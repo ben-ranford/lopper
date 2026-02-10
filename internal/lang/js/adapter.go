@@ -33,18 +33,36 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
+	detection, err := a.DetectWithConfidence(ctx, repoPath)
+	if err != nil {
+		return false, err
+	}
+	return detection.Matched, nil
+}
+
+func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	_ = ctx
 	if repoPath == "" {
 		repoPath = "."
 	}
 
+	detection := language.Detection{}
+	roots := make(map[string]struct{})
+
 	candidates := []string{"package.json", "tsconfig.json", "jsconfig.json"}
 	for _, name := range candidates {
 		path := filepath.Join(repoPath, name)
 		if _, err := os.Stat(path); err == nil {
-			return true, nil
+			detection.Matched = true
+			switch name {
+			case "package.json":
+				detection.Confidence += 45
+				roots[repoPath] = struct{}{}
+			default:
+				detection.Confidence += 20
+			}
 		} else if !os.IsNotExist(err) {
-			return false, err
+			return language.Detection{}, err
 		}
 	}
 
@@ -56,7 +74,7 @@ func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", ".idea", "dist", "build", "vendor":
+			case ".git", ".idea", "dist", "build", "vendor", "node_modules", ".next", ".turbo", "coverage":
 				return filepath.SkipDir
 			}
 			return nil
@@ -67,20 +85,38 @@ func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
 			return io.EOF
 		}
 
+		if strings.EqualFold(d.Name(), "package.json") {
+			detection.Matched = true
+			detection.Confidence += 10
+			roots[filepath.Dir(path)] = struct{}{}
+			return nil
+		}
+
 		switch strings.ToLower(filepath.Ext(d.Name())) {
 		case ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts":
-			return io.EOF
+			detection.Matched = true
+			detection.Confidence += 2
 		}
 		return nil
 	})
 	if err == io.EOF {
-		return true, nil
+		err = nil
 	}
 	if err != nil {
-		return false, err
+		return language.Detection{}, err
 	}
 
-	return false, nil
+	if detection.Matched && detection.Confidence < 35 {
+		detection.Confidence = 35
+	}
+	if detection.Confidence > 95 {
+		detection.Confidence = 95
+	}
+	if len(roots) == 0 && detection.Matched {
+		roots[repoPath] = struct{}{}
+	}
+	detection.Roots = mapKeysSorted(roots)
+	return detection, nil
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -230,6 +266,7 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 	warnings = append(warnings, riskWarnings...)
 
 	depReport := report.DependencyReport{
+		Language:             "js-ts",
 		Name:                 dependency,
 		UsedExportsCount:     usedExportCount,
 		TotalExportsCount:    totalExports,
@@ -437,4 +474,16 @@ func dependencyExists(repoPath string, dependency string) bool {
 	}
 	info, err := os.Stat(filepath.Join(root, "package.json"))
 	return err == nil && !info.IsDir()
+}
+
+func mapKeysSorted(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	items := make([]string, 0, len(values))
+	for value := range values {
+		items = append(items, value)
+	}
+	sort.Strings(items)
+	return items
 }

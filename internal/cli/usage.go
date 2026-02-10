@@ -2,9 +2,9 @@ package cli
 
 const usage = `Usage:
   surfarea [tui]
-  surfarea tui [--repo PATH] [--language auto|js-ts] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  surfarea analyse <dependency> [--repo PATH] [--format table|json] [--language auto|js-ts] [--baseline PATH] [--runtime-trace PATH]
-  surfarea analyse --top N [--repo PATH] [--format table|json] [--language auto|js-ts] [--baseline PATH] [--runtime-trace PATH] [--fail-on-increase PERCENT]
+  surfarea tui [--repo PATH] [--language auto|all|js-ts|python] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
+  surfarea analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python] [--baseline PATH] [--runtime-trace PATH]
+  surfarea analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python] [--baseline PATH] [--runtime-trace PATH] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)

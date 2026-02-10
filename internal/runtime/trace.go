@@ -61,6 +61,9 @@ func Annotate(rep report.Report, trace Trace) report.Report {
 
 	for i := range rep.Dependencies {
 		dep := &rep.Dependencies[i]
+		if dep.Language != "" && dep.Language != "js-ts" {
+			continue
+		}
 		loads := trace.DependencyLoads[dep.Name]
 		if loads == 0 {
 			continue
