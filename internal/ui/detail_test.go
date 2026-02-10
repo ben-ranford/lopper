@@ -21,6 +21,9 @@ func TestDetailShowsRiskCues(t *testing.T) {
 					RiskCues: []report.RiskCue{
 						{Code: "dynamic-loader", Severity: "medium", Message: "dynamic require/import usage found"},
 					},
+					Recommendations: []report.Recommendation{
+						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
+					},
 				},
 			},
 		},
@@ -38,5 +41,11 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 	if !strings.Contains(output, "[MEDIUM] dynamic-loader") {
 		t.Fatalf("expected risk cue entry, got: %s", output)
+	}
+	if !strings.Contains(output, "Recommendations (1)") {
+		t.Fatalf("expected recommendations section, got: %s", output)
+	}
+	if !strings.Contains(output, "[MEDIUM] prefer-subpath-imports") {
+		t.Fatalf("expected recommendation entry, got: %s", output)
 	}
 }

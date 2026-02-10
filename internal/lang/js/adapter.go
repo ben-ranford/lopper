@@ -229,7 +229,7 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, surface)
 	warnings = append(warnings, riskWarnings...)
 
-	return report.DependencyReport{
+	depReport := report.DependencyReport{
 		Name:                 dependency,
 		UsedExportsCount:     usedExportCount,
 		TotalExportsCount:    totalExports,
@@ -240,7 +240,9 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 		UnusedImports:        unusedImportList,
 		UnusedExports:        unusedExports,
 		RiskCues:             riskCues,
-	}, warnings
+	}
+	depReport.Recommendations = buildRecommendations(dependency, depReport)
+	return depReport, warnings
 }
 
 func recordImportUse(binding ImportBinding) report.ImportUse {

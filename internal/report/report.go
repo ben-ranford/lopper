@@ -47,22 +47,30 @@ type Summary struct {
 }
 
 type DependencyReport struct {
-	Name                 string        `json:"name"`
-	UsedExportsCount     int           `json:"usedExportsCount"`
-	TotalExportsCount    int           `json:"totalExportsCount"`
-	UsedPercent          float64       `json:"usedPercent"`
-	EstimatedUnusedBytes int64         `json:"estimatedUnusedBytes"`
-	TopUsedSymbols       []SymbolUsage `json:"topUsedSymbols,omitempty"`
-	UsedImports          []ImportUse   `json:"usedImports,omitempty"`
-	UnusedImports        []ImportUse   `json:"unusedImports,omitempty"`
-	UnusedExports        []SymbolRef   `json:"unusedExports,omitempty"`
-	RiskCues             []RiskCue     `json:"riskCues,omitempty"`
+	Name                 string           `json:"name"`
+	UsedExportsCount     int              `json:"usedExportsCount"`
+	TotalExportsCount    int              `json:"totalExportsCount"`
+	UsedPercent          float64          `json:"usedPercent"`
+	EstimatedUnusedBytes int64            `json:"estimatedUnusedBytes"`
+	TopUsedSymbols       []SymbolUsage    `json:"topUsedSymbols,omitempty"`
+	UsedImports          []ImportUse      `json:"usedImports,omitempty"`
+	UnusedImports        []ImportUse      `json:"unusedImports,omitempty"`
+	UnusedExports        []SymbolRef      `json:"unusedExports,omitempty"`
+	RiskCues             []RiskCue        `json:"riskCues,omitempty"`
+	Recommendations      []Recommendation `json:"recommendations,omitempty"`
 }
 
 type RiskCue struct {
 	Code     string `json:"code"`
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
+}
+
+type Recommendation struct {
+	Code      string `json:"code"`
+	Priority  string `json:"priority"`
+	Message   string `json:"message"`
+	Rationale string `json:"rationale,omitempty"`
 }
 
 type SymbolUsage struct {

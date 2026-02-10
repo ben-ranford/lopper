@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -181,6 +182,53 @@ func TestAdapterAnalyseRiskCues(t *testing.T) {
 		if !slices.Contains(codes, expected) {
 			t.Fatalf("expected risk cue %q, got %#v", expected, codes)
 		}
+	}
+}
+
+func TestAdapterAnalyseRecommendations(t *testing.T) {
+	repo := t.TempDir()
+	source := "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	lodashRoot := filepath.Join(repo, "node_modules", "lodash")
+	if err := os.MkdirAll(lodashRoot, 0o755); err != nil {
+		t.Fatalf("mkdir lodash: %v", err)
+	}
+	pkg := "{\n  \"main\": \"index.js\"\n}\n"
+	if err := os.WriteFile(filepath.Join(lodashRoot, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+	entry := strings.Join([]string{
+		"export function map() {}",
+		"export function filter() {}",
+		"export function reduce() {}",
+		"export function chunk() {}",
+		"export function uniq() {}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(lodashRoot, "index.js"), []byte(entry), 0o644); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
+	}
+
+	report, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	recs := report.Dependencies[0].Recommendations
+	codes := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		codes = append(codes, rec.Code)
+	}
+	if !slices.Contains(codes, "prefer-subpath-imports") {
+		t.Fatalf("expected subpath recommendation, got %#v", codes)
+	}
+	if !slices.Contains(codes, "consider-replacement") {
+		t.Fatalf("expected replacement recommendation, got %#v", codes)
 	}
 }
 
