@@ -1,0 +1,9 @@
+Lopper TUI (summary)
+Sort: name | Page: 1/1 | Page size: 10 | Total deps: 2
+Filter: (none)
+Summary: 2 deps, Used/Total: 1/15 (6.7%)
+
+Dependency  Used/Total  Used%  Est. Unused Size  Top Symbols
+alpha       1/10        10.0   0 B               foo (2)
+beta        0/5         0.0    0 B               -
+Commands: help | open <dependency> | q
