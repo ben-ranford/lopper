@@ -45,30 +45,67 @@ func formatTable(report Report) string {
 			report.Summary.UsedPercent,
 		)
 	}
+	if len(report.LanguageBreakdown) > 0 {
+		buffer.WriteString("Languages:\n")
+		for _, item := range report.LanguageBreakdown {
+			buffer.WriteString("- ")
+			buffer.WriteString(item.Language)
+			buffer.WriteString(": ")
+			buffer.WriteString(fmt.Sprintf("%d deps, Used/Total: %d/%d (%.1f%%)\n", item.DependencyCount, item.UsedExportsCount, item.TotalExportsCount, item.UsedPercent))
+		}
+		buffer.WriteString("\n")
+	}
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 
-	fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+	showLanguage := hasLanguageColumn(report.Dependencies)
+	if showLanguage {
+		fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+	} else {
+		fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+	}
 	for _, dep := range report.Dependencies {
 		usedPercent := dep.UsedPercent
 		if usedPercent <= 0 && dep.TotalExportsCount > 0 {
 			usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
 		}
 		usedTotal := fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount)
-		fmt.Fprintf(
-			writer,
-			"%s\t%s\t%.1f\t%s\t%s\n",
-			dep.Name,
-			usedTotal,
-			usedPercent,
-			formatBytes(dep.EstimatedUnusedBytes),
-			formatTopSymbols(dep.TopUsedSymbols),
-		)
+		if showLanguage {
+			fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%.1f\t%s\t%s\n",
+				dep.Language,
+				dep.Name,
+				usedTotal,
+				usedPercent,
+				formatBytes(dep.EstimatedUnusedBytes),
+				formatTopSymbols(dep.TopUsedSymbols),
+			)
+		} else {
+			fmt.Fprintf(
+				writer,
+				"%s\t%s\t%.1f\t%s\t%s\n",
+				dep.Name,
+				usedTotal,
+				usedPercent,
+				formatBytes(dep.EstimatedUnusedBytes),
+				formatTopSymbols(dep.TopUsedSymbols),
+			)
+		}
 	}
 
 	writer.Flush()
 	appendWarnings(&buffer, report)
 
 	return buffer.String()
+}
+
+func hasLanguageColumn(dependencies []DependencyReport) bool {
+	for _, dep := range dependencies {
+		if strings.TrimSpace(dep.Language) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func formatEmpty(report Report) string {

@@ -91,7 +91,7 @@ func filterDependencies(deps []report.DependencyReport, filter string) []report.
 
 	filtered := make([]report.DependencyReport, 0, len(deps))
 	for _, dep := range deps {
-		if strings.Contains(strings.ToLower(dep.Name), filter) {
+		if strings.Contains(strings.ToLower(dep.Name+" "+dep.Language), filter) {
 			filtered = append(filtered, dep)
 		}
 	}
@@ -220,6 +220,7 @@ func summaryHelpText() string {
 		"  n | p                Page shortcuts",
 		"  size <n>             Change page size",
 		"  open <dependency>    Show dependency detail",
+		"  open <lang>:<dep>    Detail in multi-language mode",
 		"  refresh              Re-render the current view",
 		"  q                    Quit",
 		"",
@@ -239,6 +240,9 @@ func sortDependencies(deps []report.DependencyReport, mode sortMode) []report.De
 	switch mode {
 	case sortByName:
 		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].Name == sorted[j].Name {
+				return sorted[i].Language < sorted[j].Language
+			}
 			return sorted[i].Name < sorted[j].Name
 		})
 	default:
@@ -397,6 +401,7 @@ func (s *Summary) renderSummary(reportData report.Report, state summaryState) (s
 	display := reportData
 	display.Dependencies = paged
 	display.Summary = report.ComputeSummary(sorted)
+	display.LanguageBreakdown = report.ComputeLanguageBreakdown(sorted)
 
 	formatted, err := s.Formatter.Format(display, report.FormatTable)
 	if err != nil {

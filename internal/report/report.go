@@ -35,6 +35,7 @@ type Report struct {
 	RepoPath             string             `json:"repoPath"`
 	Dependencies         []DependencyReport `json:"dependencies"`
 	Summary              *Summary           `json:"summary,omitempty"`
+	LanguageBreakdown    []LanguageSummary  `json:"languageBreakdown,omitempty"`
 	Warnings             []string           `json:"warnings,omitempty"`
 	WasteIncreasePercent *float64           `json:"wasteIncreasePercent,omitempty"`
 }
@@ -46,7 +47,16 @@ type Summary struct {
 	UsedPercent       float64 `json:"usedPercent"`
 }
 
+type LanguageSummary struct {
+	Language          string  `json:"language"`
+	DependencyCount   int     `json:"dependencyCount"`
+	UsedExportsCount  int     `json:"usedExportsCount"`
+	TotalExportsCount int     `json:"totalExportsCount"`
+	UsedPercent       float64 `json:"usedPercent"`
+}
+
 type DependencyReport struct {
+	Language             string           `json:"language,omitempty"`
 	Name                 string           `json:"name"`
 	UsedExportsCount     int              `json:"usedExportsCount"`
 	TotalExportsCount    int              `json:"totalExportsCount"`

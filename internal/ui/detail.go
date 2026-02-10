@@ -36,10 +36,16 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return fmt.Errorf("dependency name is required")
 	}
 
+	languageID := d.Language
+	if parts := strings.SplitN(dependency, ":", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		languageID = parts[0]
+		dependency = parts[1]
+	}
+
 	reportData, err := d.Analyzer.Analyse(ctx, analysis.Request{
 		RepoPath:   d.RepoPath,
 		Dependency: dependency,
-		Language:   d.Language,
+		Language:   languageID,
 	})
 	if err != nil {
 		return err
@@ -51,6 +57,9 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 
 	dep := reportData.Dependencies[0]
 	fmt.Fprintf(d.Out, "Dependency detail: %s\n", dep.Name)
+	if dep.Language != "" {
+		fmt.Fprintf(d.Out, "Language: %s\n", dep.Language)
+	}
 	fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
 	fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
 	fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)

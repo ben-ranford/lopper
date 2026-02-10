@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -53,5 +54,37 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 	if !strings.Contains(output, "[MEDIUM] prefer-subpath-imports") {
 		t.Fatalf("expected recommendation entry, got: %s", output)
+	}
+}
+
+type captureAnalyzer struct {
+	lastRequest analysis.Request
+	report      report.Report
+}
+
+func (c *captureAnalyzer) Analyse(ctx context.Context, req analysis.Request) (report.Report, error) {
+	c.lastRequest = req
+	return c.report, nil
+}
+
+func TestDetailParsesLanguagePrefix(t *testing.T) {
+	analyzer := &captureAnalyzer{
+		report: report.Report{
+			Dependencies: []report.DependencyReport{
+				{Name: "requests", Language: "python"},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "all")
+	if err := detail.Show(context.Background(), "python:requests"); err != nil {
+		t.Fatalf("show detail: %v", err)
+	}
+	if analyzer.lastRequest.Language != "python" {
+		t.Fatalf("expected language override python, got %q", analyzer.lastRequest.Language)
+	}
+	if analyzer.lastRequest.Dependency != "requests" {
+		t.Fatalf("expected dependency requests, got %q", analyzer.lastRequest.Dependency)
 	}
 }
