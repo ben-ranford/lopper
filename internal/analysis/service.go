@@ -7,6 +7,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/js"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 type Analyzer interface {
@@ -49,6 +50,15 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+
+	if req.RuntimeTracePath != "" {
+		traceData, err := runtime.Load(req.RuntimeTracePath)
+		if err != nil {
+			return report.Report{}, err
+		}
+		reportData = runtime.Annotate(reportData, traceData)
+	}
+
 	reportData.SchemaVersion = report.SchemaVersion
 	return reportData, nil
 }

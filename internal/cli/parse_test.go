@@ -69,6 +69,16 @@ func TestParseArgsAnalyseBaseline(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseRuntimeTrace(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "lodash", "--runtime-trace", "trace.ndjson"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Analyse.RuntimeTracePath != "trace.ndjson" {
+		t.Fatalf("expected runtime trace path trace.ndjson, got %q", req.Analyse.RuntimeTracePath)
+	}
+}
+
 func TestParseArgsTUIFlags(t *testing.T) {
 	req, err := ParseArgs([]string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
 	if err != nil {

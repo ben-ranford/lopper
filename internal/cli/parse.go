@@ -48,6 +48,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	failOnIncrease := fs.Int("fail-on-increase", 0, "fail if waste increases beyond threshold")
 	languageFlag := fs.String("language", req.Analyse.Language, "language adapter")
 	baselinePath := fs.String("baseline", req.Analyse.BaselinePath, "baseline report path")
+	runtimeTracePath := fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -88,12 +89,13 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	req.Mode = app.ModeAnalyse
 	req.RepoPath = *repoPath
 	req.Analyse = app.AnalyseRequest{
-		Dependency:     dependency,
-		TopN:           *top,
-		FailOnIncrease: *failOnIncrease,
-		Format:         format,
-		Language:       strings.TrimSpace(*languageFlag),
-		BaselinePath:   strings.TrimSpace(*baselinePath),
+		Dependency:       dependency,
+		TopN:             *top,
+		FailOnIncrease:   *failOnIncrease,
+		Format:           format,
+		Language:         strings.TrimSpace(*languageFlag),
+		BaselinePath:     strings.TrimSpace(*baselinePath),
+		RuntimeTracePath: strings.TrimSpace(*runtimeTracePath),
 	}
 
 	return req, nil
@@ -185,7 +187,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--language", "--baseline", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--fail-on-increase", "--language", "--baseline", "--runtime-trace", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

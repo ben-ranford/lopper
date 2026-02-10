@@ -54,6 +54,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
 	fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
 	fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
+	printRuntimeUsage(d.Out, dep.RuntimeUsage)
 	printRiskCues(d.Out, dep.RiskCues)
 	printRecommendations(d.Out, dep.Recommendations)
 
@@ -132,6 +133,20 @@ func printRecommendations(out io.Writer, recommendations []report.Recommendation
 		if recommendation.Rationale != "" {
 			fmt.Fprintf(out, "    rationale: %s\n", recommendation.Rationale)
 		}
+	}
+	fmt.Fprintln(out, "")
+}
+
+func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
+	fmt.Fprintln(out, "Runtime usage")
+	if usage == nil {
+		fmt.Fprintln(out, "  (none)")
+		fmt.Fprintln(out, "")
+		return
+	}
+	fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
+	if usage.RuntimeOnly {
+		fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
 	}
 	fmt.Fprintln(out, "")
 }

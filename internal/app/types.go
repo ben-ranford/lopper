@@ -17,12 +17,13 @@ type Request struct {
 }
 
 type AnalyseRequest struct {
-	Dependency     string
-	TopN           int
-	FailOnIncrease int
-	Format         report.Format
-	Language       string
-	BaselinePath   string
+	Dependency       string
+	TopN             int
+	FailOnIncrease   int
+	Format           report.Format
+	Language         string
+	BaselinePath     string
+	RuntimeTracePath string
 }
 
 type TUIRequest struct {

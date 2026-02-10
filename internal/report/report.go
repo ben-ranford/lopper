@@ -58,6 +58,7 @@ type DependencyReport struct {
 	UnusedExports        []SymbolRef      `json:"unusedExports,omitempty"`
 	RiskCues             []RiskCue        `json:"riskCues,omitempty"`
 	Recommendations      []Recommendation `json:"recommendations,omitempty"`
+	RuntimeUsage         *RuntimeUsage    `json:"runtimeUsage,omitempty"`
 }
 
 type RiskCue struct {
@@ -71,6 +72,11 @@ type Recommendation struct {
 	Priority  string `json:"priority"`
 	Message   string `json:"message"`
 	Rationale string `json:"rationale,omitempty"`
+}
+
+type RuntimeUsage struct {
+	LoadCount   int  `json:"loadCount"`
+	RuntimeOnly bool `json:"runtimeOnly,omitempty"`
 }
 
 type SymbolUsage struct {

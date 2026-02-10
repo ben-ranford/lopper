@@ -50,10 +50,11 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return "", a.TUI.Start(ctx, opts)
 	case ModeAnalyse:
 		reportData, err := a.Analyzer.Analyse(ctx, analysis.Request{
-			RepoPath:   req.RepoPath,
-			Dependency: req.Analyse.Dependency,
-			TopN:       req.Analyse.TopN,
-			Language:   req.Analyse.Language,
+			RepoPath:         req.RepoPath,
+			Dependency:       req.Analyse.Dependency,
+			TopN:             req.Analyse.TopN,
+			Language:         req.Analyse.Language,
+			RuntimeTracePath: req.Analyse.RuntimeTracePath,
 		})
 		if err != nil {
 			return "", err
