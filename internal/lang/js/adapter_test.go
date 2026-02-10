@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -134,6 +135,55 @@ func TestAdapterDetectNoJSSignals(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseRiskCues(t *testing.T) {
+	repo := t.TempDir()
+	source := "import { run } from \"risky\"\nrun()\n"
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	riskyRoot := filepath.Join(repo, "node_modules", "risky")
+	if err := os.MkdirAll(riskyRoot, 0o755); err != nil {
+		t.Fatalf("mkdir risky: %v", err)
+	}
+	riskyPkg := "{\n  \"main\": \"index.js\",\n  \"gypfile\": true,\n  \"dependencies\": {\"deep-a\":\"1.0.0\"}\n}\n"
+	if err := os.WriteFile(filepath.Join(riskyRoot, "package.json"), []byte(riskyPkg), 0o644); err != nil {
+		t.Fatalf("write risky package: %v", err)
+	}
+	riskyEntry := "const target = process.env.DEP_NAME\nmodule.exports = require(target)\nexports.run = () => 1\n"
+	if err := os.WriteFile(filepath.Join(riskyRoot, "index.js"), []byte(riskyEntry), 0o644); err != nil {
+		t.Fatalf("write risky entrypoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(riskyRoot, "binding.gyp"), []byte("{ }\n"), 0o644); err != nil {
+		t.Fatalf("write binding.gyp: %v", err)
+	}
+
+	mustWritePackage(t, filepath.Join(repo, "node_modules", "deep-a"), "{\n  \"name\":\"deep-a\",\n  \"dependencies\": {\"deep-b\":\"1.0.0\"}\n}\n")
+	mustWritePackage(t, filepath.Join(repo, "node_modules", "deep-b"), "{\n  \"name\":\"deep-b\",\n  \"dependencies\": {\"deep-c\":\"1.0.0\"}\n}\n")
+	mustWritePackage(t, filepath.Join(repo, "node_modules", "deep-c"), "{\n  \"name\":\"deep-c\"\n}\n")
+
+	report, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "risky",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(report.Dependencies) != 1 {
+		t.Fatalf("expected 1 dependency report, got %d", len(report.Dependencies))
+	}
+
+	codes := make([]string, 0, len(report.Dependencies[0].RiskCues))
+	for _, cue := range report.Dependencies[0].RiskCues {
+		codes = append(codes, cue.Code)
+	}
+	for _, expected := range []string{"dynamic-loader", "native-module", "deep-transitive-graph"} {
+		if !slices.Contains(codes, expected) {
+			t.Fatalf("expected risk cue %q, got %#v", expected, codes)
+		}
+	}
+}
+
 func writeDependency(repo string, name string, entrypoint string) error {
 	depDir := filepath.Join(repo, "node_modules", name)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
@@ -147,4 +197,17 @@ func writeDependency(repo string, name string, entrypoint string) error {
 		return err
 	}
 	return nil
+}
+
+func mustWritePackage(t *testing.T, root string, pkgJSON string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", root, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(pkgJSON), 0o644); err != nil {
+		t.Fatalf("write %s package.json: %v", root, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.js"), []byte("module.exports = {}\n"), 0o644); err != nil {
+		t.Fatalf("write %s index.js: %v", root, err)
+	}
 }

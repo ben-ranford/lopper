@@ -54,6 +54,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
 	fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
 	fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
+	printRiskCues(d.Out, dep.RiskCues)
 
 	printImportList(d.Out, "Used imports", dep.UsedImports)
 	printImportList(d.Out, "Unused imports", dep.UnusedImports)
@@ -99,6 +100,20 @@ func printExportsList(out io.Writer, title string, exports []report.SymbolRef) {
 			module = "(unknown)"
 		}
 		fmt.Fprintf(out, "  - %s (%s)\n", ref.Name, module)
+	}
+	fmt.Fprintln(out, "")
+}
+
+func printRiskCues(out io.Writer, cues []report.RiskCue) {
+	fmt.Fprintf(out, "Risk cues (%d)\n", len(cues))
+	if len(cues) == 0 {
+		fmt.Fprintln(out, "  (none)")
+		fmt.Fprintln(out, "")
+		return
+	}
+
+	for _, cue := range cues {
+		fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
 	}
 	fmt.Fprintln(out, "")
 }

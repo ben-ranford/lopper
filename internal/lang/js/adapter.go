@@ -226,6 +226,9 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 		usedExportCount = len(usedExports)
 	}
 
+	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, surface)
+	warnings = append(warnings, riskWarnings...)
+
 	return report.DependencyReport{
 		Name:                 dependency,
 		UsedExportsCount:     usedExportCount,
@@ -236,6 +239,7 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 		UsedImports:          usedImportList,
 		UnusedImports:        unusedImportList,
 		UnusedExports:        unusedExports,
+		RiskCues:             riskCues,
 	}, warnings
 }
 

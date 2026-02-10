@@ -56,6 +56,13 @@ type DependencyReport struct {
 	UsedImports          []ImportUse   `json:"usedImports,omitempty"`
 	UnusedImports        []ImportUse   `json:"unusedImports,omitempty"`
 	UnusedExports        []SymbolRef   `json:"unusedExports,omitempty"`
+	RiskCues             []RiskCue     `json:"riskCues,omitempty"`
+}
+
+type RiskCue struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
 }
 
 type SymbolUsage struct {

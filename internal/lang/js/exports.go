@@ -19,11 +19,15 @@ type ExportSurface struct {
 }
 
 type packageJSON struct {
-	Main    string      `json:"main"`
-	Module  string      `json:"module"`
-	Types   string      `json:"types"`
-	Typings string      `json:"typings"`
-	Exports interface{} `json:"exports"`
+	Main                 string            `json:"main"`
+	Module               string            `json:"module"`
+	Types                string            `json:"types"`
+	Typings              string            `json:"typings"`
+	Exports              interface{}       `json:"exports"`
+	Gypfile              bool              `json:"gypfile"`
+	Scripts              map[string]string `json:"scripts"`
+	Dependencies         map[string]string `json:"dependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
 }
 
 func resolveDependencyExports(repoPath string, dependency string) (ExportSurface, error) {
