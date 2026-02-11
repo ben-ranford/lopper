@@ -67,7 +67,7 @@ func isNodeBuiltin(moduleName string) bool {
 	if len(moduleName) > 5 && moduleName[:5] == "node:" {
 		moduleName = moduleName[5:]
 	}
-	
+
 	// Check if it's a built-in module (including subpaths like "fs/promises")
 	// We check the base module name before any "/"
 	for i := 0; i < len(moduleName); i++ {
@@ -75,6 +75,6 @@ func isNodeBuiltin(moduleName string) bool {
 			return nodeBuiltinModules[moduleName[:i]]
 		}
 	}
-	
+
 	return nodeBuiltinModules[moduleName]
 }

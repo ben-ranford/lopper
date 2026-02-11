@@ -292,13 +292,13 @@ func dependencyUsageWarnings(dependency string, usedExports map[string]struct{},
 func hasDirectIdentifierUsage(imp ImportBinding, file FileScan) bool {
 	// Check if the identifier is used directly (not through property access)
 	directCount := file.IdentifierUsage[imp.LocalName]
-	
+
 	// If there's namespace property usage, check if there's also direct usage beyond that
 	if props, hasProps := file.NamespaceUsage[imp.LocalName]; hasProps && len(props) > 0 {
 		// If we only have property access and no direct identifier usage, it's not ambiguous
 		return directCount > 0
 	}
-	
+
 	// No property usage, so any direct usage is ambiguous
 	return directCount > 0
 }
@@ -544,12 +544,12 @@ func dependencyFromModule(module string) string {
 	if module == "" {
 		return ""
 	}
-	
+
 	// Filter out Node.js built-in modules (both "node:*" and bare names like "fs")
 	if isNodeBuiltin(module) {
 		return ""
 	}
-	
+
 	if strings.HasPrefix(module, ".") || strings.HasPrefix(module, "/") {
 		return ""
 	}
