@@ -13,6 +13,7 @@ recommendations across supported languages.
 - JSON and table output formats
 - Optional runtime trace annotations for JS/TS dependency loads
 - Baseline comparison and CI-friendly waste increase gating
+- Tunable thresholds via CLI flags or repo config (`.lopper.yml` / `lopper.json`)
 - Interactive terminal summary/detail view (`lopper` / `lopper tui`)
 
 ## Supported language adapters
@@ -85,6 +86,44 @@ Emit JSON report:
 lopper analyse --top 20 --repo . --language all --format json
 ```
 
+Run with explicit threshold tuning:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --threshold-fail-on-increase 2 \
+  --threshold-low-confidence-warning 35 \
+  --threshold-min-usage-percent 45
+```
+
+Repo-level config example (`.lopper.yml`):
+
+```yaml
+thresholds:
+  fail_on_increase_percent: 2
+  low_confidence_warning_percent: 35
+  min_usage_percent_for_recommendations: 45
+```
+
+Threshold defaults:
+
+- `fail_on_increase_percent: 0` (disabled unless set above `0`)
+- `low_confidence_warning_percent: 40`
+- `min_usage_percent_for_recommendations: 40`
+
+Threshold ranges:
+
+- `fail_on_increase_percent` must be `>= 0`
+- `low_confidence_warning_percent` must be between `0` and `100`
+- `min_usage_percent_for_recommendations` must be between `0` and `100`
+
+Precedence is `CLI > config > defaults`.
+
+Tuning guide with strict/balanced/noise-reduction profiles:
+
+- `docs/threshold-tuning.md`
+
 Launch TUI:
 
 ```bash
@@ -135,6 +174,7 @@ Git pre-commit hook:
 ## Documentation
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- Threshold tuning: `docs/threshold-tuning.md`
 - Adapter and architecture extensibility: `docs/extensibility.md`
 - CI and release workflow: `docs/ci-usage.md`
 - Contribution guide: `CONTRIBUTING.md`

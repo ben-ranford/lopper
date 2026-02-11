@@ -30,14 +30,21 @@ func ParseFormat(value string) (Format, error) {
 }
 
 type Report struct {
-	SchemaVersion        string             `json:"schemaVersion"`
-	GeneratedAt          time.Time          `json:"generatedAt"`
-	RepoPath             string             `json:"repoPath"`
-	Dependencies         []DependencyReport `json:"dependencies"`
-	Summary              *Summary           `json:"summary,omitempty"`
-	LanguageBreakdown    []LanguageSummary  `json:"languageBreakdown,omitempty"`
-	Warnings             []string           `json:"warnings,omitempty"`
-	WasteIncreasePercent *float64           `json:"wasteIncreasePercent,omitempty"`
+	SchemaVersion        string               `json:"schemaVersion"`
+	GeneratedAt          time.Time            `json:"generatedAt"`
+	RepoPath             string               `json:"repoPath"`
+	Dependencies         []DependencyReport   `json:"dependencies"`
+	Summary              *Summary             `json:"summary,omitempty"`
+	LanguageBreakdown    []LanguageSummary    `json:"languageBreakdown,omitempty"`
+	EffectiveThresholds  *EffectiveThresholds `json:"effectiveThresholds,omitempty"`
+	Warnings             []string             `json:"warnings,omitempty"`
+	WasteIncreasePercent *float64             `json:"wasteIncreasePercent,omitempty"`
+}
+
+type EffectiveThresholds struct {
+	FailOnIncreasePercent             int `json:"failOnIncreasePercent"`
+	LowConfidenceWarningPercent       int `json:"lowConfidenceWarningPercent"`
+	MinUsagePercentForRecommendations int `json:"minUsagePercentForRecommendations"`
 }
 
 type Summary struct {

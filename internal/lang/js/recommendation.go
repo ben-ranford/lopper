@@ -14,7 +14,7 @@ var replacementHints = map[string]string{
 	"axios":  "If browser/runtime support allows, consider native `fetch`.",
 }
 
-func buildRecommendations(dependency string, dep report.DependencyReport) []report.Recommendation {
+func buildRecommendations(dependency string, dep report.DependencyReport, minUsagePercentForRecommendations int) []report.Recommendation {
 	recs := make([]report.Recommendation, 0, 4)
 
 	if dep.UsedExportsCount == 0 && len(dep.UsedImports) == 0 {
@@ -29,7 +29,7 @@ func buildRecommendations(dependency string, dep report.DependencyReport) []repo
 	rootImportUsed, subpathImportUsed, usesWildcardLike := importUsageFlags(dependency, dep)
 
 	knownExportSurface := dep.TotalExportsCount > 0
-	if knownExportSurface && rootImportUsed && !subpathImportUsed && dep.UsedPercent > 0 && dep.UsedPercent < 40 {
+	if knownExportSurface && rootImportUsed && !subpathImportUsed && dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsagePercentForRecommendations) {
 		recs = append(recs, report.Recommendation{
 			Code:      "prefer-subpath-imports",
 			Priority:  "medium",
@@ -48,7 +48,7 @@ func buildRecommendations(dependency string, dep report.DependencyReport) []repo
 	}
 
 	if hint, ok := replacementHints[dependency]; ok {
-		if dep.UsedPercent > 0 && dep.UsedPercent <= 35 || usesWildcardLike {
+		if dep.UsedPercent > 0 && dep.UsedPercent <= float64(replacementThreshold(minUsagePercentForRecommendations)) || usesWildcardLike {
 			recs = append(recs, report.Recommendation{
 				Code:      "consider-replacement",
 				Priority:  "low",
@@ -94,4 +94,12 @@ func recommendationPriorityRank(priority string) int {
 	default:
 		return 2
 	}
+}
+
+func replacementThreshold(minUsagePercentForRecommendations int) int {
+	replacementCutoff := minUsagePercentForRecommendations - 5
+	if replacementCutoff < 0 {
+		return 0
+	}
+	return replacementCutoff
 }

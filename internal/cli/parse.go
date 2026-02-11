@@ -9,6 +9,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 var (
@@ -39,66 +40,144 @@ func ParseArgs(args []string) (app.Request, error) {
 func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	args = normalizeArgs(args)
 
-	fs := flag.NewFlagSet("analyse", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	repoPath := fs.String("repo", req.RepoPath, "repository path")
-	top := fs.Int("top", 0, "top N dependencies")
-	formatFlag := fs.String("format", string(req.Analyse.Format), "output format")
-	failOnIncrease := fs.Int("fail-on-increase", 0, "fail if waste increases beyond threshold")
-	languageFlag := fs.String("language", req.Analyse.Language, "language adapter")
-	baselinePath := fs.String("baseline", req.Analyse.BaselinePath, "baseline report path")
-	runtimeTracePath := fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path")
-
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return req, ErrHelpRequested
-		}
+	fs, flags := newAnalyseFlagSet(req)
+	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
 	}
 
-	if *top < 0 {
-		return req, fmt.Errorf("--top must be >= 0")
-	}
-	if *failOnIncrease < 0 {
-		return req, fmt.Errorf("--fail-on-increase must be >= 0")
-	}
-
-	format, err := report.ParseFormat(*formatFlag)
+	dependency, err := validateAnalyseTarget(fs.Args(), *flags.top)
 	if err != nil {
 		return req, err
 	}
 
-	remaining := fs.Args()
+	format, err := report.ParseFormat(*flags.formatFlag)
+	if err != nil {
+		return req, err
+	}
+
+	resolvedThresholds, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
+	if err != nil {
+		return req, err
+	}
+
+	req.Mode = app.ModeAnalyse
+	req.RepoPath = strings.TrimSpace(*flags.repoPath)
+	req.Analyse = app.AnalyseRequest{
+		Dependency:       dependency,
+		TopN:             *flags.top,
+		Format:           format,
+		Language:         strings.TrimSpace(*flags.languageFlag),
+		BaselinePath:     strings.TrimSpace(*flags.baselinePath),
+		RuntimeTracePath: strings.TrimSpace(*flags.runtimeTracePath),
+		ConfigPath:       resolvedConfigPath,
+		Thresholds:       resolvedThresholds,
+	}
+
+	return req, nil
+}
+
+type analyseFlagValues struct {
+	repoPath                      *string
+	top                           *int
+	formatFlag                    *string
+	legacyFailOnIncrease          *int
+	thresholdFailOnIncrease       *int
+	thresholdLowConfidenceWarning *int
+	thresholdMinUsagePercent      *int
+	languageFlag                  *string
+	baselinePath                  *string
+	runtimeTracePath              *string
+	configPath                    *string
+}
+
+func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
+	fs := flag.NewFlagSet("analyse", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	values := analyseFlagValues{
+		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
+		top:                           fs.Int("top", 0, "top N dependencies"),
+		formatFlag:                    fs.String("format", string(req.Analyse.Format), "output format"),
+		legacyFailOnIncrease:          fs.Int("fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "fail if waste increases beyond threshold"),
+		thresholdFailOnIncrease:       fs.Int("threshold-fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "waste increase threshold for CI failure"),
+		thresholdLowConfidenceWarning: fs.Int("threshold-low-confidence-warning", req.Analyse.Thresholds.LowConfidenceWarningPercent, "low-confidence warning threshold"),
+		thresholdMinUsagePercent:      fs.Int("threshold-min-usage-percent", req.Analyse.Thresholds.MinUsagePercentForRecommendations, "minimum usage percent threshold for recommendation generation"),
+		languageFlag:                  fs.String("language", req.Analyse.Language, "language adapter"),
+		baselinePath:                  fs.String("baseline", req.Analyse.BaselinePath, "baseline report path"),
+		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
+		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
+	}
+
+	return fs, values
+}
+
+func parseFlagSet(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ErrHelpRequested
+		}
+		return err
+	}
+	return nil
+}
+
+func validateAnalyseTarget(remaining []string, top int) (string, error) {
+	if top < 0 {
+		return "", fmt.Errorf("--top must be >= 0")
+	}
 	if len(remaining) > 1 {
-		return req, fmt.Errorf("too many arguments for analyse")
+		return "", fmt.Errorf("too many arguments for analyse")
 	}
 
 	dependency := ""
 	if len(remaining) == 1 {
 		dependency = strings.TrimSpace(remaining[0])
 	}
-
-	if dependency != "" && *top > 0 {
-		return req, ErrConflictingTargets
+	if dependency != "" && top > 0 {
+		return "", ErrConflictingTargets
 	}
-	if dependency == "" && *top == 0 {
-		return req, fmt.Errorf("missing dependency name or --top")
+	if dependency == "" && top == 0 {
+		return "", fmt.Errorf("missing dependency name or --top")
 	}
+	return dependency, nil
+}
 
-	req.Mode = app.ModeAnalyse
-	req.RepoPath = *repoPath
-	req.Analyse = app.AnalyseRequest{
-		Dependency:       dependency,
-		TopN:             *top,
-		FailOnIncrease:   *failOnIncrease,
-		Format:           format,
-		Language:         strings.TrimSpace(*languageFlag),
-		BaselinePath:     strings.TrimSpace(*baselinePath),
-		RuntimeTracePath: strings.TrimSpace(*runtimeTracePath),
+func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, string, error) {
+	configOverrides, resolvedConfigPath, err := thresholds.Load(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
+	if err != nil {
+		return thresholds.Values{}, "", err
 	}
 
-	return req, nil
+	resolvedThresholds := configOverrides.Apply(thresholds.Defaults())
+	cliOverrides, err := cliThresholdOverrides(visitedFlags(fs), values)
+	if err != nil {
+		return thresholds.Values{}, "", err
+	}
+	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
+	if err := resolvedThresholds.Validate(); err != nil {
+		return thresholds.Values{}, "", err
+	}
+	return resolvedThresholds, resolvedConfigPath, nil
+}
+
+func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
+	overrides := thresholds.Overrides{}
+	if visited["fail-on-increase"] {
+		overrides.FailOnIncreasePercent = values.legacyFailOnIncrease
+	}
+	if visited["threshold-fail-on-increase"] {
+		if overrides.FailOnIncreasePercent != nil && *overrides.FailOnIncreasePercent != *values.thresholdFailOnIncrease {
+			return thresholds.Overrides{}, fmt.Errorf("--fail-on-increase and --threshold-fail-on-increase must match when both are provided")
+		}
+		overrides.FailOnIncreasePercent = values.thresholdFailOnIncrease
+	}
+	if visited["threshold-low-confidence-warning"] {
+		overrides.LowConfidenceWarningPercent = values.thresholdLowConfidenceWarning
+	}
+	if visited["threshold-min-usage-percent"] {
+		overrides.MinUsagePercentForRecommendations = values.thresholdMinUsagePercent
+	}
+	return overrides, nil
 }
 
 func parseTUI(args []string, req app.Request) (app.Request, error) {
@@ -115,10 +194,7 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	pageSize := fs.Int("page-size", req.TUI.PageSize, "page size")
 	snapshot := fs.String("snapshot", req.TUI.SnapshotPath, "snapshot output path")
 
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return req, ErrHelpRequested
-		}
+	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
 	}
 	if fs.NArg() > 0 {
@@ -187,9 +263,17 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--language", "--baseline", "--runtime-trace", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--language", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false
 	}
+}
+
+func visitedFlags(fs *flag.FlagSet) map[string]bool {
+	visited := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
 }

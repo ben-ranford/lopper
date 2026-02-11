@@ -1,16 +1,22 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 const (
-	unexpectedErrFmt = "unexpected error: %v"
-	modeMismatchFmt  = "expected mode %q, got %q"
-	languageFlagName = "--language"
+	unexpectedErrFmt  = "unexpected error: %v"
+	modeMismatchFmt   = "expected mode %q, got %q"
+	languageFlagName  = "--language"
+	failAliasFlag     = "--fail-on-increase"
+	thresholdFailFlag = "--threshold-fail-on-increase"
 )
 
 func TestParseArgsDefault(t *testing.T) {
@@ -127,5 +133,198 @@ func TestParseArgsTUIFlags(t *testing.T) {
 	}
 	if req.TUI.SnapshotPath != "out.txt" {
 		t.Fatalf("expected snapshot out.txt, got %q", req.TUI.SnapshotPath)
+	}
+}
+
+func TestParseArgsAnalyseThresholdDefaults(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "3"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.Thresholds != thresholds.Defaults() {
+		t.Fatalf("expected default thresholds %+v, got %+v", thresholds.Defaults(), req.Analyse.Thresholds)
+	}
+}
+
+func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
+	req, err := ParseArgs([]string{
+		"analyse",
+		"--top", "4",
+		thresholdFailFlag, "2",
+		"--threshold-low-confidence-warning", "31",
+		"--threshold-min-usage-percent", "45",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.Thresholds.FailOnIncreasePercent != 2 {
+		t.Fatalf("expected fail threshold 2, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
+	}
+	if req.Analyse.Thresholds.LowConfidenceWarningPercent != 31 {
+		t.Fatalf("expected low-confidence threshold 31, got %d", req.Analyse.Thresholds.LowConfidenceWarningPercent)
+	}
+	if req.Analyse.Thresholds.MinUsagePercentForRecommendations != 45 {
+		t.Fatalf("expected min-usage threshold 45, got %d", req.Analyse.Thresholds.MinUsagePercentForRecommendations)
+	}
+}
+
+func TestParseArgsAnalyseLegacyFailOnIncreaseAlias(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "2", failAliasFlag, "9"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.Thresholds.FailOnIncreasePercent != 9 {
+		t.Fatalf("expected alias threshold 9, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
+	}
+}
+
+func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
+	_, err := ParseArgs([]string{
+		"analyse", "--top", "2",
+		failAliasFlag, "1",
+		thresholdFailFlag, "2",
+	})
+	if err == nil {
+		t.Fatalf("expected conflict error when fail-on-increase flags disagree")
+	}
+	if !strings.Contains(err.Error(), "must match") {
+		t.Fatalf("unexpected conflict error: %v", err)
+	}
+}
+
+func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
+	repo := t.TempDir()
+	config := strings.Join([]string{
+		"thresholds:",
+		"  fail_on_increase_percent: 4",
+		"  low_confidence_warning_percent: 27",
+		"  min_usage_percent_for_recommendations: 52",
+		"",
+	}, "\n")
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
+
+	req, err := ParseArgs([]string{
+		"analyse", "--top", "10",
+		"--repo", repo,
+		"--threshold-min-usage-percent", "60",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.Thresholds.FailOnIncreasePercent != 4 {
+		t.Fatalf("expected config fail threshold 4, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
+	}
+	if req.Analyse.Thresholds.LowConfidenceWarningPercent != 27 {
+		t.Fatalf("expected config low-confidence threshold 27, got %d", req.Analyse.Thresholds.LowConfidenceWarningPercent)
+	}
+	if req.Analyse.Thresholds.MinUsagePercentForRecommendations != 60 {
+		t.Fatalf("expected CLI min-usage threshold 60, got %d", req.Analyse.Thresholds.MinUsagePercentForRecommendations)
+	}
+}
+
+func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
+	_, err := ParseArgs([]string{"analyse", "--top", "2", "--threshold-low-confidence-warning", "101"})
+	if err == nil {
+		t.Fatalf("expected range validation error")
+	}
+	if !strings.Contains(err.Error(), "between 0 and 100") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
+	args := normalizeArgs([]string{"lodash", "--top", "5", "--format=json", "--", "--literal"})
+	if len(args) == 0 {
+		t.Fatalf("expected normalized args")
+	}
+	if !flagNeedsValue(thresholdFailFlag) {
+		t.Fatalf("expected threshold flag to require value")
+	}
+	if flagNeedsValue("--format=json") {
+		t.Fatalf("expected equals-form flag not to require separate value")
+	}
+	if flagNeedsValue("--unknown-flag") {
+		t.Fatalf("did not expect unknown flag to be treated as requiring value")
+	}
+}
+
+func TestParseArgsErrorsAndHelp(t *testing.T) {
+	if _, err := ParseArgs([]string{"help"}); err != ErrHelpRequested {
+		t.Fatalf("expected top-level help request error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"analyse", "--help"}); err != ErrHelpRequested {
+		t.Fatalf("expected analyse help request error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"tui", "--help"}); err != ErrHelpRequested {
+		t.Fatalf("expected tui help request error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"unknown"}); err == nil {
+		t.Fatalf("expected unknown command error")
+	}
+}
+
+func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
+	if _, err := ParseArgs([]string{"analyse"}); err == nil {
+		t.Fatalf("expected missing target error")
+	}
+	if _, err := ParseArgs([]string{"analyse", "lodash", "--top", "2"}); err != ErrConflictingTargets {
+		t.Fatalf("expected conflicting-targets error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"analyse", "--top", "-1"}); err == nil {
+		t.Fatalf("expected negative top error")
+	}
+	if _, err := ParseArgs([]string{"analyse", "a", "b"}); err == nil {
+		t.Fatalf("expected too-many-arguments error")
+	}
+}
+
+func TestParseArgsTUIInvalidInputs(t *testing.T) {
+	if _, err := ParseArgs([]string{"tui", "--top", "-1"}); err == nil {
+		t.Fatalf("expected negative top error")
+	}
+	if _, err := ParseArgs([]string{"tui", "--page-size", "-1"}); err == nil {
+		t.Fatalf("expected negative page-size error")
+	}
+	if _, err := ParseArgs([]string{"tui", "extra"}); err == nil {
+		t.Fatalf("expected unexpected-args error")
+	}
+}
+
+func TestParseArgsVisitedFlagThresholdAliasMatch(t *testing.T) {
+	req, err := ParseArgs([]string{
+		"analyse", "--top", "2",
+		failAliasFlag, "3",
+		thresholdFailFlag, "3",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Analyse.Thresholds.FailOnIncreasePercent != 3 {
+		t.Fatalf("expected resolved fail threshold 3, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
+	}
+}
+
+func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
+	if _, err := ParseArgs([]string{"analyse", "--top"}); err == nil {
+		t.Fatalf("expected analyse flag parse error for missing value")
+	}
+	if _, err := ParseArgs([]string{"analyse", "dep", "--format", "invalid"}); err == nil {
+		t.Fatalf("expected analyse format parse error")
+	}
+	if _, err := ParseArgs([]string{"analyse", "--top", "1", "--config", "missing-config.yml"}); err == nil {
+		t.Fatalf("expected thresholds config load error")
+	}
+	if _, err := ParseArgs([]string{"tui", "--top"}); err == nil {
+		t.Fatalf("expected tui flag parse error for missing value")
+	}
+}
+
+func writeFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

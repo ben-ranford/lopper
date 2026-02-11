@@ -1,6 +1,9 @@
 package app
 
-import "github.com/ben-ranford/lopper/internal/report"
+import (
+	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
+)
 
 type Mode string
 
@@ -19,11 +22,12 @@ type Request struct {
 type AnalyseRequest struct {
 	Dependency       string
 	TopN             int
-	FailOnIncrease   int
 	Format           report.Format
 	Language         string
 	BaselinePath     string
 	RuntimeTracePath string
+	ConfigPath       string
+	Thresholds       thresholds.Values
 }
 
 type TUIRequest struct {
@@ -40,8 +44,9 @@ func DefaultRequest() Request {
 		Mode:     ModeTUI,
 		RepoPath: ".",
 		Analyse: AnalyseRequest{
-			Format:   report.FormatTable,
-			Language: "auto",
+			Format:     report.FormatTable,
+			Language:   "auto",
+			Thresholds: thresholds.Defaults(),
 		},
 		TUI: TUIRequest{
 			Language: "auto",

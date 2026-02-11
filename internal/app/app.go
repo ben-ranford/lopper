@@ -60,22 +60,32 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 }
 
 func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
+	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
+	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
+
 	reportData, err := a.Analyzer.Analyse(ctx, analysis.Request{
-		RepoPath:         req.RepoPath,
-		Dependency:       req.Analyse.Dependency,
-		TopN:             req.Analyse.TopN,
-		Language:         req.Analyse.Language,
-		RuntimeTracePath: req.Analyse.RuntimeTracePath,
+		RepoPath:                          req.RepoPath,
+		Dependency:                        req.Analyse.Dependency,
+		TopN:                              req.Analyse.TopN,
+		Language:                          req.Analyse.Language,
+		RuntimeTracePath:                  req.Analyse.RuntimeTracePath,
+		LowConfidenceWarningPercent:       &lowConfidence,
+		MinUsagePercentForRecommendations: &minUsage,
 	})
 	if err != nil {
 		return "", err
+	}
+	reportData.EffectiveThresholds = &report.EffectiveThresholds{
+		FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,
+		LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
+		MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
 	}
 
 	reportData, formatted, err := a.applyBaselineIfNeeded(reportData, req.Analyse)
 	if err != nil {
 		return formatted, err
 	}
-	if err := validateFailOnIncrease(reportData, req.Analyse.FailOnIncrease); err != nil {
+	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
 		return formatted, err
 	}
 	return formatted, nil

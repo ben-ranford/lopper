@@ -45,6 +45,7 @@ func formatTable(report Report) string {
 			report.Summary.UsedPercent,
 		)
 	}
+	appendEffectiveThresholds(&buffer, report)
 	if len(report.LanguageBreakdown) > 0 {
 		buffer.WriteString("Languages:\n")
 		for _, item := range report.LanguageBreakdown {
@@ -111,8 +112,20 @@ func hasLanguageColumn(dependencies []DependencyReport) bool {
 func formatEmpty(report Report) string {
 	var buffer bytes.Buffer
 	buffer.WriteString("No dependencies to report.\n")
+	appendEffectiveThresholds(&buffer, report)
 	appendWarnings(&buffer, report)
 	return buffer.String()
+}
+
+func appendEffectiveThresholds(buffer *bytes.Buffer, report Report) {
+	if report.EffectiveThresholds == nil {
+		return
+	}
+	buffer.WriteString("Effective thresholds:\n")
+	buffer.WriteString(fmt.Sprintf("- fail_on_increase_percent: %d\n", report.EffectiveThresholds.FailOnIncreasePercent))
+	buffer.WriteString(fmt.Sprintf("- low_confidence_warning_percent: %d\n", report.EffectiveThresholds.LowConfidenceWarningPercent))
+	buffer.WriteString(fmt.Sprintf("- min_usage_percent_for_recommendations: %d\n", report.EffectiveThresholds.MinUsagePercentForRecommendations))
+	buffer.WriteString("\n")
 }
 
 func appendWarnings(buffer *bytes.Buffer, report Report) {

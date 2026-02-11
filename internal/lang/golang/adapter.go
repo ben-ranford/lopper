@@ -815,7 +815,7 @@ func isDeclaredDependency(dependency string, declaredDependencies []string) bool
 }
 
 func importBindingIdentity(importPath string, importName *ast.Ident) (string, string, bool) {
-	base := path.Base(importPath)
+	base := defaultImportBindingName(importPath)
 	if importName == nil {
 		return base, base, false
 	}
@@ -831,6 +831,38 @@ func importBindingIdentity(importPath string, importName *ast.Ident) (string, st
 		}
 		return alias, alias, false
 	}
+}
+
+func defaultImportBindingName(importPath string) string {
+	base := path.Base(importPath)
+	if prefix, ok := trimModuleVersionSuffix(base); ok {
+		return prefix
+	}
+	return base
+}
+
+func trimModuleVersionSuffix(value string) (string, bool) {
+	separator := strings.LastIndex(value, ".")
+	if separator <= 0 || separator >= len(value)-1 {
+		return "", false
+	}
+	suffix := value[separator+1:]
+	if !isVersionSuffix(suffix) {
+		return "", false
+	}
+	return value[:separator], true
+}
+
+func isVersionSuffix(value string) bool {
+	if len(value) < 2 || value[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {

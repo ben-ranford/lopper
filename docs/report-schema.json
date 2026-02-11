@@ -18,6 +18,7 @@
       "type": "array",
       "items": { "$ref": "#/$defs/languageSummary" }
     },
+    "effectiveThresholds": { "$ref": "#/$defs/effectiveThresholds" },
     "warnings": {
       "type": "array",
       "items": { "type": "string" }
@@ -46,6 +47,16 @@
         "usedExportsCount": { "type": "integer", "minimum": 0 },
         "totalExportsCount": { "type": "integer", "minimum": 0 },
         "usedPercent": { "type": "number", "minimum": 0 }
+      }
+    },
+    "effectiveThresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failOnIncreasePercent", "lowConfidenceWarningPercent", "minUsagePercentForRecommendations"],
+      "properties": {
+        "failOnIncreasePercent": { "type": "integer", "minimum": 0 },
+        "lowConfidenceWarningPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "minUsagePercentForRecommendations": { "type": "integer", "minimum": 0, "maximum": 100 }
       }
     },
     "dependencyReport": {
@@ -162,4 +173,3 @@
     }
   }
 }
-

@@ -10,9 +10,10 @@ const Auto = "auto"
 const All = "all"
 
 type Request struct {
-	RepoPath   string
-	Dependency string
-	TopN       int
+	RepoPath                          string
+	Dependency                        string
+	TopN                              int
+	MinUsagePercentForRecommendations *int
 }
 
 type Detection struct {

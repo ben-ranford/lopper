@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -82,4 +83,36 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func TestLowConfidenceWarningThreshold(t *testing.T) {
+	candidate := language.Candidate{
+		Adapter:   nil,
+		Detection: language.Detection{Confidence: 30},
+	}
+	candidate.Adapter = stubAdapter{id: "js-ts"}
+
+	warnings := lowConfidenceWarning("all", candidate, 40)
+	if len(warnings) == 0 {
+		t.Fatalf("expected warning for confidence below threshold")
+	}
+
+	warnings = lowConfidenceWarning("all", candidate, 20)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warning when threshold is lower than confidence")
+	}
+}
+
+type stubAdapter struct {
+	id string
+}
+
+func (s stubAdapter) ID() string { return s.id }
+
+func (s stubAdapter) Aliases() []string { return nil }
+
+func (s stubAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
+
+func (s stubAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+	return report.Report{}, nil
 }

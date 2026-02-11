@@ -1,6 +1,11 @@
 package report
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestApplyBaselineComputesDelta(t *testing.T) {
 	baseline := Report{
@@ -42,5 +47,86 @@ func TestComputeLanguageBreakdown(t *testing.T) {
 	}
 	if breakdown[1].Language != "python" || breakdown[1].DependencyCount != 1 {
 		t.Fatalf("unexpected python breakdown: %#v", breakdown[1])
+	}
+}
+
+func TestLoadAndParseFormat(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "report.json")
+	content := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[]}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if _, err := Load(filepath.Join(tmp, "missing.json")); err == nil {
+		t.Fatalf("expected load error for missing file")
+	}
+
+	if _, err := ParseFormat("table"); err != nil {
+		t.Fatalf("parse table format: %v", err)
+	}
+	if _, err := ParseFormat("json"); err != nil {
+		t.Fatalf("parse json format: %v", err)
+	}
+	if _, err := ParseFormat("nope"); err == nil {
+		t.Fatalf("expected unknown format error")
+	}
+}
+
+func TestWastePercentNoSummary(t *testing.T) {
+	if _, ok := WastePercent(nil); ok {
+		t.Fatalf("expected no waste percent for nil summary")
+	}
+	if _, ok := WastePercent(&Summary{TotalExportsCount: 0}); ok {
+		t.Fatalf("expected no waste percent for zero totals")
+	}
+}
+
+func TestApplyBaselineMissingAndZeroTotalsErrors(t *testing.T) {
+	_, err := ApplyBaseline(Report{}, Report{})
+	if err == nil {
+		t.Fatalf("expected missing baseline summary error")
+	}
+	if err != ErrBaselineMissing {
+		t.Fatalf("expected ErrBaselineMissing, got %v", err)
+	}
+
+	_, err = ApplyBaseline(
+		Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2}}},
+		Report{Summary: &Summary{DependencyCount: 1, UsedExportsCount: 0, TotalExportsCount: 0, UsedPercent: 0}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "baseline total exports count is zero") {
+		t.Fatalf("expected baseline zero-total error, got %v", err)
+	}
+}
+
+func TestApplyBaselineCurrentWithoutTotalsError(t *testing.T) {
+	_, err := ApplyBaseline(
+		Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 0, TotalExportsCount: 0}}},
+		Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1}}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "current report has no export totals") {
+		t.Fatalf("expected current report totals error, got %v", err)
+	}
+}
+
+func TestLoadInvalidJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatalf("write bad json: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatalf("expected load parse error for invalid JSON")
+	}
+}
+
+func TestComputeSummaryAndLanguageBreakdownEmpty(t *testing.T) {
+	if got := ComputeSummary(nil); got != nil {
+		t.Fatalf("expected nil summary for empty dependencies, got %#v", got)
+	}
+	if got := ComputeLanguageBreakdown(nil); got != nil {
+		t.Fatalf("expected nil language breakdown for empty dependencies, got %#v", got)
 	}
 }
