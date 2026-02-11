@@ -15,6 +15,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
+	writeFile(t, filepath.Join(repo, "build.gradle"), "dependencies { implementation 'org.junit.jupiter:junit-jupiter-api:5.10.0' }\n")
+	writeFile(t, filepath.Join(repo, "src", "test", "java", "ExampleTest.java"), "import org.junit.jupiter.api.Test;\nclass ExampleTest {}\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -32,10 +34,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") {
-		t.Fatalf("expected js-ts and python dependencies, got %#v", languages)
+	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") {
+		t.Fatalf("expected js-ts, python, and jvm dependencies, got %#v", languages)
 	}
-	if len(reportData.LanguageBreakdown) < 2 {
+	if len(reportData.LanguageBreakdown) < 3 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 }

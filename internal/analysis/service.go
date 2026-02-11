@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/js"
+	"github.com/ben-ranford/lopper/internal/lang/jvm"
 	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -29,6 +30,9 @@ func NewService() *Service {
 	err := registry.Register(js.NewAdapter())
 	if err == nil {
 		err = registry.Register(python.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(jvm.NewAdapter())
 	}
 
 	return &Service{

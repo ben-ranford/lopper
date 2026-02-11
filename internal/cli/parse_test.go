@@ -69,6 +69,16 @@ func TestParseArgsAnalyseLanguageAll(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseLanguageJVM(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "10", "--language", "jvm"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Analyse.Language != "jvm" {
+		t.Fatalf("expected language jvm, got %q", req.Analyse.Language)
+	}
+}
+
 func TestParseArgsAnalyseBaseline(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", "--baseline", "baseline.json"})
 	if err != nil {
