@@ -339,7 +339,7 @@ func (s *Summary) Snapshot(ctx context.Context, opts Options, outputPath string)
 		return nil
 	}
 
-	if err := os.WriteFile(outputPath, []byte(output), 0o644); err != nil {
+	if err := os.WriteFile(outputPath, []byte(output), 0o600); err != nil {
 		return err
 	}
 	if s.Out != nil {
