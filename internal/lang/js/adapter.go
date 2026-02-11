@@ -13,6 +13,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -164,12 +165,22 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 
 	switch {
 	case req.Dependency != "":
-		depReport, warnings := buildDependencyReport(repoPath, req.Dependency, scanResult)
+		depReport, warnings := buildDependencyReport(
+			repoPath,
+			req.Dependency,
+			scanResult,
+			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+		)
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
-		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN)
+		deps, warnings := buildTopDependencies(
+			repoPath,
+			scanResult,
+			req.TopN,
+			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+		)
 		result.Dependencies = deps
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(deps) == 0 {
@@ -183,7 +194,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	return result, nil
 }
 
-func buildDependencyReport(repoPath string, dependency string, scanResult ScanResult) (report.DependencyReport, []string) {
+func buildDependencyReport(repoPath string, dependency string, scanResult ScanResult, minUsagePercentForRecommendations int) (report.DependencyReport, []string) {
 	usedExports := make(map[string]struct{})
 	counts := make(map[string]int)
 	usedImports := make(map[string]*report.ImportUse)
@@ -226,7 +237,7 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 		UnusedExports:        unusedExports,
 		RiskCues:             riskCues,
 	}
-	depReport.Recommendations = buildRecommendations(dependency, depReport)
+	depReport.Recommendations = buildRecommendations(dependency, depReport, minUsagePercentForRecommendations)
 	return depReport, warnings
 }
 
@@ -463,7 +474,7 @@ func matchesDependency(module string, dependency string) bool {
 	return false
 }
 
-func buildTopDependencies(repoPath string, scanResult ScanResult, topN int) ([]report.DependencyReport, []string) {
+func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
 	dependencies, warnings := listDependencies(repoPath, scanResult)
 	if len(dependencies) == 0 {
 		return nil, warnings
@@ -471,7 +482,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int) ([]r
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(repoPath, dep, scanResult)
+		depReport, depWarnings := buildDependencyReport(repoPath, dep, scanResult, minUsagePercentForRecommendations)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
@@ -567,6 +578,13 @@ func dependencyFromModule(module string) string {
 
 	parts := strings.Split(module, "/")
 	return parts[0]
+}
+
+func resolveMinUsageRecommendationThreshold(value *int) int {
+	if value != nil {
+		return *value
+	}
+	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
 func dependencyExists(repoPath string, dependency string) bool {

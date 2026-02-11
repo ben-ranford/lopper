@@ -14,6 +14,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -95,8 +96,9 @@ func (s *Service) prepareAnalysis(ctx context.Context, req Request) (string, []l
 func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate) ([]report.Report, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
+	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
-		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate)...)
+		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
 		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate)
 		if err != nil {
 			return nil, nil, err
@@ -107,11 +109,11 @@ func (s *Service) runCandidates(ctx context.Context, req Request, repoPath strin
 	return reports, warnings, nil
 }
 
-func lowConfidenceWarning(languageID string, candidate language.Candidate) []string {
+func lowConfidenceWarning(languageID string, candidate language.Candidate, lowConfidenceThreshold int) []string {
 	if !isMultiLanguage(languageID) {
 		return nil
 	}
-	if candidate.Detection.Confidence <= 0 || candidate.Detection.Confidence >= 40 {
+	if candidate.Detection.Confidence <= 0 || candidate.Detection.Confidence >= lowConfidenceThreshold {
 		return nil
 	}
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
@@ -129,9 +131,10 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		rootSeen[normalizedRoot] = struct{}{}
 
 		current, err := candidate.Adapter.Analyse(ctx, language.Request{
-			RepoPath:   normalizedRoot,
-			Dependency: req.Dependency,
-			TopN:       req.TopN,
+			RepoPath:                          normalizedRoot,
+			Dependency:                        req.Dependency,
+			TopN:                              req.TopN,
+			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
 		})
 		if err != nil {
 			if isMultiLanguage(req.Language) {
@@ -145,6 +148,13 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		reports = append(reports, current)
 	}
 	return reports, warnings, nil
+}
+
+func resolveLowConfidenceWarningThreshold(threshold *int) int {
+	if threshold != nil {
+		return *threshold
+	}
+	return thresholds.Defaults().LowConfidenceWarningPercent
 }
 
 func candidateRoots(roots []string, repoPath string) []string {

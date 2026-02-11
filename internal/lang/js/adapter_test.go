@@ -241,6 +241,51 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseRecommendationsHonoursThreshold(t *testing.T) {
+	repo := t.TempDir()
+	source := "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	lodashRoot := filepath.Join(repo, "node_modules", "lodash")
+	if err := os.MkdirAll(lodashRoot, 0o755); err != nil {
+		t.Fatalf("mkdir lodash: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lodashRoot, testPackageJSONName), []byte(testPackageJSONMain), 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+	entry := strings.Join([]string{
+		"export function map() {}",
+		"export function filter() {}",
+		"export function reduce() {}",
+		"export function chunk() {}",
+		"export function uniq() {}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(lodashRoot, testIndexJS), []byte(entry), 0o644); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
+	}
+
+	minUsagePercent := 10
+	report, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:                          repo,
+		Dependency:                        "lodash",
+		MinUsagePercentForRecommendations: &minUsagePercent,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+
+	codes := make([]string, 0, len(report.Dependencies[0].Recommendations))
+	for _, rec := range report.Dependencies[0].Recommendations {
+		codes = append(codes, rec.Code)
+	}
+	if slices.Contains(codes, "prefer-subpath-imports") {
+		t.Fatalf("did not expect subpath recommendation when threshold is reduced, got %#v", codes)
+	}
+}
+
 func TestDependencyFromModuleSkipsNodeBuiltins(t *testing.T) {
 	// Test node: prefix
 	if dep := dependencyFromModule("node:fs"); dep != "" {
@@ -259,6 +304,86 @@ func TestDependencyFromModuleSkipsNodeBuiltins(t *testing.T) {
 	// Test npm packages still work
 	if dep := dependencyFromModule("lodash/map"); dep != "lodash" {
 		t.Fatalf("expected lodash dependency, got %q", dep)
+	}
+}
+
+func TestAdapterMetadata(t *testing.T) {
+	adapter := NewAdapter()
+	if adapter.ID() != "js-ts" {
+		t.Fatalf("unexpected adapter id: %q", adapter.ID())
+	}
+	aliases := adapter.Aliases()
+	if !slices.Contains(aliases, "js") || !slices.Contains(aliases, "typescript") {
+		t.Fatalf("unexpected aliases: %#v", aliases)
+	}
+}
+
+func TestAdapterAnalyseNoTargetWarning(t *testing.T) {
+	repo := t.TempDir()
+	report, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(report.Warnings) == 0 {
+		t.Fatalf("expected warning when neither dependency nor topN is provided")
+	}
+}
+
+func TestAdapterDetectWalkErrorOnFileRepoPath(t *testing.T) {
+	repoFile := filepath.Join(t.TempDir(), "repo-file")
+	if err := os.WriteFile(repoFile, []byte("not-dir"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	if _, err := NewAdapter().DetectWithConfidence(context.Background(), repoFile); err == nil {
+		t.Fatalf("expected walk error for non-directory repo path")
+	}
+}
+
+func TestJSAdapterHelperBranches(t *testing.T) {
+	if !shouldSkipDetectDir("node_modules") || shouldSkipDetectDir("src") {
+		t.Fatalf("unexpected shouldSkipDetectDir behavior")
+	}
+	if !isJSExtension(".ts") || isJSExtension(".md") {
+		t.Fatalf("unexpected isJSExtension behavior")
+	}
+	if !matchesDependency("lodash/map", "lodash") || matchesDependency("react", "lodash") {
+		t.Fatalf("unexpected matchesDependency behavior")
+	}
+
+	surface := ExportSurface{Names: map[string]struct{}{"a": {}, "b": {}}, IncludesWildcard: true}
+	if got := totalExportCount(surface); got != 0 {
+		t.Fatalf("expected wildcard total export count 0, got %d", got)
+	}
+	if got := exportUsedPercent(surface, map[string]struct{}{"a": {}}, 0); got != 0 {
+		t.Fatalf("expected used percent 0 with unknown total, got %f", got)
+	}
+	if resolveMinUsageRecommendationThreshold(nil) <= 0 {
+		t.Fatalf("expected default min usage threshold")
+	}
+}
+
+func TestListDependenciesMissingAndBuiltinFiltering(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(""), 0o600); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+	scan := ScanResult{
+		Files: []FileScan{
+			{
+				Path: "index.js",
+				Imports: []ImportBinding{
+					{Module: "left-pad", ExportName: "default", LocalName: "leftPad", Kind: ImportDefault},
+					{Module: "node:fs", ExportName: "default", LocalName: "fs", Kind: ImportDefault},
+				},
+			},
+		},
+	}
+	deps, warnings := listDependencies(repo, scan)
+	if len(deps) != 0 {
+		t.Fatalf("expected no existing dependencies, got %#v", deps)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "dependency not found") {
+		t.Fatalf("expected missing dependency warning, got %#v", warnings)
 	}
 }
 

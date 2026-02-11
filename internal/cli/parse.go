@@ -9,6 +9,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 var (
@@ -45,10 +46,14 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	repoPath := fs.String("repo", req.RepoPath, "repository path")
 	top := fs.Int("top", 0, "top N dependencies")
 	formatFlag := fs.String("format", string(req.Analyse.Format), "output format")
-	failOnIncrease := fs.Int("fail-on-increase", 0, "fail if waste increases beyond threshold")
+	legacyFailOnIncrease := fs.Int("fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "fail if waste increases beyond threshold")
+	thresholdFailOnIncrease := fs.Int("threshold-fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "waste increase threshold for CI failure")
+	thresholdLowConfidenceWarning := fs.Int("threshold-low-confidence-warning", req.Analyse.Thresholds.LowConfidenceWarningPercent, "low-confidence warning threshold")
+	thresholdMinUsagePercent := fs.Int("threshold-min-usage-percent", req.Analyse.Thresholds.MinUsagePercentForRecommendations, "minimum usage percent threshold for recommendation generation")
 	languageFlag := fs.String("language", req.Analyse.Language, "language adapter")
 	baselinePath := fs.String("baseline", req.Analyse.BaselinePath, "baseline report path")
 	runtimeTracePath := fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path")
+	configPath := fs.String("config", req.Analyse.ConfigPath, "config file path")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -59,9 +64,6 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 
 	if *top < 0 {
 		return req, fmt.Errorf("--top must be >= 0")
-	}
-	if *failOnIncrease < 0 {
-		return req, fmt.Errorf("--fail-on-increase must be >= 0")
 	}
 
 	format, err := report.ParseFormat(*formatFlag)
@@ -85,17 +87,49 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	if dependency == "" && *top == 0 {
 		return req, fmt.Errorf("missing dependency name or --top")
 	}
+	visited := visitedFlags(fs)
+
+	configOverrides, resolvedConfigPath, err := thresholds.Load(strings.TrimSpace(*repoPath), strings.TrimSpace(*configPath))
+	if err != nil {
+		return req, err
+	}
+
+	resolvedThresholds := thresholds.Defaults()
+	resolvedThresholds = configOverrides.Apply(resolvedThresholds)
+
+	cliOverrides := thresholds.Overrides{}
+	if visited["fail-on-increase"] {
+		cliOverrides.FailOnIncreasePercent = legacyFailOnIncrease
+	}
+	if visited["threshold-fail-on-increase"] {
+		if cliOverrides.FailOnIncreasePercent != nil && *cliOverrides.FailOnIncreasePercent != *thresholdFailOnIncrease {
+			return req, fmt.Errorf("--fail-on-increase and --threshold-fail-on-increase must match when both are provided")
+		}
+		cliOverrides.FailOnIncreasePercent = thresholdFailOnIncrease
+	}
+	if visited["threshold-low-confidence-warning"] {
+		cliOverrides.LowConfidenceWarningPercent = thresholdLowConfidenceWarning
+	}
+	if visited["threshold-min-usage-percent"] {
+		cliOverrides.MinUsagePercentForRecommendations = thresholdMinUsagePercent
+	}
+
+	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
+	if err := resolvedThresholds.Validate(); err != nil {
+		return req, err
+	}
 
 	req.Mode = app.ModeAnalyse
-	req.RepoPath = *repoPath
+	req.RepoPath = strings.TrimSpace(*repoPath)
 	req.Analyse = app.AnalyseRequest{
 		Dependency:       dependency,
 		TopN:             *top,
-		FailOnIncrease:   *failOnIncrease,
 		Format:           format,
 		Language:         strings.TrimSpace(*languageFlag),
 		BaselinePath:     strings.TrimSpace(*baselinePath),
 		RuntimeTracePath: strings.TrimSpace(*runtimeTracePath),
+		ConfigPath:       resolvedConfigPath,
+		Thresholds:       resolvedThresholds,
 	}
 
 	return req, nil
@@ -187,9 +221,17 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--language", "--baseline", "--runtime-trace", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--language", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false
 	}
+}
+
+func visitedFlags(fs *flag.FlagSet) map[string]bool {
+	visited := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
 }
