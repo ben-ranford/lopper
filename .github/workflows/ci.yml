@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -43,6 +47,78 @@ jobs:
           else
             make ci
           fi
+
+      - name: Run coverage gate
+        id: cov
+        continue-on-error: true
+        env:
+          COVERAGE_MIN: 60
+        run: |
+          set +e
+          if [ -n "${ACT:-}" ]; then
+            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}"
+          else
+            make cov COVERAGE_MIN="${COVERAGE_MIN}"
+          fi
+          status=$?
+          if [ -f .artifacts/coverage-total.txt ]; then
+            total="$(cat .artifacts/coverage-total.txt)"
+          else
+            total=""
+          fi
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Comment on coverage failure
+        if: ${{ github.event_name == 'pull_request' && steps.cov.outcome == 'failure' && !env.ACT }}
+        uses: actions/github-script@v7
+        env:
+          COVERAGE_MIN: 60
+          COVERAGE_TOTAL: ${{ steps.cov.outputs.total }}
+        with:
+          script: |
+            const marker = '<!-- lopper-coverage-failure -->';
+            const total = process.env.COVERAGE_TOTAL || 'unavailable';
+            const body = `${marker}
+            ❌ Coverage gate failed.
+
+            Required: >= ${process.env.COVERAGE_MIN}%
+            Actual: ${total === 'unavailable' ? total : `${total}%`}
+
+            Run \`make cov\` locally for details.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail workflow on coverage gate
+        if: ${{ steps.cov.outcome == 'failure' }}
+        run: exit 1
 
       - name: Upload binary artifact
         if: ${{ always() && !env.ACT }}

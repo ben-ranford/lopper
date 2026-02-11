@@ -16,6 +16,7 @@ go mod download
 make fmt
 make test
 make lint
+make cov
 ```
 
 ## Workflow

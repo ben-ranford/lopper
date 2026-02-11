@@ -1,10 +1,12 @@
-.PHONY: format fmt format-check lint security test build ci release clean toolchain-check toolchain-install-macos
+.PHONY: format fmt format-check lint security test cov build ci release clean toolchain-check toolchain-install-macos
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
 BIN_DIR ?= bin
 DIST_DIR ?= dist
 VERSION ?= dev
+COVERAGE_FILE ?= .artifacts/coverage.out
+COVERAGE_MIN ?= 60
 HOST_GOOS := $(shell go env GOOS)
 HOST_GOARCH := $(shell go env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
@@ -33,6 +35,14 @@ security:
 
 test:
 	go test ./...
+
+cov:
+	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
+	go test ./... -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
+	@total=$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	echo "Total coverage: $$total% (required: >= $(COVERAGE_MIN)%)"; \
+	printf "%s\n" "$$total" > .artifacts/coverage-total.txt; \
+	awk "BEGIN { exit !($$total >= $(COVERAGE_MIN)) }" || (echo "Coverage gate failed: $$total% < $(COVERAGE_MIN)%"; exit 1)
 
 build:
 	mkdir -p $(BIN_DIR)
