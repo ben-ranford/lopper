@@ -2,7 +2,6 @@ package python
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -14,9 +13,7 @@ const testMainPy = "main.py"
 
 func TestAdapterDetectWithPythonSource(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, testMainPy), []byte("import requests\n"), 0o644); err != nil {
-		t.Fatalf("write main.py: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -33,9 +30,7 @@ func TestAdapterDetectWithPythonSource(t *testing.T) {
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nfrom numpy import array, mean\narray([1])\nrequests.get('x')\n"
-	if err := os.WriteFile(filepath.Join(repo, testMainPy), []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(repo, testMainPy), source)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
@@ -60,9 +55,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nimport numpy as np\nnp.array([1])\n"
-	if err := os.WriteFile(filepath.Join(repo, testMainPy), []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(repo, testMainPy), source)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath: repo,
@@ -92,9 +85,7 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "requirements.txt"), []byte("requests\n"), 0o644); err != nil {
-		t.Fatalf("write requirements.txt: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests\n")
 	ok, err := adapter.Detect(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect: %v", err)

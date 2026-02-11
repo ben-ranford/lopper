@@ -15,17 +15,8 @@ import (
 
 func TestPythonImportParsingHelpers(t *testing.T) {
 	repo := t.TempDir()
-	writeFile := func(path string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, []byte("# local module\n"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-	}
-	writeFile(filepath.Join(repo, "localpkg", "__init__.py"))
-	writeFile(filepath.Join(repo, "single.py"))
+	mustWriteFile(t, filepath.Join(repo, "localpkg", "__init__.py"), "# local module\n")
+	mustWriteFile(t, filepath.Join(repo, "single.py"), "# local module\n")
 
 	bindings := parseImportLine("requests as req, localpkg", "a.py", repo, 0, "import requests as req, localpkg")
 	if len(bindings) != 1 || bindings[0].Dependency != "requests" || bindings[0].Local != "req" {
@@ -120,9 +111,7 @@ func TestPythonRepoScanAndBoundaryBranches(t *testing.T) {
 func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 	repo := t.TempDir()
 	pyPath := filepath.Join(repo, "mod.py")
-	if err := os.WriteFile(pyPath, []byte("import requests\n"), 0o600); err != nil {
-		t.Fatalf("write py file: %v", err)
-	}
+	mustWriteFile(t, pyPath, "import requests\n")
 
 	content, rel, err := readPythonFile(repo, pyPath)
 	if err != nil {
@@ -176,15 +165,9 @@ func TestPythonDetectAndWalkBranches(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "pyproject.toml"), []byte("[project]\nname='x'\n"), 0o600); err != nil {
-		t.Fatalf("write pyproject.toml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "requirements.txt"), []byte("requests\n"), 0o600); err != nil {
-		t.Fatalf("write requirements.txt: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "setup.py"), []byte("from setuptools import setup\n"), 0o600); err != nil {
-		t.Fatalf("write setup.py: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(repo, "pyproject.toml"), "[project]\nname='x'\n")
+	mustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests\n")
+	mustWriteFile(t, filepath.Join(repo, "setup.py"), "from setuptools import setup\n")
 	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect with confidence: %v", err)

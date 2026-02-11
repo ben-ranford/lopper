@@ -5,12 +5,30 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
+
+func mustWriteFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeNumberedTextFiles(t *testing.T, repo string, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		mustWriteFile(t, filepath.Join(repo, "f-"+strconv.Itoa(i)+".txt"), "x")
+	}
+}
 
 func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
@@ -20,9 +38,7 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte("export const x = 1"), 0o600); err != nil {
-		t.Fatalf("write index.js: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(repo, "index.js"), "export const x = 1")
 	if err := os.Chdir(repo); err != nil {
 		t.Fatalf("chdir repo: %v", err)
 	}
@@ -45,12 +61,7 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 
 func TestJSScanFilesForDetectionMaxFiles(t *testing.T) {
 	repo := t.TempDir()
-	for i := 0; i < 260; i++ {
-		name := filepath.Join(repo, "f-"+strings.Repeat("a", 1)+"-"+string(rune('a'+(i%26)))+string(rune('a'+((i/26)%26)))+".txt")
-		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
-			t.Fatalf("write file %s: %v", name, err)
-		}
-	}
+	writeNumberedTextFiles(t, repo, 260)
 
 	detect := &language.Detection{Matched: false}
 	roots := map[string]struct{}{}
@@ -104,14 +115,10 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		t.Fatalf("expected computed waste score 75, got score=%f ok=%v", score, ok)
 	}
 
-	if dep := dependencyFromModule("./local"); dep != "" {
-		t.Fatalf("expected empty dependency for relative module, got %q", dep)
-	}
-	if dep := dependencyFromModule("@scope"); dep != "" {
-		t.Fatalf("expected empty dependency for malformed scoped module, got %q", dep)
-	}
-	if dep := dependencyFromModule("@/pkg"); dep != "" {
-		t.Fatalf("expected empty dependency for invalid scoped prefix, got %q", dep)
+	for _, module := range []string{"./local", "@scope", "@/pkg"} {
+		if dep := dependencyFromModule(module); dep != "" {
+			t.Fatalf("expected empty dependency for module %q, got %q", module, dep)
+		}
 	}
 
 	if dependencyExists("", "dep") {
@@ -134,23 +141,14 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "wild")
-	if err := os.MkdirAll(depRoot, 0o755); err != nil {
-		t.Fatalf("mkdir dep root: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"main":"index.js"}`), 0o600); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"index.js"}`)
 	source := strings.Join([]string{
 		`export * from "./other.js"`,
 		`export const keep = 1`,
 		"",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte(source), 0o600); err != nil {
-		t.Fatalf("write index.js: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "other.js"), []byte("export const x = 1"), 0o600); err != nil {
-		t.Fatalf("write other.js: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
+	mustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
 	surface, warnings = resolveSurfaceWarnings(repo, "wild")
 	if !surface.IncludesWildcard {

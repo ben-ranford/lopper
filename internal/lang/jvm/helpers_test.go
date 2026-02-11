@@ -90,12 +90,8 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "pom.xml"), []byte(`<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`), 0o644); err != nil {
-		t.Fatalf("write pom.xml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "build.gradle"), []byte(`implementation 'com.squareup.okhttp3:okhttp:4.12.0'`), 0o644); err != nil {
-		t.Fatalf("write build.gradle: %v", err)
-	}
+	writeFile(t, filepath.Join(repo, "pom.xml"), `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
+	writeFile(t, filepath.Join(repo, "build.gradle"), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
 	poms := parsePomDependencies(repo)
 	gradle := parseGradleDependencies(repo)
 	if len(poms) == 0 || len(gradle) == 0 {
@@ -137,15 +133,9 @@ func TestJVMScanAndRequestedDependencyBranches(t *testing.T) {
 func TestJVMDetectAndWalkBranches(t *testing.T) {
 	adapter := NewAdapter()
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "pom.xml"), []byte("<project/>"), 0o600); err != nil {
-		t.Fatalf("write pom.xml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "build.gradle"), []byte(""), 0o600); err != nil {
-		t.Fatalf("write build.gradle: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "build.gradle.kts"), []byte(""), 0o600); err != nil {
-		t.Fatalf("write build.gradle.kts: %v", err)
-	}
+	writeFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
+	writeFile(t, filepath.Join(repo, "build.gradle"), "")
+	writeFile(t, filepath.Join(repo, "build.gradle.kts"), "")
 	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect with confidence: %v", err)
