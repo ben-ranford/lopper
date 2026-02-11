@@ -21,7 +21,7 @@ func TestBuildRecommendationsBranchesAndOrdering(t *testing.T) {
 		},
 	}
 
-	recs := buildRecommendations("lodash", dep, 40)
+	recs := buildRecommendations("lodash", dep)
 	if len(recs) < 3 {
 		t.Fatalf("expected multiple recommendations, got %#v", recs)
 	}
@@ -54,7 +54,7 @@ func TestBuildRecommendationsNoUsedImportsRemoval(t *testing.T) {
 			{Name: "default", Module: "moment"},
 		},
 	}
-	recs := buildRecommendations("moment", dep, 20)
+	recs := buildRecommendations("moment", dep)
 	codes := make([]string, 0, len(recs))
 	for _, rec := range recs {
 		codes = append(codes, rec.Code)
@@ -78,11 +78,5 @@ func TestRecommendationHelperFunctions(t *testing.T) {
 	}
 	if recommendationPriorityRank("high") != 0 || recommendationPriorityRank("medium") != 1 || recommendationPriorityRank("other") != 2 {
 		t.Fatalf("unexpected recommendation priority rank mapping")
-	}
-	if replacementThreshold(3) != 0 {
-		t.Fatalf("expected replacement threshold floor at 0")
-	}
-	if replacementThreshold(40) != 35 {
-		t.Fatalf("expected replacement threshold to subtract 5")
 	}
 }
