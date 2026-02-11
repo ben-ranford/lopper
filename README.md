@@ -33,7 +33,6 @@ Language selection modes:
 Install binary from GitHub Releases:
 
 ```bash
-VERSION=v0.1.0
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -42,11 +41,18 @@ case "$ARCH" in
   *) echo "unsupported arch: $ARCH" && exit 1 ;;
 esac
 
-curl -fsSL -o /tmp/lopper.tar.gz \
-  "https://github.com/ben-ranford/lopper/releases/download/${VERSION}/surfarea_${VERSION}_${OS}_${ARCH}.tar.gz"
-tar -xzf /tmp/lopper.tar.gz -C /tmp
-sudo install /tmp/surfarea /usr/local/bin/lopper
-lopper --help
+asset_url="$(
+  curl -fsSL https://api.github.com/repos/ben-ranford/lopper/releases/latest \
+  | jq -r --arg os "$OS" --arg arch "$ARCH" \
+    '.assets[] | select(.name | test("^lopper_.*_" + $os + "_" + $arch + "\\.tar\\.gz$")) | .browser_download_url' \
+  | head -n1
+)"
+[ -n "$asset_url" ] || { echo "No matching asset for ${OS}/${ARCH}"; exit 1; }
+
+curl -fsSL -o /tmp/lopper.tar.gz "$asset_url"
+tmpdir="$(mktemp -d)"
+tar -xzf /tmp/lopper.tar.gz -C "$tmpdir"
+sudo install "$(find "$tmpdir" -type f -name lopper | head -n1)" /usr/local/bin/lopper
 ```
 
 Run without local install (Docker):
