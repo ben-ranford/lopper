@@ -107,6 +107,27 @@ fun run() {
 	}
 }
 
+func TestAdapterMetadataAndDetect(t *testing.T) {
+	adapter := NewAdapter()
+	if adapter.ID() != "jvm" {
+		t.Fatalf("unexpected adapter id: %q", adapter.ID())
+	}
+	aliases := adapter.Aliases()
+	if !slices.Contains(aliases, "java") || !slices.Contains(aliases, "kotlin") {
+		t.Fatalf("unexpected adapter aliases: %#v", aliases)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
+	ok, err := adapter.Detect(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected detect=true when pom.xml exists")
+	}
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
