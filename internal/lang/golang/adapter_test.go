@@ -553,6 +553,10 @@ func TestImportBindingIdentityBranches(t *testing.T) {
 	if name != "uuid" || local != "uuid" || wildcard {
 		t.Fatalf("unexpected default import identity %q %q %v", name, local, wildcard)
 	}
+	name, local, wildcard = importBindingIdentity("gopkg.in/yaml.v3", nil)
+	if name != "yaml" || local != "yaml" || wildcard {
+		t.Fatalf("unexpected default import identity for versioned module %q %q %v", name, local, wildcard)
+	}
 	name, local, wildcard = importBindingIdentity(depUUID, &ast.Ident{Name: "."})
 	if name != "uuid" || local != "" || !wildcard {
 		t.Fatalf("unexpected dot import identity %q %q %v", name, local, wildcard)
@@ -560,6 +564,19 @@ func TestImportBindingIdentityBranches(t *testing.T) {
 	name, local, wildcard = importBindingIdentity(depUUID, &ast.Ident{Name: "_"})
 	if name != "_" || local != "" || wildcard {
 		t.Fatalf("unexpected blank import identity %q %q %v", name, local, wildcard)
+	}
+}
+
+func TestTrimModuleVersionSuffix(t *testing.T) {
+	prefix, ok := trimModuleVersionSuffix("yaml.v3")
+	if !ok || prefix != "yaml" {
+		t.Fatalf("expected yaml.v3 suffix trim to yaml, got %q (%v)", prefix, ok)
+	}
+	if _, ok := trimModuleVersionSuffix("yaml.v3beta"); ok {
+		t.Fatalf("expected yaml.v3beta not to be treated as a version suffix")
+	}
+	if _, ok := trimModuleVersionSuffix("yaml"); ok {
+		t.Fatalf("expected yaml with no suffix not to be trimmed")
 	}
 }
 

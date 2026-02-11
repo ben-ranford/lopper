@@ -141,7 +141,9 @@ jobs:
                     name: h.name,
                     language: h.language,
                     deltaUnused: h.estimatedUnusedBytes ?? 0,
-                    deltaUsedPercent: h.usedPercent ?? 0,
+                    deltaUsedPercent: null,
+                    deltaUsedExports: h.usedExportsCount ?? 0,
+                    deltaTotalExports: h.totalExportsCount ?? 0,
                   });
                   continue;
                 }
@@ -152,17 +154,21 @@ jobs:
                     name: b.name,
                     language: b.language,
                     deltaUnused: -(b.estimatedUnusedBytes ?? 0),
-                    deltaUsedPercent: -(b.usedPercent ?? 0),
+                    deltaUsedPercent: null,
+                    deltaUsedExports: -(b.usedExportsCount ?? 0),
+                    deltaTotalExports: -(b.totalExportsCount ?? 0),
                   });
                   continue;
                 }
 
                 const deltaUnused = (h?.estimatedUnusedBytes ?? 0) - (b?.estimatedUnusedBytes ?? 0);
                 const deltaUsedPercent = (h?.usedPercent ?? 0) - (b?.usedPercent ?? 0);
+                const deltaUsedExports = (h?.usedExportsCount ?? 0) - (b?.usedExportsCount ?? 0);
+                const deltaTotalExports = (h?.totalExportsCount ?? 0) - (b?.totalExportsCount ?? 0);
                 const changed =
                   deltaUnused !== 0 ||
-                  (h?.usedExportsCount ?? 0) !== (b?.usedExportsCount ?? 0) ||
-                  (h?.totalExportsCount ?? 0) !== (b?.totalExportsCount ?? 0);
+                  deltaUsedExports !== 0 ||
+                  deltaTotalExports !== 0;
                 if (changed) {
                   deltas.push({
                     type: 'changed',
@@ -170,6 +176,8 @@ jobs:
                     language: h?.language,
                     deltaUnused,
                     deltaUsedPercent,
+                    deltaUsedExports,
+                    deltaTotalExports,
                   });
                 }
               }
@@ -180,10 +188,10 @@ jobs:
                 ? topDeltas
                     .map(
                       (row, idx) =>
-                        `| ${idx + 1} | ${row.type} | \`${escapeTable(row.name)}\` | ${escapeTable(row.language)} | ${signedPct(row.deltaUsedPercent)} | ${signedInt(row.deltaUnused)} |`,
+                        `| ${idx + 1} | ${row.type} | \`${escapeTable(row.name)}\` | ${escapeTable(row.language)} | ${signedPct(row.deltaUsedPercent)} | ${signedInt(row.deltaUsedExports)} | ${signedInt(row.deltaTotalExports)} | ${signedInt(row.deltaUnused)} |`,
                     )
                     .join('\n')
-                : '| - | _No dependency deltas detected_ | - | - | - | - |';
+                : '| - | _No dependency deltas detected_ | - | - | - | - | - | - |';
 
               const depCountDelta = (headSummary.dependencyCount ?? 0) - (baseSummary.dependencyCount ?? 0);
               const usedPctDelta = (headSummary.usedPercent ?? 0) - (baseSummary.usedPercent ?? 0);
@@ -209,10 +217,12 @@ jobs:
                   `| Used percent | ${signedPct(usedPctDelta)} |`,
                   `| Estimated unused bytes | ${signedInt(unusedBytesDelta)} |`,
                   '',
+                  '_Used percent is weighted: sum(usedExportsCount) / sum(totalExportsCount)._',
+                  '',
                   '### Dependency deltas',
                   '',
-                  '| # | Change | Dependency | Language | Used % delta | Unused bytes delta |',
-                  '| --- | --- | --- | --- | --- | --- |',
+                  '| # | Change | Dependency | Language | Used % delta | Used exports delta | Total exports delta | Unused bytes delta |',
+                  '| --- | --- | --- | --- | --- | --- | --- | --- |',
                   deltaRows,
                 ].join('\n');
               }
