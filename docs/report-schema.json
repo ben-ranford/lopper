@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/lopper/report.schema.json",
+  "title": "Lopper Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "repoPath", "dependencies"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "0.1.0" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "repoPath": { "type": "string" },
+    "dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependencyReport" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "languageBreakdown": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/languageSummary" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "wasteIncreasePercent": { "type": "number" }
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dependencyCount", "usedExportsCount", "totalExportsCount", "usedPercent"],
+      "properties": {
+        "dependencyCount": { "type": "integer", "minimum": 0 },
+        "usedExportsCount": { "type": "integer", "minimum": 0 },
+        "totalExportsCount": { "type": "integer", "minimum": 0 },
+        "usedPercent": { "type": "number", "minimum": 0 }
+      }
+    },
+    "languageSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "dependencyCount", "usedExportsCount", "totalExportsCount", "usedPercent"],
+      "properties": {
+        "language": { "type": "string" },
+        "dependencyCount": { "type": "integer", "minimum": 0 },
+        "usedExportsCount": { "type": "integer", "minimum": 0 },
+        "totalExportsCount": { "type": "integer", "minimum": 0 },
+        "usedPercent": { "type": "number", "minimum": 0 }
+      }
+    },
+    "dependencyReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "usedExportsCount", "totalExportsCount", "usedPercent", "estimatedUnusedBytes"],
+      "properties": {
+        "language": { "type": "string" },
+        "name": { "type": "string" },
+        "usedExportsCount": { "type": "integer", "minimum": 0 },
+        "totalExportsCount": { "type": "integer", "minimum": 0 },
+        "usedPercent": { "type": "number", "minimum": 0 },
+        "estimatedUnusedBytes": { "type": "integer" },
+        "topUsedSymbols": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/symbolUsage" }
+        },
+        "usedImports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/importUse" }
+        },
+        "unusedImports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/importUse" }
+        },
+        "unusedExports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/symbolRef" }
+        },
+        "riskCues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/riskCue" }
+        },
+        "recommendations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/recommendation" }
+        },
+        "runtimeUsage": {
+          "$ref": "#/$defs/runtimeUsage"
+        }
+      }
+    },
+    "symbolUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": { "type": "string" },
+        "module": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "importUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "module"],
+      "properties": {
+        "name": { "type": "string" },
+        "module": { "type": "string" },
+        "locations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/location" }
+        }
+      }
+    },
+    "symbolRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "module"],
+      "properties": {
+        "name": { "type": "string" },
+        "module": { "type": "string" }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "column"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "riskCue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+        "message": { "type": "string" }
+      }
+    },
+    "recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "priority", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "message": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "runtimeUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["loadCount"],
+      "properties": {
+        "loadCount": { "type": "integer", "minimum": 0 },
+        "runtimeOnly": { "type": "boolean" }
+      }
+    }
+  }
+}
+
