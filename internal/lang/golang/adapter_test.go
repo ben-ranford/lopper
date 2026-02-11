@@ -24,11 +24,13 @@ const (
 	fileGoWork          = "go.work"
 	fileLargeGo         = "large.go"
 	moduleDemo          = "example.com/demo"
+	modulePrefix        = "module "
 	moduleDemoLine      = "module example.com/demo"
 	moduleOriginal      = "example.com/original"
 	requirePrefix       = "require "
 	versionV160         = " v1.6.0"
 	go125Block          = "\n\ngo 1.25\n"
+	errSymlinkFmt       = "symlink not supported: %v"
 	importLoLine        = "import \"github.com/samber/lo\""
 	packageMainLine     = "package main"
 	exampleModuleA      = "example.com/a"
@@ -515,8 +517,8 @@ func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
 		"use ./svc/b",
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+go125Block)
-	writeFile(t, filepath.Join(repo, "svc", "b", fileGoMod), "module example.com/b"+go125Block)
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), modulePrefix+exampleModuleA+go125Block)
+	writeFile(t, filepath.Join(repo, "svc", "b", fileGoMod), modulePrefix+"example.com/b"+go125Block)
 
 	mods, err := loadGoWorkLocalModules(repo)
 	if err != nil {
@@ -771,7 +773,7 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 		")",
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repoEscape, "svc", "a", fileGoMod), "module "+exampleModuleA+go125Block)
+	writeFile(t, filepath.Join(repoEscape, "svc", "a", fileGoMod), modulePrefix+exampleModuleA+go125Block)
 	escapeRoots := map[string]struct{}{}
 	if err := addGoWorkRoots(repoEscape, escapeRoots); err != nil {
 		t.Fatalf("addGoWorkRoots with escape entries: %v", err)
@@ -1142,7 +1144,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	writeFile(t, outsideGoMod, "module example.com/outside\n")
 
 	if err := os.Symlink(outsideGoMod, filepath.Join(repo, fileGoMod)); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Skipf(errSymlinkFmt, err)
 	}
 	if _, err := loadGoModuleInfo(repo); err == nil {
 		t.Fatalf("expected guarded go.mod read to fail for escaping symlink")
@@ -1154,7 +1156,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	writeRepoGoMod(t, sourceRepo, goModDemo)
 	sourceSymlink := filepath.Join(sourceRepo, "link.go")
 	if err := os.Symlink(outsideGoFile, sourceSymlink); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Skipf(errSymlinkFmt, err)
 	}
 	result := newScanResult()
 	if scanGoSourceFile(sourceRepo, sourceSymlink, moduleInfo{}, &result) == nil {
@@ -1165,7 +1167,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	outsideGoWork := filepath.Join(outsideDir, "outside.work")
 	writeFile(t, outsideGoWork, "go 1.25\n\nuse ./\n")
 	if err := os.Symlink(outsideGoWork, filepath.Join(workRepo, fileGoWork)); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Skipf(errSymlinkFmt, err)
 	}
 	if _, err := readGoWorkUseEntries(workRepo); err == nil {
 		t.Fatalf("expected guarded go.work read to fail for escaping symlink")
@@ -1177,7 +1179,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 		t.Fatalf("mkdir nested dir: %v", err)
 	}
 	if err := os.Symlink(outsideGoMod, filepath.Join(nestedDir, fileGoMod)); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Skipf(errSymlinkFmt, err)
 	}
 	if _, _, _, err := loadGoModFromDir(nestedRepo, nestedDir); err == nil {
 		t.Fatalf("expected guarded nested go.mod read to fail for escaping symlink")
