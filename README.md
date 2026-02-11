@@ -124,7 +124,13 @@ make ci
 make cov
 make release VERSION=v0.1.0
 make toolchain-check
+make hooks-install
 ```
+
+Git pre-commit hook:
+
+- Run `make hooks-install` once per clone to enable the repository hook.
+- The pre-commit hook runs `make fmt`, `make ci`, and `make cov`.
 
 ## Documentation
 
