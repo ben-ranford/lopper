@@ -32,7 +32,7 @@ jobs:
 
       - name: Setup Go
         if: ${{ github.actor != 'nektos/act' }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -117,7 +117,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -155,7 +155,7 @@ jobs:
 
       - name: Setup Go
         if: ${{ github.actor != 'nektos/act' }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
