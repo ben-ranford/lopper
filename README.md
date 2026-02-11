@@ -106,7 +106,23 @@ thresholds:
   min_usage_percent_for_recommendations: 45
 ```
 
+Threshold defaults:
+
+- `fail_on_increase_percent: 0` (disabled unless set above `0`)
+- `low_confidence_warning_percent: 40`
+- `min_usage_percent_for_recommendations: 40`
+
+Threshold ranges:
+
+- `fail_on_increase_percent` must be `>= 0`
+- `low_confidence_warning_percent` must be between `0` and `100`
+- `min_usage_percent_for_recommendations` must be between `0` and `100`
+
 Precedence is `CLI > config > defaults`.
+
+Tuning guide with strict/balanced/noise-reduction profiles:
+
+- `docs/threshold-tuning.md`
 
 Launch TUI:
 
@@ -158,6 +174,7 @@ Git pre-commit hook:
 ## Documentation
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- Threshold tuning: `docs/threshold-tuning.md`
 - Adapter and architecture extensibility: `docs/extensibility.md`
 - CI and release workflow: `docs/ci-usage.md`
 - Contribution guide: `CONTRIBUTING.md`
