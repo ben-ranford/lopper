@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,6 +19,7 @@ func Load(repoPath, explicitPath string) (Overrides, string, error) {
 	if err != nil {
 		return Overrides{}, "", fmt.Errorf("resolve repo path: %w", err)
 	}
+	explicitProvided := strings.TrimSpace(explicitPath) != ""
 
 	configPath, found, err := resolveConfigPath(repoAbs, strings.TrimSpace(explicitPath))
 	if err != nil {
@@ -27,7 +29,7 @@ func Load(repoPath, explicitPath string) (Overrides, string, error) {
 		return Overrides{}, "", nil
 	}
 
-	overrides, err := loadOverridesFromPath(configPath)
+	overrides, err := loadOverridesFromPath(repoAbs, configPath, explicitProvided)
 	if err != nil {
 		return Overrides{}, "", err
 	}
@@ -62,9 +64,8 @@ func resolveConfigPath(repoPath, explicitPath string) (string, bool, error) {
 	return "", false, nil
 }
 
-func loadOverridesFromPath(path string) (Overrides, error) {
-	// #nosec G304 -- config path is either explicitly provided by user or discovered in repo root.
-	data, err := os.ReadFile(path)
+func loadOverridesFromPath(repoPath, path string, explicitProvided bool) (Overrides, error) {
+	data, err := readConfigFile(repoPath, path, explicitProvided)
 	if err != nil {
 		return Overrides{}, fmt.Errorf(readConfigFileErrFmt, path, err)
 	}
@@ -81,6 +82,14 @@ func loadOverridesFromPath(path string) (Overrides, error) {
 		return Overrides{}, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 	return overrides, nil
+}
+
+func readConfigFile(repoPath, path string, explicitProvided bool) ([]byte, error) {
+	if !explicitProvided || isPathUnderRoot(repoPath, path) {
+		return safeio.ReadFileUnder(repoPath, path)
+	}
+	// #nosec G304 -- explicit config path may intentionally live outside repo root.
+	return os.ReadFile(path)
 }
 
 func parseConfig(path string, data []byte) (rawConfig, error) {
@@ -147,4 +156,12 @@ func applyNestedOverride(name string, target **int, nested *int) error {
 	}
 	*target = nested
 	return nil
+}
+
+func isPathUnderRoot(rootPath, targetPath string) bool {
+	relative, err := filepath.Rel(rootPath, targetPath)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 }

@@ -129,6 +129,25 @@ func TestLoadConfigFromExplicitPath(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFromExplicitPathOutsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	externalDir := t.TempDir()
+	externalPath := filepath.Join(externalDir, customConfigName)
+	writeConfig(t, externalPath, "thresholds:\n  low_confidence_warning_percent: 17\n")
+
+	overrides, path, err := Load(repo, externalPath)
+	if err != nil {
+		t.Fatalf("load explicit external config: %v", err)
+	}
+	if path != externalPath {
+		t.Fatalf("expected explicit external path %q, got %q", externalPath, path)
+	}
+	resolved := overrides.Apply(Defaults())
+	if resolved.LowConfidenceWarningPercent != 17 {
+		t.Fatalf("expected low_confidence_warning_percent=17, got %d", resolved.LowConfidenceWarningPercent)
+	}
+}
+
 func TestLoadConfigExplicitPathMissing(t *testing.T) {
 	repo := t.TempDir()
 	_, _, err := Load(repo, "missing.yml")
