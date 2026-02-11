@@ -8,3 +8,4 @@ surfarea.exe
 coverage.out
 
 .artifacts/
+.idea/vcs.xml
