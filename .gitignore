@@ -6,3 +6,5 @@ surfarea.exe
 *.out
 *.test
 coverage.out
+
+.artifacts/
