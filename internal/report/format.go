@@ -159,12 +159,6 @@ func formatBytes(value int64) string {
 		floatValue /= 1024
 		unitIndex++
 	}
-	if unitIndex < 0 {
-		unitIndex = 0
-	}
-	if unitIndex >= len(units) {
-		unitIndex = len(units) - 1
-	}
 
 	formatted := fmt.Sprintf("%.1f %s", floatValue, units[unitIndex])
 	if value < 0 {
