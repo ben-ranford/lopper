@@ -112,7 +112,7 @@ jobs:
             ) {
               body = [
                 marker,
-                '## Lopper PR Dogfood Report',
+                '## Lopper (Delta)',
                 '',
                 '❌ Lopper delta analysis failed in CI.',
                 '',
@@ -199,7 +199,7 @@ jobs:
               } else {
                 body = [
                   marker,
-                  '## Lopper PR Dogfood Delta',
+                  '## Lopper (Delta)',
                   '',
                   '**Compared:** PR head vs base branch',
                   '',
