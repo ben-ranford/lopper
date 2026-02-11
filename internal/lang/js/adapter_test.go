@@ -242,9 +242,21 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 }
 
 func TestDependencyFromModuleSkipsNodeBuiltins(t *testing.T) {
+	// Test node: prefix
 	if dep := dependencyFromModule("node:fs"); dep != "" {
-		t.Fatalf("expected empty dependency for node builtin, got %q", dep)
+		t.Fatalf("expected empty dependency for node:fs builtin, got %q", dep)
 	}
+	// Test bare built-in names
+	if dep := dependencyFromModule("fs"); dep != "" {
+		t.Fatalf("expected empty dependency for fs builtin, got %q", dep)
+	}
+	if dep := dependencyFromModule("path"); dep != "" {
+		t.Fatalf("expected empty dependency for path builtin, got %q", dep)
+	}
+	if dep := dependencyFromModule("http"); dep != "" {
+		t.Fatalf("expected empty dependency for http builtin, got %q", dep)
+	}
+	// Test npm packages still work
 	if dep := dependencyFromModule("lodash/map"); dep != "lodash" {
 		t.Fatalf("expected lodash dependency, got %q", dep)
 	}
