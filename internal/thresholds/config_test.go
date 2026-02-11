@@ -7,11 +7,20 @@ import (
 	"testing"
 )
 
+const (
+	loadConfigErrFmt = "load config: %v"
+	unexpectedErrFmt = "unexpected error: %v"
+	lopperYMLName    = ".lopper.yml"
+	lopperYAMLName   = ".lopper.yaml"
+	lopperJSONName   = "lopper.json"
+	customConfigName = "custom.yml"
+)
+
 func TestLoadNoConfigFile(t *testing.T) {
 	repo := t.TempDir()
 	overrides, path, err := Load(repo, "")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf(loadConfigErrFmt, err)
 	}
 	if path != "" {
 		t.Fatalf("expected no config path, got %q", path)
@@ -31,14 +40,14 @@ func TestLoadYAMLConfig(t *testing.T) {
 		"  min_usage_percent_for_recommendations: 55",
 		"",
 	}, "\n")
-	writeConfig(t, filepath.Join(repo, ".lopper.yml"), cfg)
+	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
 
 	overrides, path, err := Load(repo, "")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf(loadConfigErrFmt, err)
 	}
-	if !strings.HasSuffix(path, ".lopper.yml") {
-		t.Fatalf("expected .lopper.yml path, got %q", path)
+	if !strings.HasSuffix(path, lopperYMLName) {
+		t.Fatalf("expected %s path, got %q", lopperYMLName, path)
 	}
 	resolved := overrides.Apply(Defaults())
 	if resolved.FailOnIncreasePercent != 3 {
@@ -59,11 +68,11 @@ func TestLoadJSONConfig(t *testing.T) {
   "low_confidence_warning_percent": 31,
   "min_usage_percent_for_recommendations": 48
 }`
-	writeConfig(t, filepath.Join(repo, "lopper.json"), cfg)
+	writeConfig(t, filepath.Join(repo, lopperJSONName), cfg)
 
 	overrides, _, err := Load(repo, "")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf(loadConfigErrFmt, err)
 	}
 	resolved := overrides.Apply(Defaults())
 	if resolved.FailOnIncreasePercent != 5 || resolved.LowConfidenceWarningPercent != 31 || resolved.MinUsagePercentForRecommendations != 48 {
@@ -73,7 +82,7 @@ func TestLoadJSONConfig(t *testing.T) {
 
 func TestLoadConfigRejectsUnknownFields(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, ".lopper.yml"), "thresholds:\n  unknown: 1\n")
+	writeConfig(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  unknown: 1\n")
 
 	_, _, err := Load(repo, "")
 	if err == nil {
@@ -92,7 +101,7 @@ func TestLoadConfigRejectsDuplicateFields(t *testing.T) {
 		"  fail_on_increase_percent: 2",
 		"",
 	}, "\n")
-	writeConfig(t, filepath.Join(repo, ".lopper.yml"), cfg)
+	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
 
 	_, _, err := Load(repo, "")
 	if err == nil {
@@ -105,14 +114,14 @@ func TestLoadConfigRejectsDuplicateFields(t *testing.T) {
 
 func TestLoadConfigFromExplicitPath(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, "custom.yml"), "thresholds:\n  low_confidence_warning_percent: 11\n")
+	writeConfig(t, filepath.Join(repo, customConfigName), "thresholds:\n  low_confidence_warning_percent: 11\n")
 
-	overrides, path, err := Load(repo, "custom.yml")
+	overrides, path, err := Load(repo, customConfigName)
 	if err != nil {
 		t.Fatalf("load explicit config: %v", err)
 	}
-	if !strings.HasSuffix(path, "custom.yml") {
-		t.Fatalf("expected explicit path custom.yml, got %q", path)
+	if !strings.HasSuffix(path, customConfigName) {
+		t.Fatalf("expected explicit path %s, got %q", customConfigName, path)
 	}
 	resolved := overrides.Apply(Defaults())
 	if resolved.LowConfidenceWarningPercent != 11 {
@@ -127,59 +136,59 @@ func TestLoadConfigExplicitPathMissing(t *testing.T) {
 		t.Fatalf("expected error for missing explicit config path")
 	}
 	if !strings.Contains(err.Error(), "config file not found") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
 func TestLoadConfigInvalidJSONMultipleValues(t *testing.T) {
 	repo := t.TempDir()
 	cfg := `{"thresholds":{"fail_on_increase_percent":1}} {"thresholds":{"fail_on_increase_percent":2}}`
-	writeConfig(t, filepath.Join(repo, "lopper.json"), cfg)
+	writeConfig(t, filepath.Join(repo, lopperJSONName), cfg)
 
 	_, _, err := Load(repo, "")
 	if err == nil {
 		t.Fatalf("expected invalid JSON error")
 	}
 	if !strings.Contains(err.Error(), "multiple JSON values") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
 func TestLoadConfigInvalidYAML(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, ".lopper.yaml"), "thresholds: [\n")
+	writeConfig(t, filepath.Join(repo, lopperYAMLName), "thresholds: [\n")
 	_, _, err := Load(repo, "")
 	if err == nil {
 		t.Fatalf("expected invalid YAML error")
 	}
 	if !strings.Contains(err.Error(), "invalid YAML") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
 func TestLoadConfigInvalidThresholdValue(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, ".lopper.yml"), "thresholds:\n  low_confidence_warning_percent: 101\n")
+	writeConfig(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  low_confidence_warning_percent: 101\n")
 	_, _, err := Load(repo, "")
 	if err == nil {
 		t.Fatalf("expected threshold validation error")
 	}
 	if !strings.Contains(err.Error(), "between 0 and 100") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
 func TestLoadConfigDiscoveryPriority(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, ".lopper.yaml"), "thresholds:\n  fail_on_increase_percent: 7\n")
-	writeConfig(t, filepath.Join(repo, "lopper.json"), `{"thresholds":{"fail_on_increase_percent":2}}`)
+	writeConfig(t, filepath.Join(repo, lopperYAMLName), "thresholds:\n  fail_on_increase_percent: 7\n")
+	writeConfig(t, filepath.Join(repo, lopperJSONName), `{"thresholds":{"fail_on_increase_percent":2}}`)
 
 	overrides, path, err := Load(repo, "")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf(loadConfigErrFmt, err)
 	}
-	if !strings.HasSuffix(path, ".lopper.yaml") {
-		t.Fatalf("expected .lopper.yaml to be selected before lopper.json, got %q", path)
+	if !strings.HasSuffix(path, lopperYAMLName) {
+		t.Fatalf("expected %s to be selected before %s, got %q", lopperYAMLName, lopperJSONName, path)
 	}
 	resolved := overrides.Apply(Defaults())
 	if resolved.FailOnIncreasePercent != 7 {
@@ -207,7 +216,7 @@ func TestLoadConfigRepoPathResolutionError(t *testing.T) {
 
 	_, _, err = Load(".", "")
 	if err != nil && !strings.Contains(err.Error(), "resolve repo path") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
@@ -222,7 +231,7 @@ func TestLoadConfigExplicitPathDirectoryReadError(t *testing.T) {
 		t.Fatalf("expected read error when explicit config path is a directory")
 	}
 	if !strings.Contains(err.Error(), "read config file") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
@@ -265,7 +274,7 @@ func TestRawConfigToOverridesDuplicateNestedLowAndMinUsage(t *testing.T) {
 }
 
 func TestParseConfigInvalidJSONDecodeError(t *testing.T) {
-	if _, err := parseConfig("lopper.json", []byte("{")); err == nil {
+	if _, err := parseConfig(lopperJSONName, []byte("{")); err == nil {
 		t.Fatalf("expected invalid JSON decode error")
 	}
 }

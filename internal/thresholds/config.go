@@ -11,7 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func Load(repoPath string, explicitPath string) (Overrides, string, error) {
+const readConfigFileErrFmt = "read config file %s: %w"
+
+func Load(repoPath, explicitPath string) (Overrides, string, error) {
 	repoAbs, err := filepath.Abs(repoPath)
 	if err != nil {
 		return Overrides{}, "", fmt.Errorf("resolve repo path: %w", err)
@@ -32,7 +34,7 @@ func Load(repoPath string, explicitPath string) (Overrides, string, error) {
 	return overrides, configPath, nil
 }
 
-func resolveConfigPath(repoPath string, explicitPath string) (string, bool, error) {
+func resolveConfigPath(repoPath, explicitPath string) (string, bool, error) {
 	if explicitPath != "" {
 		candidate := explicitPath
 		if !filepath.IsAbs(candidate) {
@@ -43,7 +45,7 @@ func resolveConfigPath(repoPath string, explicitPath string) (string, bool, erro
 			if os.IsNotExist(err) {
 				return "", false, fmt.Errorf("config file not found: %s", candidate)
 			}
-			return "", false, fmt.Errorf("read config file %s: %w", candidate, err)
+			return "", false, fmt.Errorf(readConfigFileErrFmt, candidate, err)
 		}
 		return candidate, true, nil
 	}
@@ -53,7 +55,7 @@ func resolveConfigPath(repoPath string, explicitPath string) (string, bool, erro
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, true, nil
 		} else if err != nil && !os.IsNotExist(err) {
-			return "", false, fmt.Errorf("read config file %s: %w", candidate, err)
+			return "", false, fmt.Errorf(readConfigFileErrFmt, candidate, err)
 		}
 	}
 
@@ -64,7 +66,7 @@ func loadOverridesFromPath(path string) (Overrides, error) {
 	// #nosec G304 -- config path is either explicitly provided by user or discovered in repo root.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Overrides{}, fmt.Errorf("read config file %s: %w", path, err)
+		return Overrides{}, fmt.Errorf(readConfigFileErrFmt, path, err)
 	}
 
 	cfg, err := parseConfig(path, data)

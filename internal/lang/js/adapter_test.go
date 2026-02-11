@@ -12,12 +12,14 @@ import (
 )
 
 const (
-	testIndexJS           = "index.js"
-	testPackageJSONName   = "package.json"
-	testAnalyseErrFmt     = "analyse: %v"
-	testDetectErrFmt      = "detect: %v"
-	testExpectedOneDepFmt = "expected 1 dependency report, got %d"
-	testPackageJSONMain   = "{\n  \"main\": \"index.js\"\n}\n"
+	testIndexJS            = "index.js"
+	testPackageJSONName    = "package.json"
+	testAnalyseErrFmt      = "analyse: %v"
+	testDetectErrFmt       = "detect: %v"
+	testWriteSourceErrFmt  = "write source: %v"
+	testWriteEntrypointFmt = "write entrypoint: %v"
+	testExpectedOneDepFmt  = "expected 1 dependency report, got %d"
+	testPackageJSONMain    = "{\n  \"main\": \"index.js\"\n}\n"
 )
 
 func TestAdapterAnalyseDependency(t *testing.T) {
@@ -38,7 +40,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	}
 	entrypoint := "export function map() {}\nexport function filter() {}\n"
 	if err := os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
+		t.Fatalf(testWriteEntrypointFmt, err)
 	}
 
 	adapter := NewAdapter()
@@ -149,7 +151,7 @@ func TestAdapterAnalyseRiskCues(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { run } from \"risky\"\nrun()\n"
 	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
+		t.Fatalf(testWriteSourceErrFmt, err)
 	}
 
 	riskyRoot := filepath.Join(repo, "node_modules", "risky")
@@ -198,7 +200,7 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
 	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
+		t.Fatalf(testWriteSourceErrFmt, err)
 	}
 
 	lodashRoot := filepath.Join(repo, "node_modules", "lodash")
@@ -218,7 +220,7 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 		"",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(lodashRoot, testIndexJS), []byte(entry), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
+		t.Fatalf(testWriteEntrypointFmt, err)
 	}
 
 	report, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -245,7 +247,7 @@ func TestAdapterAnalyseRecommendationsHonoursThreshold(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
 	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
+		t.Fatalf(testWriteSourceErrFmt, err)
 	}
 
 	lodashRoot := filepath.Join(repo, "node_modules", "lodash")
@@ -264,7 +266,7 @@ func TestAdapterAnalyseRecommendationsHonoursThreshold(t *testing.T) {
 		"",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(lodashRoot, testIndexJS), []byte(entry), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
+		t.Fatalf(testWriteEntrypointFmt, err)
 	}
 
 	minUsagePercent := 10
@@ -364,13 +366,13 @@ func TestJSAdapterHelperBranches(t *testing.T) {
 
 func TestListDependenciesMissingAndBuiltinFiltering(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(""), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(""), 0o600); err != nil {
 		t.Fatalf("write index.js: %v", err)
 	}
 	scan := ScanResult{
 		Files: []FileScan{
 			{
-				Path: "index.js",
+				Path: testIndexJS,
 				Imports: []ImportBinding{
 					{Module: "left-pad", ExportName: "default", LocalName: "leftPad", Kind: ImportDefault},
 					{Module: "node:fs", ExportName: "default", LocalName: "fs", Kind: ImportDefault},

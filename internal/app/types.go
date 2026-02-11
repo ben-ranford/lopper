@@ -1,7 +1,9 @@
 package app
 
-import "github.com/ben-ranford/lopper/internal/report"
-import "github.com/ben-ranford/lopper/internal/thresholds"
+import (
+	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
+)
 
 type Mode string
 

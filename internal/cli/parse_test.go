@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	unexpectedErrFmt = "unexpected error: %v"
-	modeMismatchFmt  = "expected mode %q, got %q"
-	languageFlagName = "--language"
+	unexpectedErrFmt  = "unexpected error: %v"
+	modeMismatchFmt   = "expected mode %q, got %q"
+	languageFlagName  = "--language"
+	failAliasFlag     = "--fail-on-increase"
+	thresholdFailFlag = "--threshold-fail-on-increase"
 )
 
 func TestParseArgsDefault(t *testing.T) {
@@ -148,7 +150,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 	req, err := ParseArgs([]string{
 		"analyse",
 		"--top", "4",
-		"--threshold-fail-on-increase", "2",
+		thresholdFailFlag, "2",
 		"--threshold-low-confidence-warning", "31",
 		"--threshold-min-usage-percent", "45",
 	})
@@ -167,7 +169,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLegacyFailOnIncreaseAlias(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "2", "--fail-on-increase", "9"})
+	req, err := ParseArgs([]string{"analyse", "--top", "2", failAliasFlag, "9"})
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
@@ -179,8 +181,8 @@ func TestParseArgsAnalyseLegacyFailOnIncreaseAlias(t *testing.T) {
 func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
 	_, err := ParseArgs([]string{
 		"analyse", "--top", "2",
-		"--fail-on-increase", "1",
-		"--threshold-fail-on-increase", "2",
+		failAliasFlag, "1",
+		thresholdFailFlag, "2",
 	})
 	if err == nil {
 		t.Fatalf("expected conflict error when fail-on-increase flags disagree")
@@ -235,7 +237,7 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 	if len(args) == 0 {
 		t.Fatalf("expected normalized args")
 	}
-	if !flagNeedsValue("--threshold-fail-on-increase") {
+	if !flagNeedsValue(thresholdFailFlag) {
 		t.Fatalf("expected threshold flag to require value")
 	}
 	if flagNeedsValue("--format=json") {
@@ -291,8 +293,8 @@ func TestParseArgsTUIInvalidInputs(t *testing.T) {
 func TestParseArgsVisitedFlagThresholdAliasMatch(t *testing.T) {
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "2",
-		"--fail-on-increase", "3",
-		"--threshold-fail-on-increase", "3",
+		failAliasFlag, "3",
+		thresholdFailFlag, "3",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

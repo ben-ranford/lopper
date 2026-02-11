@@ -15,6 +15,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/ui"
 )
 
+const testSnapshotPath = "snapshot.txt"
+
 type fakeAnalyzer struct {
 	report  report.Report
 	err     error
@@ -146,11 +148,11 @@ func TestExecuteTUIStartAndSnapshot(t *testing.T) {
 		t.Fatalf("expected Start to be called only once")
 	}
 
-	req.TUI.SnapshotPath = "snapshot.txt"
+	req.TUI.SnapshotPath = testSnapshotPath
 	if _, err := application.Execute(context.Background(), req); err != nil {
 		t.Fatalf("execute tui snapshot: %v", err)
 	}
-	if !tui.snapshotCalled || tui.lastSnapshot != "snapshot.txt" {
+	if !tui.snapshotCalled || tui.lastSnapshot != testSnapshotPath {
 		t.Fatalf("expected Snapshot call with output path, got called=%v path=%q", tui.snapshotCalled, tui.lastSnapshot)
 	}
 }
@@ -254,7 +256,7 @@ func TestExecuteTUIPropagatesErrors(t *testing.T) {
 
 	tui = &fakeTUI{snapshotErr: errors.New("snapshot failed")}
 	application.TUI = tui
-	req.TUI.SnapshotPath = "snapshot.txt"
+	req.TUI.SnapshotPath = testSnapshotPath
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected snapshot error")
 	}

@@ -30,7 +30,7 @@ func TestValuesValidateErrors(t *testing.T) {
 		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: -2},
 	}
 	for _, tc := range tests {
-		if err := tc.Validate(); err == nil {
+		if tc.Validate() == nil {
 			t.Fatalf("expected validation error for %+v", tc)
 		}
 	}

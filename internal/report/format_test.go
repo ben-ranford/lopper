@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const unexpectedErrFmt = "unexpected error: %v"
+
 func TestFormatTable(t *testing.T) {
 	reportData := Report{
 		EffectiveThresholds: &EffectiveThresholds{
@@ -31,7 +33,7 @@ func TestFormatTable(t *testing.T) {
 
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if !strings.Contains(output, "lodash") {
 		t.Fatalf("expected output to include dependency name")
@@ -54,7 +56,7 @@ func TestFormatJSON(t *testing.T) {
 	reportData := Report{RepoPath: "."}
 	output, err := NewFormatter().Format(reportData, FormatJSON)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if !strings.Contains(output, "repoPath") {
 		t.Fatalf("expected json output to include repoPath")
@@ -72,7 +74,7 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if !strings.Contains(output, "No dependencies to report.") {
 		t.Fatalf("expected empty report marker")
