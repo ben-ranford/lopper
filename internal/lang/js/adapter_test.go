@@ -232,6 +232,15 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 	}
 }
 
+func TestDependencyFromModuleSkipsNodeBuiltins(t *testing.T) {
+	if dep := dependencyFromModule("node:fs"); dep != "" {
+		t.Fatalf("expected empty dependency for node builtin, got %q", dep)
+	}
+	if dep := dependencyFromModule("lodash/map"); dep != "lodash" {
+		t.Fatalf("expected lodash dependency, got %q", dep)
+	}
+}
+
 func writeDependency(repo string, name string, entrypoint string) error {
 	depDir := filepath.Join(repo, "node_modules", name)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {

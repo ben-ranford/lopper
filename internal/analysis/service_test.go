@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func TestServiceAnalyseAllLanguages(t *testing.T) {
@@ -39,6 +41,34 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	}
 	if len(reportData.LanguageBreakdown) < 3 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
+	}
+}
+
+func TestMergeRecommendationsPriorityOrder(t *testing.T) {
+	left := []report.Recommendation{
+		{Code: "consider-replacement", Priority: "low"},
+	}
+	right := []report.Recommendation{
+		{Code: "prefer-subpath-imports", Priority: "medium"},
+		{Code: "remove-unused-dependency", Priority: "high"},
+	}
+
+	merged := mergeRecommendations(left, right)
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 merged recommendations, got %d", len(merged))
+	}
+	got := []string{
+		merged[0].Code,
+		merged[1].Code,
+		merged[2].Code,
+	}
+	want := []string{
+		"remove-unused-dependency",
+		"prefer-subpath-imports",
+		"consider-replacement",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected recommendation order: got %#v want %#v", got, want)
 	}
 }
 

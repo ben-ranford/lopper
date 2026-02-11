@@ -320,9 +320,22 @@ func mergeRecommendations(left []report.Recommendation, right []report.Recommend
 		if items[i].Priority == items[j].Priority {
 			return items[i].Code < items[j].Code
 		}
-		return items[i].Priority < items[j].Priority
+		return recommendationPriorityRank(items[i].Priority) < recommendationPriorityRank(items[j].Priority)
 	})
 	return items
+}
+
+func recommendationPriorityRank(priority string) int {
+	switch strings.ToLower(strings.TrimSpace(priority)) {
+	case "high":
+		return 0
+	case "medium":
+		return 1
+	case "low":
+		return 2
+	default:
+		return 3
+	}
 }
 
 func mergeTopSymbols(left []report.SymbolUsage, right []report.SymbolUsage) []report.SymbolUsage {

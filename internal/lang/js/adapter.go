@@ -448,6 +448,9 @@ func dependencyFromModule(module string) string {
 	if module == "" {
 		return ""
 	}
+	if strings.HasPrefix(module, "node:") {
+		return ""
+	}
 	if strings.HasPrefix(module, ".") || strings.HasPrefix(module, "/") {
 		return ""
 	}

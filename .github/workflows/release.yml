@@ -34,22 +34,62 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Go
+        if: ${{ !env.ACT }}
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
+      - name: Setup Go (act)
+        if: ${{ env.ACT }}
+        run: |
+          if ! command -v go >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y golang-go
+          fi
+          go version
+
       - name: Setup Zig
+        if: ${{ !env.ACT }}
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
+      - name: Setup Zig (act)
+        if: ${{ env.ACT }}
+        run: |
+          if ! command -v zig >/dev/null 2>&1; then
+            urls=(
+              "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz"
+              "https://pkg.machengine.org/zig/zig-x86_64-linux-0.15.2.tar.xz"
+            )
+            for url in "${urls[@]}"; do
+              echo "Trying $url"
+              if curl --fail --location --connect-timeout 20 --max-time 120 -o /tmp/zig.tar.xz "$url"; then
+                break
+              fi
+            done
+            test -s /tmp/zig.tar.xz
+            rm -rf /opt/zig
+            mkdir -p /opt/zig
+            tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+            ln -sf /opt/zig/zig /usr/local/bin/zig
+          fi
+          zig version
+
       - name: Install golangci-lint
         run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+          if [ -z "${ACT:-}" ]; then
+            echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Validate project
-        run: make ci
+        run: |
+          if [ -n "${ACT:-}" ]; then
+            PATH="$(go env GOPATH)/bin:$PATH" make ci
+          else
+            make ci
+          fi
 
       - name: Build Linux/Windows release artifacts
         run: |
@@ -58,6 +98,7 @@ jobs:
             PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
       - name: Upload Linux/Windows artifacts
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v4
         with:
           name: release-linux-windows
@@ -65,7 +106,12 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+      - name: Mock Linux/Windows artifact upload (act)
+        if: ${{ env.ACT }}
+        run: ls -lh dist/*
+
   build-darwin:
+    if: ${{ github.actor != 'nektos/act' }}
     needs: prepare
     runs-on: macos-latest
     steps:
@@ -79,7 +125,7 @@ jobs:
 
       - name: Install golangci-lint
         run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project
@@ -100,14 +146,52 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+  build-darwin-act:
+    if: ${{ github.actor == 'nektos/act' }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        if: ${{ !env.ACT }}
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Go (act)
+        if: ${{ env.ACT }}
+        run: |
+          if ! command -v go >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y golang-go
+          fi
+          go version
+
+      - name: Build Darwin release artifact (act mock)
+        run: |
+          mkdir -p dist
+          mock_dir="dist/surfarea_${{ needs.prepare.outputs.tag }}_darwin_amd64"
+          mkdir -p "$mock_dir"
+          cp README.md "$mock_dir/README.md"
+          tar -czf "${mock_dir}.tar.gz" -C dist "$(basename "$mock_dir")"
+          rm -rf "$mock_dir"
+
+      - name: Mock Darwin artifact upload (act)
+        run: ls -lh dist/*
+
   publish:
+    if: ${{ github.actor != 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && (needs.build-darwin.result == 'success' || needs.build-darwin.result == 'skipped') && (needs.build-darwin-act.result == 'success' || needs.build-darwin-act.result == 'skipped') }}
     needs:
       - prepare
       - build-linux-windows
       - build-darwin
+      - build-darwin-act
     runs-on: ubuntu-latest
     steps:
       - name: Download release artifacts
+        if: ${{ !env.ACT }}
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -124,3 +208,15 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+  publish-act:
+    if: ${{ github.actor == 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin-act.result == 'success' }}
+    needs:
+      - prepare
+      - build-linux-windows
+      - build-darwin-act
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mock publish summary (act)
+        run: |
+          echo "Prepared tag: ${{ needs.prepare.outputs.tag }}"
+          echo "Linux/Windows and Darwin mock build jobs completed successfully under act."

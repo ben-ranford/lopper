@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make ci
 ```

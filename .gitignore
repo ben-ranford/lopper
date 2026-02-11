@@ -1,6 +1,8 @@
 .DS_Store
 /bin/
 /dist/
+surfarea
+surfarea.exe
 *.out
 *.test
 coverage.out
