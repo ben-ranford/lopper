@@ -10,6 +10,8 @@ COVERAGE_MIN ?= 60
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.0
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
+GOLANGCI_LINT_VERSION ?= v2.9.0
+GOSEC_VERSION ?= v2.22.11
 HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
@@ -29,12 +31,10 @@ format-check:
 	fi
 
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 || (echo "golangci-lint not found in PATH"; exit 1)
-	golangci-lint run ./...
+	$(GO_CMD) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 security:
-	@command -v gosec >/dev/null 2>&1 || (echo "gosec not found in PATH"; exit 1)
-	gosec ./...
+	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) ./...
 
 test:
 	$(GO_CMD) test ./...
