@@ -3,9 +3,9 @@ package js
 import "testing"
 
 const (
-	testFsPromises  = "fs/promises"
-	testBabelCore   = "@babel/core"
-	testTypesNode   = "@types/node"
+	testFsPromises = "fs/promises"
+	testBabelCore  = "@babel/core"
+	testTypesNode  = "@types/node"
 )
 
 func TestIsNodeBuiltin(t *testing.T) {
