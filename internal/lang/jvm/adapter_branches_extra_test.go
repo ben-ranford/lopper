@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
@@ -20,7 +21,7 @@ func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
+	testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
 	if err := os.Chdir(repo); err != nil {
 		t.Fatalf("chdir repo: %v", err)
 	}
@@ -38,7 +39,7 @@ func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	}
 
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	writeFile(t, repoFile, "x")
+	testutil.MustWriteFile(t, repoFile, "x")
 	if _, err := adapter.DetectWithConfidence(context.Background(), repoFile); err == nil {
 		t.Fatalf("expected detect error for non-directory repo path")
 	}
@@ -52,13 +53,13 @@ func TestJVMRootSignalAndScanErrorBranches(t *testing.T) {
 	roots := map[string]struct{}{}
 
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	writeFile(t, repoFile, "x")
+	testutil.MustWriteFile(t, repoFile, "x")
 	if err := applyJVMRootSignals(repoFile, detection, roots); err == nil {
 		t.Fatalf("expected root signal stat error for non-directory repo path")
 	}
 
 	repo := t.TempDir()
-	ctx := canceledContext()
+	ctx := testutil.CanceledContext()
 	if _, err := scanRepo(ctx, repo, map[string]string{}, map[string]string{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -82,7 +83,7 @@ func TestJVMSourceAndBuildFileBranches(t *testing.T) {
 	}
 
 	entryPath := filepath.Join(repo, "pom.xml")
-	writeFile(t, entryPath, `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
+	testutil.MustWriteFile(t, entryPath, `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
 	entries, err := os.ReadDir(repo)
 	if err != nil {
 		t.Fatalf("readdir repo: %v", err)
@@ -208,7 +209,7 @@ func TestJVMRecommendationAndLookupBranches(t *testing.T) {
 
 func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 	repo := t.TempDir()
-	ctx := canceledContext()
+	ctx := testutil.CanceledContext()
 	if _, err := scanRepo(ctx, repo, map[string]string{}, map[string]string{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -222,7 +223,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 
 	// scanJVMSourceFile rel-path fallback branch using empty repoPath.
 	javaPath := filepath.Join(repo, "Main.java")
-	writeFile(t, javaPath, "import custom.dep.Type;\n")
+	testutil.MustWriteFile(t, javaPath, "import custom.dep.Type;\n")
 	result := &scanResult{}
 	if err := scanJVMSourceFile("", javaPath, nil, nil, result); err != nil {
 		t.Fatalf("scanJVMSourceFile with empty repoPath: %v", err)
@@ -253,7 +254,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 
 	// DetectWithConfidence should ignore fs.SkipAll as non-error.
 	manyFilesRepo := t.TempDir()
-	writeNumberedTextFiles(t, manyFilesRepo, 1050)
+	testutil.WriteNumberedTextFiles(t, manyFilesRepo, 1050)
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), manyFilesRepo)
 	if err != nil {
 		t.Fatalf("detect with many files: %v", err)
@@ -272,7 +273,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 func TestJVMAnalyseWarningAndErrorBranches(t *testing.T) {
 	repo := t.TempDir()
 	javaPath := filepath.Join(repo, "Main.java")
-	writeFile(t, javaPath, "import custom.dep.Type;\n")
+	testutil.MustWriteFile(t, javaPath, "import custom.dep.Type;\n")
 	rep, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1})
 	if err != nil {
 		t.Fatalf("analyse repo without manifests: %v", err)
@@ -281,7 +282,7 @@ func TestJVMAnalyseWarningAndErrorBranches(t *testing.T) {
 		t.Fatalf("expected missing-manifest warning, got %#v", rep.Warnings)
 	}
 
-	ctx := canceledContext()
+	ctx := testutil.CanceledContext()
 	if _, err := NewAdapter().Analyse(ctx, language.Request{RepoPath: repo, TopN: 1}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error from analyse scan, got %v", err)
 	}

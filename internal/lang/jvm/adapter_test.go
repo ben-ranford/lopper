@@ -2,18 +2,18 @@ package jvm
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestAdapterDetectWithGradleAndJava(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "build.gradle"), "dependencies { implementation 'org.junit.jupiter:junit-jupiter-api:5.10.0' }\n")
-	writeFile(t, filepath.Join(repo, "src", "main", "java", "App.java"), "import org.junit.jupiter.api.Test;\nclass App {}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), "dependencies { implementation 'org.junit.jupiter:junit-jupiter-api:5.10.0' }\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "java", "App.java"), "import org.junit.jupiter.api.Test;\nclass App {}\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -29,7 +29,7 @@ func TestAdapterDetectWithGradleAndJava(t *testing.T) {
 
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "pom.xml"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `
 <project>
   <dependencies>
     <dependency>
@@ -40,7 +40,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
   </dependencies>
 </project>
 `)
-	writeFile(t, filepath.Join(repo, "src", "test", "java", "ExampleTest.java"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "test", "java", "ExampleTest.java"), `
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Assertions;
 
@@ -73,13 +73,13 @@ class ExampleTest {
 
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "build.gradle.kts"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle.kts"), `
 dependencies {
   implementation("com.squareup.okhttp3:okhttp:4.12.0")
   implementation("org.junit.jupiter:junit-jupiter-api:5.10.0")
 }
 `)
-	writeFile(t, filepath.Join(repo, "src", "main", "kotlin", "Main.kt"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", "Main.kt"), `
 import okhttp3.OkHttpClient
 import org.junit.jupiter.api.Assertions
 
@@ -118,22 +118,12 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
 	ok, err := adapter.Detect(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect: %v", err)
 	}
 	if !ok {
 		t.Fatalf("expected detect=true when pom.xml exists")
-	}
-}
-
-func writeFile(t *testing.T, path string, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
 	}
 }

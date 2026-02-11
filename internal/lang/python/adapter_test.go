@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const testMainPy = "main.py"
 
 func TestAdapterDetectWithPythonSource(t *testing.T) {
 	repo := t.TempDir()
-	mustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -30,7 +31,7 @@ func TestAdapterDetectWithPythonSource(t *testing.T) {
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nfrom numpy import array, mean\narray([1])\nrequests.get('x')\n"
-	mustWriteFile(t, filepath.Join(repo, testMainPy), source)
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
@@ -55,7 +56,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nimport numpy as np\nnp.array([1])\n"
-	mustWriteFile(t, filepath.Join(repo, testMainPy), source)
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath: repo,
@@ -85,7 +86,7 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	mustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests\n")
 	ok, err := adapter.Detect(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect: %v", err)

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestJVMParsingHelpers(t *testing.T) {
@@ -90,8 +91,8 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "pom.xml"), `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
-	writeFile(t, filepath.Join(repo, "build.gradle"), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
 	poms := parsePomDependencies(repo)
 	gradle := parseGradleDependencies(repo)
 	if len(poms) == 0 || len(gradle) == 0 {
@@ -133,9 +134,9 @@ func TestJVMScanAndRequestedDependencyBranches(t *testing.T) {
 func TestJVMDetectAndWalkBranches(t *testing.T) {
 	adapter := NewAdapter()
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
-	writeFile(t, filepath.Join(repo, "build.gradle"), "")
-	writeFile(t, filepath.Join(repo, "build.gradle.kts"), "")
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
+	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), "")
+	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle.kts"), "")
 	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect with confidence: %v", err)

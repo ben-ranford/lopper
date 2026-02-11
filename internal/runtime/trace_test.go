@@ -8,20 +8,12 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
-
-func writeTraceFile(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "runtime.ndjson")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-	return path
-}
 
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 	t.Helper()
-	return Load(writeTraceFile(t, content))
+	return Load(testutil.WriteTempFile(t, "runtime.ndjson", content))
 }
 
 func TestLoadTrace(t *testing.T) {

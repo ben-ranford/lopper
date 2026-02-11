@@ -5,30 +5,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
-
-func mustWriteFile(t *testing.T, path string, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
-func writeNumberedTextFiles(t *testing.T, repo string, count int) {
-	t.Helper()
-	for i := 0; i < count; i++ {
-		mustWriteFile(t, filepath.Join(repo, "f-"+strconv.Itoa(i)+".txt"), "x")
-	}
-}
 
 func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
@@ -38,7 +22,7 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	repo := t.TempDir()
-	mustWriteFile(t, filepath.Join(repo, "index.js"), "export const x = 1")
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "export const x = 1")
 	if err := os.Chdir(repo); err != nil {
 		t.Fatalf("chdir repo: %v", err)
 	}
@@ -61,7 +45,7 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 
 func TestJSScanFilesForDetectionMaxFiles(t *testing.T) {
 	repo := t.TempDir()
-	writeNumberedTextFiles(t, repo, 260)
+	testutil.WriteNumberedTextFiles(t, repo, 260)
 
 	detect := &language.Detection{Matched: false}
 	roots := map[string]struct{}{}
@@ -141,14 +125,14 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "wild")
-	mustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"index.js"}`)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"index.js"}`)
 	source := strings.Join([]string{
 		`export * from "./other.js"`,
 		`export const keep = 1`,
 		"",
 	}, "\n")
-	mustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
-	mustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
 	surface, warnings = resolveSurfaceWarnings(repo, "wild")
 	if !surface.IncludesWildcard {
@@ -162,7 +146,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
-	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5)
+	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, thresholds.Defaults().MinUsagePercentForRecommendations)
 	if reports != nil {
 		t.Fatalf("expected nil reports when no dependencies are discovered, got %#v", reports)
 	}

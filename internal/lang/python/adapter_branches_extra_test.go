@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestPythonDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
@@ -18,7 +19,7 @@ func TestPythonDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	repo := t.TempDir()
-	mustWriteFile(t, filepath.Join(repo, "main.py"), "import requests")
+	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests")
 	if err := os.Chdir(repo); err != nil {
 		t.Fatalf("chdir repo: %v", err)
 	}
@@ -36,7 +37,7 @@ func TestPythonDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	}
 
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	mustWriteFile(t, repoFile, "x")
+	testutil.MustWriteFile(t, repoFile, "x")
 	if _, err := adapter.DetectWithConfidence(context.Background(), repoFile); err == nil {
 		t.Fatalf("expected detect error for non-directory repo path")
 	}
@@ -45,7 +46,7 @@ func TestPythonDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 func TestPythonAnalyseErrorBranches(t *testing.T) {
 	adapter := NewAdapter()
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	mustWriteFile(t, repoFile, "x")
+	testutil.MustWriteFile(t, repoFile, "x")
 	rep, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repoFile, TopN: 1})
 	if err != nil {
 		t.Fatalf("analyse file repo path: %v", err)
@@ -55,7 +56,7 @@ func TestPythonAnalyseErrorBranches(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	ctx := canceledContext()
+	ctx := testutil.CanceledContext()
 	if _, err := adapter.Analyse(ctx, language.Request{RepoPath: repo, TopN: 1}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -102,7 +103,7 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 
 	fileRepo := t.TempDir()
 	source := filepath.Join(fileRepo, "mod.py")
-	mustWriteFile(t, source, "import requests")
+	testutil.MustWriteFile(t, source, "import requests")
 	fileEntries, err := os.ReadDir(fileRepo)
 	if err != nil {
 		t.Fatalf("readdir fileRepo: %v", err)
@@ -113,7 +114,7 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 		}
 		// Force enforceRepoBoundary failure by scanning a file outside repo.
 		outside := filepath.Join(t.TempDir(), "outside.py")
-		mustWriteFile(t, outside, "import requests")
+		testutil.MustWriteFile(t, outside, "import requests")
 		err := scanPythonRepoEntry(fileRepo, outside, entry, &scanResult{})
 		if err == nil {
 			t.Fatalf("expected boundary error for outside path")
@@ -127,7 +128,7 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 
 	// DetectWithConfidence should ignore fs.SkipAll from max file budget.
 	manyFilesRepo := t.TempDir()
-	writeNumberedTextFiles(t, manyFilesRepo, 520)
+	testutil.WriteNumberedTextFiles(t, manyFilesRepo, 520)
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), manyFilesRepo)
 	if err != nil {
 		t.Fatalf("detect with many files: %v", err)

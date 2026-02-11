@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func TestBuildRecommendationsBranchesAndOrdering(t *testing.T) {
@@ -21,7 +22,7 @@ func TestBuildRecommendationsBranchesAndOrdering(t *testing.T) {
 		},
 	}
 
-	recs := buildRecommendations("lodash", dep)
+	recs := buildRecommendations("lodash", dep, thresholds.Defaults().MinUsagePercentForRecommendations)
 	if len(recs) < 3 {
 		t.Fatalf("expected multiple recommendations, got %#v", recs)
 	}
@@ -54,7 +55,7 @@ func TestBuildRecommendationsNoUsedImportsRemoval(t *testing.T) {
 			{Name: "default", Module: "moment"},
 		},
 	}
-	recs := buildRecommendations("moment", dep)
+	recs := buildRecommendations("moment", dep, thresholds.Defaults().MinUsagePercentForRecommendations)
 	codes := make([]string, 0, len(recs))
 	for _, rec := range recs {
 		codes = append(codes, rec.Code)
