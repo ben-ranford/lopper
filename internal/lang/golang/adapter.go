@@ -153,10 +153,11 @@ func addGoWorkRoots(repoPath string, roots map[string]struct{}) error {
 		return err
 	}
 	for _, rel := range useEntries {
-		if rel == "" {
+		resolved, ok := resolveRepoBoundedPath(repoPath, rel)
+		if !ok {
 			continue
 		}
-		roots[filepath.Clean(filepath.Join(repoPath, rel))] = struct{}{}
+		roots[resolved] = struct{}{}
 	}
 	return nil
 }
@@ -441,7 +442,7 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 	dependencies := make([]string, 0)
 	replacements := make(map[string]string)
 	for dir := range nestedDirs {
-		modulePath, deps, moduleReplacements, err := loadGoModFromDir(dir)
+		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
 		if err != nil {
 			continue
 		}
@@ -1133,10 +1134,11 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 	}
 	modulePaths := make([]string, 0)
 	for _, rel := range useEntries {
-		if rel == "" {
+		resolved, ok := resolveRepoBoundedPath(repoPath, rel)
+		if !ok {
 			continue
 		}
-		modulePath, _, _, err := loadGoModFromDir(filepath.Join(repoPath, rel))
+		modulePath, _, _, err := loadGoModFromDir(repoPath, resolved)
 		if err != nil || modulePath == "" {
 			continue
 		}
@@ -1147,8 +1149,7 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 
 func readGoWorkUseEntries(repoPath string) ([]string, error) {
 	workPath := filepath.Join(repoPath, goWorkName)
-	// #nosec G304 -- path is constrained under normalized repoPath.
-	content, err := os.ReadFile(workPath)
+	content, err := safeio.ReadFileUnder(repoPath, workPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -1189,15 +1190,44 @@ func normalizeGoWorkPath(value string) string {
 	return filepath.Clean(value)
 }
 
-func loadGoModFromDir(dir string) (string, []string, map[string]string, error) {
+func loadGoModFromDir(repoPath, dir string) (string, []string, map[string]string, error) {
 	goModPath := filepath.Join(dir, goModName)
-	// #nosec G304 -- path is constrained under the caller-controlled repo path.
-	content, err := os.ReadFile(goModPath)
+	content, err := safeio.ReadFileUnder(repoPath, goModPath)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	modulePath, dependencies, replacements := parseGoMod(content)
 	return modulePath, dependencies, replacements, nil
+}
+
+func resolveRepoBoundedPath(repoPath, value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+
+	resolved := value
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(repoPath, resolved)
+	}
+	resolved = filepath.Clean(resolved)
+
+	repoAbs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", false
+	}
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", false
+	}
+	relativeToRepo, err := filepath.Rel(repoAbs, resolvedAbs)
+	if err != nil {
+		return "", false
+	}
+	if relativeToRepo == ".." || strings.HasPrefix(relativeToRepo, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return resolvedAbs, true
 }
 
 func uniqueStrings(values []string) []string {

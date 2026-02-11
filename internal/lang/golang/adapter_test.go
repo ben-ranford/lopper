@@ -759,6 +759,33 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 		t.Fatalf("expected go.work root in %#v", roots)
 	}
 
+	repoEscape := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(repoEscape, fileGoWork), strings.Join([]string{
+		"go 1.25",
+		"",
+		"use (",
+		"\t./svc/a",
+		"\t../outside",
+		"\t" + outside,
+		")",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repoEscape, "svc", "a", fileGoMod), "module "+exampleModuleA+go125Block)
+	escapeRoots := map[string]struct{}{}
+	if err := addGoWorkRoots(repoEscape, escapeRoots); err != nil {
+		t.Fatalf("addGoWorkRoots with escape entries: %v", err)
+	}
+	if _, ok := escapeRoots[filepath.Join(repoEscape, "svc", "a")]; !ok {
+		t.Fatalf("expected in-repo go.work root in %#v", escapeRoots)
+	}
+	if _, ok := escapeRoots[outside]; ok {
+		t.Fatalf("did not expect out-of-repo absolute root in %#v", escapeRoots)
+	}
+	if _, ok := escapeRoots[filepath.Clean(filepath.Join(repoEscape, "..", "outside"))]; ok {
+		t.Fatalf("did not expect parent escape root in %#v", escapeRoots)
+	}
+
 	// no go.work should not error
 	if err := addGoWorkRoots(t.TempDir(), map[string]struct{}{}); err != nil {
 		t.Fatalf("unexpected addGoWorkRoots no-file error: %v", err)
@@ -1088,7 +1115,8 @@ func TestMiscCoverageBranches(t *testing.T) {
 }
 
 func TestLoadGoModFromDirError(t *testing.T) {
-	_, _, _, err := loadGoModFromDir(filepath.Join(t.TempDir(), "missing"))
+	repo := t.TempDir()
+	_, _, _, err := loadGoModFromDir(repo, filepath.Join(repo, "missing"))
 	if err == nil {
 		t.Fatalf("expected loadGoModFromDir error for missing file")
 	}
@@ -1131,6 +1159,28 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	result := newScanResult()
 	if scanGoSourceFile(sourceRepo, sourceSymlink, moduleInfo{}, &result) == nil {
 		t.Fatalf("expected guarded source read to fail for escaping symlink")
+	}
+
+	workRepo := t.TempDir()
+	outsideGoWork := filepath.Join(outsideDir, "outside.work")
+	writeFile(t, outsideGoWork, "go 1.25\n\nuse ./\n")
+	if err := os.Symlink(outsideGoWork, filepath.Join(workRepo, fileGoWork)); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if _, err := readGoWorkUseEntries(workRepo); err == nil {
+		t.Fatalf("expected guarded go.work read to fail for escaping symlink")
+	}
+
+	nestedRepo := t.TempDir()
+	nestedDir := filepath.Join(nestedRepo, "sub")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+	if err := os.Symlink(outsideGoMod, filepath.Join(nestedDir, fileGoMod)); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if _, _, _, err := loadGoModFromDir(nestedRepo, nestedDir); err == nil {
+		t.Fatalf("expected guarded nested go.mod read to fail for escaping symlink")
 	}
 }
 
