@@ -111,7 +111,7 @@ jobs:
         run: ls -lh dist/*
 
   build-darwin:
-    if: ${{ github.actor != 'nektos/act' }}
+    if: ${{ !env.ACT }}
     needs: prepare
     runs-on: macos-latest
     steps:
@@ -147,7 +147,7 @@ jobs:
             dist/*.zip
 
   build-darwin-act:
-    if: ${{ github.actor == 'nektos/act' }}
+    if: ${{ env.ACT }}
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -182,7 +182,7 @@ jobs:
         run: ls -lh dist/*
 
   publish:
-    if: ${{ github.actor != 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && (needs.build-darwin.result == 'success' || needs.build-darwin.result == 'skipped') && (needs.build-darwin-act.result == 'success' || needs.build-darwin-act.result == 'skipped') }}
+    if: ${{ !env.ACT && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin.result == 'success' && (needs.build-darwin-act.result == 'success' || needs.build-darwin-act.result == 'skipped') }}
     needs:
       - prepare
       - build-linux-windows
@@ -209,7 +209,7 @@ jobs:
             dist/*.zip
 
   publish-act:
-    if: ${{ github.actor == 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin-act.result == 'success' }}
+    if: ${{ env.ACT && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin-act.result == 'success' }}
     needs:
       - prepare
       - build-linux-windows
