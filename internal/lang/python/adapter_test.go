@@ -81,3 +81,25 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 		}
 	}
 }
+
+func TestAdapterMetadataAndDetect(t *testing.T) {
+	adapter := NewAdapter()
+	if adapter.ID() != "python" {
+		t.Fatalf("unexpected adapter id: %q", adapter.ID())
+	}
+	if len(adapter.Aliases()) == 0 || adapter.Aliases()[0] != "py" {
+		t.Fatalf("unexpected adapter aliases: %#v", adapter.Aliases())
+	}
+
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "requirements.txt"), []byte("requests\n"), 0o644); err != nil {
+		t.Fatalf("write requirements.txt: %v", err)
+	}
+	ok, err := adapter.Detect(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected detect=true with requirements.txt")
+	}
+}
