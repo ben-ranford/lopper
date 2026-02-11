@@ -34,7 +34,7 @@ func TestIsNodeBuiltin(t *testing.T) {
 		// Not built-ins
 		{"lodash", "lodash", false},
 		{"react", "react", false},
-		{"@babel/core", testBabelCore, false},
+		{testBabelCore, testBabelCore, false},
 		{"fake-fs", "fake-fs", false},
 
 		// Edge cases
@@ -70,7 +70,7 @@ func TestDependencyFromModuleBuiltins(t *testing.T) {
 		// npm packages should return package name
 		{"lodash", "lodash", "lodash"},
 		{"lodash/map", "lodash/map", "lodash"},
-		{"@babel/core", testBabelCore, testBabelCore},
+		{testBabelCore, testBabelCore, testBabelCore},
 		{"@types/node", testTypesNode, testTypesNode},
 
 		// Relative/local imports should return empty
