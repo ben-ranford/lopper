@@ -3,7 +3,6 @@ package python
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -154,13 +153,9 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 		t.Fatalf("did not expect matched detection from non-python files")
 	}
 
-	// scanRepo callback error branch (platform-dependent permissions).
-	if err := os.MkdirAll(filepath.Join(manyFilesRepo, "bad"), 0o000); err != nil {
-		t.Fatalf("mkdir bad dir: %v", err)
-	}
-	defer os.Chmod(filepath.Join(manyFilesRepo, "bad"), 0o755)
-	_, err = scanRepo(context.Background(), manyFilesRepo)
-	if err != nil && !errors.Is(err, fs.ErrPermission) {
-		t.Fatalf("unexpected scanRepo error: %v", err)
+	// scanRepo error propagation branch.
+	_, err = scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatalf("expected scanRepo error for missing path")
 	}
 }
