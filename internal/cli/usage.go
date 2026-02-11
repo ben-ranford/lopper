@@ -1,10 +1,10 @@
 package cli
 
 const usage = `Usage:
-  surfarea [tui]
-  surfarea tui [--repo PATH] [--language auto|all|js-ts|python|jvm] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  surfarea analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm] [--baseline PATH] [--runtime-trace PATH]
-  surfarea analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm] [--baseline PATH] [--runtime-trace PATH] [--fail-on-increase PERCENT]
+  lopper [tui]
+  lopper tui [--repo PATH] [--language auto|all|js-ts|python|jvm] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
+  lopper analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm] [--baseline PATH] [--runtime-trace PATH]
+  lopper analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm] [--baseline PATH] [--runtime-trace PATH] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)

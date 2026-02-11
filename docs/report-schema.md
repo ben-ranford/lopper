@@ -1,12 +1,12 @@
 # Report schema
 
-`surfarea analyse --format json` emits the report structure defined in
+`lopper analyse --format json` emits the report structure defined in
 `docs/report-schema.json`.
 
 ## Generate a report
 
 ```bash
-go run ./cmd/surfarea analyse --top 20 --repo . --language all --format json > report.json
+go run ./cmd/lopper analyse --top 20 --repo . --language all --format json > report.json
 ```
 
 Validate with your JSON Schema tooling against `docs/report-schema.json`.
@@ -26,4 +26,3 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `runtimeUsage` currently annotates JS/TS dependencies.
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `schemaVersion` is currently pinned to `0.1.0`.
-

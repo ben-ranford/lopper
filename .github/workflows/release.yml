@@ -111,7 +111,7 @@ jobs:
         run: ls -lh dist/*
 
   build-darwin:
-    if: ${{ github.actor != 'nektos/act' }}
+    if: ${{ !env.ACT }}
     needs: prepare
     runs-on: macos-latest
     steps:
@@ -147,7 +147,7 @@ jobs:
             dist/*.zip
 
   build-darwin-act:
-    if: ${{ github.actor == 'nektos/act' }}
+    if: ${{ env.ACT }}
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -172,7 +172,7 @@ jobs:
       - name: Build Darwin release artifact (act mock)
         run: |
           mkdir -p dist
-          mock_dir="dist/surfarea_${{ needs.prepare.outputs.tag }}_darwin_amd64"
+          mock_dir="dist/lopper_${{ needs.prepare.outputs.tag }}_darwin_amd64"
           mkdir -p "$mock_dir"
           cp README.md "$mock_dir/README.md"
           tar -czf "${mock_dir}.tar.gz" -C dist "$(basename "$mock_dir")"
@@ -182,7 +182,7 @@ jobs:
         run: ls -lh dist/*
 
   publish:
-    if: ${{ github.actor != 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && (needs.build-darwin.result == 'success' || needs.build-darwin.result == 'skipped') && (needs.build-darwin-act.result == 'success' || needs.build-darwin-act.result == 'skipped') }}
+    if: ${{ !env.ACT && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin.result == 'success' && (needs.build-darwin-act.result == 'success' || needs.build-darwin-act.result == 'skipped') }}
     needs:
       - prepare
       - build-linux-windows
@@ -209,7 +209,7 @@ jobs:
             dist/*.zip
 
   publish-act:
-    if: ${{ github.actor == 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin-act.result == 'success' }}
+    if: ${{ env.ACT && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin-act.result == 'success' }}
     needs:
       - prepare
       - build-linux-windows
