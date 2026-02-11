@@ -3,6 +3,13 @@
 Lopper is built around pluggable language adapters under `internal/lang/*`.
 The core contracts are in `internal/language`.
 
+## Current adapters
+
+- `js-ts` (JavaScript/TypeScript)
+- `python` (Python)
+- `jvm` (Java/Kotlin)
+- `go` (Go)
+
 ## Adapter contract
 
 All adapters implement:
@@ -61,4 +68,3 @@ Merged output deduplicates by `(language, dependency)` and computes:
 
 If your adapter can consume runtime traces, extend `internal/runtime` and
 its annotation logic. The current implementation annotates JS/TS dependencies.
-

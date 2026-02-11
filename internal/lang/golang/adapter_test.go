@@ -1,0 +1,1095 @@
+package golang
+
+import (
+	"context"
+	"go/ast"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
+)
+
+func TestAdapterDetectWithGoModAndSource(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n")
+	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !detection.Matched {
+		t.Fatalf("expected go detection to match")
+	}
+	if detection.Confidence <= 0 {
+		t.Fatalf("expected confidence > 0, got %d", detection.Confidence)
+	}
+	if !slices.Contains(detection.Roots, repo) {
+		t.Fatalf("expected root %q in %#v", repo, detection.Roots)
+	}
+}
+
+func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+
+	adapter := NewAdapter()
+	if adapter.ID() != "go" {
+		t.Fatalf("expected adapter id go, got %q", adapter.ID())
+	}
+	if !slices.Equal(adapter.Aliases(), []string{"golang"}) {
+		t.Fatalf("unexpected aliases %#v", adapter.Aliases())
+	}
+
+	ok, err := adapter.Detect(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect wrapper: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected detect wrapper to match")
+	}
+}
+
+func TestAdapterDetectWrapperError(t *testing.T) {
+	adapter := NewAdapter()
+	_, err := adapter.Detect(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatalf("expected detect wrapper error for missing repo path")
+	}
+}
+
+func TestDetectWithConfidenceRepoIsFileErrors(t *testing.T) {
+	repo := t.TempDir()
+	filePath := writeTempFile(t, repo, "plain-file", "content")
+	_, err := NewAdapter().DetectWithConfidence(context.Background(), filePath)
+	if err == nil {
+		t.Fatalf("expected detect error when repo path is a file")
+	}
+}
+
+func TestApplyGoRootSignalsGoWorkError(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n")
+	if err := os.Mkdir(filepath.Join(repo, "go.work"), 0o755); err != nil {
+		t.Fatalf("mkdir go.work dir: %v", err)
+	}
+
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	if err := applyGoRootSignals(repo, &detection, roots); err == nil {
+		t.Fatalf("expected applyGoRootSignals error when go.work is unreadable")
+	}
+}
+
+func TestAdapterAnalyseDependency(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n")
+	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/google/uuid\"\n)\n\nfunc main() {\n\tfmt.Println(uuid.NewString())\n}\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "github.com/google/uuid",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Language != "go" {
+		t.Fatalf("expected language go, got %q", dep.Language)
+	}
+	if dep.UsedExportsCount == 0 {
+		t.Fatalf("expected used exports > 0")
+	}
+	if dep.Name != "github.com/google/uuid" {
+		t.Fatalf("expected dependency github.com/google/uuid, got %q", dep.Name)
+	}
+}
+
+func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
+	repo := t.TempDir()
+	adapter := NewAdapter()
+
+	// loadGoModuleInfo failure path via unreadable go.mod (directory)
+	if err := os.Mkdir(filepath.Join(repo, "go.mod"), 0o755); err != nil {
+		t.Fatalf("mkdir go.mod dir: %v", err)
+	}
+	_, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo})
+	if err == nil {
+		t.Fatalf("expected analyse error for unreadable go.mod")
+	}
+
+	// scanRepo failure path via canceled context
+	repo2 := t.TempDir()
+	writeFile(t, filepath.Join(repo2, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo2, "main.go"), "package main\n\nfunc main(){}\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = adapter.Analyse(ctx, language.Request{RepoPath: repo2})
+	if err == nil {
+		t.Fatalf("expected analyse cancellation error")
+	}
+
+	// default request path (no dep/top) should still return warning payload
+	reportData, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo2})
+	if err != nil {
+		t.Fatalf("analyse default request: %v", err)
+	}
+	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
+	if !strings.Contains(warningsText, "no dependency or top-n target provided") {
+		t.Fatalf("expected default-input warning, got %#v", reportData.Warnings)
+	}
+}
+
+func TestAdapterAnalyseTopN(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire (\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/samber/lo v1.47.0\n)\n")
+	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport (\n\tu \"github.com/google/uuid\"\n\t\"github.com/samber/lo\"\n)\n\nfunc main() {\n\t_ = u.NewString()\n\t_ = lo.Contains([]int{1,2}, 2)\n}\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     2,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 2 {
+		t.Fatalf("expected two dependencies, got %d", len(reportData.Dependencies))
+	}
+	names := []string{reportData.Dependencies[0].Name, reportData.Dependencies[1].Name}
+	for _, dependency := range []string{"github.com/google/uuid", "github.com/samber/lo"} {
+		if !slices.Contains(names, dependency) {
+			t.Fatalf("expected dependency %q in %#v", dependency, names)
+		}
+	}
+}
+
+func TestParseImportsSkipsStdlibAndLocal(t *testing.T) {
+	content := []byte("package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/demo/internal/foo\"\n\t\"github.com/google/uuid\"\n)\n")
+	imports, _ := parseImports(content, "main.go", moduleInfo{
+		ModulePath:           "example.com/demo",
+		LocalModulePaths:     []string{"example.com/demo"},
+		DeclaredDependencies: []string{"github.com/google/uuid"},
+	})
+	if len(imports) != 1 {
+		t.Fatalf("expected one external dependency import, got %d", len(imports))
+	}
+	if imports[0].Dependency != "github.com/google/uuid" {
+		t.Fatalf("unexpected dependency %q", imports[0].Dependency)
+	}
+}
+
+func TestAdapterDetectWithGoWorkRoots(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse (\n\t./services/api\n)\n")
+	writeFile(t, filepath.Join(repo, "services", "api", "go.mod"), "module example.com/api\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "services", "api", "main.go"), "package main\n\nfunc main() {}\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	expectedRoot := filepath.Join(repo, "services", "api")
+	if !slices.Contains(detection.Roots, expectedRoot) {
+		t.Fatalf("expected go.work root %q in %#v", expectedRoot, detection.Roots)
+	}
+}
+
+func TestAdapterDetectWithNoSignals(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "README.md"), "no go files here\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected no match, got %#v", detection)
+	}
+	if detection.Confidence != 0 {
+		t.Fatalf("expected zero confidence, got %d", detection.Confidence)
+	}
+}
+
+func TestAdapterAnalyseUndeclaredDependencySignals(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "main.go"), strings.Join([]string{
+		"package main",
+		"",
+		"import (",
+		"\t_ \"github.com/lib/pq\"",
+		"\t\"github.com/lib/pq\"",
+		")",
+		"",
+		"func main() { _ = pq.Error{} }",
+		"",
+	}, "\n"))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "github.com/lib/pq",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+
+	riskCodes := make([]string, 0, len(dep.RiskCues))
+	for _, cue := range dep.RiskCues {
+		riskCodes = append(riskCodes, cue.Code)
+	}
+	if !slices.Contains(riskCodes, "side-effect-import") {
+		t.Fatalf("expected side-effect-import risk cue, got %#v", riskCodes)
+	}
+	if !slices.Contains(riskCodes, "undeclared-module-path") {
+		t.Fatalf("expected undeclared-module-path risk cue, got %#v", riskCodes)
+	}
+
+	recCodes := make([]string, 0, len(dep.Recommendations))
+	for _, rec := range dep.Recommendations {
+		recCodes = append(recCodes, rec.Code)
+	}
+	if !slices.Contains(recCodes, "declare-go-module-requirement") {
+		t.Fatalf("expected declare-go-module-requirement recommendation, got %#v", recCodes)
+	}
+}
+
+func TestReplacementImportMapsToDependency(t *testing.T) {
+	modulePath, dependencies, replacements := parseGoMod([]byte(strings.Join([]string{
+		"module example.com/demo",
+		"",
+		"require example.com/original v1.0.0",
+		"replace example.com/original => github.com/fork/original v1.0.1",
+		"",
+	}, "\n")))
+	if modulePath != "example.com/demo" {
+		t.Fatalf("expected module path example.com/demo, got %q", modulePath)
+	}
+	if len(dependencies) != 1 || dependencies[0] != "example.com/original" {
+		t.Fatalf("unexpected dependencies: %#v", dependencies)
+	}
+
+	dependency := dependencyFromImport("github.com/fork/original/pkg", moduleInfo{
+		ModulePath:           modulePath,
+		LocalModulePaths:     []string{modulePath},
+		DeclaredDependencies: dependencies,
+		ReplacementImports:   replacements,
+	})
+	if dependency != "example.com/original" {
+		t.Fatalf("expected replacement mapping to example.com/original, got %q", dependency)
+	}
+}
+
+func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), strings.Join([]string{
+		"module example.com/demo",
+		"",
+		"require (",
+		"\tgithub.com/google/uuid v1.6.0",
+		"\tgithub.com/samber/lo v1.47.0",
+		")",
+		"",
+	}, "\n"))
+
+	writeFile(t, filepath.Join(repo, "main.go"), strings.Join([]string{
+		"package main",
+		"",
+		"import \"github.com/google/uuid\"",
+		"",
+		"func main() { _ = uuid.NewString() }",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "generated_lo.go"), strings.Join([]string{
+		"// Code generated by mockgen. DO NOT EDIT.",
+		"package main",
+		"",
+		"import \"github.com/samber/lo\"",
+		"",
+		"var _ = lo.Contains([]int{1,2}, 2)",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "tagged_lo.go"), strings.Join([]string{
+		"//go:build never",
+		"package main",
+		"",
+		"import \"github.com/samber/lo\"",
+		"",
+		"var _ = lo.Contains([]int{1,2}, 2)",
+		"",
+	}, "\n"))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     5,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	names := make([]string, 0, len(reportData.Dependencies))
+	for _, dep := range reportData.Dependencies {
+		names = append(names, dep.Name)
+	}
+	if !slices.Contains(names, "github.com/google/uuid") {
+		t.Fatalf("expected uuid dependency in %#v", names)
+	}
+	if slices.Contains(names, "github.com/samber/lo") {
+		t.Fatalf("did not expect lo dependency from skipped files in %#v", names)
+	}
+
+	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
+	if !strings.Contains(warningsText, "generated go file") {
+		t.Fatalf("expected generated-file warning, got %#v", reportData.Warnings)
+	}
+	if !strings.Contains(warningsText, "build constraints") {
+		t.Fatalf("expected build-constraint warning, got %#v", reportData.Warnings)
+	}
+}
+
+func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), strings.Join([]string{
+		"module example.com/root",
+		"",
+		"require github.com/google/uuid v1.6.0",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "main.go"), strings.Join([]string{
+		"package main",
+		"",
+		"import \"github.com/google/uuid\"",
+		"",
+		"func main() { _ = uuid.NewString() }",
+		"",
+	}, "\n"))
+
+	writeFile(t, filepath.Join(repo, "services", "api", "go.mod"), strings.Join([]string{
+		"module example.com/api",
+		"",
+		"require github.com/samber/lo v1.47.0",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "services", "api", "main.go"), strings.Join([]string{
+		"package main",
+		"",
+		"import \"github.com/samber/lo\"",
+		"",
+		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
+		"",
+	}, "\n"))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	names := make([]string, 0, len(reportData.Dependencies))
+	for _, dep := range reportData.Dependencies {
+		names = append(names, dep.Name)
+	}
+	if !slices.Contains(names, "github.com/google/uuid") {
+		t.Fatalf("expected root dependency uuid in %#v", names)
+	}
+	if slices.Contains(names, "github.com/samber/lo") {
+		t.Fatalf("did not expect nested module dependency lo in root scan %#v", names)
+	}
+
+	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
+	if !strings.Contains(warningsText, "nested module directorie") {
+		t.Fatalf("expected nested-module warning, got %#v", reportData.Warnings)
+	}
+}
+
+func TestBuildRequestedGoDependenciesNoInputWarning(t *testing.T) {
+	deps, warnings := buildRequestedGoDependencies(language.Request{}, scanResult{})
+	if len(deps) != 0 {
+		t.Fatalf("expected no deps, got %d", len(deps))
+	}
+	if len(warnings) == 0 || !strings.Contains(strings.ToLower(warnings[0]), "no dependency or top-n") {
+		t.Fatalf("expected no-input warning, got %#v", warnings)
+	}
+}
+
+func TestScanRepoInvalidRoot(t *testing.T) {
+	_, err := scanRepo(context.Background(), "", moduleInfo{})
+	if err == nil {
+		t.Fatalf("expected invalid root error")
+	}
+}
+
+func TestScanRepoCanceledContext(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nfunc main() {}\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := scanRepo(ctx, repo, moduleInfo{})
+	if err == nil {
+		t.Fatalf("expected canceled context error")
+	}
+}
+
+func TestScanRepoMissingPathError(t *testing.T) {
+	_, err := scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing"), moduleInfo{})
+	if err == nil {
+		t.Fatalf("expected scanRepo error for missing root path")
+	}
+}
+
+func TestLoadGoModuleInfoNoGoMod(t *testing.T) {
+	repo := t.TempDir()
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("load module info: %v", err)
+	}
+	if info.ModulePath != "" {
+		t.Fatalf("expected empty module path, got %q", info.ModulePath)
+	}
+	if len(info.DeclaredDependencies) != 0 {
+		t.Fatalf("expected no deps, got %#v", info.DeclaredDependencies)
+	}
+}
+
+func TestLoadGoModuleInfoReadError(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "go.mod"), 0o755); err != nil {
+		t.Fatalf("mkdir go.mod dir: %v", err)
+	}
+	_, err := loadGoModuleInfo(repo)
+	if err == nil {
+		t.Fatalf("expected read error when go.mod is a directory")
+	}
+}
+
+func TestLoadGoModuleInfoMissingPathError(t *testing.T) {
+	_, err := loadGoModuleInfo(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatalf("expected loadGoModuleInfo error for missing path")
+	}
+}
+
+func TestLoadGoWorkLocalModulesNoFile(t *testing.T) {
+	repo := t.TempDir()
+	mods, err := loadGoWorkLocalModules(repo)
+	if err != nil {
+		t.Fatalf("load go.work modules: %v", err)
+	}
+	if len(mods) != 0 {
+		t.Fatalf("expected no modules, got %#v", mods)
+	}
+}
+
+func TestLoadGoWorkLocalModulesReadError(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "go.work"), 0o755); err != nil {
+		t.Fatalf("mkdir go.work dir: %v", err)
+	}
+	_, err := loadGoWorkLocalModules(repo)
+	if err == nil {
+		t.Fatalf("expected read error when go.work is a directory")
+	}
+}
+
+func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.work"), strings.Join([]string{
+		"go 1.25",
+		"",
+		"use (",
+		"\t./svc/a",
+		"\t./svc/missing",
+		")",
+		"use ./svc/b",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "svc", "a", "go.mod"), "module example.com/a\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "svc", "b", "go.mod"), "module example.com/b\n\ngo 1.25\n")
+
+	mods, err := loadGoWorkLocalModules(repo)
+	if err != nil {
+		t.Fatalf("load go.work modules: %v", err)
+	}
+	if !slices.Contains(mods, "example.com/a") || !slices.Contains(mods, "example.com/b") {
+		t.Fatalf("expected workspace modules in %#v", mods)
+	}
+}
+
+func TestParseImportsParseError(t *testing.T) {
+	imports, metadata := parseImports([]byte("package main\nimport ("), "broken.go", moduleInfo{})
+	if len(imports) != 0 || len(metadata) != 0 {
+		t.Fatalf("expected no imports on parse failure, got %#v %#v", imports, metadata)
+	}
+}
+
+func TestTrimImportPathNil(t *testing.T) {
+	if got := trimImportPath(nil); got != "" {
+		t.Fatalf("expected empty import path for nil, got %q", got)
+	}
+}
+
+func TestApplyImportMetadataNilScanResult(t *testing.T) {
+	applyImportMetadata([]importMetadata{
+		{Dependency: "example.com/a", IsBlank: true, Undeclared: true},
+	}, nil)
+}
+
+func TestImportBindingIdentityBranches(t *testing.T) {
+	name, local, wildcard := importBindingIdentity("github.com/google/uuid", nil)
+	if name != "uuid" || local != "uuid" || wildcard {
+		t.Fatalf("unexpected default import identity %q %q %v", name, local, wildcard)
+	}
+	name, local, wildcard = importBindingIdentity("github.com/google/uuid", &ast.Ident{Name: "."})
+	if name != "uuid" || local != "" || !wildcard {
+		t.Fatalf("unexpected dot import identity %q %q %v", name, local, wildcard)
+	}
+	name, local, wildcard = importBindingIdentity("github.com/google/uuid", &ast.Ident{Name: "_"})
+	if name != "_" || local != "" || wildcard {
+		t.Fatalf("unexpected blank import identity %q %q %v", name, local, wildcard)
+	}
+}
+
+func TestBuildConstraintHelpers(t *testing.T) {
+	content := []byte(strings.Join([]string{
+		"//go:build " + runtime.GOOS,
+		"package main",
+		"",
+	}, "\n"))
+	if !matchesActiveBuild(content) {
+		t.Fatalf("expected go:build for current GOOS to match")
+	}
+
+	plusBuildOnly := []byte(strings.Join([]string{
+		"// +build " + runtime.GOOS,
+		"package main",
+		"",
+	}, "\n"))
+	if !matchesActiveBuild(plusBuildOnly) {
+		t.Fatalf("expected +build for current GOOS to match")
+	}
+
+	goBuild, plusBuild := extractBuildConstraintExpressions(plusBuildOnly)
+	if goBuild != nil {
+		t.Fatalf("expected nil go:build expr")
+	}
+	if len(plusBuild) == 0 {
+		t.Fatalf("expected plus-build expr")
+	}
+
+	if isActiveBuildTag("definitely-not-a-real-tag") {
+		t.Fatalf("expected unknown tag to be inactive")
+	}
+	if !isActiveBuildTag(runtime.GOARCH) {
+		t.Fatalf("expected current GOARCH to be active")
+	}
+	if parseIntDefault("123", 0) != 123 {
+		t.Fatalf("expected integer parse to work")
+	}
+	if parseIntDefault("abc", 9) != 9 {
+		t.Fatalf("expected fallback for invalid integer")
+	}
+	if minInt(3, 8) != 3 || minInt(8, 3) != 3 {
+		t.Fatalf("unexpected minInt")
+	}
+
+	// Malformed comments should parse as no-op branches.
+	if expr, kind := parseBuildConstraintComment("//go:build ("); expr != nil || kind != "go" {
+		t.Fatalf("unexpected malformed go:build parse result: %v %q", expr, kind)
+	}
+	if _, kind := parseBuildConstraintComment("// +build [invalid"); kind != "plus" {
+		t.Fatalf("unexpected malformed +build parse kind: %q", kind)
+	}
+	if expr, kind := parseBuildConstraintComment("// random"); expr != nil || kind != "" {
+		t.Fatalf("unexpected non-build comment parse result: %v %q", expr, kind)
+	}
+
+	if shouldStopBuildConstraintScan("package main") != true {
+		t.Fatalf("expected package line to stop scan")
+	}
+	if shouldStopBuildConstraintScan("var x = 1") != true {
+		t.Fatalf("expected non-comment line to stop scan")
+	}
+	if shouldStopBuildConstraintScan("// comment") != false {
+		t.Fatalf("expected comment line not to stop scan")
+	}
+
+	// Exercise unix/cgo/go1 paths.
+	if runtime.GOOS != "windows" && !isActiveBuildTag("unix") {
+		t.Fatalf("expected unix tag active on non-windows")
+	}
+	if runtime.GOOS == "windows" && isActiveBuildTag("unix") {
+		t.Fatalf("expected unix tag inactive on windows")
+	}
+	t.Setenv("CGO_ENABLED", "1")
+	if !isActiveBuildTag("cgo") {
+		t.Fatalf("expected cgo tag active when CGO_ENABLED=1")
+	}
+	if !isActiveBuildTag("go1.1") {
+		t.Fatalf("expected go1.1 tag active")
+	}
+}
+
+func TestBuildTagGoVersionHelper(t *testing.T) {
+	if !isSupportedGoReleaseTag("go1.1") {
+		t.Fatalf("expected old go1.x tag to be supported")
+	}
+}
+
+func TestGoModReplacementAndTokensEdgeCases(t *testing.T) {
+	replaceSet := make(map[string]string)
+	addGoModReplacement("invalid replacement line", replaceSet)
+	addGoModReplacement("example.com/left => ../local", replaceSet)
+	if len(replaceSet) != 0 {
+		t.Fatalf("expected local replacement target to be skipped, got %#v", replaceSet)
+	}
+
+	addGoModDependency("", nil)
+	addGoModReplacement("", nil)
+	addGoModReplacement("=> github.com/new/path", replaceSet)
+	addGoModReplacement("example.com/old =>", replaceSet)
+	if firstToken("   ") != "" {
+		t.Fatalf("expected empty token")
+	}
+	if !isLocalReplaceTarget("/absolute/path") {
+		t.Fatalf("expected absolute path to be local replace target")
+	}
+	if !isLocalReplaceTarget("C:\\\\tmp\\\\x") {
+		t.Fatalf("expected Windows-style path to be local replace target")
+	}
+	if isLocalReplaceTarget("github.com/user/repo") {
+		t.Fatalf("expected import path not to be local replace target")
+	}
+}
+
+func TestUseEntriesAndPathNormalization(t *testing.T) {
+	entries := parseGoWorkUseEntries([]byte(strings.Join([]string{
+		"use (",
+		"  ./services/api",
+		"  \"./services/api\"",
+		")",
+		"use ./services/worker",
+		"",
+	}, "\n")))
+	if len(entries) < 2 {
+		t.Fatalf("expected parsed entries, got %#v", entries)
+	}
+	if normalizeGoWorkPath("\"./x\"") != filepath.Clean("./x") {
+		t.Fatalf("unexpected normalized go.work path")
+	}
+}
+
+func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/root\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "sub", "go.mod"), "module example.com/sub\n\nrequire github.com/google/uuid v1.6.0\n")
+
+	dirs, err := nestedModuleDirs(repo)
+	if err != nil {
+		t.Fatalf("nested module dirs: %v", err)
+	}
+	if _, ok := dirs[filepath.Join(repo, "sub")]; !ok {
+		t.Fatalf("expected nested module dir to be discovered")
+	}
+
+	mods, deps, replacements, err := discoverNestedModules(repo)
+	if err != nil {
+		t.Fatalf("discover nested modules: %v", err)
+	}
+	if !slices.Contains(mods, "example.com/sub") {
+		t.Fatalf("expected nested module path in %#v", mods)
+	}
+	if !slices.Contains(deps, "github.com/google/uuid") {
+		t.Fatalf("expected nested dependency in %#v", deps)
+	}
+	if len(replacements) != 0 {
+		t.Fatalf("expected no replacements, got %#v", replacements)
+	}
+
+	if !shouldSkipDir("vendor") || shouldSkipDir("src") {
+		t.Fatalf("unexpected shouldSkipDir behavior")
+	}
+
+	if _, _, _, err := discoverNestedModules(filepath.Join(repo, "missing")); err == nil {
+		t.Fatalf("expected discoverNestedModules error for missing repo")
+	}
+}
+
+func TestGoRootAndDetectionHelpers(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse ./svc/a\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", "go.mod"), "module example.com/a\n\ngo 1.25\n")
+
+	roots := map[string]struct{}{}
+	if err := addGoWorkRoots(repo, roots); err != nil {
+		t.Fatalf("addGoWorkRoots: %v", err)
+	}
+	if _, ok := roots[filepath.Join(repo, "svc", "a")]; !ok {
+		t.Fatalf("expected go.work root in %#v", roots)
+	}
+
+	// no go.work should not error
+	if err := addGoWorkRoots(t.TempDir(), map[string]struct{}{}); err != nil {
+		t.Fatalf("unexpected addGoWorkRoots no-file error: %v", err)
+	}
+
+	// go.work as directory should error
+	repoErr := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoErr, "go.work"), 0o755); err != nil {
+		t.Fatalf("mkdir go.work dir: %v", err)
+	}
+	if err := addGoWorkRoots(repoErr, map[string]struct{}{}); err == nil {
+		t.Fatalf("expected addGoWorkRoots read error")
+	}
+
+	update := language.Detection{}
+	updateGoDetection(filepath.Join(repo, "main.go"), mustDirEntry(t, writeTempFile(t, repo, "main.go", "package main")), map[string]struct{}{}, &update)
+	if !update.Matched {
+		t.Fatalf("expected updateGoDetection to match")
+	}
+
+	// walk entry helpers
+	visited := 0
+	roots2 := map[string]struct{}{}
+	detection := language.Detection{}
+	if err := os.MkdirAll(filepath.Join(repo, "vendor"), 0o755); err != nil {
+		t.Fatalf("mkdir vendor: %v", err)
+	}
+	if err := walkGoDetectionEntry(filepath.Join(repo, "vendor"), mustDirEntry(t, filepath.Join(repo, "vendor")), roots2, &detection, &visited, 5); err != filepath.SkipDir {
+		t.Fatalf("expected skip dir from walk helper, got %v", err)
+	}
+	filePath := writeTempFile(t, repo, "tiny.go", "package main")
+	visited = 6
+	if err := walkGoDetectionEntry(filePath, mustDirEntry(t, filePath), roots2, &detection, &visited, 5); err != fs.SkipAll {
+		t.Fatalf("expected fs.SkipAll from max file bound, got %v", err)
+	}
+}
+
+func TestBuildRecommendationsMatrix(t *testing.T) {
+	none := buildRecommendations(reportDependency("dep", nil, nil), false)
+	if len(none) != 0 {
+		t.Fatalf("expected no recs, got %#v", none)
+	}
+	remove := buildRecommendations(reportDependency("dep", nil, []string{"x"}), false)
+	if len(remove) == 0 {
+		t.Fatalf("expected remove-unused recommendation")
+	}
+	wild := buildRecommendations(reportDependency("dep", []string{"*"}, nil), false)
+	if len(wild) == 0 {
+		t.Fatalf("expected dot-import recommendation")
+	}
+	decl := buildRecommendations(reportDependency("dep", nil, nil), true)
+	if len(decl) == 0 {
+		t.Fatalf("expected declare-go-module recommendation")
+	}
+}
+
+func reportDependency(name string, used []string, unused []string) report.DependencyReport {
+	dep := report.DependencyReport{Name: name}
+	for _, item := range used {
+		dep.UsedImports = append(dep.UsedImports, report.ImportUse{Name: item, Module: name})
+	}
+	for _, item := range unused {
+		dep.UnusedImports = append(dep.UnusedImports, report.ImportUse{Name: item, Module: name})
+	}
+	return dep
+}
+
+func mustDirEntry(t *testing.T, path string) fs.DirEntry {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return fs.FileInfoToDirEntry(info)
+}
+
+func writeTempFile(t *testing.T, root, name, content string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	writeFile(t, path, content)
+	return path
+}
+
+func TestUtilityCoverageBranches(t *testing.T) {
+	if stripInlineComment("value // comment") != "value " {
+		t.Fatalf("expected inline comment to be stripped")
+	}
+	if normalizeDependencyID(" Example.COM/X ") != "example.com/x" {
+		t.Fatalf("unexpected normalized dependency ID")
+	}
+
+	values := uniqueStrings([]string{"a", "a", " ", "b"})
+	if !slices.Equal(values, []string{"a", "b"}) {
+		t.Fatalf("unexpected unique values %#v", values)
+	}
+
+	if inferDependency("example.com/x/y/z") != "example.com/x/y" {
+		t.Fatalf("unexpected inferred dependency")
+	}
+	if inferDependency("stdlib/path") != "" {
+		t.Fatalf("expected no inferred dep for non-external path")
+	}
+
+	if !looksExternalImport("example.com/a") || looksExternalImport("internal/a") {
+		t.Fatalf("unexpected external import detection")
+	}
+	if !isLocalModuleImport("example.com/mod/x", []string{"example.com/mod"}) {
+		t.Fatalf("expected local module import match")
+	}
+	if longestDeclaredDependency("example.com/a/x", []string{"example.com/a", "example.com"}) != "example.com/a" {
+		t.Fatalf("expected longest declared dependency")
+	}
+	if longestReplacementDependency("example.com/a/x", map[string]string{"example.com/a": "example.com/original"}) != "example.com/original" {
+		t.Fatalf("expected longest replacement dependency")
+	}
+	if longestReplacementDependency("example.com/none/x", map[string]string{"example.com/a": "example.com/original"}) != "" {
+		t.Fatalf("expected no replacement dependency match")
+	}
+	if parseIntDefault("", 7) != 7 {
+		t.Fatalf("expected parseIntDefault empty fallback")
+	}
+}
+
+func TestHandleScanDirAndWarningHelpers(t *testing.T) {
+	repo := t.TempDir()
+	child := filepath.Join(repo, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	vendor := filepath.Join(repo, "vendor")
+	if err := os.MkdirAll(vendor, 0o755); err != nil {
+		t.Fatalf("mkdir vendor: %v", err)
+	}
+	info, err := os.Stat(child)
+	if err != nil {
+		t.Fatalf("stat child: %v", err)
+	}
+	entry := fs.FileInfoToDirEntry(info)
+
+	if err := handleScanDirEntry(repo, repo, entry, nil, nil); err != nil {
+		t.Fatalf("expected nil scan dir err for repo root, got %v", err)
+	}
+	vendorInfo, err := os.Stat(vendor)
+	if err != nil {
+		t.Fatalf("stat vendor: %v", err)
+	}
+	vendorEntry := fs.FileInfoToDirEntry(vendorInfo)
+	if err := handleScanDirEntry(vendor, repo, vendorEntry, nil, nil); err != filepath.SkipDir {
+		t.Fatalf("expected vendor skip dir, got %v", err)
+	}
+	nested := map[string]struct{}{child: {}}
+	result := newScanResult()
+	if err := handleScanDirEntry(child, repo, entry, nested, &result); err != filepath.SkipDir {
+		t.Fatalf("expected nested module skip, got %v", err)
+	}
+	if err := handleScanDirEntry(child, repo, entry, nested, nil); err != filepath.SkipDir {
+		t.Fatalf("expected nested module skip with nil result, got %v", err)
+	}
+
+	appendScanWarnings(nil, moduleInfo{})
+	appendSkipWarnings(nil)
+	appendUndeclaredDependencyWarnings(nil)
+
+	result.UndeclaredImportsByDependency["example.com/x"] = 2
+	appendUndeclaredDependencyWarnings(&result)
+	if len(result.Warnings) == 0 {
+		t.Fatalf("expected undeclared dependency warning")
+	}
+}
+
+func TestDetectWithConfidenceCapAndDefaultRepoPath(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse ./\n")
+	for i := 0; i < 30; i++ {
+		writeFile(t, filepath.Join(repo, "pkg", "f"+string(rune('a'+(i%26)))+".go"), "package pkg\n")
+	}
+
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldwd) }()
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), "")
+	if err != nil {
+		t.Fatalf("detect with empty repo path: %v", err)
+	}
+	if !detection.Matched {
+		t.Fatalf("expected detection to match")
+	}
+	if detection.Confidence > 95 {
+		t.Fatalf("expected confidence clamp <=95, got %d", detection.Confidence)
+	}
+}
+
+func TestScanGoSourceFileErrorAndSkipCounters(t *testing.T) {
+	repo := t.TempDir()
+	result := newScanResult()
+	err := scanGoSourceFile(repo, filepath.Join(repo, "missing.go"), moduleInfo{}, &result)
+	if err == nil {
+		t.Fatalf("expected read error for missing go file")
+	}
+
+	large := strings.Repeat("a", maxScannableGoFile+1)
+	writeFile(t, filepath.Join(repo, "large.go"), large)
+	if err := scanGoSourceFile(repo, filepath.Join(repo, "large.go"), moduleInfo{}, &result); err != nil {
+		t.Fatalf("scan large go file: %v", err)
+	}
+	if result.SkippedLargeFiles == 0 {
+		t.Fatalf("expected skipped large files increment")
+	}
+
+	// nil result should be safe through skip paths
+	if err := scanGoSourceFile(repo, filepath.Join(repo, "large.go"), moduleInfo{}, nil); err != nil {
+		t.Fatalf("scan large go file with nil result: %v", err)
+	}
+}
+
+func TestDiscoverNestedModulesContinueOnUnreadableGoMod(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/root\n")
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, "sub", "go.mod"), 0o755); err != nil {
+		t.Fatalf("mkdir sub/go.mod dir: %v", err)
+	}
+
+	mods, deps, replacements, err := discoverNestedModules(repo)
+	if err != nil {
+		t.Fatalf("discover nested modules: %v", err)
+	}
+	if len(mods) != 0 || len(deps) != 0 || len(replacements) != 0 {
+		t.Fatalf("expected unreadable nested module to be skipped, got %#v %#v %#v", mods, deps, replacements)
+	}
+}
+
+func TestMiscCoverageBranches(t *testing.T) {
+	// nil state and empty line branch
+	processGoModLine("", nil)
+
+	if normalizeGoWorkPath("   ") != "" {
+		t.Fatalf("expected empty normalized go.work path")
+	}
+	if isLocalModuleImport("example.com/x", []string{""}) {
+		t.Fatalf("expected empty local module path to be ignored")
+	}
+	if dependencyFromImport("C", moduleInfo{}) != "" {
+		t.Fatalf("expected cgo import to be ignored")
+	}
+	if _, warnings := buildDependencyReport("example.com/none", newScanResult()); len(warnings) == 0 {
+		t.Fatalf("expected warning when no imports found")
+	}
+	if isSupportedGoReleaseTag("go1.999") {
+		t.Fatalf("expected future go version tag to be unsupported")
+	}
+	if !isSupportedGoReleaseTag("go1.bad") {
+		t.Fatalf("expected malformed go version tag to follow fallback behavior")
+	}
+	if matchesActiveBuild([]byte("// +build definitely_not_active\npackage main\n")) {
+		t.Fatalf("expected inactive plus-build expression to evaluate false")
+	}
+
+	applyImportMetadata([]importMetadata{{Dependency: ""}}, &scanResult{
+		BlankImportsByDependency:      map[string]int{},
+		UndeclaredImportsByDependency: map[string]int{},
+	})
+	addGoModDependency("   ", map[string]struct{}{})
+	processGoModLine("module example.com/demo", nil)
+	processGoModLine("", &goModParseState{depSet: map[string]struct{}{}, replaceSet: map[string]string{}})
+	if isLocalReplaceTarget("") {
+		t.Fatalf("expected empty path not to be local replacement")
+	}
+}
+
+func TestLoadGoModFromDirError(t *testing.T) {
+	_, _, _, err := loadGoModFromDir(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatalf("expected loadGoModFromDir error for missing file")
+	}
+}
+
+func TestParseGoModReplaceControlBranches(t *testing.T) {
+	state := &goModParseState{}
+	if parseGoModReplaceBlockControl("replace (", state) != true || !state.inReplaceBlock {
+		t.Fatalf("expected start replace block")
+	}
+	if parseGoModReplaceBlockControl(")", state) != true || state.inReplaceBlock {
+		t.Fatalf("expected close replace block")
+	}
+	if parseGoModReplaceBlockControl("not replace", state) {
+		t.Fatalf("expected no replace block control")
+	}
+}
+
+func TestProcessGoModLineInBlockBranches(t *testing.T) {
+	state := &goModParseState{
+		depSet:         map[string]struct{}{},
+		replaceSet:     map[string]string{},
+		inRequireBlock: true,
+	}
+	processGoModLine("github.com/google/uuid v1.6.0", state)
+	if _, ok := state.depSet["github.com/google/uuid"]; !ok {
+		t.Fatalf("expected dependency from require block")
+	}
+
+	state.inRequireBlock = false
+	state.inReplaceBlock = true
+	processGoModLine("example.com/original => github.com/fork/original v1.0.0", state)
+	if got := state.replaceSet["github.com/fork/original"]; got != "example.com/original" {
+		t.Fatalf("expected replacement mapping from replace block, got %q", got)
+	}
+}
+
+func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), strings.Join([]string{
+		"module example.com/root",
+		"",
+		"replace example.com/original => github.com/shared/fork v1.0.0",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "sub", "go.mod"), strings.Join([]string{
+		"module example.com/sub",
+		"",
+		"replace example.com/other => github.com/shared/fork v1.1.0",
+		"",
+	}, "\n"))
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	// root replacement should win when nested module has same replacement import target
+	if got := info.ReplacementImports["github.com/shared/fork"]; got != "example.com/original" {
+		t.Fatalf("expected root replacement to win, got %q", got)
+	}
+}
+
+func writeFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
