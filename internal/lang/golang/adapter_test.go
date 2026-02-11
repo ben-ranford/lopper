@@ -26,12 +26,15 @@ const (
 	moduleDemo          = "example.com/demo"
 	moduleDemoLine      = "module example.com/demo"
 	moduleOriginal      = "example.com/original"
+	requirePrefix       = "require "
+	versionV160         = " v1.6.0"
+	go125Block          = "\n\ngo 1.25\n"
 	importLoLine        = "import \"github.com/samber/lo\""
 	packageMainLine     = "package main"
 	exampleModuleA      = "example.com/a"
 	exampleModuleX      = "example.com/x"
-	goModDemo           = moduleDemoLine + "\n\ngo 1.25\n"
-	goModDemoWithUUID   = moduleDemoLine + "\n\nrequire " + depUUID + " v1.6.0\n"
+	goModDemo           = moduleDemoLine + go125Block
+	goModDemoWithUUID   = moduleDemoLine + "\n\n" + requirePrefix + depUUID + versionV160 + "\n"
 	mainNoopProgram     = packageMainLine + "\n\nfunc main() {}\n"
 	mainUUIDNoopProgram = packageMainLine + "\n\nimport \"" + depUUID + "\"\n\nfunc main() { _ = uuid.NewString() }\n"
 )
@@ -165,7 +168,7 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoGoMod(t, repo, moduleDemoLine+"\n\nrequire (\n\t"+depUUID+" v1.6.0\n\t"+depLo+" v1.47.0\n)\n")
+	writeRepoGoMod(t, repo, moduleDemoLine+"\n\n"+requirePrefix+"(\n\t"+depUUID+versionV160+"\n\t"+depLo+" v1.47.0\n)\n")
 	writeRepoMain(t, repo, packageMainLine+"\n\nimport (\n\tu \""+depUUID+"\"\n\t\""+depLo+"\"\n)\n\nfunc main() {\n\t_ = u.NewString()\n\t_ = lo.Contains([]int{1,2}, 2)\n}\n")
 
 	reportData := analyseReport(t, language.Request{
@@ -199,7 +202,7 @@ func TestParseImportsSkipsStdlibAndLocal(t *testing.T) {
 func TestAdapterDetectWithGoWorkRoots(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse (\n\t./services/api\n)\n")
-	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), "module example.com/api\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), "module example.com/api"+go125Block)
 	writeFile(t, filepath.Join(repo, "services", "api", fileMainGo), mainNoopProgram)
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -279,7 +282,7 @@ func TestReplacementImportMapsToDependency(t *testing.T) {
 	modulePath, dependencies, replacements := parseGoMod([]byte(strings.Join([]string{
 		moduleDemoLine,
 		"",
-		"require " + moduleOriginal + " v1.0.0",
+		requirePrefix + moduleOriginal + " v1.0.0",
 		"replace " + moduleOriginal + " => github.com/fork/original v1.0.1",
 		"",
 	}, "\n")))
@@ -306,8 +309,8 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 	writeRepoGoModLines(t, repo,
 		moduleDemoLine,
 		"",
-		"require (",
-		"\t"+depUUID+" v1.6.0",
+		requirePrefix+"(",
+		"\t"+depUUID+versionV160,
 		"\t"+depLo+" v1.47.0",
 		")",
 		"",
@@ -366,7 +369,7 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	writeRepoGoModLines(t, repo,
 		"module example.com/root",
 		"",
-		"require "+depUUID+" v1.6.0",
+		requirePrefix+depUUID+versionV160,
 		"",
 	)
 	writeRepoMainLines(t, repo,
@@ -512,8 +515,8 @@ func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
 		"use ./svc/b",
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+"\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo, "svc", "b", fileGoMod), "module example.com/b\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+go125Block)
+	writeFile(t, filepath.Join(repo, "svc", "b", fileGoMod), "module example.com/b"+go125Block)
 
 	mods, err := loadGoWorkLocalModules(repo)
 	if err != nil {
@@ -1126,7 +1129,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 	result := newScanResult()
-	if err := scanGoSourceFile(sourceRepo, sourceSymlink, moduleInfo{}, &result); err == nil {
+	if scanGoSourceFile(sourceRepo, sourceSymlink, moduleInfo{}, &result) == nil {
 		t.Fatalf("expected guarded source read to fail for escaping symlink")
 	}
 }
