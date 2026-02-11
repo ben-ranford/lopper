@@ -11,10 +11,19 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 )
 
+const (
+	testIndexJS           = "index.js"
+	testPackageJSONName   = "package.json"
+	testAnalyseErrFmt     = "analyse: %v"
+	testDetectErrFmt      = "detect: %v"
+	testExpectedOneDepFmt = "expected 1 dependency report, got %d"
+	testPackageJSONMain   = "{\n  \"main\": \"index.js\"\n}\n"
+)
+
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { map, filter as f } from \"lodash\"\nmap([1], (x) => x)\nf([1], Boolean)\n"
-	path := filepath.Join(repo, "index.js")
+	path := filepath.Join(repo, testIndexJS)
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -23,12 +32,12 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	packageJSON := "{\n  \"main\": \"index.js\"\n}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
+	packageJSON := testPackageJSONMain
+	if err := os.WriteFile(filepath.Join(depDir, testPackageJSONName), []byte(packageJSON), 0o644); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
 	entrypoint := "export function map() {}\nexport function filter() {}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "index.js"), []byte(entrypoint), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644); err != nil {
 		t.Fatalf("write entrypoint: %v", err)
 	}
 
@@ -38,10 +47,10 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 		Dependency: "lodash",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(report.Dependencies) != 1 {
-		t.Fatalf("expected 1 dependency report, got %d", len(report.Dependencies))
+		t.Fatalf(testExpectedOneDepFmt, len(report.Dependencies))
 	}
 
 	dep := report.Dependencies[0]
@@ -63,7 +72,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { used } from \"alpha\"\nimport { unused } from \"beta\"\nused()\n"
-	path := filepath.Join(repo, "index.js")
+	path := filepath.Join(repo, testIndexJS)
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -81,10 +90,10 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 		TopN:     1,
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(report.Dependencies) != 1 {
-		t.Fatalf("expected 1 dependency report, got %d", len(report.Dependencies))
+		t.Fatalf(testExpectedOneDepFmt, len(report.Dependencies))
 	}
 	if report.Dependencies[0].Name != "beta" {
 		t.Fatalf("expected top dependency to be beta, got %q", report.Dependencies[0].Name)
@@ -93,13 +102,13 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 
 func TestAdapterDetectWithPackageJSON(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte("{\"name\":\"fixture\"}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testPackageJSONName), []byte("{\"name\":\"fixture\"}\n"), 0o644); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
 
 	ok, err := NewAdapter().Detect(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(testDetectErrFmt, err)
 	}
 	if !ok {
 		t.Fatalf("expected detect=true when package.json exists")
@@ -108,13 +117,13 @@ func TestAdapterDetectWithPackageJSON(t *testing.T) {
 
 func TestAdapterDetectWithJSSource(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte("export const x = 1\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte("export const x = 1\n"), 0o644); err != nil {
 		t.Fatalf("write index.js: %v", err)
 	}
 
 	ok, err := NewAdapter().Detect(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(testDetectErrFmt, err)
 	}
 	if !ok {
 		t.Fatalf("expected detect=true when JS sources exist")
@@ -129,7 +138,7 @@ func TestAdapterDetectNoJSSignals(t *testing.T) {
 
 	ok, err := NewAdapter().Detect(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(testDetectErrFmt, err)
 	}
 	if ok {
 		t.Fatalf("expected detect=false when no JS/TS signals exist")
@@ -139,7 +148,7 @@ func TestAdapterDetectNoJSSignals(t *testing.T) {
 func TestAdapterAnalyseRiskCues(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { run } from \"risky\"\nrun()\n"
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
@@ -148,11 +157,11 @@ func TestAdapterAnalyseRiskCues(t *testing.T) {
 		t.Fatalf("mkdir risky: %v", err)
 	}
 	riskyPkg := "{\n  \"main\": \"index.js\",\n  \"gypfile\": true,\n  \"dependencies\": {\"deep-a\":\"1.0.0\"}\n}\n"
-	if err := os.WriteFile(filepath.Join(riskyRoot, "package.json"), []byte(riskyPkg), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(riskyRoot, testPackageJSONName), []byte(riskyPkg), 0o644); err != nil {
 		t.Fatalf("write risky package: %v", err)
 	}
 	riskyEntry := "const target = process.env.DEP_NAME\nmodule.exports = require(target)\nexports.run = () => 1\n"
-	if err := os.WriteFile(filepath.Join(riskyRoot, "index.js"), []byte(riskyEntry), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(riskyRoot, testIndexJS), []byte(riskyEntry), 0o644); err != nil {
 		t.Fatalf("write risky entrypoint: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(riskyRoot, "binding.gyp"), []byte("{ }\n"), 0o644); err != nil {
@@ -168,10 +177,10 @@ func TestAdapterAnalyseRiskCues(t *testing.T) {
 		Dependency: "risky",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(report.Dependencies) != 1 {
-		t.Fatalf("expected 1 dependency report, got %d", len(report.Dependencies))
+		t.Fatalf(testExpectedOneDepFmt, len(report.Dependencies))
 	}
 
 	codes := make([]string, 0, len(report.Dependencies[0].RiskCues))
@@ -188,7 +197,7 @@ func TestAdapterAnalyseRiskCues(t *testing.T) {
 func TestAdapterAnalyseRecommendations(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
@@ -196,8 +205,8 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 	if err := os.MkdirAll(lodashRoot, 0o755); err != nil {
 		t.Fatalf("mkdir lodash: %v", err)
 	}
-	pkg := "{\n  \"main\": \"index.js\"\n}\n"
-	if err := os.WriteFile(filepath.Join(lodashRoot, "package.json"), []byte(pkg), 0o644); err != nil {
+	pkg := testPackageJSONMain
+	if err := os.WriteFile(filepath.Join(lodashRoot, testPackageJSONName), []byte(pkg), 0o644); err != nil {
 		t.Fatalf("write package: %v", err)
 	}
 	entry := strings.Join([]string{
@@ -208,7 +217,7 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 		"export function uniq() {}",
 		"",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(lodashRoot, "index.js"), []byte(entry), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(lodashRoot, testIndexJS), []byte(entry), 0o644); err != nil {
 		t.Fatalf("write entrypoint: %v", err)
 	}
 
@@ -217,7 +226,7 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 		Dependency: "lodash",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	recs := report.Dependencies[0].Recommendations
 	codes := make([]string, 0, len(recs))
@@ -246,11 +255,11 @@ func writeDependency(repo string, name string, entrypoint string) error {
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
 		return err
 	}
-	packageJSON := "{\n  \"main\": \"index.js\"\n}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
+	packageJSON := testPackageJSONMain
+	if err := os.WriteFile(filepath.Join(depDir, testPackageJSONName), []byte(packageJSON), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(depDir, "index.js"), []byte(entrypoint), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644); err != nil {
 		return err
 	}
 	return nil
@@ -261,10 +270,10 @@ func mustWritePackage(t *testing.T, root string, pkgJSON string) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", root, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(pkgJSON), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, testPackageJSONName), []byte(pkgJSON), 0o644); err != nil {
 		t.Fatalf("write %s package.json: %v", root, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "index.js"), []byte("module.exports = {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, testIndexJS), []byte("module.exports = {}\n"), 0o644); err != nil {
 		t.Fatalf("write %s index.js: %v", root, err)
 	}
 }

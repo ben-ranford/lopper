@@ -18,6 +18,8 @@ type Detail struct {
 	Language  string
 }
 
+const noneLabel = "  (none)"
+
 func NewDetail(out io.Writer, analyzer analysis.Analyzer, formatter report.Formatter, repoPath string, language string) *Detail {
 	if language == "" {
 		language = "auto"
@@ -51,18 +53,18 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return err
 	}
 	if len(reportData.Dependencies) == 0 {
-		fmt.Fprintf(d.Out, "No data for dependency %q\n", dependency)
+		_, _ = fmt.Fprintf(d.Out, "No data for dependency %q\n", dependency)
 		return nil
 	}
 
 	dep := reportData.Dependencies[0]
-	fmt.Fprintf(d.Out, "Dependency detail: %s\n", dep.Name)
+	_, _ = fmt.Fprintf(d.Out, "Dependency detail: %s\n", dep.Name)
 	if dep.Language != "" {
-		fmt.Fprintf(d.Out, "Language: %s\n", dep.Language)
+		_, _ = fmt.Fprintf(d.Out, "Language: %s\n", dep.Language)
 	}
-	fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
-	fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
-	fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
+	_, _ = fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
+	_, _ = fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
+	_, _ = fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
 	printRuntimeUsage(d.Out, dep.RuntimeUsage)
 	printRiskCues(d.Out, dep.RiskCues)
 	printRecommendations(d.Out, dep.Recommendations)
@@ -72,9 +74,9 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	printExportsList(d.Out, "Unused exports", dep.UnusedExports)
 
 	if len(reportData.Warnings) > 0 {
-		fmt.Fprintln(d.Out, "Warnings:")
+		_, _ = fmt.Fprintln(d.Out, "Warnings:")
 		for _, warning := range reportData.Warnings {
-			fmt.Fprintf(d.Out, "- %s\n", warning)
+			_, _ = fmt.Fprintf(d.Out, "- %s\n", warning)
 		}
 	}
 
@@ -82,9 +84,9 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 }
 
 func printImportList(out io.Writer, title string, imports []report.ImportUse) {
-	fmt.Fprintf(out, "%s (%d)\n", title, len(imports))
+	_, _ = fmt.Fprintf(out, "%s (%d)\n", title, len(imports))
 	if len(imports) == 0 {
-		fmt.Fprintln(out, "  (none)")
+		_, _ = fmt.Fprintln(out, noneLabel)
 		return
 	}
 
@@ -93,15 +95,15 @@ func printImportList(out io.Writer, title string, imports []report.ImportUse) {
 		if len(imp.Locations) > 0 {
 			locationHint = fmt.Sprintf(" (%s:%d)", imp.Locations[0].File, imp.Locations[0].Line)
 		}
-		fmt.Fprintf(out, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint)
+		_, _ = fmt.Fprintf(out, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint)
 	}
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "")
 }
 
 func printExportsList(out io.Writer, title string, exports []report.SymbolRef) {
-	fmt.Fprintf(out, "%s (%d)\n", title, len(exports))
+	_, _ = fmt.Fprintf(out, "%s (%d)\n", title, len(exports))
 	if len(exports) == 0 {
-		fmt.Fprintln(out, "  (none)")
+		_, _ = fmt.Fprintln(out, noneLabel)
 		return
 	}
 
@@ -110,54 +112,54 @@ func printExportsList(out io.Writer, title string, exports []report.SymbolRef) {
 		if module == "" {
 			module = "(unknown)"
 		}
-		fmt.Fprintf(out, "  - %s (%s)\n", ref.Name, module)
+		_, _ = fmt.Fprintf(out, "  - %s (%s)\n", ref.Name, module)
 	}
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "")
 }
 
 func printRiskCues(out io.Writer, cues []report.RiskCue) {
-	fmt.Fprintf(out, "Risk cues (%d)\n", len(cues))
+	_, _ = fmt.Fprintf(out, "Risk cues (%d)\n", len(cues))
 	if len(cues) == 0 {
-		fmt.Fprintln(out, "  (none)")
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, noneLabel)
+		_, _ = fmt.Fprintln(out, "")
 		return
 	}
 
 	for _, cue := range cues {
-		fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
+		_, _ = fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
 	}
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "")
 }
 
 func printRecommendations(out io.Writer, recommendations []report.Recommendation) {
-	fmt.Fprintf(out, "Recommendations (%d)\n", len(recommendations))
+	_, _ = fmt.Fprintf(out, "Recommendations (%d)\n", len(recommendations))
 	if len(recommendations) == 0 {
-		fmt.Fprintln(out, "  (none)")
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, noneLabel)
+		_, _ = fmt.Fprintln(out, "")
 		return
 	}
 
 	for _, recommendation := range recommendations {
-		fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(recommendation.Priority), recommendation.Code, recommendation.Message)
+		_, _ = fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(recommendation.Priority), recommendation.Code, recommendation.Message)
 		if recommendation.Rationale != "" {
-			fmt.Fprintf(out, "    rationale: %s\n", recommendation.Rationale)
+			_, _ = fmt.Fprintf(out, "    rationale: %s\n", recommendation.Rationale)
 		}
 	}
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "")
 }
 
 func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
-	fmt.Fprintln(out, "Runtime usage")
+	_, _ = fmt.Fprintln(out, "Runtime usage")
 	if usage == nil {
-		fmt.Fprintln(out, "  (none)")
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, noneLabel)
+		_, _ = fmt.Fprintln(out, "")
 		return
 	}
-	fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
+	_, _ = fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
 	if usage.RuntimeOnly {
-		fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
+		_, _ = fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
 	}
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "")
 }
 
 func isDetailCommand(input string) (string, bool) {

@@ -10,9 +10,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 )
 
+const testMainPy = "main.py"
+
 func TestAdapterDetectWithPythonSource(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "main.py"), []byte("import requests\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testMainPy), []byte("import requests\n"), 0o644); err != nil {
 		t.Fatalf("write main.py: %v", err)
 	}
 
@@ -31,7 +33,7 @@ func TestAdapterDetectWithPythonSource(t *testing.T) {
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nfrom numpy import array, mean\narray([1])\nrequests.get('x')\n"
-	if err := os.WriteFile(filepath.Join(repo, "main.py"), []byte(source), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testMainPy), []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
@@ -58,7 +60,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nimport numpy as np\nnp.array([1])\n"
-	if err := os.WriteFile(filepath.Join(repo, "main.py"), []byte(source), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testMainPy), []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 

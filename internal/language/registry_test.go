@@ -7,6 +7,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	registerJSErrFmt     = "register js-ts: %v"
+	registerPythonErrFmt = "register python: %v"
+)
+
 type testAdapter struct {
 	id        string
 	aliases   []string
@@ -36,10 +41,10 @@ func (a testAdapter) Analyse(ctx context.Context, req Request) (report.Report, e
 func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
-		t.Fatalf("register js-ts: %v", err)
+		t.Fatalf(registerJSErrFmt, err)
 	}
 	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 85}}); err != nil {
-		t.Fatalf("register python: %v", err)
+		t.Fatalf(registerPythonErrFmt, err)
 	}
 
 	candidates, err := registry.Resolve(context.Background(), ".", Auto)
@@ -57,10 +62,10 @@ func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
 func TestResolveAllReturnsMatches(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
-		t.Fatalf("register js-ts: %v", err)
+		t.Fatalf(registerJSErrFmt, err)
 	}
 	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: false, Confidence: 0}}); err != nil {
-		t.Fatalf("register python: %v", err)
+		t.Fatalf(registerPythonErrFmt, err)
 	}
 
 	candidates, err := registry.Resolve(context.Background(), ".", All)
@@ -78,10 +83,10 @@ func TestResolveAllReturnsMatches(t *testing.T) {
 func TestResolveAutoTieReturnsError(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 80}}); err != nil {
-		t.Fatalf("register js-ts: %v", err)
+		t.Fatalf(registerJSErrFmt, err)
 	}
 	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 80}}); err != nil {
-		t.Fatalf("register python: %v", err)
+		t.Fatalf(registerPythonErrFmt, err)
 	}
 
 	_, err := registry.Resolve(context.Background(), ".", Auto)

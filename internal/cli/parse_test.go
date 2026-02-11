@@ -7,23 +7,29 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	unexpectedErrFmt = "unexpected error: %v"
+	modeMismatchFmt  = "expected mode %q, got %q"
+	languageFlagName = "--language"
+)
+
 func TestParseArgsDefault(t *testing.T) {
 	req, err := ParseArgs(nil)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Mode != app.ModeTUI {
-		t.Fatalf("expected mode %q, got %q", app.ModeTUI, req.Mode)
+		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
 	}
 }
 
 func TestParseArgsAnalyseDependency(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Mode != app.ModeAnalyse {
-		t.Fatalf("expected mode %q, got %q", app.ModeAnalyse, req.Mode)
+		t.Fatalf(modeMismatchFmt, app.ModeAnalyse, req.Mode)
 	}
 	if req.Analyse.Dependency != "lodash" {
 		t.Fatalf("expected dependency lodash, got %q", req.Analyse.Dependency)
@@ -39,7 +45,7 @@ func TestParseArgsAnalyseDependency(t *testing.T) {
 func TestParseArgsAnalyseTop(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", "json"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Analyse.TopN != 5 {
 		t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
@@ -50,9 +56,9 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLanguage(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", "--language", "js-ts"})
+	req, err := ParseArgs([]string{"analyse", "lodash", languageFlagName, "js-ts"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Analyse.Language != "js-ts" {
 		t.Fatalf("expected language js-ts, got %q", req.Analyse.Language)
@@ -60,9 +66,9 @@ func TestParseArgsAnalyseLanguage(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLanguageAll(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "10", "--language", "all"})
+	req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, "all"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Analyse.Language != "all" {
 		t.Fatalf("expected language all, got %q", req.Analyse.Language)
@@ -70,9 +76,9 @@ func TestParseArgsAnalyseLanguageAll(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLanguageJVM(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "10", "--language", "jvm"})
+	req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, "jvm"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Analyse.Language != "jvm" {
 		t.Fatalf("expected language jvm, got %q", req.Analyse.Language)
@@ -82,7 +88,7 @@ func TestParseArgsAnalyseLanguageJVM(t *testing.T) {
 func TestParseArgsAnalyseBaseline(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", "--baseline", "baseline.json"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Analyse.BaselinePath != "baseline.json" {
 		t.Fatalf("expected baseline path baseline.json, got %q", req.Analyse.BaselinePath)
@@ -92,7 +98,7 @@ func TestParseArgsAnalyseBaseline(t *testing.T) {
 func TestParseArgsAnalyseRuntimeTrace(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", "--runtime-trace", "trace.ndjson"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Analyse.RuntimeTracePath != "trace.ndjson" {
 		t.Fatalf("expected runtime trace path trace.ndjson, got %q", req.Analyse.RuntimeTracePath)
@@ -102,10 +108,10 @@ func TestParseArgsAnalyseRuntimeTrace(t *testing.T) {
 func TestParseArgsTUIFlags(t *testing.T) {
 	req, err := ParseArgs([]string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if req.Mode != app.ModeTUI {
-		t.Fatalf("expected mode %q, got %q", app.ModeTUI, req.Mode)
+		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
 	}
 	if req.TUI.TopN != 15 {
 		t.Fatalf("expected top 15, got %d", req.TUI.TopN)

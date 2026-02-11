@@ -22,11 +22,12 @@ type Trace struct {
 }
 
 func Load(path string) (Trace, error) {
+	// #nosec G304 -- caller intentionally selects the runtime trace file path.
 	file, err := os.Open(path)
 	if err != nil {
 		return Trace{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	trace := Trace{DependencyLoads: make(map[string]int)}
 	scanner := bufio.NewScanner(file)
