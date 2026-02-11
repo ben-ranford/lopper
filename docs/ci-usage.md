@@ -29,7 +29,7 @@ jobs:
 
 ## Make targets used by CI
 
-- `make build`: build local executable at `bin/surfarea`
+- `make build`: build local executable at `bin/lopper`
 - `make lint`: run `golangci-lint`
 - `make format-check`: fail if `gofmt` changes are needed
 - `make ci`: `format-check + lint + test + build`

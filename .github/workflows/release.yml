@@ -172,7 +172,7 @@ jobs:
       - name: Build Darwin release artifact (act mock)
         run: |
           mkdir -p dist
-          mock_dir="dist/surfarea_${{ needs.prepare.outputs.tag }}_darwin_amd64"
+          mock_dir="dist/lopper_${{ needs.prepare.outputs.tag }}_darwin_amd64"
           mkdir -p "$mock_dir"
           cp README.md "$mock_dir/README.md"
           tar -czf "${mock_dir}.tar.gz" -C dist "$(basename "$mock_dir")"

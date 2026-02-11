@@ -11,7 +11,7 @@ recommendations across supported languages.
 - JSON and table output formats
 - Optional runtime trace annotations for JS/TS dependency loads
 - Baseline comparison and CI-friendly waste increase gating
-- Interactive terminal summary/detail view (`surfarea` / `surfarea tui`)
+- Interactive terminal summary/detail view (`lopper` / `lopper tui`)
 
 ## Supported language adapters
 
@@ -30,31 +30,31 @@ Language selection modes:
 Run from source:
 
 ```bash
-go run ./cmd/surfarea --help
+go run ./cmd/lopper --help
 ```
 
 Analyze one dependency:
 
 ```bash
-go run ./cmd/surfarea analyse lodash --repo . --language js-ts
+go run ./cmd/lopper analyse lodash --repo . --language js-ts
 ```
 
 Rank dependencies:
 
 ```bash
-go run ./cmd/surfarea analyse --top 20 --repo . --language all --format table
+go run ./cmd/lopper analyse --top 20 --repo . --language all --format table
 ```
 
 Emit JSON report:
 
 ```bash
-go run ./cmd/surfarea analyse --top 20 --repo . --language all --format json
+go run ./cmd/lopper analyse --top 20 --repo . --language all --format json
 ```
 
 Launch TUI:
 
 ```bash
-go run ./cmd/surfarea tui --repo . --language all
+go run ./cmd/lopper tui --repo . --language all
 ```
 
 ## Runtime trace annotations (JS/TS)
@@ -70,7 +70,7 @@ npm test
 Use trace in analysis:
 
 ```bash
-go run ./cmd/surfarea analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lopper-runtime.ndjson
+go run ./cmd/lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lopper-runtime.ndjson
 ```
 
 ## Development

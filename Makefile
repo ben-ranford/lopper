@@ -1,7 +1,7 @@
 .PHONY: format fmt format-check lint test build ci release clean toolchain-check toolchain-install-macos
 
-BINARY_NAME ?= surfarea
-CMD_PATH ?= ./cmd/surfarea
+BINARY_NAME ?= lopper
+CMD_PATH ?= ./cmd/lopper
 BIN_DIR ?= bin
 DIST_DIR ?= dist
 VERSION ?= dev

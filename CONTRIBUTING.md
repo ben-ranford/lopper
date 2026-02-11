@@ -45,11 +45,10 @@ Please include reproduction steps and environment details for bugs.
 
 ## Project structure (high level)
 
-- `cmd/surfarea`: CLI entrypoint
+- `cmd/lopper`: CLI entrypoint
 - `internal/cli`: argument parsing and CLI shell
 - `internal/analysis`: adapter orchestration and report merge
 - `internal/lang/*`: language adapters
 - `internal/report`: report model, formatting, baseline math
 - `internal/ui`: TUI summary/detail
 - `internal/runtime`: runtime trace parsing and annotation
-
