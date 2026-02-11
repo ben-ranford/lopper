@@ -8,56 +8,58 @@ package js
 // and subpath exports like 'fs/promises').
 //
 // To update this list, run:
-//   node -p "[...require('module').builtinModules].filter(m => !m.startsWith('_') && !m.includes('/')).sort().join('\n')"
+//
+//	node -p "[...require('module').builtinModules].filter(m => !m.startsWith('_') && !m.includes('/')).sort().join('\n')"
 //
 // Or programmatically in Node.js v16+:
-//   const builtins = require('module').builtinModules
-//     .filter(m => !m.startsWith('_') && !m.includes('/') && !m.startsWith('node:'))
+//
+//	const builtins = require('module').builtinModules
+//	  .filter(m => !m.startsWith('_') && !m.includes('/') && !m.startsWith('node:'))
 //
 // Last updated: 2026-02-11 (Node.js v24.x)
 var nodeBuiltinModules = map[string]bool{
-	"assert":             true,
-	"async_hooks":        true,
-	"buffer":             true,
-	"child_process":      true,
-	"cluster":            true,
-	"console":            true,
-	"constants":          true,
-	"crypto":             true,
-	"dgram":              true,
+	"assert":              true,
+	"async_hooks":         true,
+	"buffer":              true,
+	"child_process":       true,
+	"cluster":             true,
+	"console":             true,
+	"constants":           true,
+	"crypto":              true,
+	"dgram":               true,
 	"diagnostics_channel": true,
-	"dns":                true,
-	"domain":             true,
-	"events":             true,
-	"fs":                 true,
-	"http":               true,
-	"http2":              true,
-	"https":              true,
-	"inspector":          true,
-	"module":             true,
-	"net":                true,
-	"os":                 true,
-	"path":               true,
-	"perf_hooks":         true,
-	"process":            true,
-	"punycode":           true,
-	"querystring":        true,
-	"readline":           true,
-	"repl":               true,
-	"stream":             true,
-	"string_decoder":     true,
-	"sys":                true,
-	"timers":             true,
-	"tls":                true,
-	"trace_events":       true,
-	"tty":                true,
-	"url":                true,
-	"util":               true,
-	"v8":                 true,
-	"vm":                 true,
-	"wasi":               true,
-	"worker_threads":     true,
-	"zlib":               true,
+	"dns":                 true,
+	"domain":              true,
+	"events":              true,
+	"fs":                  true,
+	"http":                true,
+	"http2":               true,
+	"https":               true,
+	"inspector":           true,
+	"module":              true,
+	"net":                 true,
+	"os":                  true,
+	"path":                true,
+	"perf_hooks":          true,
+	"process":             true,
+	"punycode":            true,
+	"querystring":         true,
+	"readline":            true,
+	"repl":                true,
+	"stream":              true,
+	"string_decoder":      true,
+	"sys":                 true,
+	"timers":              true,
+	"tls":                 true,
+	"trace_events":        true,
+	"tty":                 true,
+	"url":                 true,
+	"util":                true,
+	"v8":                  true,
+	"vm":                  true,
+	"wasi":                true,
+	"worker_threads":      true,
+	"zlib":                true,
 }
 
 // isNodeBuiltin checks if a module name is a Node.js built-in module.
