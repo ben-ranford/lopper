@@ -3,7 +3,6 @@ package jvm
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -281,15 +280,10 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 		t.Fatalf("did not expect matched detection from non-source files")
 	}
 
-	// WalkDir callback error branch.
-	if err := os.MkdirAll(filepath.Join(manyFilesRepo, "bad"), 0o000); err != nil {
-		t.Fatalf("mkdir bad dir: %v", err)
-	}
-	defer os.Chmod(filepath.Join(manyFilesRepo, "bad"), 0o755)
-	_, err = scanRepo(context.Background(), manyFilesRepo, map[string]string{}, map[string]string{})
-	if err != nil && !errors.Is(err, fs.ErrPermission) {
-		// Permission errors are platform dependent; any non-nil error covers the branch.
-		t.Fatalf("unexpected scanRepo error: %v", err)
+	// WalkDir error propagation branch.
+	_, err = scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing"), map[string]string{}, map[string]string{})
+	if err == nil {
+		t.Fatalf("expected scanRepo error for missing path")
 	}
 }
 
