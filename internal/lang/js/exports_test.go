@@ -9,18 +9,7 @@ import (
 
 func TestResolveDependencyExports(t *testing.T) {
 	repo := t.TempDir()
-	depDir := filepath.Join(repo, "node_modules", "sample")
-	if err := os.MkdirAll(depDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	packageJSON := "{\n  \"main\": \"index.js\"\n}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	entrypoint := "export const alpha = 1\nexport function beta() {}\nexport default function () {}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "index.js"), []byte(entrypoint), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
-	}
+	writeDependencyFixture(t, repo, "sample", "{\n  \"main\": \"index.js\"\n}\n", "export const alpha = 1\nexport function beta() {}\nexport default function () {}\n")
 
 	surface, err := resolveDependencyExports(repo, "sample")
 	if err != nil {
@@ -36,18 +25,7 @@ func TestResolveDependencyExports(t *testing.T) {
 
 func TestResolveDependencyExportsSkipsNonCodeAssets(t *testing.T) {
 	repo := t.TempDir()
-	depDir := filepath.Join(repo, "node_modules", "styled")
-	if err := os.MkdirAll(depDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	packageJSON := "{\n  \"exports\": {\n    \"default\": {\n      \"styles\": \"./styles.css\",\n      \"import\": \"./index.js\"\n    }\n  }\n}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	entrypoint := "export const theme = {}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "index.js"), []byte(entrypoint), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
-	}
+	writeDependencyFixture(t, repo, "styled", "{\n  \"exports\": {\n    \"default\": {\n      \"styles\": \"./styles.css\",\n      \"import\": \"./index.js\"\n    }\n  }\n}\n", "export const theme = {}\n")
 
 	surface, err := resolveDependencyExports(repo, "styled")
 	if err != nil {
@@ -67,5 +45,19 @@ func TestResolveDependencyExportsSkipsNonCodeAssets(t *testing.T) {
 	}
 	if !foundWarning {
 		t.Fatalf("expected warning for non-js export condition")
+	}
+}
+
+func writeDependencyFixture(t *testing.T, repoPath string, depName string, packageJSON string, entrypoint string) {
+	t.Helper()
+	depDir := filepath.Join(repoPath, "node_modules", depName)
+	if err := os.MkdirAll(depDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depDir, "index.js"), []byte(entrypoint), 0o644); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
 	}
 }

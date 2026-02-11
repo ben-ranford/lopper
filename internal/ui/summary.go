@@ -51,36 +51,59 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 	reader := bufio.NewReader(s.In)
 	state := buildSummaryState(opts)
 	for {
-		output, err := s.renderSummary(reportData, state)
-		if err != nil {
+		if err := s.renderSummaryOutput(reportData, state); err != nil {
 			return err
 		}
-		fmt.Fprint(s.Out, output)
 
-		input, err := reader.ReadString('\n')
+		input, err := readSummaryInput(reader)
 		if err != nil {
 			return err
 		}
-		input = strings.TrimSpace(input)
-		if input == "" || input == "refresh" {
-			continue
+		quit, err := s.handleSummaryInput(ctx, opts, &state, input)
+		if err != nil {
+			return err
 		}
-		if input == "q" || input == "quit" {
+		if quit {
 			return nil
 		}
-
-		if dependency, ok := isDetailCommand(input); ok {
-			detail := NewDetail(s.Out, s.Analyzer, s.Formatter, opts.RepoPath, opts.Language)
-			if err := detail.Show(ctx, dependency); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if handled := applySummaryCommand(&state, input, s.Out); !handled {
-			fmt.Fprintln(s.Out, "Unknown command. Type 'help' for options.")
-		}
 	}
+}
+
+func (s *Summary) renderSummaryOutput(reportData report.Report, state summaryState) error {
+	output, err := s.renderSummary(reportData, state)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprint(s.Out, output)
+	return nil
+}
+
+func readSummaryInput(reader *bufio.Reader) (string, error) {
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(input), nil
+}
+
+func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, state *summaryState, input string) (bool, error) {
+	if input == "" || input == "refresh" {
+		return false, nil
+	}
+	if input == "q" || input == "quit" {
+		return true, nil
+	}
+	if dependency, ok := isDetailCommand(input); ok {
+		detail := NewDetail(s.Out, s.Analyzer, s.Formatter, opts.RepoPath, opts.Language)
+		if err := detail.Show(ctx, dependency); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if !applySummaryCommand(state, input, s.Out) {
+		_, _ = fmt.Fprintln(s.Out, "Unknown command. Type 'help' for options.")
+	}
+	return false, nil
 }
 
 func filterDependencies(deps []report.DependencyReport, filter string) []report.DependencyReport {
@@ -121,90 +144,108 @@ func applySummaryCommand(state *summaryState, input string, out io.Writer) bool 
 
 	switch fields[0] {
 	case "help", "h", "?":
-		state.showHelp = true
-		printSummaryHelp(out)
-		return true
+		return handleHelpCommand(state, out)
 	case "filter":
-		if len(fields) == 1 {
-			state.filter = ""
-			state.page = 1
-			return true
-		}
-		state.filter = strings.Join(fields[1:], " ")
-		state.page = 1
-		return true
+		return handleFilterCommand(state, fields)
 	case "sort":
-		if len(fields) < 2 {
-			return false
-		}
-		switch fields[1] {
-		case string(sortByWaste):
-			state.sortMode = sortByWaste
-			state.page = 1
-			return true
-		case string(sortByName):
-			state.sortMode = sortByName
-			state.page = 1
-			return true
-		default:
-			return false
-		}
+		return handleSortCommand(state, fields)
 	case "page":
-		if len(fields) < 2 {
-			return false
-		}
-		page, err := parsePositiveInt(fields[1])
-		if err != nil {
-			return false
-		}
-		state.page = page
-		return true
-	case "next":
+		return handlePageCommand(state, fields)
+	case "next", "n":
 		state.page++
 		return true
-	case "prev":
+	case "prev", "p":
 		state.page--
 		return true
 	case "size":
-		if len(fields) < 2 {
-			return false
-		}
-		size, err := parsePositiveInt(fields[1])
-		if err != nil {
-			return false
-		}
-		state.pageSize = size
-		state.page = 1
-		return true
-	case "n":
-		state.page++
-		return true
-	case "p":
-		state.page--
-		return true
+		return handleSizeCommand(state, fields)
 	case "s":
-		if state.sortMode == sortByWaste {
-			state.sortMode = sortByName
-		} else {
-			state.sortMode = sortByWaste
-		}
-		state.page = 1
-		return true
+		return handleToggleSortCommand(state)
 	case "w":
-		state.sortMode = sortByWaste
-		state.page = 1
+		setSortMode(state, sortByWaste)
 		return true
 	case "a":
-		state.sortMode = sortByName
-		state.page = 1
+		setSortMode(state, sortByName)
 		return true
 	default:
 		return false
 	}
 }
 
+func handleHelpCommand(state *summaryState, out io.Writer) bool {
+	state.showHelp = true
+	printSummaryHelp(out)
+	return true
+}
+
+func handleFilterCommand(state *summaryState, fields []string) bool {
+	if len(fields) == 1 {
+		state.filter = ""
+		state.page = 1
+		return true
+	}
+	state.filter = strings.Join(fields[1:], " ")
+	state.page = 1
+	return true
+}
+
+func handleSortCommand(state *summaryState, fields []string) bool {
+	if len(fields) < 2 {
+		return false
+	}
+	switch fields[1] {
+	case string(sortByWaste):
+		setSortMode(state, sortByWaste)
+		return true
+	case string(sortByName):
+		setSortMode(state, sortByName)
+		return true
+	default:
+		return false
+	}
+}
+
+func handlePageCommand(state *summaryState, fields []string) bool {
+	if len(fields) < 2 {
+		return false
+	}
+	page, err := parsePositiveInt(fields[1])
+	if err != nil {
+		return false
+	}
+	state.page = page
+	return true
+}
+
+func handleSizeCommand(state *summaryState, fields []string) bool {
+	if len(fields) < 2 {
+		return false
+	}
+	size, err := parsePositiveInt(fields[1])
+	if err != nil {
+		return false
+	}
+	state.pageSize = size
+	state.page = 1
+	return true
+}
+
+func handleToggleSortCommand(state *summaryState) bool {
+	if state.sortMode == sortByWaste {
+		setSortMode(state, sortByName)
+		return true
+	}
+	setSortMode(state, sortByWaste)
+	return true
+}
+
+func setSortMode(state *summaryState, mode sortMode) {
+	state.sortMode = mode
+	state.page = 1
+}
+
 func printSummaryHelp(out io.Writer) {
-	fmt.Fprint(out, summaryHelpText())
+	_, _ = fmt.Fprint(out, summaryHelpText())
 }
 
 func summaryHelpText() string {

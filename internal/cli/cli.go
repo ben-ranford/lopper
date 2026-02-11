@@ -32,28 +32,28 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 	req, err := ParseArgs(args)
 	if err != nil {
 		if errors.Is(err, ErrHelpRequested) {
-			fmt.Fprint(c.Out, Usage())
+			_, _ = fmt.Fprint(c.Out, Usage())
 			return 0
 		}
-		fmt.Fprintf(c.Err, "error: %v\n\n", err)
-		fmt.Fprint(c.Err, Usage())
+		_, _ = fmt.Fprintf(c.Err, "error: %v\n\n", err)
+		_, _ = fmt.Fprint(c.Err, Usage())
 		return 2
 	}
 
 	output, runErr := c.Runner.Execute(ctx, req)
 	if output != "" {
-		fmt.Fprint(c.Out, output)
+		_, _ = fmt.Fprint(c.Out, output)
 		if !strings.HasSuffix(output, "\n") {
-			fmt.Fprintln(c.Out)
+			_, _ = fmt.Fprintln(c.Out)
 		}
 	}
 
 	if runErr != nil {
 		if errors.Is(runErr, app.ErrFailOnIncrease) {
-			fmt.Fprintln(c.Err, runErr.Error())
+			_, _ = fmt.Fprintln(c.Err, runErr.Error())
 			return 3
 		}
-		fmt.Fprintln(c.Err, runErr.Error())
+		_, _ = fmt.Fprintln(c.Err, runErr.Error())
 		return 1
 	}
 

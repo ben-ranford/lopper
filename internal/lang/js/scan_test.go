@@ -24,18 +24,21 @@ func TestScanRepoFixtures(t *testing.T) {
 				t.Fatalf("scan repo: %v", err)
 			}
 
-			found := false
-			for _, file := range result.Files {
-				for _, imp := range file.Imports {
-					if imp.Module == tc.module {
-						found = true
-						break
-					}
-				}
-			}
+			found := containsModuleImport(result, tc.module)
 			if !found {
 				t.Fatalf("expected to find module %q", tc.module)
 			}
 		})
 	}
+}
+
+func containsModuleImport(result ScanResult, module string) bool {
+	for _, file := range result.Files {
+		for _, imp := range file.Imports {
+			if imp.Module == module {
+				return true
+			}
+		}
+	}
+	return false
 }

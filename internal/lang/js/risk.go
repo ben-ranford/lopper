@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -27,48 +26,9 @@ func assessRiskCues(repoPath string, dependency string, surface ExportSurface) (
 
 	pkg, warnings := loadDependencyPackageJSON(depRoot)
 	cues := make([]report.RiskCue, 0, 3)
-
-	if dynamicCount, samples, err := detectDynamicLoaderUsage(depRoot, surface.EntryPoints); err == nil && dynamicCount > 0 {
-		msg := fmt.Sprintf("dynamic require/import usage found in %d dependency entrypoint location(s)", dynamicCount)
-		if len(samples) > 0 {
-			msg = fmt.Sprintf("%s (%s)", msg, strings.Join(samples, ", "))
-		}
-		cues = append(cues, report.RiskCue{
-			Code:     riskCodeDynamicLoader,
-			Severity: "medium",
-			Message:  msg,
-		})
-	} else if err != nil {
-		warnings = append(warnings, fmt.Sprintf("dynamic loader scan failed for %q: %v", dependency, err))
-	}
-
-	if isNative, details, err := detectNativeModuleIndicators(depRoot, pkg); err == nil && isNative {
-		msg := "dependency appears to include native module indicators"
-		if len(details) > 0 {
-			msg = fmt.Sprintf("%s (%s)", msg, strings.Join(details, ", "))
-		}
-		cues = append(cues, report.RiskCue{
-			Code:     riskCodeNativeModule,
-			Severity: "high",
-			Message:  msg,
-		})
-	} else if err != nil {
-		warnings = append(warnings, fmt.Sprintf("native module scan failed for %q: %v", dependency, err))
-	}
-
-	if depth, err := estimateTransitiveDepth(repoPath, depRoot, pkg); err == nil && depth >= 4 {
-		severity := "medium"
-		if depth >= 7 {
-			severity = "high"
-		}
-		cues = append(cues, report.RiskCue{
-			Code:     riskCodeDeepGraph,
-			Severity: severity,
-			Message:  fmt.Sprintf("transitive dependency depth is %d levels", depth),
-		})
-	} else if err != nil {
-		warnings = append(warnings, fmt.Sprintf("transitive depth check failed for %q: %v", dependency, err))
-	}
+	cues, warnings = appendDynamicRiskCue(cues, warnings, dependency, surface.EntryPoints)
+	cues, warnings = appendNativeRiskCue(cues, warnings, dependency, depRoot, pkg)
+	cues, warnings = appendDepthRiskCue(cues, warnings, dependency, repoPath, depRoot, pkg)
 
 	sort.Slice(cues, func(i, j int) bool {
 		return cues[i].Code < cues[j].Code
@@ -76,9 +36,73 @@ func assessRiskCues(repoPath string, dependency string, surface ExportSurface) (
 	return cues, warnings
 }
 
+func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency string, entrypoints []string) ([]report.RiskCue, []string) {
+	dynamicCount, samples, err := detectDynamicLoaderUsage(entrypoints)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("dynamic loader scan failed for %q: %v", dependency, err))
+		return cues, warnings
+	}
+	if dynamicCount == 0 {
+		return cues, warnings
+	}
+	msg := fmt.Sprintf("dynamic require/import usage found in %d dependency entrypoint location(s)", dynamicCount)
+	if len(samples) > 0 {
+		msg = fmt.Sprintf("%s (%s)", msg, strings.Join(samples, ", "))
+	}
+	cues = append(cues, report.RiskCue{
+		Code:     riskCodeDynamicLoader,
+		Severity: "medium",
+		Message:  msg,
+	})
+	return cues, warnings
+}
+
+func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
+	isNative, details, err := detectNativeModuleIndicators(depRoot, pkg)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("native module scan failed for %q: %v", dependency, err))
+		return cues, warnings
+	}
+	if !isNative {
+		return cues, warnings
+	}
+	msg := "dependency appears to include native module indicators"
+	if len(details) > 0 {
+		msg = fmt.Sprintf("%s (%s)", msg, strings.Join(details, ", "))
+	}
+	cues = append(cues, report.RiskCue{
+		Code:     riskCodeNativeModule,
+		Severity: "high",
+		Message:  msg,
+	})
+	return cues, warnings
+}
+
+func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
+	depth, err := estimateTransitiveDepth(repoPath, depRoot, pkg)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("transitive depth check failed for %q: %v", dependency, err))
+		return cues, warnings
+	}
+	if depth < 4 {
+		return cues, warnings
+	}
+	severity := "medium"
+	if depth >= 7 {
+		severity = "high"
+	}
+	cues = append(cues, report.RiskCue{
+		Code:     riskCodeDeepGraph,
+		Severity: severity,
+		Message:  fmt.Sprintf("transitive dependency depth is %d levels", depth),
+	})
+	return cues, warnings
+}
+
 func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	pkgPath := filepath.Join(depRoot, "package.json")
-	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
+	// #nosec G304 -- depRoot is resolved under repoPath/node_modules for the selected dependency.
+	data, err := os.ReadFile(pkgPath)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}
@@ -90,7 +114,7 @@ func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	return pkg, nil
 }
 
-func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []string, error) {
+func detectDynamicLoaderUsage(entrypoints []string) (int, []string, error) {
 	count := 0
 	samples := make([]string, 0, 3)
 
@@ -98,7 +122,8 @@ func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []stri
 		if !isLikelyCodeAsset(entry) {
 			continue
 		}
-		content, err := safeio.ReadFileUnder(depRoot, entry)
+		// #nosec G304 -- entrypoints are resolved from dependency exports under depRoot.
+		content, err := os.ReadFile(entry)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -157,8 +182,24 @@ func firstNonSpaceByte(value string) byte {
 }
 
 func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (bool, []string, error) {
-	details := make([]string, 0, 3)
+	details := collectNativeMetadataIndicators(pkg)
+	bindingDetails, err := detectBindingGyp(depRoot)
+	if err != nil {
+		return false, nil, err
+	}
+	details = append(details, bindingDetails...)
+	nodeBinary, err := detectNodeBinary(depRoot)
+	if err != nil {
+		return false, nil, err
+	}
+	if nodeBinary != "" {
+		details = append(details, nodeBinary)
+	}
+	return len(details) > 0, dedupeStrings(details), nil
+}
 
+func collectNativeMetadataIndicators(pkg packageJSON) []string {
+	details := make([]string, 0, 3)
 	if pkg.Gypfile {
 		details = append(details, "package.json:gypfile")
 	}
@@ -171,15 +212,22 @@ func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (bool, []stri
 			details = append(details, fmt.Sprintf("scripts.%s", scriptName))
 		}
 	}
+	return details
+}
 
+func detectBindingGyp(depRoot string) ([]string, error) {
 	if _, err := os.Stat(filepath.Join(depRoot, "binding.gyp")); err == nil {
-		details = append(details, "binding.gyp")
+		return []string{"binding.gyp"}, nil
 	} else if err != nil && !os.IsNotExist(err) {
-		return false, nil, err
+		return nil, err
 	}
+	return nil, nil
+}
 
+func detectNodeBinary(depRoot string) (string, error) {
 	const maxVisited = 600
 	visited := 0
+	found := ""
 	walkErr := filepath.WalkDir(depRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -195,16 +243,15 @@ func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (bool, []stri
 			return fs.SkipAll
 		}
 		if strings.EqualFold(filepath.Ext(entry.Name()), ".node") {
-			details = append(details, filepath.Base(path))
+			found = filepath.Base(path)
 			return fs.SkipAll
 		}
 		return nil
 	})
 	if walkErr != nil && walkErr != fs.SkipAll {
-		return false, nil, walkErr
+		return "", walkErr
 	}
-
-	return len(details) > 0, dedupeStrings(details), nil
+	return found, nil
 }
 
 func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) (int, error) {

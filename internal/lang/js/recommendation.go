@@ -14,10 +14,7 @@ var replacementHints = map[string]string{
 	"axios":  "If browser/runtime support allows, consider native `fetch`.",
 }
 
-func buildRecommendations(
-	dependency string,
-	dep report.DependencyReport,
-) []report.Recommendation {
+func buildRecommendations(dependency string, dep report.DependencyReport) []report.Recommendation {
 	recs := make([]report.Recommendation, 0, 4)
 
 	if dep.UsedExportsCount == 0 && len(dep.UsedImports) == 0 {
@@ -29,20 +26,7 @@ func buildRecommendations(
 		})
 	}
 
-	rootImportUsed := false
-	subpathImportUsed := false
-	usesWildcardLike := false
-	for _, imp := range append(append([]report.ImportUse{}, dep.UsedImports...), dep.UnusedImports...) {
-		if imp.Module == dependency {
-			rootImportUsed = true
-		}
-		if strings.HasPrefix(imp.Module, dependency+"/") {
-			subpathImportUsed = true
-		}
-		if imp.Name == "*" || imp.Name == "default" {
-			usesWildcardLike = true
-		}
-	}
+	rootImportUsed, subpathImportUsed, usesWildcardLike := importUsageFlags(dependency, dep)
 
 	knownExportSurface := dep.TotalExportsCount > 0
 	if knownExportSurface && rootImportUsed && !subpathImportUsed && dep.UsedPercent > 0 && dep.UsedPercent < 40 {
@@ -81,6 +65,24 @@ func buildRecommendations(
 		return recommendationPriorityRank(recs[i].Priority) < recommendationPriorityRank(recs[j].Priority)
 	})
 	return recs
+}
+
+func importUsageFlags(dependency string, dep report.DependencyReport) (bool, bool, bool) {
+	rootImportUsed := false
+	subpathImportUsed := false
+	usesWildcardLike := false
+	for _, imp := range append(append([]report.ImportUse{}, dep.UsedImports...), dep.UnusedImports...) {
+		if imp.Module == dependency {
+			rootImportUsed = true
+		}
+		if strings.HasPrefix(imp.Module, dependency+"/") {
+			subpathImportUsed = true
+		}
+		if imp.Name == "*" || imp.Name == "default" {
+			usesWildcardLike = true
+		}
+	}
+	return rootImportUsed, subpathImportUsed, usesWildcardLike
 }
 
 func recommendationPriorityRank(priority string) int {

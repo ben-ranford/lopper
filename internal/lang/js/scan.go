@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -14,7 +15,6 @@ import (
 	tslang "github.com/smacker/go-tree-sitter/typescript/typescript"
 
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type ImportKind string
@@ -43,6 +43,14 @@ type FileScan struct {
 type ScanResult struct {
 	Files    []FileScan
 	Warnings []string
+}
+
+type scanRepoState struct {
+	parser          *sourceParser
+	repoPath        string
+	result          *ScanResult
+	parseErrorCount int
+	parseErrorFiles []string
 }
 
 var supportedExtensions = map[string]bool{
@@ -75,8 +83,11 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 	}
 
 	parser := newSourceParser()
-	var parseErrorFiles []string
-	parseErrorCount := 0
+	state := scanRepoState{
+		parser:   parser,
+		repoPath: repoPath,
+		result:   &result,
+	}
 
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -85,46 +96,7 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-
-		if entry.IsDir() {
-			if skipDirectories[entry.Name()] {
-				return fs.SkipDir
-			}
-			return nil
-		}
-
-		if !isSupportedFile(path) {
-			return nil
-		}
-
-		content, readErr := safeio.ReadFileUnder(repoPath, path)
-		if readErr != nil {
-			return readErr
-		}
-
-		tree, langErr := parser.Parse(path, content)
-		if langErr != nil {
-			return langErr
-		}
-		if tree == nil {
-			return fmt.Errorf("tree-sitter returned nil tree for %s", path)
-		}
-
-		relPath, relErr := filepath.Rel(repoPath, path)
-		if relErr != nil {
-			relPath = path
-		}
-
-		if tree.RootNode().HasError() {
-			parseErrorCount++
-			if len(parseErrorFiles) < 5 {
-				parseErrorFiles = append(parseErrorFiles, relPath)
-			}
-		}
-
-		fileScan := analyzeFile(tree, content, relPath)
-		result.Files = append(result.Files, fileScan)
-		return nil
+		return scanRepoEntry(ctx, &state, path, entry)
 	})
 
 	if err != nil {
@@ -135,15 +107,64 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 		result.Warnings = append(result.Warnings, "no JS/TS files found for analysis")
 	}
 
-	if parseErrorCount > 0 {
-		warning := fmt.Sprintf("parse errors in %d file(s)", parseErrorCount)
-		if len(parseErrorFiles) > 0 {
-			warning = fmt.Sprintf("%s: %s", warning, strings.Join(parseErrorFiles, ", "))
+	if state.parseErrorCount > 0 {
+		warning := fmt.Sprintf("parse errors in %d file(s)", state.parseErrorCount)
+		if len(state.parseErrorFiles) > 0 {
+			warning = fmt.Sprintf("%s: %s", warning, strings.Join(state.parseErrorFiles, ", "))
 		}
 		result.Warnings = append(result.Warnings, warning)
 	}
 
 	return result, nil
+}
+
+func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry fs.DirEntry) error {
+	if entry.IsDir() {
+		if skipDirectories[entry.Name()] {
+			return fs.SkipDir
+		}
+		return nil
+	}
+	if !isSupportedFile(path) {
+		return nil
+	}
+
+	content, tree, relPath, err := readAndParseFile(ctx, state.parser, state.repoPath, path)
+	if err != nil {
+		return err
+	}
+	if tree.RootNode().HasError() {
+		state.parseErrorCount++
+		appendParseErrorFile(&state.parseErrorFiles, relPath)
+	}
+	state.result.Files = append(state.result.Files, analyzeFile(tree, content, relPath))
+	return nil
+}
+
+func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string, path string) ([]byte, *sitter.Tree, string, error) {
+	// #nosec G304 -- path originates from filepath.WalkDir rooted at repoPath.
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return nil, nil, "", readErr
+	}
+	tree, langErr := parser.Parse(ctx, path, content)
+	if langErr != nil {
+		return nil, nil, "", langErr
+	}
+	if tree == nil {
+		return nil, nil, "", fmt.Errorf("tree-sitter returned nil tree for %s", path)
+	}
+	relPath, relErr := filepath.Rel(repoPath, path)
+	if relErr != nil {
+		relPath = path
+	}
+	return content, tree, relPath, nil
+}
+
+func appendParseErrorFile(parseErrorFiles *[]string, relPath string) {
+	if len(*parseErrorFiles) < 5 {
+		*parseErrorFiles = append(*parseErrorFiles, relPath)
+	}
 }
 
 func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
@@ -178,7 +199,7 @@ func newSourceParser() *sourceParser {
 	}
 }
 
-func (p *sourceParser) Parse(path string, content []byte) (*sitter.Tree, error) {
+func (p *sourceParser) Parse(ctx context.Context, path string, content []byte) (*sitter.Tree, error) {
 	lang, err := p.languageForPath(path)
 	if err != nil {
 		return nil, err
@@ -187,7 +208,7 @@ func (p *sourceParser) Parse(path string, content []byte) (*sitter.Tree, error) 
 	parser := sitter.NewParser()
 	parser.SetLanguage(lang)
 
-	return parser.Parse(nil, content), nil
+	return parser.ParseCtx(ctx, nil, content)
 }
 
 func (p *sourceParser) languageForPath(path string) (*sitter.Language, error) {
@@ -261,10 +282,7 @@ func isIdentifierUsage(node *sitter.Node) bool {
 	switch parent.Type() {
 	case "import_specifier", "import_clause", "namespace_import", "named_imports", "import_statement":
 		return false
-	case "variable_declarator":
-		nameNode := parent.ChildByFieldName("name")
-		return nameNode == nil || nameNode.ID() != node.ID()
-	case "function_declaration", "class_declaration":
+	case "variable_declarator", "function_declaration", "class_declaration":
 		nameNode := parent.ChildByFieldName("name")
 		return nameNode == nil || nameNode.ID() != node.ID()
 	case "formal_parameters", "required_parameter", "optional_parameter", "rest_parameter":

@@ -42,66 +42,15 @@ func NewService() *Service {
 }
 
 func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, error) {
-	if s.InitErr != nil {
-		return report.Report{}, s.InitErr
-	}
-	if s.Registry == nil {
-		return report.Report{}, errors.New("language registry is not configured")
-	}
-
-	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
+	repoPath, candidates, err := s.prepareAnalysis(ctx, req)
 	if err != nil {
 		return report.Report{}, err
 	}
 
-	candidates, err := s.Registry.Resolve(ctx, repoPath, req.Language)
+	reports, warnings, err := s.runCandidates(ctx, req, repoPath, candidates)
 	if err != nil {
 		return report.Report{}, err
 	}
-
-	reports := make([]report.Report, 0, len(candidates))
-	var warnings []string
-
-	for _, candidate := range candidates {
-		if isMultiLanguage(req.Language) && candidate.Detection.Confidence > 0 && candidate.Detection.Confidence < 40 {
-			warnings = append(
-				warnings,
-				"low detection confidence for adapter "+candidate.Adapter.ID()+": results may be partial",
-			)
-		}
-		roots := candidate.Detection.Roots
-		if len(roots) == 0 {
-			roots = []string{repoPath}
-		}
-		rootSeen := make(map[string]struct{})
-		for _, root := range roots {
-			normalizedRoot := root
-			if !filepath.IsAbs(normalizedRoot) {
-				normalizedRoot = filepath.Join(repoPath, normalizedRoot)
-			}
-			if _, ok := rootSeen[normalizedRoot]; ok {
-				continue
-			}
-			rootSeen[normalizedRoot] = struct{}{}
-
-			current, err := candidate.Adapter.Analyse(ctx, language.Request{
-				RepoPath:   normalizedRoot,
-				Dependency: req.Dependency,
-				TopN:       req.TopN,
-			})
-			if err != nil {
-				if isMultiLanguage(req.Language) {
-					warnings = append(warnings, err.Error())
-					continue
-				}
-				return report.Report{}, err
-			}
-			applyLanguageID(current.Dependencies, candidate.Adapter.ID())
-			adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
-			reports = append(reports, current)
-		}
-	}
-
 	if len(reports) == 0 {
 		return report.Report{
 			SchemaVersion: report.SchemaVersion,
@@ -113,16 +62,110 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	reportData := mergeReports(repoPath, reports)
 	reportData.Warnings = append(reportData.Warnings, warnings...)
 
-	if req.RuntimeTracePath != "" {
-		traceData, err := runtime.Load(req.RuntimeTracePath)
-		if err != nil {
-			return report.Report{}, err
-		}
-		reportData = runtime.Annotate(reportData, traceData)
+	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, reportData)
+	if err != nil {
+		return report.Report{}, err
 	}
-
 	reportData.SchemaVersion = report.SchemaVersion
 	return reportData, nil
+}
+
+func (s *Service) prepareAnalysis(ctx context.Context, req Request) (string, []language.Candidate, error) {
+	if s.InitErr != nil {
+		return "", nil, s.InitErr
+	}
+	if s.Registry == nil {
+		return "", nil, errors.New("language registry is not configured")
+	}
+	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
+	if err != nil {
+		return "", nil, err
+	}
+	candidates, err := s.Registry.Resolve(ctx, repoPath, req.Language)
+	if err != nil {
+		return "", nil, err
+	}
+	return repoPath, candidates, nil
+}
+
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate) ([]report.Report, []string, error) {
+	reports := make([]report.Report, 0, len(candidates))
+	warnings := make([]string, 0)
+	for _, candidate := range candidates {
+		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate)...)
+		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate)
+		if err != nil {
+			return nil, nil, err
+		}
+		reports = append(reports, candidateReports...)
+		warnings = append(warnings, candidateWarnings...)
+	}
+	return reports, warnings, nil
+}
+
+func lowConfidenceWarning(languageID string, candidate language.Candidate) []string {
+	if !isMultiLanguage(languageID) {
+		return nil
+	}
+	if candidate.Detection.Confidence <= 0 || candidate.Detection.Confidence >= 40 {
+		return nil
+	}
+	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
+}
+
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate) ([]report.Report, []string, error) {
+	reports := make([]report.Report, 0)
+	warnings := make([]string, 0)
+	rootSeen := make(map[string]struct{})
+	for _, root := range candidateRoots(candidate.Detection.Roots, repoPath) {
+		normalizedRoot := normalizeCandidateRoot(repoPath, root)
+		if _, ok := rootSeen[normalizedRoot]; ok {
+			continue
+		}
+		rootSeen[normalizedRoot] = struct{}{}
+
+		current, err := candidate.Adapter.Analyse(ctx, language.Request{
+			RepoPath:   normalizedRoot,
+			Dependency: req.Dependency,
+			TopN:       req.TopN,
+		})
+		if err != nil {
+			if isMultiLanguage(req.Language) {
+				warnings = append(warnings, err.Error())
+				continue
+			}
+			return nil, nil, err
+		}
+		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
+		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
+		reports = append(reports, current)
+	}
+	return reports, warnings, nil
+}
+
+func candidateRoots(roots []string, repoPath string) []string {
+	if len(roots) == 0 {
+		return []string{repoPath}
+	}
+	return roots
+}
+
+func normalizeCandidateRoot(repoPath, root string) string {
+	if filepath.IsAbs(root) {
+		return root
+	}
+	return filepath.Join(repoPath, root)
+}
+
+func annotateRuntimeTraceIfPresent(runtimeTracePath string, reportData report.Report) (report.Report, error) {
+	if runtimeTracePath == "" {
+		return reportData, nil
+	}
+	traceData, err := runtime.Load(runtimeTracePath)
+	if err != nil {
+		return report.Report{}, err
+	}
+	return runtime.Annotate(reportData, traceData), nil
 }
 
 func isMultiLanguage(languageID string) bool {
@@ -144,23 +187,19 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 		return
 	}
 	for i := range dependencies {
-		for j := range dependencies[i].UsedImports {
-			for k := range dependencies[i].UsedImports[j].Locations {
-				location := &dependencies[i].UsedImports[j].Locations[k]
-				if filepath.IsAbs(location.File) {
-					continue
-				}
-				location.File = filepath.Clean(filepath.Join(prefix, location.File))
+		adjustImportLocations(prefix, dependencies[i].UsedImports)
+		adjustImportLocations(prefix, dependencies[i].UnusedImports)
+	}
+}
+
+func adjustImportLocations(prefix string, imports []report.ImportUse) {
+	for j := range imports {
+		for k := range imports[j].Locations {
+			location := &imports[j].Locations[k]
+			if filepath.IsAbs(location.File) {
+				continue
 			}
-		}
-		for j := range dependencies[i].UnusedImports {
-			for k := range dependencies[i].UnusedImports[j].Locations {
-				location := &dependencies[i].UnusedImports[j].Locations[k]
-				if filepath.IsAbs(location.File) {
-					continue
-				}
-				location.File = filepath.Clean(filepath.Join(prefix, location.File))
-			}
+			location.File = filepath.Clean(filepath.Join(prefix, location.File))
 		}
 	}
 }

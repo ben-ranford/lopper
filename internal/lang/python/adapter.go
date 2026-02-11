@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -35,10 +35,7 @@ func (a *Adapter) Aliases() []string {
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
 	detection, err := a.DetectWithConfidence(ctx, repoPath)
-	if err != nil {
-		return false, err
-	}
-	return detection.Matched, nil
+	return detection.Matched, err
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
@@ -50,6 +47,51 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 
+	if err := applyPythonRootSignals(repoPath, &detection, roots); err != nil {
+		return language.Detection{}, err
+	}
+
+	const maxFiles = 512
+	visited := 0
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return walkPythonDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
+	})
+	if err != nil && err != fs.SkipAll {
+		return language.Detection{}, err
+	}
+
+	if detection.Matched && detection.Confidence < 35 {
+		detection.Confidence = 35
+	}
+	if detection.Confidence > 95 {
+		detection.Confidence = 95
+	}
+	if len(roots) == 0 && detection.Matched {
+		roots[repoPath] = struct{}{}
+	}
+	detection.Roots = shared.SortedKeys(roots)
+	return detection, nil
+}
+
+func walkPythonDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	(*visited)++
+	if *visited > maxFiles {
+		return fs.SkipAll
+	}
+	updateDetectionFromPythonFile(path, entry, roots, detection)
+	return nil
+}
+
+func applyPythonRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
 	rootSignals := []struct {
 		name       string
 		confidence int
@@ -65,55 +107,23 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 			detection.Confidence += signal.confidence
 			roots[repoPath] = struct{}{}
 		} else if !os.IsNotExist(err) {
-			return language.Detection{}, err
-		}
-	}
-
-	const maxFiles = 512
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	}
+	return nil
+}
 
-		visited++
-		if visited > maxFiles {
-			return fs.SkipAll
-		}
-
-		switch strings.ToLower(entry.Name()) {
-		case "pyproject.toml", "requirements.txt", "setup.py":
-			detection.Matched = true
-			detection.Confidence += 10
-			roots[filepath.Dir(path)] = struct{}{}
-		}
-		if strings.HasSuffix(strings.ToLower(path), ".py") {
-			detection.Matched = true
-			detection.Confidence += 2
-		}
-		return nil
-	})
-	if err != nil && err != fs.SkipAll {
-		return language.Detection{}, err
+func updateDetectionFromPythonFile(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
+	switch strings.ToLower(entry.Name()) {
+	case "pyproject.toml", "requirements.txt", "setup.py":
+		detection.Matched = true
+		detection.Confidence += 10
+		roots[filepath.Dir(path)] = struct{}{}
 	}
-
-	if detection.Matched && detection.Confidence < 35 {
-		detection.Confidence = 35
+	if strings.HasSuffix(strings.ToLower(path), ".py") {
+		detection.Matched = true
+		detection.Confidence += 2
 	}
-	if detection.Confidence > 95 {
-		detection.Confidence = 95
-	}
-	if len(roots) == 0 && detection.Matched {
-		roots[repoPath] = struct{}{}
-	}
-	detection.Roots = sortedKeys(roots)
-	return detection, nil
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -133,55 +143,36 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	}
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
 
-	switch {
-	case req.Dependency != "":
-		dependency := normalizeDependencyID(req.Dependency)
-		depReport, warnings := buildDependencyReport(dependency, scanResult)
-		result.Dependencies = []report.DependencyReport{depReport}
-		result.Warnings = append(result.Warnings, warnings...)
-		result.Summary = report.ComputeSummary(result.Dependencies)
-	case req.TopN > 0:
-		dependencies := listDependencies(scanResult)
-		reports := make([]report.DependencyReport, 0, len(dependencies))
-		for _, dependency := range dependencies {
-			depReport, warnings := buildDependencyReport(dependency, scanResult)
-			reports = append(reports, depReport)
-			result.Warnings = append(result.Warnings, warnings...)
-		}
-		sort.Slice(reports, func(i, j int) bool {
-			iScore, iKnown := wasteScore(reports[i])
-			jScore, jKnown := wasteScore(reports[j])
-			if iKnown != jKnown {
-				return iKnown
-			}
-			if iScore == jScore {
-				return reports[i].Name < reports[j].Name
-			}
-			return iScore > jScore
-		})
-		if req.TopN > 0 && req.TopN < len(reports) {
-			reports = reports[:req.TopN]
-		}
-		result.Dependencies = reports
-		if len(reports) == 0 {
-			result.Warnings = append(result.Warnings, "no dependency data available for top-N ranking")
-		}
-		result.Summary = report.ComputeSummary(result.Dependencies)
-	default:
-		result.Warnings = append(result.Warnings, "no dependency or top-N target provided")
-	}
+	dependencies, warnings := buildRequestedPythonDependencies(req, scanResult)
+	result.Dependencies = dependencies
+	result.Warnings = append(result.Warnings, warnings...)
+	result.Summary = report.ComputeSummary(result.Dependencies)
 
 	return result, nil
 }
 
-type importBinding struct {
-	Dependency string
-	Module     string
-	Name       string
-	Local      string
-	Location   report.Location
-	Wildcard   bool
+func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	switch {
+	case req.Dependency != "":
+		dependency := normalizeDependencyID(req.Dependency)
+		depReport, warnings := buildDependencyReport(dependency, scan)
+		return []report.DependencyReport{depReport}, warnings
+	case req.TopN > 0:
+		return buildTopPythonDependencies(req.TopN, scan)
+	default:
+		return nil, []string{"no dependency or top-N target provided"}
+	}
 }
+
+func buildTopPythonDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+	fileUsages := pythonFileUsages(scan)
+	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
+	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+		return buildDependencyReport(dependency, scan)
+	})
+}
+
+type importBinding = shared.ImportRecord
 
 type fileScan struct {
 	Path    string
@@ -207,31 +198,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(path), ".py") {
-			return nil
-		}
-
-		content, err := safeio.ReadFileUnder(repoPath, path)
-		if err != nil {
-			return err
-		}
-		relativePath, err := filepath.Rel(repoPath, path)
-		if err != nil {
-			relativePath = path
-		}
-		imports := parseImports(content, relativePath, repoPath)
-		result.Files = append(result.Files, fileScan{
-			Path:    relativePath,
-			Imports: imports,
-			Usage:   countUsage(content, imports),
-		})
-		return nil
+		return scanPythonRepoEntry(repoPath, path, entry, &result)
 	})
 	if err != nil {
 		return result, err
@@ -240,6 +207,54 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		result.Warnings = append(result.Warnings, "no Python files found for analysis")
 	}
 	return result, nil
+}
+
+func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result *scanResult) error {
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".py") {
+		return nil
+	}
+	cleanPath, err := enforceRepoBoundary(repoPath, path)
+	if err != nil {
+		return err
+	}
+	content, relativePath, err := readPythonFile(repoPath, cleanPath)
+	if err != nil {
+		return err
+	}
+	imports := parseImports(content, relativePath, repoPath)
+	result.Files = append(result.Files, fileScan{
+		Path:    relativePath,
+		Imports: imports,
+		Usage:   shared.CountUsage(content, imports),
+	})
+	return nil
+}
+
+func enforceRepoBoundary(repoPath, path string) (string, error) {
+	cleanRepo := filepath.Clean(repoPath)
+	cleanPath := filepath.Clean(path)
+	if strings.HasPrefix(cleanPath, cleanRepo+string(os.PathSeparator)) || cleanPath == cleanRepo {
+		return cleanPath, nil
+	}
+	return "", fmt.Errorf("refusing to read path outside repo: %s", path)
+}
+
+func readPythonFile(repoPath, cleanPath string) ([]byte, string, error) {
+	content, err := safeio.ReadFileUnder(repoPath, cleanPath)
+	if err != nil {
+		return nil, "", err
+	}
+	relativePath, err := filepath.Rel(repoPath, cleanPath)
+	if err != nil {
+		relativePath = cleanPath
+	}
+	return content, relativePath, nil
 }
 
 var (
@@ -258,67 +273,79 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 		}
 
 		if matches := importLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 2 {
-			parts := splitCSV(matches[1])
-			for _, part := range parts {
-				moduleName, local := parseImportPart(part)
-				if moduleName == "" {
-					continue
-				}
-				dependency := dependencyFromModule(repoPath, moduleName)
-				if dependency == "" {
-					continue
-				}
-				if local == "" {
-					local = strings.Split(moduleName, ".")[0]
-				}
-				bindings = append(bindings, importBinding{
-					Dependency: dependency,
-					Module:     moduleName,
-					Name:       moduleName,
-					Local:      local,
-					Location: report.Location{
-						File:   filePath,
-						Line:   index + 1,
-						Column: firstContentColumn(lineNoComment),
-					},
-				})
-			}
+			bindings = append(bindings, parseImportLine(matches[1], filePath, repoPath, index, lineNoComment)...)
 			continue
 		}
 
 		if matches := fromLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 3 {
-			moduleName := strings.TrimSpace(matches[1])
-			if strings.HasPrefix(moduleName, ".") {
-				continue
-			}
-			dependency := dependencyFromModule(repoPath, moduleName)
-			if dependency == "" {
-				continue
-			}
-			for _, part := range splitCSV(matches[2]) {
-				symbol, local := parseImportPart(part)
-				if symbol == "" {
-					continue
-				}
-				if local == "" {
-					local = symbol
-				}
-				bindings = append(bindings, importBinding{
-					Dependency: dependency,
-					Module:     moduleName,
-					Name:       symbol,
-					Local:      local,
-					Wildcard:   symbol == "*",
-					Location: report.Location{
-						File:   filePath,
-						Line:   index + 1,
-						Column: firstContentColumn(lineNoComment),
-					},
-				})
-			}
+			bindings = append(bindings, parseFromImportLine(matches[1], matches[2], filePath, repoPath, index, lineNoComment)...)
 		}
 	}
 	return bindings
+}
+
+func parseImportLine(partsText string, filePath string, repoPath string, index int, line string) []importBinding {
+	bindings := make([]importBinding, 0)
+	for _, part := range splitCSV(partsText) {
+		moduleName, local := parseImportPart(part)
+		if moduleName == "" {
+			continue
+		}
+		dependency := dependencyFromModule(repoPath, moduleName)
+		if dependency == "" {
+			continue
+		}
+		if local == "" {
+			local = strings.Split(moduleName, ".")[0]
+		}
+		bindings = append(bindings, importBinding{
+			Dependency: dependency,
+			Module:     moduleName,
+			Name:       moduleName,
+			Local:      local,
+			Location:   importLocation(filePath, index, line),
+		})
+	}
+	return bindings
+}
+
+func parseFromImportLine(moduleValue string, symbolsValue string, filePath string, repoPath string, index int, line string) []importBinding {
+	moduleName := strings.TrimSpace(moduleValue)
+	if strings.HasPrefix(moduleName, ".") {
+		return nil
+	}
+	dependency := dependencyFromModule(repoPath, moduleName)
+	if dependency == "" {
+		return nil
+	}
+
+	bindings := make([]importBinding, 0)
+	for _, part := range splitCSV(symbolsValue) {
+		symbol, local := parseImportPart(part)
+		if symbol == "" {
+			continue
+		}
+		if local == "" {
+			local = symbol
+		}
+		bindings = append(bindings, importBinding{
+			Dependency: dependency,
+			Module:     moduleName,
+			Name:       symbol,
+			Local:      local,
+			Wildcard:   symbol == "*",
+			Location:   importLocation(filePath, index, line),
+		})
+	}
+	return bindings
+}
+
+func importLocation(filePath string, index int, line string) report.Location {
+	return report.Location{
+		File:   filePath,
+		Line:   index + 1,
+		Column: shared.FirstContentColumn(line),
+	}
 }
 
 func splitCSV(value string) []string {
@@ -355,182 +382,33 @@ func stripComment(line string) string {
 	return line
 }
 
-func firstContentColumn(line string) int {
-	for i := 0; i < len(line); i++ {
-		if line[i] != ' ' && line[i] != '\t' {
-			return i + 1
-		}
-	}
-	return 1
-}
-
-func countUsage(content []byte, imports []importBinding) map[string]int {
-	importCount := make(map[string]int)
-	for _, binding := range imports {
-		if binding.Wildcard || binding.Local == "" {
-			continue
-		}
-		importCount[binding.Local]++
-	}
-
-	usage := make(map[string]int, len(importCount))
-	text := string(content)
-	for local, count := range importCount {
-		pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(local) + `\b`)
-		occurrences := len(pattern.FindAllStringIndex(text, -1)) - count
-		if occurrences < 0 {
-			occurrences = 0
-		}
-		usage[local] = occurrences
-	}
-	return usage
-}
-
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	usedImports := make(map[string]*report.ImportUse)
-	unusedImports := make(map[string]*report.ImportUse)
-	usedSymbols := make(map[string]struct{})
-	allSymbols := make(map[string]struct{})
-	symbolCounts := make(map[string]int)
-	var warnings []string
-	wildcardImports := 0
-
-	for _, file := range scan.Files {
-		for _, imported := range file.Imports {
-			if normalizeDependencyID(imported.Dependency) != dependency {
-				continue
-			}
-
-			allSymbols[imported.Name] = struct{}{}
-			used := imported.Wildcard || file.Usage[imported.Local] > 0
-			if imported.Wildcard {
-				wildcardImports++
-			}
-			entry := report.ImportUse{
-				Name:   imported.Name,
-				Module: imported.Module,
-				Locations: []report.Location{
-					imported.Location,
-				},
-			}
-			if used {
-				usedSymbols[imported.Name] = struct{}{}
-				count := file.Usage[imported.Local]
-				if imported.Wildcard && count == 0 {
-					count = 1
-				}
-				if count > 0 {
-					symbolCounts[imported.Name] += count
-				}
-				addImport(usedImports, entry)
-			} else {
-				addImport(unusedImports, entry)
-			}
-		}
-	}
-
-	if len(allSymbols) == 0 {
+	stats := shared.BuildDependencyStats(dependency, pythonFileUsages(scan), normalizeDependencyID)
+	warnings := make([]string, 0)
+	if !stats.HasImports {
 		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))
-	}
-
-	usedCount := len(usedSymbols)
-	totalCount := len(allSymbols)
-	usedPercent := 0.0
-	if totalCount > 0 {
-		usedPercent = (float64(usedCount) / float64(totalCount)) * 100
-	}
-
-	topSymbols := make([]report.SymbolUsage, 0, len(symbolCounts))
-	for name, count := range symbolCounts {
-		topSymbols = append(topSymbols, report.SymbolUsage{Name: name, Count: count})
-	}
-	sort.Slice(topSymbols, func(i, j int) bool {
-		if topSymbols[i].Count == topSymbols[j].Count {
-			return topSymbols[i].Name < topSymbols[j].Name
-		}
-		return topSymbols[i].Count > topSymbols[j].Count
-	})
-	if len(topSymbols) > 5 {
-		topSymbols = topSymbols[:5]
 	}
 
 	dep := report.DependencyReport{
 		Language:             "python",
 		Name:                 dependency,
-		UsedExportsCount:     usedCount,
-		TotalExportsCount:    totalCount,
-		UsedPercent:          usedPercent,
+		UsedExportsCount:     stats.UsedCount,
+		TotalExportsCount:    stats.TotalCount,
+		UsedPercent:          stats.UsedPercent,
 		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       topSymbols,
-		UsedImports:          flattenImports(usedImports),
-		UnusedImports:        dedupeUnused(flattenImports(unusedImports), flattenImports(usedImports)),
+		TopUsedSymbols:       stats.TopSymbols,
+		UsedImports:          stats.UsedImports,
+		UnusedImports:        stats.UnusedImports,
 	}
-	if wildcardImports > 0 {
+	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "wildcard-import",
 			Severity: "medium",
-			Message:  fmt.Sprintf("found %d wildcard import(s) for this dependency", wildcardImports),
+			Message:  fmt.Sprintf("found %d wildcard import(s) for this dependency", stats.WildcardImports),
 		})
 	}
 	dep.Recommendations = buildRecommendations(dep)
 	return dep, warnings
-}
-
-func listDependencies(scan scanResult) []string {
-	set := make(map[string]struct{})
-	for _, file := range scan.Files {
-		for _, imported := range file.Imports {
-			if imported.Dependency == "" {
-				continue
-			}
-			set[normalizeDependencyID(imported.Dependency)] = struct{}{}
-		}
-	}
-	items := make([]string, 0, len(set))
-	for item := range set {
-		items = append(items, item)
-	}
-	sort.Strings(items)
-	return items
-}
-
-func addImport(dest map[string]*report.ImportUse, entry report.ImportUse) {
-	key := entry.Module + ":" + entry.Name
-	if current, ok := dest[key]; ok {
-		current.Locations = append(current.Locations, entry.Locations...)
-		return
-	}
-	copyEntry := entry
-	dest[key] = &copyEntry
-}
-
-func flattenImports(source map[string]*report.ImportUse) []report.ImportUse {
-	items := make([]report.ImportUse, 0, len(source))
-	for _, entry := range source {
-		items = append(items, *entry)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
-	})
-	return items
-}
-
-func dedupeUnused(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
-	usedKeys := make(map[string]struct{}, len(used))
-	for _, entry := range used {
-		usedKeys[entry.Module+":"+entry.Name] = struct{}{}
-	}
-	filtered := make([]report.ImportUse, 0, len(unused))
-	for _, entry := range unused {
-		if _, ok := usedKeys[entry.Module+":"+entry.Name]; ok {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	return filtered
 }
 
 func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
@@ -543,7 +421,7 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 			Rationale: "Unused dependencies increase attack and maintenance surface.",
 		})
 	}
-	if hasWildcardImport(dep.UsedImports) || hasWildcardImport(dep.UnusedImports) {
+	if shared.HasWildcardImport(dep.UsedImports) || shared.HasWildcardImport(dep.UnusedImports) {
 		recs = append(recs, report.Recommendation{
 			Code:      "avoid-star-imports",
 			Priority:  "medium",
@@ -552,22 +430,6 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 		})
 	}
 	return recs
-}
-
-func hasWildcardImport(imports []report.ImportUse) bool {
-	for _, imported := range imports {
-		if imported.Name == "*" {
-			return true
-		}
-	}
-	return false
-}
-
-func wasteScore(dep report.DependencyReport) (float64, bool) {
-	if dep.TotalExportsCount == 0 {
-		return -1, false
-	}
-	return 100 - dep.UsedPercent, true
 }
 
 func dependencyFromModule(repoPath string, moduleName string) string {
@@ -613,16 +475,12 @@ func shouldSkipDir(name string) bool {
 	}
 }
 
-func sortedKeys(values map[string]struct{}) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	items := make([]string, 0, len(values))
-	for value := range values {
-		items = append(items, value)
-	}
-	sort.Strings(items)
-	return items
+func pythonFileUsages(scan scanResult) []shared.FileUsage {
+	return shared.MapFileUsages(
+		scan.Files,
+		func(file fileScan) []shared.ImportRecord { return file.Imports },
+		func(file fileScan) map[string]int { return file.Usage },
+	)
 }
 
 var pythonStdlib = map[string]bool{
