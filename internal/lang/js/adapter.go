@@ -253,15 +253,17 @@ func collectDependencyImportUsage(
 	usedImports map[string]*report.ImportUse,
 	unusedImports map[string]*report.ImportUse,
 ) bool {
-	hasWildcard := false
+	hasAmbiguousWildcard := false
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {
 			if !matchesDependency(imp.Module, dependency) {
 				continue
 			}
 			used := applyImportUsage(imp, file, usedExports, counts)
-			if imp.ExportName == "*" || imp.ExportName == "default" {
-				hasWildcard = true
+			// Only flag as ambiguous if it's a wildcard/default import AND
+			// the identifier is used directly (not just through property access)
+			if (imp.ExportName == "*" || imp.ExportName == "default") && hasDirectIdentifierUsage(imp, file) {
+				hasAmbiguousWildcard = true
 			}
 			entry := recordImportUse(imp)
 			if used {
@@ -271,7 +273,7 @@ func collectDependencyImportUsage(
 			addImportUse(unusedImports, entry)
 		}
 	}
-	return hasWildcard
+	return hasAmbiguousWildcard
 }
 
 func dependencyUsageWarnings(dependency string, usedExports map[string]struct{}, hasWildcard bool) []string {
@@ -283,6 +285,22 @@ func dependencyUsageWarnings(dependency string, usedExports map[string]struct{},
 		warnings = append(warnings, "default or namespace imports reduce export precision")
 	}
 	return warnings
+}
+
+// hasDirectIdentifierUsage checks if an import's local name is used directly
+// (not just through property access), which makes wildcard/default imports ambiguous
+func hasDirectIdentifierUsage(imp ImportBinding, file FileScan) bool {
+	// Check if the identifier is used directly (not through property access)
+	directCount := file.IdentifierUsage[imp.LocalName]
+	
+	// If there's namespace property usage, check if there's also direct usage beyond that
+	if props, hasProps := file.NamespaceUsage[imp.LocalName]; hasProps && len(props) > 0 {
+		// If we only have property access and no direct identifier usage, it's not ambiguous
+		return directCount > 0
+	}
+	
+	// No property usage, so any direct usage is ambiguous
+	return directCount > 0
 }
 
 func buildTopSymbols(counts map[string]int) []report.SymbolUsage {
@@ -526,9 +544,12 @@ func dependencyFromModule(module string) string {
 	if module == "" {
 		return ""
 	}
-	if strings.HasPrefix(module, "node:") {
+	
+	// Filter out Node.js built-in modules (both "node:*" and bare names like "fs")
+	if isNodeBuiltin(module) {
 		return ""
 	}
+	
 	if strings.HasPrefix(module, ".") || strings.HasPrefix(module, "/") {
 		return ""
 	}
