@@ -67,6 +67,12 @@ Analyze one dependency:
 lopper analyse lodash --repo . --language js-ts
 ```
 
+Analyze a Go dependency:
+
+```bash
+lopper analyse github.com/google/uuid --repo . --language go
+```
+
 Rank dependencies:
 
 ```bash

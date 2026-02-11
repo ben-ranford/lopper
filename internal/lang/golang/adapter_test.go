@@ -391,7 +391,7 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	}
 
 	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
-	if !strings.Contains(warningsText, "nested module directorie") {
+	if !strings.Contains(warningsText, "nested module directories") {
 		t.Fatalf("expected nested-module warning, got %#v", reportData.Warnings)
 	}
 }
@@ -626,6 +626,21 @@ func TestBuildConstraintHelpers(t *testing.T) {
 func TestBuildTagGoVersionHelper(t *testing.T) {
 	if !isSupportedGoReleaseTag("go1.1") {
 		t.Fatalf("expected old go1.x tag to be supported")
+	}
+	if minor, ok := goVersionMinor("devel go1.26-abc123"); !ok || minor < 1 {
+		t.Fatalf("expected to parse devel runtime version, got %d %v", minor, ok)
+	}
+	if minor, ok := goVersionMinor("go1.25rc2"); !ok || minor != 25 {
+		t.Fatalf("expected to parse rc runtime version, got %d %v", minor, ok)
+	}
+	if _, ok := goVersionMinor("invalid-version"); ok {
+		t.Fatalf("expected invalid runtime version to fail parse")
+	}
+	if minor, ok := leadingInt("25rc2"); !ok || minor != 25 {
+		t.Fatalf("expected leadingInt to parse numeric prefix, got %d %v", minor, ok)
+	}
+	if _, ok := leadingInt("rc2"); ok {
+		t.Fatalf("expected leadingInt to reject non-numeric prefix")
 	}
 }
 
@@ -1030,8 +1045,8 @@ func TestMiscCoverageBranches(t *testing.T) {
 	if isSupportedGoReleaseTag("go1.999") {
 		t.Fatalf("expected future go version tag to be unsupported")
 	}
-	if !isSupportedGoReleaseTag("go1.bad") {
-		t.Fatalf("expected malformed go version tag to follow fallback behavior")
+	if isSupportedGoReleaseTag("go1.bad") {
+		t.Fatalf("expected malformed go version tag to be unsupported")
 	}
 	if matchesActiveBuild([]byte("// +build definitely_not_active\npackage main\n")) {
 		t.Fatalf("expected inactive plus-build expression to evaluate false")
@@ -1053,6 +1068,46 @@ func TestLoadGoModFromDirError(t *testing.T) {
 	_, _, _, err := loadGoModFromDir(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
 		t.Fatalf("expected loadGoModFromDir error for missing file")
+	}
+}
+
+func TestDetectWithConfidenceCanceledContext(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoGoMod(t, repo, goModDemo)
+	writeRepoMain(t, repo, mainNoopProgram)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := NewAdapter().DetectWithConfidence(ctx, repo)
+	if err == nil {
+		t.Fatalf("expected detect cancellation error")
+	}
+}
+
+func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideGoMod := filepath.Join(outsideDir, "outside.mod")
+	writeFile(t, outsideGoMod, "module example.com/outside\n")
+
+	if err := os.Symlink(outsideGoMod, filepath.Join(repo, "go.mod")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if _, err := loadGoModuleInfo(repo); err == nil {
+		t.Fatalf("expected guarded go.mod read to fail for escaping symlink")
+	}
+
+	outsideGoFile := filepath.Join(outsideDir, "outside.go")
+	writeFile(t, outsideGoFile, "package main\n")
+	sourceRepo := t.TempDir()
+	writeRepoGoMod(t, sourceRepo, goModDemo)
+	sourceSymlink := filepath.Join(sourceRepo, "link.go")
+	if err := os.Symlink(outsideGoFile, sourceSymlink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	result := newScanResult()
+	if err := scanGoSourceFile(sourceRepo, sourceSymlink, moduleInfo{}, &result); err == nil {
+		t.Fatalf("expected guarded source read to fail for escaping symlink")
 	}
 }
 

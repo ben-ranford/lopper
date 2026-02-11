@@ -19,6 +19,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -50,7 +51,6 @@ func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
-	_ = ctx
 	repoPath = defaultRepo(repoPath)
 
 	detection := language.Detection{}
@@ -64,6 +64,9 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
 		}
 		return walkGoDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
 	})
@@ -345,7 +348,7 @@ func appendSkipWarnings(result *scanResult) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d large Go file(s) above %d bytes", result.SkippedLargeFiles, maxScannableGoFile))
 	}
 	if result.SkippedNestedModuleDirs > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d nested module directorie(s) while scanning root module", result.SkippedNestedModuleDirs))
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d nested module directories while scanning root module", result.SkippedNestedModuleDirs))
 	}
 }
 
@@ -362,8 +365,7 @@ func appendUndeclaredDependencyWarnings(result *scanResult) {
 }
 
 func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scanResult) error {
-	// #nosec G304 -- path originates from filepath.WalkDir rooted at repoPath.
-	content, err := os.ReadFile(path)
+	content, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {
 		return err
 	}
@@ -623,25 +625,55 @@ func isActiveBuildTag(tag string) bool {
 }
 
 func isSupportedGoReleaseTag(tag string) bool {
-	current := strings.TrimPrefix(runtime.Version(), "go")
-	current = strings.TrimPrefix(current, "devel ")
-	if current == runtime.Version() {
-		// Non-standard runtime string.
+	minorCurrent, ok := goVersionMinor(runtime.Version())
+	if !ok {
 		return false
 	}
-	current = strings.SplitN(current, " ", 2)[0]
-	current = strings.SplitN(current, "-", 2)[0]
-	currentParts := strings.Split(current, ".")
-	if len(currentParts) < 2 {
+	if !strings.HasPrefix(tag, "go1.") {
 		return false
 	}
-	minorCurrent := parseIntDefault(currentParts[1], 0)
-	tagParts := strings.Split(strings.TrimPrefix(tag, "go1."), ".")
-	if len(tagParts) == 0 {
+	minorTag, ok := leadingInt(strings.TrimPrefix(tag, "go1."))
+	if !ok {
 		return false
 	}
-	minorTag := parseIntDefault(tagParts[0], 0)
 	return minorTag <= minorCurrent
+}
+
+func goVersionMinor(version string) (int, bool) {
+	normalized := strings.TrimSpace(version)
+	normalized = strings.TrimPrefix(normalized, "devel ")
+	goIndex := strings.Index(normalized, "go")
+	if goIndex < 0 {
+		return 0, false
+	}
+	normalized = strings.TrimPrefix(normalized[goIndex:], "go")
+	normalized = strings.SplitN(normalized, " ", 2)[0]
+	normalized = strings.SplitN(normalized, "-", 2)[0]
+
+	versionParts := strings.Split(normalized, ".")
+	if len(versionParts) < 2 || versionParts[0] != "1" {
+		return 0, false
+	}
+	return leadingInt(versionParts[1])
+}
+
+func leadingInt(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	n := 0
+	seen := false
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			break
+		}
+		seen = true
+		n = (n * 10) + int(value[i]-'0')
+	}
+	if !seen {
+		return 0, false
+	}
+	return n, true
 }
 
 func parseIntDefault(value string, fallback int) int {
@@ -897,8 +929,7 @@ func loadGoModuleInfo(repoPath string) (moduleInfo, error) {
 	}
 
 	goModPath := filepath.Join(repoPath, goModName)
-	// #nosec G304 -- path is constrained under normalized repoPath.
-	content, err := os.ReadFile(goModPath)
+	content, err := safeio.ReadFileUnder(repoPath, goModPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return moduleInfo{}, err
