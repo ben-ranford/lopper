@@ -20,6 +20,8 @@ type Adapter struct {
 	Clock func() time.Time
 }
 
+const jsPackageFile = "package.json"
+
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -49,56 +51,11 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 
-	candidates := []string{"package.json", "tsconfig.json", "jsconfig.json"}
-	for _, name := range candidates {
-		path := filepath.Join(repoPath, name)
-		if _, err := os.Stat(path); err == nil {
-			detection.Matched = true
-			switch name {
-			case "package.json":
-				detection.Confidence += 45
-				roots[repoPath] = struct{}{}
-			default:
-				detection.Confidence += 20
-			}
-		} else if !os.IsNotExist(err) {
-			return language.Detection{}, err
-		}
+	if err := addRootSignalDetection(repoPath, &detection, roots); err != nil {
+		return language.Detection{}, err
 	}
 
-	const maxFiles = 256
-	visitedFiles := 0
-	err := filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", ".idea", "dist", "build", "vendor", "node_modules", ".next", ".turbo", "coverage":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		visitedFiles++
-		if visitedFiles > maxFiles {
-			return io.EOF
-		}
-
-		if strings.EqualFold(d.Name(), "package.json") {
-			detection.Matched = true
-			detection.Confidence += 10
-			roots[filepath.Dir(path)] = struct{}{}
-			return nil
-		}
-
-		switch strings.ToLower(filepath.Ext(d.Name())) {
-		case ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts":
-			detection.Matched = true
-			detection.Confidence += 2
-		}
-		return nil
-	})
+	err := scanFilesForJSDetection(repoPath, &detection, roots)
 	if err == io.EOF {
 		err = nil
 	}
@@ -117,6 +74,75 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 	detection.Roots = mapKeysSorted(roots)
 	return detection, nil
+}
+
+func addRootSignalDetection(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+	candidates := []string{jsPackageFile, "tsconfig.json", "jsconfig.json"}
+	for _, name := range candidates {
+		path := filepath.Join(repoPath, name)
+		if _, err := os.Stat(path); err == nil {
+			detection.Matched = true
+			if name == jsPackageFile {
+				detection.Confidence += 45
+				roots[repoPath] = struct{}{}
+				continue
+			}
+			detection.Confidence += 20
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanFilesForJSDetection(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+	const maxFiles = 256
+	visitedFiles := 0
+	return filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if shouldSkipDetectDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		visitedFiles++
+		if visitedFiles > maxFiles {
+			return io.EOF
+		}
+		if strings.EqualFold(d.Name(), jsPackageFile) {
+			detection.Matched = true
+			detection.Confidence += 10
+			roots[filepath.Dir(path)] = struct{}{}
+			return nil
+		}
+		if isJSExtension(strings.ToLower(filepath.Ext(d.Name()))) {
+			detection.Matched = true
+			detection.Confidence += 2
+		}
+		return nil
+	})
+}
+
+func shouldSkipDetectDir(name string) bool {
+	switch name {
+	case ".git", ".idea", "dist", "build", "vendor", "node_modules", ".next", ".turbo", "coverage":
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSExtension(ext string) bool {
+	switch ext {
+	case ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -162,100 +188,22 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 	counts := make(map[string]int)
 	usedImports := make(map[string]*report.ImportUse)
 	unusedImports := make(map[string]*report.ImportUse)
-	var warnings []string
-	var hasWildcard bool
+	warnings := make([]string, 0)
 
-	surface, err := resolveDependencyExports(repoPath, dependency)
-	if err != nil {
-		warnings = append(warnings, err.Error())
-	} else {
-		warnings = append(warnings, surface.Warnings...)
-		if surface.IncludesWildcard {
-			warnings = append(warnings, "dependency export surface includes wildcard re-exports")
-		}
-	}
-
-	for _, file := range scanResult.Files {
-		for _, imp := range file.Imports {
-			if !matchesDependency(imp.Module, dependency) {
-				continue
-			}
-
-			used := false
-			switch imp.Kind {
-			case ImportNamed:
-				if count := file.IdentifierUsage[imp.LocalName]; count > 0 {
-					used = true
-					usedExports[imp.ExportName] = struct{}{}
-					counts[imp.ExportName] += count
-				}
-			case ImportNamespace, ImportDefault:
-				if props, ok := file.NamespaceUsage[imp.LocalName]; ok {
-					for prop, count := range props {
-						used = true
-						usedExports[prop] = struct{}{}
-						counts[prop] += count
-					}
-				}
-				if count := file.IdentifierUsage[imp.LocalName]; count > 0 {
-					used = true
-					if imp.Kind == ImportDefault {
-						usedExports["default"] = struct{}{}
-						counts["default"] += count
-					} else {
-						usedExports["*"] = struct{}{}
-						counts["*"] += count
-					}
-				}
-			}
-
-			if imp.ExportName == "*" || imp.ExportName == "default" {
-				hasWildcard = true
-			}
-
-			entry := recordImportUse(imp)
-			if used {
-				addImportUse(usedImports, entry)
-			} else {
-				addImportUse(unusedImports, entry)
-			}
-		}
-	}
-
-	if len(usedExports) == 0 {
-		warnings = append(warnings, fmt.Sprintf("no used exports found for dependency %q", dependency))
-	}
-	if hasWildcard {
-		warnings = append(warnings, "default or namespace imports reduce export precision")
-	}
+	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency)
+	warnings = append(warnings, surfaceWarnings...)
+	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
+	warnings = append(warnings, dependencyUsageWarnings(dependency, usedExports, hasWildcard)...)
 
 	usedImportList := flattenImportUses(usedImports)
 	unusedImportList := flattenImportUses(unusedImports)
 	unusedImportList = removeOverlaps(unusedImportList, usedImportList)
 
-	topSymbols := make([]report.SymbolUsage, 0, len(counts))
-	for name, count := range counts {
-		topSymbols = append(topSymbols, report.SymbolUsage{Name: name, Count: count})
-	}
-	sort.Slice(topSymbols, func(i, j int) bool {
-		if topSymbols[i].Count == topSymbols[j].Count {
-			return topSymbols[i].Name < topSymbols[j].Name
-		}
-		return topSymbols[i].Count > topSymbols[j].Count
-	})
-	if len(topSymbols) > 5 {
-		topSymbols = topSymbols[:5]
-	}
+	topSymbols := buildTopSymbols(counts)
 
-	totalExports := len(surface.Names)
+	totalExports := totalExportCount(surface)
 	unusedExports := buildUnusedExports(dependency, surface.Names, usedExports)
-	usedPercent := 0.0
-	if surface.IncludesWildcard {
-		totalExports = 0
-	} else if totalExports > 0 {
-		usedCount := countUsedExports(surface.Names, usedExports)
-		usedPercent = (float64(usedCount) / float64(totalExports)) * 100
-	}
+	usedPercent := exportUsedPercent(surface, usedExports, totalExports)
 
 	usedExportCount := countUsedExports(surface.Names, usedExports)
 	if usedExportCount == 0 && totalExports == 0 {
@@ -280,6 +228,136 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 	}
 	depReport.Recommendations = buildRecommendations(dependency, depReport)
 	return depReport, warnings
+}
+
+func resolveSurfaceWarnings(repoPath, dependency string) (ExportSurface, []string) {
+	surface := ExportSurface{Names: map[string]struct{}{}}
+	warnings := make([]string, 0)
+	resolved, err := resolveDependencyExports(repoPath, dependency)
+	if err != nil {
+		warnings = append(warnings, err.Error())
+		return surface, warnings
+	}
+	warnings = append(warnings, resolved.Warnings...)
+	if resolved.IncludesWildcard {
+		warnings = append(warnings, "dependency export surface includes wildcard re-exports")
+	}
+	return resolved, warnings
+}
+
+func collectDependencyImportUsage(
+	scanResult ScanResult,
+	dependency string,
+	usedExports map[string]struct{},
+	counts map[string]int,
+	usedImports map[string]*report.ImportUse,
+	unusedImports map[string]*report.ImportUse,
+) bool {
+	hasWildcard := false
+	for _, file := range scanResult.Files {
+		for _, imp := range file.Imports {
+			if !matchesDependency(imp.Module, dependency) {
+				continue
+			}
+			used := applyImportUsage(imp, file, usedExports, counts)
+			if imp.ExportName == "*" || imp.ExportName == "default" {
+				hasWildcard = true
+			}
+			entry := recordImportUse(imp)
+			if used {
+				addImportUse(usedImports, entry)
+				continue
+			}
+			addImportUse(unusedImports, entry)
+		}
+	}
+	return hasWildcard
+}
+
+func dependencyUsageWarnings(dependency string, usedExports map[string]struct{}, hasWildcard bool) []string {
+	warnings := make([]string, 0)
+	if len(usedExports) == 0 {
+		warnings = append(warnings, fmt.Sprintf("no used exports found for dependency %q", dependency))
+	}
+	if hasWildcard {
+		warnings = append(warnings, "default or namespace imports reduce export precision")
+	}
+	return warnings
+}
+
+func buildTopSymbols(counts map[string]int) []report.SymbolUsage {
+	topSymbols := make([]report.SymbolUsage, 0, len(counts))
+	for name, count := range counts {
+		topSymbols = append(topSymbols, report.SymbolUsage{Name: name, Count: count})
+	}
+	sort.Slice(topSymbols, func(i, j int) bool {
+		if topSymbols[i].Count == topSymbols[j].Count {
+			return topSymbols[i].Name < topSymbols[j].Name
+		}
+		return topSymbols[i].Count > topSymbols[j].Count
+	})
+	if len(topSymbols) > 5 {
+		return topSymbols[:5]
+	}
+	return topSymbols
+}
+
+func totalExportCount(surface ExportSurface) int {
+	if surface.IncludesWildcard {
+		return 0
+	}
+	return len(surface.Names)
+}
+
+func exportUsedPercent(surface ExportSurface, usedExports map[string]struct{}, totalExports int) float64 {
+	if totalExports == 0 {
+		return 0
+	}
+	usedCount := countUsedExports(surface.Names, usedExports)
+	return (float64(usedCount) / float64(totalExports)) * 100
+}
+
+func applyImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
+	switch imp.Kind {
+	case ImportNamed:
+		return applyNamedImportUsage(imp, file, usedExports, counts)
+	case ImportNamespace, ImportDefault:
+		return applyNamespaceOrDefaultImportUsage(imp, file, usedExports, counts)
+	default:
+		return false
+	}
+}
+
+func applyNamedImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
+	count := file.IdentifierUsage[imp.LocalName]
+	if count <= 0 {
+		return false
+	}
+	usedExports[imp.ExportName] = struct{}{}
+	counts[imp.ExportName] += count
+	return true
+}
+
+func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
+	used := false
+	if props, ok := file.NamespaceUsage[imp.LocalName]; ok {
+		for prop, count := range props {
+			used = true
+			usedExports[prop] = struct{}{}
+			counts[prop] += count
+		}
+	}
+	if count := file.IdentifierUsage[imp.LocalName]; count > 0 {
+		used = true
+		if imp.Kind == ImportDefault {
+			usedExports["default"] = struct{}{}
+			counts["default"] += count
+		} else {
+			usedExports["*"] = struct{}{}
+			counts["*"] += count
+		}
+	}
+	return used
 }
 
 func recordImportUse(binding ImportBinding) report.ImportUse {

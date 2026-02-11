@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +10,6 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
-
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type ExportSurface struct {
@@ -39,33 +38,57 @@ func resolveDependencyExports(repoPath string, dependency string) (ExportSurface
 		return surface, err
 	}
 
-	pkgPath := filepath.Join(depPath, "package.json")
-	data, err := safeio.ReadFileUnder(depPath, pkgPath)
+	pkg, warnings, err := loadPackageJSONForSurface(depPath)
 	if err != nil {
-		surface.Warnings = append(surface.Warnings, fmt.Sprintf("unable to read %s", pkgPath))
+		surface.Warnings = append(surface.Warnings, warnings...)
+		return surface, nil
+	}
+	surface.Warnings = append(surface.Warnings, warnings...)
+
+	entrypoints := collectCandidateEntrypoints(pkg, &surface)
+	resolved := resolveEntrypoints(depPath, entrypoints, &surface)
+
+	if len(resolved) == 0 {
+		surface.Warnings = append(surface.Warnings, "no entrypoints resolved for dependency")
 		return surface, nil
 	}
 
+	parseEntrypointsIntoSurface(resolved, &surface)
+
+	return surface, nil
+}
+
+func loadPackageJSONForSurface(depPath string) (packageJSON, []string, error) {
+	pkgPath := filepath.Join(depPath, "package.json")
+	// #nosec G304 -- depPath is resolved under repoPath/node_modules for the selected dependency.
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+	}
 	var pkg packageJSON
 	if err := json.Unmarshal(data, &pkg); err != nil {
-		surface.Warnings = append(surface.Warnings, "failed to parse dependency package.json")
-		return surface, nil
+		return packageJSON{}, []string{"failed to parse dependency package.json"}, err
 	}
+	return pkg, nil, nil
+}
 
+func collectCandidateEntrypoints(pkg packageJSON, surface *ExportSurface) map[string]struct{} {
 	entrypoints := make(map[string]struct{})
 	if pkg.Exports != nil {
-		collectExportPaths(pkg.Exports, entrypoints, &surface)
+		collectExportPaths(pkg.Exports, entrypoints, surface)
 	}
 	addEntrypoint(entrypoints, pkg.Main)
 	addEntrypoint(entrypoints, pkg.Module)
 	addEntrypoint(entrypoints, pkg.Types)
 	addEntrypoint(entrypoints, pkg.Typings)
-
 	if len(entrypoints) == 0 {
 		addEntrypoint(entrypoints, "index.js")
 	}
+	return entrypoints
+}
 
-	resolved := make([]string, 0)
+func resolveEntrypoints(depPath string, entrypoints map[string]struct{}, surface *ExportSurface) []string {
+	resolved := make([]string, 0, len(entrypoints))
 	for entry := range entrypoints {
 		path, ok := resolveEntrypoint(depPath, entry)
 		if !ok {
@@ -74,12 +97,10 @@ func resolveDependencyExports(repoPath string, dependency string) (ExportSurface
 		}
 		resolved = append(resolved, path)
 	}
+	return resolved
+}
 
-	if len(resolved) == 0 {
-		surface.Warnings = append(surface.Warnings, "no entrypoints resolved for dependency")
-		return surface, nil
-	}
-
+func parseEntrypointsIntoSurface(resolved []string, surface *ExportSurface) {
 	parser := newSourceParser()
 	seenEntries := make(map[string]struct{})
 	for _, entry := range resolved {
@@ -88,33 +109,34 @@ func resolveDependencyExports(repoPath string, dependency string) (ExportSurface
 		}
 		seenEntries[entry] = struct{}{}
 
-		content, err := safeio.ReadFileUnder(depPath, entry)
+		// #nosec G304 -- entrypoints are resolved from dependency exports under depPath.
+		content, err := os.ReadFile(entry)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
 			continue
 		}
-		tree, err := parser.Parse(entry, content)
+		tree, err := parser.Parse(context.Background(), entry, content)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to parse entrypoint: %s", entry))
 			continue
 		}
-		if tree == nil {
-			continue
-		}
-		for _, name := range collectExportNames(tree, content) {
-			if name == "*" {
-				surface.IncludesWildcard = true
-				continue
-			}
-			surface.Names[name] = struct{}{}
+		if tree != nil {
+			addCollectedExports(surface, collectExportNames(tree, content))
 		}
 	}
-
 	for entry := range seenEntries {
 		surface.EntryPoints = append(surface.EntryPoints, entry)
 	}
+}
 
-	return surface, nil
+func addCollectedExports(surface *ExportSurface, names []string) {
+	for _, name := range names {
+		if name == "*" {
+			surface.IncludesWildcard = true
+			continue
+		}
+		surface.Names[name] = struct{}{}
+	}
 }
 
 func dependencyRoot(repoPath string, dependency string) (string, error) {
