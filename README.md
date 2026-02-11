@@ -79,11 +79,19 @@ go run ./cmd/surfarea analyse --top 20 --repo . --language js-ts --runtime-trace
 make fmt
 make test
 make lint
+make build
+```
+
+CI/release helper targets:
+
+```bash
+make ci
+make release VERSION=v0.1.0
 ```
 
 ## Documentation
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
 - Adapter and architecture extensibility: `docs/extensibility.md`
+- CI and release workflow: `docs/ci-usage.md`
 - Contribution guide: `CONTRIBUTING.md`
-
