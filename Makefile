@@ -7,8 +7,11 @@ DIST_DIR ?= dist
 VERSION ?= dev
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_MIN ?= 60
-HOST_GOOS := $(shell go env GOOS)
-HOST_GOARCH := $(shell go env GOARCH)
+GO ?= go
+GO_TOOLCHAIN ?= go1.26.0
+GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
+HOST_GOOS := $(shell $(GO_CMD) env GOOS)
+HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
 ZIG ?= zig
 
@@ -34,19 +37,19 @@ security:
 	gosec ./...
 
 test:
-	go test ./...
+	$(GO_CMD) test ./...
 
 cov:
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
-	go test ./... -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
-	@total=$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	$(GO_CMD) test ./... -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
+	@total=$$($(GO_CMD) tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	echo "Total coverage: $$total% (required: >= $(COVERAGE_MIN)%)"; \
 	printf "%s\n" "$$total" > .artifacts/coverage-total.txt; \
 	awk "BEGIN { exit !($$total >= $(COVERAGE_MIN)) }" || (echo "Coverage gate failed: $$total% < $(COVERAGE_MIN)%"; exit 1)
 
 build:
 	mkdir -p $(BIN_DIR)
-	go build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 ci: format-check lint security test build
 
@@ -71,7 +74,7 @@ release:
 		if [ "$$GOOS" = "windows" ]; then ext=".exe"; fi; \
 		echo "Building $$name"; \
 		if [ "$$GOOS" = "$(HOST_GOOS)" ] && [ "$$GOARCH" = "$(HOST_GOARCH)" ]; then \
-			GOOS=$$GOOS GOARCH=$$GOARCH go build -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
+			GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
 		else \
 			if [ "$$GOOS" = "darwin" ]; then \
 				echo "Cross-compiling to $$GOOS/$$GOARCH is not supported in this setup."; \
@@ -86,7 +89,7 @@ release:
 				windows/arm64) target="aarch64-windows-gnu" ;; \
 				*) echo "Unsupported cross target $$GOOS/$$GOARCH"; exit 1 ;; \
 			esac; \
-			CC="$(ZIG) cc -target $$target" CXX="$(ZIG) c++ -target $$target" CGO_ENABLED=1 GOOS=$$GOOS GOARCH=$$GOARCH go build -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
+			CC="$(ZIG) cc -target $$target" CXX="$(ZIG) c++ -target $$target" CGO_ENABLED=1 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
 		fi; \
 		if [ "$$GOOS" = "windows" ]; then \
 			(cd "$(DIST_DIR)" && zip -qr "$$name.zip" "$$name"); \
