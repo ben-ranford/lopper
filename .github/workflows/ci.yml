@@ -15,11 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
         if: ${{ !env.ACT }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -262,7 +262,7 @@ jobs:
 
       - name: Comment on coverage failure
         if: ${{ github.event_name == 'pull_request' && steps.cov.outcome == 'failure' && !env.ACT }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           COVERAGE_MIN: 60
           COVERAGE_TOTAL: ${{ steps.cov.outputs.total }}
@@ -313,7 +313,7 @@ jobs:
 
       - name: Upload binary artifact
         if: ${{ always() && !env.ACT }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: lopper-bin
           path: bin/lopper

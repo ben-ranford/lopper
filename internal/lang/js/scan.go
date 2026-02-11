@@ -294,6 +294,11 @@ func isIdentifierUsage(node *sitter.Node) bool {
 		return key == nil || key.ID() != node.ID()
 	case "object_pattern", "array_pattern":
 		return false
+	case "member_expression", "subscript_expression":
+		// Don't count the object in member/subscript expressions as direct usage
+		// since these are tracked separately as namespace property access
+		objectNode := parent.ChildByFieldName("object")
+		return objectNode == nil || objectNode.ID() != node.ID()
 	default:
 		return true
 	}

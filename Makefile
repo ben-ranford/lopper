@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security test cov build ci release clean toolchain-check toolchain-install-macos
+.PHONY: format fmt format-check lint security test cov build ci release clean toolchain-check toolchain-install-macos hooks-install hooks-uninstall
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -98,3 +98,12 @@ release:
 
 clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
+
+hooks-install:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit
+	@echo "Installed git hooks from .githooks"
+
+hooks-uninstall:
+	@git config --unset core.hooksPath || true
+	@echo "Removed custom core.hooksPath hook configuration"
