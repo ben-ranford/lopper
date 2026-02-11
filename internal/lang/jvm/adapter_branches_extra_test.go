@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -21,9 +20,7 @@ func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "Main.java"), []byte("class Main {}"), 0o600); err != nil {
-		t.Fatalf("write Main.java: %v", err)
-	}
+	writeFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
 	if err := os.Chdir(repo); err != nil {
 		t.Fatalf("chdir repo: %v", err)
 	}
@@ -41,9 +38,7 @@ func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	}
 
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	if err := os.WriteFile(repoFile, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write repo file: %v", err)
-	}
+	writeFile(t, repoFile, "x")
 	if _, err := adapter.DetectWithConfidence(context.Background(), repoFile); err == nil {
 		t.Fatalf("expected detect error for non-directory repo path")
 	}
@@ -57,16 +52,13 @@ func TestJVMRootSignalAndScanErrorBranches(t *testing.T) {
 	roots := map[string]struct{}{}
 
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	if err := os.WriteFile(repoFile, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write repo file: %v", err)
-	}
+	writeFile(t, repoFile, "x")
 	if err := applyJVMRootSignals(repoFile, detection, roots); err == nil {
 		t.Fatalf("expected root signal stat error for non-directory repo path")
 	}
 
 	repo := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := canceledContext()
 	if _, err := scanRepo(ctx, repo, map[string]string{}, map[string]string{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -90,9 +82,7 @@ func TestJVMSourceAndBuildFileBranches(t *testing.T) {
 	}
 
 	entryPath := filepath.Join(repo, "pom.xml")
-	if err := os.WriteFile(entryPath, []byte(`<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`), 0o600); err != nil {
-		t.Fatalf("write pom.xml: %v", err)
-	}
+	writeFile(t, entryPath, `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
 	entries, err := os.ReadDir(repo)
 	if err != nil {
 		t.Fatalf("readdir repo: %v", err)
@@ -218,8 +208,7 @@ func TestJVMRecommendationAndLookupBranches(t *testing.T) {
 
 func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 	repo := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := canceledContext()
 	if _, err := scanRepo(ctx, repo, map[string]string{}, map[string]string{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -233,9 +222,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 
 	// scanJVMSourceFile rel-path fallback branch using empty repoPath.
 	javaPath := filepath.Join(repo, "Main.java")
-	if err := os.WriteFile(javaPath, []byte("import custom.dep.Type;\n"), 0o600); err != nil {
-		t.Fatalf("write Main.java: %v", err)
-	}
+	writeFile(t, javaPath, "import custom.dep.Type;\n")
 	result := &scanResult{}
 	if err := scanJVMSourceFile("", javaPath, nil, nil, result); err != nil {
 		t.Fatalf("scanJVMSourceFile with empty repoPath: %v", err)
@@ -266,12 +253,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 
 	// DetectWithConfidence should ignore fs.SkipAll as non-error.
 	manyFilesRepo := t.TempDir()
-	for i := 0; i < 1050; i++ {
-		path := filepath.Join(manyFilesRepo, "f-"+strconv.Itoa(i)+".txt")
-		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-			t.Fatalf("write file: %v", err)
-		}
-	}
+	writeNumberedTextFiles(t, manyFilesRepo, 1050)
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), manyFilesRepo)
 	if err != nil {
 		t.Fatalf("detect with many files: %v", err)
@@ -290,9 +272,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 func TestJVMAnalyseWarningAndErrorBranches(t *testing.T) {
 	repo := t.TempDir()
 	javaPath := filepath.Join(repo, "Main.java")
-	if err := os.WriteFile(javaPath, []byte("import custom.dep.Type;\n"), 0o600); err != nil {
-		t.Fatalf("write Main.java: %v", err)
-	}
+	writeFile(t, javaPath, "import custom.dep.Type;\n")
 	rep, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1})
 	if err != nil {
 		t.Fatalf("analyse repo without manifests: %v", err)
@@ -301,8 +281,7 @@ func TestJVMAnalyseWarningAndErrorBranches(t *testing.T) {
 		t.Fatalf("expected missing-manifest warning, got %#v", rep.Warnings)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := canceledContext()
 	if _, err := NewAdapter().Analyse(ctx, language.Request{RepoPath: repo, TopN: 1}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error from analyse scan, got %v", err)
 	}

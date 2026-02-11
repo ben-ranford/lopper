@@ -10,18 +10,26 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func TestLoadTrace(t *testing.T) {
-	tmp := t.TempDir()
-	tracePath := filepath.Join(tmp, "runtime.ndjson")
-	content := []byte(
-		`{"kind":"resolve","module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js"}` + "\n" +
-			`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}` + "\n",
-	)
-	if err := os.WriteFile(tracePath, content, 0o644); err != nil {
+func writeTraceFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime.ndjson")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write trace: %v", err)
 	}
+	return path
+}
 
-	trace, err := Load(tracePath)
+func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
+	t.Helper()
+	return Load(writeTraceFile(t, content))
+}
+
+func TestLoadTrace(t *testing.T) {
+	trace, err := loadTraceFromContent(
+		t,
+		`{"kind":"resolve","module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+
+			`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n",
+	)
 	if err != nil {
 		t.Fatalf("load trace: %v", err)
 	}
@@ -62,12 +70,7 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 }
 
 func TestLoadTraceInvalidLine(t *testing.T) {
-	tmp := t.TempDir()
-	tracePath := filepath.Join(tmp, "runtime.ndjson")
-	if err := os.WriteFile(tracePath, []byte("{not-json}\n"), 0o644); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-	if _, err := Load(tracePath); err == nil {
+	if _, err := loadTraceFromContent(t, "{not-json}\n"); err == nil {
 		t.Fatalf("expected parse error for invalid NDJSON")
 	}
 }
@@ -96,21 +99,9 @@ func TestDependencyResolutionHelpers(t *testing.T) {
 	}
 }
 
-func TestLoadTraceReturnsOpenError(t *testing.T) {
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.ndjson")); err == nil {
-		t.Fatalf("expected open error for missing trace")
-	}
-}
-
 func TestLoadTraceScannerErrTooLong(t *testing.T) {
-	tmp := t.TempDir()
-	tracePath := filepath.Join(tmp, "runtime.ndjson")
 	tooLong := strings.Repeat("x", 80*1024)
-	if err := os.WriteFile(tracePath, []byte(tooLong), 0o644); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-
-	_, err := Load(tracePath)
+	_, err := loadTraceFromContent(t, tooLong)
 	if err == nil {
 		t.Fatalf("expected scanner error for oversized line")
 	}
@@ -175,13 +166,7 @@ func TestDependencyFromEventPrefersModule(t *testing.T) {
 }
 
 func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
-	tmp := t.TempDir()
-	tracePath := filepath.Join(tmp, "runtime.ndjson")
-	content := []byte("{\"module\":\"ok\"}\n{not-json}\n")
-	if err := os.WriteFile(tracePath, content, 0o644); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-	_, err := Load(tracePath)
+	_, err := loadTraceFromContent(t, "{\"module\":\"ok\"}\n{not-json}\n")
 	if err == nil {
 		t.Fatalf("expected parse error")
 	}
@@ -191,13 +176,7 @@ func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
 }
 
 func TestLoadTraceSkipsBlankLines(t *testing.T) {
-	tmp := t.TempDir()
-	tracePath := filepath.Join(tmp, "runtime.ndjson")
-	content := []byte("\n   \n{\"module\":\"lodash/map\"}\n")
-	if err := os.WriteFile(tracePath, content, 0o644); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-	trace, err := Load(tracePath)
+	trace, err := loadTraceFromContent(t, "\n   \n{\"module\":\"lodash/map\"}\n")
 	if err != nil {
 		t.Fatalf("load trace: %v", err)
 	}
@@ -206,7 +185,7 @@ func TestLoadTraceSkipsBlankLines(t *testing.T) {
 	}
 }
 
-func TestLoadTraceDoesNotWrapMissingFileError(t *testing.T) {
+func TestLoadTraceMissingFileError(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.ndjson"))
 	if err == nil {
 		t.Fatalf("expected missing-file error")
