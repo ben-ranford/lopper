@@ -102,7 +102,7 @@ jobs:
 
       - name: Upload Linux/Windows artifacts
         if: ${{ github.actor != 'nektos/act' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-linux-windows
           path: |
@@ -143,7 +143,7 @@ jobs:
             PLATFORMS="darwin/${host_goarch}"
 
       - name: Upload Darwin artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-darwin
           path: |
