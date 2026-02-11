@@ -3,7 +3,9 @@
 This repository includes two GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests and pushes to `main`
-- `.github/workflows/release.yml`: on every commit to `main`, runs CI and publishes a GitHub release with build artifacts
+- `.github/workflows/release.yml`: on every commit to `main`, runs CI and publishes a GitHub release with:
+  - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
+  - Darwin artifact from macOS (native arch)
 
 ## Example pipeline
 
@@ -31,10 +33,21 @@ jobs:
 - `make lint`: run `golangci-lint`
 - `make format-check`: fail if `gofmt` changes are needed
 - `make ci`: `format-check + lint + test + build`
+- `make toolchain-check`: verify required cross toolchain binaries
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
 
-To build multiple platforms (requires compatible toolchains/libraries):
+Cross-compilation uses `zig cc` for CGO targets.
+Current cross-CGO release targets are Linux and Windows.
+For Darwin artifacts, build on a macOS runner with native architecture.
+
+To build multiple platforms:
 
 ```bash
 make release VERSION=v0.1.0 PLATFORMS="linux/amd64 darwin/arm64 windows/amd64"
+```
+
+On macOS, install toolchain support with:
+
+```bash
+make toolchain-install-macos
 ```

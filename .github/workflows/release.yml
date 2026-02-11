@@ -13,13 +13,64 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Compute release tag
+        id: tag
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          date_tag="$(date -u +'%Y%m%d%H%M%S')"
+          tag="main-${date_tag}-${short_sha}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build-linux-windows:
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          fetch-depth: 0
+          go-version-file: go.mod
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate project
+        run: make ci
+
+      - name: Build Linux/Windows release artifacts
+        run: |
+          make release \
+            VERSION=${{ needs.prepare.outputs.tag }} \
+            PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
+
+      - name: Upload Linux/Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-windows
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  build-darwin:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -34,23 +85,42 @@ jobs:
       - name: Validate project
         run: make ci
 
-      - name: Compute release tag
-        id: tag
+      - name: Build Darwin release artifact
         run: |
-          short_sha="${GITHUB_SHA::7}"
-          date_tag="$(date -u +'%Y%m%d%H%M%S')"
-          tag="main-${date_tag}-${short_sha}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          host_goarch="$(go env GOARCH)"
+          make release \
+            VERSION=${{ needs.prepare.outputs.tag }} \
+            PLATFORMS="darwin/${host_goarch}"
 
-      - name: Build release artifacts
-        run: make release VERSION=${{ steps.tag.outputs.tag }}
+      - name: Upload Darwin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish:
+    needs:
+      - prepare
+      - build-linux-windows
+      - build-darwin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Release ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Release ${{ needs.prepare.outputs.tag }}
           generate_release_notes: true
           files: |
             dist/*.tar.gz
             dist/*.zip
+

@@ -87,6 +87,7 @@ CI/release helper targets:
 ```bash
 make ci
 make release VERSION=v0.1.0
+make toolchain-check
 ```
 
 ## Documentation
