@@ -20,12 +20,13 @@ recommendations across supported languages.
 - `js-ts` (JavaScript/TypeScript)
 - `python` (Python)
 - `jvm` (Java/Kotlin import analysis)
+- `go` (Go module import analysis)
 
 Language selection modes:
 
 - `auto`: choose the highest-confidence detected adapter
 - `all`: run all matching adapters and merge results
-- `<id>`: force one adapter (`js-ts`, `python`, `jvm`)
+- `<id>`: force one adapter (`js-ts`, `python`, `jvm`, `go`)
 
 ## Quick start
 
