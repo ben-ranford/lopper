@@ -36,7 +36,7 @@ func formatTable(report Report) string {
 
 	var buffer bytes.Buffer
 	if report.Summary != nil {
-		fmt.Fprintf(
+		_, _ = fmt.Fprintf(
 			&buffer,
 			"Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n",
 			report.Summary.DependencyCount,
@@ -59,9 +59,9 @@ func formatTable(report Report) string {
 
 	showLanguage := hasLanguageColumn(report.Dependencies)
 	if showLanguage {
-		fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+		_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
 	} else {
-		fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+		_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
 	}
 	for _, dep := range report.Dependencies {
 		usedPercent := dep.UsedPercent
@@ -70,7 +70,7 @@ func formatTable(report Report) string {
 		}
 		usedTotal := fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount)
 		if showLanguage {
-			fmt.Fprintf(
+			_, _ = fmt.Fprintf(
 				writer,
 				"%s\t%s\t%s\t%.1f\t%s\t%s\n",
 				dep.Language,
@@ -81,7 +81,7 @@ func formatTable(report Report) string {
 				formatTopSymbols(dep.TopUsedSymbols),
 			)
 		} else {
-			fmt.Fprintf(
+			_, _ = fmt.Fprintf(
 				writer,
 				"%s\t%s\t%.1f\t%s\t%s\n",
 				dep.Name,
@@ -93,7 +93,7 @@ func formatTable(report Report) string {
 		}
 	}
 
-	writer.Flush()
+	_ = writer.Flush()
 	appendWarnings(&buffer, report)
 
 	return buffer.String()
