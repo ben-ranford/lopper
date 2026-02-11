@@ -209,7 +209,7 @@ jobs:
         run: |
           set -euo pipefail
           current_tag="${{ needs.prepare.outputs.tag }}"
-          previous_tag="$(git tag --list 'main-*' --sort=-creatordate | sed -n '1p')"
+          previous_tag="$(git tag --list 'main-*' --sort=-creatordate | awk -v current="${current_tag}" '$0 != current {print; exit}')"
           ghcr_owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           ghcr_ref="ghcr.io/${ghcr_owner}/lopper:${current_tag}"
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
@@ -219,7 +219,7 @@ jobs:
             echo
             echo "## Container image"
             echo
-            echo "- Tagged image: [\`${ghcr_ref}\`](https://${ghcr_ref})"
+            echo "- Tagged image: \`${ghcr_ref}\`"
             echo "- Package: [GHCR lopper package](${ghcr_package_url})"
             echo "- Pull command: \`docker pull ${ghcr_ref}\`"
             echo
