@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint test build ci release clean toolchain-check toolchain-install-macos
+.PHONY: format fmt format-check lint security test build ci release clean toolchain-check toolchain-install-macos
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -27,6 +27,10 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 || (echo "golangci-lint not found in PATH"; exit 1)
 	golangci-lint run ./...
 
+security:
+	@command -v gosec >/dev/null 2>&1 || (echo "gosec not found in PATH"; exit 1)
+	gosec ./...
+
 test:
 	go test ./...
 
@@ -34,7 +38,7 @@ build:
 	mkdir -p $(BIN_DIR)
 	go build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-ci: format-check lint test build
+ci: format-check lint security test build
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)

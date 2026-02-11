@@ -13,6 +13,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -216,7 +217,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
+		content, err := safeio.ReadFileUnder(repoPath, path)
 		if err != nil {
 			return err
 		}

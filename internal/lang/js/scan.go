@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	tslang "github.com/smacker/go-tree-sitter/typescript/typescript"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type ImportKind string
@@ -97,7 +97,7 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 			return nil
 		}
 
-		content, readErr := os.ReadFile(path)
+		content, readErr := safeio.ReadFileUnder(repoPath, path)
 		if readErr != nil {
 			return readErr
 		}

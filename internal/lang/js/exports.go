@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type ExportSurface struct {
@@ -38,7 +40,7 @@ func resolveDependencyExports(repoPath string, dependency string) (ExportSurface
 	}
 
 	pkgPath := filepath.Join(depPath, "package.json")
-	data, err := os.ReadFile(pkgPath)
+	data, err := safeio.ReadFileUnder(depPath, pkgPath)
 	if err != nil {
 		surface.Warnings = append(surface.Warnings, fmt.Sprintf("unable to read %s", pkgPath))
 		return surface, nil
@@ -86,7 +88,7 @@ func resolveDependencyExports(repoPath string, dependency string) (ExportSurface
 		}
 		seenEntries[entry] = struct{}{}
 
-		content, err := os.ReadFile(entry)
+		content, err := safeio.ReadFileUnder(depPath, entry)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
 			continue

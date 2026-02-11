@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -27,7 +28,7 @@ func assessRiskCues(repoPath string, dependency string, surface ExportSurface) (
 	pkg, warnings := loadDependencyPackageJSON(depRoot)
 	cues := make([]report.RiskCue, 0, 3)
 
-	if dynamicCount, samples, err := detectDynamicLoaderUsage(surface.EntryPoints); err == nil && dynamicCount > 0 {
+	if dynamicCount, samples, err := detectDynamicLoaderUsage(depRoot, surface.EntryPoints); err == nil && dynamicCount > 0 {
 		msg := fmt.Sprintf("dynamic require/import usage found in %d dependency entrypoint location(s)", dynamicCount)
 		if len(samples) > 0 {
 			msg = fmt.Sprintf("%s (%s)", msg, strings.Join(samples, ", "))
@@ -77,7 +78,7 @@ func assessRiskCues(repoPath string, dependency string, surface ExportSurface) (
 
 func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	pkgPath := filepath.Join(depRoot, "package.json")
-	data, err := os.ReadFile(pkgPath)
+	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}
@@ -89,7 +90,7 @@ func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	return pkg, nil
 }
 
-func detectDynamicLoaderUsage(entrypoints []string) (int, []string, error) {
+func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []string, error) {
 	count := 0
 	samples := make([]string, 0, 3)
 
@@ -97,7 +98,7 @@ func detectDynamicLoaderUsage(entrypoints []string) (int, []string, error) {
 		if !isLikelyCodeAsset(entry) {
 			continue
 		}
-		content, err := os.ReadFile(entry)
+		content, err := safeio.ReadFileUnder(depRoot, entry)
 		if err != nil {
 			return 0, nil, err
 		}
