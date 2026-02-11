@@ -6,7 +6,7 @@ Thanks for contributing to Lopper.
 
 Requirements:
 
-- Go `1.25.x`
+- Go `1.26.x`
 - `golangci-lint` (optional, required for `make lint`)
 
 Install dependencies and run checks:
