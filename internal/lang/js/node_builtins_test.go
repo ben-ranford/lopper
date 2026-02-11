@@ -2,6 +2,12 @@ package js
 
 import "testing"
 
+const (
+	testFsPromises  = "fs/promises"
+	testBabelCore   = "@babel/core"
+	testTypesNode   = "@types/node"
+)
+
 func TestIsNodeBuiltin(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -21,14 +27,14 @@ func TestIsNodeBuiltin(t *testing.T) {
 		{"http with prefix", "node:http", true},
 
 		// Built-ins with subpaths
-		{"fs/promises", "fs/promises", true},
+		{"fs/promises", testFsPromises, true},
 		{"path/posix", "path/posix", true},
-		{"node:fs/promises", "node:fs/promises", true},
+		{"node:fs/promises", "node:" + testFsPromises, true},
 
 		// Not built-ins
 		{"lodash", "lodash", false},
 		{"react", "react", false},
-		{"@babel/core", "@babel/core", false},
+		{"@babel/core", testBabelCore, false},
 		{"fake-fs", "fake-fs", false},
 
 		// Edge cases
@@ -59,13 +65,13 @@ func TestDependencyFromModuleBuiltins(t *testing.T) {
 		{"crypto bare", "crypto", ""},
 		{"node:fs prefix", "node:fs", ""},
 		{"node:path prefix", "node:path", ""},
-		{"fs/promises subpath", "fs/promises", ""},
+		{"fs/promises subpath", testFsPromises, ""},
 
 		// npm packages should return package name
 		{"lodash", "lodash", "lodash"},
 		{"lodash/map", "lodash/map", "lodash"},
-		{"@babel/core", "@babel/core", "@babel/core"},
-		{"@types/node", "@types/node", "@types/node"},
+		{"@babel/core", testBabelCore, testBabelCore},
+		{"@types/node", testTypesNode, testTypesNode},
 
 		// Relative/local imports should return empty
 		{"./local", "./local", ""},

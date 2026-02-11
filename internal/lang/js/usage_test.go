@@ -9,6 +9,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const testJsFile = "test.js"
+
 func TestNamespaceUsageComputedProperty(t *testing.T) {
 	repo := t.TempDir()
 	source := "import * as util from \"lodash\"\nutil['map']([1], (x) => x)\n"
@@ -150,7 +152,7 @@ func TestHasDirectIdentifierUsage(t *testing.T) {
 	}
 }
 
-func TestCollectDependencyImportUsage_WildcardWarning(t *testing.T) {
+func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 	tests := []struct {
 		name                string
 		scanResult          ScanResult
@@ -164,14 +166,14 @@ func TestCollectDependencyImportUsage_WildcardWarning(t *testing.T) {
 			scanResult: ScanResult{
 				Files: []FileScan{
 					{
-						Path: "test.js",
+						Path: testJsFile,
 						Imports: []ImportBinding{
 							{
 								Module:     "lodash",
 								ExportName: "*",
 								LocalName:  "lodash",
 								Kind:       ImportNamespace,
-								Location:   report.Location{File: "test.js", Line: 1},
+								Location:   report.Location{File: testJsFile, Line: 1},
 							},
 						},
 						IdentifierUsage: map[string]int{},
@@ -190,14 +192,14 @@ func TestCollectDependencyImportUsage_WildcardWarning(t *testing.T) {
 			scanResult: ScanResult{
 				Files: []FileScan{
 					{
-						Path: "test.js",
+						Path: testJsFile,
 						Imports: []ImportBinding{
 							{
 								Module:     "lodash",
 								ExportName: "*",
 								LocalName:  "lodash",
 								Kind:       ImportNamespace,
-								Location:   report.Location{File: "test.js", Line: 1},
+								Location:   report.Location{File: testJsFile, Line: 1},
 							},
 						},
 						IdentifierUsage: map[string]int{
@@ -244,14 +246,14 @@ func TestCollectDependencyImportUsage_WildcardWarning(t *testing.T) {
 			scanResult: ScanResult{
 				Files: []FileScan{
 					{
-						Path: "test.js",
+						Path: testJsFile,
 						Imports: []ImportBinding{
 							{
 								Module:     "lodash",
 								ExportName: "get",
 								LocalName:  "get",
 								Kind:       ImportNamed,
-								Location:   report.Location{File: "test.js", Line: 1},
+								Location:   report.Location{File: testJsFile, Line: 1},
 							},
 						},
 						IdentifierUsage: map[string]int{
