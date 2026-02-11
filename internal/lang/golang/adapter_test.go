@@ -16,19 +16,34 @@ import (
 )
 
 const (
-	goModDemo         = "module example.com/demo\n\ngo 1.25\n"
-	goModDemoWithUUID = "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n"
-	mainNoopProgram   = "package main\n\nfunc main() {}\n"
+	errDetectFmt        = "detect: %v"
+	depUUID             = "github.com/google/uuid"
+	depLo               = "github.com/samber/lo"
+	fileGoMod           = "go.mod"
+	fileMainGo          = "main.go"
+	fileGoWork          = "go.work"
+	fileLargeGo         = "large.go"
+	moduleDemo          = "example.com/demo"
+	moduleDemoLine      = "module example.com/demo"
+	moduleOriginal      = "example.com/original"
+	importLoLine        = "import \"github.com/samber/lo\""
+	packageMainLine     = "package main"
+	exampleModuleA      = "example.com/a"
+	exampleModuleX      = "example.com/x"
+	goModDemo           = moduleDemoLine + "\n\ngo 1.25\n"
+	goModDemoWithUUID   = moduleDemoLine + "\n\nrequire " + depUUID + " v1.6.0\n"
+	mainNoopProgram     = packageMainLine + "\n\nfunc main() {}\n"
+	mainUUIDNoopProgram = packageMainLine + "\n\nimport \"" + depUUID + "\"\n\nfunc main() { _ = uuid.NewString() }\n"
 )
 
 func TestAdapterDetectWithGoModAndSource(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemoWithUUID)
-	writeRepoMain(t, repo, "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
+	writeRepoMain(t, repo, mainUUIDNoopProgram)
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(errDetectFmt, err)
 	}
 	if !detection.Matched {
 		t.Fatalf("expected go detection to match")
@@ -81,12 +96,12 @@ func TestDetectWithConfidenceRepoIsFileErrors(t *testing.T) {
 
 func TestApplyGoRootSignalsGoWorkError(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoGoMod(t, repo, "module example.com/demo\n")
+	writeRepoGoMod(t, repo, moduleDemoLine+"\n")
 	mkdirGoWorkDir(t, repo)
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
-	if err := applyGoRootSignals(repo, &detection, roots); err == nil {
+	if applyGoRootSignals(repo, &detection, roots) == nil {
 		t.Fatalf("expected applyGoRootSignals error when go.work is unreadable")
 	}
 }
@@ -94,11 +109,11 @@ func TestApplyGoRootSignalsGoWorkError(t *testing.T) {
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemoWithUUID)
-	writeRepoMain(t, repo, "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/google/uuid\"\n)\n\nfunc main() {\n\tfmt.Println(uuid.NewString())\n}\n")
+	writeRepoMain(t, repo, packageMainLine+"\n\nimport (\n\t\"fmt\"\n\t\""+depUUID+"\"\n)\n\nfunc main() {\n\tfmt.Println(uuid.NewString())\n}\n")
 
 	reportData := analyseReport(t, language.Request{
 		RepoPath:   repo,
-		Dependency: "github.com/google/uuid",
+		Dependency: depUUID,
 	})
 	requireDependencyCount(t, reportData, 1)
 	dep := reportData.Dependencies[0]
@@ -108,8 +123,8 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	if dep.UsedExportsCount == 0 {
 		t.Fatalf("expected used exports > 0")
 	}
-	if dep.Name != "github.com/google/uuid" {
-		t.Fatalf("expected dependency github.com/google/uuid, got %q", dep.Name)
+	if dep.Name != depUUID {
+		t.Fatalf("expected dependency %s, got %q", depUUID, dep.Name)
 	}
 }
 
@@ -118,7 +133,7 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 	adapter := NewAdapter()
 
 	// loadGoModuleInfo failure path via unreadable go.mod (directory)
-	if err := os.Mkdir(filepath.Join(repo, "go.mod"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
 		t.Fatalf("mkdir go.mod dir: %v", err)
 	}
 	_, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo})
@@ -129,7 +144,7 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 	// scanRepo failure path via canceled context
 	repo2 := t.TempDir()
 	writeRepoGoMod(t, repo2, goModDemo)
-	writeRepoMain(t, repo2, "package main\n\nfunc main(){}\n")
+	writeRepoMain(t, repo2, packageMainLine+"\n\nfunc main(){}\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = adapter.Analyse(ctx, language.Request{RepoPath: repo2})
@@ -150,8 +165,8 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoGoMod(t, repo, "module example.com/demo\n\nrequire (\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/samber/lo v1.47.0\n)\n")
-	writeRepoMain(t, repo, "package main\n\nimport (\n\tu \"github.com/google/uuid\"\n\t\"github.com/samber/lo\"\n)\n\nfunc main() {\n\t_ = u.NewString()\n\t_ = lo.Contains([]int{1,2}, 2)\n}\n")
+	writeRepoGoMod(t, repo, moduleDemoLine+"\n\nrequire (\n\t"+depUUID+" v1.6.0\n\t"+depLo+" v1.47.0\n)\n")
+	writeRepoMain(t, repo, packageMainLine+"\n\nimport (\n\tu \""+depUUID+"\"\n\t\""+depLo+"\"\n)\n\nfunc main() {\n\t_ = u.NewString()\n\t_ = lo.Contains([]int{1,2}, 2)\n}\n")
 
 	reportData := analyseReport(t, language.Request{
 		RepoPath: repo,
@@ -159,7 +174,7 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 	})
 	requireDependencyCount(t, reportData, 2)
 	names := []string{reportData.Dependencies[0].Name, reportData.Dependencies[1].Name}
-	for _, dependency := range []string{"github.com/google/uuid", "github.com/samber/lo"} {
+	for _, dependency := range []string{depUUID, depLo} {
 		if !slices.Contains(names, dependency) {
 			t.Fatalf("expected dependency %q in %#v", dependency, names)
 		}
@@ -167,29 +182,29 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 }
 
 func TestParseImportsSkipsStdlibAndLocal(t *testing.T) {
-	content := []byte("package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/demo/internal/foo\"\n\t\"github.com/google/uuid\"\n)\n")
-	imports, _ := parseImports(content, "main.go", moduleInfo{
-		ModulePath:           "example.com/demo",
-		LocalModulePaths:     []string{"example.com/demo"},
-		DeclaredDependencies: []string{"github.com/google/uuid"},
+	content := []byte(packageMainLine + "\n\nimport (\n\t\"fmt\"\n\t\"" + moduleDemo + "/internal/foo\"\n\t\"" + depUUID + "\"\n)\n")
+	imports, _ := parseImports(content, fileMainGo, moduleInfo{
+		ModulePath:           moduleDemo,
+		LocalModulePaths:     []string{moduleDemo},
+		DeclaredDependencies: []string{depUUID},
 	})
 	if len(imports) != 1 {
 		t.Fatalf("expected one external dependency import, got %d", len(imports))
 	}
-	if imports[0].Dependency != "github.com/google/uuid" {
+	if imports[0].Dependency != depUUID {
 		t.Fatalf("unexpected dependency %q", imports[0].Dependency)
 	}
 }
 
 func TestAdapterDetectWithGoWorkRoots(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse (\n\t./services/api\n)\n")
-	writeFile(t, filepath.Join(repo, "services", "api", "go.mod"), "module example.com/api\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo, "services", "api", "main.go"), "package main\n\nfunc main() {}\n")
+	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse (\n\t./services/api\n)\n")
+	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), "module example.com/api\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "services", "api", fileMainGo), mainNoopProgram)
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(errDetectFmt, err)
 	}
 	expectedRoot := filepath.Join(repo, "services", "api")
 	if !slices.Contains(detection.Roots, expectedRoot) {
@@ -203,7 +218,7 @@ func TestAdapterDetectWithNoSignals(t *testing.T) {
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(errDetectFmt, err)
 	}
 	if detection.Matched {
 		t.Fatalf("expected no match, got %#v", detection)
@@ -217,7 +232,7 @@ func TestAdapterAnalyseUndeclaredDependencySignals(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemo)
 	writeRepoMain(t, repo, strings.Join([]string{
-		"package main",
+		packageMainLine,
 		"",
 		"import (",
 		"\t_ \"github.com/lib/pq\"",
@@ -262,16 +277,16 @@ func TestAdapterAnalyseUndeclaredDependencySignals(t *testing.T) {
 
 func TestReplacementImportMapsToDependency(t *testing.T) {
 	modulePath, dependencies, replacements := parseGoMod([]byte(strings.Join([]string{
-		"module example.com/demo",
+		moduleDemoLine,
 		"",
-		"require example.com/original v1.0.0",
-		"replace example.com/original => github.com/fork/original v1.0.1",
+		"require " + moduleOriginal + " v1.0.0",
+		"replace " + moduleOriginal + " => github.com/fork/original v1.0.1",
 		"",
 	}, "\n")))
-	if modulePath != "example.com/demo" {
-		t.Fatalf("expected module path example.com/demo, got %q", modulePath)
+	if modulePath != moduleDemo {
+		t.Fatalf("expected module path %s, got %q", moduleDemo, modulePath)
 	}
-	if len(dependencies) != 1 || dependencies[0] != "example.com/original" {
+	if len(dependencies) != 1 || dependencies[0] != moduleOriginal {
 		t.Fatalf("unexpected dependencies: %#v", dependencies)
 	}
 
@@ -281,45 +296,45 @@ func TestReplacementImportMapsToDependency(t *testing.T) {
 		DeclaredDependencies: dependencies,
 		ReplacementImports:   replacements,
 	})
-	if dependency != "example.com/original" {
-		t.Fatalf("expected replacement mapping to example.com/original, got %q", dependency)
+	if dependency != moduleOriginal {
+		t.Fatalf("expected replacement mapping to %s, got %q", moduleOriginal, dependency)
 	}
 }
 
 func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoModLines(t, repo,
-		"module example.com/demo",
+		moduleDemoLine,
 		"",
 		"require (",
-		"\tgithub.com/google/uuid v1.6.0",
-		"\tgithub.com/samber/lo v1.47.0",
+		"\t"+depUUID+" v1.6.0",
+		"\t"+depLo+" v1.47.0",
 		")",
 		"",
 	)
 
 	writeRepoMainLines(t, repo,
-		"package main",
+		packageMainLine,
 		"",
-		"import \"github.com/google/uuid\"",
+		"import \""+depUUID+"\"",
 		"",
 		"func main() { _ = uuid.NewString() }",
 		"",
 	)
 	writeFile(t, filepath.Join(repo, "generated_lo.go"), strings.Join([]string{
 		"// Code generated by mockgen. DO NOT EDIT.",
-		"package main",
+		packageMainLine,
 		"",
-		"import \"github.com/samber/lo\"",
+		importLoLine,
 		"",
 		"var _ = lo.Contains([]int{1,2}, 2)",
 		"",
 	}, "\n"))
 	writeFile(t, filepath.Join(repo, "tagged_lo.go"), strings.Join([]string{
 		"//go:build never",
-		"package main",
+		packageMainLine,
 		"",
-		"import \"github.com/samber/lo\"",
+		importLoLine,
 		"",
 		"var _ = lo.Contains([]int{1,2}, 2)",
 		"",
@@ -330,10 +345,10 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 		TopN:     5,
 	})
 	names := dependencyNames(reportData.Dependencies)
-	if !slices.Contains(names, "github.com/google/uuid") {
+	if !slices.Contains(names, depUUID) {
 		t.Fatalf("expected uuid dependency in %#v", names)
 	}
-	if slices.Contains(names, "github.com/samber/lo") {
+	if slices.Contains(names, depLo) {
 		t.Fatalf("did not expect lo dependency from skipped files in %#v", names)
 	}
 
@@ -351,28 +366,28 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	writeRepoGoModLines(t, repo,
 		"module example.com/root",
 		"",
-		"require github.com/google/uuid v1.6.0",
+		"require "+depUUID+" v1.6.0",
 		"",
 	)
 	writeRepoMainLines(t, repo,
-		"package main",
+		packageMainLine,
 		"",
-		"import \"github.com/google/uuid\"",
+		"import \""+depUUID+"\"",
 		"",
 		"func main() { _ = uuid.NewString() }",
 		"",
 	)
 
-	writeFile(t, filepath.Join(repo, "services", "api", "go.mod"), strings.Join([]string{
+	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), strings.Join([]string{
 		"module example.com/api",
 		"",
-		"require github.com/samber/lo v1.47.0",
+		"require " + depLo + " v1.47.0",
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "services", "api", "main.go"), strings.Join([]string{
-		"package main",
+	writeFile(t, filepath.Join(repo, "services", "api", fileMainGo), strings.Join([]string{
+		packageMainLine,
 		"",
-		"import \"github.com/samber/lo\"",
+		importLoLine,
 		"",
 		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
 		"",
@@ -383,10 +398,10 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 		TopN:     10,
 	})
 	names := dependencyNames(reportData.Dependencies)
-	if !slices.Contains(names, "github.com/google/uuid") {
+	if !slices.Contains(names, depUUID) {
 		t.Fatalf("expected root dependency uuid in %#v", names)
 	}
-	if slices.Contains(names, "github.com/samber/lo") {
+	if slices.Contains(names, depLo) {
 		t.Fatalf("did not expect nested module dependency lo in root scan %#v", names)
 	}
 
@@ -449,7 +464,7 @@ func TestLoadGoModuleInfoNoGoMod(t *testing.T) {
 
 func TestLoadGoModuleInfoReadError(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repo, "go.mod"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
 		t.Fatalf("mkdir go.mod dir: %v", err)
 	}
 	_, err := loadGoModuleInfo(repo)
@@ -487,7 +502,7 @@ func TestLoadGoWorkLocalModulesReadError(t *testing.T) {
 
 func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.work"), strings.Join([]string{
+	writeFile(t, filepath.Join(repo, fileGoWork), strings.Join([]string{
 		"go 1.25",
 		"",
 		"use (",
@@ -497,20 +512,20 @@ func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
 		"use ./svc/b",
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "svc", "a", "go.mod"), "module example.com/a\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo, "svc", "b", "go.mod"), "module example.com/b\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+"\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "svc", "b", fileGoMod), "module example.com/b\n\ngo 1.25\n")
 
 	mods, err := loadGoWorkLocalModules(repo)
 	if err != nil {
 		t.Fatalf("load go.work modules: %v", err)
 	}
-	if !slices.Contains(mods, "example.com/a") || !slices.Contains(mods, "example.com/b") {
+	if !slices.Contains(mods, exampleModuleA) || !slices.Contains(mods, "example.com/b") {
 		t.Fatalf("expected workspace modules in %#v", mods)
 	}
 }
 
 func TestParseImportsParseError(t *testing.T) {
-	imports, metadata := parseImports([]byte("package main\nimport ("), "broken.go", moduleInfo{})
+	imports, metadata := parseImports([]byte(packageMainLine+"\nimport ("), "broken.go", moduleInfo{})
 	if len(imports) != 0 || len(metadata) != 0 {
 		t.Fatalf("expected no imports on parse failure, got %#v %#v", imports, metadata)
 	}
@@ -524,29 +539,35 @@ func TestTrimImportPathNil(t *testing.T) {
 
 func TestApplyImportMetadataNilScanResult(t *testing.T) {
 	applyImportMetadata([]importMetadata{
-		{Dependency: "example.com/a", IsBlank: true, Undeclared: true},
+		{Dependency: exampleModuleA, IsBlank: true, Undeclared: true},
 	}, nil)
 }
 
 func TestImportBindingIdentityBranches(t *testing.T) {
-	name, local, wildcard := importBindingIdentity("github.com/google/uuid", nil)
+	name, local, wildcard := importBindingIdentity(depUUID, nil)
 	if name != "uuid" || local != "uuid" || wildcard {
 		t.Fatalf("unexpected default import identity %q %q %v", name, local, wildcard)
 	}
-	name, local, wildcard = importBindingIdentity("github.com/google/uuid", &ast.Ident{Name: "."})
+	name, local, wildcard = importBindingIdentity(depUUID, &ast.Ident{Name: "."})
 	if name != "uuid" || local != "" || !wildcard {
 		t.Fatalf("unexpected dot import identity %q %q %v", name, local, wildcard)
 	}
-	name, local, wildcard = importBindingIdentity("github.com/google/uuid", &ast.Ident{Name: "_"})
+	name, local, wildcard = importBindingIdentity(depUUID, &ast.Ident{Name: "_"})
 	if name != "_" || local != "" || wildcard {
 		t.Fatalf("unexpected blank import identity %q %q %v", name, local, wildcard)
 	}
 }
 
 func TestBuildConstraintHelpers(t *testing.T) {
+	t.Run("matching_and_extraction", testBuildConstraintMatchingAndExtraction)
+	t.Run("comment_parsing_and_scan_stop", testBuildConstraintCommentAndScanStop)
+	t.Run("tag_helpers", testBuildConstraintTagHelpers)
+}
+
+func testBuildConstraintMatchingAndExtraction(t *testing.T) {
 	content := []byte(strings.Join([]string{
 		"//go:build " + runtime.GOOS,
-		"package main",
+		packageMainLine,
 		"",
 	}, "\n"))
 	if !matchesActiveBuild(content) {
@@ -555,13 +576,12 @@ func TestBuildConstraintHelpers(t *testing.T) {
 
 	plusBuildOnly := []byte(strings.Join([]string{
 		"// +build " + runtime.GOOS,
-		"package main",
+		packageMainLine,
 		"",
 	}, "\n"))
 	if !matchesActiveBuild(plusBuildOnly) {
 		t.Fatalf("expected +build for current GOOS to match")
 	}
-
 	goBuild, plusBuild := extractBuildConstraintExpressions(plusBuildOnly)
 	if goBuild != nil {
 		t.Fatalf("expected nil go:build expr")
@@ -569,7 +589,30 @@ func TestBuildConstraintHelpers(t *testing.T) {
 	if len(plusBuild) == 0 {
 		t.Fatalf("expected plus-build expr")
 	}
+}
 
+func testBuildConstraintCommentAndScanStop(t *testing.T) {
+	if expr, kind := parseBuildConstraintComment("//go:build ("); expr != nil || kind != "go" {
+		t.Fatalf("unexpected malformed go:build parse result: %v %q", expr, kind)
+	}
+	if _, kind := parseBuildConstraintComment("// +build [invalid"); kind != "plus" {
+		t.Fatalf("unexpected malformed +build parse kind: %q", kind)
+	}
+	if expr, kind := parseBuildConstraintComment("// random"); expr != nil || kind != "" {
+		t.Fatalf("unexpected non-build comment parse result: %v %q", expr, kind)
+	}
+	if !shouldStopBuildConstraintScan(packageMainLine) {
+		t.Fatalf("expected package line to stop scan")
+	}
+	if !shouldStopBuildConstraintScan("var x = 1") {
+		t.Fatalf("expected non-comment line to stop scan")
+	}
+	if shouldStopBuildConstraintScan("// comment") {
+		t.Fatalf("expected comment line not to stop scan")
+	}
+}
+
+func testBuildConstraintTagHelpers(t *testing.T) {
 	if isActiveBuildTag("definitely-not-a-real-tag") {
 		t.Fatalf("expected unknown tag to be inactive")
 	}
@@ -585,29 +628,6 @@ func TestBuildConstraintHelpers(t *testing.T) {
 	if minInt(3, 8) != 3 || minInt(8, 3) != 3 {
 		t.Fatalf("unexpected minInt")
 	}
-
-	// Malformed comments should parse as no-op branches.
-	if expr, kind := parseBuildConstraintComment("//go:build ("); expr != nil || kind != "go" {
-		t.Fatalf("unexpected malformed go:build parse result: %v %q", expr, kind)
-	}
-	if _, kind := parseBuildConstraintComment("// +build [invalid"); kind != "plus" {
-		t.Fatalf("unexpected malformed +build parse kind: %q", kind)
-	}
-	if expr, kind := parseBuildConstraintComment("// random"); expr != nil || kind != "" {
-		t.Fatalf("unexpected non-build comment parse result: %v %q", expr, kind)
-	}
-
-	if shouldStopBuildConstraintScan("package main") != true {
-		t.Fatalf("expected package line to stop scan")
-	}
-	if shouldStopBuildConstraintScan("var x = 1") != true {
-		t.Fatalf("expected non-comment line to stop scan")
-	}
-	if shouldStopBuildConstraintScan("// comment") != false {
-		t.Fatalf("expected comment line not to stop scan")
-	}
-
-	// Exercise unix/cgo/go1 paths.
 	if runtime.GOOS != "windows" && !isActiveBuildTag("unix") {
 		t.Fatalf("expected unix tag active on non-windows")
 	}
@@ -689,8 +709,8 @@ func TestUseEntriesAndPathNormalization(t *testing.T) {
 
 func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/root\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo, "sub", "go.mod"), "module example.com/sub\n\nrequire github.com/google/uuid v1.6.0\n")
+	writeFile(t, filepath.Join(repo, fileGoMod), "module example.com/root\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, "sub", fileGoMod), "module example.com/sub\n\nrequire "+depUUID+" v1.6.0\n")
 
 	dirs, err := nestedModuleDirs(repo)
 	if err != nil {
@@ -707,7 +727,7 @@ func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 	if !slices.Contains(mods, "example.com/sub") {
 		t.Fatalf("expected nested module path in %#v", mods)
 	}
-	if !slices.Contains(deps, "github.com/google/uuid") {
+	if !slices.Contains(deps, depUUID) {
 		t.Fatalf("expected nested dependency in %#v", deps)
 	}
 	if len(replacements) != 0 {
@@ -718,15 +738,15 @@ func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 
-	if _, _, _, err := discoverNestedModules(filepath.Join(repo, "missing")); err == nil {
+	if _, _, _, err = discoverNestedModules(filepath.Join(repo, "missing")); err == nil {
 		t.Fatalf("expected discoverNestedModules error for missing repo")
 	}
 }
 
 func TestGoRootAndDetectionHelpers(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse ./svc/a\n")
-	writeFile(t, filepath.Join(repo, "svc", "a", "go.mod"), "module example.com/a\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse ./svc/a\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+"\n\ngo 1.25\n")
 
 	roots := map[string]struct{}{}
 	if err := addGoWorkRoots(repo, roots); err != nil {
@@ -744,12 +764,12 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 	// go.work as directory should error
 	repoErr := t.TempDir()
 	mkdirGoWorkDir(t, repoErr)
-	if err := addGoWorkRoots(repoErr, map[string]struct{}{}); err == nil {
+	if addGoWorkRoots(repoErr, map[string]struct{}{}) == nil {
 		t.Fatalf("expected addGoWorkRoots read error")
 	}
 
 	update := language.Detection{}
-	updateGoDetection(filepath.Join(repo, "main.go"), mustDirEntry(t, writeTempFile(t, repo, "main.go", "package main")), map[string]struct{}{}, &update)
+	updateGoDetection(filepath.Join(repo, fileMainGo), mustDirEntry(t, writeTempFile(t, repo, fileMainGo, packageMainLine)), map[string]struct{}{}, &update)
 	if !update.Matched {
 		t.Fatalf("expected updateGoDetection to match")
 	}
@@ -764,7 +784,7 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 	if err := walkGoDetectionEntry(filepath.Join(repo, "vendor"), mustDirEntry(t, filepath.Join(repo, "vendor")), roots2, &detection, &visited, 5); err != filepath.SkipDir {
 		t.Fatalf("expected skip dir from walk helper, got %v", err)
 	}
-	filePath := writeTempFile(t, repo, "tiny.go", "package main")
+	filePath := writeTempFile(t, repo, "tiny.go", packageMainLine)
 	visited = 6
 	if err := walkGoDetectionEntry(filePath, mustDirEntry(t, filePath), roots2, &detection, &visited, 5); err != fs.SkipAll {
 		t.Fatalf("expected fs.SkipAll from max file bound, got %v", err)
@@ -819,12 +839,12 @@ func writeTempFile(t *testing.T, root, name, content string) string {
 
 func writeRepoGoMod(t *testing.T, repo, content string) {
 	t.Helper()
-	writeFile(t, filepath.Join(repo, "go.mod"), content)
+	writeFile(t, filepath.Join(repo, fileGoMod), content)
 }
 
 func writeRepoMain(t *testing.T, repo, content string) {
 	t.Helper()
-	writeFile(t, filepath.Join(repo, "main.go"), content)
+	writeFile(t, filepath.Join(repo, fileMainGo), content)
 }
 
 func writeRepoGoModLines(t *testing.T, repo string, lines ...string) {
@@ -839,7 +859,7 @@ func writeRepoMainLines(t *testing.T, repo string, lines ...string) {
 
 func mkdirGoWorkDir(t *testing.T, repo string) {
 	t.Helper()
-	if err := os.Mkdir(filepath.Join(repo, "go.work"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(repo, fileGoWork), 0o755); err != nil {
 		t.Fatalf("mkdir go.work dir: %v", err)
 	}
 }
@@ -872,7 +892,7 @@ func TestUtilityCoverageBranches(t *testing.T) {
 	if stripInlineComment("value // comment") != "value " {
 		t.Fatalf("expected inline comment to be stripped")
 	}
-	if normalizeDependencyID(" Example.COM/X ") != "example.com/x" {
+	if normalizeDependencyID(" Example.COM/X ") != exampleModuleX {
 		t.Fatalf("unexpected normalized dependency ID")
 	}
 
@@ -881,26 +901,26 @@ func TestUtilityCoverageBranches(t *testing.T) {
 		t.Fatalf("unexpected unique values %#v", values)
 	}
 
-	if inferDependency("example.com/x/y/z") != "example.com/x/y" {
+	if inferDependency(exampleModuleX+"/y/z") != exampleModuleX+"/y" {
 		t.Fatalf("unexpected inferred dependency")
 	}
 	if inferDependency("stdlib/path") != "" {
 		t.Fatalf("expected no inferred dep for non-external path")
 	}
 
-	if !looksExternalImport("example.com/a") || looksExternalImport("internal/a") {
+	if !looksExternalImport(exampleModuleA) || looksExternalImport("internal/a") {
 		t.Fatalf("unexpected external import detection")
 	}
 	if !isLocalModuleImport("example.com/mod/x", []string{"example.com/mod"}) {
 		t.Fatalf("expected local module import match")
 	}
-	if longestDeclaredDependency("example.com/a/x", []string{"example.com/a", "example.com"}) != "example.com/a" {
+	if longestDeclaredDependency(exampleModuleA+"/x", []string{exampleModuleA, "example.com"}) != exampleModuleA {
 		t.Fatalf("expected longest declared dependency")
 	}
-	if longestReplacementDependency("example.com/a/x", map[string]string{"example.com/a": "example.com/original"}) != "example.com/original" {
+	if longestReplacementDependency(exampleModuleA+"/x", map[string]string{exampleModuleA: moduleOriginal}) != moduleOriginal {
 		t.Fatalf("expected longest replacement dependency")
 	}
-	if longestReplacementDependency("example.com/none/x", map[string]string{"example.com/a": "example.com/original"}) != "" {
+	if longestReplacementDependency("example.com/none/x", map[string]string{exampleModuleA: moduleOriginal}) != "" {
 		t.Fatalf("expected no replacement dependency match")
 	}
 	if parseIntDefault("", 7) != 7 {
@@ -948,7 +968,7 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 	appendSkipWarnings(nil)
 	appendUndeclaredDependencyWarnings(nil)
 
-	result.UndeclaredImportsByDependency["example.com/x"] = 2
+	result.UndeclaredImportsByDependency[exampleModuleX] = 2
 	appendUndeclaredDependencyWarnings(&result)
 	if len(result.Warnings) == 0 {
 		t.Fatalf("expected undeclared dependency warning")
@@ -958,7 +978,7 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 func TestDetectWithConfidenceCapAndDefaultRepoPath(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemo)
-	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse ./\n")
+	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse ./\n")
 	for i := 0; i < 30; i++ {
 		writeFile(t, filepath.Join(repo, "pkg", "f"+string(rune('a'+(i%26)))+".go"), "package pkg\n")
 	}
@@ -993,8 +1013,8 @@ func TestScanGoSourceFileErrorAndSkipCounters(t *testing.T) {
 	}
 
 	large := strings.Repeat("a", maxScannableGoFile+1)
-	writeFile(t, filepath.Join(repo, "large.go"), large)
-	if err := scanGoSourceFile(repo, filepath.Join(repo, "large.go"), moduleInfo{}, &result); err != nil {
+	writeFile(t, filepath.Join(repo, fileLargeGo), large)
+	if err := scanGoSourceFile(repo, filepath.Join(repo, fileLargeGo), moduleInfo{}, &result); err != nil {
 		t.Fatalf("scan large go file: %v", err)
 	}
 	if result.SkippedLargeFiles == 0 {
@@ -1002,18 +1022,18 @@ func TestScanGoSourceFileErrorAndSkipCounters(t *testing.T) {
 	}
 
 	// nil result should be safe through skip paths
-	if err := scanGoSourceFile(repo, filepath.Join(repo, "large.go"), moduleInfo{}, nil); err != nil {
+	if err := scanGoSourceFile(repo, filepath.Join(repo, fileLargeGo), moduleInfo{}, nil); err != nil {
 		t.Fatalf("scan large go file with nil result: %v", err)
 	}
 }
 
 func TestDiscoverNestedModulesContinueOnUnreadableGoMod(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/root\n")
+	writeFile(t, filepath.Join(repo, fileGoMod), "module example.com/root\n")
 	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(repo, "sub", "go.mod"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(repo, "sub", fileGoMod), 0o755); err != nil {
 		t.Fatalf("mkdir sub/go.mod dir: %v", err)
 	}
 
@@ -1033,7 +1053,7 @@ func TestMiscCoverageBranches(t *testing.T) {
 	if normalizeGoWorkPath("   ") != "" {
 		t.Fatalf("expected empty normalized go.work path")
 	}
-	if isLocalModuleImport("example.com/x", []string{""}) {
+	if isLocalModuleImport(exampleModuleX, []string{""}) {
 		t.Fatalf("expected empty local module path to be ignored")
 	}
 	if dependencyFromImport("C", moduleInfo{}) != "" {
@@ -1048,7 +1068,7 @@ func TestMiscCoverageBranches(t *testing.T) {
 	if isSupportedGoReleaseTag("go1.bad") {
 		t.Fatalf("expected malformed go version tag to be unsupported")
 	}
-	if matchesActiveBuild([]byte("// +build definitely_not_active\npackage main\n")) {
+	if matchesActiveBuild([]byte("// +build definitely_not_active\n" + packageMainLine + "\n")) {
 		t.Fatalf("expected inactive plus-build expression to evaluate false")
 	}
 
@@ -1057,7 +1077,7 @@ func TestMiscCoverageBranches(t *testing.T) {
 		UndeclaredImportsByDependency: map[string]int{},
 	})
 	addGoModDependency("   ", map[string]struct{}{})
-	processGoModLine("module example.com/demo", nil)
+	processGoModLine(moduleDemoLine, nil)
 	processGoModLine("", &goModParseState{depSet: map[string]struct{}{}, replaceSet: map[string]string{}})
 	if isLocalReplaceTarget("") {
 		t.Fatalf("expected empty path not to be local replacement")
@@ -1090,7 +1110,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	outsideGoMod := filepath.Join(outsideDir, "outside.mod")
 	writeFile(t, outsideGoMod, "module example.com/outside\n")
 
-	if err := os.Symlink(outsideGoMod, filepath.Join(repo, "go.mod")); err != nil {
+	if err := os.Symlink(outsideGoMod, filepath.Join(repo, fileGoMod)); err != nil {
 		t.Skipf("symlink not supported: %v", err)
 	}
 	if _, err := loadGoModuleInfo(repo); err == nil {
@@ -1098,7 +1118,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	}
 
 	outsideGoFile := filepath.Join(outsideDir, "outside.go")
-	writeFile(t, outsideGoFile, "package main\n")
+	writeFile(t, outsideGoFile, packageMainLine+"\n")
 	sourceRepo := t.TempDir()
 	writeRepoGoMod(t, sourceRepo, goModDemo)
 	sourceSymlink := filepath.Join(sourceRepo, "link.go")
@@ -1130,28 +1150,28 @@ func TestProcessGoModLineInBlockBranches(t *testing.T) {
 		replaceSet:     map[string]string{},
 		inRequireBlock: true,
 	}
-	processGoModLine("github.com/google/uuid v1.6.0", state)
-	if _, ok := state.depSet["github.com/google/uuid"]; !ok {
+	processGoModLine(depUUID+" v1.6.0", state)
+	if _, ok := state.depSet[depUUID]; !ok {
 		t.Fatalf("expected dependency from require block")
 	}
 
 	state.inRequireBlock = false
 	state.inReplaceBlock = true
-	processGoModLine("example.com/original => github.com/fork/original v1.0.0", state)
-	if got := state.replaceSet["github.com/fork/original"]; got != "example.com/original" {
+	processGoModLine(moduleOriginal+" => github.com/fork/original v1.0.0", state)
+	if got := state.replaceSet["github.com/fork/original"]; got != moduleOriginal {
 		t.Fatalf("expected replacement mapping from replace block, got %q", got)
 	}
 }
 
 func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), strings.Join([]string{
+	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
 		"module example.com/root",
 		"",
-		"replace example.com/original => github.com/shared/fork v1.0.0",
+		"replace " + moduleOriginal + " => github.com/shared/fork v1.0.0",
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "sub", "go.mod"), strings.Join([]string{
+	writeFile(t, filepath.Join(repo, "sub", fileGoMod), strings.Join([]string{
 		"module example.com/sub",
 		"",
 		"replace example.com/other => github.com/shared/fork v1.1.0",
@@ -1163,7 +1183,7 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 		t.Fatalf("loadGoModuleInfo: %v", err)
 	}
 	// root replacement should win when nested module has same replacement import target
-	if got := info.ReplacementImports["github.com/shared/fork"]; got != "example.com/original" {
+	if got := info.ReplacementImports["github.com/shared/fork"]; got != moduleOriginal {
 		t.Fatalf("expected root replacement to win, got %q", got)
 	}
 }
