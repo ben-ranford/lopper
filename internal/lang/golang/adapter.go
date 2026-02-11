@@ -46,18 +46,12 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	detection, err := a.DetectWithConfidence(ctx, repoPath)
-	if err != nil {
-		return false, err
-	}
-	return detection.Matched, nil
+	return matchedDetection(a.DetectWithConfidence(ctx, repoPath))
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	_ = ctx
-	if repoPath == "" {
-		repoPath = "."
-	}
+	repoPath = defaultRepo(repoPath)
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
@@ -77,17 +71,36 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	if detection.Matched && detection.Confidence < 35 {
-		detection.Confidence = 35
-	}
-	if detection.Confidence > 95 {
-		detection.Confidence = 95
-	}
+	detection.Confidence = clampConfidence(detection.Confidence, detection.Matched)
 	if len(roots) == 0 && detection.Matched {
 		roots[repoPath] = struct{}{}
 	}
 	detection.Roots = shared.SortedKeys(roots)
 	return detection, nil
+}
+
+func matchedDetection(detection language.Detection, err error) (bool, error) {
+	if err != nil {
+		return false, err
+	}
+	return detection.Matched, nil
+}
+
+func defaultRepo(repoPath string) string {
+	if repoPath == "" {
+		return "."
+	}
+	return repoPath
+}
+
+func clampConfidence(confidence int, matched bool) int {
+	if matched && confidence < 35 {
+		confidence = 35
+	}
+	if confidence > 95 {
+		confidence = 95
+	}
+	return confidence
 }
 
 func walkGoDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
@@ -132,16 +145,11 @@ func applyGoRootSignals(repoPath string, detection *language.Detection, roots ma
 }
 
 func addGoWorkRoots(repoPath string, roots map[string]struct{}) error {
-	workPath := filepath.Join(repoPath, goWorkName)
-	// #nosec G304 -- path is constrained under normalized repoPath.
-	content, err := os.ReadFile(workPath)
+	useEntries, err := readGoWorkUseEntries(repoPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-	for _, rel := range parseGoWorkUseEntries(content) {
+	for _, rel := range useEntries {
 		if rel == "" {
 			continue
 		}
@@ -207,15 +215,22 @@ func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]repo
 }
 
 func buildTopGoDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+	importRecords := func(file fileScan) []shared.ImportRecord { return file.Imports }
+	usageRecords := func(file fileScan) map[string]int { return file.Usage }
 	fileUsages := shared.MapFileUsages(
 		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
+		importRecords,
+		usageRecords,
 	)
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
-	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+	return buildTopGoReports(topN, dependencies, scan)
+}
+
+func buildTopGoReports(topN int, dependencies []string, scan scanResult) ([]report.DependencyReport, []string) {
+	builder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	})
+	}
+	return shared.BuildTopReports(topN, dependencies, builder)
 }
 
 type importBinding = shared.ImportRecord
@@ -692,7 +707,7 @@ func isLocalModuleImport(importPath string, localModules []string) bool {
 		if modulePath == "" {
 			continue
 		}
-		if importPath == modulePath || strings.HasPrefix(importPath, modulePath+"/") {
+		if hasImportPathPrefix(importPath, modulePath) {
 			return true
 		}
 	}
@@ -710,7 +725,7 @@ func looksExternalImport(importPath string) bool {
 func longestDeclaredDependency(importPath string, declaredDependencies []string) string {
 	match := ""
 	for _, dependency := range declaredDependencies {
-		if importPath != dependency && !strings.HasPrefix(importPath, dependency+"/") {
+		if !hasImportPathPrefix(importPath, dependency) {
 			continue
 		}
 		if len(dependency) > len(match) {
@@ -726,7 +741,7 @@ func longestReplacementDependency(importPath string, replacements map[string]str
 	}
 	match := ""
 	for replacementImport := range replacements {
-		if importPath != replacementImport && !strings.HasPrefix(importPath, replacementImport+"/") {
+		if !hasImportPathPrefix(importPath, replacementImport) {
 			continue
 		}
 		if len(replacementImport) > len(match) {
@@ -737,6 +752,10 @@ func longestReplacementDependency(importPath string, replacements map[string]str
 		return ""
 	}
 	return replacements[match]
+}
+
+func hasImportPathPrefix(importPath, dependency string) bool {
+	return importPath == dependency || strings.HasPrefix(importPath, dependency+"/")
 }
 
 func inferDependency(importPath string) string {
@@ -783,22 +802,16 @@ func importBindingIdentity(importPath string, importName *ast.Ident) (string, st
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
 	stats := shared.BuildDependencyStats(dependency, goFileUsages(scan), normalizeDependencyID)
-	warnings := make([]string, 0)
-	if !stats.HasImports {
-		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))
-	}
+	dep := report.DependencyReport{Language: "go", Name: dependency}
+	dep.UsedExportsCount = stats.UsedCount
+	dep.TotalExportsCount = stats.TotalCount
+	dep.UsedPercent = stats.UsedPercent
+	dep.EstimatedUnusedBytes = 0
+	dep.TopUsedSymbols = stats.TopSymbols
+	dep.UsedImports = stats.UsedImports
+	dep.UnusedImports = stats.UnusedImports
 
-	dep := report.DependencyReport{
-		Language:             "go",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
+	warnings := dependencyWarnings(dependency, stats.HasImports)
 	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "dot-import",
@@ -826,22 +839,8 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 
 func buildRecommendations(dep report.DependencyReport, hasUndeclaredImports bool) []report.Recommendation {
 	recs := make([]report.Recommendation, 0, 3)
-	if len(dep.UsedImports) == 0 && len(dep.UnusedImports) > 0 {
-		recs = append(recs, report.Recommendation{
-			Code:      "remove-unused-dependency",
-			Priority:  "high",
-			Message:   fmt.Sprintf("No used imports were detected for %q; consider removing it.", dep.Name),
-			Rationale: "Unused dependencies increase attack and maintenance surface.",
-		})
-	}
-	if shared.HasWildcardImport(dep.UsedImports) || shared.HasWildcardImport(dep.UnusedImports) {
-		recs = append(recs, report.Recommendation{
-			Code:      "avoid-dot-imports",
-			Priority:  "medium",
-			Message:   "Dot imports were detected; prefer package-qualified usage for clarity.",
-			Rationale: "Qualified imports preserve namespace clarity and improve static analysis precision.",
-		})
-	}
+	recs = appendUnusedDependencyRecommendation(recs, dep)
+	recs = appendDotImportRecommendation(recs, dep)
 	if hasUndeclaredImports {
 		recs = append(recs, report.Recommendation{
 			Code:      "declare-go-module-requirement",
@@ -851,6 +850,37 @@ func buildRecommendations(dep report.DependencyReport, hasUndeclaredImports bool
 		})
 	}
 	return recs
+}
+
+func dependencyWarnings(dependency string, hasImports bool) []string {
+	if hasImports {
+		return nil
+	}
+	return []string{fmt.Sprintf("no imports found for dependency %q", dependency)}
+}
+
+func appendUnusedDependencyRecommendation(recs []report.Recommendation, dep report.DependencyReport) []report.Recommendation {
+	if len(dep.UsedImports) != 0 || len(dep.UnusedImports) == 0 {
+		return recs
+	}
+	return append(recs, report.Recommendation{
+		Code:      "remove-unused-dependency",
+		Priority:  "high",
+		Message:   fmt.Sprintf("No used imports were detected for %q; consider removing it.", dep.Name),
+		Rationale: "Unused dependencies increase attack and maintenance surface.",
+	})
+}
+
+func appendDotImportRecommendation(recs []report.Recommendation, dep report.DependencyReport) []report.Recommendation {
+	if !shared.HasWildcardImport(dep.UsedImports) && !shared.HasWildcardImport(dep.UnusedImports) {
+		return recs
+	}
+	return append(recs, report.Recommendation{
+		Code:      "avoid-dot-imports",
+		Priority:  "medium",
+		Message:   "Dot imports were detected; prefer package-qualified usage for clarity.",
+		Rationale: "Qualified imports preserve namespace clarity and improve static analysis precision.",
+	})
 }
 
 func goFileUsages(scan scanResult) []shared.FileUsage {
@@ -968,41 +998,45 @@ func parseGoModModuleLine(line string, state *goModParseState) bool {
 }
 
 func parseGoModRequireBlockControl(line string, state *goModParseState) bool {
-	if strings.HasPrefix(line, "require (") {
-		state.inRequireBlock = true
-		return true
-	}
-	if state.inRequireBlock && line == ")" {
-		state.inRequireBlock = false
-		return true
-	}
-	return false
+	return parseGoModBlockControl(line, "require (", &state.inRequireBlock)
 }
 
 func parseGoModReplaceBlockControl(line string, state *goModParseState) bool {
-	if strings.HasPrefix(line, "replace (") {
-		state.inReplaceBlock = true
+	return parseGoModBlockControl(line, "replace (", &state.inReplaceBlock)
+}
+
+func parseGoModBlockControl(line string, startToken string, inBlock *bool) bool {
+	if inBlock == nil {
+		return false
+	}
+	if strings.HasPrefix(line, startToken) {
+		*inBlock = true
 		return true
 	}
-	if state.inReplaceBlock && line == ")" {
-		state.inReplaceBlock = false
+	if *inBlock && line == ")" {
+		*inBlock = false
 		return true
 	}
 	return false
 }
 
 func parseGoModSingleRequire(line string, depSet map[string]struct{}) {
-	if !strings.HasPrefix(line, "require ") {
-		return
-	}
-	addGoModDependency(strings.TrimPrefix(line, "require "), depSet)
+	parseGoModSingleDirective(line, "require ", func(value string) {
+		addGoModDependency(value, depSet)
+	})
 }
 
 func parseGoModSingleReplace(line string, replaceSet map[string]string) {
-	if !strings.HasPrefix(line, "replace ") {
+	parseGoModSingleDirective(line, "replace ", func(value string) {
+		addGoModReplacement(value, replaceSet)
+	})
+}
+
+func parseGoModSingleDirective(line, prefix string, handler func(string)) {
+	if handler == nil || !strings.HasPrefix(line, prefix) {
 		return
 	}
-	addGoModReplacement(strings.TrimPrefix(line, "replace "), replaceSet)
+	handler(strings.TrimPrefix(line, prefix))
 }
 
 func addGoModDependency(line string, depSet map[string]struct{}) {
@@ -1062,18 +1096,12 @@ func firstToken(value string) string {
 }
 
 func loadGoWorkLocalModules(repoPath string) ([]string, error) {
-	workPath := filepath.Join(repoPath, goWorkName)
-	// #nosec G304 -- path is constrained under normalized repoPath.
-	content, err := os.ReadFile(workPath)
+	useEntries, err := readGoWorkUseEntries(repoPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-
 	modulePaths := make([]string, 0)
-	for _, rel := range parseGoWorkUseEntries(content) {
+	for _, rel := range useEntries {
 		if rel == "" {
 			continue
 		}
@@ -1084,6 +1112,19 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 		modulePaths = append(modulePaths, modulePath)
 	}
 	return uniqueStrings(modulePaths), nil
+}
+
+func readGoWorkUseEntries(repoPath string) ([]string, error) {
+	workPath := filepath.Join(repoPath, goWorkName)
+	// #nosec G304 -- path is constrained under normalized repoPath.
+	content, err := os.ReadFile(workPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseGoWorkUseEntries(content), nil
 }
 
 func parseGoWorkUseEntries(content []byte) []string {

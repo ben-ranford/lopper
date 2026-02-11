@@ -15,10 +15,16 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	goModDemo         = "module example.com/demo\n\ngo 1.25\n"
+	goModDemoWithUUID = "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n"
+	mainNoopProgram   = "package main\n\nfunc main() {}\n"
+)
+
 func TestAdapterDetectWithGoModAndSource(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n")
-	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
+	writeRepoGoMod(t, repo, goModDemoWithUUID)
+	writeRepoMain(t, repo, "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -37,7 +43,7 @@ func TestAdapterDetectWithGoModAndSource(t *testing.T) {
 
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+	writeRepoGoMod(t, repo, goModDemo)
 
 	adapter := NewAdapter()
 	if adapter.ID() != "go" {
@@ -75,10 +81,8 @@ func TestDetectWithConfidenceRepoIsFileErrors(t *testing.T) {
 
 func TestApplyGoRootSignalsGoWorkError(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n")
-	if err := os.Mkdir(filepath.Join(repo, "go.work"), 0o755); err != nil {
-		t.Fatalf("mkdir go.work dir: %v", err)
-	}
+	writeRepoGoMod(t, repo, "module example.com/demo\n")
+	mkdirGoWorkDir(t, repo)
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
@@ -89,19 +93,14 @@ func TestApplyGoRootSignalsGoWorkError(t *testing.T) {
 
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n")
-	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/google/uuid\"\n)\n\nfunc main() {\n\tfmt.Println(uuid.NewString())\n}\n")
+	writeRepoGoMod(t, repo, goModDemoWithUUID)
+	writeRepoMain(t, repo, "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/google/uuid\"\n)\n\nfunc main() {\n\tfmt.Println(uuid.NewString())\n}\n")
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+	reportData := analyseReport(t, language.Request{
 		RepoPath:   repo,
 		Dependency: "github.com/google/uuid",
 	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-	}
+	requireDependencyCount(t, reportData, 1)
 	dep := reportData.Dependencies[0]
 	if dep.Language != "go" {
 		t.Fatalf("expected language go, got %q", dep.Language)
@@ -129,8 +128,8 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 
 	// scanRepo failure path via canceled context
 	repo2 := t.TempDir()
-	writeFile(t, filepath.Join(repo2, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo2, "main.go"), "package main\n\nfunc main(){}\n")
+	writeRepoGoMod(t, repo2, goModDemo)
+	writeRepoMain(t, repo2, "package main\n\nfunc main(){}\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = adapter.Analyse(ctx, language.Request{RepoPath: repo2})
@@ -151,19 +150,14 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire (\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/samber/lo v1.47.0\n)\n")
-	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport (\n\tu \"github.com/google/uuid\"\n\t\"github.com/samber/lo\"\n)\n\nfunc main() {\n\t_ = u.NewString()\n\t_ = lo.Contains([]int{1,2}, 2)\n}\n")
+	writeRepoGoMod(t, repo, "module example.com/demo\n\nrequire (\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/samber/lo v1.47.0\n)\n")
+	writeRepoMain(t, repo, "package main\n\nimport (\n\tu \"github.com/google/uuid\"\n\t\"github.com/samber/lo\"\n)\n\nfunc main() {\n\t_ = u.NewString()\n\t_ = lo.Contains([]int{1,2}, 2)\n}\n")
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+	reportData := analyseReport(t, language.Request{
 		RepoPath: repo,
 		TopN:     2,
 	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	if len(reportData.Dependencies) != 2 {
-		t.Fatalf("expected two dependencies, got %d", len(reportData.Dependencies))
-	}
+	requireDependencyCount(t, reportData, 2)
 	names := []string{reportData.Dependencies[0].Name, reportData.Dependencies[1].Name}
 	for _, dependency := range []string{"github.com/google/uuid", "github.com/samber/lo"} {
 		if !slices.Contains(names, dependency) {
@@ -221,8 +215,8 @@ func TestAdapterDetectWithNoSignals(t *testing.T) {
 
 func TestAdapterAnalyseUndeclaredDependencySignals(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo, "main.go"), strings.Join([]string{
+	writeRepoGoMod(t, repo, goModDemo)
+	writeRepoMain(t, repo, strings.Join([]string{
 		"package main",
 		"",
 		"import (",
@@ -294,7 +288,7 @@ func TestReplacementImportMapsToDependency(t *testing.T) {
 
 func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), strings.Join([]string{
+	writeRepoGoModLines(t, repo,
 		"module example.com/demo",
 		"",
 		"require (",
@@ -302,16 +296,16 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 		"\tgithub.com/samber/lo v1.47.0",
 		")",
 		"",
-	}, "\n"))
+	)
 
-	writeFile(t, filepath.Join(repo, "main.go"), strings.Join([]string{
+	writeRepoMainLines(t, repo,
 		"package main",
 		"",
 		"import \"github.com/google/uuid\"",
 		"",
 		"func main() { _ = uuid.NewString() }",
 		"",
-	}, "\n"))
+	)
 	writeFile(t, filepath.Join(repo, "generated_lo.go"), strings.Join([]string{
 		"// Code generated by mockgen. DO NOT EDIT.",
 		"package main",
@@ -331,17 +325,11 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 		"",
 	}, "\n"))
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+	reportData := analyseReport(t, language.Request{
 		RepoPath: repo,
 		TopN:     5,
 	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	names := make([]string, 0, len(reportData.Dependencies))
-	for _, dep := range reportData.Dependencies {
-		names = append(names, dep.Name)
-	}
+	names := dependencyNames(reportData.Dependencies)
 	if !slices.Contains(names, "github.com/google/uuid") {
 		t.Fatalf("expected uuid dependency in %#v", names)
 	}
@@ -360,20 +348,20 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 
 func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), strings.Join([]string{
+	writeRepoGoModLines(t, repo,
 		"module example.com/root",
 		"",
 		"require github.com/google/uuid v1.6.0",
 		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, "main.go"), strings.Join([]string{
+	)
+	writeRepoMainLines(t, repo,
 		"package main",
 		"",
 		"import \"github.com/google/uuid\"",
 		"",
 		"func main() { _ = uuid.NewString() }",
 		"",
-	}, "\n"))
+	)
 
 	writeFile(t, filepath.Join(repo, "services", "api", "go.mod"), strings.Join([]string{
 		"module example.com/api",
@@ -390,17 +378,11 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 		"",
 	}, "\n"))
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+	reportData := analyseReport(t, language.Request{
 		RepoPath: repo,
 		TopN:     10,
 	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	names := make([]string, 0, len(reportData.Dependencies))
-	for _, dep := range reportData.Dependencies {
-		names = append(names, dep.Name)
-	}
+	names := dependencyNames(reportData.Dependencies)
 	if !slices.Contains(names, "github.com/google/uuid") {
 		t.Fatalf("expected root dependency uuid in %#v", names)
 	}
@@ -433,8 +415,8 @@ func TestScanRepoInvalidRoot(t *testing.T) {
 
 func TestScanRepoCanceledContext(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nfunc main() {}\n")
+	writeRepoGoMod(t, repo, goModDemo)
+	writeRepoMain(t, repo, mainNoopProgram)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -496,9 +478,7 @@ func TestLoadGoWorkLocalModulesNoFile(t *testing.T) {
 
 func TestLoadGoWorkLocalModulesReadError(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repo, "go.work"), 0o755); err != nil {
-		t.Fatalf("mkdir go.work dir: %v", err)
-	}
+	mkdirGoWorkDir(t, repo)
 	_, err := loadGoWorkLocalModules(repo)
 	if err == nil {
 		t.Fatalf("expected read error when go.work is a directory")
@@ -748,9 +728,7 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 
 	// go.work as directory should error
 	repoErr := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoErr, "go.work"), 0o755); err != nil {
-		t.Fatalf("mkdir go.work dir: %v", err)
-	}
+	mkdirGoWorkDir(t, repoErr)
 	if err := addGoWorkRoots(repoErr, map[string]struct{}{}); err == nil {
 		t.Fatalf("expected addGoWorkRoots read error")
 	}
@@ -822,6 +800,57 @@ func writeTempFile(t *testing.T, root, name, content string) string {
 	path := filepath.Join(root, name)
 	writeFile(t, path, content)
 	return path
+}
+
+func writeRepoGoMod(t *testing.T, repo, content string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, "go.mod"), content)
+}
+
+func writeRepoMain(t *testing.T, repo, content string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, "main.go"), content)
+}
+
+func writeRepoGoModLines(t *testing.T, repo string, lines ...string) {
+	t.Helper()
+	writeRepoGoMod(t, repo, strings.Join(lines, "\n"))
+}
+
+func writeRepoMainLines(t *testing.T, repo string, lines ...string) {
+	t.Helper()
+	writeRepoMain(t, repo, strings.Join(lines, "\n"))
+}
+
+func mkdirGoWorkDir(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.Mkdir(filepath.Join(repo, "go.work"), 0o755); err != nil {
+		t.Fatalf("mkdir go.work dir: %v", err)
+	}
+}
+
+func analyseReport(t *testing.T, req language.Request) report.Report {
+	t.Helper()
+	reportData, err := NewAdapter().Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	return reportData
+}
+
+func requireDependencyCount(t *testing.T, reportData report.Report, expected int) {
+	t.Helper()
+	if len(reportData.Dependencies) != expected {
+		t.Fatalf("expected %d dependency report(s), got %d", expected, len(reportData.Dependencies))
+	}
+}
+
+func dependencyNames(dependencies []report.DependencyReport) []string {
+	names := make([]string, 0, len(dependencies))
+	for _, dep := range dependencies {
+		names = append(names, dep.Name)
+	}
+	return names
 }
 
 func TestUtilityCoverageBranches(t *testing.T) {
@@ -913,7 +942,7 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 
 func TestDetectWithConfidenceCapAndDefaultRepoPath(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\ngo 1.25\n")
+	writeRepoGoMod(t, repo, goModDemo)
 	writeFile(t, filepath.Join(repo, "go.work"), "go 1.25\n\nuse ./\n")
 	for i := 0; i < 30; i++ {
 		writeFile(t, filepath.Join(repo, "pkg", "f"+string(rune('a'+(i%26)))+".go"), "package pkg\n")
