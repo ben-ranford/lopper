@@ -134,11 +134,11 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	}
 
 	adapter := testServiceAdapter{id: "x", detect: language.Detection{Matched: true, Confidence: 0}}
-	warnings := lowConfidenceWarning("all", language.Candidate{Adapter: adapter, Detection: language.Detection{Confidence: 0}}, 40)
+	warnings := lowConfidenceWarning("all", language.Candidate{Adapter: adapter, Detection: language.Detection{Confidence: 0}})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warning for non-positive confidence")
 	}
-	if warnings := lowConfidenceWarning("js-ts", language.Candidate{Adapter: adapter, Detection: language.Detection{Confidence: 10}}, 40); len(warnings) != 0 {
+	if warnings := lowConfidenceWarning("js-ts", language.Candidate{Adapter: adapter, Detection: language.Detection{Confidence: 10}}); len(warnings) != 0 {
 		t.Fatalf("expected no warning for single-language mode")
 	}
 

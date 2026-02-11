@@ -9,7 +9,6 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func TestHelperFunctions(t *testing.T) {
@@ -26,13 +25,6 @@ func TestHelperFunctions(t *testing.T) {
 	}
 	if got := normalizeCandidateRoot("/repo", "sub"); got != filepath.Join("/repo", "sub") {
 		t.Fatalf("unexpected normalized root: %q", got)
-	}
-	if got := resolveLowConfidenceWarningThreshold(nil); got != thresholds.Defaults().LowConfidenceWarningPercent {
-		t.Fatalf("expected default low-confidence threshold, got %d", got)
-	}
-	v := 12
-	if got := resolveLowConfidenceWarningThreshold(&v); got != 12 {
-		t.Fatalf("expected explicit low-confidence threshold, got %d", got)
 	}
 }
 
