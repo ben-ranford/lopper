@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+const (
+	dynamicRequireToken = "require("
+	bindingGypFile      = "binding.gyp"
+	packageJSONFile     = "package.json"
+)
+
 func TestRiskHelperFunctions(t *testing.T) {
 	if dependencyPath("@scope/pkg") != filepath.Join("@scope", "pkg") {
 		t.Fatalf("expected scoped dependency path")
@@ -15,16 +21,16 @@ func TestRiskHelperFunctions(t *testing.T) {
 		t.Fatalf("expected unscoped dependency path")
 	}
 
-	if !hasDynamicCall("const x = require(dep)", "require(") {
+	if !hasDynamicCall("const x = require(dep)", dynamicRequireToken) {
 		t.Fatalf("expected dynamic require call detection")
 	}
-	if hasDynamicCall("const x = myrequire(dep)", "require(") {
+	if hasDynamicCall("const x = myrequire(dep)", dynamicRequireToken) {
 		t.Fatalf("did not expect identifier-prefixed token to count as dynamic call")
 	}
-	if hasDynamicCall("const x = require('fixed')", "require(") {
+	if hasDynamicCall("const x = require('fixed')", dynamicRequireToken) {
 		t.Fatalf("did not expect static require to be detected as dynamic")
 	}
-	if hasDynamicCall("// require(dep)", "require(") {
+	if hasDynamicCall("// require(dep)", dynamicRequireToken) {
 		t.Fatalf("did not expect commented token to be detected")
 	}
 	if !isCommented("abc // trailing") || isCommented("abc") {
@@ -48,7 +54,7 @@ func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "addon.node"), []byte("bin"), 0o600); err != nil {
 		t.Fatalf("write node binary: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "binding.gyp"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, bindingGypFile), []byte("{}"), 0o600); err != nil {
 		t.Fatalf("write binding.gyp: %v", err)
 	}
 
@@ -63,7 +69,7 @@ func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detect binding.gyp: %v", err)
 	}
-	if len(binding) != 1 || binding[0] != "binding.gyp" {
+	if len(binding) != 1 || binding[0] != bindingGypFile {
 		t.Fatalf("unexpected binding.gyp detection: %#v", binding)
 	}
 }
@@ -82,7 +88,7 @@ func TestAssessRiskCueWarningBranches(t *testing.T) {
 	if err := os.MkdirAll(depRoot, 0o755); err != nil {
 		t.Fatalf("mkdir dep root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte("{"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid package.json: %v", err)
 	}
 	_, warnings = assessRiskCues(repo, "pkg", ExportSurface{EntryPoints: []string{filepath.Join(depRoot, "missing.js")}})
@@ -116,7 +122,7 @@ func TestNativeMetadataAndDepthHelpers(t *testing.T) {
 		t.Fatalf("expected native metadata indicators")
 	}
 
-	if _, err := os.Stat(filepath.Join(depRoot, "binding.gyp")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(depRoot, bindingGypFile)); !os.IsNotExist(err) {
 		t.Fatalf("expected no binding.gyp in fixture")
 	}
 	native, details, err := detectNativeModuleIndicators(depRoot, pkg)
@@ -127,14 +133,14 @@ func TestNativeMetadataAndDepthHelpers(t *testing.T) {
 		t.Fatalf("expected native indicators from package metadata")
 	}
 
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"a":"1.0.0"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte(`{"name":"pkg","dependencies":{"a":"1.0.0"}}`), 0o600); err != nil {
 		t.Fatalf("write root package.json: %v", err)
 	}
 	childRoot := filepath.Join(depRoot, "node_modules", "a")
 	if err := os.MkdirAll(childRoot, 0o755); err != nil {
 		t.Fatalf("mkdir child root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(childRoot, "package.json"), []byte(`{"name":"a"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(childRoot, packageJSONFile), []byte(`{"name":"a"}`), 0o600); err != nil {
 		t.Fatalf("write child package.json: %v", err)
 	}
 	depth, err := estimateTransitiveDepth(repo, depRoot, packageJSON{Dependencies: map[string]string{"a": "1.0.0"}})

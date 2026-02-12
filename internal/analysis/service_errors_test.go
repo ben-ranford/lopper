@@ -12,6 +12,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	analyseFailedErrMsg = "analyse failed"
+	registerAdapterFmt  = "register adapter: %v"
+)
+
 type testServiceAdapter struct {
 	id      string
 	detect  language.Detection
@@ -47,7 +52,7 @@ func TestPrepareAnalysisErrors(t *testing.T) {
 }
 
 func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
-	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New("analyse failed")}
+	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
 	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 10, Roots: []string{"."}}}
 	svc := &Service{}
 	reports, warnings, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all"}, ".", candidate)
@@ -63,7 +68,7 @@ func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
 }
 
 func TestRunCandidateOnRootsSingleLanguageError(t *testing.T) {
-	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New("analyse failed")}
+	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
 	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 10, Roots: []string{"."}}}
 	svc := &Service{}
 	_, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "js-ts"}, ".", candidate)
@@ -77,9 +82,9 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 	if err := reg.Register(testServiceAdapter{
 		id:     "broken",
 		detect: language.Detection{Matched: true, Confidence: 20},
-		err:    errors.New("analyse failed"),
+		err:    errors.New(analyseFailedErrMsg),
 	}); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterFmt, err)
 	}
 	svc := &Service{Registry: reg}
 
@@ -103,7 +108,7 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 			Dependencies: []report.DependencyReport{{Name: "dep"}},
 		},
 	}); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterFmt, err)
 	}
 	svc = &Service{Registry: reg}
 	_, err = svc.Analyse(context.Background(), Request{
@@ -125,7 +130,7 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 		err:     nil,
 		analyse: report.Report{},
 	}); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterFmt, err)
 	}
 	// Force registry resolve error via unsupported explicit language.
 	svc := &Service{Registry: reg}

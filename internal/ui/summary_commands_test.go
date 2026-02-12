@@ -15,7 +15,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func TestSummaryCommandHandlers(t *testing.T) {
+func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 	state := &summaryState{page: 2, pageSize: 10, sortMode: sortByWaste}
 	var out bytes.Buffer
 
@@ -25,7 +25,6 @@ func TestSummaryCommandHandlers(t *testing.T) {
 	if !strings.Contains(out.String(), "Commands:") {
 		t.Fatalf("expected help text output")
 	}
-
 	if !applySummaryCommand(state, "filter lodash", io.Discard) || state.filter != "lodash" || state.page != 1 {
 		t.Fatalf("expected filter command to set filter and reset page")
 	}
@@ -41,6 +40,10 @@ func TestSummaryCommandHandlers(t *testing.T) {
 	if applySummaryCommand(state, "sort nope", io.Discard) {
 		t.Fatalf("expected invalid sort command to fail")
 	}
+}
+
+func TestSummaryCommandHandlersPagingAndShortcuts(t *testing.T) {
+	state := &summaryState{page: 2, pageSize: 10, sortMode: sortByWaste}
 	if !applySummaryCommand(state, "page 3", io.Discard) || state.page != 3 {
 		t.Fatalf("expected page command to apply")
 	}
@@ -136,7 +139,7 @@ func TestSummaryStartAndSnapshotBranches(t *testing.T) {
 	if !strings.Contains(out.String(), "Lopper TUI (summary)") {
 		t.Fatalf("expected snapshot output on stdout")
 	}
-	if err := summary.Snapshot(context.Background(), Options{}, ""); err == nil {
+	if summary.Snapshot(context.Background(), Options{}, "") == nil {
 		t.Fatalf("expected snapshot path validation error")
 	}
 }
@@ -171,7 +174,7 @@ func TestSummarySnapshotWriteError(t *testing.T) {
 	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}}}
 	summary := NewSummary(io.Discard, strings.NewReader(""), stubAnalyzer{report: rep}, report.NewFormatter())
 	outPath := filepath.Join(t.TempDir(), "missing", "snapshot.txt")
-	if err := summary.Snapshot(context.Background(), Options{RepoPath: "."}, outPath); err == nil {
+	if summary.Snapshot(context.Background(), Options{RepoPath: "."}, outPath) == nil {
 		t.Fatalf("expected write error for non-existent output directory")
 	}
 }
@@ -246,22 +249,22 @@ func TestSummarySnapshotStdoutWhenOutNil(t *testing.T) {
 
 func TestSummaryCommandValidationBranches(t *testing.T) {
 	state := &summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
-	if ok := applySummaryCommand(state, "   ", io.Discard); !ok {
+	if !applySummaryCommand(state, "   ", io.Discard) {
 		t.Fatalf("expected empty command fields to be accepted")
 	}
-	if ok := handleSortCommand(state, []string{"sort"}); ok {
+	if handleSortCommand(state, []string{"sort"}) {
 		t.Fatalf("expected sort command without mode to fail")
 	}
-	if ok := handlePageCommand(state, []string{"page"}); ok {
+	if handlePageCommand(state, []string{"page"}) {
 		t.Fatalf("expected page command without argument to fail")
 	}
-	if ok := handlePageCommand(state, []string{"page", "nope"}); ok {
+	if handlePageCommand(state, []string{"page", "nope"}) {
 		t.Fatalf("expected page command with invalid number to fail")
 	}
-	if ok := handleSizeCommand(state, []string{"size"}); ok {
+	if handleSizeCommand(state, []string{"size"}) {
 		t.Fatalf("expected size command without argument to fail")
 	}
-	if ok := handleSizeCommand(state, []string{"size", "bad"}); ok {
+	if handleSizeCommand(state, []string{"size", "bad"}) {
 		t.Fatalf("expected size command with invalid number to fail")
 	}
 

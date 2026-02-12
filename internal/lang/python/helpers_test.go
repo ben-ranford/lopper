@@ -13,10 +13,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestPythonImportParsingHelpers(t *testing.T) {
+const localModuleContent = "# local module\n"
+
+func TestPythonParseImportAndFromImportHelpers(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "localpkg", "__init__.py"), "# local module\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "single.py"), "# local module\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "localpkg", "__init__.py"), localModuleContent)
+	testutil.MustWriteFile(t, filepath.Join(repo, "single.py"), localModuleContent)
 
 	bindings := parseImportLine("requests as req, localpkg", "a.py", repo, 0, "import requests as req, localpkg")
 	if len(bindings) != 1 || bindings[0].Dependency != "requests" || bindings[0].Local != "req" {
@@ -30,6 +32,9 @@ func TestPythonImportParsingHelpers(t *testing.T) {
 	if !fromBindings[1].Wildcard {
 		t.Fatalf("expected wildcard from-import binding")
 	}
+}
+
+func TestPythonImportStringHelpers(t *testing.T) {
 	if got := stripComment("import os # comment"); got != "import os " {
 		t.Fatalf("unexpected strip comment result: %q", got)
 	}
@@ -42,6 +47,12 @@ func TestPythonImportParsingHelpers(t *testing.T) {
 	if name, local := parseImportPart("value"); name != "value" || local != "" {
 		t.Fatalf("unexpected parseImportPart result: name=%q local=%q", name, local)
 	}
+}
+
+func TestPythonModuleResolutionHelpers(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "localpkg", "__init__.py"), localModuleContent)
+	testutil.MustWriteFile(t, filepath.Join(repo, "single.py"), localModuleContent)
 	dependencyCases := []struct {
 		module string
 		want   string

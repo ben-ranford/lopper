@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	registerJSErrFmt     = "register js-ts: %v"
-	registerPythonErrFmt = "register python: %v"
+	registerJSErrFmt      = "register js-ts: %v"
+	registerPythonErrFmt  = "register python: %v"
+	registerAdapterErrFmt = "register adapter: %v"
 )
 
 type testAdapter struct {
@@ -125,16 +126,16 @@ func TestResolveAutoTieReturnsError(t *testing.T) {
 
 func TestRegisterValidationAndIDs(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(nil); err == nil {
+	if registry.Register(nil) == nil {
 		t.Fatalf("expected nil adapter error")
 	}
-	if err := registry.Register(testAdapter{id: " ", detection: Detection{Matched: true}}); err == nil {
+	if registry.Register(testAdapter{id: " ", detection: Detection{Matched: true}}) == nil {
 		t.Fatalf("expected empty adapter id error")
 	}
 	if err := registry.Register(testAdapter{id: "js-ts", aliases: []string{"js"}, detection: Detection{Matched: true}}); err != nil {
 		t.Fatalf(registerJSErrFmt, err)
 	}
-	if err := registry.Register(testAdapter{id: "other", aliases: []string{"js"}, detection: Detection{Matched: true}}); err == nil {
+	if registry.Register(testAdapter{id: "other", aliases: []string{"js"}, detection: Detection{Matched: true}}) == nil {
 		t.Fatalf("expected duplicate alias registration error")
 	}
 
@@ -211,7 +212,7 @@ func TestDetectAdapterFallbackPath(t *testing.T) {
 func TestResolveAllNoMatchAndIDsNilRegistry(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: false}}); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterErrFmt, err)
 	}
 	if _, err := registry.Resolve(context.Background(), ".", All); !errors.Is(err, ErrNoLanguageMatch) {
 		t.Fatalf("expected ErrNoLanguageMatch for all-mode no match, got %v", err)
@@ -228,7 +229,7 @@ func TestResolveExplicitUnmatchedDetectionFallsBackToForcedMatch(t *testing.T) {
 		id:        "python",
 		detection: Detection{Matched: false, Confidence: 0, Roots: nil},
 	}); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterErrFmt, err)
 	}
 
 	candidates, err := registry.Resolve(context.Background(), ".", "python")
@@ -283,7 +284,7 @@ func TestDetectMatchesAndFallbackDetectorBranches(t *testing.T) {
 		},
 	}
 	if err := registry.Register(adapter); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterErrFmt, err)
 	}
 
 	// Same adapter appears under both id and alias; detectMatches should de-dupe by adapter ID.
@@ -328,7 +329,7 @@ func TestNormalizeDetectionFallbackToRepoPathOnAbsError(t *testing.T) {
 func TestResolveAutoSingleMatchBranch(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 60}}); err != nil {
-		t.Fatalf("register adapter: %v", err)
+		t.Fatalf(registerAdapterErrFmt, err)
 	}
 	candidates, err := registry.resolveAuto(context.Background(), ".")
 	if err != nil {

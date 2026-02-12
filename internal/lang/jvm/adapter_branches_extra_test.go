@@ -13,12 +13,18 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	mainJavaFile  = "Main.java"
+	gradleDirName = ".gradle"
+	readDirErrFmt = "readdir repo: %v"
+)
+
 func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	adapter := NewAdapter()
 
 	t.Run("detect from empty repo path", func(t *testing.T) {
 		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
+		testutil.MustWriteFile(t, filepath.Join(repo, mainJavaFile), "class Main {}")
 		testutil.Chdir(t, repo)
 
 		detection, err := adapter.DetectWithConfidence(context.Background(), "")
@@ -48,33 +54,47 @@ func TestJVMRootSignalAndScanErrorBranches(t *testing.T) {
 
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
 	testutil.MustWriteFile(t, repoFile, "x")
-	if err := applyJVMRootSignals(repoFile, detection, roots); err == nil {
+	if applyJVMRootSignals(repoFile, detection, roots) == nil {
 		t.Fatalf("expected root signal stat error for non-directory repo path")
 	}
 }
 
 func TestJVMSourceAndBuildFileBranches(t *testing.T) {
 	repo := t.TempDir()
+	t.Run("source file branches", func(t *testing.T) { assertJVMSourceFileBranches(t, repo) })
+	t.Run("missing build root", func(t *testing.T) { assertMissingBuildRootBranch(t, repo) })
+	t.Run("build file entry branches", func(t *testing.T) { assertBuildFileEntryBranches(t, repo) })
+	t.Run("gradle dir skip branch", func(t *testing.T) { assertGradleDirSkipBranch(t, repo) })
+}
+
+func assertJVMSourceFileBranches(t *testing.T, repo string) {
+	t.Helper()
 	result := &scanResult{}
 	if err := scanJVMSourceFile(repo, filepath.Join(repo, "README.md"), nil, nil, result); err != nil {
 		t.Fatalf("scan non-source file should be no-op: %v", err)
 	}
-	if err := scanJVMSourceFile(repo, filepath.Join(repo, "Missing.java"), nil, nil, result); err == nil {
+	if scanJVMSourceFile(repo, filepath.Join(repo, "Missing.java"), nil, nil, result) == nil {
 		t.Fatalf("expected read error for missing source file")
 	}
+}
 
+func assertMissingBuildRootBranch(t *testing.T, repo string) {
+	t.Helper()
 	descriptors := parseBuildFiles(filepath.Join(repo, "missing-root"), pomXMLName, func(string) []dependencyDescriptor {
 		return []dependencyDescriptor{{Name: "x"}}
 	})
 	if len(descriptors) != 0 {
 		t.Fatalf("expected no descriptors when walking missing root, got %#v", descriptors)
 	}
+}
 
-	entryPath := filepath.Join(repo, "pom.xml")
+func assertBuildFileEntryBranches(t *testing.T, repo string) {
+	t.Helper()
+	entryPath := filepath.Join(repo, pomXMLName)
 	testutil.MustWriteFile(t, entryPath, `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
 	entries, err := os.ReadDir(repo)
 	if err != nil {
-		t.Fatalf("readdir repo: %v", err)
+		t.Fatalf(readDirErrFmt, err)
 	}
 	if len(entries) == 0 {
 		t.Fatalf("expected file entries")
@@ -102,8 +122,6 @@ func TestJVMSourceAndBuildFileBranches(t *testing.T) {
 	if len(collected) != 1 {
 		t.Fatalf("expected descriptor dedupe in parseBuildFileEntry, got %#v", collected)
 	}
-
-	// Parse entry using a file entry but incorrect path to exercise read failure branch.
 	err = parseBuildFileEntry(
 		filepath.Join(repo, "missing-pom.xml"),
 		entries[0],
@@ -115,29 +133,33 @@ func TestJVMSourceAndBuildFileBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error when parseBuildFileEntry read fails, got %v", err)
 	}
+}
 
-	// Directory skip branch.
-	gradleDir := filepath.Join(repo, ".gradle")
+func assertGradleDirSkipBranch(t *testing.T, repo string) {
+	t.Helper()
+	gradleDir := filepath.Join(repo, gradleDirName)
 	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
-		t.Fatalf("mkdir .gradle: %v", err)
+		t.Fatalf("mkdir %s: %v", gradleDirName, err)
 	}
 	dirEntries, err := os.ReadDir(repo)
 	if err != nil {
-		t.Fatalf("readdir repo: %v", err)
+		t.Fatalf(readDirErrFmt, err)
 	}
 	for _, entry := range dirEntries {
-		if entry.IsDir() && entry.Name() == ".gradle" {
-			err := parseBuildFileEntry(
-				filepath.Join(repo, ".gradle"),
-				entry,
-				[]string{pomXMLName},
-				func(string) []dependencyDescriptor { return nil },
-				map[string]struct{}{},
-				&collected,
-			)
-			if !errors.Is(err, filepath.SkipDir) {
-				t.Fatalf("expected filepath.SkipDir for .gradle dir, got %v", err)
-			}
+		if !entry.IsDir() || entry.Name() != gradleDirName {
+			continue
+		}
+		collected := []dependencyDescriptor{}
+		err := parseBuildFileEntry(
+			filepath.Join(repo, gradleDirName),
+			entry,
+			[]string{pomXMLName},
+			func(string) []dependencyDescriptor { return nil },
+			map[string]struct{}{},
+			&collected,
+		)
+		if !errors.Is(err, filepath.SkipDir) {
+			t.Fatalf("expected filepath.SkipDir for %s dir, got %v", gradleDirName, err)
 		}
 	}
 }
@@ -206,7 +228,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 	}
 
 	// scanJVMSourceFile rel-path fallback branch using empty repoPath.
-	javaPath := filepath.Join(repo, "Main.java")
+	javaPath := filepath.Join(repo, mainJavaFile)
 	testutil.MustWriteFile(t, javaPath, "import custom.dep.Type;\n")
 	result := &scanResult{}
 	if err := scanJVMSourceFile("", javaPath, nil, nil, result); err != nil {
@@ -225,7 +247,7 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 
 func TestJVMAnalyseWarningAndErrorBranches(t *testing.T) {
 	repo := t.TempDir()
-	javaPath := filepath.Join(repo, "Main.java")
+	javaPath := filepath.Join(repo, mainJavaFile)
 	testutil.MustWriteFile(t, javaPath, "import custom.dep.Type;\n")
 	rep, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1})
 	if err != nil {

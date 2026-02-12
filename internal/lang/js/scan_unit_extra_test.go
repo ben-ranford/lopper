@@ -8,11 +8,16 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
+const (
+	unitIndexJS       = "index.js"
+	parseSourceErrFmt = "parse source: %v"
+)
+
 func parseJSNodeByType(t *testing.T, source []byte, nodeType string) *sitter.Node {
 	t.Helper()
-	tree, err := newSourceParser().Parse(context.Background(), "index.js", source)
+	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrFmt, err)
 	}
 	var found *sitter.Node
 	walkNode(tree.RootNode(), func(node *sitter.Node) {
@@ -35,9 +40,9 @@ const ns = require("axios");
 require("leftpad");
 foo("x");
 `)
-	tree, err := newSourceParser().Parse(context.Background(), "index.js", source)
+	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrFmt, err)
 	}
 
 	var importStmts []*sitter.Node
@@ -54,19 +59,19 @@ foo("x");
 		t.Fatalf("expected import and call expressions")
 	}
 
-	firstImport := parseImportStatement(importStmts[0], source, "index.js")
+	firstImport := parseImportStatement(importStmts[0], source, unitIndexJS)
 	if len(firstImport) != 1 || firstImport[0].Kind != ImportNamespace {
 		t.Fatalf("expected namespace fallback import for bare import, got %#v", firstImport)
 	}
 
-	secondImport := parseImportStatement(importStmts[1], source, "index.js")
+	secondImport := parseImportStatement(importStmts[1], source, unitIndexJS)
 	if len(secondImport) == 0 || secondImport[0].Kind != ImportNamed {
 		t.Fatalf("expected named import parsing, got %#v", secondImport)
 	}
 
 	var sawRequire bool
 	for _, call := range callExprs {
-		bindings := parseRequireCall(call, source, "index.js")
+		bindings := parseRequireCall(call, source, unitIndexJS)
 		if len(bindings) == 0 {
 			continue
 		}
@@ -79,9 +84,9 @@ foo("x");
 
 func TestScanLiteralAndNodeHelpers(t *testing.T) {
 	source := []byte(`const x = "value"; const y = \` + "`v`" + `; const z = unknown;`)
-	tree, err := newSourceParser().Parse(context.Background(), "index.js", source)
+	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrFmt, err)
 	}
 	values := make([]string, 0)
 	walkNode(tree.RootNode(), func(node *sitter.Node) {
@@ -98,7 +103,7 @@ func TestScanLiteralAndNodeHelpers(t *testing.T) {
 	if text := nodeText(nil, source); text != "" {
 		t.Fatalf("expected empty node text for nil node, got %q", text)
 	}
-	if child := firstNamedChildOfType(tree.RootNode(), "not-a-real-type"); child != nil {
+	if firstNamedChildOfType(tree.RootNode(), "not-a-real-type") != nil {
 		t.Fatalf("expected no named child for unknown type")
 	}
 }
@@ -106,7 +111,7 @@ func TestScanLiteralAndNodeHelpers(t *testing.T) {
 func TestParseRequireBindingNoDeclarator(t *testing.T) {
 	source := []byte(`require("leftpad")`)
 	call := parseJSNodeByType(t, source, "call_expression")
-	bindings := parseRequireBinding(call, source, "leftpad", "index.js")
+	bindings := parseRequireBinding(call, source, "leftpad", unitIndexJS)
 	if len(bindings) != 0 {
 		t.Fatalf("expected no require bindings without variable declarator, got %#v", bindings)
 	}

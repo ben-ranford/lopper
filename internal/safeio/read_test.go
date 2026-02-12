@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const unexpectedErrFmt = "unexpected error: %v"
+
 func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, "nested", "file.txt")
@@ -43,7 +45,7 @@ func TestReadFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 		t.Fatal("expected error for outside path, got nil")
 	}
 	if !strings.Contains(err.Error(), "path escapes root") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
@@ -69,7 +71,7 @@ func TestReadFileUnderRejectsNonDirectoryRoot(t *testing.T) {
 		t.Fatal("expected error when root is not a directory")
 	}
 	if !strings.Contains(err.Error(), "open root") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
@@ -98,7 +100,7 @@ func TestReadFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatal("expected root path resolution error")
 	}
 	if !strings.Contains(err.Error(), "resolve root path") && !strings.Contains(err.Error(), "open root") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
@@ -128,6 +130,6 @@ func TestReadFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatal("expected target path resolution error")
 	}
 	if !strings.Contains(err.Error(), "resolve target path") && !strings.Contains(err.Error(), "path escapes root") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }

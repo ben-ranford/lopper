@@ -27,34 +27,52 @@ function demo(arg) { const local = 1; return util.map([arg], m); }
 	if err != nil {
 		t.Fatalf("scan repo: %v", err)
 	}
+	file := assertSingleScannedFile(t, result)
+	assertImportBindingCoverage(t, file.Imports)
+	assertIdentifierUsageCoverage(t, file.IdentifierUsage)
+}
+
+func assertSingleScannedFile(t *testing.T, result ScanResult) FileScan {
+	t.Helper()
 	if len(result.Files) != 1 {
 		t.Fatalf("expected one scanned file, got %d", len(result.Files))
 	}
-	imports := result.Files[0].Imports
+	return result.Files[0]
+}
+
+func assertImportBindingCoverage(t *testing.T, imports []ImportBinding) {
+	t.Helper()
 	if len(imports) < 5 {
 		t.Fatalf("expected multiple parsed imports, got %#v", imports)
 	}
-	var foundMapAlias, foundFilter, foundNamespace bool
+	found := map[string]bool{
+		"map-alias": false,
+		"filter":    false,
+		"namespace": false,
+	}
 	for _, imp := range imports {
-		if imp.Module == "lodash" && imp.ExportName == "map" && imp.LocalName == "m" {
-			foundMapAlias = true
-		}
-		if imp.Module == "lodash" && imp.ExportName == "filter" {
-			foundFilter = true
-		}
-		if imp.Module == "axios" && imp.Kind == ImportNamespace {
-			foundNamespace = true
+		switch {
+		case imp.Module == "lodash" && imp.ExportName == "map" && imp.LocalName == "m":
+			found["map-alias"] = true
+		case imp.Module == "lodash" && imp.ExportName == "filter":
+			found["filter"] = true
+		case imp.Module == "axios" && imp.Kind == ImportNamespace:
+			found["namespace"] = true
 		}
 	}
-	if !foundMapAlias || !foundFilter || !foundNamespace {
-		t.Fatalf("expected require/import branches to parse bindings, got %#v", imports)
+	for key, ok := range found {
+		if !ok {
+			t.Fatalf("missing expected parsed binding %q in %#v", key, imports)
+		}
 	}
+}
 
-	ids := result.Files[0].IdentifierUsage
-	if ids["demo"] != 0 {
+func assertIdentifierUsageCoverage(t *testing.T, usage map[string]int) {
+	t.Helper()
+	if usage["demo"] != 0 {
 		t.Fatalf("expected function declaration identifier not counted as usage")
 	}
-	if ids["arg"] == 0 {
+	if usage["arg"] == 0 {
 		t.Fatalf("expected parameter usage to be counted in function body")
 	}
 }

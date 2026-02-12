@@ -13,15 +13,20 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestJVMParsingHelpers(t *testing.T) {
+const (
+	junitJupiterAPIName = "junit-jupiter-api"
+	acmeLibName         = "acme-lib"
+)
+
+func TestJVMParsePackageAndImports(t *testing.T) {
 	content := []byte("package com.example.app;\nimport java.util.List;\nimport org.junit.jupiter.api.Test;\nimport com.acme.lib.Widget;\n")
 	pkg := parsePackage(content)
 	if pkg != "com.example.app" {
 		t.Fatalf("unexpected parsed package: %q", pkg)
 	}
 
-	prefixes := map[string]string{"org.junit.jupiter": "junit-jupiter-api"}
-	aliases := map[string]string{"com.acme": "acme-lib"}
+	prefixes := map[string]string{"org.junit.jupiter": junitJupiterAPIName}
+	aliases := map[string]string{"com.acme": acmeLibName}
 	imports := parseImports(content, "App.java", pkg, prefixes, aliases)
 	if len(imports) != 2 {
 		t.Fatalf("expected two non-stdlib imports, got %#v", imports)
@@ -29,7 +34,12 @@ func TestJVMParsingHelpers(t *testing.T) {
 	if imports[0].Dependency == "" || imports[1].Dependency == "" {
 		t.Fatalf("expected dependencies to be resolved: %#v", imports)
 	}
+}
 
+func TestJVMIgnoreAndResolveDependencyHelpers(t *testing.T) {
+	pkg := "com.example.app"
+	prefixes := map[string]string{"org.junit.jupiter": junitJupiterAPIName}
+	aliases := map[string]string{"com.acme": acmeLibName}
 	ignoreCases := []struct {
 		module string
 		want   bool
@@ -50,8 +60,8 @@ func TestJVMParsingHelpers(t *testing.T) {
 		aliases  map[string]string
 		want     string
 	}{
-		{module: "org.junit.jupiter.api.Test", prefixes: prefixes, aliases: aliases, want: "junit-jupiter-api"},
-		{module: "com.acme.lib.Widget", prefixes: map[string]string{}, aliases: aliases, want: "acme-lib"},
+		{module: "org.junit.jupiter.api.Test", prefixes: prefixes, aliases: aliases, want: junitJupiterAPIName},
+		{module: "com.acme.lib.Widget", prefixes: map[string]string{}, aliases: aliases, want: acmeLibName},
 	}
 	for _, tc := range resolveCases {
 		if got := resolveDependency(tc.module, tc.prefixes, tc.aliases); got != tc.want {
@@ -71,10 +81,13 @@ func TestJVMParsingHelpers(t *testing.T) {
 			t.Fatalf("fallbackDependency(%q): expected %q, got %q", tc.module, tc.want, got)
 		}
 	}
+}
+
+func TestJVMParsingFormattingHelpers(t *testing.T) {
 	if got := lastModuleSegment("a.b.C"); got != "C" {
 		t.Fatalf("unexpected last module segment: %q", got)
 	}
-	if col := firstContentColumn("\t import x"); col <= 1 {
+	if firstContentColumn("\t import x") <= 1 {
 		t.Fatalf("expected firstContentColumn to detect indentation")
 	}
 	if got := stripLineComment("import a // trailing"); got != "import a " {
@@ -101,7 +114,7 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 		t.Fatalf("expected alias lookup for artifact")
 	}
 
-	if !matchesBuildFile("build.gradle", []string{"build.gradle"}) || matchesBuildFile("foo.txt", []string{"build.gradle"}) {
+	if !matchesBuildFile(buildGradleName, []string{buildGradleName}) || matchesBuildFile("foo.txt", []string{buildGradleName}) {
 		t.Fatalf("unexpected build file matching")
 	}
 	if !shouldSkipDir(".gradle") || shouldSkipDir("src") {
@@ -110,7 +123,7 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
 	poms := parsePomDependencies(repo)
 	gradle := parseGradleDependencies(repo)
 	if len(poms) == 0 || len(gradle) == 0 {
@@ -156,7 +169,7 @@ func TestJVMDetectAndWalkBranches(t *testing.T) {
 		repo := t.TempDir()
 		for path, content := range map[string]string{
 			"pom.xml":          "<project/>",
-			"build.gradle":     "",
+			buildGradleName:    "",
 			"build.gradle.kts": "",
 		} {
 			testutil.MustWriteFile(t, filepath.Join(repo, path), content)

@@ -11,11 +11,13 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const importRequestsLine = "import requests"
+
 func TestPythonDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	adapter := NewAdapter()
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests")
+	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), importRequestsLine)
 	testutil.Chdir(t, repo)
 
 	detection, err := adapter.DetectWithConfidence(context.Background(), "")
@@ -58,7 +60,7 @@ func TestPythonAnalyseErrorBranches(t *testing.T) {
 func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 	fileRepo := t.TempDir()
 	source := filepath.Join(fileRepo, "mod.py")
-	testutil.MustWriteFile(t, source, "import requests")
+	testutil.MustWriteFile(t, source, importRequestsLine)
 	fileEntries, err := os.ReadDir(fileRepo)
 	if err != nil {
 		t.Fatalf("readdir fileRepo: %v", err)
@@ -69,7 +71,7 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 		}
 		// Force enforceRepoBoundary failure by scanning a file outside repo.
 		outside := filepath.Join(t.TempDir(), "outside.py")
-		testutil.MustWriteFile(t, outside, "import requests")
+		testutil.MustWriteFile(t, outside, importRequestsLine)
 		err := scanPythonRepoEntry(fileRepo, outside, entry, &scanResult{})
 		if err == nil {
 			t.Fatalf("expected boundary error for outside path")

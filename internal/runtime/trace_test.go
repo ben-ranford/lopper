@@ -11,6 +11,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const scopePkgDependency = "@scope/pkg"
+
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 	t.Helper()
 	return Load(testutil.WriteTempFile(t, "runtime.ndjson", content))
@@ -28,8 +30,8 @@ func TestLoadTrace(t *testing.T) {
 	if trace.DependencyLoads["lodash"] != 1 {
 		t.Fatalf("expected lodash load count=1, got %d", trace.DependencyLoads["lodash"])
 	}
-	if trace.DependencyLoads["@scope/pkg"] != 1 {
-		t.Fatalf("expected @scope/pkg load count=1, got %d", trace.DependencyLoads["@scope/pkg"])
+	if trace.DependencyLoads[scopePkgDependency] != 1 {
+		t.Fatalf("expected %s load count=1, got %d", scopePkgDependency, trace.DependencyLoads[scopePkgDependency])
 	}
 }
 
@@ -75,8 +77,8 @@ func TestDependencyResolutionHelpers(t *testing.T) {
 	}{
 		{name: "blank specifier", got: dependencyFromSpecifier(" "), want: ""},
 		{name: "local specifier", got: dependencyFromSpecifier("./local"), want: ""},
-		{name: "scoped specifier", got: dependencyFromSpecifier("@scope/pkg/path"), want: "@scope/pkg"},
-		{name: "scoped resolved path", got: dependencyFromResolvedPath("file:///repo/node_modules/@scope/pkg/lib/index.js"), want: "@scope/pkg"},
+		{name: "scoped specifier", got: dependencyFromSpecifier("@scope/pkg/path"), want: scopePkgDependency},
+		{name: "scoped resolved path", got: dependencyFromResolvedPath("file:///repo/node_modules/@scope/pkg/lib/index.js"), want: scopePkgDependency},
 		{name: "resolved lodash path", got: dependencyFromResolvedPath("/repo/node_modules/lodash/map.js"), want: "lodash"},
 		{name: "non node_modules path", got: dependencyFromResolvedPath("/repo/no-node-modules/here.js"), want: ""},
 		{name: "event fallback", got: dependencyFromEvent(Event{Resolved: "/repo/node_modules/react/index.js"}), want: "react"},

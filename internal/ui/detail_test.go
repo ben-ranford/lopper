@@ -11,6 +11,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const showDetailErrFmt = "show detail: %v"
+
 func TestDetailShowsRiskCues(t *testing.T) {
 	analyzer := stubAnalyzer{
 		report: report.Report{
@@ -37,7 +39,7 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "js-ts")
 	if err := detail.Show(context.Background(), "risky"); err != nil {
-		t.Fatalf("show detail: %v", err)
+		t.Fatalf(showDetailErrFmt, err)
 	}
 
 	output := out.String()
@@ -80,7 +82,7 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "all")
 	if err := detail.Show(context.Background(), "python:requests"); err != nil {
-		t.Fatalf("show detail: %v", err)
+		t.Fatalf(showDetailErrFmt, err)
 	}
 	if analyzer.lastRequest.Language != "python" {
 		t.Fatalf("expected language override python, got %q", analyzer.lastRequest.Language)
@@ -93,7 +95,7 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 func TestDetailHelpersAndErrors(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "")
-	if err := detail.Show(context.Background(), ""); err == nil {
+	if detail.Show(context.Background(), "") == nil {
 		t.Fatalf("expected error when dependency is empty")
 	}
 	if !strings.Contains(NewDetail(&out, stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "").Language, "auto") {
@@ -183,7 +185,7 @@ func TestDetailShowWarningsAndCommandBranches(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "js-ts")
 	if err := detail.Show(context.Background(), "dep"); err != nil {
-		t.Fatalf("show detail: %v", err)
+		t.Fatalf(showDetailErrFmt, err)
 	}
 	if !strings.Contains(out.String(), "Warnings:") {
 		t.Fatalf("expected warnings section in detail output, got %q", out.String())

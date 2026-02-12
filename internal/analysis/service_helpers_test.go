@@ -46,7 +46,7 @@ func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 	}
 }
 
-func TestMergeHelpers(t *testing.T) {
+func TestMergeDependencyCoreFields(t *testing.T) {
 	left := report.DependencyReport{
 		Language:          "js-ts",
 		Name:              "lodash",
@@ -81,18 +81,36 @@ func TestMergeHelpers(t *testing.T) {
 	if merged.RuntimeUsage == nil || merged.RuntimeUsage.LoadCount != 3 || merged.RuntimeUsage.RuntimeOnly {
 		t.Fatalf("unexpected merged runtime usage: %#v", merged.RuntimeUsage)
 	}
-	for _, imp := range merged.UnusedImports {
-		if imp.Name == "map" {
-			t.Fatalf("expected used import overlaps to be filtered from unused imports")
-		}
-	}
 	if len(merged.RiskCues) != 2 || len(merged.Recommendations) != 2 {
 		t.Fatalf("expected merged cues and recommendations")
 	}
 	if len(merged.TopUsedSymbols) == 0 || merged.TopUsedSymbols[0].Name != "map" {
 		t.Fatalf("expected merged top symbols to include map first, got %#v", merged.TopUsedSymbols)
 	}
+}
 
+func TestMergeDependencyFiltersUsedFromUnused(t *testing.T) {
+	left := report.DependencyReport{
+		Language:      "js-ts",
+		Name:          "lodash",
+		UsedImports:   []report.ImportUse{{Name: "map", Module: "lodash", Locations: []report.Location{{File: "a.js", Line: 1}}}},
+		UnusedImports: []report.ImportUse{{Name: "filter", Module: "lodash", Locations: []report.Location{{File: "a.js", Line: 2}}}},
+	}
+	right := report.DependencyReport{
+		Language:      "js-ts",
+		Name:          "lodash",
+		UsedImports:   []report.ImportUse{{Name: "map", Module: "lodash", Locations: []report.Location{{File: "b.js", Line: 1}}}},
+		UnusedImports: []report.ImportUse{{Name: "map", Module: "lodash", Locations: []report.Location{{File: "b.js", Line: 3}}}},
+	}
+	merged := mergeDependency(left, right)
+	for _, imp := range merged.UnusedImports {
+		if imp.Name == "map" {
+			t.Fatalf("expected used import overlaps to be filtered from unused imports")
+		}
+	}
+}
+
+func TestMergeHelpersSortBranches(t *testing.T) {
 	refs := mergeSymbolRefs([]report.SymbolRef{{Name: "a", Module: "m"}}, []report.SymbolRef{{Name: "b", Module: "m"}})
 	if len(refs) != 2 {
 		t.Fatalf("expected merged symbol refs, got %#v", refs)

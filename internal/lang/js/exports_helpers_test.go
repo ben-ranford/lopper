@@ -11,6 +11,8 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
+const indexJSName = "index.js"
+
 func TestExportParsingHelpers(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte(`
@@ -22,7 +24,7 @@ export const { first, nested: { second }, alias: third } = value;
 export const [arrOne, , arrTwo] = list;
 export * from "./other.js";
 `)
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), indexJSName, source)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
@@ -49,20 +51,20 @@ func TestEntrypointAndPathHelpers(t *testing.T) {
 	if err := os.MkdirAll(depRoot, 0o755); err != nil {
 		t.Fatalf("mkdir dep root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export const x = 1"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(depRoot, indexJSName), []byte("export const x = 1"), 0o600); err != nil {
 		t.Fatalf("write index.js: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(depRoot, "subdir"), 0o755); err != nil {
 		t.Fatalf("mkdir subdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(depRoot, "subdir", "index.js"), []byte("export const y = 2"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(depRoot, "subdir", indexJSName), []byte("export const y = 2"), 0o600); err != nil {
 		t.Fatalf("write subdir index.js: %v", err)
 	}
 
-	if got, ok := resolveEntrypoint(depRoot, "index"); !ok || filepath.Base(got) != "index.js" {
+	if got, ok := resolveEntrypoint(depRoot, "index"); !ok || filepath.Base(got) != indexJSName {
 		t.Fatalf("expected index.js entrypoint resolution, got %q ok=%v", got, ok)
 	}
-	if got, ok := resolveEntrypoint(depRoot, "subdir"); !ok || filepath.Base(got) != "index.js" {
+	if got, ok := resolveEntrypoint(depRoot, "subdir"); !ok || filepath.Base(got) != indexJSName {
 		t.Fatalf("expected directory entrypoint resolution, got %q ok=%v", got, ok)
 	}
 	if _, ok := resolveEntrypoint(depRoot, "missing"); ok {
@@ -141,7 +143,7 @@ func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 
 func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	repo := t.TempDir()
-	jsFile := filepath.Join(repo, "index.js")
+	jsFile := filepath.Join(repo, indexJSName)
 	if err := os.WriteFile(jsFile, []byte("export const value = 1\n"), 0o600); err != nil {
 		t.Fatalf("write index.js: %v", err)
 	}
@@ -173,7 +175,7 @@ export const { base: alias = 1, ...rest } = obj;
 export const [first = 1, ...tail] = arr;
 function f(...args) { return args }
 `)
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), indexJSName, source)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
