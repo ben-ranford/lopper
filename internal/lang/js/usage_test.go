@@ -4,17 +4,22 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	sitter "github.com/smacker/go-tree-sitter"
 )
 
-const testJsFile = "test.js"
+const (
+	testJsFile  = "test.js"
+	indexJSFile = "index.js"
+)
 
 func TestNamespaceUsageComputedProperty(t *testing.T) {
 	repo := t.TempDir()
 	source := "import * as util from \"lodash\"\nutil['map']([1], (x) => x)\n"
-	path := filepath.Join(repo, "index.js")
+	path := filepath.Join(repo, indexJSFile)
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -34,6 +39,27 @@ func TestNamespaceUsageComputedProperty(t *testing.T) {
 	}
 	if props["map"] == 0 {
 		t.Fatalf("expected computed property map usage")
+	}
+}
+
+func TestNamespaceUsageMemberExpression(t *testing.T) {
+	repo := t.TempDir()
+	source := "import * as util from \"lodash\"\nutil.map([1], (x) => x)\nutil['filter']([1], Boolean)\n"
+	path := filepath.Join(repo, indexJSFile)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	usage := result.Files[0].NamespaceUsage["util"]
+	if usage["map"] == 0 {
+		t.Fatalf("expected member expression map usage")
+	}
+	if usage["filter"] == 0 {
+		t.Fatalf("expected subscript expression filter usage")
 	}
 }
 
@@ -288,5 +314,52 @@ func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 				t.Errorf("%s: hasAmbiguous = %v, want %v", tt.description, hasAmbiguous, tt.expectAmbiguousFlag)
 			}
 		})
+	}
+}
+
+func TestNamespaceReferenceExtractionBranches(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+const obj = {};
+obj["named"];
+obj[prop];
+obj.method;
+other().call;
+`)
+	tree, err := parser.Parse(context.Background(), indexJSFile, source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+	refs := collectNamespaceReferences(tree, source)
+	if len(refs) == 0 {
+		t.Fatalf("expected namespace references")
+	}
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Local == "obj" {
+			names = append(names, ref.Property)
+		}
+	}
+	if !slices.Contains(names, "named") || !slices.Contains(names, "prop") || !slices.Contains(names, "method") {
+		t.Fatalf("expected property extraction branches, got %#v", names)
+	}
+}
+
+func TestExtractPropertyStringBackticksAndRaw(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte("const a = `value`; const b = 'quoted';")
+	tree, err := parser.Parse(context.Background(), indexJSFile, source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+	root := tree.RootNode()
+	found := []string{}
+	walkNode(root, func(node *sitter.Node) {
+		if node.Type() == "template_string" || node.Type() == "string" {
+			found = append(found, extractPropertyString(node, source))
+		}
+	})
+	if !slices.Contains(found, "value") || !slices.Contains(found, "quoted") {
+		t.Fatalf("expected string extraction from template and quoted strings, got %#v", found)
 	}
 }

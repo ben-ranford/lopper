@@ -1,9 +1,11 @@
 package shared
 
 import (
+	"context"
 	"regexp"
 	"sort"
 
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -272,6 +274,39 @@ func SortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(items)
 	return items
+}
+
+func DefaultRepoPath(repoPath string) string {
+	if repoPath == "" {
+		return "."
+	}
+	return repoPath
+}
+
+func FinalizeDetection(repoPath string, detection language.Detection, roots map[string]struct{}) language.Detection {
+	if detection.Matched && detection.Confidence < 35 {
+		detection.Confidence = 35
+	}
+	if detection.Confidence > 95 {
+		detection.Confidence = 95
+	}
+	if len(roots) == 0 && detection.Matched {
+		roots[repoPath] = struct{}{}
+	}
+	detection.Roots = SortedKeys(roots)
+	return detection
+}
+
+func DetectMatched(
+	ctx context.Context,
+	repoPath string,
+	detectWithConfidence func(context.Context, string) (language.Detection, error),
+) (bool, error) {
+	detection, err := detectWithConfidence(ctx, repoPath)
+	if err != nil {
+		return false, err
+	}
+	return detection.Matched, nil
 }
 
 func HasWildcardImport(imports []report.ImportUse) bool {
