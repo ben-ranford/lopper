@@ -1,10 +1,13 @@
 package shared
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -151,5 +154,44 @@ func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	addImport(dest, report.ImportUse{Name: "map", Module: "lodash", Locations: []report.Location{{File: "b.js", Line: 2}}})
 	if len(dest["lodash:map"].Locations) != 2 {
 		t.Fatalf("expected duplicate import locations to merge, got %#v", dest["lodash:map"])
+	}
+}
+
+func TestDetectionHelpers(t *testing.T) {
+	if got := DefaultRepoPath(""); got != "." {
+		t.Fatalf("expected empty repo path to default to '.', got %q", got)
+	}
+	if got := DefaultRepoPath("repo"); got != "repo" {
+		t.Fatalf("expected non-empty repo path to pass through, got %q", got)
+	}
+
+	detection := FinalizeDetection("repo", language.Detection{Matched: true, Confidence: 20}, map[string]struct{}{})
+	if detection.Confidence != 35 {
+		t.Fatalf("expected floor confidence 35, got %d", detection.Confidence)
+	}
+	if !slices.Equal(detection.Roots, []string{"repo"}) {
+		t.Fatalf("expected fallback root assignment, got %#v", detection.Roots)
+	}
+
+	detection = FinalizeDetection("repo", language.Detection{Matched: true, Confidence: 120}, map[string]struct{}{"b": {}, "a": {}})
+	if detection.Confidence != 95 {
+		t.Fatalf("expected confidence cap 95, got %d", detection.Confidence)
+	}
+	if !slices.Equal(detection.Roots, []string{"a", "b"}) {
+		t.Fatalf("expected sorted roots, got %#v", detection.Roots)
+	}
+
+	matched, err := DetectMatched(context.Background(), "repo", func(context.Context, string) (language.Detection, error) {
+		return language.Detection{Matched: true}, nil
+	})
+	if err != nil || !matched {
+		t.Fatalf("expected matched detection from helper, matched=%v err=%v", matched, err)
+	}
+
+	boom := errors.New("boom")
+	if _, err := DetectMatched(context.Background(), "repo", func(context.Context, string) (language.Detection, error) {
+		return language.Detection{}, boom
+	}); !errors.Is(err, boom) {
+		t.Fatalf("expected detect helper to propagate error, got %v", err)
 	}
 }

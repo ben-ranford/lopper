@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
@@ -36,18 +37,12 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	detection, err := a.DetectWithConfidence(ctx, repoPath)
-	if err != nil {
-		return false, err
-	}
-	return detection.Matched, nil
+	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	_ = ctx
-	if repoPath == "" {
-		repoPath = "."
-	}
+	repoPath = shared.DefaultRepoPath(repoPath)
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
@@ -64,17 +59,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	if detection.Matched && detection.Confidence < 35 {
-		detection.Confidence = 35
-	}
-	if detection.Confidence > 95 {
-		detection.Confidence = 95
-	}
-	if len(roots) == 0 && detection.Matched {
-		roots[repoPath] = struct{}{}
-	}
-	detection.Roots = mapKeysSorted(roots)
-	return detection, nil
+	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
 func addRootSignalDetection(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
@@ -594,16 +579,4 @@ func dependencyExists(repoPath string, dependency string) bool {
 	}
 	info, err := os.Stat(filepath.Join(root, "package.json"))
 	return err == nil && !info.IsDir()
-}
-
-func mapKeysSorted(values map[string]struct{}) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	items := make([]string, 0, len(values))
-	for value := range values {
-		items = append(items, value)
-	}
-	sort.Strings(items)
-	return items
 }
