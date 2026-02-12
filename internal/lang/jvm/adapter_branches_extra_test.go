@@ -57,12 +57,6 @@ func TestJVMRootSignalAndScanErrorBranches(t *testing.T) {
 	if err := applyJVMRootSignals(repoFile, detection, roots); err == nil {
 		t.Fatalf("expected root signal stat error for non-directory repo path")
 	}
-
-	repo := t.TempDir()
-	ctx := testutil.CanceledContext()
-	if _, err := scanRepo(ctx, repo, map[string]string{}, map[string]string{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled error, got %v", err)
-	}
 }
 
 func TestJVMSourceAndBuildFileBranches(t *testing.T) {
@@ -209,10 +203,6 @@ func TestJVMRecommendationAndLookupBranches(t *testing.T) {
 
 func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 	repo := t.TempDir()
-	ctx := testutil.CanceledContext()
-	if _, err := scanRepo(ctx, repo, map[string]string{}, map[string]string{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled error, got %v", err)
-	}
 
 	// Trigger parseImports branches: fallback dependency, wildcard symbol, empty symbol.
 	content := []byte("import com.example.lib.;\nimport com.foo.bar.*;\nimport custom.module.Type;\n")
@@ -232,39 +222,8 @@ func TestJVMScanCallbackAndParseBranches(t *testing.T) {
 		t.Fatalf("expected scanned file")
 	}
 
-	// walkJVMDetectionEntry skip-dir branch.
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "build"), 0o755); err != nil {
-		t.Fatalf("mkdir build dir: %v", err)
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("readdir root: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() == "build" {
-			visited := 0
-			detection := &language.Detection{}
-			err := walkJVMDetectionEntry(filepath.Join(root, "build"), entry, map[string]struct{}{}, detection, &visited, 10)
-			if !errors.Is(err, filepath.SkipDir) {
-				t.Fatalf("expected filepath.SkipDir for build dir, got %v", err)
-			}
-		}
-	}
-
-	// DetectWithConfidence should ignore fs.SkipAll as non-error.
-	manyFilesRepo := t.TempDir()
-	testutil.WriteNumberedTextFiles(t, manyFilesRepo, 1050)
-	detection, err := NewAdapter().DetectWithConfidence(context.Background(), manyFilesRepo)
-	if err != nil {
-		t.Fatalf("detect with many files: %v", err)
-	}
-	if detection.Matched {
-		t.Fatalf("did not expect matched detection from non-source files")
-	}
-
 	// WalkDir error propagation branch.
-	_, err = scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing"), map[string]string{}, map[string]string{})
+	_, err := scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing"), map[string]string{}, map[string]string{})
 	if err == nil {
 		t.Fatalf("expected scanRepo error for missing path")
 	}

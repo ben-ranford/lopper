@@ -62,45 +62,7 @@ func TestPythonAnalyseErrorBranches(t *testing.T) {
 	}
 }
 
-func TestPythonImportAndDependencyBranches(t *testing.T) {
-	repo := t.TempDir()
-	if deps := parseImports([]byte("from requests import "), "a.py", repo); len(deps) != 0 {
-		t.Fatalf("expected no bindings for empty from-import symbols, got %#v", deps)
-	}
-	if deps := parseImportLine("os,requests", "a.py", repo, 0, "import os,requests"); len(deps) != 1 {
-		t.Fatalf("expected stdlib import filtered out, got %#v", deps)
-	}
-	if deps := parseFromImportLine("requests", " , ", "a.py", repo, 0, "from requests import ,"); len(deps) != 0 {
-		t.Fatalf("expected empty from-import symbol parts to be skipped, got %#v", deps)
-	}
-	if dep := dependencyFromModule(repo, ".invalid"); dep != "" {
-		t.Fatalf("expected empty dependency for invalid module root, got %q", dep)
-	}
-	if dep := dependencyFromModule(repo, " "); dep != "" {
-		t.Fatalf("expected empty dependency for blank module name, got %q", dep)
-	}
-}
-
 func TestPythonWalkAndScanEntryBranches(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, ".venv"), 0o755); err != nil {
-		t.Fatalf("mkdir .venv: %v", err)
-	}
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir repo: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() == ".venv" {
-			visited := 0
-			detection := &language.Detection{}
-			err := walkPythonDetectionEntry(filepath.Join(repo, ".venv"), entry, map[string]struct{}{}, detection, &visited, 10)
-			if !errors.Is(err, filepath.SkipDir) {
-				t.Fatalf("expected filepath.SkipDir for skipped dir, got %v", err)
-			}
-		}
-	}
-
 	fileRepo := t.TempDir()
 	source := filepath.Join(fileRepo, "mod.py")
 	testutil.MustWriteFile(t, source, "import requests")

@@ -43,20 +43,31 @@ func TestPythonImportParsingHelpers(t *testing.T) {
 	if name, local := parseImportPart("value"); name != "value" || local != "" {
 		t.Fatalf("unexpected parseImportPart result: name=%q local=%q", name, local)
 	}
-	if dependencyFromModule(repo, "os") != "" {
-		t.Fatalf("expected stdlib import to be ignored")
+	dependencyCases := []struct {
+		module string
+		want   string
+	}{
+		{module: "os", want: ""},
+		{module: "localpkg.module", want: ""},
+		{module: "requests.sessions", want: "requests"},
 	}
-	if dependencyFromModule(repo, "localpkg.module") != "" {
-		t.Fatalf("expected local package import to be ignored")
+	for _, tc := range dependencyCases {
+		if got := dependencyFromModule(repo, tc.module); got != tc.want {
+			t.Fatalf("dependencyFromModule(%q): expected %q, got %q", tc.module, tc.want, got)
+		}
 	}
-	if dependencyFromModule(repo, "requests.sessions") != "requests" {
-		t.Fatalf("expected third-party dependency normalization")
+	localCases := []struct {
+		module string
+		want   bool
+	}{
+		{module: "localpkg", want: true},
+		{module: "single", want: true},
+		{module: "missing", want: false},
 	}
-	if !isLocalModule(repo, "localpkg") || !isLocalModule(repo, "single") {
-		t.Fatalf("expected local module detection")
-	}
-	if isLocalModule(repo, "missing") {
-		t.Fatalf("did not expect missing module to be local")
+	for _, tc := range localCases {
+		if got := isLocalModule(repo, tc.module); got != tc.want {
+			t.Fatalf("isLocalModule(%q): expected %v, got %v", tc.module, tc.want, got)
+		}
 	}
 }
 
@@ -126,11 +137,18 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 		t.Fatalf("expected missing file read error")
 	}
 
-	if got := parseFromImportLine(".local", "name", "x.py", repo, 0, "from .local import name"); got != nil {
-		t.Fatalf("expected relative from-import to be ignored, got %#v", got)
+	fromImportCases := []struct {
+		module  string
+		symbols string
+		line    string
+	}{
+		{module: ".local", symbols: "name", line: "from .local import name"},
+		{module: "os", symbols: "path", line: "from os import path"},
 	}
-	if got := parseFromImportLine("os", "path", "x.py", repo, 0, "from os import path"); got != nil {
-		t.Fatalf("expected stdlib from-import to be ignored, got %#v", got)
+	for _, tc := range fromImportCases {
+		if got := parseFromImportLine(tc.module, tc.symbols, "x.py", repo, 0, tc.line); got != nil {
+			t.Fatalf("expected from-import %q to be ignored, got %#v", tc.line, got)
+		}
 	}
 	if got := parseImportLine("  ", "x.py", repo, 0, "import "); len(got) != 0 {
 		t.Fatalf("expected empty import line parse result, got %#v", got)

@@ -68,26 +68,23 @@ func TestLoadTraceInvalidLine(t *testing.T) {
 }
 
 func TestDependencyResolutionHelpers(t *testing.T) {
-	if dep := dependencyFromSpecifier(" "); dep != "" {
-		t.Fatalf("expected empty dependency for blank specifier, got %q", dep)
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "blank specifier", got: dependencyFromSpecifier(" "), want: ""},
+		{name: "local specifier", got: dependencyFromSpecifier("./local"), want: ""},
+		{name: "scoped specifier", got: dependencyFromSpecifier("@scope/pkg/path"), want: "@scope/pkg"},
+		{name: "scoped resolved path", got: dependencyFromResolvedPath("file:///repo/node_modules/@scope/pkg/lib/index.js"), want: "@scope/pkg"},
+		{name: "resolved lodash path", got: dependencyFromResolvedPath("/repo/node_modules/lodash/map.js"), want: "lodash"},
+		{name: "non node_modules path", got: dependencyFromResolvedPath("/repo/no-node-modules/here.js"), want: ""},
+		{name: "event fallback", got: dependencyFromEvent(Event{Resolved: "/repo/node_modules/react/index.js"}), want: "react"},
 	}
-	if dep := dependencyFromSpecifier("./local"); dep != "" {
-		t.Fatalf("expected empty dependency for local specifier, got %q", dep)
-	}
-	if dep := dependencyFromSpecifier("@scope/pkg/path"); dep != "@scope/pkg" {
-		t.Fatalf("expected scoped dependency, got %q", dep)
-	}
-	if dep := dependencyFromResolvedPath("file:///repo/node_modules/@scope/pkg/lib/index.js"); dep != "@scope/pkg" {
-		t.Fatalf("expected scoped dependency from resolved path, got %q", dep)
-	}
-	if dep := dependencyFromResolvedPath("/repo/node_modules/lodash/map.js"); dep != "lodash" {
-		t.Fatalf("expected lodash dependency from resolved path, got %q", dep)
-	}
-	if dep := dependencyFromResolvedPath("/repo/no-node-modules/here.js"); dep != "" {
-		t.Fatalf("expected empty dependency for non-node_modules path, got %q", dep)
-	}
-	if dep := dependencyFromEvent(Event{Resolved: "/repo/node_modules/react/index.js"}); dep != "react" {
-		t.Fatalf("expected dependency from resolved event, got %q", dep)
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, tc.got)
+		}
 	}
 }
 
@@ -126,24 +123,22 @@ func TestAnnotateNoTraceLoadsReturnsOriginal(t *testing.T) {
 }
 
 func TestDependencyFromSpecifierAndResolvedPathEdgeCases(t *testing.T) {
-	if dep := dependencyFromSpecifier("@scope"); dep != "" {
-		t.Fatalf("expected empty scoped dependency without package segment, got %q", dep)
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "scoped without package", got: dependencyFromSpecifier("@scope"), want: ""},
+		{name: "absolute specifier path", got: dependencyFromSpecifier("/abs/path"), want: ""},
+		{name: "node protocol", got: dependencyFromSpecifier("node:fs"), want: ""},
+		{name: "empty node_modules suffix", got: dependencyFromResolvedPath("file:///repo/node_modules/"), want: ""},
+		{name: "malformed scoped resolved path", got: dependencyFromResolvedPath("file:///repo/node_modules/@scope"), want: ""},
+		{name: "package with subpath", got: dependencyFromResolvedPath("file:///repo/node_modules/pkg/sub/index.js"), want: "pkg"},
 	}
-	if dep := dependencyFromSpecifier("/abs/path"); dep != "" {
-		t.Fatalf("expected empty dependency for absolute path, got %q", dep)
-	}
-	if dep := dependencyFromSpecifier("node:fs"); dep != "" {
-		t.Fatalf("expected empty dependency for node protocol, got %q", dep)
-	}
-
-	if dep := dependencyFromResolvedPath("file:///repo/node_modules/"); dep != "" {
-		t.Fatalf("expected empty dependency for empty node_modules suffix, got %q", dep)
-	}
-	if dep := dependencyFromResolvedPath("file:///repo/node_modules/@scope"); dep != "" {
-		t.Fatalf("expected empty dependency for malformed scoped path, got %q", dep)
-	}
-	if dep := dependencyFromResolvedPath("file:///repo/node_modules/pkg/sub/index.js"); dep != "pkg" {
-		t.Fatalf("expected pkg dependency, got %q", dep)
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, tc.got)
+		}
 	}
 }
 

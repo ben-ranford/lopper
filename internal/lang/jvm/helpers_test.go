@@ -31,27 +31,46 @@ func TestJVMParsingHelpers(t *testing.T) {
 		t.Fatalf("expected dependencies to be resolved: %#v", imports)
 	}
 
-	if !shouldIgnoreImport("java.util.List", pkg) {
-		t.Fatalf("expected java stdlib import to be ignored")
+	ignoreCases := []struct {
+		module string
+		want   bool
+	}{
+		{module: "java.util.List", want: true},
+		{module: "com.example.app.internal.Type", want: true},
+		{module: "com.other.lib.Type", want: false},
 	}
-	if !shouldIgnoreImport("com.example.app.internal.Type", pkg) {
-		t.Fatalf("expected same-package import to be ignored")
-	}
-	if shouldIgnoreImport("com.other.lib.Type", pkg) {
-		t.Fatalf("did not expect external import to be ignored")
+	for _, tc := range ignoreCases {
+		if got := shouldIgnoreImport(tc.module, pkg); got != tc.want {
+			t.Fatalf("shouldIgnoreImport(%q): expected %v, got %v", tc.module, tc.want, got)
+		}
 	}
 
-	if resolveDependency("org.junit.jupiter.api.Test", prefixes, aliases) != "junit-jupiter-api" {
-		t.Fatalf("expected prefix resolution")
+	resolveCases := []struct {
+		module   string
+		prefixes map[string]string
+		aliases  map[string]string
+		want     string
+	}{
+		{module: "org.junit.jupiter.api.Test", prefixes: prefixes, aliases: aliases, want: "junit-jupiter-api"},
+		{module: "com.acme.lib.Widget", prefixes: map[string]string{}, aliases: aliases, want: "acme-lib"},
 	}
-	if resolveDependency("com.acme.lib.Widget", map[string]string{}, aliases) != "acme-lib" {
-		t.Fatalf("expected alias resolution")
+	for _, tc := range resolveCases {
+		if got := resolveDependency(tc.module, tc.prefixes, tc.aliases); got != tc.want {
+			t.Fatalf("resolveDependency(%q): expected %q, got %q", tc.module, tc.want, got)
+		}
 	}
-	if got := fallbackDependency("single"); got != "single" {
-		t.Fatalf("unexpected fallback dependency for single segment: %q", got)
+
+	fallbackCases := []struct {
+		module string
+		want   string
+	}{
+		{module: "single", want: "single"},
+		{module: "a.b.c", want: "a.b"},
 	}
-	if got := fallbackDependency("a.b.c"); got != "a.b" {
-		t.Fatalf("unexpected fallback dependency for multi segment: %q", got)
+	for _, tc := range fallbackCases {
+		if got := fallbackDependency(tc.module); got != tc.want {
+			t.Fatalf("fallbackDependency(%q): expected %q, got %q", tc.module, tc.want, got)
+		}
 	}
 	if got := lastModuleSegment("a.b.C"); got != "C" {
 		t.Fatalf("unexpected last module segment: %q", got)
