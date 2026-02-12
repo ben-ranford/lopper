@@ -3,7 +3,6 @@ package js
 import (
 	"context"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,29 +16,14 @@ import (
 func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
 
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "export const x = 1")
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	testutil.Chdir(t, repo)
 
-	detection, err := adapter.DetectWithConfidence(context.Background(), "")
-	if err != nil {
+	if detection, err := adapter.DetectWithConfidence(context.Background(), ""); err != nil {
 		t.Fatalf("detect with confidence: %v", err)
-	}
-	if !detection.Matched {
-		t.Fatalf("expected matched detection")
-	}
-	if detection.Confidence != 35 {
-		t.Fatalf("expected floor confidence 35 for source-only detection, got %d", detection.Confidence)
-	}
-	if len(detection.Roots) != 1 || detection.Roots[0] != "." {
-		t.Fatalf("expected roots fallback to repo path, got %#v", detection.Roots)
+	} else if !detection.Matched || detection.Confidence != 35 || len(detection.Roots) != 1 || detection.Roots[0] != "." {
+		t.Fatalf("unexpected empty-repo detection result: %#v", detection)
 	}
 }
 

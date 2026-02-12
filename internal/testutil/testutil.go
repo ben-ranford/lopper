@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,4 +41,31 @@ func WriteTempFile(t *testing.T, filename string, content string) string {
 	path := filepath.Join(t.TempDir(), filename)
 	MustWriteFileMode(t, path, content, 0o644)
 	return path
+}
+
+func Chdir(t *testing.T, dir string) {
+	t.Helper()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+}
+
+func MustFirstFileEntry(t *testing.T, dir string) fs.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return entry
+		}
+	}
+	t.Fatalf("expected file entry in %s", dir)
+	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -170,15 +169,8 @@ func TestPythonRequestedDependencyBranches(t *testing.T) {
 
 func TestPythonDetectAndWalkBranches(t *testing.T) {
 	adapter := NewAdapter()
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
 	emptyWD := t.TempDir()
-	if err := os.Chdir(emptyWD); err != nil {
-		t.Fatalf("chdir emptyWD: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	testutil.Chdir(t, emptyWD)
 	if detection, err := adapter.DetectWithConfidence(context.Background(), ""); err != nil || detection.Matched {
 		t.Fatalf("expected default repo '.' to be processed without match in empty cwd, detection=%#v err=%v", detection, err)
 	}
@@ -195,21 +187,7 @@ func TestPythonDetectAndWalkBranches(t *testing.T) {
 		t.Fatalf("expected matched detection capped at 95, got %#v", detection)
 	}
 
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir repo: %v", err)
-	}
-	var fileEntry fs.DirEntry
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			fileEntry = entry
-			break
-		}
-	}
-	if fileEntry == nil {
-		t.Fatalf("expected file entry in repo")
-	}
-
+	fileEntry := testutil.MustFirstFileEntry(t, repo)
 	visited := 1
 	roots := make(map[string]struct{})
 	detect := &language.Detection{}

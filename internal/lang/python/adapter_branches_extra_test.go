@@ -14,16 +14,9 @@ import (
 func TestPythonDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	adapter := NewAdapter()
 
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests")
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	testutil.Chdir(t, repo)
 
 	detection, err := adapter.DetectWithConfidence(context.Background(), "")
 	if err != nil {

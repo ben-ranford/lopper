@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -152,39 +151,37 @@ func TestJVMScanAndRequestedDependencyBranches(t *testing.T) {
 
 func TestJVMDetectAndWalkBranches(t *testing.T) {
 	adapter := NewAdapter()
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), "<project/>")
-	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), "")
-	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle.kts"), "")
-	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
-	}
-	if !detection.Matched || detection.Confidence != 95 {
-		t.Fatalf("expected matched detection capped at 95, got %#v", detection)
-	}
 
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir repo: %v", err)
-	}
-	var fileEntry fs.DirEntry
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			fileEntry = entry
-			break
+	t.Run("confidence cap", func(t *testing.T) {
+		repo := t.TempDir()
+		for path, content := range map[string]string{
+			"pom.xml":          "<project/>",
+			"build.gradle":     "",
+			"build.gradle.kts": "",
+		} {
+			testutil.MustWriteFile(t, filepath.Join(repo, path), content)
 		}
-	}
-	if fileEntry == nil {
-		t.Fatalf("expected file entry")
-	}
-	visited := 1
-	roots := make(map[string]struct{})
-	detect := &language.Detection{}
-	err = walkJVMDetectionEntry(filepath.Join(repo, fileEntry.Name()), fileEntry, roots, detect, &visited, 1)
-	if !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
-	}
+		detection, err := adapter.DetectWithConfidence(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("detect with confidence: %v", err)
+		}
+		if !detection.Matched || detection.Confidence != 95 {
+			t.Fatalf("expected matched detection capped at 95, got %#v", detection)
+		}
+	})
+
+	t.Run("max file walk budget", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
+		entry := testutil.MustFirstFileEntry(t, repo)
+		visited := 1
+		roots := map[string]struct{}{}
+		detect := &language.Detection{}
+		err := walkJVMDetectionEntry(filepath.Join(repo, entry.Name()), entry, roots, detect, &visited, 1)
+		if !errors.Is(err, fs.SkipAll) {
+			t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
+		}
+	})
 }
 
 func TestJVMParseHelpersEdgeBranches(t *testing.T) {

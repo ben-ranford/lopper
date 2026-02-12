@@ -16,36 +16,30 @@ import (
 func TestJVMDetectWithConfidenceEmptyRepoPathAndErrors(t *testing.T) {
 	adapter := NewAdapter()
 
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Run("detect from empty repo path", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
+		testutil.Chdir(t, repo)
 
-	detection, err := adapter.DetectWithConfidence(context.Background(), "")
-	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
-	}
-	if !detection.Matched || detection.Confidence != 35 {
-		t.Fatalf("expected matched detection with floor confidence 35, got %#v", detection)
-	}
-	if len(detection.Roots) == 0 {
-		t.Fatalf("expected detection roots")
-	}
+		detection, err := adapter.DetectWithConfidence(context.Background(), "")
+		if err != nil {
+			t.Fatalf("detect with confidence: %v", err)
+		}
+		if !detection.Matched || detection.Confidence != 35 || len(detection.Roots) == 0 {
+			t.Fatalf("unexpected detection result for empty repo path: %#v", detection)
+		}
+	})
 
-	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	testutil.MustWriteFile(t, repoFile, "x")
-	if _, err := adapter.DetectWithConfidence(context.Background(), repoFile); err == nil {
-		t.Fatalf("expected detect error for non-directory repo path")
-	}
-	if _, err := adapter.Detect(context.Background(), repoFile); err == nil {
-		t.Fatalf("expected detect error to propagate")
-	}
+	t.Run("non-directory repo path errors", func(t *testing.T) {
+		repoFile := filepath.Join(t.TempDir(), "repo-file")
+		testutil.MustWriteFile(t, repoFile, "x")
+		if _, err := adapter.DetectWithConfidence(context.Background(), repoFile); err == nil {
+			t.Fatalf("expected detect-with-confidence error for non-directory repo path")
+		}
+		if matched, err := adapter.Detect(context.Background(), repoFile); err == nil || matched {
+			t.Fatalf("expected detect error to propagate, matched=%v err=%v", matched, err)
+		}
+	})
 }
 
 func TestJVMRootSignalAndScanErrorBranches(t *testing.T) {
