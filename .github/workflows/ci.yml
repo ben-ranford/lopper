@@ -69,7 +69,7 @@ jobs:
 
       - name: Comment lopper report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           LOPPER_OUTCOME: ${{ steps.lopper.outcome }}
           LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
