@@ -60,7 +60,6 @@ func TestAddReferenceNoOpBranches(t *testing.T) {
 
 	var refs []NamespaceReference
 	// Non-identifier object/property cases should be ignored.
-
 	walkNode(root, func(node *sitter.Node) {
 		switch node.Type() {
 		case "subscript_expression":
@@ -147,5 +146,101 @@ c.#value;
 	addMemberReference(member, source, &refs)
 	if len(refs) != 0 {
 		t.Fatalf("expected no refs for private member expression, got %#v", refs)
+	}
+}
+
+func TestAddReferenceAdditionalNoOpBranches(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+const obj = {};
+obj[""];
+obj[0];
+({}).name;
+fn().name;
+`)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
+	if err != nil {
+		t.Fatalf(parseSourceErrF, err)
+	}
+	root := tree.RootNode()
+
+	var refs []NamespaceReference
+	walkNode(root, func(node *sitter.Node) {
+		switch node.Type() {
+		case "subscript_expression":
+			addSubscriptReference(node, source, &refs)
+		case "member_expression":
+			addMemberReference(node, source, &refs)
+		}
+	})
+
+	// All expressions above should be ignored by the namespace collector rules.
+	if len(refs) != 0 {
+		t.Fatalf("expected no namespace references, got %#v", refs)
+	}
+}
+
+func TestAddReferenceSuccessBranches(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+const value = {};
+const prop = "dynamic";
+value.name;
+value[prop];
+`)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
+	if err != nil {
+		t.Fatalf(parseSourceErrF, err)
+	}
+	root := tree.RootNode()
+
+	refs := []NamespaceReference{}
+	walkNode(root, func(node *sitter.Node) {
+		switch node.Type() {
+		case "member_expression":
+			addMemberReference(node, source, &refs)
+		case "subscript_expression":
+			addSubscriptReference(node, source, &refs)
+		}
+	})
+
+	if len(refs) < 2 {
+		t.Fatalf("expected member+subscript references, got %#v", refs)
+	}
+}
+
+func TestAddReferenceMismatchedNodeTypeBranches(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+const value = {};
+value.name;
+value["name"];
+`)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
+	if err != nil {
+		t.Fatalf(parseSourceErrF, err)
+	}
+	root := tree.RootNode()
+
+	var memberNode *sitter.Node
+	var subscriptNode *sitter.Node
+	walkNode(root, func(node *sitter.Node) {
+		if memberNode == nil && node.Type() == "member_expression" {
+			memberNode = node
+		}
+		if subscriptNode == nil && node.Type() == "subscript_expression" {
+			subscriptNode = node
+		}
+	})
+	if memberNode == nil || subscriptNode == nil {
+		t.Fatalf("expected member and subscript nodes")
+	}
+
+	refs := []NamespaceReference{}
+	// These calls intentionally mismatch node kinds to cover nil field early-return paths.
+	addMemberReference(subscriptNode, source, &refs)
+	addSubscriptReference(memberNode, source, &refs)
+	if len(refs) != 0 {
+		t.Fatalf("expected no references for mismatched node type calls, got %#v", refs)
 	}
 }
