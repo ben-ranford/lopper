@@ -149,6 +149,62 @@ public class Program {
 	}
 }
 
+func TestServiceForwardsMinUsageThresholdToDotNet(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "App.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), `
+using Newtonsoft.Json;
+public class Program { public static void Main() {} }
+`)
+
+	service := NewService()
+	withDefault, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "newtonsoft.json",
+		Language:   "dotnet",
+	})
+	if err != nil {
+		t.Fatalf("analyse with default threshold: %v", err)
+	}
+	if len(withDefault.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(withDefault.Dependencies))
+	}
+	if !hasRecommendationCode(withDefault.Dependencies[0], "reduce-low-usage-package-surface") {
+		t.Fatalf("expected low-usage recommendation with default threshold")
+	}
+
+	zero := 0
+	withZero, err := service.Analyse(context.Background(), Request{
+		RepoPath:                          repo,
+		Dependency:                        "newtonsoft.json",
+		Language:                          "dotnet",
+		MinUsagePercentForRecommendations: &zero,
+	})
+	if err != nil {
+		t.Fatalf("analyse with zero threshold: %v", err)
+	}
+	if len(withZero.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(withZero.Dependencies))
+	}
+	if hasRecommendationCode(withZero.Dependencies[0], "reduce-low-usage-package-surface") {
+		t.Fatalf("did not expect low-usage recommendation when threshold is 0")
+	}
+}
+
+func hasRecommendationCode(dep report.DependencyReport, code string) bool {
+	for _, rec := range dep.Recommendations {
+		if rec.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 type stubAdapter struct {
 	id string
 }
