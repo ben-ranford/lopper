@@ -22,12 +22,13 @@ recommendations across supported languages.
 - `python` (Python)
 - `jvm` (Java/Kotlin import analysis)
 - `go` (Go module import analysis)
+- `php` (Composer/PSR-4 import analysis)
 
 Language selection modes:
 
 - `auto`: choose the highest-confidence detected adapter
 - `all`: run all matching adapters and merge results
-- `<id>`: force one adapter (`js-ts`, `python`, `jvm`, `go`)
+- `<id>`: force one adapter (`js-ts`, `python`, `jvm`, `go`, `php`)
 
 ## Quick start
 

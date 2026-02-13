@@ -22,6 +22,9 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "src", "test", "java", "ExampleTest.java"), "import org.junit.jupiter.api.Test;\nclass ExampleTest {}\n")
 	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n")
 	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
+	writeFile(t, filepath.Join(repo, "composer.json"), "{\n  \"require\": {\n    \"monolog/monolog\": \"^3.0\"\n  }\n}\n")
+	writeFile(t, filepath.Join(repo, "composer.lock"), "{\n  \"packages\": [\n    {\n      \"name\": \"monolog/monolog\",\n      \"autoload\": {\n        \"psr-4\": {\n          \"Monolog\\\\\": \"src/Monolog\"\n        }\n      }\n    }\n  ]\n}\n")
+	writeFile(t, filepath.Join(repo, "index.php"), "<?php\nuse Monolog\\Logger;\n$logger = new Logger(\"app\");\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -39,10 +42,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") {
-		t.Fatalf("expected js-ts, python, jvm, and go dependencies, got %#v", languages)
+	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") {
+		t.Fatalf("expected js-ts, python, jvm, go, and php dependencies, got %#v", languages)
 	}
-	if len(reportData.LanguageBreakdown) < 4 {
+	if len(reportData.LanguageBreakdown) < 5 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 }
