@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security test cov build ci release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check lint security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -6,7 +6,7 @@ BIN_DIR ?= bin
 DIST_DIR ?= dist
 VERSION ?= dev
 COVERAGE_FILE ?= .artifacts/coverage.out
-COVERAGE_MIN ?= 90
+COVERAGE_MIN ?= 95
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.0
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
@@ -41,7 +41,8 @@ test:
 
 cov:
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
-	$(GO_CMD) test ./... -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
+	@pkgs=$$($(GO_CMD) list ./... | grep -v '/internal/testutil$$'); \
+	$(GO_CMD) test $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
 	@total=$$($(GO_CMD) tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	echo "Total coverage: $$total% (required: >= $(COVERAGE_MIN)%)"; \
 	printf "%s\n" "$$total" > .artifacts/coverage-total.txt; \
@@ -52,6 +53,12 @@ build:
 	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 ci: format-check lint security test build
+
+demos:
+	./scripts/demos/render.sh
+
+demos-check:
+	./scripts/demos/check.sh
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)

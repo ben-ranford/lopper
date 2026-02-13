@@ -1,0 +1,13 @@
+Summary: 2 deps, Used/Total: 5/5 (100.0%)
+
+Effective thresholds:
+- fail_on_increase_percent: 1
+- low_confidence_warning_percent: 40
+- min_usage_percent_for_recommendations: 40
+
+Languages:
+- go: 2 deps, Used/Total: 5/5 (100.0%)
+
+Language  Dependency                         Used/Total  Used%  Est. Unused Size  Top Symbols
+go        github.com/smacker/go-tree-sitter  4/4         100.0  0 B               sitter (72), javascript, tslang, tsxlang
+go        gopkg.in/yaml.v3                   1/1         100.0  0 B               yaml (9)
