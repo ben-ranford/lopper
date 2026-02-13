@@ -82,10 +82,6 @@ func (a *Adapter) Aliases() []string {
 	return []string{"rs", "cargo"}
 }
 
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
-}
-
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	repoPath = shared.DefaultRepoPath(repoPath)
 
@@ -213,6 +209,10 @@ func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, wor
 	return nil
 }
 
+func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
+	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+}
+
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
 	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
 	if err != nil {
@@ -255,24 +255,7 @@ func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, 
 		if parseErr != nil {
 			return nil, nil, nil, nil, parseErr
 		}
-		for alias, info := range deps {
-			if existing, ok := lookup[alias]; ok {
-				if existing.Canonical != info.Canonical {
-					warnings = append(warnings, fmt.Sprintf("ambiguous dependency alias %q maps to multiple crates; using %q", alias, existing.Canonical))
-				}
-				if existing.LocalPath && !info.LocalPath {
-					lookup[alias] = info
-				}
-				continue
-			}
-			lookup[alias] = info
-			if info.Renamed {
-				if _, ok := renamed[info.Canonical]; !ok {
-					renamed[info.Canonical] = make(map[string]struct{})
-				}
-				renamed[info.Canonical][alias] = struct{}{}
-			}
-		}
+		warnings = mergeDependencyLookup(lookup, renamed, deps, warnings)
 	}
 
 	renamedByDep := make(map[string][]string, len(renamed))
@@ -282,34 +265,83 @@ func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, 
 	return manifestPaths, lookup, renamedByDep, dedupeWarnings(warnings), nil
 }
 
+func mergeDependencyLookup(lookup map[string]dependencyInfo, renamed map[string]map[string]struct{}, deps map[string]dependencyInfo, warnings []string) []string {
+	for alias, info := range deps {
+		if existing, ok := lookup[alias]; ok {
+			warnings = handleExistingDependencyAlias(lookup, alias, existing, info, warnings)
+			continue
+		}
+		lookup[alias] = info
+		trackRenamedDependencyAlias(renamed, alias, info)
+	}
+	return warnings
+}
+
+func handleExistingDependencyAlias(lookup map[string]dependencyInfo, alias string, existing, incoming dependencyInfo, warnings []string) []string {
+	if existing.Canonical != incoming.Canonical {
+		warnings = append(warnings, fmt.Sprintf("ambiguous dependency alias %q maps to multiple crates; using %q", alias, existing.Canonical))
+	}
+	if existing.LocalPath && !incoming.LocalPath {
+		lookup[alias] = incoming
+	}
+	return warnings
+}
+
+func trackRenamedDependencyAlias(renamed map[string]map[string]struct{}, alias string, info dependencyInfo) {
+	if !info.Renamed {
+		return
+	}
+	if _, ok := renamed[info.Canonical]; !ok {
+		renamed[info.Canonical] = make(map[string]struct{})
+	}
+	renamed[info.Canonical][alias] = struct{}{}
+}
+
 func discoverManifestPaths(repoPath string) ([]string, []string, error) {
-	warnings := make([]string, 0)
 	rootManifest := filepath.Join(repoPath, cargoTomlName)
 	if _, err := os.Stat(rootManifest); err == nil {
-		meta, _, parseErr := parseCargoManifest(rootManifest, repoPath)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-
-		paths := make([]string, 0, 1+len(meta.WorkspaceMembers))
-		if meta.HasPackage || len(meta.WorkspaceMembers) == 0 {
-			paths = append(paths, rootManifest)
-		}
-		for _, member := range meta.WorkspaceMembers {
-			memberRoots := resolveWorkspaceMembers(repoPath, member)
-			if len(memberRoots) == 0 {
-				warnings = append(warnings, fmt.Sprintf("workspace member pattern %q did not resolve to a Cargo.toml", member))
-			}
-			for _, root := range memberRoots {
-				paths = append(paths, filepath.Join(root, cargoTomlName))
-			}
-		}
-		return uniquePaths(paths), dedupeWarnings(warnings), nil
+		return discoverFromRootManifest(repoPath, rootManifest)
 	} else if !os.IsNotExist(err) {
 		return nil, nil, err
 	}
+	return discoverManifestsByWalk(repoPath)
+}
 
+func discoverFromRootManifest(repoPath, rootManifest string) ([]string, []string, error) {
+	meta, _, parseErr := parseCargoManifest(rootManifest, repoPath)
+	if parseErr != nil {
+		return nil, nil, parseErr
+	}
+	paths := make([]string, 0, 1+len(meta.WorkspaceMembers))
+	warnings := make([]string, 0)
+	if meta.HasPackage || len(meta.WorkspaceMembers) == 0 {
+		paths = append(paths, rootManifest)
+	}
+	for _, member := range meta.WorkspaceMembers {
+		memberManifests, warning := resolveWorkspaceMemberManifestPaths(repoPath, member)
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+		paths = append(paths, memberManifests...)
+	}
+	return uniquePaths(paths), dedupeWarnings(warnings), nil
+}
+
+func resolveWorkspaceMemberManifestPaths(repoPath, member string) ([]string, string) {
+	memberRoots := resolveWorkspaceMembers(repoPath, member)
+	if len(memberRoots) == 0 {
+		return nil, fmt.Sprintf("workspace member pattern %q did not resolve to a Cargo.toml", member)
+	}
+	paths := make([]string, 0, len(memberRoots))
+	for _, root := range memberRoots {
+		paths = append(paths, filepath.Join(root, cargoTomlName))
+	}
+	return paths, ""
+}
+
+func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
 	paths := make([]string, 0)
+	warnings := make([]string, 0)
 	count := 0
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -368,7 +400,7 @@ func resolveWorkspaceMembers(repoPath, pattern string) []string {
 	return shared.SortedKeys(roots)
 }
 
-func parseCargoManifest(manifestPath string, repoPath string) (manifestMeta, map[string]dependencyInfo, error) {
+func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string]dependencyInfo, error) {
 	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
 	if err != nil {
 		return manifestMeta{}, nil, err
@@ -378,91 +410,131 @@ func parseCargoManifest(manifestPath string, repoPath string) (manifestMeta, map
 
 func parseCargoManifestContent(content string) manifestMeta {
 	meta := manifestMeta{}
-	lines := strings.Split(content, "\n")
-	section := ""
 	inWorkspaceMembers := false
-	for _, line := range lines {
-		clean := strings.TrimSpace(stripTomlComment(line))
-		if clean == "" {
-			continue
-		}
-		if match := tablePattern.FindStringSubmatch(clean); len(match) == 2 {
-			section = strings.ToLower(strings.TrimSpace(match[1]))
+	consumeTomlContent(
+		content,
+		func(section string) {
 			inWorkspaceMembers = false
-			if section == "package" {
-				meta.HasPackage = true
-			}
-			continue
-		}
-
-		if section == "workspace" {
-			if inWorkspaceMembers {
-				meta.WorkspaceMembers = append(meta.WorkspaceMembers, extractQuotedStrings(clean)...)
-				if strings.Contains(clean, "]") {
-					inWorkspaceMembers = false
-				}
-				continue
-			}
-			if strings.HasPrefix(clean, workspaceFieldStart) {
-				right := clean
-				if eq := strings.Index(clean, "="); eq >= 0 {
-					right = strings.TrimSpace(clean[eq+1:])
-				}
-				meta.WorkspaceMembers = append(meta.WorkspaceMembers, extractQuotedStrings(right)...)
-				if strings.Contains(right, "[") && !strings.Contains(right, "]") {
-					inWorkspaceMembers = true
-				}
-			}
-		}
-	}
+			markManifestPackageSection(section, &meta)
+		},
+		func(section, clean string) {
+			inWorkspaceMembers = parseWorkspaceMembersLine(clean, section, inWorkspaceMembers, &meta)
+		},
+	)
 	meta.WorkspaceMembers = dedupeStrings(meta.WorkspaceMembers)
 	return meta
 }
 
+func parseTomlSectionName(clean string) (string, bool) {
+	match := tablePattern.FindStringSubmatch(clean)
+	if len(match) != 2 {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimSpace(match[1])), true
+}
+
+func markManifestPackageSection(section string, meta *manifestMeta) {
+	if section == "package" {
+		meta.HasPackage = true
+	}
+}
+
+func parseWorkspaceMembersLine(clean, section string, inWorkspaceMembers bool, meta *manifestMeta) bool {
+	if section != "workspace" {
+		return false
+	}
+	if inWorkspaceMembers {
+		meta.WorkspaceMembers = append(meta.WorkspaceMembers, extractQuotedStrings(clean)...)
+		return !strings.Contains(clean, "]")
+	}
+	if !strings.HasPrefix(clean, workspaceFieldStart) {
+		return false
+	}
+	right := workspaceMembersAssignmentValue(clean)
+	meta.WorkspaceMembers = append(meta.WorkspaceMembers, extractQuotedStrings(right)...)
+	return strings.Contains(right, "[") && !strings.Contains(right, "]")
+}
+
+func workspaceMembersAssignmentValue(clean string) string {
+	if eq := strings.Index(clean, "="); eq >= 0 {
+		return strings.TrimSpace(clean[eq+1:])
+	}
+	return clean
+}
+
 func parseCargoDependencies(content string) map[string]dependencyInfo {
 	deps := make(map[string]dependencyInfo)
-	lines := strings.Split(content, "\n")
+	consumeTomlContent(content, nil, func(section, clean string) {
+		addDependencyFromLine(deps, section, clean)
+	})
+	return deps
+}
+
+func consumeTomlContent(content string, onSection func(string), onLine func(section, clean string)) {
 	section := ""
-	for _, line := range lines {
+	for _, line := range strings.Split(content, "\n") {
 		clean := strings.TrimSpace(stripTomlComment(line))
 		if clean == "" {
 			continue
 		}
-		if match := tablePattern.FindStringSubmatch(clean); len(match) == 2 {
-			section = strings.ToLower(strings.TrimSpace(match[1]))
-			continue
-		}
-		if !isDependencySection(section) {
-			continue
-		}
-		key, value, ok := parseTomlAssignment(clean)
-		if !ok {
-			continue
-		}
-		alias := normalizeDependencyID(key)
-		if alias == "" {
-			continue
-		}
-		info := dependencyInfo{Canonical: alias}
-		if strings.HasPrefix(strings.TrimSpace(value), "{") {
-			fields := parseInlineFields(value)
-			if pkg, ok := fields["package"]; ok {
-				info.Canonical = normalizeDependencyID(pkg)
-				info.Renamed = info.Canonical != alias
+		if nextSection, isSection := parseTomlSectionName(clean); isSection {
+			section = nextSection
+			if onSection != nil {
+				onSection(section)
 			}
-			if pathValue, ok := fields["path"]; ok && strings.TrimSpace(pathValue) != "" {
-				info.LocalPath = true
-			}
+			continue
 		}
-		deps[alias] = info
-		if _, ok := deps[info.Canonical]; !ok {
-			deps[info.Canonical] = dependencyInfo{
-				Canonical: info.Canonical,
-				LocalPath: info.LocalPath,
-			}
-		}
+		onLine(section, clean)
 	}
-	return deps
+}
+
+func addDependencyFromLine(deps map[string]dependencyInfo, section, clean string) {
+	if !isDependencySection(section) {
+		return
+	}
+	alias, info, ok := parseDependencyInfo(clean)
+	if !ok {
+		return
+	}
+	deps[alias] = info
+	ensureCanonicalDependencyAlias(deps, info)
+}
+
+func parseDependencyInfo(clean string) (string, dependencyInfo, bool) {
+	key, value, ok := parseTomlAssignment(clean)
+	if !ok {
+		return "", dependencyInfo{}, false
+	}
+	alias := normalizeDependencyID(key)
+	if alias == "" {
+		return "", dependencyInfo{}, false
+	}
+	info := dependencyInfo{Canonical: alias}
+	if strings.HasPrefix(strings.TrimSpace(value), "{") {
+		applyInlineDependencyFields(value, alias, &info)
+	}
+	return alias, info, true
+}
+
+func applyInlineDependencyFields(value, alias string, info *dependencyInfo) {
+	fields := parseInlineFields(value)
+	if pkg, ok := fields["package"]; ok {
+		info.Canonical = normalizeDependencyID(pkg)
+		info.Renamed = info.Canonical != alias
+	}
+	if pathValue, ok := fields["path"]; ok && strings.TrimSpace(pathValue) != "" {
+		info.LocalPath = true
+	}
+}
+
+func ensureCanonicalDependencyAlias(deps map[string]dependencyInfo, info dependencyInfo) {
+	if _, ok := deps[info.Canonical]; ok {
+		return
+	}
+	deps[info.Canonical] = dependencyInfo{
+		Canonical: info.Canonical,
+		LocalPath: info.LocalPath,
+	}
 }
 
 func isDependencySection(section string) bool {
@@ -554,73 +626,82 @@ func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depL
 		UnresolvedImports:   make(map[string]int),
 		RenamedAliasesByDep: renamedAliases,
 	}
+	roots := scanRoots(manifestPaths, repoPath)
+	scannedFiles := make(map[string]struct{})
+	fileCount := 0
+	for _, root := range roots {
+		err := scanRepoRoot(ctx, repoPath, root, depLookup, scannedFiles, &fileCount, &result)
+		if err != nil && err != fs.SkipAll {
+			return scanResult{}, err
+		}
+	}
+	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
+	result.Warnings = dedupeWarnings(result.Warnings)
+	return result, nil
+}
+
+func scanRoots(manifestPaths []string, repoPath string) []string {
 	roots := make([]string, 0, len(manifestPaths))
 	for _, manifestPath := range manifestPaths {
 		roots = append(roots, filepath.Dir(manifestPath))
 	}
 	roots = uniquePaths(roots)
 	if len(roots) == 0 {
-		roots = []string{repoPath}
+		return []string{repoPath}
 	}
+	return roots
+}
 
-	scannedFiles := make(map[string]struct{})
-	fileCount := 0
-	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if ctx != nil && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if entry.IsDir() {
-				if shouldSkipDir(entry.Name()) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.EqualFold(filepath.Ext(path), ".rs") {
-				return nil
-			}
-			if _, ok := scannedFiles[path]; ok {
-				return nil
-			}
-			scannedFiles[path] = struct{}{}
-
-			fileCount++
-			if fileCount > maxDetectionFiles {
-				result.SkippedFilesByBoundLimit = true
-				return fs.SkipAll
-			}
-
-			err := scanRustSourceFile(repoPath, root, path, depLookup, &result)
-			if err != nil {
-				return err
+func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if entry.IsDir() {
+			if shouldSkipDir(entry.Name()) {
+				return filepath.SkipDir
 			}
 			return nil
-		})
-		if err != nil && err != fs.SkipAll {
-			return scanResult{}, err
 		}
-	}
+		return scanRepoFileEntry(repoPath, root, path, depLookup, scannedFiles, fileCount, result)
+	})
+}
 
+func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	if !strings.EqualFold(filepath.Ext(path), ".rs") {
+		return nil
+	}
+	if _, ok := scannedFiles[path]; ok {
+		return nil
+	}
+	scannedFiles[path] = struct{}{}
+
+	(*fileCount)++
+	if *fileCount > maxDetectionFiles {
+		result.SkippedFilesByBoundLimit = true
+		return fs.SkipAll
+	}
+	return scanRustSourceFile(repoPath, root, path, depLookup, result)
+}
+
+func compileScanWarnings(result scanResult) []string {
+	warnings := make([]string, 0, 4+len(result.UnresolvedImports))
 	if len(result.Files) == 0 {
-		result.Warnings = append(result.Warnings, "no Rust source files found for analysis")
+		warnings = append(warnings, "no Rust source files found for analysis")
 	}
 	if result.SkippedLargeFiles > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d Rust files larger than %d bytes", result.SkippedLargeFiles, maxScannableRustFile))
+		warnings = append(warnings, fmt.Sprintf("skipped %d Rust files larger than %d bytes", result.SkippedLargeFiles, maxScannableRustFile))
 	}
 	if result.SkippedFilesByBoundLimit {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("Rust source scanning capped at %d files", maxDetectionFiles))
+		warnings = append(warnings, fmt.Sprintf("Rust source scanning capped at %d files", maxDetectionFiles))
 	}
 	if result.MacroAmbiguityDetected {
-		result.Warnings = append(result.Warnings, "Rust macro invocations detected; static attribution may be partial for macro- and feature-driven paths")
+		warnings = append(warnings, "Rust macro invocations detected; static attribution may be partial for macro- and feature-driven paths")
 	}
-	for _, item := range summarizeUnresolved(result.UnresolvedImports) {
-		result.Warnings = append(result.Warnings, item)
-	}
-	result.Warnings = dedupeWarnings(result.Warnings)
-	return result, nil
+	return append(warnings, summarizeUnresolved(result.UnresolvedImports)...)
 }
 
 func scanRustSourceFile(repoPath string, crateRoot string, path string, depLookup map[string]dependencyInfo, result *scanResult) error {
@@ -655,64 +736,82 @@ func scanRustSourceFile(repoPath string, crateRoot string, path string, depLooku
 }
 
 func parseRustImports(content, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
-	imports := make([]importBinding, 0)
-	for _, item := range parseExternCrateImports(content, filePath, crateRoot, depLookup, scan) {
-		imports = append(imports, item)
-	}
-
-	indexes := useStmtPattern.FindAllStringSubmatchIndex(content, -1)
-	for _, idx := range indexes {
-		if len(idx) < 4 {
+	imports := parseExternCrateImports(content, filePath, crateRoot, depLookup, scan)
+	for _, idx := range useStmtPattern.FindAllStringSubmatchIndex(content, -1) {
+		clause, line, column, ok := parseUseStatementIndex(content, idx)
+		if !ok {
 			continue
 		}
-		clauseStart, clauseEnd := idx[2], idx[3]
-		if clauseStart < 0 || clauseEnd < 0 || clauseEnd > len(content) {
-			continue
-		}
-		clause := strings.TrimSpace(content[clauseStart:clauseEnd])
-		line, column := lineColumn(content, clauseStart)
-		entries := parseUseClause(clause)
-		for _, entry := range entries {
-			if entry.Path == "" {
-				continue
-			}
-			dependency := resolveDependency(entry.Path, crateRoot, depLookup, scan)
-			if dependency == "" {
-				continue
-			}
-
-			module := strings.TrimPrefix(entry.Path, "::")
-			name := entry.Symbol
-			if name == "" {
-				name = lastPathSegment(module)
-			}
-			local := entry.Local
-			if local == "" {
-				local = name
-			}
-			if entry.Wildcard {
-				name = "*"
-				if local == "" {
-					local = lastPathSegment(module)
-				}
-			}
-
-			imports = append(imports, importBinding{
-				Dependency: dependency,
-				Module:     module,
-				Name:       name,
-				Local:      local,
-				Wildcard:   entry.Wildcard,
-				Location: report.Location{
-					File:   filePath,
-					Line:   line,
-					Column: column,
-				},
-			})
-		}
+		imports = appendUseClauseImports(imports, clause, filePath, line, column, crateRoot, depLookup, scan)
 	}
-
 	return imports
+}
+
+func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) {
+	if len(idx) < 4 {
+		return "", 0, 0, false
+	}
+	clauseStart, clauseEnd := idx[2], idx[3]
+	if clauseStart < 0 || clauseEnd < 0 || clauseEnd > len(content) {
+		return "", 0, 0, false
+	}
+	clause := strings.TrimSpace(content[clauseStart:clauseEnd])
+	line, column := lineColumn(content, clauseStart)
+	return clause, line, column, true
+}
+
+func appendUseClauseImports(imports []importBinding, clause, filePath string, line, column int, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
+	entries := parseUseClause(clause)
+	for _, entry := range entries {
+		binding, ok := makeUseImportBinding(entry, filePath, line, column, crateRoot, depLookup, scan)
+		if !ok {
+			continue
+		}
+		imports = append(imports, binding)
+	}
+	return imports
+}
+
+func makeUseImportBinding(entry usePathEntry, filePath string, line, column int, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) (importBinding, bool) {
+	if entry.Path == "" {
+		return importBinding{}, false
+	}
+	dependency := resolveDependency(entry.Path, crateRoot, depLookup, scan)
+	if dependency == "" {
+		return importBinding{}, false
+	}
+	module := strings.TrimPrefix(entry.Path, "::")
+	name, local := normalizeUseSymbolNames(entry, module)
+	return importBinding{
+		Dependency: dependency,
+		Module:     module,
+		Name:       name,
+		Local:      local,
+		Wildcard:   entry.Wildcard,
+		Location: report.Location{
+			File:   filePath,
+			Line:   line,
+			Column: column,
+		},
+	}, true
+}
+
+func normalizeUseSymbolNames(entry usePathEntry, module string) (string, string) {
+	name := entry.Symbol
+	if name == "" {
+		name = lastPathSegment(module)
+	}
+	local := entry.Local
+	if local == "" {
+		local = name
+	}
+	if entry.Wildcard {
+		name = "*"
+		if local == "" {
+			local = lastPathSegment(module)
+		}
+	}
+	return name, local
 }
 
 type usePathEntry struct {
@@ -763,46 +862,72 @@ func parseUseClause(clause string) []usePathEntry {
 	return entries
 }
 
-func expandUsePart(part string, prefix string, out *[]usePathEntry) {
+func expandUsePart(part, prefix string, out *[]usePathEntry) {
 	part = strings.TrimSpace(part)
 	if part == "" {
 		return
 	}
 	part = strings.TrimPrefix(part, "pub ")
-
-	if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
-		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}"))
-		for _, segment := range splitTopLevel(inner, ',') {
-			expandUsePart(segment, prefix, out)
-		}
+	if expandUseBraceGroup(part, prefix, out) {
 		return
 	}
-
-	if idx := strings.Index(part, "::{"); idx >= 0 && strings.HasSuffix(part, "}") {
-		base := strings.TrimSpace(part[:idx])
-		inner := strings.TrimSpace(part[idx+3 : len(part)-1])
-		nextPrefix := joinPath(prefix, base)
-		for _, segment := range splitTopLevel(inner, ',') {
-			expandUsePart(segment, nextPrefix, out)
-		}
+	if expandUsePrefixedBraceGroup(part, prefix, out) {
 		return
 	}
+	part, local := parseUseLocalAlias(part)
+	part, prefix, wildcard := normalizeUseWildcard(part, prefix)
+	*out = append(*out, makeUsePathEntry(prefix, part, local, wildcard))
+}
 
-	local := ""
-	if idx := strings.LastIndex(part, " as "); idx > 0 {
-		local = strings.TrimSpace(part[idx+4:])
-		part = strings.TrimSpace(part[:idx])
+func expandUseBraceGroup(part, prefix string, out *[]usePathEntry) bool {
+	if !strings.HasPrefix(part, "{") || !strings.HasSuffix(part, "}") {
+		return false
 	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}"))
+	expandUseSegments(inner, prefix, out)
+	return true
+}
 
+func expandUsePrefixedBraceGroup(part, prefix string, out *[]usePathEntry) bool {
+	idx := strings.Index(part, "::{")
+	if idx < 0 || !strings.HasSuffix(part, "}") {
+		return false
+	}
+	base := strings.TrimSpace(part[:idx])
+	inner := strings.TrimSpace(part[idx+3 : len(part)-1])
+	nextPrefix := joinPath(prefix, base)
+	expandUseSegments(inner, nextPrefix, out)
+	return true
+}
+
+func expandUseSegments(inner, prefix string, out *[]usePathEntry) {
+	for _, segment := range splitTopLevel(inner, ',') {
+		expandUsePart(segment, prefix, out)
+	}
+}
+
+func parseUseLocalAlias(part string) (string, string) {
+	idx := strings.LastIndex(part, " as ")
+	if idx <= 0 {
+		return part, ""
+	}
+	local := strings.TrimSpace(part[idx+4:])
+	base := strings.TrimSpace(part[:idx])
+	return base, local
+}
+
+func normalizeUseWildcard(part, prefix string) (string, string, bool) {
 	wildcard := part == "*" || strings.HasSuffix(part, "::*")
-	if wildcard {
-		if part == "*" {
-			part = strings.TrimSpace(prefix)
-			prefix = ""
-		} else {
-			part = strings.TrimSpace(strings.TrimSuffix(part, "::*"))
-		}
+	if !wildcard {
+		return part, prefix, false
 	}
+	if part == "*" {
+		return strings.TrimSpace(prefix), "", true
+	}
+	return strings.TrimSpace(strings.TrimSuffix(part, "::*")), prefix, true
+}
+
+func makeUsePathEntry(prefix, part, local string, wildcard bool) usePathEntry {
 	fullPath := joinPath(prefix, part)
 	symbol := lastPathSegment(fullPath)
 	if strings.EqualFold(symbol, "self") {
@@ -814,12 +939,12 @@ func expandUsePart(part string, prefix string, out *[]usePathEntry) {
 	if strings.EqualFold(local, "self") {
 		local = lastPathSegment(prefix)
 	}
-	*out = append(*out, usePathEntry{
+	return usePathEntry{
 		Path:     fullPath,
 		Symbol:   symbol,
 		Local:    local,
 		Wildcard: wildcard,
-	})
+	}
 }
 
 func joinPath(prefix, value string) string {
@@ -888,7 +1013,7 @@ func resolveDependency(path string, crateRoot string, depLookup map[string]depen
 	return normalizedRoot
 }
 
-func isLocalRustModule(crateRoot string, root string) bool {
+func isLocalRustModule(crateRoot, root string) bool {
 	if crateRoot == "" || root == "" {
 		return false
 	}

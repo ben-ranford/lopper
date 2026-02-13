@@ -497,6 +497,50 @@ func TestBuildRequestedRustDependenciesNoTargetAndLineColumn(t *testing.T) {
 	}
 }
 
+func TestRefactorHelperBranches(t *testing.T) {
+	meta := manifestMeta{}
+	if parseWorkspaceMembersLine(`members = ["a"]`, "package", false, &meta) {
+		t.Fatalf("expected false outside workspace section")
+	}
+	if parseWorkspaceMembersLine(`exclude = ["x"]`, "workspace", false, &meta) {
+		t.Fatalf("expected false for non-members workspace field")
+	}
+	if got := workspaceMembersAssignmentValue("members"); got != "members" {
+		t.Fatalf("expected passthrough without assignment, got %q", got)
+	}
+
+	deps := map[string]dependencyInfo{}
+	addDependencyFromLine(deps, "package", `serde = "1.0"`)
+	if len(deps) != 0 {
+		t.Fatalf("expected no deps outside dependency section, got %#v", deps)
+	}
+	if _, _, ok := parseDependencyInfo(`"" = "1.0"`); ok {
+		t.Fatalf("expected invalid empty alias from quoted key")
+	}
+
+	if _, _, _, ok := parseUseStatementIndex("abc", []int{0, 1, 0}); ok {
+		t.Fatalf("expected parseUseStatementIndex false for short index")
+	}
+	if _, _, _, ok := parseUseStatementIndex("abc", []int{0, 1, 0, 99}); ok {
+		t.Fatalf("expected parseUseStatementIndex false for invalid bounds")
+	}
+
+	repo := t.TempDir()
+	root := filepath.Join(repo, "crate")
+	writeFile(t, filepath.Join(root, "src", "lib.rs"), "pub fn run() {}\n")
+	scanned := map[string]struct{}{}
+	result := &scanResult{UnresolvedImports: map[string]int{}}
+	count := 0
+	if err := scanRepoFileEntry(repo, root, filepath.Join(root, "README.md"), nil, scanned, &count, result); err != nil {
+		t.Fatalf("scan non-rs entry: %v", err)
+	}
+	rsPath := filepath.Join(root, "src", "lib.rs")
+	scanned[rsPath] = struct{}{}
+	if err := scanRepoFileEntry(repo, root, rsPath, nil, scanned, &count, result); err != nil {
+		t.Fatalf("scan duplicate rs entry: %v", err)
+	}
+}
+
 func TestDetectWithConfidenceDefaultRepoAndCanceledContext(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
