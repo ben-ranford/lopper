@@ -15,6 +15,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -180,19 +181,20 @@ type scanResult struct {
 }
 
 func buildRequestedDotNetDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	minUsagePercentForRecommendations := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
 	switch {
 	case req.Dependency != "":
 		dependency := normalizeDependencyID(req.Dependency)
-		dep, warnings := buildDependencyReport(dependency, scan)
+		dep, warnings := buildDependencyReport(dependency, scan, minUsagePercentForRecommendations)
 		return []report.DependencyReport{dep}, warnings
 	case req.TopN > 0:
-		return buildTopDotNetDependencies(req.TopN, scan)
+		return buildTopDotNetDependencies(req.TopN, scan, minUsagePercentForRecommendations)
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
 }
 
-func buildTopDotNetDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopDotNetDependencies(topN int, scan scanResult, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
 	set := make(map[string]struct{})
 	for _, dep := range scan.DeclaredDependencies {
 		if dep != "" {
@@ -216,7 +218,7 @@ func buildTopDotNetDependencies(topN int, scan scanResult) ([]report.DependencyR
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	warnings := make([]string, 0)
 	for _, dep := range dependencies {
-		current, currentWarnings := buildDependencyReport(dep, scan)
+		current, currentWarnings := buildDependencyReport(dep, scan, minUsagePercentForRecommendations)
 		reports = append(reports, current)
 		warnings = append(warnings, currentWarnings...)
 	}
@@ -230,7 +232,7 @@ func buildTopDotNetDependencies(topN int, scan scanResult) ([]report.DependencyR
 	return reports, warnings
 }
 
-func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
+func buildDependencyReport(dependency string, scan scanResult, minUsagePercentForRecommendations int) (report.DependencyReport, []string) {
 	fileUsages := shared.MapFileUsages(
 		scan.Files,
 		func(file fileScan) []shared.ImportRecord { return file.Imports },
@@ -268,11 +270,11 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 		})
 		warnings = append(warnings, fmt.Sprintf("dependency %q appears in source imports but is not declared in project manifests", dependency))
 	}
-	dep.Recommendations = buildRecommendations(dep, ambiguousCount, undeclaredCount)
+	dep.Recommendations = buildRecommendations(dep, ambiguousCount, undeclaredCount, minUsagePercentForRecommendations)
 	return dep, warnings
 }
 
-func buildRecommendations(dep report.DependencyReport, ambiguousCount int, undeclaredCount int) []report.Recommendation {
+func buildRecommendations(dep report.DependencyReport, ambiguousCount int, undeclaredCount int, minUsagePercentForRecommendations int) []report.Recommendation {
 	recommendations := make([]report.Recommendation, 0, 3)
 	if undeclaredCount > 0 {
 		recommendations = append(recommendations, report.Recommendation{
@@ -290,7 +292,7 @@ func buildRecommendations(dep report.DependencyReport, ambiguousCount int, undec
 			Rationale: "Multiple declared packages matched the same namespace prefix.",
 		})
 	}
-	if dep.TotalExportsCount > 0 && dep.UsedPercent < 40 {
+	if dep.TotalExportsCount > 0 && dep.UsedPercent < float64(minUsagePercentForRecommendations) {
 		recommendations = append(recommendations, report.Recommendation{
 			Code:      "reduce-low-usage-package-surface",
 			Priority:  "low",
@@ -299,6 +301,13 @@ func buildRecommendations(dep report.DependencyReport, ambiguousCount int, undec
 		})
 	}
 	return recommendations
+}
+
+func resolveMinUsageRecommendationThreshold(threshold *int) int {
+	if threshold != nil {
+		return *threshold
+	}
+	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
 func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {

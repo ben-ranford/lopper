@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -199,4 +200,60 @@ func TestParseManifestReferences(t *testing.T) {
 	if !slices.Contains(projectDeps, "dapper") {
 		t.Fatalf("expected dapper in project deps, got %#v", projectDeps)
 	}
+}
+
+func TestAdapterRecommendationsHonorMinUsageThreshold(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), `
+using Newtonsoft.Json;
+
+public class Program {
+  public static void Main() {}
+}
+`)
+
+	withDefaultThreshold, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "newtonsoft.json",
+	})
+	if err != nil {
+		t.Fatalf("analyse with default threshold: %v", err)
+	}
+	if len(withDefaultThreshold.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(withDefaultThreshold.Dependencies))
+	}
+	if !hasRecommendation(withDefaultThreshold.Dependencies[0], "reduce-low-usage-package-surface") {
+		t.Fatalf("expected low-usage recommendation with default threshold")
+	}
+
+	zero := 0
+	withZeroThreshold, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:                          repo,
+		Dependency:                        "newtonsoft.json",
+		MinUsagePercentForRecommendations: &zero,
+	})
+	if err != nil {
+		t.Fatalf("analyse with zero threshold: %v", err)
+	}
+	if len(withZeroThreshold.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(withZeroThreshold.Dependencies))
+	}
+	if hasRecommendation(withZeroThreshold.Dependencies[0], "reduce-low-usage-package-surface") {
+		t.Fatalf("did not expect low-usage recommendation when threshold is 0")
+	}
+}
+
+func hasRecommendation(dep report.DependencyReport, code string) bool {
+	for _, rec := range dep.Recommendations {
+		if rec.Code == code {
+			return true
+		}
+	}
+	return false
 }
