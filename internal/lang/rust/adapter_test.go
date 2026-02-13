@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func TestDetectWithConfidenceWorkspaceMembers(t *testing.T) {
@@ -143,6 +144,107 @@ func TestAnalyseTopWorkspaceDependencies(t *testing.T) {
 	if reportData.Summary == nil {
 		t.Fatalf("expected summary in report")
 	}
+}
+
+func TestAnalyseWildcardAndNestedUseRegression(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Cargo.toml"), strings.Join([]string{
+		"[package]",
+		`name = "demo"`,
+		`version = "0.1.0"`,
+		"",
+		"[dependencies]",
+		`serde = "1.0"`,
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "src", "main.rs"), strings.Join([]string{
+		"use serde::{de::DeserializeOwned, *};",
+		"fn main() {}",
+		"",
+	}, "\n"))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse rust wildcard: %v", err)
+	}
+	if len(reportData.Dependencies) == 0 {
+		t.Fatalf("expected rust dependencies")
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Name != "serde" {
+		t.Fatalf("expected serde dependency, got %#v", reportData.Dependencies)
+	}
+	codes := make([]string, 0, len(dep.RiskCues))
+	for _, cue := range dep.RiskCues {
+		codes = append(codes, cue.Code)
+	}
+	if !slices.Contains(codes, "broad-imports") {
+		t.Fatalf("expected broad-imports risk cue, got %#v", dep.RiskCues)
+	}
+}
+
+func TestRustMinUsageThresholdControlsLowUsageRecommendation(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Cargo.toml"), strings.Join([]string{
+		"[package]",
+		`name = "demo"`,
+		`version = "0.1.0"`,
+		"",
+		"[dependencies]",
+		`serde = "1.0"`,
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "src", "main.rs"), strings.Join([]string{
+		"use serde::{Deserialize, Serialize};",
+		"#[derive(Serialize)]",
+		"struct Person { id: u64 }",
+		"fn main() {}",
+		"",
+	}, "\n"))
+
+	highThreshold := 80
+	reportWithRec, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:                          repo,
+		Dependency:                        "serde",
+		MinUsagePercentForRecommendations: &highThreshold,
+	})
+	if err != nil {
+		t.Fatalf("analyse rust high threshold: %v", err)
+	}
+	if len(reportWithRec.Dependencies) != 1 {
+		t.Fatalf("expected one dependency row, got %d", len(reportWithRec.Dependencies))
+	}
+	if !hasRecommendation(reportWithRec.Dependencies[0], "reduce-rust-surface-area") {
+		t.Fatalf("expected low-usage recommendation with high threshold, got %#v", reportWithRec.Dependencies[0].Recommendations)
+	}
+
+	lowThreshold := 20
+	reportWithoutRec, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:                          repo,
+		Dependency:                        "serde",
+		MinUsagePercentForRecommendations: &lowThreshold,
+	})
+	if err != nil {
+		t.Fatalf("analyse rust low threshold: %v", err)
+	}
+	if len(reportWithoutRec.Dependencies) != 1 {
+		t.Fatalf("expected one dependency row, got %d", len(reportWithoutRec.Dependencies))
+	}
+	if hasRecommendation(reportWithoutRec.Dependencies[0], "reduce-rust-surface-area") {
+		t.Fatalf("did not expect low-usage recommendation with low threshold, got %#v", reportWithoutRec.Dependencies[0].Recommendations)
+	}
+}
+
+func hasRecommendation(dep report.DependencyReport, code string) bool {
+	for _, rec := range dep.Recommendations {
+		if rec.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func writeFile(t *testing.T, path string, content string) {

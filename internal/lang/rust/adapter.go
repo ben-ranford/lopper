@@ -15,6 +15,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -793,9 +794,14 @@ func expandUsePart(part string, prefix string, out *[]usePathEntry) {
 		part = strings.TrimSpace(part[:idx])
 	}
 
-	wildcard := strings.HasSuffix(part, "::*")
+	wildcard := part == "*" || strings.HasSuffix(part, "::*")
 	if wildcard {
-		part = strings.TrimSpace(strings.TrimSuffix(part, "::*"))
+		if part == "*" {
+			part = strings.TrimSpace(prefix)
+			prefix = ""
+		} else {
+			part = strings.TrimSpace(strings.TrimSuffix(part, "::*"))
+		}
 	}
 	fullPath := joinPath(prefix, part)
 	symbol := lastPathSegment(fullPath)
@@ -914,19 +920,20 @@ func lineColumn(content string, offset int) (int, int) {
 }
 
 func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	minUsageThreshold := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
 	switch {
 	case req.Dependency != "":
 		dependency := normalizeDependencyID(req.Dependency)
-		depReport := buildDependencyReport(dependency, scan)
+		depReport := buildDependencyReport(dependency, scan, minUsageThreshold)
 		return []report.DependencyReport{depReport}, nil
 	case req.TopN > 0:
-		return buildTopRustDependencies(req.TopN, scan)
+		return buildTopRustDependencies(req.TopN, scan, minUsageThreshold)
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
 }
 
-func buildTopRustDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int) ([]report.DependencyReport, []string) {
 	fileUsages := shared.MapFileUsages(
 		scan.Files,
 		func(file fileScan) []shared.ImportRecord { return file.Imports },
@@ -934,11 +941,11 @@ func buildTopRustDependencies(topN int, scan scanResult) ([]report.DependencyRep
 	)
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
 	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
-		return buildDependencyReport(dependency, scan), nil
+		return buildDependencyReport(dependency, scan, minUsageThreshold), nil
 	})
 }
 
-func buildDependencyReport(dependency string, scan scanResult) report.DependencyReport {
+func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int) report.DependencyReport {
 	stats := shared.BuildDependencyStats(
 		dependency,
 		shared.MapFileUsages(
@@ -965,12 +972,14 @@ func buildDependencyReport(dependency string, scan scanResult) report.Dependency
 			Severity: "medium",
 			Message:  "found broad wildcard imports; prefer narrower symbol imports",
 		})
-		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-			Code:      "prefer-explicit-imports",
-			Priority:  "medium",
-			Message:   "Replace wildcard imports with explicit symbol imports for better precision.",
-			Rationale: "Explicit imports improve maintainability and reduce over-coupling.",
-		})
+		if dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
+			dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+				Code:      "prefer-explicit-imports",
+				Priority:  "medium",
+				Message:   "Replace wildcard imports with explicit symbol imports for better precision.",
+				Rationale: "Explicit imports improve maintainability and reduce over-coupling.",
+			})
+		}
 	}
 	if aliases := scan.RenamedAliasesByDep[dependency]; len(aliases) > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
@@ -992,6 +1001,14 @@ func buildDependencyReport(dependency string, scan scanResult) report.Dependency
 			Message:  "macro-heavy usage may reduce static import attribution precision",
 		})
 	}
+	if dep.TotalExportsCount > 0 && dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
+		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+			Code:      "reduce-rust-surface-area",
+			Priority:  "low",
+			Message:   fmt.Sprintf("Only %.1f%% of %q imports appear used; consider tightening imports or lighter alternatives.", dep.UsedPercent, dependency),
+			Rationale: "Low observed usage often indicates avoidable dependency surface area.",
+		})
+	}
 	if len(dep.UsedImports) == 0 && len(dep.UnusedImports) > 0 {
 		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
 			Code:      "remove-unused-dependency",
@@ -1002,12 +1019,21 @@ func buildDependencyReport(dependency string, scan scanResult) report.Dependency
 	}
 	sort.Slice(dep.RiskCues, func(i, j int) bool { return dep.RiskCues[i].Code < dep.RiskCues[j].Code })
 	sort.Slice(dep.Recommendations, func(i, j int) bool {
-		if dep.Recommendations[i].Priority == dep.Recommendations[j].Priority {
+		left := recommendationPriorityRank(dep.Recommendations[i].Priority)
+		right := recommendationPriorityRank(dep.Recommendations[j].Priority)
+		if left == right {
 			return dep.Recommendations[i].Code < dep.Recommendations[j].Code
 		}
-		return dep.Recommendations[i].Priority < dep.Recommendations[j].Priority
+		return left < right
 	})
 	return dep
+}
+
+func resolveMinUsageRecommendationThreshold(value *int) int {
+	if value != nil {
+		return *value
+	}
+	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
 func summarizeUnresolved(unresolved map[string]int) []string {
@@ -1137,6 +1163,17 @@ func lastPathSegment(path string) string {
 	}
 	parts := strings.Split(path, "::")
 	return strings.TrimSpace(parts[len(parts)-1])
+}
+
+func recommendationPriorityRank(priority string) int {
+	switch priority {
+	case "high":
+		return 0
+	case "medium":
+		return 1
+	default:
+		return 2
+	}
 }
 
 var rustStdRoots = map[string]bool{
