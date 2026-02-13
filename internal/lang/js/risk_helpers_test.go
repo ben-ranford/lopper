@@ -211,11 +211,12 @@ func TestRiskHelperAdditionalBranches(t *testing.T) {
 }
 
 func TestRiskHelperErrorBranches(t *testing.T) {
-	depRoot := t.TempDir()
-	if err := os.Chmod(depRoot, 0o000); err != nil {
-		t.Fatalf("chmod depRoot: %v", err)
+	// Use a regular file path as depRoot to trigger filesystem errors
+	// without changing directory permissions.
+	depRoot := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(depRoot, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write depRoot file: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(depRoot, 0o755) })
 
 	if _, _, err := detectNativeModuleIndicators(depRoot, packageJSON{}); err == nil {
 		t.Fatalf("expected detectNativeModuleIndicators permission error")
