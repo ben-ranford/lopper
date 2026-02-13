@@ -49,6 +49,22 @@ func TestReadFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestReadFileUnderRejectsParentDirectoryTarget(t *testing.T) {
+	parentDir := t.TempDir()
+	rootDir := filepath.Join(parentDir, "root")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("create root dir: %v", err)
+	}
+
+	_, err := ReadFileUnder(rootDir, parentDir)
+	if err == nil {
+		t.Fatal("expected error for parent directory target")
+	}
+	if !strings.Contains(err.Error(), "path escapes root") {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
 func TestReadFileUnderReturnsErrorForMissingFile(t *testing.T) {
 	rootDir := t.TempDir()
 	missingPath := filepath.Join(rootDir, "missing.txt")

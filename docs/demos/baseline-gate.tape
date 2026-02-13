@@ -15,10 +15,10 @@ Type "mkdir -p .artifacts/demos"
 Enter
 Sleep 300ms
 
-Type "go run ./cmd/lopper analyse --top 8 --repo . --language go --format json > .artifacts/demos/baseline.json"
+Type "cp docs/demos/fixtures/baseline.json .artifacts/demos/baseline.json"
 Enter
 Sleep 1s
 
-Type "go run ./cmd/lopper analyse --top 8 --repo . --language go --format table --baseline .artifacts/demos/baseline.json --threshold-fail-on-increase 1"
+Type "cat docs/demos/fixtures/baseline-gate.table.txt"
 Enter
 Sleep 4s

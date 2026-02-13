@@ -11,6 +11,6 @@ Type "cd /vhs"
 Enter
 Sleep 400ms
 
-Type "go run ./cmd/lopper analyse --top 8 --repo . --language go --format table"
+Type "cat docs/demos/fixtures/quickstart-top.table.txt"
 Enter
 Sleep 4s

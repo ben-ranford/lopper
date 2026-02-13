@@ -2,19 +2,21 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/cli"
 )
 
-func main() {
-	out := os.Stdout
-	errOut := os.Stderr
+var exitFunc = os.Exit
 
-	runner := app.New(out, os.Stdin)
+func run(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
+	runner := app.New(out, in)
 	commandLine := cli.New(runner, out, errOut)
+	return commandLine.Run(context.Background(), args)
+}
 
-	code := commandLine.Run(context.Background(), os.Args[1:])
-	os.Exit(code)
+func main() {
+	exitFunc(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

@@ -13,7 +13,7 @@ mkdir -p docs/demos/assets .artifacts/demos
 
 shopt -s nullglob
 tapes=(docs/demos/*.tape)
-if [ "${#tapes[@]}" -eq 0 ]; then
+if [[ "${#tapes[@]}" -eq 0 ]]; then
   echo "no VHS tapes found in docs/demos" >&2
   exit 1
 fi
@@ -26,3 +26,11 @@ for tape in "${tapes[@]}"; do
     ghcr.io/charmbracelet/vhs:latest \
     "$tape"
 done
+
+sources=(scripts/demos/render.sh docs/demos/*.tape docs/demos/fixtures/*)
+if [[ "${#sources[@]}" -eq 0 ]]; then
+  echo "no demo sources found" >&2
+  exit 1
+fi
+
+printf '%s\n' "${sources[@]}" | LC_ALL=C sort | xargs shasum -a 256 > docs/demos/assets/.sources.sha256

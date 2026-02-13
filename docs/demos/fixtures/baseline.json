@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "0.1.0",
+  "generatedAt": "2026-02-13T18:30:14.599476+11:00",
+  "repoPath": "/Users/benranford/Projects/lopper-issue-8",
+  "dependencies": [
+    {
+      "language": "go",
+      "name": "github.com/smacker/go-tree-sitter",
+      "usedExportsCount": 4,
+      "totalExportsCount": 4,
+      "usedPercent": 100,
+      "estimatedUnusedBytes": 0,
+      "topUsedSymbols": [
+        {
+          "name": "sitter",
+          "count": 72
+        },
+        {
+          "name": "javascript",
+          "count": 1
+        },
+        {
+          "name": "tslang",
+          "count": 1
+        },
+        {
+          "name": "tsxlang",
+          "count": 1
+        }
+      ],
+      "usedImports": [
+        {
+          "name": "sitter",
+          "module": "github.com/smacker/go-tree-sitter",
+          "locations": [
+            {
+              "file": "internal/lang/js/exports.go",
+              "line": 12,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/exports_helpers_test.go",
+              "line": 11,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/scan.go",
+              "line": 12,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/scan_branches_test.go",
+              "line": 10,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/scan_unit_extra_test.go",
+              "line": 8,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/usage.go",
+              "line": 6,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/usage_helpers_extra_test.go",
+              "line": 7,
+              "column": 2
+            },
+            {
+              "file": "internal/lang/js/usage_test.go",
+              "line": 11,
+              "column": 2
+            }
+          ]
+        },
+        {
+          "name": "javascript",
+          "module": "github.com/smacker/go-tree-sitter/javascript",
+          "locations": [
+            {
+              "file": "internal/lang/js/scan.go",
+              "line": 13,
+              "column": 2
+            }
+          ]
+        },
+        {
+          "name": "tsxlang",
+          "module": "github.com/smacker/go-tree-sitter/typescript/tsx",
+          "locations": [
+            {
+              "file": "internal/lang/js/scan.go",
+              "line": 14,
+              "column": 2
+            }
+          ]
+        },
+        {
+          "name": "tslang",
+          "module": "github.com/smacker/go-tree-sitter/typescript/typescript",
+          "locations": [
+            {
+              "file": "internal/lang/js/scan.go",
+              "line": 15,
+              "column": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "name": "gopkg.in/yaml.v3",
+      "usedExportsCount": 1,
+      "totalExportsCount": 1,
+      "usedPercent": 100,
+      "estimatedUnusedBytes": 0,
+      "topUsedSymbols": [
+        {
+          "name": "yaml",
+          "count": 9
+        }
+      ],
+      "usedImports": [
+        {
+          "name": "yaml",
+          "module": "gopkg.in/yaml.v3",
+          "locations": [
+            {
+              "file": "internal/thresholds/config.go",
+              "line": 12,
+              "column": 2
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "dependencyCount": 2,
+    "usedExportsCount": 5,
+    "totalExportsCount": 5,
+    "usedPercent": 100
+  },
+  "languageBreakdown": [
+    {
+      "language": "go",
+      "dependencyCount": 2,
+      "usedExportsCount": 5,
+      "totalExportsCount": 5,
+      "usedPercent": 100
+    }
+  ],
+  "effectiveThresholds": {
+    "failOnIncreasePercent": 0,
+    "lowConfidenceWarningPercent": 40,
+    "minUsagePercentForRecommendations": 40
+  }
+}

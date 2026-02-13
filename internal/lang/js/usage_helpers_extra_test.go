@@ -72,3 +72,75 @@ func TestAddReferenceNoOpBranches(t *testing.T) {
 		t.Fatalf("expected empty property string for nil node, got %q", got)
 	}
 }
+
+func TestAddSubscriptReferenceEarlyReturns(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+const obj = {};
+obj[''];
+obj[1];
+call()[prop];
+`)
+	tree, err := parser.Parse(context.Background(), "index.js", source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	root := tree.RootNode()
+	var refs []NamespaceReference
+	subscriptCount := 0
+	walkNode(root, func(node *sitter.Node) {
+		if node.Type() == "subscript_expression" {
+			subscriptCount++
+			addSubscriptReference(node, source, &refs)
+		}
+	})
+	if subscriptCount == 0 {
+		t.Fatal("expected at least one subscript expression")
+	}
+
+	// All subscript references above are intentionally invalid for usage extraction.
+	if len(refs) != 0 {
+		t.Fatalf("expected no refs, got %#v", refs)
+	}
+}
+
+func TestAddMemberReferenceDefaultPropertyType(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+class C {
+  #value = 1;
+}
+const c = new C();
+c.#value;
+`)
+	tree, err := parser.Parse(context.Background(), "index.js", source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	root := tree.RootNode()
+	var member *sitter.Node
+	walkNode(root, func(node *sitter.Node) {
+		if member != nil || node.Type() != "member_expression" {
+			return
+		}
+		object := node.ChildByFieldName("object")
+		property := node.ChildByFieldName("property")
+		if object == nil || property == nil {
+			return
+		}
+		if object.Type() == "identifier" && property.Type() == "private_property_identifier" {
+			member = node
+		}
+	})
+	if member == nil {
+		t.Fatalf("expected member expression node with private property")
+	}
+
+	refs := []NamespaceReference{}
+	addMemberReference(member, source, &refs)
+	if len(refs) != 0 {
+		t.Fatalf("expected no refs for private member expression, got %#v", refs)
+	}
+}

@@ -11,6 +11,6 @@ Type "cd /vhs"
 Enter
 Sleep 400ms
 
-Type "go run ./cmd/lopper analyse gopkg.in/yaml.v3 --repo . --language go --format table"
+Type "cat docs/demos/fixtures/single-dependency.table.txt"
 Enter
 Sleep 4s
