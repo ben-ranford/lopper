@@ -30,6 +30,12 @@ const (
     <PackageVersion Include="Serilog.AspNetCore" Version="8.0.0" />
   </ItemGroup>
 </Project>`
+	appProjectFileName          = "App.csproj"
+	centralPackagesFileName     = "Directory.Packages.props"
+	programSourceFileName       = "Program.cs"
+	newtonsoftDependencyName    = "newtonsoft.json"
+	serilogDependencyName       = "serilog.aspnetcore"
+	expectedSingleDependencyFmt = "expected one dependency report, got %d"
 )
 
 func writeManifestFixture(t *testing.T, path string, content string) {
@@ -40,7 +46,7 @@ func writeManifestFixture(t *testing.T, path string, content string) {
 func expectSingleDotNetDependency(t *testing.T, deps []report.DependencyReport) report.DependencyReport {
 	t.Helper()
 	if len(deps) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(deps))
+		t.Fatalf(expectedSingleDependencyFmt, len(deps))
 	}
 	dep := deps[0]
 	if dep.Language != "dotnet" {
@@ -56,9 +62,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAKE}") = "App", "src/App/App.csproj", "{ONE}"
 EndProject
 `)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "App.csproj"), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "Directory.Packages.props"), `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3"/></ItemGroup></Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "Program.cs"), "using Newtonsoft.Json;\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", appProjectFileName), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFileName), `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3"/></ItemGroup></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", programSourceFileName), "using Newtonsoft.Json;\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -85,7 +91,7 @@ EndProject
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
 	writeManifestFixture(t, filepath.Join(repo, "Api.csproj"), newtonsoftProjectManifest)
-	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, programSourceFileName), `
 using Newtonsoft.Json;
 using JsonConvert = Newtonsoft.Json.JsonConvert;
 
@@ -98,7 +104,7 @@ public class Program {
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
-		Dependency: "newtonsoft.json",
+		Dependency: newtonsoftDependencyName,
 	})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
@@ -111,7 +117,7 @@ public class Program {
 
 func TestAdapterAnalyseTopNWithCentralPackages(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Directory.Packages.props"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFileName), `
 <Project>
   <ItemGroup>
     <PackageVersion Include="Serilog.AspNetCore" Version="8.0.0" />
@@ -125,7 +131,7 @@ func TestAdapterAnalyseTopNWithCentralPackages(t *testing.T) {
     <PackageReference Include="Dapper" />
   </ItemGroup>
 </Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "Api", "Program.cs"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "Api", programSourceFileName), `
 using Serilog;
 
 public class Program {
@@ -149,7 +155,7 @@ public class Program {
 	for _, dep := range reportData.Dependencies {
 		names = append(names, dep.Name)
 	}
-	if !slices.Contains(names, "serilog.aspnetcore") {
+	if !slices.Contains(names, serilogDependencyName) {
 		t.Fatalf("expected serilog.aspnetcore in top dependencies, got %#v", names)
 	}
 	if !slices.Contains(names, "dapper") {
@@ -170,14 +176,14 @@ func TestAdapterMetadataAndAliases(t *testing.T) {
 
 func TestCollectDeclaredDependencies(t *testing.T) {
 	repo := t.TempDir()
-	writeManifestFixture(t, filepath.Join(repo, "Directory.Packages.props"), serilogCentralManifest)
-	writeManifestFixture(t, filepath.Join(repo, "App.csproj"), dapperProjectManifest)
+	writeManifestFixture(t, filepath.Join(repo, centralPackagesFileName), serilogCentralManifest)
+	writeManifestFixture(t, filepath.Join(repo, appProjectFileName), dapperProjectManifest)
 
 	deps, err := collectDeclaredDependencies(repo)
 	if err != nil {
 		t.Fatalf("collect dependencies: %v", err)
 	}
-	if !slices.Contains(deps, "serilog.aspnetcore") {
+	if !slices.Contains(deps, serilogDependencyName) {
 		t.Fatalf("expected serilog.aspnetcore in deps, got %#v", deps)
 	}
 	if !slices.Contains(deps, "dapper") {
@@ -187,8 +193,8 @@ func TestCollectDeclaredDependencies(t *testing.T) {
 
 func TestParseManifestReferences(t *testing.T) {
 	repo := t.TempDir()
-	propsPath := filepath.Join(repo, "Directory.Packages.props")
-	projectPath := filepath.Join(repo, "App.csproj")
+	propsPath := filepath.Join(repo, centralPackagesFileName)
+	projectPath := filepath.Join(repo, appProjectFileName)
 	writeManifestFixture(t, propsPath, serilogCentralManifest)
 	writeManifestFixture(t, projectPath, dapperProjectManifest)
 
@@ -196,7 +202,7 @@ func TestParseManifestReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse props: %v", err)
 	}
-	if !slices.Contains(propsDeps, "serilog.aspnetcore") {
+	if !slices.Contains(propsDeps, serilogDependencyName) {
 		t.Fatalf("expected serilog.aspnetcore in props deps, got %#v", propsDeps)
 	}
 
@@ -211,8 +217,8 @@ func TestParseManifestReferences(t *testing.T) {
 
 func TestAdapterRecommendationsHonorMinUsageThreshold(t *testing.T) {
 	repo := t.TempDir()
-	writeManifestFixture(t, filepath.Join(repo, "App.csproj"), newtonsoftProjectManifest)
-	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), `
+	writeManifestFixture(t, filepath.Join(repo, appProjectFileName), newtonsoftProjectManifest)
+	testutil.MustWriteFile(t, filepath.Join(repo, programSourceFileName), `
 using Newtonsoft.Json;
 
 public class Program {
@@ -222,7 +228,7 @@ public class Program {
 
 	withDefaultThreshold, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
-		Dependency: "newtonsoft.json",
+		Dependency: newtonsoftDependencyName,
 	})
 	if err != nil {
 		t.Fatalf("analyse with default threshold: %v", err)
@@ -235,7 +241,7 @@ public class Program {
 	zero := 0
 	withZeroThreshold, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:                          repo,
-		Dependency:                        "newtonsoft.json",
+		Dependency:                        newtonsoftDependencyName,
 		MinUsagePercentForRecommendations: &zero,
 	})
 	if err != nil {

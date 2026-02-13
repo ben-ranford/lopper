@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -14,15 +13,23 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	appProjectName      = "App.csproj"
+	programSourceName   = "Program.cs"
+	newtonsoftName      = "newtonsoft.json"
+	acmeBarName         = "acme.bar"
+	acmeLoggingName     = "acme.logging"
+	acmeFooSourceImport = "using Acme.Foo;\n"
+)
+
 func TestDetectAndRootSignalBranches(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.sln"), `
-Project("{FAKE}") = "App", "src\\App\\App.csproj", "{ONE}"
-EndProject
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "App.csproj"), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "Program.cs"), "using System;\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, appProjectName), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "App.sln"),
+		"Project(\"{FAKE}\") = \"App\", \"src\\\\App\\\\"+appProjectName+"\", \"{ONE}\"\nEndProject\n",
+	)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", appProjectName), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", programSourceName), "using System;\n")
 
 	ok, err := NewAdapter().Detect(context.Background(), repo)
 	if err != nil {
@@ -34,13 +41,13 @@ EndProject
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
-	if err := applyRootSignals(filepath.Join(repo, "missing"), &detection, roots); err == nil {
+	if applyRootSignals(filepath.Join(repo, "missing"), &detection, roots) == nil {
 		t.Fatalf("expected applyRootSignals to fail on missing path")
 	}
 
 	detection = language.Detection{}
 	roots = map[string]struct{}{}
-	if err := updateDetection(repo, filepath.Join(repo, "broken.sln"), "broken.sln", &detection, roots); err == nil {
+	if updateDetection(repo, filepath.Join(repo, "broken.sln"), "broken.sln", &detection, roots) == nil {
 		t.Fatalf("expected updateDetection to fail for unreadable solution")
 	}
 }
@@ -69,7 +76,7 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	}
 
 	canceled := testutil.CanceledContext()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), "using Foo.Bar;\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, programSourceName), "using Foo.Bar;\n")
 	if _, err := scanRepo(canceled, repo); err == nil {
 		t.Fatalf("expected canceled context error")
 	}
@@ -93,56 +100,10 @@ func TestCollectDeclaredDependenciesAncestorFallback(t *testing.T) {
 }
 
 func TestDependencyMapperAndScoreBranches(t *testing.T) {
-	mapper := newDependencyMapper([]string{"acme.bar", "acme.baz", "newtonsoft.json"})
-
-	if dep, ambiguous, undeclared := mapper.resolve("System.Text"); dep != "" || ambiguous || undeclared {
-		t.Fatalf("expected system namespace to be ignored")
-	}
-	if dep, ambiguous, undeclared := mapper.resolve(""); dep != "" || ambiguous || undeclared {
-		t.Fatalf("expected empty namespace to be ignored")
-	}
-
-	dep, ambiguous, undeclared := mapper.resolve("Acme.Foo")
-	if dep != "acme.bar" || !ambiguous || undeclared {
-		t.Fatalf("expected ambiguous acme mapping, got dep=%q ambiguous=%v undeclared=%v", dep, ambiguous, undeclared)
-	}
-
-	dep, ambiguous, undeclared = mapper.resolve("Unknown.Vendor.Component")
-	if dep != "unknown.vendor" || ambiguous || !undeclared {
-		t.Fatalf("expected fallback undeclared mapping, got dep=%q ambiguous=%v undeclared=%v", dep, ambiguous, undeclared)
-	}
-
-	if got := matchScore("newtonsoft.json", "newtonsoft.json"); got != 100 {
-		t.Fatalf("matchScore equality branch mismatch: %d", got)
-	}
-	if got := matchScore("newtonsoft.json.serialization", "newtonsoft.json"); got != 90 {
-		t.Fatalf("matchScore module prefix branch mismatch: %d", got)
-	}
-	if got := matchScore("newtonsoft", "newtonsoft.json"); got != 75 {
-		t.Fatalf("matchScore dependency prefix branch mismatch: %d", got)
-	}
-	if got := matchScore("acme.foo", "acme.bar"); got != 60 {
-		t.Fatalf("matchScore first segment branch mismatch: %d", got)
-	}
-	if got := matchScore("foo.client", "bar.client"); got != 50 {
-		t.Fatalf("matchScore last segment branch mismatch: %d", got)
-	}
-	if got := matchScore("my.vendor.core", "vendor"); got != 40 {
-		t.Fatalf("matchScore contains branch mismatch: %d", got)
-	}
-	if got := matchScore("x.y", "a.b"); got != 0 {
-		t.Fatalf("matchScore no match branch mismatch: %d", got)
-	}
-
-	if got := fallbackDependency("acme.logging.core"); got != "acme.logging" {
-		t.Fatalf("fallbackDependency multi segment mismatch: %q", got)
-	}
-	if got := fallbackDependency("single"); got != "single" {
-		t.Fatalf("fallbackDependency single segment mismatch: %q", got)
-	}
-	if got := firstSegment(""); got != "" {
-		t.Fatalf("firstSegment empty mismatch: %q", got)
-	}
+	mapper := newDependencyMapper([]string{acmeBarName, "acme.baz", newtonsoftName})
+	assertResolverBranches(t, mapper)
+	assertMatchScoreBranches(t)
+	assertFallbackBranches(t)
 }
 
 func TestParsingHelperBranches(t *testing.T) {
@@ -185,7 +146,7 @@ using Acme.Foo;
 using System.Text;
 open Acme.Foo;
 `)
-	imports, meta := parseImports(content, "Program.cs", mapper)
+	imports, meta := parseImports(content, programSourceName, mapper)
 	if len(imports) < 2 {
 		t.Fatalf("expected imports parsed, got %#v", imports)
 	}
@@ -212,7 +173,7 @@ open Acme.Foo;
 				Path: "Program.cs",
 				Imports: []importBinding{
 					{
-						Dependency: "acme.logging",
+						Dependency: acmeLoggingName,
 						Module:     "Acme.Logging",
 						Name:       "Logger",
 						Local:      "Logger",
@@ -221,10 +182,10 @@ open Acme.Foo;
 				Usage: map[string]int{"Logger": 1},
 			},
 		},
-		AmbiguousByDependency:  map[string]int{"acme.logging": 2},
-		UndeclaredByDependency: map[string]int{"acme.logging": 1},
+		AmbiguousByDependency:  map[string]int{acmeLoggingName: 2},
+		UndeclaredByDependency: map[string]int{acmeLoggingName: 1},
 	}
-	dep, depWarnings := buildDependencyReport("acme.logging", scan, 80)
+	dep, depWarnings := buildDependencyReport(acmeLoggingName, scan, 80)
 	if len(dep.RiskCues) < 2 {
 		t.Fatalf("expected risk cues for ambiguous + undeclared, got %#v", dep.RiskCues)
 	}
@@ -237,7 +198,7 @@ open Acme.Foo;
 }
 
 func TestCaptureMatchesAndSolutionRootsBranches(t *testing.T) {
-	if got := captureMatches(nil); got != nil {
+	if captureMatches(nil) != nil {
 		t.Fatalf("expected nil matches result")
 	}
 	if got := captureMatches([][][]byte{{[]byte("only-one-element")}}); len(got) != 0 {
@@ -262,9 +223,9 @@ EndProject
 
 func TestDetectAndScanFileLimitsAndAnalysisWarnings(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, appProjectName), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
 	for i := 0; i < maxScanFiles+10; i++ {
-		testutil.MustWriteFile(t, filepath.Join(repo, "src", "f"+strconv.Itoa(i)+".cs"), "using Acme.Foo;\n")
+		testutil.MustWriteFile(t, filepath.Join(repo, "src", "f"+strconv.Itoa(i)+".cs"), acmeFooSourceImport)
 	}
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -287,7 +248,7 @@ func TestDetectAndScanFileLimitsAndAnalysisWarnings(t *testing.T) {
 	}
 
 	noManifestRepo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(noManifestRepo, "Program.cs"), "using Missing.Package;\n")
+	testutil.MustWriteFile(t, filepath.Join(noManifestRepo, programSourceName), "using Missing.Package;\n")
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath: noManifestRepo,
 		TopN:     1,
@@ -303,7 +264,7 @@ func TestDetectAndScanFileLimitsAndAnalysisWarnings(t *testing.T) {
 func TestErrorBranchesForContextAndManifestReaders(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "A.csproj"), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), "using Acme.Foo;\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, programSourceName), acmeFooSourceImport)
 
 	canceled := testutil.CanceledContext()
 	if _, err := NewAdapter().DetectWithConfidence(canceled, repo); err == nil {
@@ -323,39 +284,21 @@ func TestErrorBranchesForContextAndManifestReaders(t *testing.T) {
 
 func TestUnreadableManifestAndSourceErrorBranches(t *testing.T) {
 	repo := t.TempDir()
-	csproj := filepath.Join(repo, "Unreadable.csproj")
-	props := filepath.Join(repo, "Directory.Packages.props")
-	source := filepath.Join(repo, "Program.cs")
+	testutil.MustWriteFile(t, filepath.Join(repo, appProjectName), `<Project><ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFile), `<Project><ItemGroup><PackageVersion Include="B" Version="1.0.0" /></ItemGroup></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, programSourceName), acmeFooSourceImport)
 
-	testutil.MustWriteFile(t, csproj, `<Project><ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup></Project>`)
-	testutil.MustWriteFile(t, props, `<Project><ItemGroup><PackageVersion Include="B" Version="1.0.0" /></ItemGroup></Project>`)
-	testutil.MustWriteFile(t, source, "using Acme.Foo;\n")
-
-	if err := os.Chmod(csproj, 0o000); err != nil {
-		t.Fatalf("chmod csproj: %v", err)
+	if _, err := collectDeclaredDependencies(filepath.Join(repo, "missing-repo")); err == nil {
+		t.Fatalf("expected collectDeclaredDependencies error for missing repo")
 	}
-	if _, err := collectDeclaredDependencies(repo); err == nil {
-		t.Fatalf("expected collectDeclaredDependencies error for unreadable csproj")
+	if _, err := parsePackageReferences(repo, filepath.Join(repo, "..", "escape.csproj")); err == nil {
+		t.Fatalf("expected parsePackageReferences error for escaped path")
 	}
-	if err := os.Chmod(csproj, 0o600); err != nil {
-		t.Fatalf("restore csproj mode: %v", err)
+	if _, err := parsePackageVersions(repo, filepath.Join(repo, "..", "escape.props")); err == nil {
+		t.Fatalf("expected parsePackageVersions error for escaped path")
 	}
-
-	if err := os.Chmod(props, 0o000); err != nil {
-		t.Fatalf("chmod props: %v", err)
-	}
-	if _, err := collectDeclaredDependencies(repo); err == nil {
-		t.Fatalf("expected collectDeclaredDependencies error for unreadable props")
-	}
-	if err := os.Chmod(props, 0o600); err != nil {
-		t.Fatalf("restore props mode: %v", err)
-	}
-
-	if err := os.Chmod(source, 0o000); err != nil {
-		t.Fatalf("chmod source: %v", err)
-	}
-	if _, err := scanRepo(context.Background(), repo); err == nil {
-		t.Fatalf("expected scanRepo error for unreadable source file")
+	if _, _, err := readSourceFile(repo, filepath.Join(repo, "..", "escape.cs")); err == nil {
+		t.Fatalf("expected readSourceFile error for escaped path")
 	}
 }
 
@@ -366,5 +309,58 @@ func TestWalkDirPermissionErrorBranches(t *testing.T) {
 	}
 	if _, err := scanRepo(context.Background(), repo); err == nil {
 		t.Fatalf("expected scan error for missing repo path")
+	}
+}
+
+func assertResolverBranches(t *testing.T, mapper dependencyMapper) {
+	t.Helper()
+	if dep, ambiguous, undeclared := mapper.resolve("System.Text"); dep != "" || ambiguous || undeclared {
+		t.Fatalf("expected system namespace to be ignored")
+	}
+	if dep, ambiguous, undeclared := mapper.resolve(""); dep != "" || ambiguous || undeclared {
+		t.Fatalf("expected empty namespace to be ignored")
+	}
+	dep, ambiguous, undeclared := mapper.resolve("Acme.Foo")
+	if dep != acmeBarName || !ambiguous || undeclared {
+		t.Fatalf("expected ambiguous acme mapping, got dep=%q ambiguous=%v undeclared=%v", dep, ambiguous, undeclared)
+	}
+	dep, ambiguous, undeclared = mapper.resolve("Unknown.Vendor.Component")
+	if dep != "unknown.vendor" || ambiguous || !undeclared {
+		t.Fatalf("expected fallback undeclared mapping, got dep=%q ambiguous=%v undeclared=%v", dep, ambiguous, undeclared)
+	}
+}
+
+func assertMatchScoreBranches(t *testing.T) {
+	t.Helper()
+	testCases := []struct {
+		module     string
+		dependency string
+		want       int
+	}{
+		{newtonsoftName, newtonsoftName, 100},
+		{"newtonsoft.json.serialization", newtonsoftName, 90},
+		{"newtonsoft", newtonsoftName, 75},
+		{"acme.foo", acmeBarName, 60},
+		{"foo.client", "bar.client", 50},
+		{"my.vendor.core", "vendor", 40},
+		{"x.y", "a.b", 0},
+	}
+	for _, tc := range testCases {
+		if got := matchScore(tc.module, tc.dependency); got != tc.want {
+			t.Fatalf("matchScore mismatch for %q/%q: got %d want %d", tc.module, tc.dependency, got, tc.want)
+		}
+	}
+}
+
+func assertFallbackBranches(t *testing.T) {
+	t.Helper()
+	if got := fallbackDependency("acme.logging.core"); got != acmeLoggingName {
+		t.Fatalf("fallbackDependency multi segment mismatch: %q", got)
+	}
+	if got := fallbackDependency("single"); got != "single" {
+		t.Fatalf("fallbackDependency single segment mismatch: %q", got)
+	}
+	if got := firstSegment(""); got != "" {
+		t.Fatalf("firstSegment empty mismatch: %q", got)
 	}
 }

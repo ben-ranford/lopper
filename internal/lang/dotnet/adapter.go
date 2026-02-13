@@ -25,6 +25,11 @@ type Adapter struct {
 
 const (
 	centralPackagesFile = "Directory.Packages.props"
+	csharpProjectExt    = ".csproj"
+	fsharpProjectExt    = ".fsproj"
+	solutionFileExt     = ".sln"
+	csharpSourceExt     = ".cs"
+	fsharpSourceExt     = ".fs"
 	maxDetectFiles      = 1024
 	maxScanFiles        = 4096
 )
@@ -88,16 +93,17 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 	}
 	for _, entry := range entries {
 		name := entry.Name()
+		lower := strings.ToLower(name)
 		switch {
 		case strings.EqualFold(name, centralPackagesFile):
 			detection.Matched = true
 			detection.Confidence += 45
 			roots[repoPath] = struct{}{}
-		case strings.HasSuffix(strings.ToLower(name), ".csproj"), strings.HasSuffix(strings.ToLower(name), ".fsproj"):
+		case isProjectManifestName(lower):
 			detection.Matched = true
 			detection.Confidence += 55
 			roots[repoPath] = struct{}{}
-		case strings.HasSuffix(strings.ToLower(name), ".sln"):
+		case isSolutionFileName(lower):
 			detection.Matched = true
 			detection.Confidence += 50
 			roots[repoPath] = struct{}{}
@@ -109,25 +115,25 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 	return nil
 }
 
-func updateDetection(repoPath string, path string, name string, detection *language.Detection, roots map[string]struct{}) error {
+func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}) error {
 	lower := strings.ToLower(name)
 	switch {
 	case lower == strings.ToLower(centralPackagesFile):
 		detection.Matched = true
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
-	case strings.HasSuffix(lower, ".csproj"), strings.HasSuffix(lower, ".fsproj"):
+	case isProjectManifestName(lower):
 		detection.Matched = true
 		detection.Confidence += 12
 		roots[filepath.Dir(path)] = struct{}{}
-	case strings.HasSuffix(lower, ".sln"):
+	case isSolutionFileName(lower):
 		detection.Matched = true
 		detection.Confidence += 8
 		roots[filepath.Dir(path)] = struct{}{}
 		if err := addSolutionRoots(repoPath, path, roots); err != nil {
 			return err
 		}
-	case strings.HasSuffix(lower, ".cs"), strings.HasSuffix(lower, ".fs"):
+	case isSourceFileName(lower):
 		detection.Matched = true
 		detection.Confidence += 2
 	}
@@ -325,143 +331,36 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	}
 	result.DeclaredDependencies = declared
 
-	mapper := newDependencyMapper(declared)
-	visitedSourceFiles := 0
-	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !isSourceFile(path) {
-			return nil
-		}
-		if isGeneratedSource(path) {
-			result.SkippedGeneratedFiles++
-			return nil
-		}
-		visitedSourceFiles++
-		if visitedSourceFiles > maxScanFiles {
-			result.SkippedFileLimit = true
-			return fs.SkipAll
-		}
-		content, relativePath, err := readSourceFile(repoPath, path)
-		if err != nil {
-			return err
-		}
-		imports, mappingMeta := parseImports(content, relativePath, mapper)
-		usage := shared.CountUsage(content, imports)
-		result.Files = append(result.Files, fileScan{
-			Path:    relativePath,
-			Imports: imports,
-			Usage:   usage,
-		})
-		for dep, count := range mappingMeta.ambiguousByDependency {
-			result.AmbiguousByDependency[dep] += count
-		}
-		for dep, count := range mappingMeta.undeclaredByDependency {
-			result.UndeclaredByDependency[dep] += count
-		}
-		return nil
-	})
+	scanner := newRepoScanner(ctx, repoPath, newDependencyMapper(declared), &result)
+	err = filepath.WalkDir(repoPath, scanner.walk)
 	if err != nil && err != fs.SkipAll {
 		return result, err
 	}
-	if len(result.Files) == 0 {
-		result.Warnings = append(result.Warnings, "no C#/F# source files found for analysis")
-	}
-	if result.SkippedGeneratedFiles > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d generated source file(s)", result.SkippedGeneratedFiles))
-	}
-	if result.SkippedFileLimit {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("source scan capped at %d files", maxScanFiles))
-	}
+	appendScanWarnings(&result)
 	return result, nil
 }
 
 func collectDeclaredDependencies(repoPath string) ([]string, error) {
 	set := make(map[string]struct{})
-
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		lower := strings.ToLower(entry.Name())
-		switch {
-		case strings.HasSuffix(lower, ".csproj"), strings.HasSuffix(lower, ".fsproj"):
-			deps, parseErr := parsePackageReferences(repoPath, path)
-			if parseErr != nil {
-				return parseErr
-			}
-			for _, dep := range deps {
-				set[normalizeDependencyID(dep)] = struct{}{}
-			}
-		case strings.EqualFold(entry.Name(), centralPackagesFile):
-			deps, parseErr := parsePackageVersions(repoPath, path)
-			if parseErr != nil {
-				return parseErr
-			}
-			for _, dep := range deps {
-				set[normalizeDependencyID(dep)] = struct{}{}
-			}
-		}
-		return nil
-	})
+	err := filepath.WalkDir(repoPath, newDependencyCollector(repoPath, set).walk)
 	if err != nil {
 		return nil, err
 	}
-
-	ancestorDir := filepath.Dir(repoPath)
-	for ancestorDir != "" && ancestorDir != filepath.Dir(ancestorDir) {
-		path := filepath.Join(ancestorDir, centralPackagesFile)
-		_, statErr := os.Stat(path)
-		if statErr == nil {
-			deps, parseErr := parsePackageVersions(ancestorDir, path)
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			for _, dep := range deps {
-				set[normalizeDependencyID(dep)] = struct{}{}
-			}
-			break
-		}
-		if os.IsNotExist(statErr) {
-			ancestorDir = filepath.Dir(ancestorDir)
-			continue
-		}
-		return nil, statErr
+	if err := addAncestorCentralPackages(repoPath, set); err != nil {
+		return nil, err
 	}
-
-	dependencies := make([]string, 0, len(set))
-	for dep := range set {
-		dependencies = append(dependencies, dep)
-	}
-	sort.Strings(dependencies)
-	return dependencies, nil
+	return sortedDependencies(set), nil
 }
 
-func parsePackageReferences(repoPath string, manifestPath string) ([]string, error) {
+func parsePackageReferences(repoPath, manifestPath string) ([]string, error) {
 	return parseManifestDependencies(repoPath, manifestPath, packageReferencePattern)
 }
 
-func parsePackageVersions(repoPath string, manifestPath string) ([]string, error) {
+func parsePackageVersions(repoPath, manifestPath string) ([]string, error) {
 	return parseManifestDependencies(repoPath, manifestPath, packageVersionPattern)
 }
 
-func parseManifestDependencies(repoPath string, manifestPath string, pattern *regexp.Regexp) ([]string, error) {
+func parseManifestDependencies(repoPath, manifestPath string, pattern *regexp.Regexp) ([]string, error) {
 	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
 	if err != nil {
 		return nil, err
@@ -493,7 +392,7 @@ func captureMatches(matches [][][]byte) []string {
 	return items
 }
 
-func readSourceFile(repoPath string, sourcePath string) ([]byte, string, error) {
+func readSourceFile(repoPath, sourcePath string) ([]byte, string, error) {
 	content, err := safeio.ReadFileUnder(repoPath, sourcePath)
 	if err != nil {
 		return nil, "", err
@@ -523,74 +422,260 @@ func parseImports(content []byte, relativePath string, mapper dependencyMapper) 
 		if line == "" {
 			continue
 		}
-		if module, alias, ok := parseCSharpUsing(line); ok {
-			dependency, ambiguous, undeclared := mapper.resolve(module)
-			if dependency == "" {
-				continue
+		if binding, handled := parseCSharpImportLine(line, raw, relativePath, i+1, mapper, &meta); handled {
+			if binding != nil {
+				imports = append(imports, *binding)
 			}
-			if ambiguous {
-				meta.ambiguousByDependency[dependency]++
-			}
-			if undeclared {
-				meta.undeclaredByDependency[dependency]++
-			}
-			name := alias
-			if name == "" {
-				name = lastSegment(module)
-			}
-			if name == "" {
-				name = module
-			}
-			local := alias
-			if local == "" {
-				local = lastSegment(module)
-			}
-			imports = append(imports, importBinding{
-				Dependency: dependency,
-				Module:     module,
-				Name:       name,
-				Local:      local,
-				Location: report.Location{
-					File:   relativePath,
-					Line:   i + 1,
-					Column: shared.FirstContentColumn(raw),
-				},
-			})
 			continue
 		}
-
-		module, ok := parseFSharpOpen(line)
-		if !ok {
-			continue
+		if binding := parseFSharpImportLine(line, raw, relativePath, i+1, mapper, &meta); binding != nil {
+			imports = append(imports, *binding)
 		}
-		dependency, ambiguous, undeclared := mapper.resolve(module)
-		if dependency == "" {
-			continue
-		}
-		if ambiguous {
-			meta.ambiguousByDependency[dependency]++
-		}
-		if undeclared {
-			meta.undeclaredByDependency[dependency]++
-		}
-		name := lastSegment(module)
-		if name == "" {
-			name = module
-		}
-		imports = append(imports, importBinding{
-			Dependency: dependency,
-			Module:     module,
-			Name:       name,
-			Local:      name,
-			Location: report.Location{
-				File:   relativePath,
-				Line:   i + 1,
-				Column: shared.FirstContentColumn(raw),
-			},
-		})
 	}
 
 	return imports, meta
+}
+
+type repoScanner struct {
+	ctx                context.Context
+	repoPath           string
+	mapper             dependencyMapper
+	result             *scanResult
+	visitedSourceFiles int
+}
+
+func newRepoScanner(ctx context.Context, repoPath string, mapper dependencyMapper, result *scanResult) repoScanner {
+	return repoScanner{
+		ctx:      ctx,
+		repoPath: repoPath,
+		mapper:   mapper,
+		result:   result,
+	}
+}
+
+func (s *repoScanner) walk(path string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return s.ctx.Err()
+	}
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	return s.scanFile(path)
+}
+
+func (s *repoScanner) scanFile(path string) error {
+	if !isSourceFile(path) {
+		return nil
+	}
+	if isGeneratedSource(path) {
+		s.result.SkippedGeneratedFiles++
+		return nil
+	}
+	s.visitedSourceFiles++
+	if s.visitedSourceFiles > maxScanFiles {
+		s.result.SkippedFileLimit = true
+		return fs.SkipAll
+	}
+	content, relativePath, err := readSourceFile(s.repoPath, path)
+	if err != nil {
+		return err
+	}
+	imports, mappingMeta := parseImports(content, relativePath, s.mapper)
+	usage := shared.CountUsage(content, imports)
+	s.result.Files = append(s.result.Files, fileScan{
+		Path:    relativePath,
+		Imports: imports,
+		Usage:   usage,
+	})
+	s.addMappingMeta(mappingMeta)
+	return nil
+}
+
+func (s *repoScanner) addMappingMeta(meta mappingMetadata) {
+	for dep, count := range meta.ambiguousByDependency {
+		s.result.AmbiguousByDependency[dep] += count
+	}
+	for dep, count := range meta.undeclaredByDependency {
+		s.result.UndeclaredByDependency[dep] += count
+	}
+}
+
+func appendScanWarnings(result *scanResult) {
+	if len(result.Files) == 0 {
+		result.Warnings = append(result.Warnings, "no C#/F# source files found for analysis")
+	}
+	if result.SkippedGeneratedFiles > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d generated source file(s)", result.SkippedGeneratedFiles))
+	}
+	if result.SkippedFileLimit {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("source scan capped at %d files", maxScanFiles))
+	}
+}
+
+type dependencyCollector struct {
+	repoPath string
+	set      map[string]struct{}
+}
+
+func newDependencyCollector(repoPath string, set map[string]struct{}) dependencyCollector {
+	return dependencyCollector{
+		repoPath: repoPath,
+		set:      set,
+	}
+}
+
+func (c dependencyCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	dependencies, err := parseManifestDependenciesForEntry(c.repoPath, path, entry.Name())
+	if err != nil {
+		return err
+	}
+	addDependencies(c.set, dependencies)
+	return nil
+}
+
+func parseManifestDependenciesForEntry(repoPath, path, name string) ([]string, error) {
+	lower := strings.ToLower(name)
+	switch {
+	case isProjectManifestName(lower):
+		return parsePackageReferences(repoPath, path)
+	case strings.EqualFold(name, centralPackagesFile):
+		return parsePackageVersions(repoPath, path)
+	default:
+		return nil, nil
+	}
+}
+
+func addDependencies(set map[string]struct{}, dependencies []string) {
+	for _, dep := range dependencies {
+		set[normalizeDependencyID(dep)] = struct{}{}
+	}
+}
+
+func addAncestorCentralPackages(repoPath string, set map[string]struct{}) error {
+	for ancestorDir := filepath.Dir(repoPath); ancestorDir != "" && ancestorDir != filepath.Dir(ancestorDir); ancestorDir = filepath.Dir(ancestorDir) {
+		path := filepath.Join(ancestorDir, centralPackagesFile)
+		_, err := os.Stat(path)
+		if err == nil {
+			deps, parseErr := parsePackageVersions(ancestorDir, path)
+			if parseErr != nil {
+				return parseErr
+			}
+			addDependencies(set, deps)
+			return nil
+		}
+		if os.IsNotExist(err) {
+			continue
+		}
+		return err
+	}
+	return nil
+}
+
+func sortedDependencies(set map[string]struct{}) []string {
+	dependencies := make([]string, 0, len(set))
+	for dep := range set {
+		dependencies = append(dependencies, dep)
+	}
+	sort.Strings(dependencies)
+	return dependencies
+}
+
+func parseCSharpImportLine(
+	line, raw, relativePath string,
+	lineNumber int,
+	mapper dependencyMapper,
+	meta *mappingMetadata,
+) (*importBinding, bool) {
+	module, alias, ok := parseCSharpUsing(line)
+	if !ok {
+		return nil, false
+	}
+	dependency, resolved := resolveImportDependency(module, mapper, meta)
+	if !resolved {
+		return nil, true
+	}
+	name := alias
+	if name == "" {
+		name = lastSegment(module)
+	}
+	if name == "" {
+		name = module
+	}
+	local := alias
+	if local == "" {
+		local = lastSegment(module)
+	}
+	binding := buildImportBinding(dependency, module, name, local, relativePath, lineNumber, raw)
+	return &binding, true
+}
+
+func parseFSharpImportLine(
+	line, raw, relativePath string,
+	lineNumber int,
+	mapper dependencyMapper,
+	meta *mappingMetadata,
+) *importBinding {
+	module, ok := parseFSharpOpen(line)
+	if !ok {
+		return nil
+	}
+	dependency, resolved := resolveImportDependency(module, mapper, meta)
+	if !resolved {
+		return nil
+	}
+	name := lastSegment(module)
+	if name == "" {
+		name = module
+	}
+	binding := buildImportBinding(dependency, module, name, name, relativePath, lineNumber, raw)
+	return &binding
+}
+
+func resolveImportDependency(module string, mapper dependencyMapper, meta *mappingMetadata) (string, bool) {
+	dependency, ambiguous, undeclared := mapper.resolve(module)
+	if dependency == "" {
+		return "", false
+	}
+	if ambiguous {
+		meta.ambiguousByDependency[dependency]++
+	}
+	if undeclared {
+		meta.undeclaredByDependency[dependency]++
+	}
+	return dependency, true
+}
+
+func buildImportBinding(
+	dependency, module, name, local, relativePath string,
+	lineNumber int,
+	raw string,
+) importBinding {
+	return importBinding{
+		Dependency: dependency,
+		Module:     module,
+		Name:       name,
+		Local:      local,
+		Location: report.Location{
+			File:   relativePath,
+			Line:   lineNumber,
+			Column: shared.FirstContentColumn(raw),
+		},
+	}
 }
 
 func parseCSharpUsing(line string) (module string, alias string, ok bool) {
@@ -640,7 +725,7 @@ func shouldSkipDir(name string) bool {
 
 func isSourceFile(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".cs", ".fs":
+	case csharpSourceExt, fsharpSourceExt:
 		return true
 	default:
 		return false
@@ -725,7 +810,7 @@ func (m dependencyMapper) resolve(module string) (dependency string, ambiguous b
 	return candidates[0].id, false, false
 }
 
-func matchScore(module string, dependency string) int {
+func matchScore(module, dependency string) int {
 	if module == dependency {
 		return 100
 	}
@@ -748,6 +833,18 @@ func matchScore(module string, dependency string) int {
 		return 40
 	}
 	return 0
+}
+
+func isProjectManifestName(lowerName string) bool {
+	return strings.HasSuffix(lowerName, csharpProjectExt) || strings.HasSuffix(lowerName, fsharpProjectExt)
+}
+
+func isSolutionFileName(lowerName string) bool {
+	return strings.HasSuffix(lowerName, solutionFileExt)
+}
+
+func isSourceFileName(lowerName string) bool {
+	return strings.HasSuffix(lowerName, csharpSourceExt) || strings.HasSuffix(lowerName, fsharpSourceExt)
 }
 
 func fallbackDependency(module string) string {

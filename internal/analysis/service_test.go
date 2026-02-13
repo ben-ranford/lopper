@@ -11,6 +11,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	programFileName           = "Program.cs"
+	newtonsoftDependencyID    = "newtonsoft.json"
+	expectedOneDependencyText = "expected one dependency report, got %d"
+)
+
 func TestServiceAnalyseAllLanguages(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
@@ -28,7 +34,7 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nanyhow = \"1.0\"\n")
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
 	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
-	writeFile(t, filepath.Join(repo, "Program.cs"), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
+	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -118,7 +124,7 @@ func TestServiceAnalyseCSharpAlias(t *testing.T) {
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 </Project>`)
-	writeFile(t, filepath.Join(repo, "Program.cs"), `
+	writeFile(t, filepath.Join(repo, programFileName), `
 using JsonConvert = Newtonsoft.Json.JsonConvert;
 
 public class Program {
@@ -131,14 +137,14 @@ public class Program {
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
 		RepoPath:   repo,
-		Dependency: "newtonsoft.json",
+		Dependency: newtonsoftDependencyID,
 		Language:   "csharp",
 	})
 	if err != nil {
 		t.Fatalf("analyse csharp alias: %v", err)
 	}
 	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
 	if dep.Language != "dotnet" {
@@ -157,7 +163,7 @@ func TestServiceForwardsMinUsageThresholdToDotNet(t *testing.T) {
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 </Project>`)
-	writeFile(t, filepath.Join(repo, "Program.cs"), `
+	writeFile(t, filepath.Join(repo, programFileName), `
 using Newtonsoft.Json;
 public class Program { public static void Main() {} }
 `)
@@ -165,14 +171,14 @@ public class Program { public static void Main() {} }
 	service := NewService()
 	withDefault, err := service.Analyse(context.Background(), Request{
 		RepoPath:   repo,
-		Dependency: "newtonsoft.json",
+		Dependency: newtonsoftDependencyID,
 		Language:   "dotnet",
 	})
 	if err != nil {
 		t.Fatalf("analyse with default threshold: %v", err)
 	}
 	if len(withDefault.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(withDefault.Dependencies))
+		t.Fatalf(expectedOneDependencyText, len(withDefault.Dependencies))
 	}
 	if !hasRecommendationCode(withDefault.Dependencies[0], "reduce-low-usage-package-surface") {
 		t.Fatalf("expected low-usage recommendation with default threshold")
@@ -181,7 +187,7 @@ public class Program { public static void Main() {} }
 	zero := 0
 	withZero, err := service.Analyse(context.Background(), Request{
 		RepoPath:                          repo,
-		Dependency:                        "newtonsoft.json",
+		Dependency:                        newtonsoftDependencyID,
 		Language:                          "dotnet",
 		MinUsagePercentForRecommendations: &zero,
 	})
@@ -189,7 +195,7 @@ public class Program { public static void Main() {} }
 		t.Fatalf("analyse with zero threshold: %v", err)
 	}
 	if len(withZero.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(withZero.Dependencies))
+		t.Fatalf(expectedOneDependencyText, len(withZero.Dependencies))
 	}
 	if hasRecommendationCode(withZero.Dependencies[0], "reduce-low-usage-package-surface") {
 		t.Fatalf("did not expect low-usage recommendation when threshold is 0")
