@@ -7,6 +7,11 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
+const (
+	usageHelpersIndexJS = "index.js"
+	parseSourceErrF = "parse source: %v"
+)
+
 func TestAddMemberAndSubscriptReferenceBranches(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte(`
@@ -16,9 +21,9 @@ value.name;
 value[prop];
 call().name;
 `)
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrF, err)
 	}
 
 	root := tree.RootNode()
@@ -47,9 +52,9 @@ call().name;
 func TestAddReferenceNoOpBranches(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte(`const obj = {}; obj[unknown];`)
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrF, err)
 	}
 	root := tree.RootNode()
 
@@ -81,9 +86,9 @@ obj[''];
 obj[1];
 call()[prop];
 `)
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrF, err)
 	}
 
 	root := tree.RootNode()
@@ -114,9 +119,9 @@ class C {
 const c = new C();
 c.#value;
 `)
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
 	if err != nil {
-		t.Fatalf("parse source: %v", err)
+		t.Fatalf(parseSourceErrF, err)
 	}
 
 	root := tree.RootNode()
