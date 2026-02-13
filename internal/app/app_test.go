@@ -297,3 +297,33 @@ func TestExecuteAnalyseBaselineAndApplyBaselineErrors(t *testing.T) {
 		t.Fatalf("expected baseline application error for zero baseline totals")
 	}
 }
+
+func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "serde", Language: "rust", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.Language = "rust"
+	req.Analyse.Dependency = "serde"
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Thresholds = thresholds.Values{
+		FailOnIncreasePercent:             0,
+		LowConfidenceWarningPercent:       35,
+		MinUsagePercentForRecommendations: 70,
+	}
+
+	if _, err := application.Execute(context.Background(), req); err != nil {
+		t.Fatalf("execute analyse: %v", err)
+	}
+	if analyzer.lastReq.MinUsagePercentForRecommendations == nil || *analyzer.lastReq.MinUsagePercentForRecommendations != 70 {
+		t.Fatalf("expected min-usage threshold to be forwarded for rust analysis, got %#v", analyzer.lastReq.MinUsagePercentForRecommendations)
+	}
+}
