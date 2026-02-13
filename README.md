@@ -149,6 +149,7 @@ lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lop
 ## Development
 
 ```bash
+make setup
 make fmt
 make test
 make lint
@@ -163,6 +164,7 @@ make ci
 make cov
 make release VERSION=v0.1.0
 make toolchain-check
+make toolchain-install
 make hooks-install
 ```
 
