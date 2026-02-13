@@ -7,16 +7,18 @@ Thanks for contributing to Lopper.
 Requirements:
 
 - Go `1.26.x`
-- `golangci-lint` (optional for faster local runs; `make lint` will auto-run a pinned version)
+- `zig` (required for cross-CGO release builds)
+- `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
 
 Install dependencies and run checks:
 
 ```bash
-go mod download
+make setup
 make fmt
 make test
 make lint
 make cov
+make build
 ```
 
 ## Workflow

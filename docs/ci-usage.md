@@ -35,9 +35,11 @@ jobs:
 - `make build`: build local executable at `bin/lopper`
 - `make lint`: run `golangci-lint`
 - `make format-check`: fail if `gofmt` changes are needed
-- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=60`)
+- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=90`)
 - `make ci`: `format-check + lint + security + test + build`
 - `make toolchain-check`: verify required cross toolchain binaries
+- `make toolchain-install`: install required OS toolchains (`go`, `zig`) on macOS/Linux
+- `make setup`: bootstrap toolchain + local Go tooling + module download
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
 
 Coverage artifacts:
@@ -57,8 +59,8 @@ To build multiple platforms:
 make release VERSION=v0.1.0 PLATFORMS="linux/amd64 darwin/arm64 windows/amd64"
 ```
 
-On macOS, install toolchain support with:
+Install toolchain support with:
 
 ```bash
-make toolchain-install-macos
+make toolchain-install
 ```
