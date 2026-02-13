@@ -21,6 +21,12 @@ make cov
 make build
 ```
 
+Refresh terminal demos:
+
+```bash
+make demos
+```
+
 ## Workflow
 
 1. Create a branch for your change.
@@ -34,6 +40,8 @@ make build
 - What changed and why
 - Test evidence (`go test ./...`, manual commands, fixtures)
 - Backward compatibility notes (if any)
+
+If your change impacts CLI behavior shown in docs, refresh demo GIFs with `make demos` and include regenerated assets.
 
 Use the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
 

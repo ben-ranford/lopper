@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security test cov build ci release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check lint security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -52,6 +52,17 @@ build:
 	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 ci: format-check lint security test build
+
+demos:
+	./scripts/demos/render.sh
+
+demos-check: demos
+	@status=$$(git status --porcelain -- docs/demos/assets); \
+	if [ -n "$$status" ]; then \
+		echo "Demo assets are missing or out of date. Run: make demos"; \
+		echo "$$status"; \
+		exit 1; \
+	fi
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)

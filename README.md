@@ -97,6 +97,26 @@ lopper analyse --top 20 \
   --threshold-min-usage-percent 45
 ```
 
+## Terminal demos
+
+Regenerate all demo assets from source tapes:
+
+```bash
+make demos
+```
+
+Quick start (`--top` ranking):
+
+![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif)
+
+Single dependency deep dive:
+
+![Single dependency demo](docs/demos/assets/single-dependency.gif)
+
+Baseline gating workflow:
+
+![Baseline gating demo](docs/demos/assets/baseline-gate.gif)
+
 Repo-level config example (`.lopper.yml`):
 
 ```yaml
@@ -162,6 +182,7 @@ CI/release helper targets:
 ```bash
 make ci
 make cov
+make demos
 make release VERSION=v0.1.0
 make toolchain-check
 make toolchain-install

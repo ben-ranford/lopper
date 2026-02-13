@@ -48,6 +48,9 @@ jobs:
             make ci
           fi
 
+      - name: Verify demo assets are up to date
+        run: make demos-check
+
       - name: Run lopper self-analysis (PR)
         id: lopper
         if: ${{ github.event_name == 'pull_request' }}
