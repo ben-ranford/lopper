@@ -9,7 +9,7 @@ import (
 
 const (
 	usageHelpersIndexJS = "index.js"
-	parseSourceErrF = "parse source: %v"
+	parseSourceErrF     = "parse source: %v"
 )
 
 func TestAddMemberAndSubscriptReferenceBranches(t *testing.T) {
