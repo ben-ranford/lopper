@@ -55,7 +55,7 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
   },
   "autoload": {
     "psr-4": {
-      "App\\\\": "src/"
+      "App\\": "src/"
     }
   }
 }
@@ -64,27 +64,27 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
   "packages": [
     {
       "name": "monolog/monolog",
-      "autoload": {"psr-4": {"Monolog\\\\": "src/Monolog"}}
+      "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
     },
     {
       "name": "symfony/yaml",
-      "autoload": {"psr-4": {"Symfony\\\\Component\\\\Yaml\\\\": ""}}
+      "autoload": {"psr-4": {"Symfony\\Component\\Yaml\\": ""}}
     }
   ],
   "packages-dev": [
     {
       "name": "phpunit/phpunit",
-      "autoload": {"psr-4": {"PHPUnit\\\\Framework\\\\": "src"}}
+      "autoload": {"psr-4": {"PHPUnit\\Framework\\": "src"}}
     }
   ]
 }
 `)
 	writeFile(t, filepath.Join(repo, "src", "index.php"), `<?php
-use Monolog\\Logger;
-use Monolog\\{Handler\\StreamHandler, Formatter\\LineFormatter as LineFmt};
-use Symfony\\Component\\Yaml\\Yaml;
+use Monolog\Logger;
+use Monolog\{Handler\StreamHandler, Formatter\LineFormatter as LineFmt};
+use Symfony\Component\Yaml\Yaml;
 
-$className = "Monolog\\Logger";
+$className = "Monolog\Logger";
 class_exists($className);
 
 $logger = new Logger("app");
@@ -149,18 +149,18 @@ func TestPHPAdapterSkipsNestedComposerPackages(t *testing.T) {
   "packages": [
     {
       "name": "symfony/yaml",
-      "autoload": {"psr-4": {"Symfony\\\\Component\\\\Yaml\\\\": ""}}
+      "autoload": {"psr-4": {"Symfony\\Component\\Yaml\\": ""}}
     }
   ]
 }
 `)
 	writeFile(t, filepath.Join(repo, "src", "index.php"), `<?php
-use Symfony\\Component\\Yaml\\Yaml;
+use Symfony\Component\Yaml\Yaml;
 Yaml::parse("foo: bar");
 `)
 	writeFile(t, filepath.Join(repo, "packages", "nested", "composer.json"), `{"name":"acme/nested"}`)
 	writeFile(t, filepath.Join(repo, "packages", "nested", "src", "nested.php"), `<?php
-use Symfony\\Component\\Yaml\\Yaml;
+use Symfony\Component\Yaml\Yaml;
 Yaml::parse("foo: bar");
 `)
 
@@ -179,6 +179,41 @@ Yaml::parse("foo: bar");
 	}
 	if !containsWarning(reportData.Warnings, "nested composer package") {
 		t.Fatalf("expected nested package warning, got %#v", reportData.Warnings)
+	}
+}
+
+func TestPHPAdapterParsesNamespaceReferencesWithoutUseStatement(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "composer.json"), `{"require":{"monolog/monolog":"^3.0"}}`)
+	writeFile(t, filepath.Join(repo, "composer.lock"), `{
+  "packages": [
+    {
+      "name": "monolog/monolog",
+      "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
+    }
+  ]
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", "index.php"), `<?php
+$logger = new \Monolog\Logger("app");
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "monolog/monolog",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount == 0 {
+		t.Fatalf("expected namespace reference usage to be counted")
+	}
+	if containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("did not expect no-import warning for namespace reference usage: %#v", reportData.Warnings)
 	}
 }
 

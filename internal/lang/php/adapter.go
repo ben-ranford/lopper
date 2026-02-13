@@ -497,7 +497,7 @@ func (r dependencyResolver) isLocalNamespace(module string) bool {
 		if namespace == "" {
 			continue
 		}
-		if module == namespace || strings.HasPrefix(module, namespace+`\\`) {
+		if module == namespace || strings.HasPrefix(module, namespace+`\`) {
 			return true
 		}
 	}
@@ -512,7 +512,7 @@ func (r dependencyResolver) resolveWithPSR4(module string) string {
 		if normalizedPrefix == "" {
 			continue
 		}
-		if module == normalizedPrefix || strings.HasPrefix(module, normalizedPrefix+`\\`) {
+		if module == normalizedPrefix || strings.HasPrefix(module, normalizedPrefix+`\`) {
 			if len(normalizedPrefix) > len(longest) {
 				longest = normalizedPrefix
 				selected = dependency
@@ -523,7 +523,7 @@ func (r dependencyResolver) resolveWithPSR4(module string) string {
 }
 
 func (r dependencyResolver) resolveByNamespaceHeuristic(module string) string {
-	parts := strings.Split(module, `\\`)
+	parts := strings.Split(module, `\`)
 	if len(parts) < 2 {
 		return ""
 	}
@@ -540,6 +540,7 @@ func (r dependencyResolver) resolveByNamespaceHeuristic(module string) string {
 }
 
 var useStmtPattern = regexp.MustCompile(`(?ms)^\s*use\s+([^;]+);`)
+var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+`)
 
 func parseImports(content []byte, filePath string, resolver dependencyResolver) ([]importBinding, map[string]int, int) {
 	text := string(content)
@@ -561,7 +562,80 @@ func parseImports(content []byte, filePath string, resolver dependencyResolver) 
 		}
 		unresolved += unresolvedCount
 	}
+	namespaceImports, unresolvedNamespaces := parseNamespaceReferences(content, filePath, resolver)
+	imports = append(imports, namespaceImports...)
+	unresolved += unresolvedNamespaces
 	return imports, groupedByDep, unresolved
+}
+
+func parseNamespaceReferences(content []byte, filePath string, resolver dependencyResolver) ([]importBinding, int) {
+	text := string(content)
+	matches := namespaceRefPattern.FindAllStringIndex(text, -1)
+	imports := make([]importBinding, 0)
+	unresolved := 0
+	seen := make(map[string]struct{})
+	for _, match := range matches {
+		if len(match) != 2 {
+			continue
+		}
+		start := match[0]
+		end := match[1]
+		rawModule := strings.TrimSpace(text[start:end])
+		module := normalizeNamespace(strings.TrimPrefix(rawModule, `\`))
+		if module == "" {
+			continue
+		}
+		line := lineNumberAt(text, start)
+		lineText := lineTextAt(text, line)
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(lineText)), "use ") {
+			continue
+		}
+		local := lastNamespaceSegment(module)
+		if local == "" {
+			continue
+		}
+
+		dependency, resolved := resolver.dependencyFromModule(module)
+		if dependency == "" {
+			if resolved {
+				unresolved++
+			}
+			continue
+		}
+
+		key := module + ":" + fmt.Sprint(line)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		imports = append(imports, importBinding{
+			Dependency: dependency,
+			Module:     module,
+			Name:       local,
+			Local:      local,
+			// Mark direct namespace references as always-used imports because they are explicit usage sites.
+			Wildcard: true,
+			Location: report.Location{
+				File:   filePath,
+				Line:   line,
+				Column: 1,
+			},
+		})
+	}
+	return imports, unresolved
+}
+
+func lineTextAt(text string, targetLine int) string {
+	if targetLine <= 0 {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	index := targetLine - 1
+	if index < 0 || index >= len(lines) {
+		return ""
+	}
+	return lines[index]
 }
 
 func lineNumberAt(text string, offset int) int {
@@ -634,7 +708,7 @@ func parseUsePart(part string, base string, filePath string, line int, resolver 
 
 	module, local := splitAlias(part)
 	if base != "" {
-		module = normalizeNamespace(base + `\\` + module)
+		module = normalizeNamespace(base + `\` + module)
 	}
 	module = normalizeNamespace(module)
 	if module == "" {
@@ -686,14 +760,14 @@ func lastNamespaceSegment(module string) string {
 	if module == "" {
 		return ""
 	}
-	parts := strings.Split(module, `\\`)
+	parts := strings.Split(module, `\`)
 	return strings.TrimSpace(parts[len(parts)-1])
 }
 
 func normalizeNamespace(value string) string {
 	value = strings.TrimSpace(value)
-	value = strings.TrimPrefix(value, `\\`)
-	value = strings.TrimSuffix(value, `\\`)
+	value = strings.TrimPrefix(value, `\`)
+	value = strings.TrimSuffix(value, `\`)
 	return value
 }
 
