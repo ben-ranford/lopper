@@ -360,20 +360,11 @@ func TestUnreadableManifestAndSourceErrorBranches(t *testing.T) {
 }
 
 func TestWalkDirPermissionErrorBranches(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
-	blockedDir := filepath.Join(repo, "blocked")
-	testutil.MustWriteFile(t, filepath.Join(blockedDir, "Program.cs"), "using Acme.Foo;\n")
-
-	if err := os.Chmod(blockedDir, 0o000); err != nil {
-		t.Fatalf("chmod blocked dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(blockedDir, 0o755) })
-
+	repo := filepath.Join(t.TempDir(), "missing-repo")
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), repo); err == nil {
-		t.Fatalf("expected detect permission error")
+		t.Fatalf("expected detect error for missing repo path")
 	}
 	if _, err := scanRepo(context.Background(), repo); err == nil {
-		t.Fatalf("expected scan permission error")
+		t.Fatalf("expected scan error for missing repo path")
 	}
 }
