@@ -454,20 +454,19 @@ func collectDeclaredDependencies(repoPath string) ([]string, error) {
 }
 
 func parsePackageReferences(repoPath string, manifestPath string) ([]string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
-	if err != nil {
-		return nil, err
-	}
-	matches := packageReferencePattern.FindAllSubmatch(content, -1)
-	return captureMatches(matches), nil
+	return parseManifestDependencies(repoPath, manifestPath, packageReferencePattern)
 }
 
 func parsePackageVersions(repoPath string, manifestPath string) ([]string, error) {
+	return parseManifestDependencies(repoPath, manifestPath, packageVersionPattern)
+}
+
+func parseManifestDependencies(repoPath string, manifestPath string, pattern *regexp.Regexp) ([]string, error) {
 	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
 	if err != nil {
 		return nil, err
 	}
-	matches := packageVersionPattern.FindAllSubmatch(content, -1)
+	matches := pattern.FindAllSubmatch(content, -1)
 	return captureMatches(matches), nil
 }
 

@@ -11,6 +11,44 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	newtonsoftProjectManifest = `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`
+	dapperProjectManifest = `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.35" />
+  </ItemGroup>
+</Project>`
+	serilogCentralManifest = `
+<Project>
+  <ItemGroup>
+    <PackageVersion Include="Serilog.AspNetCore" Version="8.0.0" />
+  </ItemGroup>
+</Project>`
+)
+
+func writeManifestFixture(t *testing.T, path string, content string) {
+	t.Helper()
+	testutil.MustWriteFile(t, path, content)
+}
+
+func expectSingleDotNetDependency(t *testing.T, deps []report.DependencyReport) report.DependencyReport {
+	t.Helper()
+	if len(deps) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(deps))
+	}
+	dep := deps[0]
+	if dep.Language != "dotnet" {
+		t.Fatalf("expected language dotnet, got %q", dep.Language)
+	}
+	return dep
+}
+
 func TestAdapterDetectWithSolutionAndProjects(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "App.sln"), `
@@ -46,12 +84,7 @@ EndProject
 
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Api.csproj"), `
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-  </ItemGroup>
-</Project>`)
+	writeManifestFixture(t, filepath.Join(repo, "Api.csproj"), newtonsoftProjectManifest)
 	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), `
 using Newtonsoft.Json;
 using JsonConvert = Newtonsoft.Json.JsonConvert;
@@ -70,13 +103,7 @@ public class Program {
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
 	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.Language != "dotnet" {
-		t.Fatalf("expected language dotnet, got %q", dep.Language)
-	}
+	dep := expectSingleDotNetDependency(t, reportData.Dependencies)
 	if dep.UsedExportsCount == 0 {
 		t.Fatalf("expected used exports > 0")
 	}
@@ -143,18 +170,8 @@ func TestAdapterMetadataAndAliases(t *testing.T) {
 
 func TestCollectDeclaredDependencies(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Directory.Packages.props"), `
-<Project>
-  <ItemGroup>
-    <PackageVersion Include="Serilog.AspNetCore" Version="8.0.0" />
-  </ItemGroup>
-</Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), `
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.35" />
-  </ItemGroup>
-</Project>`)
+	writeManifestFixture(t, filepath.Join(repo, "Directory.Packages.props"), serilogCentralManifest)
+	writeManifestFixture(t, filepath.Join(repo, "App.csproj"), dapperProjectManifest)
 
 	deps, err := collectDeclaredDependencies(repo)
 	if err != nil {
@@ -172,18 +189,8 @@ func TestParseManifestReferences(t *testing.T) {
 	repo := t.TempDir()
 	propsPath := filepath.Join(repo, "Directory.Packages.props")
 	projectPath := filepath.Join(repo, "App.csproj")
-	testutil.MustWriteFile(t, propsPath, `
-<Project>
-  <ItemGroup>
-    <PackageVersion Include="Serilog.AspNetCore" Version="8.0.0" />
-  </ItemGroup>
-</Project>`)
-	testutil.MustWriteFile(t, projectPath, `
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.35" />
-  </ItemGroup>
-</Project>`)
+	writeManifestFixture(t, propsPath, serilogCentralManifest)
+	writeManifestFixture(t, projectPath, dapperProjectManifest)
 
 	propsDeps, err := parsePackageVersions(repo, propsPath)
 	if err != nil {
@@ -204,12 +211,7 @@ func TestParseManifestReferences(t *testing.T) {
 
 func TestAdapterRecommendationsHonorMinUsageThreshold(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), `
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-  </ItemGroup>
-</Project>`)
+	writeManifestFixture(t, filepath.Join(repo, "App.csproj"), newtonsoftProjectManifest)
 	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), `
 using Newtonsoft.Json;
 
@@ -225,10 +227,8 @@ public class Program {
 	if err != nil {
 		t.Fatalf("analyse with default threshold: %v", err)
 	}
-	if len(withDefaultThreshold.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(withDefaultThreshold.Dependencies))
-	}
-	if !hasRecommendation(withDefaultThreshold.Dependencies[0], "reduce-low-usage-package-surface") {
+	depDefault := expectSingleDotNetDependency(t, withDefaultThreshold.Dependencies)
+	if !hasRecommendation(depDefault, "reduce-low-usage-package-surface") {
 		t.Fatalf("expected low-usage recommendation with default threshold")
 	}
 
@@ -241,10 +241,8 @@ public class Program {
 	if err != nil {
 		t.Fatalf("analyse with zero threshold: %v", err)
 	}
-	if len(withZeroThreshold.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(withZeroThreshold.Dependencies))
-	}
-	if hasRecommendation(withZeroThreshold.Dependencies[0], "reduce-low-usage-package-surface") {
+	depZero := expectSingleDotNetDependency(t, withZeroThreshold.Dependencies)
+	if hasRecommendation(depZero, "reduce-low-usage-package-surface") {
 		t.Fatalf("did not expect low-usage recommendation when threshold is 0")
 	}
 }
