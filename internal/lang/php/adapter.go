@@ -442,7 +442,7 @@ func scanFileEntry(
 	return nil
 }
 
-func mergeDependencyCounts(dest map[string]int, src map[string]int) {
+func mergeDependencyCounts(dest, src map[string]int) {
 	for dep, count := range src {
 		dest[dep] += count
 	}
@@ -693,13 +693,24 @@ func isDuplicateNamespaceReference(seen map[string]struct{}, module string, line
 }
 
 func namespaceImportBinding(filePath string, line int, local string, module string, dependency string) importBinding {
+	return newImportBinding(filePath, line, dependency, module, local, local, true)
+}
+
+func newImportBinding(
+	filePath string,
+	line int,
+	dependency, module, local, name string,
+	wildcard bool,
+) importBinding {
+	if name == "" {
+		name = local
+	}
 	return importBinding{
 		Dependency: dependency,
 		Module:     module,
-		Name:       local,
+		Name:       name,
 		Local:      local,
-		// Mark direct namespace references as always-used imports because they are explicit usage sites.
-		Wildcard: true,
+		Wildcard:   wildcard,
 		Location: report.Location{
 			File:   filePath,
 			Line:   line,
@@ -738,36 +749,45 @@ func parseUseStatement(statement, filePath string, line int, resolver dependency
 	if statement == "" {
 		return nil, nil, 0
 	}
-
-	groupedDeps := make(map[string]struct{})
-	imports := make([]importBinding, 0)
-	unresolved := 0
-
-	if strings.Contains(statement, "{") && strings.Contains(statement, "}") {
-		open := strings.Index(statement, "{")
-		close := strings.LastIndex(statement, "}")
-		if open >= 0 && close > open {
-			base := normalizeNamespace(statement[:open])
-			inside := statement[open+1 : close]
-			for _, part := range strings.Split(inside, ",") {
-				binding, dep, ok, unresolvedImport := parseUsePart(strings.TrimSpace(part), base, filePath, line, resolver)
-				if unresolvedImport {
-					unresolved++
-				}
-				if !ok {
-					continue
-				}
-				imports = append(imports, binding)
-				if dep != "" {
-					groupedDeps[dep] = struct{}{}
-				}
-			}
-			return imports, groupedDeps, unresolved
-		}
+	if bindings, groupedDeps, unresolved, ok := parseGroupedUseStatement(statement, filePath, line, resolver); ok {
+		return bindings, groupedDeps, unresolved
 	}
+	return parseFlatUseStatement(statement, filePath, line, resolver)
+}
 
-	for _, part := range strings.Split(statement, ",") {
-		binding, _, ok, unresolvedImport := parseUsePart(strings.TrimSpace(part), "", filePath, line, resolver)
+func parseGroupedUseStatement(
+	statement, filePath string,
+	line int,
+	resolver dependencyResolver,
+) ([]importBinding, map[string]struct{}, int, bool) {
+	open := strings.Index(statement, "{")
+	close := strings.LastIndex(statement, "}")
+	if open < 0 || close <= open {
+		return nil, nil, 0, false
+	}
+	base := normalizeNamespace(statement[:open])
+	inside := statement[open+1 : close]
+	imports, groupedDeps, unresolved := parseUseParts(strings.Split(inside, ","), base, filePath, line, resolver, true)
+	return imports, groupedDeps, unresolved, true
+}
+
+func parseFlatUseStatement(statement, filePath string, line int, resolver dependencyResolver) ([]importBinding, map[string]struct{}, int) {
+	imports, _, unresolved := parseUseParts(strings.Split(statement, ","), "", filePath, line, resolver, false)
+	return imports, map[string]struct{}{}, unresolved
+}
+
+func parseUseParts(
+	parts []string,
+	base, filePath string,
+	line int,
+	resolver dependencyResolver,
+	collectGroupedDeps bool,
+) ([]importBinding, map[string]struct{}, int) {
+	imports := make([]importBinding, 0)
+	groupedDeps := make(map[string]struct{})
+	unresolved := 0
+	for _, part := range parts {
+		binding, dep, ok, unresolvedImport := parseUsePart(strings.TrimSpace(part), base, filePath, line, resolver)
 		if unresolvedImport {
 			unresolved++
 		}
@@ -775,54 +795,55 @@ func parseUseStatement(statement, filePath string, line int, resolver dependency
 			continue
 		}
 		imports = append(imports, binding)
+		if collectGroupedDeps && dep != "" {
+			groupedDeps[dep] = struct{}{}
+		}
 	}
 	return imports, groupedDeps, unresolved
 }
 
-func parseUsePart(part string, base string, filePath string, line int, resolver dependencyResolver) (importBinding, string, bool, bool) {
-	part = strings.TrimSpace(part)
-	partLower := strings.ToLower(part)
-	if strings.HasPrefix(partLower, "function ") {
-		part = strings.TrimSpace(part[len("function "):])
-	} else if strings.HasPrefix(partLower, "const ") {
-		part = strings.TrimSpace(part[len("const "):])
-	}
-
-	module, local := splitAlias(part)
-	if base != "" {
-		module = normalizeNamespace(base + `\` + module)
-	}
-	module = normalizeNamespace(module)
-	if module == "" {
+func parseUsePart(part, base, filePath string, line int, resolver dependencyResolver) (importBinding, string, bool, bool) {
+	module, local, ok := parseUsePartModuleAndLocal(part, base)
+	if !ok {
 		return importBinding{}, "", false, false
 	}
-	if local == "" {
-		local = lastNamespaceSegment(module)
-	}
-	if local == "" {
-		return importBinding{}, "", false, false
-	}
-
 	dependency, resolved := resolver.dependencyFromModule(module)
 	if dependency == "" {
 		return importBinding{}, "", false, resolved
 	}
 
-	binding := importBinding{
-		Dependency: dependency,
-		Module:     module,
-		Name:       lastNamespaceSegment(module),
-		Local:      local,
-		Location: report.Location{
-			File:   filePath,
-			Line:   line,
-			Column: 1,
-		},
-	}
-	if binding.Name == "" {
-		binding.Name = local
-	}
+	binding := newImportBinding(filePath, line, dependency, module, local, lastNamespaceSegment(module), false)
 	return binding, normalizeDependencyID(dependency), true, false
+}
+
+func parseUsePartModuleAndLocal(part, base string) (string, string, bool) {
+	module, local := splitAlias(stripUseImportQualifier(part))
+	if base != "" {
+		module = normalizeNamespace(base + `\` + module)
+	}
+	module = normalizeNamespace(module)
+	if module == "" {
+		return "", "", false
+	}
+	if local == "" {
+		local = lastNamespaceSegment(module)
+	}
+	if local == "" {
+		return "", "", false
+	}
+	return module, local, true
+}
+
+func stripUseImportQualifier(part string) string {
+	part = strings.TrimSpace(part)
+	partLower := strings.ToLower(part)
+	if strings.HasPrefix(partLower, "function ") {
+		return strings.TrimSpace(part[len("function "):])
+	}
+	if strings.HasPrefix(partLower, "const ") {
+		return strings.TrimSpace(part[len("const "):])
+	}
+	return part
 }
 
 func splitAlias(value string) (string, string) {
@@ -961,7 +982,7 @@ func loadComposerLockMappings(repoPath string, data *composerData) error {
 	return nil
 }
 
-func readOptionalRepoFile(repoPath string, filename string) ([]byte, bool, error) {
+func readOptionalRepoFile(repoPath, filename string) ([]byte, bool, error) {
 	path := filepath.Join(repoPath, filename)
 	bytes, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {

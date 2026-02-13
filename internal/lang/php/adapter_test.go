@@ -2,6 +2,7 @@ package php
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,18 +14,21 @@ import (
 )
 
 const testComposerJSON = "composer.json"
+const testComposerLock = "composer.lock"
 const testIndexPHP = "index.php"
+const testMonologDependency = "monolog/monolog"
+const testPHPHeader = "<?php\n"
 
 func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testComposerJSON), `{
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{
   "name": "acme/app",
   "require": {
-    "monolog/monolog": "^3.0"
+    "%s": "^3.0"
   }
 }
-`)
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), "<?php\n")
+`, testMonologDependency))
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader)
 	writeFile(t, filepath.Join(repo, "packages", "plugin", testComposerJSON), `{"name":"acme/plugin"}`)
 
 	adapter := NewAdapter()
@@ -45,12 +49,12 @@ func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 
 func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testComposerJSON), `{
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{
   "name": "acme/app",
   "require": {
     "php": "^8.2",
     "ext-json": "*",
-    "monolog/monolog": "^3.0",
+    "%s": "^3.0",
     "symfony/yaml": "^6.0"
   },
   "require-dev": {
@@ -62,11 +66,11 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
     }
   }
 }
-`)
-	writeFile(t, filepath.Join(repo, "composer.lock"), `{
+`, testMonologDependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), fmt.Sprintf(`{
   "packages": [
     {
-      "name": "monolog/monolog",
+      "name": "%s",
       "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
     },
     {
@@ -81,7 +85,7 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
     }
   ]
 }
-`)
+`, testMonologDependency))
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
 use Monolog\Logger;
 use Monolog\{Handler\StreamHandler, Formatter\LineFormatter as LineFmt};
@@ -97,7 +101,7 @@ $yaml = Yaml::parse("foo: bar");
 	adapter := NewAdapter()
 	depReport, err := adapter.Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
-		Dependency: "monolog/monolog",
+		Dependency: testMonologDependency,
 		TopN:       0,
 	})
 	if err != nil {
@@ -110,7 +114,7 @@ $yaml = Yaml::parse("foo: bar");
 	if dep.Language != "php" {
 		t.Fatalf("expected php language, got %q", dep.Language)
 	}
-	if dep.Name != "monolog/monolog" {
+	if dep.Name != testMonologDependency {
 		t.Fatalf("unexpected dependency: %q", dep.Name)
 	}
 	if dep.TotalExportsCount == 0 {
@@ -148,7 +152,7 @@ $yaml = Yaml::parse("foo: bar");
 func TestPHPAdapterSkipsNestedComposerPackages(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, testComposerJSON), `{"require":{"symfony/yaml":"^6.0"}}`)
-	writeFile(t, filepath.Join(repo, "composer.lock"), `{
+	writeFile(t, filepath.Join(repo, testComposerLock), `{
   "packages": [
     {
       "name": "symfony/yaml",
@@ -187,23 +191,23 @@ Yaml::parse("foo: bar");
 
 func TestPHPAdapterParsesNamespaceReferencesWithoutUseStatement(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testComposerJSON), `{"require":{"monolog/monolog":"^3.0"}}`)
-	writeFile(t, filepath.Join(repo, "composer.lock"), `{
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{"%s":"^3.0"}}`, testMonologDependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), fmt.Sprintf(`{
   "packages": [
     {
-      "name": "monolog/monolog",
+      "name": "%s",
       "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
     }
   ]
 }
-`)
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
+`, testMonologDependency))
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
 $logger = new \Monolog\Logger("app");
 `)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
-		Dependency: "monolog/monolog",
+		Dependency: testMonologDependency,
 	})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
