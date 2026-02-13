@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,16 @@ func TestCanceledContextIsDone(t *testing.T) {
 	case <-ctx.Done():
 	default:
 		t.Fatal("expected canceled context")
+	}
+}
+
+func TestCanceledContext(t *testing.T) {
+	ctx := CanceledContext()
+	if ctx.Err() == nil {
+		t.Fatalf("expected canceled context")
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("unexpected context error: %v", ctx.Err())
 	}
 }
 
@@ -43,6 +54,60 @@ func TestWriteHelpers(t *testing.T) {
 		t.Fatalf("stat temp file: %v", err)
 	} else if got := info.Mode().Perm(); got != 0o644 {
 		t.Fatalf("expected 0644, got %o", got)
+	}
+}
+
+func TestFileHelpers(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a", "b.txt")
+	MustWriteFile(t, p, "hello")
+	content, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "hello" {
+		t.Fatalf("unexpected content: %q", content)
+	}
+
+	MustWriteFileMode(t, filepath.Join(dir, "mode.txt"), "x", 0o644)
+	info, err := os.Stat(filepath.Join(dir, "mode.txt"))
+	if err != nil {
+		t.Fatalf("stat mode file: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("unexpected mode: %o", info.Mode().Perm())
+	}
+}
+
+func TestWriteNumberedTextFilesAndFirstEntry(t *testing.T) {
+	dir := t.TempDir()
+	WriteNumberedTextFiles(t, dir, 3)
+	entry := MustFirstFileEntry(t, dir)
+	if entry == nil || entry.IsDir() {
+		t.Fatalf("expected first file entry")
+	}
+}
+
+func TestMustFirstFileEntrySkipsDirectories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	MustWriteFile(t, filepath.Join(dir, "z.txt"), "x")
+	entry := MustFirstFileEntry(t, dir)
+	if entry == nil || entry.IsDir() {
+		t.Fatalf("expected file entry after directory entries")
+	}
+}
+
+func TestWriteTempFile(t *testing.T) {
+	path := WriteTempFile(t, "tmp.txt", "abc")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read temp file: %v", err)
+	}
+	if string(content) != "abc" {
+		t.Fatalf("unexpected temp file content: %q", content)
 	}
 }
 
@@ -78,6 +143,36 @@ func TestChdirAndMustFirstFileEntry(t *testing.T) {
 	} else if cwd != originalWD {
 		t.Fatalf("expected cwd restored to %s, got %s", originalWD, cwd)
 	}
+}
+
+func TestChdir(t *testing.T) {
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	dir := t.TempDir()
+	Chdir(t, dir)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd after chdir: %v", err)
+	}
+	wdResolved, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatalf("eval wd symlink: %v", err)
+	}
+	dirResolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("eval dir symlink: %v", err)
+	}
+	if wdResolved != dirResolved {
+		t.Fatalf("expected wd %q, got %q", dirResolved, wdResolved)
+	}
+	t.Cleanup(func() {
+		wd2, err := os.Getwd()
+		if err == nil && wd2 != original {
+			_ = os.Chdir(original)
+		}
+	})
 }
 
 func TestFatalPathsViaHelperProcess(t *testing.T) {

@@ -336,6 +336,13 @@ type composerPackage struct {
 	Autoload composerAutoload `json:"autoload"`
 }
 
+type scanState struct {
+	visited              int
+	unresolvedNamespaces int
+	foundPHP             bool
+	skippedNestedPackage int
+}
+
 func scanRepo(ctx context.Context, repoPath string, composer composerData) (scanResult, error) {
 	result := scanResult{
 		DeclaredDependencies:       composer.DeclaredDependencies,
@@ -344,85 +351,125 @@ func scanRepo(ctx context.Context, repoPath string, composer composerData) (scan
 	}
 
 	resolver := newDependencyResolver(composer)
-	visited := 0
-	unresolvedNamespaces := 0
-	foundPHP := false
-	skippedNestedPackages := 0
+	state := scanState{}
 
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			if path != repoPath && hasComposerManifest(path) {
-				skippedNestedPackages++
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		visited++
-		if visited > maxScanFiles {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("scan stopped after %d files to keep analysis bounded", maxScanFiles))
-			return fs.SkipAll
-		}
-		if !strings.EqualFold(filepath.Ext(path), ".php") {
-			return nil
-		}
-		foundPHP = true
-
-		content, relPath, err := readPHPFile(repoPath, path)
-		if err != nil {
+		if err := contextErr(ctx); err != nil {
 			return err
 		}
-		imports, groupedByDep, unresolved := parseImports(content, relPath, resolver)
-		usage := shared.CountUsage(content, imports)
-		dynamic := hasDynamicPatterns(content)
-		if dynamic {
-			depsInFile := dependenciesInFile(imports)
-			for dep := range depsInFile {
-				result.DynamicUsageByDependency[dep]++
-			}
-		}
-		for dep, count := range groupedByDep {
-			result.GroupedImportsByDependency[dep] += count
-		}
-		unresolvedNamespaces += unresolved
-		result.Files = append(result.Files, fileScan{
-			Path:    relPath,
-			Imports: imports,
-			Usage:   usage,
-			Dynamic: dynamic,
-		})
-		return nil
+		return scanEntry(repoPath, path, entry, resolver, &result, &state)
 	})
 	if err != nil && err != fs.SkipAll {
 		return result, err
 	}
 
-	if !foundPHP {
+	appendScanWarnings(&result, state)
+
+	return result, nil
+}
+
+func contextErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func scanEntry(
+	repoPath string,
+	path string,
+	entry fs.DirEntry,
+	resolver dependencyResolver,
+	result *scanResult,
+	state *scanState,
+) error {
+	if entry.IsDir() {
+		return scanDirEntry(repoPath, path, entry, state)
+	}
+	return scanFileEntry(repoPath, path, resolver, result, state)
+}
+
+func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanState) error {
+	if shouldSkipDir(entry.Name()) {
+		return filepath.SkipDir
+	}
+	if path != repoPath && hasComposerManifest(path) {
+		state.skippedNestedPackage++
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func scanFileEntry(
+	repoPath string,
+	path string,
+	resolver dependencyResolver,
+	result *scanResult,
+	state *scanState,
+) error {
+	state.visited++
+	if state.visited > maxScanFiles {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("scan stopped after %d files to keep analysis bounded", maxScanFiles))
+		return fs.SkipAll
+	}
+	if !strings.EqualFold(filepath.Ext(path), ".php") {
+		return nil
+	}
+	state.foundPHP = true
+
+	content, relPath, err := readPHPFile(repoPath, path)
+	if err != nil {
+		return err
+	}
+	imports, groupedByDep, unresolved := parseImports(content, relPath, resolver)
+	usage := shared.CountUsage(content, imports)
+	dynamic := hasDynamicPatterns(content)
+
+	mergeDependencyCounts(result.GroupedImportsByDependency, groupedByDep)
+	if dynamic {
+		incrementDynamicUsage(result.DynamicUsageByDependency, imports)
+	}
+	state.unresolvedNamespaces += unresolved
+	result.Files = append(result.Files, fileScan{
+		Path:    relPath,
+		Imports: imports,
+		Usage:   usage,
+		Dynamic: dynamic,
+	})
+	return nil
+}
+
+func mergeDependencyCounts(dest map[string]int, src map[string]int) {
+	for dep, count := range src {
+		dest[dep] += count
+	}
+}
+
+func incrementDynamicUsage(dest map[string]int, imports []importBinding) {
+	for dep := range dependenciesInFile(imports) {
+		dest[dep]++
+	}
+}
+
+func appendScanWarnings(result *scanResult, state scanState) {
+	if !state.foundPHP {
 		result.Warnings = append(result.Warnings, "no PHP source files found for analysis")
 	}
 	if len(result.DeclaredDependencies) == 0 {
 		result.Warnings = append(result.Warnings, "no Composer dependencies discovered from composer.json")
 	}
-	if unresolvedNamespaces > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("unable to map %d PHP import namespace(s) to composer dependencies", unresolvedNamespaces))
+	if state.unresolvedNamespaces > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("unable to map %d PHP import namespace(s) to composer dependencies", state.unresolvedNamespaces))
 	}
-	if skippedNestedPackages > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d nested composer package directory(ies) while scanning", skippedNestedPackages))
+	if state.skippedNestedPackage > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d nested composer package directory(ies) while scanning", state.skippedNestedPackage))
 	}
 	if len(result.DynamicUsageByDependency) > 0 {
 		result.Warnings = append(result.Warnings, "dynamic loading/reflection patterns detected; dependency usage may be under-reported")
 	}
-
-	return result, nil
 }
 
 func dependenciesInFile(imports []importBinding) map[string]struct{} {
@@ -575,55 +622,90 @@ func parseNamespaceReferences(content []byte, filePath string, resolver dependen
 	unresolved := 0
 	seen := make(map[string]struct{})
 	for _, match := range matches {
-		if len(match) != 2 {
+		binding, unresolvedInc, ok := parseNamespaceReference(text, match, filePath, resolver, seen)
+		unresolved += unresolvedInc
+		if !ok {
 			continue
 		}
-		start := match[0]
-		end := match[1]
-		rawModule := strings.TrimSpace(text[start:end])
-		module := normalizeNamespace(strings.TrimPrefix(rawModule, `\`))
-		if module == "" {
-			continue
-		}
-		line := lineNumberAt(text, start)
-		lineText := lineTextAt(text, line)
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(lineText)), "use ") {
-			continue
-		}
-		local := lastNamespaceSegment(module)
-		if local == "" {
-			continue
-		}
-
-		dependency, resolved := resolver.dependencyFromModule(module)
-		if dependency == "" {
-			if resolved {
-				unresolved++
-			}
-			continue
-		}
-
-		key := module + ":" + fmt.Sprint(line)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-
-		imports = append(imports, importBinding{
-			Dependency: dependency,
-			Module:     module,
-			Name:       local,
-			Local:      local,
-			// Mark direct namespace references as always-used imports because they are explicit usage sites.
-			Wildcard: true,
-			Location: report.Location{
-				File:   filePath,
-				Line:   line,
-				Column: 1,
-			},
-		})
+		imports = append(imports, binding)
 	}
 	return imports, unresolved
+}
+
+func parseNamespaceReference(
+	text string,
+	match []int,
+	filePath string,
+	resolver dependencyResolver,
+	seen map[string]struct{},
+) (importBinding, int, bool) {
+	module, line, local, ok := parseNamespaceReferenceMetadata(text, match)
+	if !ok {
+		return importBinding{}, 0, false
+	}
+	if isUseLine(text, line) {
+		return importBinding{}, 0, false
+	}
+	dependency, resolved := resolver.dependencyFromModule(module)
+	if dependency == "" {
+		if resolved {
+			return importBinding{}, 1, false
+		}
+		return importBinding{}, 0, false
+	}
+	if isDuplicateNamespaceReference(seen, module, line) {
+		return importBinding{}, 0, false
+	}
+	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true
+}
+
+func parseNamespaceReferenceMetadata(text string, match []int) (string, int, string, bool) {
+	if len(match) != 2 {
+		return "", 0, "", false
+	}
+	start := match[0]
+	end := match[1]
+	rawModule := strings.TrimSpace(text[start:end])
+	module := normalizeNamespace(strings.TrimPrefix(rawModule, `\`))
+	if module == "" {
+		return "", 0, "", false
+	}
+	line := lineNumberAt(text, start)
+	local := lastNamespaceSegment(module)
+	if local == "" {
+		return "", 0, "", false
+	}
+	return module, line, local, true
+}
+
+func isUseLine(text string, line int) bool {
+	lineText := lineTextAt(text, line)
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(lineText)), "use ")
+}
+
+func isDuplicateNamespaceReference(seen map[string]struct{}, module string, line int) bool {
+	key := module + ":" + fmt.Sprint(line)
+	if _, ok := seen[key]; ok {
+		return true
+	}
+	seen[key] = struct{}{}
+	return false
+}
+
+func namespaceImportBinding(filePath string, line int, local string, module string, dependency string) importBinding {
+	return importBinding{
+		Dependency: dependency,
+		Module:     module,
+		Name:       local,
+		Local:      local,
+		// Mark direct namespace references as always-used imports because they are explicit usage sites.
+		Wildcard: true,
+		Location: report.Location{
+			File:   filePath,
+			Line:   line,
+			Column: 1,
+		},
+	}
 }
 
 func lineTextAt(text string, targetLine int) string {
@@ -804,17 +886,16 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 }
 
 func readComposerManifest(repoPath string) (composerManifest, bool, error) {
-	path := filepath.Join(repoPath, composerJSONName)
-	bytes, err := safeio.ReadFileUnder(repoPath, path)
+	bytes, found, err := readOptionalRepoFile(repoPath, composerJSONName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return composerManifest{}, false, nil
-		}
 		return composerManifest{}, false, err
 	}
+	if !found {
+		return composerManifest{}, false, nil
+	}
 	manifest := composerManifest{}
-	if err := json.Unmarshal(bytes, &manifest); err != nil {
-		return composerManifest{}, false, fmt.Errorf("parse composer.json: %w", err)
+	if err := unmarshalRepoJSON(composerJSONName, bytes, &manifest); err != nil {
+		return composerManifest{}, false, err
 	}
 	return manifest, true, nil
 }
@@ -853,17 +934,16 @@ func normalizeComposerDependency(name string) (string, bool) {
 }
 
 func loadComposerLockMappings(repoPath string, data *composerData) error {
-	path := filepath.Join(repoPath, composerLockName)
-	bytes, err := safeio.ReadFileUnder(repoPath, path)
+	bytes, found, err := readOptionalRepoFile(repoPath, composerLockName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
+	if !found {
+		return nil
+	}
 	lock := composerLock{}
-	if err := json.Unmarshal(bytes, &lock); err != nil {
-		return fmt.Errorf("parse composer.lock: %w", err)
+	if err := unmarshalRepoJSON(composerLockName, bytes, &lock); err != nil {
+		return err
 	}
 	for _, pkg := range append(lock.Packages, lock.PackagesDev...) {
 		dep := normalizeDependencyID(pkg.Name)
@@ -877,6 +957,25 @@ func loadComposerLockMappings(repoPath string, data *composerData) error {
 			}
 			data.NamespaceToDep[normalized] = dep
 		}
+	}
+	return nil
+}
+
+func readOptionalRepoFile(repoPath string, filename string) ([]byte, bool, error) {
+	path := filepath.Join(repoPath, filename)
+	bytes, err := safeio.ReadFileUnder(repoPath, path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return bytes, true, nil
+}
+
+func unmarshalRepoJSON(filename string, bytes []byte, dest any) error {
+	if err := json.Unmarshal(bytes, dest); err != nil {
+		return fmt.Errorf("parse %s: %w", filename, err)
 	}
 	return nil
 }

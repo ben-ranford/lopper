@@ -12,17 +12,20 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const testComposerJSON = "composer.json"
+const testIndexPHP = "index.php"
+
 func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "composer.json"), `{
+	writeFile(t, filepath.Join(repo, testComposerJSON), `{
   "name": "acme/app",
   "require": {
     "monolog/monolog": "^3.0"
   }
 }
 `)
-	writeFile(t, filepath.Join(repo, "src", "index.php"), "<?php\n")
-	writeFile(t, filepath.Join(repo, "packages", "plugin", "composer.json"), `{"name":"acme/plugin"}`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), "<?php\n")
+	writeFile(t, filepath.Join(repo, "packages", "plugin", testComposerJSON), `{"name":"acme/plugin"}`)
 
 	adapter := NewAdapter()
 	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
@@ -42,7 +45,7 @@ func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 
 func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "composer.json"), `{
+	writeFile(t, filepath.Join(repo, testComposerJSON), `{
   "name": "acme/app",
   "require": {
     "php": "^8.2",
@@ -79,7 +82,7 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
   ]
 }
 `)
-	writeFile(t, filepath.Join(repo, "src", "index.php"), `<?php
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
 use Monolog\Logger;
 use Monolog\{Handler\StreamHandler, Formatter\LineFormatter as LineFmt};
 use Symfony\Component\Yaml\Yaml;
@@ -144,7 +147,7 @@ $yaml = Yaml::parse("foo: bar");
 
 func TestPHPAdapterSkipsNestedComposerPackages(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "composer.json"), `{"require":{"symfony/yaml":"^6.0"}}`)
+	writeFile(t, filepath.Join(repo, testComposerJSON), `{"require":{"symfony/yaml":"^6.0"}}`)
 	writeFile(t, filepath.Join(repo, "composer.lock"), `{
   "packages": [
     {
@@ -154,11 +157,11 @@ func TestPHPAdapterSkipsNestedComposerPackages(t *testing.T) {
   ]
 }
 `)
-	writeFile(t, filepath.Join(repo, "src", "index.php"), `<?php
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
 use Symfony\Component\Yaml\Yaml;
 Yaml::parse("foo: bar");
 `)
-	writeFile(t, filepath.Join(repo, "packages", "nested", "composer.json"), `{"name":"acme/nested"}`)
+	writeFile(t, filepath.Join(repo, "packages", "nested", testComposerJSON), `{"name":"acme/nested"}`)
 	writeFile(t, filepath.Join(repo, "packages", "nested", "src", "nested.php"), `<?php
 use Symfony\Component\Yaml\Yaml;
 Yaml::parse("foo: bar");
@@ -184,7 +187,7 @@ Yaml::parse("foo: bar");
 
 func TestPHPAdapterParsesNamespaceReferencesWithoutUseStatement(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "composer.json"), `{"require":{"monolog/monolog":"^3.0"}}`)
+	writeFile(t, filepath.Join(repo, testComposerJSON), `{"require":{"monolog/monolog":"^3.0"}}`)
 	writeFile(t, filepath.Join(repo, "composer.lock"), `{
   "packages": [
     {
@@ -194,7 +197,7 @@ func TestPHPAdapterParsesNamespaceReferencesWithoutUseStatement(t *testing.T) {
   ]
 }
 `)
-	writeFile(t, filepath.Join(repo, "src", "index.php"), `<?php
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
 $logger = new \Monolog\Logger("app");
 `)
 
