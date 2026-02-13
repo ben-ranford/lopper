@@ -55,6 +55,22 @@ ci: format-check lint security test build
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)
+	@version="$$(go env GOVERSION 2>/dev/null || go version | awk '{print $$3}')"; \
+	version="$${version#go}"; \
+	major="$${version%%.*}"; \
+	rest="$${version#*.}"; \
+	minor="$${rest%%.*}"; \
+	major="$${major%%[^0-9]*}"; \
+	minor="$${minor%%[^0-9]*}"; \
+	if [ -z "$$major" ] || [ -z "$$minor" ]; then \
+		echo "Unable to parse Go version: $$version"; \
+		exit 1; \
+	fi; \
+	if [ "$$major" -lt 1 ] || { [ "$$major" -eq 1 ] && [ "$$minor" -lt 26 ]; }; then \
+		echo "Go 1.26.x or newer is required (found $$version)."; \
+		echo "Install/update Go from https://go.dev/dl/ or use your package manager's newest Go release."; \
+		exit 1; \
+	fi
 	@command -v $(ZIG) >/dev/null 2>&1 || (echo "zig not found in PATH (required for cross-CGO builds)"; exit 1)
 
 toolchain-install:
@@ -79,7 +95,7 @@ toolchain-install-linux:
 		$$SUDO dnf install -y golang zig; \
 	elif command -v pacman >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO pacman -Sy --noconfirm go zig; \
+		$$SUDO pacman -Syu --noconfirm --needed go zig; \
 	else \
 		echo "No supported package manager found (need apt-get, dnf, or pacman)"; \
 		exit 1; \
@@ -89,7 +105,7 @@ tools-install:
 	$(GO_CMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(GO_CMD) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 
-setup: toolchain-install tools-install
+setup: toolchain-install
 	$(GO_CMD) mod download
 	$(MAKE) toolchain-check
 	@echo "Toolchain ready. Use: make test && make build"

@@ -39,7 +39,7 @@ jobs:
 - `make ci`: `format-check + lint + security + test + build`
 - `make toolchain-check`: verify required cross toolchain binaries
 - `make toolchain-install`: install required OS toolchains (`go`, `zig`) on macOS/Linux
-- `make setup`: bootstrap toolchain + local Go tooling + module download
+- `make setup`: bootstrap toolchain + module download + readiness checks
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
 
 Coverage artifacts:
