@@ -10,6 +10,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/golang"
 	"github.com/ben-ranford/lopper/internal/lang/js"
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
+	"github.com/ben-ranford/lopper/internal/lang/php"
 	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -38,6 +39,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(golang.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(php.NewAdapter())
 	}
 
 	return &Service{

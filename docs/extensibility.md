@@ -9,6 +9,7 @@ The core contracts are in `internal/language`.
 - `python` (Python)
 - `jvm` (Java/Kotlin)
 - `go` (Go)
+- `php` (PHP)
 
 ## Adapter contract
 
