@@ -127,7 +127,7 @@ func TestParsingHelperBranches(t *testing.T) {
 	if !shouldSkipDir("node_modules") || shouldSkipDir("src") {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
-	if !isGeneratedSource("Foo.Designer.cs") || isGeneratedSource("Program.cs") {
+	if !isGeneratedSource("Foo.Designer.cs") || isGeneratedSource(programSourceName) {
 		t.Fatalf("unexpected generated source detection behavior")
 	}
 	if got := stripLineComment(" using Foo.Bar; // comment "); got != "using Foo.Bar;" {
@@ -139,7 +139,7 @@ func TestParsingHelperBranches(t *testing.T) {
 }
 
 func TestParseImportsAndBuildFunctionsBranches(t *testing.T) {
-	mapper := newDependencyMapper([]string{"acme.bar", "acme.baz"})
+	mapper := newDependencyMapper([]string{acmeBarName, "acme.baz"})
 	content := []byte(`
 using Logger = Acme.Foo;
 using Acme.Foo;
@@ -150,7 +150,7 @@ open Acme.Foo;
 	if len(imports) < 2 {
 		t.Fatalf("expected imports parsed, got %#v", imports)
 	}
-	if meta.ambiguousByDependency["acme.bar"] == 0 {
+	if meta.ambiguousByDependency[acmeBarName] == 0 {
 		t.Fatalf("expected ambiguous mapping count for acme.bar")
 	}
 
@@ -170,7 +170,7 @@ open Acme.Foo;
 	scan := scanResult{
 		Files: []fileScan{
 			{
-				Path: "Program.cs",
+				Path: programSourceName,
 				Imports: []importBinding{
 					{
 						Dependency: acmeLoggingName,

@@ -331,8 +331,13 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	}
 	result.DeclaredDependencies = declared
 
-	scanner := newRepoScanner(ctx, repoPath, newDependencyMapper(declared), &result)
-	err = filepath.WalkDir(repoPath, scanner.walk)
+	scanner := newRepoScanner(repoPath, newDependencyMapper(declared), &result)
+	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return scanner.walk(path, entry, walkErr)
+	})
 	if err != nil && err != fs.SkipAll {
 		return result, err
 	}
@@ -437,16 +442,14 @@ func parseImports(content []byte, relativePath string, mapper dependencyMapper) 
 }
 
 type repoScanner struct {
-	ctx                context.Context
 	repoPath           string
 	mapper             dependencyMapper
 	result             *scanResult
 	visitedSourceFiles int
 }
 
-func newRepoScanner(ctx context.Context, repoPath string, mapper dependencyMapper, result *scanResult) repoScanner {
+func newRepoScanner(repoPath string, mapper dependencyMapper, result *scanResult) repoScanner {
 	return repoScanner{
-		ctx:      ctx,
 		repoPath: repoPath,
 		mapper:   mapper,
 		result:   result,
@@ -456,9 +459,6 @@ func newRepoScanner(ctx context.Context, repoPath string, mapper dependencyMappe
 func (s *repoScanner) walk(path string, entry fs.DirEntry, walkErr error) error {
 	if walkErr != nil {
 		return walkErr
-	}
-	if s.ctx != nil && s.ctx.Err() != nil {
-		return s.ctx.Err()
 	}
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
