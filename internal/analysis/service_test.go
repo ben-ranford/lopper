@@ -110,6 +110,45 @@ func TestLowConfidenceWarningThreshold(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseCSharpAlias(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Api.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), `
+using JsonConvert = Newtonsoft.Json.JsonConvert;
+
+public class Program {
+  public static void Main() {
+    _ = JsonConvert.SerializeObject(new { Name = "demo" });
+  }
+}
+`)
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "newtonsoft.json",
+		Language:   "csharp",
+	})
+	if err != nil {
+		t.Fatalf("analyse csharp alias: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Language != "dotnet" {
+		t.Fatalf("expected language dotnet, got %q", dep.Language)
+	}
+	if dep.UsedExportsCount == 0 {
+		t.Fatalf("expected used exports > 0")
+	}
+}
+
 type stubAdapter struct {
 	id string
 }

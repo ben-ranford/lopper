@@ -25,6 +25,7 @@ recommendations across supported languages.
 - `php` (Composer/PSR-4 import analysis)
 - `rust` (Cargo crate import analysis)
 - `dotnet` (C#/.NET project and namespace analysis)
+  aliases: `csharp`, `cs`, `fsharp`, `fs`
 
 Language selection modes:
 
