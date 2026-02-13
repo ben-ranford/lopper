@@ -34,6 +34,28 @@ const (
 	maxScanFiles        = 4096
 )
 
+type detectionWeights struct {
+	central  int
+	project  int
+	solution int
+	source   int
+}
+
+var (
+	rootDetectionWeights = detectionWeights{central: 45, project: 55, solution: 50}
+	walkDetectionWeights = detectionWeights{central: 10, project: 12, solution: 8, source: 2}
+)
+
+type fileSignal int
+
+const (
+	fileSignalNone fileSignal = iota
+	fileSignalCentral
+	fileSignalProject
+	fileSignalSolution
+	fileSignalSource
+)
+
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -93,51 +115,66 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		lower := strings.ToLower(name)
-		switch {
-		case strings.EqualFold(name, centralPackagesFile):
-			detection.Matched = true
-			detection.Confidence += 45
-			roots[repoPath] = struct{}{}
-		case isProjectManifestName(lower):
-			detection.Matched = true
-			detection.Confidence += 55
-			roots[repoPath] = struct{}{}
-		case isSolutionFileName(lower):
-			detection.Matched = true
-			detection.Confidence += 50
-			roots[repoPath] = struct{}{}
-			if err := addSolutionRoots(repoPath, filepath.Join(repoPath, name), roots); err != nil {
-				return err
-			}
+		path := filepath.Join(repoPath, name)
+		if err := applyDetectionSignal(repoPath, path, name, repoPath, detection, roots, rootDetectionWeights); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}) error {
-	lower := strings.ToLower(name)
+	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
+}
+
+func applyDetectionSignal(
+	repoPath, path, name, root string,
+	detection *language.Detection,
+	roots map[string]struct{},
+	weights detectionWeights,
+) error {
+	signal := signalForName(name)
 	switch {
-	case lower == strings.ToLower(centralPackagesFile):
-		detection.Matched = true
-		detection.Confidence += 10
-		roots[filepath.Dir(path)] = struct{}{}
-	case isProjectManifestName(lower):
-		detection.Matched = true
-		detection.Confidence += 12
-		roots[filepath.Dir(path)] = struct{}{}
-	case isSolutionFileName(lower):
-		detection.Matched = true
-		detection.Confidence += 8
-		roots[filepath.Dir(path)] = struct{}{}
+	case signal == fileSignalCentral:
+		markDetection(detection, roots, weights.central, root)
+	case signal == fileSignalProject:
+		markDetection(detection, roots, weights.project, root)
+	case signal == fileSignalSolution:
+		markDetection(detection, roots, weights.solution, root)
 		if err := addSolutionRoots(repoPath, path, roots); err != nil {
 			return err
 		}
-	case isSourceFileName(lower):
-		detection.Matched = true
-		detection.Confidence += 2
+	case signal == fileSignalSource:
+		markDetection(detection, roots, weights.source, "")
 	}
 	return nil
+}
+
+func signalForName(name string) fileSignal {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.EqualFold(name, centralPackagesFile):
+		return fileSignalCentral
+	case isProjectManifestName(lower):
+		return fileSignalProject
+	case isSolutionFileName(lower):
+		return fileSignalSolution
+	case isSourceFileName(lower):
+		return fileSignalSource
+	default:
+		return fileSignalNone
+	}
+}
+
+func markDetection(detection *language.Detection, roots map[string]struct{}, confidence int, root string) {
+	if confidence <= 0 {
+		return
+	}
+	detection.Matched = true
+	detection.Confidence += confidence
+	if root != "" {
+		roots[root] = struct{}{}
+	}
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
