@@ -27,6 +27,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "index.php"), "<?php\nuse Monolog\\Logger;\n$logger = new Logger(\"app\");\n")
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nanyhow = \"1.0\"\n")
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
+	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
+	writeFile(t, filepath.Join(repo, "Program.cs"), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -44,10 +46,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") {
-		t.Fatalf("expected js-ts, python, jvm, go, php, and rust dependencies, got %#v", languages)
+	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
+		t.Fatalf("expected js-ts, python, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
 	}
-	if len(reportData.LanguageBreakdown) < 6 {
+	if len(reportData.LanguageBreakdown) < 7 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 }

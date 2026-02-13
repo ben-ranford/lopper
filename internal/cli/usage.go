@@ -2,9 +2,9 @@ package cli
 
 const usage = `Usage:
   lopper [tui]
-  lopper tui [--repo PATH] [--language auto|all|js-ts|python|jvm|go|php|rust] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  lopper analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm|go|php|rust] [--baseline PATH] [--runtime-trace PATH] [--config PATH]
-  lopper analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm|go|php|rust] [--baseline PATH] [--runtime-trace PATH] [--config PATH] [--fail-on-increase PERCENT]
+  lopper tui [--repo PATH] [--language auto|all|js-ts|python|jvm|go|php|rust|dotnet] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
+  lopper analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm|go|php|rust|dotnet] [--baseline PATH] [--runtime-trace PATH] [--config PATH]
+  lopper analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|jvm|go|php|rust|dotnet] [--baseline PATH] [--runtime-trace PATH] [--config PATH] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)
