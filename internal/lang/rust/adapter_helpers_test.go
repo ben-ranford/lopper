@@ -16,10 +16,26 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
+const (
+	cargoManifestFile    = "Cargo.toml"
+	cargoLockFile        = "Cargo.lock"
+	workspaceSection     = "[workspace]"
+	demoPackageManifest  = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"
+	rustLibFile          = "lib.rs"
+	srcMainRS            = "src/main.rs"
+	srcLibRS             = "src/lib.rs"
+	rustRunFn            = "pub fn run() {}\n"
+	cargoLockVersion3    = "version = 3\n"
+	serdeJSONDep         = "serde-json"
+	unknownCrateID       = "unknown-crate"
+	dirWithManifest      = "dir-with-manifest"
+	workspaceMembersGlob = "crates/*"
+)
+
 func TestAdapterIdentityAndDetect(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
-	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "pub fn run() {}\n")
+	writeFile(t, filepath.Join(repo, cargoManifestFile), demoPackageManifest)
+	writeFile(t, filepath.Join(repo, "src", rustLibFile), rustRunFn)
 
 	adapter := NewAdapter()
 	if adapter.ID() != "rust" {
@@ -42,7 +58,7 @@ func TestManifestParsingHelpers(t *testing.T) {
 		"[package]",
 		`name = "demo"`,
 		"",
-		"[workspace]",
+		workspaceSection,
 		`members = [`,
 		`  "crates/a",`,
 		`  "crates/b",`,
@@ -50,7 +66,7 @@ func TestManifestParsingHelpers(t *testing.T) {
 		"]",
 		"",
 		"[dependencies]",
-		`serde_json = { package = "serde-json", version = "1.0" }`,
+		fmt.Sprintf(`serde_json = { package = "%s", version = "1.0" }`, serdeJSONDep),
 		`local_dep = { path = "./crates/local_dep" }`,
 		"",
 		"[target.'cfg(unix)'.dependencies]",
@@ -67,8 +83,8 @@ func TestManifestParsingHelpers(t *testing.T) {
 	}
 
 	deps := parseCargoDependencies(manifest)
-	if deps["serde-json"].Canonical != "serde-json" {
-		t.Fatalf("expected canonical serde-json mapping, got %#v", deps["serde-json"])
+	if deps[serdeJSONDep].Canonical != serdeJSONDep {
+		t.Fatalf("expected canonical serde-json mapping, got %#v", deps[serdeJSONDep])
 	}
 	if !deps["local-dep"].LocalPath {
 		t.Fatalf("expected local path dependency handling, got %#v", deps["local-dep"])
@@ -85,8 +101,8 @@ func TestManifestParsingHelpers(t *testing.T) {
 		t.Fatalf("expected invalid assignment")
 	}
 
-	fields := parseInlineFields(`{ package = "serde-json", path = "./x" }`)
-	if fields["package"] != "serde-json" || fields["path"] != "./x" {
+	fields := parseInlineFields(fmt.Sprintf(`{ package = "%s", path = "./x" }`, serdeJSONDep))
+	if fields["package"] != serdeJSONDep || fields["path"] != "./x" {
 		t.Fatalf("unexpected inline fields: %#v", fields)
 	}
 
@@ -100,18 +116,18 @@ func TestManifestParsingHelpers(t *testing.T) {
 
 func TestManifestDiscoveryAndWorkspaceResolution(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), strings.Join([]string{
-		"[workspace]",
+	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join([]string{
+		workspaceSection,
 		`members = ["crates/*", "missing/*"]`,
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "crates", "a", "Cargo.toml"), "[package]\nname = \"a\"\nversion = \"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname = \"a\"\nversion = \"0.1.0\"\n")
 
 	paths, warnings, err := discoverManifestPaths(repo)
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
 	}
-	if len(paths) != 1 || !strings.Contains(paths[0], filepath.Join("crates", "a", "Cargo.toml")) {
+	if len(paths) != 1 || !strings.Contains(paths[0], filepath.Join("crates", "a", cargoManifestFile)) {
 		t.Fatalf("unexpected workspace manifest paths: %#v", paths)
 	}
 	if len(warnings) == 0 {
@@ -136,7 +152,7 @@ func TestManifestDiscoveryAndWorkspaceResolution(t *testing.T) {
 func TestManifestDiscoveryCapWarning(t *testing.T) {
 	repo := t.TempDir()
 	for i := range maxManifestCount + 1 {
-		writeFile(t, filepath.Join(repo, "crates", fmt.Sprintf("crate-%03d", i), "Cargo.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n")
+		writeFile(t, filepath.Join(repo, "crates", fmt.Sprintf("crate-%03d", i), cargoManifestFile), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n")
 	}
 	_, warnings, err := discoverManifestPaths(repo)
 	if err != nil {
@@ -182,7 +198,7 @@ func TestUseClauseAndImportHelpers(t *testing.T) {
 
 func TestResolveDependencyBranches(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), "pub fn run() {}\n")
+	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), rustRunFn)
 	lookup := map[string]dependencyInfo{
 		"serde": {Canonical: "serde"},
 		"local": {Canonical: "local", LocalPath: true},
@@ -200,7 +216,7 @@ func TestResolveDependencyBranches(t *testing.T) {
 		{path: "localmod::x", want: ""},
 		{path: "serde::de::Deserialize", want: "serde"},
 		{path: "local::x", want: ""},
-		{path: "unknown_crate::x", want: "unknown-crate"},
+		{path: "unknown_crate::x", want: unknownCrateID},
 	}
 	for _, tc := range cases {
 		got := resolveDependency(tc.path, repo, lookup, scan)
@@ -208,7 +224,7 @@ func TestResolveDependencyBranches(t *testing.T) {
 			t.Fatalf("resolveDependency(%q) = %q, want %q", tc.path, got, tc.want)
 		}
 	}
-	if scan.UnresolvedImports["unknown-crate"] != 1 {
+	if scan.UnresolvedImports[unknownCrateID] != 1 {
 		t.Fatalf("expected unresolved count, got %#v", scan.UnresolvedImports)
 	}
 }
@@ -217,7 +233,7 @@ func TestBuildDependencyReportBranches(t *testing.T) {
 	scan := scanResult{
 		Files: []fileScan{
 			{
-				Path: "src/main.rs",
+				Path: srcMainRS,
 				Imports: []importBinding{
 					{
 						Dependency: "serde",
@@ -225,14 +241,14 @@ func TestBuildDependencyReportBranches(t *testing.T) {
 						Name:       "*",
 						Local:      "serde",
 						Wildcard:   true,
-						Location:   report.Location{File: "src/main.rs", Line: 1, Column: 1},
+						Location:   report.Location{File: srcMainRS, Line: 1, Column: 1},
 					},
 					{
 						Dependency: "serde",
 						Module:     "serde",
 						Name:       "Deserialize",
 						Local:      "Deserialize",
-						Location:   report.Location{File: "src/main.rs", Line: 2, Column: 1},
+						Location:   report.Location{File: srcMainRS, Line: 2, Column: 1},
 					},
 				},
 				Usage: map[string]int{"serde": 1},
@@ -256,14 +272,14 @@ func TestBuildDependencyReportBranches(t *testing.T) {
 	removeScan := scanResult{
 		Files: []fileScan{
 			{
-				Path: "src/lib.rs",
+				Path: srcLibRS,
 				Imports: []importBinding{
 					{
 						Dependency: "anyhow",
 						Module:     "anyhow",
 						Name:       "Result",
 						Local:      "Result",
-						Location:   report.Location{File: "src/lib.rs", Line: 1, Column: 1},
+						Location:   report.Location{File: srcLibRS, Line: 1, Column: 1},
 					},
 				},
 				Usage: map[string]int{},
@@ -278,7 +294,7 @@ func TestBuildDependencyReportBranches(t *testing.T) {
 }
 
 func TestLowerLevelHelpers(t *testing.T) {
-	if normalizeDependencyID("Serde_JSON ") != "serde-json" {
+	if normalizeDependencyID("Serde_JSON ") != serdeJSONDep {
 		t.Fatalf("expected normalized dependency id")
 	}
 	if !shouldSkipDir("vendor") || shouldSkipDir("src") {
@@ -336,7 +352,7 @@ func TestSummarizeUnresolvedLimitAndSort(t *testing.T) {
 
 func TestImportParsingAndResolveWarnings(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), "pub fn run() {}\n")
+	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), rustRunFn)
 	lookup := map[string]dependencyInfo{
 		"serde": {Canonical: "serde"},
 	}
@@ -350,32 +366,42 @@ func TestImportParsingAndResolveWarnings(t *testing.T) {
 		"",
 	}, "\n")
 
-	extern := parseExternCrateImports(content, "src/lib.rs", repo, lookup, scan)
+	extern := parseExternCrateImports(content, srcLibRS, repo, lookup, scan)
 	if len(extern) != 1 || extern[0].Dependency != "serde" {
 		t.Fatalf("expected extern crate parse for serde, got %#v", extern)
 	}
 
-	imports := parseRustImports(content, "src/lib.rs", repo, lookup, scan)
+	imports := parseRustImports(content, srcLibRS, repo, lookup, scan)
 	if len(imports) < 2 {
 		t.Fatalf("expected parsed rust imports, got %#v", imports)
 	}
-	if scan.UnresolvedImports["unknown-crate"] == 0 {
+	if scan.UnresolvedImports[unknownCrateID] == 0 {
 		t.Fatalf("expected unresolved alias tracking, got %#v", scan.UnresolvedImports)
 	}
 }
 
 func TestDetectAndScanBranches(t *testing.T) {
+	repo := setupDetectAndScanRepo(t)
+	detection, roots := assertDetectAndScanRootSignals(t, repo)
+	assertDetectAndScanWalkBranches(t, repo, &detection, roots)
+	assertDetectAndScanResults(t, repo)
+}
+
+func setupDetectAndScanRepo(t *testing.T) string {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), strings.Join([]string{
-		"[workspace]",
-		`members = ["crates/*"]`,
+	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join([]string{
+		workspaceSection,
+		fmt.Sprintf(`members = ["%s"]`, workspaceMembersGlob),
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "Cargo.lock"), "version = 3\n")
-	writeFile(t, filepath.Join(repo, "crates", "a", "Cargo.toml"), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n")
-	writeFile(t, filepath.Join(repo, "crates", "a", "src", "lib.rs"), "use anyhow::Result;\nmy_macro!();\n")
+	writeFile(t, filepath.Join(repo, cargoLockFile), cargoLockVersion3)
+	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, "crates", "a", "src", rustLibFile), "use anyhow::Result;\nmy_macro!();\n")
 	writeFile(t, filepath.Join(repo, "target", "ignored.rs"), "use ignored::X;\n")
+	return repo
+}
 
+func assertDetectAndScanRootSignals(t *testing.T, repo string) (language.Detection, map[string]struct{}) {
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
 	workspaceOnly, err := applyRustRootSignals(repo, &detection, roots)
@@ -397,23 +423,13 @@ func TestDetectAndScanBranches(t *testing.T) {
 	if !dd.Matched || len(dd.Roots) == 0 {
 		t.Fatalf("expected detection roots, got %#v", dd)
 	}
+	return detection, roots
+}
 
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	var targetDirEntry os.DirEntry
-	for _, entry := range entries {
-		if entry.Name() == "target" {
-			targetDirEntry = entry
-			break
-		}
-	}
-	if targetDirEntry == nil {
-		t.Fatalf("expected target dir entry")
-	}
+func assertDetectAndScanWalkBranches(t *testing.T, repo string, detection *language.Detection, roots map[string]struct{}) {
+	targetDirEntry := mustFindDirEntryByName(t, repo, "target")
 	visited := 0
-	if got := walkRustDetectionEntry(filepath.Join(repo, "target"), targetDirEntry, repo, false, roots, &detection, &visited); got != filepath.SkipDir {
+	if got := walkRustDetectionEntry(filepath.Join(repo, "target"), targetDirEntry, repo, false, roots, detection, &visited); got != filepath.SkipDir {
 		t.Fatalf("expected skip dir for target, got %v", got)
 	}
 
@@ -422,11 +438,13 @@ func TestDetectAndScanBranches(t *testing.T) {
 		t.Fatalf("readdir src: %v", err)
 	}
 	visited = maxDetectionFiles
-	if got := walkRustDetectionEntry(filepath.Join(repo, "crates", "a", "src", "lib.rs"), fileEntries[0], repo, false, roots, &detection, &visited); got != fs.SkipAll {
+	if got := walkRustDetectionEntry(filepath.Join(repo, "crates", "a", "src", rustLibFile), fileEntries[0], repo, false, roots, detection, &visited); got != fs.SkipAll {
 		t.Fatalf("expected scan bound skip all, got %v", got)
 	}
+}
 
-	scan, err := scanRepo(context.Background(), repo, []string{filepath.Join(repo, "crates", "a", "Cargo.toml")}, map[string]dependencyInfo{"anyhow": {Canonical: "anyhow"}}, map[string][]string{})
+func assertDetectAndScanResults(t *testing.T, repo string) {
+	scan, err := scanRepo(context.Background(), repo, []string{filepath.Join(repo, "crates", "a", cargoManifestFile)}, map[string]dependencyInfo{"anyhow": {Canonical: "anyhow"}}, map[string][]string{})
 	if err != nil {
 		t.Fatalf("scan repo: %v", err)
 	}
@@ -439,17 +457,32 @@ func TestDetectAndScanBranches(t *testing.T) {
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := scanRepo(cancelCtx, repo, []string{filepath.Join(repo, "crates", "a", "Cargo.toml")}, map[string]dependencyInfo{}, map[string][]string{}); err == nil {
+	if _, err := scanRepo(cancelCtx, repo, []string{filepath.Join(repo, "crates", "a", cargoManifestFile)}, map[string]dependencyInfo{}, map[string][]string{}); err == nil {
 		t.Fatalf("expected canceled context error")
 	}
 }
 
+func mustFindDirEntryByName(t *testing.T, dir, name string) os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return entry
+		}
+	}
+	t.Fatalf("expected dir entry %q in %s", name, dir)
+	return nil
+}
+
 func TestScanRustSourceFileLargeAndManifestDataAmbiguity(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[workspace]\nmembers = [\"crates/*\"]\n")
-	writeFile(t, filepath.Join(repo, "crates", "a", "Cargo.toml"), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { package = \"crate-a\", version = \"1\" }\n")
-	writeFile(t, filepath.Join(repo, "crates", "b", "Cargo.toml"), "[package]\nname=\"b\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { package = \"crate-b\", version = \"1\" }\n")
-	writeFile(t, filepath.Join(repo, "crates", "a", "src", "lib.rs"), "use foo::X;\n")
+	writeFile(t, filepath.Join(repo, cargoManifestFile), fmt.Sprintf("%s\nmembers = [\"%s\"]\n", workspaceSection, workspaceMembersGlob))
+	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { package = \"crate-a\", version = \"1\" }\n")
+	writeFile(t, filepath.Join(repo, "crates", "b", cargoManifestFile), "[package]\nname=\"b\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { package = \"crate-b\", version = \"1\" }\n")
+	writeFile(t, filepath.Join(repo, "crates", "a", "src", rustLibFile), "use foo::X;\n")
 
 	largePath := filepath.Join(repo, "crates", "a", "src", "huge.rs")
 	if err := os.MkdirAll(filepath.Dir(largePath), 0o750); err != nil {
@@ -481,7 +514,7 @@ func TestScanRustSourceFileLargeAndManifestDataAmbiguity(t *testing.T) {
 		t.Fatalf("expected parsed lookup and renamed aliases, got lookup=%#v renamed=%#v", lookup, renamed)
 	}
 
-	if _, _, err := parseCargoManifest(filepath.Join(repo, "missing", "Cargo.toml"), repo); err == nil {
+	if _, _, err := parseCargoManifest(filepath.Join(repo, "missing", cargoManifestFile), repo); err == nil {
 		t.Fatalf("expected parseCargoManifest missing file error")
 	}
 }
@@ -527,14 +560,14 @@ func TestRefactorHelperBranches(t *testing.T) {
 
 	repo := t.TempDir()
 	root := filepath.Join(repo, "crate")
-	writeFile(t, filepath.Join(root, "src", "lib.rs"), "pub fn run() {}\n")
+	writeFile(t, filepath.Join(root, "src", rustLibFile), rustRunFn)
 	scanned := map[string]struct{}{}
 	result := &scanResult{UnresolvedImports: map[string]int{}}
 	count := 0
 	if err := scanRepoFileEntry(repo, root, filepath.Join(root, "README.md"), nil, scanned, &count, result); err != nil {
 		t.Fatalf("scan non-rs entry: %v", err)
 	}
-	rsPath := filepath.Join(root, "src", "lib.rs")
+	rsPath := filepath.Join(root, "src", rustLibFile)
 	scanned[rsPath] = struct{}{}
 	if err := scanRepoFileEntry(repo, root, rsPath, nil, scanned, &count, result); err != nil {
 		t.Fatalf("scan duplicate rs entry: %v", err)
@@ -543,8 +576,8 @@ func TestRefactorHelperBranches(t *testing.T) {
 
 func TestDetectWithConfidenceDefaultRepoAndCanceledContext(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
-	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "pub fn run() {}\n")
+	writeFile(t, filepath.Join(repo, cargoManifestFile), demoPackageManifest)
+	writeFile(t, filepath.Join(repo, "src", rustLibFile), rustRunFn)
 
 	originalWD, err := os.Getwd()
 	if err != nil {
@@ -572,13 +605,13 @@ func TestDetectWithConfidenceDefaultRepoAndCanceledContext(t *testing.T) {
 
 func TestDiscoverManifestPathsRootPackageAndResolveMembersErrors(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, cargoManifestFile), demoPackageManifest)
 
 	paths, warnings, err := discoverManifestPaths(repo)
 	if err != nil {
 		t.Fatalf("discover root package manifest: %v", err)
 	}
-	if len(paths) != 1 || paths[0] != filepath.Join(repo, "Cargo.toml") {
+	if len(paths) != 1 || paths[0] != filepath.Join(repo, cargoManifestFile) {
 		t.Fatalf("expected root manifest path, got %#v", paths)
 	}
 	if len(warnings) != 0 {
@@ -607,11 +640,11 @@ func TestScanRepoNoRootsNoFilesAndBoundedLimit(t *testing.T) {
 	}
 
 	bigRepo := t.TempDir()
-	writeFile(t, filepath.Join(bigRepo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+	writeFile(t, filepath.Join(bigRepo, cargoManifestFile), demoPackageManifest)
 	for i := range maxDetectionFiles + 1 {
 		writeFile(t, filepath.Join(bigRepo, "src", fmt.Sprintf("f_%04d.rs", i)), "use serde::Deserialize;\n")
 	}
-	scan, err = scanRepo(context.Background(), bigRepo, []string{filepath.Join(bigRepo, "Cargo.toml")}, map[string]dependencyInfo{}, map[string][]string{})
+	scan, err = scanRepo(context.Background(), bigRepo, []string{filepath.Join(bigRepo, cargoManifestFile)}, map[string]dependencyInfo{}, map[string][]string{})
 	if err != nil {
 		t.Fatalf("scan repo bounded: %v", err)
 	}
@@ -627,7 +660,7 @@ func TestScanRustSourceFileOutsideRootAndUseExpansionBranches(t *testing.T) {
 		t.Fatalf("write outside file: %v", err)
 	}
 	result := &scanResult{UnresolvedImports: map[string]int{}}
-	if err := scanRustSourceFile(repo, repo, outside, map[string]dependencyInfo{}, result); err == nil {
+	if scanRustSourceFile(repo, repo, outside, map[string]dependencyInfo{}, result) == nil {
 		t.Fatalf("expected scan error for outside file")
 	}
 
@@ -642,9 +675,9 @@ func TestScanRustSourceFileOutsideRootAndUseExpansionBranches(t *testing.T) {
 
 func TestCollectManifestDataPrefersExternalOverLocalPathAlias(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[workspace]\nmembers = [\"a\", \"b\"]\n")
-	writeFile(t, filepath.Join(repo, "a", "Cargo.toml"), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { path = \"../foo\" }\n")
-	writeFile(t, filepath.Join(repo, "b", "Cargo.toml"), "[package]\nname=\"b\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = \"1.0\"\n")
+	writeFile(t, filepath.Join(repo, cargoManifestFile), fmt.Sprintf("%s\nmembers = [\"a\", \"b\"]\n", workspaceSection))
+	writeFile(t, filepath.Join(repo, "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { path = \"../foo\" }\n")
+	writeFile(t, filepath.Join(repo, "b", cargoManifestFile), "[package]\nname=\"b\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = \"1.0\"\n")
 
 	_, lookup, _, _, err := collectManifestData(repo)
 	if err != nil {
@@ -727,17 +760,17 @@ func TestAdditionalHelperBranches(t *testing.T) {
 
 func TestRootSignalsAndManifestDiscoveryVariants(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.toml"), strings.Join([]string{
+	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join([]string{
 		"[package]",
 		`name = "root-pkg"`,
 		`version = "0.1.0"`,
 		"",
-		"[workspace]",
+		workspaceSection,
 		`members = ["crates/a"]`,
 		"",
 	}, "\n"))
-	writeFile(t, filepath.Join(repo, "Cargo.lock"), "version = 3\n")
-	writeFile(t, filepath.Join(repo, "crates", "a", "Cargo.toml"), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, cargoLockFile), cargoLockVersion3)
+	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n")
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
@@ -766,7 +799,7 @@ func TestRootSignalsAndManifestDiscoveryVariants(t *testing.T) {
 
 func TestApplyRustRootSignalsLockOnlyAndWorkspaceRootSkips(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "Cargo.lock"), "version = 3\n")
+	writeFile(t, filepath.Join(repo, cargoLockFile), cargoLockVersion3)
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
 	workspaceOnly, err := applyRustRootSignals(repo, &detection, roots)
@@ -781,7 +814,7 @@ func TestApplyRustRootSignalsLockOnlyAndWorkspaceRootSkips(t *testing.T) {
 	}
 
 	memberRoots := map[string]struct{}{}
-	addWorkspaceMemberRoot(repo, "crates/*", memberRoots)
+	addWorkspaceMemberRoot(repo, workspaceMembersGlob, memberRoots)
 	if len(memberRoots) != 0 {
 		t.Fatalf("expected no member roots when glob has no matches")
 	}
@@ -798,13 +831,13 @@ func TestWorkspaceResolutionAndParsingEdgeBranches(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "members", "dir-no-manifest"), 0o750); err != nil {
 		t.Fatalf("mkdir dir-no-manifest: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(repo, "members", "dir-with-manifest"), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "members", dirWithManifest), 0o750); err != nil {
 		t.Fatalf("mkdir dir-with-manifest: %v", err)
 	}
-	writeFile(t, filepath.Join(repo, "members", "dir-with-manifest", "Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, "members", dirWithManifest, cargoManifestFile), "[package]\nname=\"x\"\nversion=\"0.1.0\"\n")
 
 	roots := resolveWorkspaceMembers(repo, "members/*")
-	if len(roots) != 1 || !strings.HasSuffix(roots[0], filepath.Join("members", "dir-with-manifest")) {
+	if len(roots) != 1 || !strings.HasSuffix(roots[0], filepath.Join("members", dirWithManifest)) {
 		t.Fatalf("expected only dir with manifest, got %#v", roots)
 	}
 
@@ -835,7 +868,7 @@ func TestPathAndScanErrorEdges(t *testing.T) {
 
 	repo := t.TempDir()
 	result := &scanResult{UnresolvedImports: map[string]int{}}
-	if err := scanRustSourceFile(repo, repo, filepath.Join(repo, "missing.rs"), map[string]dependencyInfo{}, result); err == nil {
+	if scanRustSourceFile(repo, repo, filepath.Join(repo, "missing.rs"), map[string]dependencyInfo{}, result) == nil {
 		t.Fatalf("expected scanRustSourceFile stat error on missing file")
 	}
 }
@@ -843,7 +876,7 @@ func TestPathAndScanErrorEdges(t *testing.T) {
 func TestParseRustImportsWildcardDefaults(t *testing.T) {
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 	content := "use ::serde::de::*;\n"
-	imports := parseRustImports(content, "src/lib.rs", "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
+	imports := parseRustImports(content, srcLibRS, "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
 	if len(imports) != 1 {
 		t.Fatalf("expected one wildcard import, got %#v", imports)
 	}

@@ -742,7 +742,15 @@ func parseRustImports(content, filePath, crateRoot string, depLookup map[string]
 		if !ok {
 			continue
 		}
-		imports = appendUseClauseImports(imports, clause, filePath, line, column, crateRoot, depLookup, scan)
+		ctx := useImportContext{
+			FilePath:  filePath,
+			Line:      line,
+			Column:    column,
+			CrateRoot: crateRoot,
+			DepLookup: depLookup,
+			Scan:      scan,
+		}
+		imports = append(imports, appendUseClauseImports(clause, ctx)...)
 	}
 	return imports
 }
@@ -760,10 +768,20 @@ func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) 
 	return clause, line, column, true
 }
 
-func appendUseClauseImports(imports []importBinding, clause, filePath string, line, column int, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
+type useImportContext struct {
+	FilePath  string
+	Line      int
+	Column    int
+	CrateRoot string
+	DepLookup map[string]dependencyInfo
+	Scan      *scanResult
+}
+
+func appendUseClauseImports(clause string, ctx useImportContext) []importBinding {
+	imports := make([]importBinding, 0)
 	entries := parseUseClause(clause)
 	for _, entry := range entries {
-		binding, ok := makeUseImportBinding(entry, filePath, line, column, crateRoot, depLookup, scan)
+		binding, ok := makeUseImportBinding(entry, ctx)
 		if !ok {
 			continue
 		}
@@ -772,11 +790,11 @@ func appendUseClauseImports(imports []importBinding, clause, filePath string, li
 	return imports
 }
 
-func makeUseImportBinding(entry usePathEntry, filePath string, line, column int, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) (importBinding, bool) {
+func makeUseImportBinding(entry usePathEntry, ctx useImportContext) (importBinding, bool) {
 	if entry.Path == "" {
 		return importBinding{}, false
 	}
-	dependency := resolveDependency(entry.Path, crateRoot, depLookup, scan)
+	dependency := resolveDependency(entry.Path, ctx.CrateRoot, ctx.DepLookup, ctx.Scan)
 	if dependency == "" {
 		return importBinding{}, false
 	}
@@ -789,9 +807,9 @@ func makeUseImportBinding(entry usePathEntry, filePath string, line, column int,
 		Local:      local,
 		Wildcard:   entry.Wildcard,
 		Location: report.Location{
-			File:   filePath,
-			Line:   line,
-			Column: column,
+			File:   ctx.FilePath,
+			Line:   ctx.Line,
+			Column: ctx.Column,
 		},
 	}, true
 }

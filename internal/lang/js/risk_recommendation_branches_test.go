@@ -9,6 +9,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const requireToken = "require("
+
 func TestFirstNonSpaceByteBranches(t *testing.T) {
 	if got := firstNonSpaceByte(" \t\r"); got != 0 {
 		t.Fatalf("expected zero for whitespace-only string, got %q", got)
@@ -82,16 +84,16 @@ func TestImportUsageFlagsAndReplacementThresholdFloor(t *testing.T) {
 }
 
 func TestHasDynamicCallBranches(t *testing.T) {
-	if hasDynamicCall("require('x')", "require(") {
+	if hasDynamicCall("require('x')", requireToken) {
 		t.Fatalf("did not expect dynamic call when argument is static string literal")
 	}
-	if !hasDynamicCall("require(loader())", "require(") {
+	if !hasDynamicCall("require(loader())", requireToken) {
 		t.Fatalf("expected dynamic call detection")
 	}
-	if hasDynamicCall("myrequire(loader())", "require(") {
+	if hasDynamicCall("myrequire(loader())", requireToken) {
 		t.Fatalf("did not expect token match inside identifier")
 	}
-	if hasDynamicCall("// require(loader())", "require(") {
+	if hasDynamicCall("// require(loader())", requireToken) {
 		t.Fatalf("did not expect token inside comment")
 	}
 }
