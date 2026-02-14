@@ -14,7 +14,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 ## Key fields
 
 - `summary`: aggregated totals across all dependency rows.
-- `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `jvm`, `go`, `php`, `rust`).
+- `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `jvm`, `go`, `php`, `rust`, `dotnet`).
 - `effectiveThresholds`: resolved thresholds applied for this run (`CLI > config > defaults`).
 - `dependencies[].language`: language tag for each dependency row.
 - `dependencies[].riskCues`: heuristic risk signals.

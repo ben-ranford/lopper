@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/dotnet"
 	"github.com/ben-ranford/lopper/internal/lang/golang"
 	"github.com/ben-ranford/lopper/internal/lang/js"
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
@@ -46,6 +47,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(rust.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(dotnet.NewAdapter())
 	}
 
 	return &Service{

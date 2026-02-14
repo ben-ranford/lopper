@@ -122,9 +122,6 @@ func dependencyFromResolvedPath(value string) string {
 		return ""
 	}
 	parts := strings.Split(rest, "/")
-	if len(parts) == 0 {
-		return ""
-	}
 	if strings.HasPrefix(parts[0], "@") {
 		if len(parts) < 2 {
 			return ""

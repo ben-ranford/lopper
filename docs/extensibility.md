@@ -11,6 +11,7 @@ The core contracts are in `internal/language`.
 - `go` (Go)
 - `php` (PHP)
 - `rust` (Rust/Cargo)
+- `dotnet` (C#/.NET)
 
 ## Adapter contract
 
