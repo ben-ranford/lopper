@@ -11,7 +11,7 @@ on:
       - 'CONTRIBUTING.md'
 
 concurrency:
-  # Serialize release runs per branch so newer commits queue behind in-flight releases.
+  # Serialize release runs so newer commits queue behind in-flight releases.
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
