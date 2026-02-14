@@ -226,6 +226,7 @@ jobs:
             ${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.tag }}
             ${{ steps.image.outputs.name }}:latest
           provenance: false
+          sbom: true
 
   build-ghcr-act:
     if: ${{ github.actor == 'nektos/act' }}
