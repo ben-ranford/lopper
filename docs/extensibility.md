@@ -10,6 +10,7 @@ The core contracts are in `internal/language`.
 - `jvm` (Java/Kotlin)
 - `go` (Go)
 - `php` (PHP)
+- `rust` (Rust/Cargo)
 
 ## Adapter contract
 

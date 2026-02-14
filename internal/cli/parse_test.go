@@ -91,6 +91,16 @@ func TestParseArgsAnalyseLanguageJVM(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseLanguageRust(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, "rust"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.Language != "rust" {
+		t.Fatalf("expected language rust, got %q", req.Analyse.Language)
+	}
+}
+
 func TestParseArgsAnalyseBaseline(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", "--baseline", "baseline.json"})
 	if err != nil {

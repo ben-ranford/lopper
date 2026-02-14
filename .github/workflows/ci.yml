@@ -275,7 +275,7 @@ jobs:
         id: cov
         continue-on-error: true
         env:
-          COVERAGE_MIN: 90
+          COVERAGE_MIN: 95
         run: |
           set +e
           if [ -n "${ACT:-}" ]; then
@@ -296,7 +296,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && steps.cov.outcome == 'failure' && !env.ACT }}
         uses: actions/github-script@v8
         env:
-          COVERAGE_MIN: 90
+          COVERAGE_MIN: 95
           COVERAGE_TOTAL: ${{ steps.cov.outputs.total }}
         with:
           script: |

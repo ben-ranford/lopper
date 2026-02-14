@@ -152,3 +152,24 @@ func TestReadFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
+
+func TestReadFileUnderDirectoryTargetReturnsReadError(t *testing.T) {
+	rootDir := t.TempDir()
+	dirTarget := filepath.Join(rootDir, "nested")
+	if err := os.MkdirAll(dirTarget, 0o755); err != nil {
+		t.Fatalf("create dir target: %v", err)
+	}
+
+	_, err := ReadFileUnder(rootDir, dirTarget)
+	if err == nil {
+		t.Fatal("expected error when reading a directory target")
+	}
+}
+
+func TestReadFileUnderRootPathAsTargetReturnsError(t *testing.T) {
+	rootDir := t.TempDir()
+	_, err := ReadFileUnder(rootDir, rootDir)
+	if err == nil {
+		t.Fatal("expected error when target is root directory")
+	}
+}
