@@ -153,17 +153,23 @@ open Acme.Foo;
 	if meta.ambiguousByDependency[acmeBarName] == 0 {
 		t.Fatalf("expected ambiguous mapping count for acme.bar")
 	}
+	assertImportBindings(t, imports)
+	assertEmptyDependencySelectionWarnings(t)
+	assertRiskyDependencyReport(t)
+}
+
+func assertImportBindings(t *testing.T, imports []importBinding) {
+	t.Helper()
 	aliasFound := false
 	wildcardCount := 0
 	for _, imported := range imports {
-		if imported.Name == "Logger" {
+		switch {
+		case imported.Name == "Logger":
 			aliasFound = true
 			if imported.Wildcard || imported.Local != "Logger" {
 				t.Fatalf("expected alias import to keep local identifier, got %#v", imported)
 			}
-			continue
-		}
-		if imported.Name == "*" && imported.Module == "Acme.Foo" {
+		case imported.Name == "*" && imported.Module == "Acme.Foo":
 			wildcardCount++
 			if !imported.Wildcard || imported.Local != "" {
 				t.Fatalf("expected namespace/open import to be wildcard with empty local, got %#v", imported)
@@ -176,7 +182,10 @@ open Acme.Foo;
 	if wildcardCount < 2 {
 		t.Fatalf("expected wildcard bindings for csharp using + fsharp open, got %d (%#v)", wildcardCount, imports)
 	}
+}
 
+func assertEmptyDependencySelectionWarnings(t *testing.T) {
+	t.Helper()
 	empty := scanResult{
 		AmbiguousByDependency:  map[string]int{},
 		UndeclaredByDependency: map[string]int{},
@@ -189,7 +198,10 @@ open Acme.Foo;
 	if len(deps) != 0 || len(warnings) == 0 {
 		t.Fatalf("expected empty top-N warning")
 	}
+}
 
+func assertRiskyDependencyReport(t *testing.T) {
+	t.Helper()
 	scan := scanResult{
 		Files: []fileScan{
 			{

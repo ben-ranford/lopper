@@ -647,10 +647,26 @@ func parseCSharpImportLine(
 		return nil, true
 	}
 	if alias == "" {
-		binding := buildImportBinding(dependency, module, "*", "", true, relativePath, lineNumber, raw)
+		binding := buildImportBinding(importBindingArgs{
+			dependency:   dependency,
+			module:       module,
+			name:         "*",
+			wildcard:     true,
+			relativePath: relativePath,
+			lineNumber:   lineNumber,
+			raw:          raw,
+		})
 		return &binding, true
 	}
-	binding := buildImportBinding(dependency, module, alias, alias, false, relativePath, lineNumber, raw)
+	binding := buildImportBinding(importBindingArgs{
+		dependency:   dependency,
+		module:       module,
+		name:         alias,
+		local:        alias,
+		relativePath: relativePath,
+		lineNumber:   lineNumber,
+		raw:          raw,
+	})
 	return &binding, true
 }
 
@@ -668,7 +684,15 @@ func parseFSharpImportLine(
 	if !resolved {
 		return nil
 	}
-	binding := buildImportBinding(dependency, module, "*", "", true, relativePath, lineNumber, raw)
+	binding := buildImportBinding(importBindingArgs{
+		dependency:   dependency,
+		module:       module,
+		name:         "*",
+		wildcard:     true,
+		relativePath: relativePath,
+		lineNumber:   lineNumber,
+		raw:          raw,
+	})
 	return &binding
 }
 
@@ -686,23 +710,28 @@ func resolveImportDependency(module string, mapper dependencyMapper, meta *mappi
 	return dependency, true
 }
 
-func buildImportBinding(
-	dependency, module, name, local string,
-	wildcard bool,
-	relativePath string,
-	lineNumber int,
-	raw string,
-) importBinding {
+type importBindingArgs struct {
+	dependency   string
+	module       string
+	name         string
+	local        string
+	wildcard     bool
+	relativePath string
+	lineNumber   int
+	raw          string
+}
+
+func buildImportBinding(args importBindingArgs) importBinding {
 	return importBinding{
-		Dependency: dependency,
-		Module:     module,
-		Name:       name,
-		Local:      local,
-		Wildcard:   wildcard,
+		Dependency: args.dependency,
+		Module:     args.module,
+		Name:       args.name,
+		Local:      args.local,
+		Wildcard:   args.wildcard,
 		Location: report.Location{
-			File:   relativePath,
-			Line:   lineNumber,
-			Column: shared.FirstContentColumn(raw),
+			File:   args.relativePath,
+			Line:   args.lineNumber,
+			Column: shared.FirstContentColumn(args.raw),
 		},
 	}
 }

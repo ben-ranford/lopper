@@ -12,8 +12,30 @@ const (
 	parseSourceErrF     = "parse source: %v"
 )
 
-func TestAddMemberAndSubscriptReferenceBranches(t *testing.T) {
+func parseRootNode(t *testing.T, source []byte) *sitter.Node {
+	t.Helper()
 	parser := newSourceParser()
+	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
+	if err != nil {
+		t.Fatalf(parseSourceErrF, err)
+	}
+	return tree.RootNode()
+}
+
+func collectReferencesByNodeType(root *sitter.Node, source []byte) []NamespaceReference {
+	refs := []NamespaceReference{}
+	walkNode(root, func(node *sitter.Node) {
+		switch node.Type() {
+		case "member_expression":
+			addMemberReference(node, source, &refs)
+		case "subscript_expression":
+			addSubscriptReference(node, source, &refs)
+		}
+	})
+	return refs
+}
+
+func TestAddMemberAndSubscriptReferenceBranches(t *testing.T) {
 	source := []byte(`
 const value = {};
 value["name"];
@@ -21,12 +43,7 @@ value.name;
 value[prop];
 call().name;
 `)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-
-	root := tree.RootNode()
+	root := parseRootNode(t, source)
 	var memberNode *sitter.Node
 	var subscriptNode *sitter.Node
 	walkNode(root, func(node *sitter.Node) {
@@ -50,24 +67,9 @@ call().name;
 }
 
 func TestAddReferenceNoOpBranches(t *testing.T) {
-	parser := newSourceParser()
 	source := []byte(`const obj = {}; obj[unknown];`)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-	root := tree.RootNode()
-
-	var refs []NamespaceReference
-	// Non-identifier object/property cases should be ignored.
-	walkNode(root, func(node *sitter.Node) {
-		switch node.Type() {
-		case "subscript_expression":
-			addSubscriptReference(node, source, &refs)
-		case "member_expression":
-			addMemberReference(node, source, &refs)
-		}
-	})
+	root := parseRootNode(t, source)
+	refs := collectReferencesByNodeType(root, source)
 	if len(refs) == 0 {
 		t.Fatalf("expected at least one valid subscript reference")
 	}
@@ -78,19 +80,13 @@ func TestAddReferenceNoOpBranches(t *testing.T) {
 }
 
 func TestAddSubscriptReferenceEarlyReturns(t *testing.T) {
-	parser := newSourceParser()
 	source := []byte(`
 const obj = {};
 obj[''];
 obj[1];
 call()[prop];
 `)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-
-	root := tree.RootNode()
+	root := parseRootNode(t, source)
 	var refs []NamespaceReference
 	subscriptCount := 0
 	walkNode(root, func(node *sitter.Node) {
@@ -110,7 +106,6 @@ call()[prop];
 }
 
 func TestAddMemberReferenceDefaultPropertyType(t *testing.T) {
-	parser := newSourceParser()
 	source := []byte(`
 class C {
   #value = 1;
@@ -118,12 +113,7 @@ class C {
 const c = new C();
 c.#value;
 `)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-
-	root := tree.RootNode()
+	root := parseRootNode(t, source)
 	var member *sitter.Node
 	walkNode(root, func(node *sitter.Node) {
 		if member != nil || node.Type() != "member_expression" {
@@ -150,7 +140,6 @@ c.#value;
 }
 
 func TestAddReferenceAdditionalNoOpBranches(t *testing.T) {
-	parser := newSourceParser()
 	source := []byte(`
 const obj = {};
 obj[""];
@@ -158,21 +147,8 @@ obj[0];
 ({}).name;
 fn().name;
 `)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-	root := tree.RootNode()
-
-	var refs []NamespaceReference
-	walkNode(root, func(node *sitter.Node) {
-		switch node.Type() {
-		case "subscript_expression":
-			addSubscriptReference(node, source, &refs)
-		case "member_expression":
-			addMemberReference(node, source, &refs)
-		}
-	})
+	root := parseRootNode(t, source)
+	refs := collectReferencesByNodeType(root, source)
 
 	// All expressions above should be ignored by the namespace collector rules.
 	if len(refs) != 0 {
@@ -181,28 +157,14 @@ fn().name;
 }
 
 func TestAddReferenceSuccessBranches(t *testing.T) {
-	parser := newSourceParser()
 	source := []byte(`
 const value = {};
 const prop = "dynamic";
 value.name;
 value[prop];
 `)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-	root := tree.RootNode()
-
-	refs := []NamespaceReference{}
-	walkNode(root, func(node *sitter.Node) {
-		switch node.Type() {
-		case "member_expression":
-			addMemberReference(node, source, &refs)
-		case "subscript_expression":
-			addSubscriptReference(node, source, &refs)
-		}
-	})
+	root := parseRootNode(t, source)
+	refs := collectReferencesByNodeType(root, source)
 
 	if len(refs) < 2 {
 		t.Fatalf("expected member+subscript references, got %#v", refs)
@@ -210,17 +172,12 @@ value[prop];
 }
 
 func TestAddReferenceMismatchedNodeTypeBranches(t *testing.T) {
-	parser := newSourceParser()
 	source := []byte(`
 const value = {};
 value.name;
 value["name"];
 `)
-	tree, err := parser.Parse(context.Background(), usageHelpersIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrF, err)
-	}
-	root := tree.RootNode()
+	root := parseRootNode(t, source)
 
 	var memberNode *sitter.Node
 	var subscriptNode *sitter.Node
