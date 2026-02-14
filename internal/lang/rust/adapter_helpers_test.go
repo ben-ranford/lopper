@@ -22,6 +22,7 @@ const (
 	workspaceSection     = "[workspace]"
 	demoPackageManifest  = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"
 	rustLibFile          = "lib.rs"
+	localmodRSFile       = "localmod.rs"
 	srcMainRS            = "src/main.rs"
 	srcLibRS             = "src/lib.rs"
 	rustRunFn            = "pub fn run() {}\n"
@@ -198,7 +199,7 @@ func TestUseClauseAndImportHelpers(t *testing.T) {
 
 func TestResolveDependencyBranches(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), rustRunFn)
+	writeFile(t, filepath.Join(repo, "src", localmodRSFile), rustRunFn)
 	lookup := map[string]dependencyInfo{
 		"serde": {Canonical: "serde"},
 		"local": {Canonical: "local", LocalPath: true},
@@ -352,7 +353,7 @@ func TestSummarizeUnresolvedLimitAndSort(t *testing.T) {
 
 func TestImportParsingAndResolveWarnings(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), rustRunFn)
+	writeFile(t, filepath.Join(repo, "src", localmodRSFile), rustRunFn)
 	lookup := map[string]dependencyInfo{
 		"serde": {Canonical: "serde"},
 	}
@@ -884,7 +885,7 @@ func TestPathAndScanErrorEdges(t *testing.T) {
 
 func TestLocalModuleCacheBranches(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), rustRunFn)
+	writeFile(t, filepath.Join(repo, "src", localmodRSFile), rustRunFn)
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 
 	if !isLocalRustModuleWithCache(scan, repo, "localmod") {
