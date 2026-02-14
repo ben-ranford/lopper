@@ -183,6 +183,9 @@ func TestUseClauseAndImportHelpers(t *testing.T) {
 	if got := splitTopLevel("a::{b,c},d", ','); len(got) != 2 {
 		t.Fatalf("expected top-level split behavior, got %#v", got)
 	}
+	if got := splitTopLevel("a::{b,c}},d", ','); len(got) != 1 {
+		t.Fatalf("expected malformed brace sequence to avoid top-level split, got %#v", got)
+	}
 	if joinPath("a::b", "c") != "a::b::c" {
 		t.Fatalf("unexpected join path result")
 	}

@@ -53,6 +53,14 @@ func TestCountUsage(t *testing.T) {
 	}
 }
 
+func TestUsagePatternCacheReusesCompiledRegex(t *testing.T) {
+	first := usagePattern("foo")
+	second := usagePattern("foo")
+	if first != second {
+		t.Fatalf("expected cached regex instance reuse")
+	}
+}
+
 func TestBuildDependencyStats(t *testing.T) {
 	files := []FileUsage{
 		{
