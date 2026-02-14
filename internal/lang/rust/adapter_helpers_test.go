@@ -437,7 +437,7 @@ func assertDetectAndScanWalkBranches(t *testing.T, repo string, detection *langu
 	if err != nil {
 		t.Fatalf("readdir src: %v", err)
 	}
-	visited = maxDetectionFiles
+	visited = maxDetectionEntries
 	if got := walkRustDetectionEntry(filepath.Join(repo, "crates", "a", "src", rustLibFile), fileEntries[0], repo, false, roots, detection, &visited); got != fs.SkipAll {
 		t.Fatalf("expected scan bound skip all, got %v", got)
 	}
@@ -647,7 +647,7 @@ func TestScanRepoNoRootsNoFilesAndBoundedLimit(t *testing.T) {
 
 	bigRepo := t.TempDir()
 	writeFile(t, filepath.Join(bigRepo, cargoManifestFile), demoPackageManifest)
-	for i := range maxDetectionFiles + 1 {
+	for i := range maxScanFiles + 1 {
 		writeFile(t, filepath.Join(bigRepo, "src", fmt.Sprintf("f_%04d.rs", i)), "use serde::Deserialize;\n")
 	}
 	scan, err = scanRepo(context.Background(), bigRepo, []string{filepath.Join(bigRepo, cargoManifestFile)}, map[string]dependencyInfo{}, map[string][]string{})
@@ -879,6 +879,31 @@ func TestPathAndScanErrorEdges(t *testing.T) {
 	result := &scanResult{UnresolvedImports: map[string]int{}}
 	if scanRustSourceFile(repo, repo, filepath.Join(repo, "missing.rs"), map[string]dependencyInfo{}, result) == nil {
 		t.Fatalf("expected scanRustSourceFile stat error on missing file")
+	}
+}
+
+func TestLocalModuleCacheBranches(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", "localmod.rs"), rustRunFn)
+	scan := &scanResult{UnresolvedImports: map[string]int{}}
+
+	if !isLocalRustModuleWithCache(scan, repo, "localmod") {
+		t.Fatalf("expected local module detection for localmod")
+	}
+	if len(scan.LocalModuleCache) != 1 {
+		t.Fatalf("expected one cached local-module entry, got %d", len(scan.LocalModuleCache))
+	}
+	if !isLocalRustModuleWithCache(scan, repo, "localmod") {
+		t.Fatalf("expected cached local module detection for localmod")
+	}
+	if len(scan.LocalModuleCache) != 1 {
+		t.Fatalf("expected cache reuse without extra entries, got %d", len(scan.LocalModuleCache))
+	}
+	if isLocalRustModuleWithCache(scan, repo, "missing_mod") {
+		t.Fatalf("did not expect missing module to resolve as local")
+	}
+	if len(scan.LocalModuleCache) != 2 {
+		t.Fatalf("expected cached miss entry as well, got %d", len(scan.LocalModuleCache))
 	}
 }
 

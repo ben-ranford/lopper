@@ -26,10 +26,12 @@ type Adapter struct {
 const (
 	cargoTomlName        = "Cargo.toml"
 	cargoLockName        = "Cargo.lock"
-	maxDetectionFiles    = 2048
+	maxDetectionEntries  = 2048
+	maxScanFiles         = 2048
 	maxScannableRustFile = 2 * 1024 * 1024
 	maxManifestCount     = 256
 	maxWarningSamples    = 5
+	localModuleCacheSep  = "\x00"
 )
 
 type dependencyInfo struct {
@@ -56,6 +58,7 @@ type scanResult struct {
 	Warnings                 []string
 	UnresolvedImports        map[string]int
 	RenamedAliasesByDep      map[string][]string
+	LocalModuleCache         map[string]bool
 	MacroAmbiguityDetected   bool
 	SkippedLargeFiles        int
 	SkippedFilesByBoundLimit bool
@@ -183,7 +186,7 @@ func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, wor
 	}
 
 	(*visited)++
-	if *visited > maxDetectionFiles {
+	if *visited > maxDetectionEntries {
 		return fs.SkipAll
 	}
 
@@ -630,6 +633,7 @@ func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depL
 	result := scanResult{
 		UnresolvedImports:   make(map[string]int),
 		RenamedAliasesByDep: renamedAliases,
+		LocalModuleCache:    make(map[string]bool),
 	}
 	roots := scanRoots(manifestPaths, repoPath)
 	scannedFiles := make(map[string]struct{})
@@ -685,7 +689,7 @@ func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]depende
 	scannedFiles[path] = struct{}{}
 
 	(*fileCount)++
-	if *fileCount > maxDetectionFiles {
+	if *fileCount > maxScanFiles {
 		result.SkippedFilesByBoundLimit = true
 		return fs.SkipAll
 	}
@@ -701,7 +705,7 @@ func compileScanWarnings(result scanResult) []string {
 		warnings = append(warnings, fmt.Sprintf("skipped %d Rust files larger than %d bytes", result.SkippedLargeFiles, maxScannableRustFile))
 	}
 	if result.SkippedFilesByBoundLimit {
-		warnings = append(warnings, fmt.Sprintf("Rust source scanning capped at %d files", maxDetectionFiles))
+		warnings = append(warnings, fmt.Sprintf("Rust source scanning capped at %d files", maxScanFiles))
 	}
 	if result.MacroAmbiguityDetected {
 		warnings = append(warnings, "Rust macro invocations detected; static attribution may be partial for macro- and feature-driven paths")
@@ -1022,7 +1026,7 @@ func resolveDependency(path string, crateRoot string, depLookup map[string]depen
 	if normalizedRoot == "crate" || normalizedRoot == "self" || normalizedRoot == "super" {
 		return ""
 	}
-	if isLocalRustModule(crateRoot, root) {
+	if isLocalRustModuleWithCache(scan, crateRoot, root) {
 		return ""
 	}
 
@@ -1032,8 +1036,26 @@ func resolveDependency(path string, crateRoot string, depLookup map[string]depen
 		}
 		return info.Canonical
 	}
-	scan.UnresolvedImports[normalizedRoot]++
+	if scan != nil {
+		scan.UnresolvedImports[normalizedRoot]++
+	}
 	return normalizedRoot
+}
+
+func isLocalRustModuleWithCache(scan *scanResult, crateRoot, root string) bool {
+	if scan == nil {
+		return isLocalRustModule(crateRoot, root)
+	}
+	if scan.LocalModuleCache == nil {
+		scan.LocalModuleCache = make(map[string]bool)
+	}
+	key := crateRoot + localModuleCacheSep + root
+	if cached, ok := scan.LocalModuleCache[key]; ok {
+		return cached
+	}
+	isLocal := isLocalRustModule(crateRoot, root)
+	scan.LocalModuleCache[key] = isLocal
+	return isLocal
 }
 
 func isLocalRustModule(crateRoot, root string) bool {
