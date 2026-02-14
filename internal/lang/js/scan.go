@@ -295,10 +295,13 @@ func isIdentifierUsage(node *sitter.Node) bool {
 	case "object_pattern", "array_pattern":
 		return false
 	case "member_expression", "subscript_expression":
-		// Don't count the object in member/subscript expressions as direct usage
-		// since these are tracked separately as namespace property access
+		// The object side (e.g. `util` in `util.map`) is tracked via namespace
+		// property access, so only non-object identifiers count as direct usage.
 		objectNode := parent.ChildByFieldName("object")
-		return objectNode == nil || objectNode.ID() != node.ID()
+		if objectNode != nil && objectNode.ID() == node.ID() {
+			return false
+		}
+		return true
 	default:
 		return true
 	}
