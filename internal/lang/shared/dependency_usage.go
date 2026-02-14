@@ -4,10 +4,13 @@ import (
 	"context"
 	"regexp"
 	"sort"
+	"sync"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
+
+var usagePatternCache sync.Map
 
 type ImportRecord struct {
 	Dependency string
@@ -76,7 +79,7 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	usage := make(map[string]int, len(importCount))
 	text := string(content)
 	for local, count := range importCount {
-		pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(local) + `\b`)
+		pattern := usagePattern(local)
 		occurrences := len(pattern.FindAllStringIndex(text, -1)) - count
 		if occurrences < 0 {
 			occurrences = 0
@@ -84,6 +87,15 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 		usage[local] = occurrences
 	}
 	return usage
+}
+
+func usagePattern(local string) *regexp.Regexp {
+	if cached, ok := usagePatternCache.Load(local); ok {
+		return cached.(*regexp.Regexp)
+	}
+	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(local) + `\b`)
+	actual, _ := usagePatternCache.LoadOrStore(local, pattern)
+	return actual.(*regexp.Regexp)
 }
 
 func BuildDependencyStats(dependency string, files []FileUsage, normalize func(string) string) DependencyStats {

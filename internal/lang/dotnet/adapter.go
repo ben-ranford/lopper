@@ -907,9 +907,6 @@ func isSourceFileName(lowerName string) bool {
 
 func fallbackDependency(module string) string {
 	segments := strings.Split(module, ".")
-	if len(segments) == 0 {
-		return module
-	}
 	if len(segments) > 1 {
 		return strings.ToLower(strings.Join(segments[:2], "."))
 	}
@@ -918,9 +915,6 @@ func fallbackDependency(module string) string {
 
 func firstSegment(value string) string {
 	parts := strings.Split(value, ".")
-	if len(parts) == 0 {
-		return ""
-	}
 	return parts[0]
 }
 

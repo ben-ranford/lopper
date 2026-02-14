@@ -996,9 +996,7 @@ func splitTopLevel(value string, sep rune) []string {
 		case '{':
 			depth++
 		case '}':
-			if depth > 0 {
-				depth--
-			}
+			depth--
 		case sep:
 			if depth == 0 {
 				parts = append(parts, strings.TrimSpace(value[start:i]))
