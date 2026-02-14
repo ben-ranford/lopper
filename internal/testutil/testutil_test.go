@@ -83,8 +83,11 @@ func TestWriteNumberedTextFilesAndFirstEntry(t *testing.T) {
 	dir := t.TempDir()
 	WriteNumberedTextFiles(t, dir, 3)
 	entry := MustFirstFileEntry(t, dir)
-	if entry == nil || entry.IsDir() {
+	if entry == nil {
 		t.Fatalf("expected first file entry")
+	}
+	if entry.Name() != "f-0.txt" {
+		t.Fatalf("expected first file entry to be %q, got %q", "f-0.txt", entry.Name())
 	}
 }
 
@@ -95,8 +98,11 @@ func TestMustFirstFileEntrySkipsDirectories(t *testing.T) {
 	}
 	MustWriteFile(t, filepath.Join(dir, "z.txt"), "x")
 	entry := MustFirstFileEntry(t, dir)
-	if entry == nil || entry.IsDir() {
+	if entry == nil {
 		t.Fatalf("expected file entry after directory entries")
+	}
+	if entry.Name() != "z.txt" {
+		t.Fatalf("expected first file entry to be %q, got %q", "z.txt", entry.Name())
 	}
 }
 

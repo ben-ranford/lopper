@@ -538,8 +538,14 @@ func TestRefactorHelperBranches(t *testing.T) {
 	if parseWorkspaceMembersLine(`exclude = ["x"]`, "workspace", false, &meta) {
 		t.Fatalf("expected false for non-members workspace field")
 	}
-	if got := workspaceMembersAssignmentValue("members"); got != "members" {
-		t.Fatalf("expected passthrough without assignment, got %q", got)
+	if _, ok := workspaceMembersAssignmentValue("members"); ok {
+		t.Fatalf("expected missing assignment to be rejected")
+	}
+	if _, ok := workspaceMembersAssignmentValue(`members2 = ["a"]`); ok {
+		t.Fatalf("expected non-members key to be rejected")
+	}
+	if got, ok := workspaceMembersAssignmentValue(`members = ["a"]`); !ok || got != `["a"]` {
+		t.Fatalf("unexpected workspace members assignment parse: %q %v", got, ok)
 	}
 
 	deps := map[string]dependencyInfo{}
@@ -702,6 +708,9 @@ func TestDiscoveryAndRootSignalErrorBranches(t *testing.T) {
 		t.Fatalf("chmod restricted: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(restricted, 0o700) })
+	if _, err := os.ReadDir(restricted); err == nil {
+		t.Skip("skipping permission-based test: directory remains readable after chmod 000")
+	}
 
 	_, _, err := discoverManifestPaths(restricted)
 	if err == nil {

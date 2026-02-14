@@ -447,19 +447,24 @@ func parseWorkspaceMembersLine(clean, section string, inWorkspaceMembers bool, m
 		meta.WorkspaceMembers = append(meta.WorkspaceMembers, extractQuotedStrings(clean)...)
 		return !strings.Contains(clean, "]")
 	}
-	if !strings.HasPrefix(clean, workspaceFieldStart) {
+	right, ok := workspaceMembersAssignmentValue(clean)
+	if !ok {
 		return false
 	}
-	right := workspaceMembersAssignmentValue(clean)
 	meta.WorkspaceMembers = append(meta.WorkspaceMembers, extractQuotedStrings(right)...)
 	return strings.Contains(right, "[") && !strings.Contains(right, "]")
 }
 
-func workspaceMembersAssignmentValue(clean string) string {
-	if eq := strings.Index(clean, "="); eq >= 0 {
-		return strings.TrimSpace(clean[eq+1:])
+func workspaceMembersAssignmentValue(clean string) (string, bool) {
+	eq := strings.Index(clean, "=")
+	if eq < 0 {
+		return "", false
 	}
-	return clean
+	key := strings.TrimSpace(clean[:eq])
+	if key != workspaceFieldStart {
+		return "", false
+	}
+	return strings.TrimSpace(clean[eq+1:]), true
 }
 
 func parseCargoDependencies(content string) map[string]dependencyInfo {
