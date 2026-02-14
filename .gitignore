@@ -9,4 +9,4 @@ coverage.out
 
 .artifacts/
 .idea/vcs.xml
-lopper
+/lopper
