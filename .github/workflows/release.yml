@@ -11,7 +11,8 @@ on:
       - 'CONTRIBUTING.md'
 
 concurrency:
-  group: release-main
+  # Serialize release runs so newer commits queue behind in-flight releases.
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -226,6 +227,7 @@ jobs:
             ${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.tag }}
             ${{ steps.image.outputs.name }}:latest
           provenance: false
+          sbom: true
 
   build-ghcr-act:
     if: ${{ github.actor == 'nektos/act' }}
