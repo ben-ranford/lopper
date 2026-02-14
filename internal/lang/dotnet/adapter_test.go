@@ -219,7 +219,7 @@ func TestAdapterRecommendationsHonorMinUsageThreshold(t *testing.T) {
 	repo := t.TempDir()
 	writeManifestFixture(t, filepath.Join(repo, appProjectFileName), newtonsoftProjectManifest)
 	testutil.MustWriteFile(t, filepath.Join(repo, programSourceFileName), `
-using Newtonsoft.Json;
+using J = Newtonsoft.Json;
 
 public class Program {
   public static void Main() {}

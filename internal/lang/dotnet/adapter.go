@@ -646,18 +646,11 @@ func parseCSharpImportLine(
 	if !resolved {
 		return nil, true
 	}
-	name := alias
-	if name == "" {
-		name = lastSegment(module)
+	if alias == "" {
+		binding := buildImportBinding(dependency, module, "*", "", true, relativePath, lineNumber, raw)
+		return &binding, true
 	}
-	if name == "" {
-		name = module
-	}
-	local := alias
-	if local == "" {
-		local = lastSegment(module)
-	}
-	binding := buildImportBinding(dependency, module, name, local, relativePath, lineNumber, raw)
+	binding := buildImportBinding(dependency, module, alias, alias, false, relativePath, lineNumber, raw)
 	return &binding, true
 }
 
@@ -675,11 +668,7 @@ func parseFSharpImportLine(
 	if !resolved {
 		return nil
 	}
-	name := lastSegment(module)
-	if name == "" {
-		name = module
-	}
-	binding := buildImportBinding(dependency, module, name, name, relativePath, lineNumber, raw)
+	binding := buildImportBinding(dependency, module, "*", "", true, relativePath, lineNumber, raw)
 	return &binding
 }
 
@@ -698,7 +687,9 @@ func resolveImportDependency(module string, mapper dependencyMapper, meta *mappi
 }
 
 func buildImportBinding(
-	dependency, module, name, local, relativePath string,
+	dependency, module, name, local string,
+	wildcard bool,
+	relativePath string,
 	lineNumber int,
 	raw string,
 ) importBinding {
@@ -707,6 +698,7 @@ func buildImportBinding(
 		Module:     module,
 		Name:       name,
 		Local:      local,
+		Wildcard:   wildcard,
 		Location: report.Location{
 			File:   relativePath,
 			Line:   lineNumber,
@@ -919,9 +911,28 @@ func addSolutionRoots(repoPath string, solutionPath string, roots map[string]str
 		}
 		relPath = strings.ReplaceAll(relPath, "\\", string(filepath.Separator))
 		projectPath := filepath.Clean(filepath.Join(filepath.Dir(solutionPath), relPath))
+		if !isRepoBoundedPath(repoPath, projectPath) {
+			continue
+		}
 		roots[filepath.Dir(projectPath)] = struct{}{}
 	}
 	return nil
+}
+
+func isRepoBoundedPath(repoPath, candidatePath string) bool {
+	repoAbs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return false
+	}
+	candidateAbs, err := filepath.Abs(candidatePath)
+	if err != nil {
+		return false
+	}
+	relativeToRepo, err := filepath.Rel(repoAbs, candidateAbs)
+	if err != nil {
+		return false
+	}
+	return relativeToRepo != ".." && !strings.HasPrefix(relativeToRepo, ".."+string(filepath.Separator))
 }
 
 var (

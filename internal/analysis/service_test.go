@@ -164,7 +164,7 @@ func TestServiceForwardsMinUsageThresholdToDotNet(t *testing.T) {
   </ItemGroup>
 </Project>`)
 	writeFile(t, filepath.Join(repo, programFileName), `
-using Newtonsoft.Json;
+using J = Newtonsoft.Json;
 public class Program { public static void Main() {} }
 `)
 

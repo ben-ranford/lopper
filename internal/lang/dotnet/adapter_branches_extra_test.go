@@ -147,11 +147,34 @@ using System.Text;
 open Acme.Foo;
 `)
 	imports, meta := parseImports(content, programSourceName, mapper)
-	if len(imports) < 2 {
+	if len(imports) < 3 {
 		t.Fatalf("expected imports parsed, got %#v", imports)
 	}
 	if meta.ambiguousByDependency[acmeBarName] == 0 {
 		t.Fatalf("expected ambiguous mapping count for acme.bar")
+	}
+	aliasFound := false
+	wildcardCount := 0
+	for _, imported := range imports {
+		if imported.Name == "Logger" {
+			aliasFound = true
+			if imported.Wildcard || imported.Local != "Logger" {
+				t.Fatalf("expected alias import to keep local identifier, got %#v", imported)
+			}
+			continue
+		}
+		if imported.Name == "*" && imported.Module == "Acme.Foo" {
+			wildcardCount++
+			if !imported.Wildcard || imported.Local != "" {
+				t.Fatalf("expected namespace/open import to be wildcard with empty local, got %#v", imported)
+			}
+		}
+	}
+	if !aliasFound {
+		t.Fatalf("expected alias import binding")
+	}
+	if wildcardCount < 2 {
+		t.Fatalf("expected wildcard bindings for csharp using + fsharp open, got %d (%#v)", wildcardCount, imports)
 	}
 
 	empty := scanResult{
@@ -210,6 +233,7 @@ func TestCaptureMatchesAndSolutionRootsBranches(t *testing.T) {
 	testutil.MustWriteFile(t, sln, `
 Project("{FAKE}") = "App", "src\\App\\App.csproj", "{ONE}"
 Project("{FAKE}") = "Lib", "src\\Lib\\Lib.fsproj", "{TWO}"
+Project("{FAKE}") = "Escaped", "..\\outside\\Outside.csproj", "{THREE}"
 EndProject
 `)
 	roots := map[string]struct{}{}
@@ -218,6 +242,10 @@ EndProject
 	}
 	if len(roots) < 2 {
 		t.Fatalf("expected multiple roots from solution, got %#v", roots)
+	}
+	outsideRoot := filepath.Join(filepath.Dir(repo), "outside")
+	if _, ok := roots[outsideRoot]; ok {
+		t.Fatalf("expected escaped solution project root to be ignored, got %#v", roots)
 	}
 }
 
