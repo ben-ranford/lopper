@@ -3,6 +3,7 @@ package js
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -149,5 +150,79 @@ func TestNativeMetadataAndDepthHelpers(t *testing.T) {
 	}
 	if depth < 2 {
 		t.Fatalf("expected depth >= 2, got %d", depth)
+	}
+}
+
+func TestTransitiveDepthBudgetAndCycleBranches(t *testing.T) {
+	repo := t.TempDir()
+	pkg := packageJSON{Dependencies: map[string]string{"missing": "1.0.0"}}
+
+	memo := map[string]int{}
+	visiting := map[string]struct{}{}
+	depth, err := transitiveDepth(repo, filepath.Join(repo, "node_modules", "pkg"), pkg, memo, visiting, 0)
+	if err != nil {
+		t.Fatalf("transitive depth budget branch: %v", err)
+	}
+	if depth != 1 {
+		t.Fatalf("expected depth 1 when budget is exhausted, got %d", depth)
+	}
+
+	visiting = map[string]struct{}{filepath.Join(repo, "node_modules", "pkg"): {}}
+	depth, err = transitiveDepth(repo, filepath.Join(repo, "node_modules", "pkg"), pkg, memo, visiting, 10)
+	if err != nil {
+		t.Fatalf("transitive depth cycle branch: %v", err)
+	}
+	if depth != 1 {
+		t.Fatalf("expected depth 1 for cycle detection branch, got %d", depth)
+	}
+}
+
+func TestDetectNodeBinaryMaxVisitedBranch(t *testing.T) {
+	depRoot := t.TempDir()
+	for i := 0; i < 650; i++ {
+		name := "f-" + strconv.Itoa(i) + ".txt"
+		if err := os.WriteFile(filepath.Join(depRoot, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write file %d: %v", i, err)
+		}
+	}
+
+	found, err := detectNodeBinary(depRoot)
+	if err != nil {
+		t.Fatalf("detect node binary with max visited cap: %v", err)
+	}
+	if found != "" {
+		t.Fatalf("expected no .node file found, got %q", found)
+	}
+}
+
+func TestRiskHelperAdditionalBranches(t *testing.T) {
+	if firstNonSpaceByte("   \t\r") != 0 {
+		t.Fatalf("expected firstNonSpaceByte to return 0 for blank input")
+	}
+
+	depRoot := t.TempDir()
+	native, details, err := detectNativeModuleIndicators(depRoot, packageJSON{})
+	if err != nil {
+		t.Fatalf("detect native indicators without metadata: %v", err)
+	}
+	if native || len(details) != 0 {
+		t.Fatalf("expected no native indicators, got native=%v details=%#v", native, details)
+	}
+}
+
+func TestRiskHelperErrorBranches(t *testing.T) {
+	// Use a regular file path as depRoot to trigger filesystem errors
+	// without changing directory permissions.
+	depRoot := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(depRoot, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write depRoot file: %v", err)
+	}
+
+	if _, _, err := detectNativeModuleIndicators(depRoot, packageJSON{}); err == nil {
+		t.Fatalf("expected detectNativeModuleIndicators permission error")
+	}
+
+	if _, err := detectNodeBinary(filepath.Join(t.TempDir(), "missing-root")); err == nil {
+		t.Fatalf("expected detectNodeBinary error for missing root")
 	}
 }

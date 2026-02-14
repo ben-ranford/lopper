@@ -11,6 +11,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	programFileName           = "Program.cs"
+	newtonsoftDependencyID    = "newtonsoft.json"
+	expectedOneDependencyText = "expected one dependency report, got %d"
+)
+
 func TestServiceAnalyseAllLanguages(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
@@ -27,6 +33,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "index.php"), "<?php\nuse Monolog\\Logger;\n$logger = new Logger(\"app\");\n")
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nanyhow = \"1.0\"\n")
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
+	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
+	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -44,10 +52,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") {
-		t.Fatalf("expected js-ts, python, jvm, go, php, and rust dependencies, got %#v", languages)
+	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
+		t.Fatalf("expected js-ts, python, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
 	}
-	if len(reportData.LanguageBreakdown) < 6 {
+	if len(reportData.LanguageBreakdown) < 7 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 }
@@ -106,6 +114,101 @@ func TestLowConfidenceWarningThreshold(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warning when threshold is lower than confidence")
 	}
+}
+
+func TestServiceAnalyseCSharpAlias(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Api.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	writeFile(t, filepath.Join(repo, programFileName), `
+using JsonConvert = Newtonsoft.Json.JsonConvert;
+
+public class Program {
+  public static void Main() {
+    _ = JsonConvert.SerializeObject(new { Name = "demo" });
+  }
+}
+`)
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: newtonsoftDependencyID,
+		Language:   "csharp",
+	})
+	if err != nil {
+		t.Fatalf("analyse csharp alias: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Language != "dotnet" {
+		t.Fatalf("expected language dotnet, got %q", dep.Language)
+	}
+	if dep.UsedExportsCount == 0 {
+		t.Fatalf("expected used exports > 0")
+	}
+}
+
+func TestServiceForwardsMinUsageThresholdToDotNet(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "App.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	writeFile(t, filepath.Join(repo, programFileName), `
+using J = Newtonsoft.Json;
+public class Program { public static void Main() {} }
+`)
+
+	service := NewService()
+	withDefault, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: newtonsoftDependencyID,
+		Language:   "dotnet",
+	})
+	if err != nil {
+		t.Fatalf("analyse with default threshold: %v", err)
+	}
+	if len(withDefault.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(withDefault.Dependencies))
+	}
+	if !hasRecommendationCode(withDefault.Dependencies[0], "reduce-low-usage-package-surface") {
+		t.Fatalf("expected low-usage recommendation with default threshold")
+	}
+
+	zero := 0
+	withZero, err := service.Analyse(context.Background(), Request{
+		RepoPath:                          repo,
+		Dependency:                        newtonsoftDependencyID,
+		Language:                          "dotnet",
+		MinUsagePercentForRecommendations: &zero,
+	})
+	if err != nil {
+		t.Fatalf("analyse with zero threshold: %v", err)
+	}
+	if len(withZero.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(withZero.Dependencies))
+	}
+	if hasRecommendationCode(withZero.Dependencies[0], "reduce-low-usage-package-surface") {
+		t.Fatalf("did not expect low-usage recommendation when threshold is 0")
+	}
+}
+
+func hasRecommendationCode(dep report.DependencyReport, code string) bool {
+	for _, rec := range dep.Recommendations {
+		if rec.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 type stubAdapter struct {
