@@ -42,6 +42,19 @@ brew tap ben-ranford/tap
 brew install lopper
 ```
 
+Update to the latest stable tap release:
+
+```bash
+brew update
+brew upgrade ben-ranford/tap/lopper
+```
+
+Uninstall:
+
+```bash
+brew uninstall lopper
+```
+
 Install binary from GitHub Releases:
 
 ```bash
