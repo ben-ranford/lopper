@@ -312,9 +312,11 @@ jobs:
         working-directory: homebrew-tap
         run: |
           set -euo pipefail
-          brew audit --strict --online --formula Formula/lopper.rb
-          brew install --build-from-source Formula/lopper.rb
-          brew test lopper
+          brew untap ben-ranford/tap >/dev/null 2>&1 || true
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}"
+          brew audit --strict --online ben-ranford/tap/lopper
+          brew install --build-from-source ben-ranford/tap/lopper
+          brew test ben-ranford/tap/lopper
 
       - name: Commit and push formula changes
         if: ${{ steps.tap_token.outputs.available == 'true' }}

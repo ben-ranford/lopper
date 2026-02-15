@@ -387,9 +387,11 @@ jobs:
         if: ${{ steps.tap.outputs.exists == 'true' }}
         run: |
           set -euo pipefail
-          brew audit --strict --online --formula homebrew-tap/Formula/lopper.rb
-          brew install --build-from-source homebrew-tap/Formula/lopper.rb
-          brew test lopper
+          brew untap ben-ranford/tap >/dev/null 2>&1 || true
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}/homebrew-tap"
+          brew audit --strict --online ben-ranford/tap/lopper
+          brew install --build-from-source ben-ranford/tap/lopper
+          brew test ben-ranford/tap/lopper
 
       - name: Skip when tap is not created yet
         if: ${{ steps.tap.outputs.exists != 'true' }}
