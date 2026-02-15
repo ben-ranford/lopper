@@ -1,14 +1,9 @@
 name: release
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - 'docs/**'
-      - '.github/**'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
+  schedule:
+    - cron: '0 12 * * 6'
+  workflow_dispatch:
 
 concurrency:
   # Serialize release runs so newer commits queue behind in-flight releases.
@@ -18,82 +13,70 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      previous_tag: ${{ steps.tag.outputs.previous_tag }}
     steps:
-      - name: Compute release tag
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute weekly semver tag
         id: tag
         run: |
-          short_sha="${GITHUB_SHA::7}"
-          date_tag="$(date -u +'%Y%m%d%H%M%S')"
-          tag="main-${date_tag}-${short_sha}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git fetch --tags --force
+
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1)"
+          if [ -z "$latest_tag" ]; then
+            next_tag="v0.1.0"
+            previous_tag=""
+          else
+            if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="${BASH_REMATCH[3]}"
+              next_tag="v${major}.${minor}.$((patch + 1))"
+              previous_tag="$latest_tag"
+            else
+              echo "Latest semver tag '$latest_tag' is invalid"
+              exit 1
+            fi
+          fi
+
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
 
   build-linux-windows:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup Go
-        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - name: Setup Go (act)
-        if: ${{ github.actor == 'nektos/act' }}
-        run: |
-          if ! command -v go >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y golang-go
-          fi
-          go version
-
       - name: Setup Zig
-        if: ${{ github.actor != 'nektos/act' }}
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
-      - name: Setup Zig (act)
-        if: ${{ github.actor == 'nektos/act' }}
-        run: |
-          if ! command -v zig >/dev/null 2>&1; then
-            urls=(
-              "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz"
-              "https://pkg.machengine.org/zig/zig-x86_64-linux-0.15.2.tar.xz"
-            )
-            for url in "${urls[@]}"; do
-              echo "Trying $url"
-              if curl --fail --location --connect-timeout 20 --max-time 120 -o /tmp/zig.tar.xz "$url"; then
-                break
-              fi
-            done
-            test -s /tmp/zig.tar.xz
-            rm -rf /opt/zig
-            mkdir -p /opt/zig
-            tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
-            ln -sf /opt/zig/zig /usr/local/bin/zig
-          fi
-          zig version
-
       - name: Install tooling
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          if [ -z "${ACT:-}" ]; then
-            echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          fi
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project
-        run: |
-          if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci
-          else
-            make ci
-          fi
+        run: make ci
 
       - name: Build Linux/Windows release artifacts
         run: |
@@ -102,7 +85,6 @@ jobs:
             PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
       - name: Upload Linux/Windows artifacts
-        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/upload-artifact@v6
         with:
           name: release-linux-windows
@@ -110,14 +92,11 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-      - name: Mock Linux/Windows artifact upload (act)
-        if: ${{ github.actor == 'nektos/act' }}
-        run: ls -lh dist/*
-
   build-darwin:
-    if: ${{ github.actor != 'nektos/act' }}
     needs: prepare
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -130,7 +109,7 @@ jobs:
       - name: Install tooling
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project
@@ -151,43 +130,7 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  build-darwin-act:
-    if: ${{ github.actor == 'nektos/act' }}
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Go
-        if: ${{ github.actor != 'nektos/act' }}
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - name: Setup Go (act)
-        if: ${{ github.actor == 'nektos/act' }}
-        run: |
-          if ! command -v go >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y golang-go
-          fi
-          go version
-
-      - name: Build Darwin release artifact (act mock)
-        run: |
-          mkdir -p dist
-          mock_dir="dist/lopper_${{ needs.prepare.outputs.tag }}_darwin_amd64"
-          mkdir -p "$mock_dir"
-          cp README.md "$mock_dir/README.md"
-          tar -czf "${mock_dir}.tar.gz" -C dist "$(basename "$mock_dir")"
-          rm -rf "$mock_dir"
-
-      - name: Mock Darwin artifact upload (act)
-        run: ls -lh dist/*
-
   build-ghcr:
-    if: ${{ github.actor != 'nektos/act' }}
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
@@ -229,32 +172,12 @@ jobs:
           provenance: false
           sbom: true
 
-  build-ghcr-act:
-    if: ${{ github.actor == 'nektos/act' }}
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - name: Compute image name
-        id: image
-        run: |
-          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
-
-      - name: Mock GHCR build/push (act)
-        run: |
-          echo "Mock GHCR publish for:"
-          echo "${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.tag }}"
-          echo "${{ steps.image.outputs.name }}:latest"
-
   publish:
-    if: ${{ github.actor != 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin.result == 'success' && (needs.build-darwin-act.result == 'success' || needs.build-darwin-act.result == 'skipped') && needs.build-ghcr.result == 'success' && (needs.build-ghcr-act.result == 'success' || needs.build-ghcr-act.result == 'skipped') }}
     needs:
       - prepare
       - build-linux-windows
       - build-darwin
-      - build-darwin-act
       - build-ghcr
-      - build-ghcr-act
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -265,7 +188,6 @@ jobs:
           fetch-depth: 0
 
       - name: Download release artifacts
-        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/download-artifact@v7
         with:
           pattern: release-*
@@ -276,13 +198,16 @@ jobs:
         run: |
           set -euo pipefail
           current_tag="${{ needs.prepare.outputs.tag }}"
-          previous_tag="$(git tag --list 'main-*' --sort=-creatordate | awk -v current="${current_tag}" '$0 != current {print; exit}')"
+          previous_tag="${{ needs.prepare.outputs.previous_tag }}"
           ghcr_owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           ghcr_ref="ghcr.io/${ghcr_owner}/lopper:${current_tag}"
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
 
           {
-            echo "## Changelog"
+            echo "## Weekly semver release"
+            echo
+            echo "- Tag: \`${current_tag}\`"
+            echo "- Trigger: scheduled Saturday release"
             echo
             echo "## Container image"
             echo
@@ -317,16 +242,102 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  publish-act:
-    if: ${{ github.actor == 'nektos/act' && always() && needs.prepare.result == 'success' && needs.build-linux-windows.result == 'success' && needs.build-darwin-act.result == 'success' && needs.build-ghcr-act.result == 'success' }}
+  update-homebrew-tap:
     needs:
       - prepare
-      - build-linux-windows
-      - build-darwin-act
-      - build-ghcr-act
+      - publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Mock publish summary (act)
+      - name: Detect tap token
+        id: tap_token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          echo "Prepared tag: ${{ needs.prepare.outputs.tag }}"
-          echo "Linux/Windows and Darwin mock build jobs completed successfully under act."
+          if [ -n "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Homebrew
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        uses: Homebrew/actions/setup-homebrew@04a6d8cfe9d251e2afb78c5bdc6274ec9642aea2
+
+      - name: Checkout tap repository
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: ben-ranford/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update lopper formula
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        working-directory: homebrew-tap
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          curl --fail --show-error --silent --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "$source_url" -o /tmp/lopper-source.tar.gz
+          source_sha="$(sha256sum /tmp/lopper-source.tar.gz | awk '{print $1}')"
+
+          mkdir -p Formula
+          cat > Formula/lopper.rb <<RUBY
+          class Lopper < Formula
+            desc "Local-first CLI/TUI for measuring dependency surface area"
+            homepage "https://github.com/ben-ranford/lopper"
+            url "${source_url}"
+            sha256 "${source_sha}"
+            license "MIT"
+
+            depends_on "go" => :build
+
+            def install
+              system "go", "build", *std_go_args(output: bin/"lopper"), "./cmd/lopper"
+            end
+
+            test do
+              assert_match "Usage:", shell_output("#{bin}/lopper --help")
+            end
+          end
+          RUBY
+
+      - name: Validate formula
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          brew untap ben-ranford/tap >/dev/null 2>&1 || true
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}"
+          brew audit --strict --online ben-ranford/tap/lopper
+          brew install --build-from-source ben-ranford/tap/lopper
+          brew test ben-ranford/tap/lopper
+
+      - name: Commit and push formula changes
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Formula/lopper.rb
+          if git diff --cached --quiet; then
+            echo "No formula changes to commit"
+            exit 0
+          fi
+
+          git commit -m "lopper ${{ needs.prepare.outputs.tag }}"
+          git push origin HEAD:main
+
+      - name: Skip tap update when token is missing
+        if: ${{ steps.tap_token.outputs.available != 'true' }}
+        run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."

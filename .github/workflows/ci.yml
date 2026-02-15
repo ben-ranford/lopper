@@ -6,13 +6,12 @@ on:
     branches:
       - main
 
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -356,3 +355,44 @@ jobs:
         run: |
           test -f bin/lopper
           ls -lh bin/lopper
+
+  homebrew-tap-verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Detect tap repository
+        id: tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh repo view ben-ranford/homebrew-tap >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Homebrew
+        if: ${{ steps.tap.outputs.exists == 'true' }}
+        uses: Homebrew/actions/setup-homebrew@04a6d8cfe9d251e2afb78c5bdc6274ec9642aea2
+
+      - name: Checkout tap formula
+        if: ${{ steps.tap.outputs.exists == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: ben-ranford/homebrew-tap
+          path: homebrew-tap
+
+      - name: Run Homebrew audit and test
+        if: ${{ steps.tap.outputs.exists == 'true' }}
+        run: |
+          set -euo pipefail
+          brew untap ben-ranford/tap >/dev/null 2>&1 || true
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}/homebrew-tap"
+          brew audit --strict --online ben-ranford/tap/lopper
+          brew install --build-from-source ben-ranford/tap/lopper
+          brew test ben-ranford/tap/lopper
+
+      - name: Skip when tap is not created yet
+        if: ${{ steps.tap.outputs.exists != 'true' }}
+        run: echo "homebrew-tap repository not found; skipping Homebrew tap verification."
