@@ -42,6 +42,12 @@ brew tap ben-ranford/tap
 brew install lopper
 ```
 
+Install rolling channel from Homebrew tap:
+
+```bash
+brew install ben-ranford/tap/lopper@rolling
+```
+
 Update to the latest stable tap release:
 
 ```bash
@@ -83,7 +89,9 @@ sudo install "$(find "$tmpdir" -type f -name lopper | head -n1)" /usr/local/bin/
 Release channels:
 
 - Stable semver release (`vX.Y.Z`): published weekly on Saturday at 12:00 UTC
-- Nightly prerelease (`nightly-*`): published from `main` pushes, marked as non-stable
+- Rolling prerelease (`rolling-*`): published from `main` pushes, marked as non-stable
+- Docker tags: `latest` = latest stable semver, `rolling` = latest rolling build
+- Homebrew formulas: `lopper` = latest stable semver, `lopper@rolling` = latest rolling build
 
 Run without local install (Docker):
 
