@@ -169,7 +169,7 @@ jobs:
             echo "- Tag: \`${ROLLING_TAG}\`"
             echo "- Stability: rolling (not a stable semver release)"
             echo "- Docker rolling tag: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lopper:rolling\`"
-            echo "- Homebrew rolling formula: \`ben-ranford/tap/lopper@rolling\`"
+            echo "- Homebrew rolling formula: \`ben-ranford/tap/lopper-rolling\`"
             echo
             if [ -n "${previous_tag}" ]; then
               echo "Changes since \`${previous_tag}\`:"
@@ -257,7 +257,7 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Update lopper@rolling formula
+      - name: Update lopper-rolling formula
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         env:
@@ -274,8 +274,8 @@ jobs:
           source_sha="$(sha256sum /tmp/lopper-rolling-source.tar.gz | awk '{print $1}')"
 
           mkdir -p Formula
-          cat > Formula/lopper@rolling.rb <<RUBY
-          class LopperATRolling < Formula
+          cat > Formula/lopper-rolling.rb <<RUBY
+          class LopperRolling < Formula
             desc "Local-first CLI/TUI for measuring dependency surface area"
             homepage "https://github.com/ben-ranford/lopper"
             url "${source_url}"
@@ -302,9 +302,9 @@ jobs:
           set -euo pipefail
           brew untap ben-ranford/tap >/dev/null 2>&1 || true
           brew tap --custom-remote ben-ranford/tap "file://${PWD}"
-          brew audit --strict --online ben-ranford/tap/lopper@rolling
-          brew install --build-from-source ben-ranford/tap/lopper@rolling
-          brew test ben-ranford/tap/lopper@rolling
+          brew audit --strict --online ben-ranford/tap/lopper-rolling
+          brew install --build-from-source ben-ranford/tap/lopper-rolling
+          brew test ben-ranford/tap/lopper-rolling
 
       - name: Commit and push rolling formula changes
         if: ${{ steps.tap_token.outputs.available == 'true' }}
@@ -314,13 +314,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add Formula/lopper@rolling.rb
+          git add Formula/lopper-rolling.rb
           if git diff --cached --quiet; then
             echo "No rolling formula changes to commit"
             exit 0
           fi
 
-          git commit -m "lopper@rolling ${{ needs.prepare-rolling.outputs.tag }}"
+          git commit -m "lopper-rolling ${{ needs.prepare-rolling.outputs.tag }}"
           git push origin HEAD:main
 
       - name: Skip rolling tap update when token is missing

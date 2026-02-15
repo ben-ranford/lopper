@@ -45,7 +45,7 @@ brew install lopper
 Install rolling channel from Homebrew tap:
 
 ```bash
-brew install ben-ranford/tap/lopper@rolling
+brew install ben-ranford/tap/lopper-rolling
 ```
 
 Update to the latest stable tap release:
@@ -92,7 +92,7 @@ Release channels:
 - Rolling prerelease (`rolling-*`): published on merge to `main`, marked as non-stable
 - Rolling GitHub prerelease assets: Linux/Windows/Darwin binaries plus source bundle
 - Docker tags: `latest` = latest stable semver, `rolling` = latest rolling build
-- Homebrew formulas: `lopper` = latest stable semver, `lopper@rolling` = latest rolling build
+- Homebrew formulas: `lopper` = latest stable semver, `lopper-rolling` = latest rolling build
 
 Run without local install (Docker):
 
