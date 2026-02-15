@@ -299,6 +299,7 @@ jobs:
             license "MIT"
 
             depends_on "go" => :build
+            conflicts_with "ben-ranford/tap/lopper-rolling", because: "both install the lopper executable"
 
             def install
               system "go", "build", *std_go_args(output: bin/"lopper"), "./cmd/lopper"
