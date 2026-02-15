@@ -7,13 +7,13 @@ This repository includes four GitHub Actions workflows:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
-- `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper@rolling`
+- `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with Linux/Windows/Darwin build artifacts plus source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper-rolling`
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
 
 Homebrew tap automation:
 
 - The weekly release workflow updates `ben-ranford/homebrew-tap` `Formula/lopper.rb` from the new semver tag.
-- The rolling workflow updates `ben-ranford/homebrew-tap` `Formula/lopper@rolling.rb` from the latest rolling tag.
+- The rolling workflow updates `ben-ranford/homebrew-tap` `Formula/lopper-rolling.rb` from the latest rolling tag.
 - The tap update step validates with `brew audit --strict --online`, `brew install --build-from-source`, and `brew test lopper` before push.
 - Set repository secret `HOMEBREW_TAP_TOKEN` (with write access to `ben-ranford/homebrew-tap`) to enable automatic tap updates.
 
