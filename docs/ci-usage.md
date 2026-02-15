@@ -7,7 +7,7 @@ This repository includes four GitHub Actions workflows:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
-- `.github/workflows/rolling.yml`: on push to `main`, publishes a rolling prerelease with source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper@rolling`
+- `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper@rolling`
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
 
 Homebrew tap automation:

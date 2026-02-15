@@ -1,14 +1,11 @@
 name: rolling
 
 on:
-  push:
+  pull_request:
+    types:
+      - closed
     branches:
       - main
-    paths-ignore:
-      - 'docs/**'
-      - '.github/**'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
 
 concurrency:
   group: release-rolling-main
@@ -16,10 +13,13 @@ concurrency:
 
 jobs:
   publish-rolling:
+    if: ${{ github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
     outputs:
       tag: ${{ steps.rolling.outputs.tag }}
     steps:
@@ -27,11 +27,12 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Compute rolling tag
         id: rolling
         run: |
-          short_sha="${GITHUB_SHA::7}"
+          short_sha="${SOURCE_SHA::7}"
           date_tag="$(date -u +'%Y%m%d%H%M%S')"
           tag="rolling-${date_tag}-${short_sha}"
           bundle="lopper_${tag}_source"
@@ -45,7 +46,7 @@ jobs:
           bundle="${{ steps.rolling.outputs.bundle }}"
           archive_path="dist/${bundle}.tar.gz"
 
-          git archive --format=tar.gz --prefix="${bundle}/" -o "$archive_path" "$GITHUB_SHA"
+          git archive --format=tar.gz --prefix="${bundle}/" -o "$archive_path" "$SOURCE_SHA"
           sha256sum "$archive_path" > "${archive_path}.sha256"
 
       - name: Generate rolling release notes
@@ -67,11 +68,11 @@ jobs:
             if [ -n "${previous_tag}" ]; then
               echo "Changes since \`${previous_tag}\`:"
               echo
-              git log --reverse --pretty=format:'- %h %s (%an)' "${previous_tag}..${GITHUB_SHA}"
+              git log --reverse --pretty=format:'- %h %s (%an)' "${previous_tag}..${SOURCE_SHA}"
             else
               echo "Commits in this rolling build:"
               echo
-              git log --reverse --pretty=format:'- %h %s (%an)' "${GITHUB_SHA}"
+              git log --reverse --pretty=format:'- %h %s (%an)' "${SOURCE_SHA}"
             fi
           } > rolling-changelog.md
 
