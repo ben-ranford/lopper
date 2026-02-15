@@ -102,7 +102,7 @@ sudo install "$(find "$tmpdir" -type f -name lopper | head -n1)" /usr/local/bin/
 
 Release channels:
 
-- Stable semver release (`vX.Y.Z`): published weekly on Saturday at 12:00 UTC
+- Stable semver release (`vX.Y.Z`): published weekly on Saturday at 12:00 UTC when changes exist since the previous stable tag
 - Rolling prerelease (`rolling-*`): published on merge to `main`, marked as non-stable
 - Rolling GitHub prerelease assets: Linux/Windows/Darwin binaries plus source bundle
 - Docker tags: `latest` = latest stable semver, `rolling` = latest rolling build

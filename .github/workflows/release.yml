@@ -18,6 +18,8 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       previous_tag: ${{ steps.tag.outputs.previous_tag }}
+      should_release: ${{ steps.tag.outputs.should_release }}
+      release_reason: ${{ steps.tag.outputs.release_reason }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -47,11 +49,35 @@ jobs:
             fi
           fi
 
+          commits_since_previous_tag="0"
+          if [ -n "${previous_tag}" ]; then
+            commits_since_previous_tag="$(git rev-list --count "${previous_tag}..HEAD")"
+          fi
+
+          should_release="true"
+          release_reason="changes_detected"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_reason="manual_dispatch"
+          elif [ -z "${previous_tag}" ]; then
+            release_reason="initial_release"
+          elif [ "${commits_since_previous_tag}" = "0" ]; then
+            should_release="false"
+            release_reason="no_changes"
+          fi
+
           echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+          echo "release_reason=$release_reason" >> "$GITHUB_OUTPUT"
+
+      - name: Log release gate decision
+        run: |
+          echo "Release gate: should_release=${{ steps.tag.outputs.should_release }}"
+          echo "Release gate reason: ${{ steps.tag.outputs.release_reason }}"
 
   build-linux-windows:
     needs: prepare
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -94,6 +120,7 @@ jobs:
 
   build-darwin:
     needs: prepare
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: macos-latest
     permissions:
       contents: read
@@ -132,6 +159,7 @@ jobs:
 
   build-ghcr:
     needs: prepare
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -178,6 +206,7 @@ jobs:
       - build-linux-windows
       - build-darwin
       - build-ghcr
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -246,6 +275,7 @@ jobs:
     needs:
       - prepare
       - publish
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -342,3 +372,14 @@ jobs:
       - name: Skip tap update when token is missing
         if: ${{ steps.tap_token.outputs.available != 'true' }}
         run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
+
+  skip-release:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_release != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: No-op when no changes since last semver tag
+        run: |
+          echo "Skipping weekly release: no changes detected since previous semver tag."
