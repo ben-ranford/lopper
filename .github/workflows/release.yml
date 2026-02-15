@@ -10,12 +10,11 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       previous_tag: ${{ steps.tag.outputs.previous_tag }}
@@ -54,6 +53,8 @@ jobs:
   build-linux-windows:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -94,6 +95,8 @@ jobs:
   build-darwin:
     needs: prepare
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -176,6 +179,8 @@ jobs:
       - build-darwin
       - build-ghcr
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout (for changelog generation)
         uses: actions/checkout@v6
