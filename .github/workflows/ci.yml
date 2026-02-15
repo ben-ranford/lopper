@@ -356,3 +356,40 @@ jobs:
         run: |
           test -f bin/lopper
           ls -lh bin/lopper
+
+  homebrew-tap-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect tap repository
+        id: tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh repo view ben-ranford/homebrew-tap >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Homebrew
+        if: ${{ steps.tap.outputs.exists == 'true' }}
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Checkout tap formula
+        if: ${{ steps.tap.outputs.exists == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: ben-ranford/homebrew-tap
+          path: homebrew-tap
+
+      - name: Run Homebrew audit and test
+        if: ${{ steps.tap.outputs.exists == 'true' }}
+        run: |
+          set -euo pipefail
+          brew audit --strict --online --formula homebrew-tap/Formula/lopper.rb
+          brew install --build-from-source homebrew-tap/Formula/lopper.rb
+          brew test lopper
+
+      - name: Skip when tap is not created yet
+        if: ${{ steps.tap.outputs.exists != 'true' }}
+        run: echo "homebrew-tap repository not found; skipping Homebrew tap verification."

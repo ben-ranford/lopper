@@ -35,6 +35,13 @@ Language selection modes:
 
 ## Quick start
 
+Install from Homebrew tap (stable semver releases):
+
+```bash
+brew tap ben-ranford/tap
+brew install lopper
+```
+
 Install binary from GitHub Releases:
 
 ```bash
@@ -59,6 +66,11 @@ tmpdir="$(mktemp -d)"
 tar -xzf /tmp/lopper.tar.gz -C "$tmpdir"
 sudo install "$(find "$tmpdir" -type f -name lopper | head -n1)" /usr/local/bin/lopper
 ```
+
+Release channels:
+
+- Stable semver release (`vX.Y.Z`): published weekly on Saturday at 12:00 UTC
+- Nightly prerelease (`nightly-*`): published from `main` pushes, marked as non-stable
 
 Run without local install (Docker):
 

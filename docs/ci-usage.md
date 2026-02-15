@@ -1,13 +1,20 @@
 # CI and release workflow
 
-This repository includes two GitHub Actions workflows:
+This repository includes four GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests and pushes to `main`
-- `.github/workflows/release.yml`: on every commit to `main`, runs CI and publishes a GitHub release with:
+- `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs CI and publishes a GitHub release with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
+- `.github/workflows/nightly.yml`: on push to `main`, publishes a nightly prerelease with source bundle assets and clearly marked nightly notes
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
+
+Homebrew tap automation:
+
+- The weekly release workflow updates `ben-ranford/homebrew-tap` `Formula/lopper.rb` from the new semver tag.
+- The tap update step validates with `brew audit --strict --online`, `brew install --build-from-source`, and `brew test lopper` before push.
+- Set repository secret `HOMEBREW_TAP_TOKEN` (with write access to `ben-ranford/homebrew-tap`) to enable automatic tap updates.
 
 ## Example pipeline
 
