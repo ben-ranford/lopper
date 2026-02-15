@@ -12,38 +12,144 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish-rolling:
+  prepare-rolling:
     if: ${{ github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.rolling.outputs.tag }}
+      source_sha: ${{ steps.rolling.outputs.source_sha }}
+    steps:
+      - name: Compute rolling tag
+        id: rolling
+        run: |
+          source_sha="${{ github.event.pull_request.merge_commit_sha || github.sha }}"
+          short_sha="${source_sha::7}"
+          date_tag="$(date -u +'%Y%m%d%H%M%S')"
+          tag="rolling-${date_tag}-${short_sha}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+
+  build-rolling-linux-windows:
+    needs:
+      - prepare-rolling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-rolling.outputs.source_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install tooling
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate project
+        run: make ci
+
+      - name: Build rolling Linux/Windows artifacts
+        run: |
+          make release \
+            VERSION=${{ needs.prepare-rolling.outputs.tag }} \
+            PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
+
+      - name: Upload rolling Linux/Windows artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: rolling-linux-windows
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  build-rolling-darwin:
+    needs:
+      - prepare-rolling
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-rolling.outputs.source_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install tooling
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate project
+        run: make ci
+
+      - name: Build rolling Darwin artifact
+        run: |
+          host_goarch="$(go env GOARCH)"
+          make release \
+            VERSION=${{ needs.prepare-rolling.outputs.tag }} \
+            PLATFORMS="darwin/${host_goarch}"
+
+      - name: Upload rolling Darwin artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: rolling-darwin
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish-rolling:
+    needs:
+      - prepare-rolling
+      - build-rolling-linux-windows
+      - build-rolling-darwin
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
-    env:
-      SOURCE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
     outputs:
-      tag: ${{ steps.rolling.outputs.tag }}
+      tag: ${{ needs.prepare-rolling.outputs.tag }}
+    env:
+      ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+      SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
     steps:
-      - name: Checkout
+      - name: Checkout (for changelog generation)
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ env.SOURCE_SHA }}
 
-      - name: Compute rolling tag
-        id: rolling
-        run: |
-          short_sha="${SOURCE_SHA::7}"
-          date_tag="$(date -u +'%Y%m%d%H%M%S')"
-          tag="rolling-${date_tag}-${short_sha}"
-          bundle="lopper_${tag}_source"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+      - name: Download rolling binary artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: rolling-*
+          merge-multiple: true
+          path: dist
 
       - name: Build rolling source bundle
         run: |
           set -euo pipefail
           mkdir -p dist
-          bundle="${{ steps.rolling.outputs.bundle }}"
+          bundle="lopper_${ROLLING_TAG}_source"
           archive_path="dist/${bundle}.tar.gz"
 
           git archive --format=tar.gz --prefix="${bundle}/" -o "$archive_path" "$SOURCE_SHA"
@@ -52,15 +158,15 @@ jobs:
       - name: Generate rolling release notes
         run: |
           set -euo pipefail
-          current_tag="${{ steps.rolling.outputs.tag }}"
+          git fetch --tags --force
           previous_tag="$(git tag --list 'rolling-*' --sort=-creatordate | head -n1)"
 
           {
             echo "## Rolling build from main"
             echo
-            echo "This is a rolling pre-release generated from the latest \`main\` commit."
+            echo "This is a rolling pre-release generated from the latest merged \`main\` commit."
             echo
-            echo "- Tag: \`${current_tag}\`"
+            echo "- Tag: \`${ROLLING_TAG}\`"
             echo "- Stability: rolling (not a stable semver release)"
             echo "- Docker rolling tag: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lopper:rolling\`"
             echo "- Homebrew rolling formula: \`ben-ranford/tap/lopper@rolling\`"
@@ -103,7 +209,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ steps.image.outputs.name }}:${{ steps.rolling.outputs.tag }}
+            ${{ steps.image.outputs.name }}:${{ env.ROLLING_TAG }}
             ${{ steps.image.outputs.name }}:rolling
           provenance: false
           sbom: true
@@ -111,16 +217,18 @@ jobs:
       - name: Publish rolling prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.rolling.outputs.tag }}
-          name: Rolling ${{ steps.rolling.outputs.tag }}
+          tag_name: ${{ env.ROLLING_TAG }}
+          name: Rolling ${{ env.ROLLING_TAG }}
           body_path: rolling-changelog.md
           prerelease: true
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/*.sha256
 
   update-homebrew-tap-rolling:
     needs:
+      - prepare-rolling
       - publish-rolling
     runs-on: ubuntu-latest
     permissions:
@@ -153,7 +261,7 @@ jobs:
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         env:
-          ROLLING_TAG: ${{ needs.publish-rolling.outputs.tag }}
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -212,7 +320,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "lopper@rolling ${{ needs.publish-rolling.outputs.tag }}"
+          git commit -m "lopper@rolling ${{ needs.prepare-rolling.outputs.tag }}"
           git push origin HEAD:main
 
       - name: Skip rolling tap update when token is missing

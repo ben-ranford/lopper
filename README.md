@@ -90,6 +90,7 @@ Release channels:
 
 - Stable semver release (`vX.Y.Z`): published weekly on Saturday at 12:00 UTC
 - Rolling prerelease (`rolling-*`): published on merge to `main`, marked as non-stable
+- Rolling GitHub prerelease assets: Linux/Windows/Darwin binaries plus source bundle
 - Docker tags: `latest` = latest stable semver, `rolling` = latest rolling build
 - Homebrew formulas: `lopper` = latest stable semver, `lopper@rolling` = latest rolling build
 
