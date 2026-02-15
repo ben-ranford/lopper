@@ -1,0 +1,219 @@
+name: rolling
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '.github/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+
+concurrency:
+  group: release-rolling-main
+  cancel-in-progress: false
+
+jobs:
+  publish-rolling:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      tag: ${{ steps.rolling.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute rolling tag
+        id: rolling
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          date_tag="$(date -u +'%Y%m%d%H%M%S')"
+          tag="rolling-${date_tag}-${short_sha}"
+          bundle="lopper_${tag}_source"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+
+      - name: Build rolling source bundle
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          bundle="${{ steps.rolling.outputs.bundle }}"
+          archive_path="dist/${bundle}.tar.gz"
+
+          git archive --format=tar.gz --prefix="${bundle}/" -o "$archive_path" "$GITHUB_SHA"
+          sha256sum "$archive_path" > "${archive_path}.sha256"
+
+      - name: Generate rolling release notes
+        run: |
+          set -euo pipefail
+          current_tag="${{ steps.rolling.outputs.tag }}"
+          previous_tag="$(git tag --list 'rolling-*' --sort=-creatordate | head -n1)"
+
+          {
+            echo "## Rolling build from main"
+            echo
+            echo "This is a rolling pre-release generated from the latest \`main\` commit."
+            echo
+            echo "- Tag: \`${current_tag}\`"
+            echo "- Stability: rolling (not a stable semver release)"
+            echo "- Docker rolling tag: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lopper:rolling\`"
+            echo "- Homebrew rolling formula: \`ben-ranford/tap/lopper@rolling\`"
+            echo
+            if [ -n "${previous_tag}" ]; then
+              echo "Changes since \`${previous_tag}\`:"
+              echo
+              git log --reverse --pretty=format:'- %h %s (%an)' "${previous_tag}..${GITHUB_SHA}"
+            else
+              echo "Commits in this rolling build:"
+              echo
+              git log --reverse --pretty=format:'- %h %s (%an)' "${GITHUB_SHA}"
+            fi
+          } > rolling-changelog.md
+
+      - name: Compute image name
+        id: image
+        run: |
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push rolling image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ steps.rolling.outputs.tag }}
+            ${{ steps.image.outputs.name }}:rolling
+          provenance: false
+          sbom: true
+
+      - name: Publish rolling prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rolling.outputs.tag }}
+          name: Rolling ${{ steps.rolling.outputs.tag }}
+          body_path: rolling-changelog.md
+          prerelease: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  update-homebrew-tap-rolling:
+    needs:
+      - publish-rolling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Detect tap token
+        id: tap_token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Homebrew
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        uses: Homebrew/actions/setup-homebrew@04a6d8cfe9d251e2afb78c5bdc6274ec9642aea2
+
+      - name: Checkout tap repository
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: ben-ranford/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update lopper@rolling formula
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        working-directory: homebrew-tap
+        env:
+          ROLLING_TAG: ${{ needs.publish-rolling.outputs.tag }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${ROLLING_TAG}.tar.gz"
+          curl --fail --show-error --silent --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "$source_url" -o /tmp/lopper-rolling-source.tar.gz
+          source_sha="$(sha256sum /tmp/lopper-rolling-source.tar.gz | awk '{print $1}')"
+
+          mkdir -p Formula
+          cat > Formula/lopper@rolling.rb <<RUBY
+          class LopperATRolling < Formula
+            desc "Local-first CLI/TUI for measuring dependency surface area"
+            homepage "https://github.com/ben-ranford/lopper"
+            url "${source_url}"
+            sha256 "${source_sha}"
+            license "MIT"
+
+            depends_on "go" => :build
+            keg_only :versioned_formula
+
+            def install
+              system "go", "build", *std_go_args(output: bin/"lopper"), "./cmd/lopper"
+            end
+
+            test do
+              assert_match "Usage:", shell_output("#{bin}/lopper --help")
+            end
+          end
+          RUBY
+
+      - name: Validate rolling formula
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          brew untap ben-ranford/tap >/dev/null 2>&1 || true
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}"
+          brew audit --strict --online ben-ranford/tap/lopper@rolling
+          brew install --build-from-source ben-ranford/tap/lopper@rolling
+          brew test ben-ranford/tap/lopper@rolling
+
+      - name: Commit and push rolling formula changes
+        if: ${{ steps.tap_token.outputs.available == 'true' }}
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Formula/lopper@rolling.rb
+          if git diff --cached --quiet; then
+            echo "No rolling formula changes to commit"
+            exit 0
+          fi
+
+          git commit -m "lopper@rolling ${{ needs.publish-rolling.outputs.tag }}"
+          git push origin HEAD:main
+
+      - name: Skip rolling tap update when token is missing
+        if: ${{ steps.tap_token.outputs.available != 'true' }}
+        run: echo "HOMEBREW_TAP_TOKEN not configured; skipping rolling tap update."
