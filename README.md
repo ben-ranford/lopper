@@ -48,6 +48,20 @@ Install rolling channel from Homebrew tap:
 brew install ben-ranford/tap/lopper-rolling
 ```
 
+Switch from stable to rolling:
+
+```bash
+brew uninstall lopper
+brew install ben-ranford/tap/lopper-rolling
+```
+
+Switch from rolling to stable:
+
+```bash
+brew uninstall lopper-rolling
+brew install lopper
+```
+
 Update to the latest stable tap release:
 
 ```bash
