@@ -291,7 +291,7 @@ jobs:
 
             keg_only :versioned_formula
             depends_on "go" => :build
-            conflicts_with "lopper", because: "both install the lopper executable"
+            conflicts_with "ben-ranford/tap/lopper", because: "both install the lopper executable"
 
             def install
               system "go", "build", *std_go_args(output: bin/"lopper"), "./cmd/lopper"
