@@ -159,7 +159,13 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --tags --force
-          previous_tag="$(git tag --list 'rolling-*' --sort=-creatordate | head -n1)"
+          previous_tag=""
+          while IFS= read -r candidate; do
+            if [ "${candidate}" != "${ROLLING_TAG}" ]; then
+              previous_tag="${candidate}"
+              break
+            fi
+          done < <(git tag --list 'rolling-*' --sort=-creatordate)
 
           {
             echo "## Rolling build from main"
@@ -218,6 +224,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.ROLLING_TAG }}
+          target_commitish: ${{ env.SOURCE_SHA }}
           name: Rolling ${{ env.ROLLING_TAG }}
           body_path: rolling-changelog.md
           prerelease: true
