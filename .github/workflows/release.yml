@@ -72,7 +72,7 @@ jobs:
       - name: Install tooling
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project
@@ -109,7 +109,7 @@ jobs:
       - name: Install tooling
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project
@@ -263,7 +263,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@04a6d8cfe9d251e2afb78c5bdc6274ec9642aea2
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}
@@ -283,7 +283,10 @@ jobs:
           set -euo pipefail
 
           source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
-          curl -fsSL "$source_url" -o /tmp/lopper-source.tar.gz
+          curl --fail --show-error --silent --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "$source_url" -o /tmp/lopper-source.tar.gz
           source_sha="$(sha256sum /tmp/lopper-source.tar.gz | awk '{print $1}')"
 
           mkdir -p Formula
@@ -302,7 +305,7 @@ jobs:
             end
 
             test do
-              assert_match "Lopper", shell_output("#{bin}/lopper --help")
+              assert_match "Usage:", shell_output("#{bin}/lopper --help")
             end
           end
           RUBY
