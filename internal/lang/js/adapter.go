@@ -150,9 +150,11 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 
 	switch {
 	case req.Dependency != "":
+		dependencyRootPath := resolveDependencyRootFromScan(repoPath, req.Dependency, scanResult)
 		depReport, warnings := buildDependencyReport(
 			repoPath,
 			req.Dependency,
+			dependencyRootPath,
 			scanResult,
 			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
 		)
@@ -179,14 +181,20 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	return result, nil
 }
 
-func buildDependencyReport(repoPath string, dependency string, scanResult ScanResult, minUsagePercentForRecommendations int) (report.DependencyReport, []string) {
+func buildDependencyReport(
+	repoPath string,
+	dependency string,
+	dependencyRootPath string,
+	scanResult ScanResult,
+	minUsagePercentForRecommendations int,
+) (report.DependencyReport, []string) {
 	usedExports := make(map[string]struct{})
 	counts := make(map[string]int)
 	usedImports := make(map[string]*report.ImportUse)
 	unusedImports := make(map[string]*report.ImportUse)
 	warnings := make([]string, 0)
 
-	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency)
+	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath)
 	warnings = append(warnings, surfaceWarnings...)
 	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
 	warnings = append(warnings, dependencyUsageWarnings(dependency, usedExports, hasWildcard)...)
@@ -206,7 +214,7 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 		usedExportCount = len(usedExports)
 	}
 
-	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, surface)
+	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, dependencyRootPath, surface)
 	warnings = append(warnings, riskWarnings...)
 
 	depReport := report.DependencyReport{
@@ -226,10 +234,10 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 	return depReport, warnings
 }
 
-func resolveSurfaceWarnings(repoPath, dependency string) (ExportSurface, []string) {
+func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
-	resolved, err := resolveDependencyExports(repoPath, dependency)
+	resolved, err := resolveDependencyExports(repoPath, dependency, dependencyRootPath)
 	if err != nil {
 		warnings = append(warnings, err.Error())
 		return surface, warnings
@@ -460,14 +468,20 @@ func matchesDependency(module string, dependency string) bool {
 }
 
 func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
-	dependencies, warnings := listDependencies(repoPath, scanResult)
+	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
 	if len(dependencies) == 0 {
 		return nil, warnings
 	}
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(repoPath, dep, scanResult, minUsagePercentForRecommendations)
+		depReport, depWarnings := buildDependencyReport(
+			repoPath,
+			dep,
+			dependencyRoots[dep],
+			scanResult,
+			minUsagePercentForRecommendations,
+		)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
@@ -502,18 +516,30 @@ func wasteScore(dep report.DependencyReport) (float64, bool) {
 	return 100 - usedPercent, true
 }
 
-func listDependencies(repoPath string, scanResult ScanResult) ([]string, []string) {
+func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[string]string, []string) {
 	set := make(map[string]struct{})
+	roots := make(map[string]string)
 	missing := make(map[string]struct{})
+	existenceCache := make(map[string]string)
 
 	for _, file := range scanResult.Files {
+		importerPath := filepath.Join(repoPath, file.Path)
 		for _, imp := range file.Imports {
 			dep := dependencyFromModule(imp.Module)
 			if dep == "" {
 				continue
 			}
-			if dependencyExists(repoPath, dep) {
+			cacheKey := importerPath + "\x00" + dep
+			resolvedRoot, ok := existenceCache[cacheKey]
+			if !ok {
+				resolvedRoot = resolveDependencyRootFromImporter(repoPath, importerPath, dep)
+				existenceCache[cacheKey] = resolvedRoot
+			}
+			if resolvedRoot != "" {
 				set[dep] = struct{}{}
+				if roots[dep] == "" {
+					roots[dep] = resolvedRoot
+				}
 			} else {
 				missing[dep] = struct{}{}
 			}
@@ -532,7 +558,7 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, []strin
 	}
 	sort.Strings(warnings)
 
-	return deps, warnings
+	return deps, roots, warnings
 }
 
 func dependencyFromModule(module string) string {
@@ -572,11 +598,45 @@ func resolveMinUsageRecommendationThreshold(value *int) int {
 	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
-func dependencyExists(repoPath string, dependency string) bool {
-	root, err := dependencyRoot(repoPath, dependency)
+func resolveDependencyRootFromImporter(repoPath string, importerPath string, dependency string) string {
+	absRepo, err := filepath.Abs(repoPath)
 	if err != nil {
-		return false
+		absRepo = repoPath
 	}
-	info, err := os.Stat(filepath.Join(root, "package.json"))
-	return err == nil && !info.IsDir()
+	startDir := filepath.Dir(importerPath)
+	absStart, err := filepath.Abs(startDir)
+	if err != nil {
+		absStart = startDir
+	}
+
+	for {
+		root, ok := resolveInstalledDependencyRoot(absRepo, absStart, dependency)
+		if ok {
+			return root
+		}
+		if absStart == absRepo {
+			break
+		}
+		parent := filepath.Dir(absStart)
+		if parent == absStart {
+			break
+		}
+		absStart = parent
+	}
+	return ""
+}
+
+func resolveDependencyRootFromScan(repoPath string, dependency string, scanResult ScanResult) string {
+	for _, file := range scanResult.Files {
+		for _, imp := range file.Imports {
+			if !matchesDependency(imp.Module, dependency) {
+				continue
+			}
+			importerPath := filepath.Join(repoPath, file.Path)
+			if resolved := resolveDependencyRootFromImporter(repoPath, importerPath, dependency); resolved != "" {
+				return resolved
+			}
+		}
+	}
+	return ""
 }

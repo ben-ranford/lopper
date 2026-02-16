@@ -380,12 +380,52 @@ func TestListDependenciesMissingAndBuiltinFiltering(t *testing.T) {
 			},
 		},
 	}
-	deps, warnings := listDependencies(repo, scan)
+	deps, roots, warnings := listDependencies(repo, scan)
 	if len(deps) != 0 {
 		t.Fatalf("expected no existing dependencies, got %#v", deps)
 	}
+	if len(roots) != 0 {
+		t.Fatalf("expected no dependency roots, got %#v", roots)
+	}
 	if len(warnings) == 0 || !strings.Contains(warnings[0], "dependency not found") {
 		t.Fatalf("expected missing dependency warning, got %#v", warnings)
+	}
+}
+
+func TestListDependenciesNestedWorkspaceNodeModules(t *testing.T) {
+	repo := t.TempDir()
+	appDir := filepath.Join(repo, "apps", "api")
+	srcFile := filepath.Join(appDir, "src", testIndexJS)
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(srcFile, []byte(""), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	if err := writeDependency(appDir, "express", "module.exports = {}\n"); err != nil {
+		t.Fatalf("write express dependency: %v", err)
+	}
+
+	scan := ScanResult{
+		Files: []FileScan{
+			{
+				Path: filepath.Join("apps", "api", "src", testIndexJS),
+				Imports: []ImportBinding{
+					{Module: "express", ExportName: "default", LocalName: "express", Kind: ImportDefault},
+				},
+			},
+		},
+	}
+	deps, roots, warnings := listDependencies(repo, scan)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no missing dependency warning, got %#v", warnings)
+	}
+	if len(deps) != 1 || deps[0] != "express" {
+		t.Fatalf("expected express dependency, got %#v", deps)
+	}
+	if got := roots["express"]; got != filepath.Join(appDir, "node_modules", "express") {
+		t.Fatalf("unexpected resolved dependency root: %q", got)
 	}
 }
 

@@ -18,10 +18,14 @@ const (
 	riskCodeDeepGraph     = "deep-transitive-graph"
 )
 
-func assessRiskCues(repoPath string, dependency string, surface ExportSurface) ([]report.RiskCue, []string) {
-	depRoot, err := dependencyRoot(repoPath, dependency)
-	if err != nil {
-		return nil, []string{fmt.Sprintf("unable to assess risk cues for %q: %v", dependency, err)}
+func assessRiskCues(repoPath string, dependency string, dependencyRootPath string, surface ExportSurface) ([]report.RiskCue, []string) {
+	depRoot := dependencyRootPath
+	if depRoot == "" {
+		root, err := dependencyRoot(repoPath, dependency)
+		if err != nil {
+			return nil, []string{fmt.Sprintf("unable to assess risk cues for %q: %v", dependency, err)}
+		}
+		depRoot = root
 	}
 
 	pkg, warnings := loadDependencyPackageJSON(depRoot)

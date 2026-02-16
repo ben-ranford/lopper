@@ -77,7 +77,7 @@ func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 
 func TestAssessRiskCueWarningBranches(t *testing.T) {
 	repo := t.TempDir()
-	cues, warnings := assessRiskCues(repo, "", ExportSurface{})
+	cues, warnings := assessRiskCues(repo, "", "", ExportSurface{})
 	if len(cues) != 0 {
 		t.Fatalf("expected no cues for invalid dependency root, got %#v", cues)
 	}
@@ -92,7 +92,7 @@ func TestAssessRiskCueWarningBranches(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid package.json: %v", err)
 	}
-	_, warnings = assessRiskCues(repo, "pkg", ExportSurface{EntryPoints: []string{filepath.Join(depRoot, "missing.js")}})
+	_, warnings = assessRiskCues(repo, "pkg", "", ExportSurface{EntryPoints: []string{filepath.Join(depRoot, "missing.js")}})
 	if len(warnings) == 0 {
 		t.Fatalf("expected warnings for invalid metadata and missing entrypoint")
 	}
