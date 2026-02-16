@@ -576,6 +576,9 @@ func (c *dependencyCollector) recordImport(repoPath string, importerPath string,
 		Dependency:   dep,
 	})
 	if resolvedRoot == "" {
+		if _, alreadyFound := c.found[dep]; alreadyFound {
+			return
+		}
 		c.missing[dep] = struct{}{}
 		return
 	}
