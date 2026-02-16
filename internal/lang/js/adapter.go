@@ -150,14 +150,20 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 
 	switch {
 	case req.Dependency != "":
+		resolvedRoots := resolveDependencyRootsFromScan(repoPath, req.Dependency, scanResult)
+		dependencyRootPath := firstResolvedDependencyRoot(resolvedRoots)
 		depReport, warnings := buildDependencyReport(
 			repoPath,
 			req.Dependency,
+			dependencyRootPath,
 			scanResult,
 			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
 		)
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
+		if len(resolvedRoots) > 1 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", req.Dependency))
+		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
 		deps, warnings := buildTopDependencies(
@@ -179,14 +185,20 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	return result, nil
 }
 
-func buildDependencyReport(repoPath string, dependency string, scanResult ScanResult, minUsagePercentForRecommendations int) (report.DependencyReport, []string) {
+func buildDependencyReport(
+	repoPath string,
+	dependency string,
+	dependencyRootPath string,
+	scanResult ScanResult,
+	minUsagePercentForRecommendations int,
+) (report.DependencyReport, []string) {
 	usedExports := make(map[string]struct{})
 	counts := make(map[string]int)
 	usedImports := make(map[string]*report.ImportUse)
 	unusedImports := make(map[string]*report.ImportUse)
 	warnings := make([]string, 0)
 
-	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency)
+	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath)
 	warnings = append(warnings, surfaceWarnings...)
 	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
 	warnings = append(warnings, dependencyUsageWarnings(dependency, usedExports, hasWildcard)...)
@@ -206,7 +218,7 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 		usedExportCount = len(usedExports)
 	}
 
-	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, surface)
+	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, dependencyRootPath, surface)
 	warnings = append(warnings, riskWarnings...)
 
 	depReport := report.DependencyReport{
@@ -226,10 +238,10 @@ func buildDependencyReport(repoPath string, dependency string, scanResult ScanRe
 	return depReport, warnings
 }
 
-func resolveSurfaceWarnings(repoPath, dependency string) (ExportSurface, []string) {
+func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
-	resolved, err := resolveDependencyExports(repoPath, dependency)
+	resolved, err := resolveDependencyExports(repoPath, dependency, dependencyRootPath)
 	if err != nil {
 		warnings = append(warnings, err.Error())
 		return surface, warnings
@@ -460,14 +472,20 @@ func matchesDependency(module string, dependency string) bool {
 }
 
 func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
-	dependencies, warnings := listDependencies(repoPath, scanResult)
+	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
 	if len(dependencies) == 0 {
 		return nil, warnings
 	}
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(repoPath, dep, scanResult, minUsagePercentForRecommendations)
+		depReport, depWarnings := buildDependencyReport(
+			repoPath,
+			dep,
+			dependencyRoots[dep],
+			scanResult,
+			minUsagePercentForRecommendations,
+		)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
@@ -502,37 +520,86 @@ func wasteScore(dep report.DependencyReport) (float64, bool) {
 	return 100 - usedPercent, true
 }
 
-func listDependencies(repoPath string, scanResult ScanResult) ([]string, []string) {
-	set := make(map[string]struct{})
-	missing := make(map[string]struct{})
-
+func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[string]string, []string) {
+	collector := newDependencyCollector()
 	for _, file := range scanResult.Files {
+		importerPath := filepath.Join(repoPath, file.Path)
 		for _, imp := range file.Imports {
-			dep := dependencyFromModule(imp.Module)
-			if dep == "" {
-				continue
-			}
-			if dependencyExists(repoPath, dep) {
-				set[dep] = struct{}{}
-			} else {
-				missing[dep] = struct{}{}
-			}
+			collector.recordImport(repoPath, importerPath, imp)
 		}
 	}
 
-	deps := make([]string, 0, len(set))
-	for dep := range set {
+	deps := make([]string, 0, len(collector.found))
+	for dep := range collector.found {
 		deps = append(deps, dep)
 	}
 	sort.Strings(deps)
 
-	warnings := make([]string, 0, len(missing))
-	for dep := range missing {
+	warnings := make([]string, 0, len(collector.missing))
+	for dep := range collector.missing {
 		warnings = append(warnings, fmt.Sprintf("dependency not found in node_modules: %s", dep))
+	}
+	for dep := range collector.multiRoot {
+		warnings = append(warnings, fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", dep))
 	}
 	sort.Strings(warnings)
 
-	return deps, warnings
+	return deps, collector.roots, warnings
+}
+
+type dependencyCollector struct {
+	found     map[string]struct{}
+	roots     map[string]string
+	multiRoot map[string]struct{}
+	missing   map[string]struct{}
+	cache     map[string]string
+}
+
+func newDependencyCollector() dependencyCollector {
+	return dependencyCollector{
+		found:     make(map[string]struct{}),
+		roots:     make(map[string]string),
+		multiRoot: make(map[string]struct{}),
+		missing:   make(map[string]struct{}),
+		cache:     make(map[string]string),
+	}
+}
+
+func (c *dependencyCollector) recordImport(repoPath string, importerPath string, imp ImportBinding) {
+	dep := dependencyFromModule(imp.Module)
+	if dep == "" {
+		return
+	}
+	resolvedRoot := c.cachedDependencyRoot(dependencyResolutionRequest{
+		RepoPath:     repoPath,
+		ImporterPath: importerPath,
+		Dependency:   dep,
+	})
+	if resolvedRoot == "" {
+		if _, alreadyFound := c.found[dep]; alreadyFound {
+			return
+		}
+		c.missing[dep] = struct{}{}
+		return
+	}
+	c.found[dep] = struct{}{}
+	if c.roots[dep] == "" {
+		c.roots[dep] = resolvedRoot
+		return
+	}
+	if c.roots[dep] != resolvedRoot {
+		c.multiRoot[dep] = struct{}{}
+	}
+}
+
+func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionRequest) string {
+	cacheKey := req.ImporterPath + "\x00" + req.Dependency
+	if resolvedRoot, ok := c.cache[cacheKey]; ok {
+		return resolvedRoot
+	}
+	resolvedRoot := resolveDependencyRootFromImporter(req)
+	c.cache[cacheKey] = resolvedRoot
+	return resolvedRoot
 }
 
 func dependencyFromModule(module string) string {
@@ -572,11 +639,96 @@ func resolveMinUsageRecommendationThreshold(value *int) int {
 	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
-func dependencyExists(repoPath string, dependency string) bool {
-	root, err := dependencyRoot(repoPath, dependency)
+type dependencyResolutionRequest struct {
+	RepoPath     string
+	ImporterPath string
+	Dependency   string
+}
+
+func resolveDependencyRootFromImporter(req dependencyResolutionRequest) string {
+	if req.RepoPath == "" || req.ImporterPath == "" || req.Dependency == "" {
+		return ""
+	}
+
+	absRepo, err := filepath.Abs(req.RepoPath)
+	if err != nil {
+		return ""
+	}
+	absImporter, err := filepath.Abs(req.ImporterPath)
+	if err != nil {
+		return ""
+	}
+	if !isPathWithin(absImporter, absRepo) {
+		return ""
+	}
+
+	absStart := filepath.Dir(absImporter)
+
+	for {
+		root, ok := resolveDependencyRootAtDir(absStart, req.Dependency)
+		if ok {
+			return root
+		}
+		if absStart == absRepo {
+			break
+		}
+		parent := filepath.Dir(absStart)
+		if parent == absStart {
+			break
+		}
+		absStart = parent
+	}
+	return ""
+}
+
+func resolveDependencyRootsFromScan(repoPath string, dependency string, scanResult ScanResult) []string {
+	rootsSet := make(map[string]struct{})
+	for _, file := range scanResult.Files {
+		for _, imp := range file.Imports {
+			if !matchesDependency(imp.Module, dependency) {
+				continue
+			}
+			importerPath := filepath.Join(repoPath, file.Path)
+			if resolved := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+				RepoPath:     repoPath,
+				ImporterPath: importerPath,
+				Dependency:   dependency,
+			}); resolved != "" {
+				rootsSet[resolved] = struct{}{}
+			}
+		}
+	}
+	roots := make([]string, 0, len(rootsSet))
+	for root := range rootsSet {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+func firstResolvedDependencyRoot(roots []string) string {
+	if len(roots) == 0 {
+		return ""
+	}
+	return roots[0]
+}
+
+func resolveDependencyRootAtDir(rootDir, dependency string) (string, bool) {
+	root := filepath.Join(rootDir, "node_modules", dependencyPath(dependency))
+	info, err := os.Stat(filepath.Join(root, "package.json"))
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return root, true
+}
+
+func isPathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
 	}
-	info, err := os.Stat(filepath.Join(root, "package.json"))
-	return err == nil && !info.IsDir()
+	if rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

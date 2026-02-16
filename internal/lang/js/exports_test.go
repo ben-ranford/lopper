@@ -11,7 +11,7 @@ func TestResolveDependencyExports(t *testing.T) {
 	repo := t.TempDir()
 	writeDependencyFixture(t, repo, "sample", "{\n  \"main\": \"index.js\"\n}\n", "export const alpha = 1\nexport function beta() {}\nexport default function () {}\n")
 
-	surface, err := resolveDependencyExports(repo, "sample")
+	surface, err := resolveDependencyExports(repo, "sample", "")
 	if err != nil {
 		t.Fatalf("resolve exports: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestResolveDependencyExportsSkipsNonCodeAssets(t *testing.T) {
 	repo := t.TempDir()
 	writeDependencyFixture(t, repo, "styled", "{\n  \"exports\": {\n    \"default\": {\n      \"styles\": \"./styles.css\",\n      \"import\": \"./index.js\"\n    }\n  }\n}\n", "export const theme = {}\n")
 
-	surface, err := resolveDependencyExports(repo, "styled")
+	surface, err := resolveDependencyExports(repo, "styled", "")
 	if err != nil {
 		t.Fatalf("resolve exports: %v", err)
 	}

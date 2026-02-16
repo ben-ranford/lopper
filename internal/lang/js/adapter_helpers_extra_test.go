@@ -17,7 +17,7 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "export const x = 1")
+	testutil.MustWriteFile(t, filepath.Join(repo, testIndexJS), "export const x = 1")
 	testutil.Chdir(t, repo)
 
 	if detection, err := adapter.DetectWithConfidence(context.Background(), ""); err != nil {
@@ -89,8 +89,21 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		}
 	}
 
-	if dependencyExists("", "dep") {
-		t.Fatalf("expected dependencyExists false for invalid repo path")
+	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+		RepoPath:     "",
+		ImporterPath: "",
+		Dependency:   "dep",
+	}); got != "" {
+		t.Fatalf("expected empty resolution for invalid repo path, got %q", got)
+	}
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+		RepoPath:     repo,
+		ImporterPath: filepath.Join(outside, "index.js"),
+		Dependency:   "dep",
+	}); got != "" {
+		t.Fatalf("expected empty resolution for importer outside repo root, got %q", got)
 	}
 
 	if warnings := dependencyUsageWarnings("dep", map[string]struct{}{}, true); len(warnings) != 2 {
@@ -99,7 +112,7 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 }
 
 func TestResolveSurfaceWarningsBranches(t *testing.T) {
-	surface, warnings := resolveSurfaceWarnings("", "dep")
+	surface, warnings := resolveSurfaceWarnings("", "dep", "")
 	if len(surface.Names) != 0 {
 		t.Fatalf("expected empty surface on resolution error")
 	}
@@ -118,7 +131,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
-	surface, warnings = resolveSurfaceWarnings(repo, "wild")
+	surface, warnings = resolveSurfaceWarnings(repo, "wild", "")
 	if !surface.IncludesWildcard {
 		t.Fatalf("expected wildcard export surface")
 	}

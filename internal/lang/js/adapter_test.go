@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 	testWriteEntrypointFmt = "write entrypoint: %v"
 	testExpectedOneDepFmt  = "expected 1 dependency report, got %d"
 	testPackageJSONMain    = "{\n  \"main\": \"index.js\"\n}\n"
+	testModuleExportsStub  = "module.exports = {}\n"
 )
 
 func TestAdapterAnalyseDependency(t *testing.T) {
@@ -380,12 +382,115 @@ func TestListDependenciesMissingAndBuiltinFiltering(t *testing.T) {
 			},
 		},
 	}
-	deps, warnings := listDependencies(repo, scan)
+	deps, roots, warnings := listDependencies(repo, scan)
 	if len(deps) != 0 {
 		t.Fatalf("expected no existing dependencies, got %#v", deps)
 	}
+	if len(roots) != 0 {
+		t.Fatalf("expected no dependency roots, got %#v", roots)
+	}
 	if len(warnings) == 0 || !strings.Contains(warnings[0], "dependency not found") {
 		t.Fatalf("expected missing dependency warning, got %#v", warnings)
+	}
+}
+
+func TestListDependenciesNestedWorkspaceNodeModules(t *testing.T) {
+	repo := t.TempDir()
+	appDir := filepath.Join(repo, "apps", "api")
+	srcFile := filepath.Join(appDir, "src", testIndexJS)
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(srcFile, []byte(""), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	if err := writeDependency(appDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write express dependency: %v", err)
+	}
+
+	scan := ScanResult{
+		Files: []FileScan{
+			{
+				Path: filepath.Join("apps", "api", "src", testIndexJS),
+				Imports: []ImportBinding{
+					{Module: "express", ExportName: "default", LocalName: "express", Kind: ImportDefault},
+				},
+			},
+		},
+	}
+	deps, roots, warnings := listDependencies(repo, scan)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no missing dependency warning, got %#v", warnings)
+	}
+	if len(deps) != 1 || deps[0] != "express" {
+		t.Fatalf("expected express dependency, got %#v", deps)
+	}
+	if got := roots["express"]; got != filepath.Join(appDir, "node_modules", "express") {
+		t.Fatalf("unexpected resolved dependency root: %q", got)
+	}
+}
+
+func TestListDependenciesWarnsWhenDependencyHasMultipleRoots(t *testing.T) {
+	repo := t.TempDir()
+	apiDir := filepath.Join(repo, "apps", "api")
+	webDir := filepath.Join(repo, "apps", "web")
+
+	if err := writeDependency(apiDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write api express dependency: %v", err)
+	}
+	if err := writeDependency(webDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write web express dependency: %v", err)
+	}
+
+	scan := ScanResult{
+		Files: []FileScan{
+			{
+				Path: filepath.Join("apps", "api", "src", testIndexJS),
+				Imports: []ImportBinding{
+					{Module: "express", ExportName: "default", LocalName: "express", Kind: ImportDefault},
+				},
+			},
+			{
+				Path: filepath.Join("apps", "web", "src", testIndexJS),
+				Imports: []ImportBinding{
+					{Module: "express", ExportName: "default", LocalName: "express", Kind: ImportDefault},
+				},
+			},
+		},
+	}
+	_, _, warnings := listDependencies(repo, scan)
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "dependency resolves to multiple node_modules roots: express") {
+		t.Fatalf("expected multi-root warning, got %#v", warnings)
+	}
+}
+
+func TestAdapterAnalyseDependencyWarnsWhenMultipleRootsAreResolved(t *testing.T) {
+	repo := t.TempDir()
+	apiDir := filepath.Join(repo, "apps", "api")
+	webDir := filepath.Join(repo, "apps", "web")
+
+	testutil.MustWriteFile(t, filepath.Join(apiDir, "src", testIndexJS), "import express from \"express\"\nexpress()\n")
+	testutil.MustWriteFile(t, filepath.Join(webDir, "src", testIndexJS), "import express from \"express\"\nexpress()\n")
+
+	if err := writeDependency(apiDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write api express dependency: %v", err)
+	}
+	if err := writeDependency(webDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write web express dependency: %v", err)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "express",
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if !strings.Contains(warnings, "dependency resolves to multiple node_modules roots: express") {
+		t.Fatalf("expected multi-root warning in dependency mode, got %#v", reportData.Warnings)
 	}
 }
 
@@ -412,7 +517,7 @@ func mustWritePackage(t *testing.T, root string, pkgJSON string) {
 	if err := os.WriteFile(filepath.Join(root, testPackageJSONName), []byte(pkgJSON), 0o644); err != nil {
 		t.Fatalf("write %s package.json: %v", root, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, testIndexJS), []byte("module.exports = {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, testIndexJS), []byte(testModuleExportsStub), 0o644); err != nil {
 		t.Fatalf("write %s index.js: %v", root, err)
 	}
 }

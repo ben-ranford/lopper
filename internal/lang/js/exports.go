@@ -31,11 +31,15 @@ type packageJSON struct {
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
 }
 
-func resolveDependencyExports(repoPath string, dependency string) (ExportSurface, error) {
+func resolveDependencyExports(repoPath string, dependency string, dependencyRootPath string) (ExportSurface, error) {
 	surface := ExportSurface{Names: make(map[string]struct{})}
-	depPath, err := dependencyRoot(repoPath, dependency)
-	if err != nil {
-		return surface, err
+	depPath := dependencyRootPath
+	if depPath == "" {
+		root, err := dependencyRoot(repoPath, dependency)
+		if err != nil {
+			return surface, err
+		}
+		depPath = root
 	}
 
 	pkg, warnings, err := loadPackageJSONForSurface(depPath)
