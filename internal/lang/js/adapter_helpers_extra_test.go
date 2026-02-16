@@ -96,6 +96,15 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 	}); got != "" {
 		t.Fatalf("expected empty resolution for invalid repo path, got %q", got)
 	}
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+		RepoPath:     repo,
+		ImporterPath: filepath.Join(outside, "index.js"),
+		Dependency:   "dep",
+	}); got != "" {
+		t.Fatalf("expected empty resolution for importer outside repo root, got %q", got)
+	}
 
 	if warnings := dependencyUsageWarnings("dep", map[string]struct{}{}, true); len(warnings) != 2 {
 		t.Fatalf("expected both no-usage and wildcard warnings, got %#v", warnings)

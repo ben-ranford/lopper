@@ -150,7 +150,8 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 
 	switch {
 	case req.Dependency != "":
-		dependencyRootPath := resolveDependencyRootFromScan(repoPath, req.Dependency, scanResult)
+		resolvedRoots := resolveDependencyRootsFromScan(repoPath, req.Dependency, scanResult)
+		dependencyRootPath := firstResolvedDependencyRoot(resolvedRoots)
 		depReport, warnings := buildDependencyReport(
 			repoPath,
 			req.Dependency,
@@ -160,6 +161,9 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 		)
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
+		if len(resolvedRoots) > 1 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", req.Dependency))
+		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
 		deps, warnings := buildTopDependencies(
@@ -639,18 +643,26 @@ type dependencyResolutionRequest struct {
 }
 
 func resolveDependencyRootFromImporter(req dependencyResolutionRequest) string {
-	absRepo, err := filepath.Abs(req.RepoPath)
-	if err != nil {
-		absRepo = req.RepoPath
-	}
-	startDir := filepath.Dir(req.ImporterPath)
-	absStart, err := filepath.Abs(startDir)
-	if err != nil {
-		absStart = startDir
+	if req.RepoPath == "" || req.ImporterPath == "" || req.Dependency == "" {
+		return ""
 	}
 
+	absRepo, err := filepath.Abs(req.RepoPath)
+	if err != nil {
+		return ""
+	}
+	absImporter, err := filepath.Abs(req.ImporterPath)
+	if err != nil {
+		return ""
+	}
+	if !isPathWithin(absImporter, absRepo) {
+		return ""
+	}
+
+	absStart := filepath.Dir(absImporter)
+
 	for {
-		root, ok := resolveInstalledDependencyRoot(absRepo, absStart, req.Dependency)
+		root, ok := resolveDependencyRootAtDir(absStart, req.Dependency)
 		if ok {
 			return root
 		}
@@ -666,7 +678,8 @@ func resolveDependencyRootFromImporter(req dependencyResolutionRequest) string {
 	return ""
 }
 
-func resolveDependencyRootFromScan(repoPath string, dependency string, scanResult ScanResult) string {
+func resolveDependencyRootsFromScan(repoPath string, dependency string, scanResult ScanResult) []string {
+	rootsSet := make(map[string]struct{})
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {
 			if !matchesDependency(imp.Module, dependency) {
@@ -678,9 +691,41 @@ func resolveDependencyRootFromScan(repoPath string, dependency string, scanResul
 				ImporterPath: importerPath,
 				Dependency:   dependency,
 			}); resolved != "" {
-				return resolved
+				rootsSet[resolved] = struct{}{}
 			}
 		}
 	}
-	return ""
+	roots := make([]string, 0, len(rootsSet))
+	for root := range rootsSet {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+func firstResolvedDependencyRoot(roots []string) string {
+	if len(roots) == 0 {
+		return ""
+	}
+	return roots[0]
+}
+
+func resolveDependencyRootAtDir(rootDir string, dependency string) (string, bool) {
+	root := filepath.Join(rootDir, "node_modules", dependencyPath(dependency))
+	info, err := os.Stat(filepath.Join(root, "package.json"))
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return root, true
+}
+
+func isPathWithin(path string, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

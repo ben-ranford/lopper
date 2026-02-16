@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -462,6 +463,34 @@ func TestListDependenciesWarnsWhenDependencyHasMultipleRoots(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "dependency resolves to multiple node_modules roots: express") {
 		t.Fatalf("expected multi-root warning, got %#v", warnings)
+	}
+}
+
+func TestAdapterAnalyseDependencyWarnsWhenMultipleRootsAreResolved(t *testing.T) {
+	repo := t.TempDir()
+	apiDir := filepath.Join(repo, "apps", "api")
+	webDir := filepath.Join(repo, "apps", "web")
+
+	testutil.MustWriteFile(t, filepath.Join(apiDir, "src", testIndexJS), "import express from \"express\"\nexpress()\n")
+	testutil.MustWriteFile(t, filepath.Join(webDir, "src", testIndexJS), "import express from \"express\"\nexpress()\n")
+
+	if err := writeDependency(apiDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write api express dependency: %v", err)
+	}
+	if err := writeDependency(webDir, "express", testModuleExportsStub); err != nil {
+		t.Fatalf("write web express dependency: %v", err)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "express",
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if !strings.Contains(warnings, "dependency resolves to multiple node_modules roots: express") {
+		t.Fatalf("expected multi-root warning in dependency mode, got %#v", reportData.Warnings)
 	}
 }
 
