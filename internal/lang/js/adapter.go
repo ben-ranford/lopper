@@ -710,7 +710,7 @@ func firstResolvedDependencyRoot(roots []string) string {
 	return roots[0]
 }
 
-func resolveDependencyRootAtDir(rootDir string, dependency string) (string, bool) {
+func resolveDependencyRootAtDir(rootDir, dependency string) (string, bool) {
 	root := filepath.Join(rootDir, "node_modules", dependencyPath(dependency))
 	info, err := os.Stat(filepath.Join(root, "package.json"))
 	if err != nil || info.IsDir() {
@@ -719,7 +719,7 @@ func resolveDependencyRootAtDir(rootDir string, dependency string) (string, bool
 	return root, true
 }
 
-func isPathWithin(path string, root string) bool {
+func isPathWithin(path, root string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false

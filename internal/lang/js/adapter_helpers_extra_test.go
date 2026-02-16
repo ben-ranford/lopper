@@ -17,7 +17,7 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "export const x = 1")
+	testutil.MustWriteFile(t, filepath.Join(repo, testIndexJS), "export const x = 1")
 	testutil.Chdir(t, repo)
 
 	if detection, err := adapter.DetectWithConfidence(context.Background(), ""); err != nil {
