@@ -517,48 +517,73 @@ func wasteScore(dep report.DependencyReport) (float64, bool) {
 }
 
 func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[string]string, []string) {
-	set := make(map[string]struct{})
-	roots := make(map[string]string)
-	missing := make(map[string]struct{})
-	existenceCache := make(map[string]string)
-
+	collector := newDependencyCollector()
 	for _, file := range scanResult.Files {
 		importerPath := filepath.Join(repoPath, file.Path)
 		for _, imp := range file.Imports {
-			dep := dependencyFromModule(imp.Module)
-			if dep == "" {
-				continue
-			}
-			cacheKey := importerPath + "\x00" + dep
-			resolvedRoot, ok := existenceCache[cacheKey]
-			if !ok {
-				resolvedRoot = resolveDependencyRootFromImporter(repoPath, importerPath, dep)
-				existenceCache[cacheKey] = resolvedRoot
-			}
-			if resolvedRoot != "" {
-				set[dep] = struct{}{}
-				if roots[dep] == "" {
-					roots[dep] = resolvedRoot
-				}
-			} else {
-				missing[dep] = struct{}{}
-			}
+			collector.recordImport(repoPath, importerPath, imp)
 		}
 	}
 
-	deps := make([]string, 0, len(set))
-	for dep := range set {
+	deps := make([]string, 0, len(collector.found))
+	for dep := range collector.found {
 		deps = append(deps, dep)
 	}
 	sort.Strings(deps)
 
-	warnings := make([]string, 0, len(missing))
-	for dep := range missing {
+	warnings := make([]string, 0, len(collector.missing))
+	for dep := range collector.missing {
 		warnings = append(warnings, fmt.Sprintf("dependency not found in node_modules: %s", dep))
 	}
 	sort.Strings(warnings)
 
-	return deps, roots, warnings
+	return deps, collector.roots, warnings
+}
+
+type dependencyCollector struct {
+	found   map[string]struct{}
+	roots   map[string]string
+	missing map[string]struct{}
+	cache   map[string]string
+}
+
+func newDependencyCollector() dependencyCollector {
+	return dependencyCollector{
+		found:   make(map[string]struct{}),
+		roots:   make(map[string]string),
+		missing: make(map[string]struct{}),
+		cache:   make(map[string]string),
+	}
+}
+
+func (c *dependencyCollector) recordImport(repoPath string, importerPath string, imp ImportBinding) {
+	dep := dependencyFromModule(imp.Module)
+	if dep == "" {
+		return
+	}
+	resolvedRoot := c.cachedDependencyRoot(dependencyResolutionRequest{
+		RepoPath:     repoPath,
+		ImporterPath: importerPath,
+		Dependency:   dep,
+	})
+	if resolvedRoot == "" {
+		c.missing[dep] = struct{}{}
+		return
+	}
+	c.found[dep] = struct{}{}
+	if c.roots[dep] == "" {
+		c.roots[dep] = resolvedRoot
+	}
+}
+
+func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionRequest) string {
+	cacheKey := req.ImporterPath + "\x00" + req.Dependency
+	if resolvedRoot, ok := c.cache[cacheKey]; ok {
+		return resolvedRoot
+	}
+	resolvedRoot := resolveDependencyRootFromImporter(req)
+	c.cache[cacheKey] = resolvedRoot
+	return resolvedRoot
 }
 
 func dependencyFromModule(module string) string {
@@ -598,19 +623,25 @@ func resolveMinUsageRecommendationThreshold(value *int) int {
 	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
-func resolveDependencyRootFromImporter(repoPath string, importerPath string, dependency string) string {
-	absRepo, err := filepath.Abs(repoPath)
+type dependencyResolutionRequest struct {
+	RepoPath     string
+	ImporterPath string
+	Dependency   string
+}
+
+func resolveDependencyRootFromImporter(req dependencyResolutionRequest) string {
+	absRepo, err := filepath.Abs(req.RepoPath)
 	if err != nil {
-		absRepo = repoPath
+		absRepo = req.RepoPath
 	}
-	startDir := filepath.Dir(importerPath)
+	startDir := filepath.Dir(req.ImporterPath)
 	absStart, err := filepath.Abs(startDir)
 	if err != nil {
 		absStart = startDir
 	}
 
 	for {
-		root, ok := resolveInstalledDependencyRoot(absRepo, absStart, dependency)
+		root, ok := resolveInstalledDependencyRoot(absRepo, absStart, req.Dependency)
 		if ok {
 			return root
 		}
@@ -633,7 +664,11 @@ func resolveDependencyRootFromScan(repoPath string, dependency string, scanResul
 				continue
 			}
 			importerPath := filepath.Join(repoPath, file.Path)
-			if resolved := resolveDependencyRootFromImporter(repoPath, importerPath, dependency); resolved != "" {
+			if resolved := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+				RepoPath:     repoPath,
+				ImporterPath: importerPath,
+				Dependency:   dependency,
+			}); resolved != "" {
 				return resolved
 			}
 		}

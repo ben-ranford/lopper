@@ -89,7 +89,11 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		}
 	}
 
-	if got := resolveDependencyRootFromImporter("", "", "dep"); got != "" {
+	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+		RepoPath:     "",
+		ImporterPath: "",
+		Dependency:   "dep",
+	}); got != "" {
 		t.Fatalf("expected empty resolution for invalid repo path, got %q", got)
 	}
 
