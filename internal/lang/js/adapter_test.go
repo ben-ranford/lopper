@@ -20,6 +20,7 @@ const (
 	testWriteEntrypointFmt = "write entrypoint: %v"
 	testExpectedOneDepFmt  = "expected 1 dependency report, got %d"
 	testPackageJSONMain    = "{\n  \"main\": \"index.js\"\n}\n"
+	testModuleExportsStub  = "module.exports = {}\n"
 )
 
 func TestAdapterAnalyseDependency(t *testing.T) {
@@ -403,7 +404,7 @@ func TestListDependenciesNestedWorkspaceNodeModules(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
-	if err := writeDependency(appDir, "express", "module.exports = {}\n"); err != nil {
+	if err := writeDependency(appDir, "express", testModuleExportsStub); err != nil {
 		t.Fatalf("write express dependency: %v", err)
 	}
 
@@ -434,10 +435,10 @@ func TestListDependenciesWarnsWhenDependencyHasMultipleRoots(t *testing.T) {
 	apiDir := filepath.Join(repo, "apps", "api")
 	webDir := filepath.Join(repo, "apps", "web")
 
-	if err := writeDependency(apiDir, "express", "module.exports = {}\n"); err != nil {
+	if err := writeDependency(apiDir, "express", testModuleExportsStub); err != nil {
 		t.Fatalf("write api express dependency: %v", err)
 	}
-	if err := writeDependency(webDir, "express", "module.exports = {}\n"); err != nil {
+	if err := writeDependency(webDir, "express", testModuleExportsStub); err != nil {
 		t.Fatalf("write web express dependency: %v", err)
 	}
 
@@ -487,7 +488,7 @@ func mustWritePackage(t *testing.T, root string, pkgJSON string) {
 	if err := os.WriteFile(filepath.Join(root, testPackageJSONName), []byte(pkgJSON), 0o644); err != nil {
 		t.Fatalf("write %s package.json: %v", root, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, testIndexJS), []byte("module.exports = {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, testIndexJS), []byte(testModuleExportsStub), 0o644); err != nil {
 		t.Fatalf("write %s index.js: %v", root, err)
 	}
 }

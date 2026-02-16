@@ -544,20 +544,20 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 }
 
 type dependencyCollector struct {
-	found   map[string]struct{}
-	roots   map[string]string
+	found     map[string]struct{}
+	roots     map[string]string
 	multiRoot map[string]struct{}
-	missing map[string]struct{}
-	cache   map[string]string
+	missing   map[string]struct{}
+	cache     map[string]string
 }
 
 func newDependencyCollector() dependencyCollector {
 	return dependencyCollector{
-		found:   make(map[string]struct{}),
-		roots:   make(map[string]string),
+		found:     make(map[string]struct{}),
+		roots:     make(map[string]string),
 		multiRoot: make(map[string]struct{}),
-		missing: make(map[string]struct{}),
-		cache:   make(map[string]string),
+		missing:   make(map[string]struct{}),
+		cache:     make(map[string]string),
 	}
 }
 
