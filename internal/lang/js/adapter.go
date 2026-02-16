@@ -535,6 +535,9 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 	for dep := range collector.missing {
 		warnings = append(warnings, fmt.Sprintf("dependency not found in node_modules: %s", dep))
 	}
+	for dep := range collector.multiRoot {
+		warnings = append(warnings, fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", dep))
+	}
 	sort.Strings(warnings)
 
 	return deps, collector.roots, warnings
@@ -543,6 +546,7 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 type dependencyCollector struct {
 	found   map[string]struct{}
 	roots   map[string]string
+	multiRoot map[string]struct{}
 	missing map[string]struct{}
 	cache   map[string]string
 }
@@ -551,6 +555,7 @@ func newDependencyCollector() dependencyCollector {
 	return dependencyCollector{
 		found:   make(map[string]struct{}),
 		roots:   make(map[string]string),
+		multiRoot: make(map[string]struct{}),
 		missing: make(map[string]struct{}),
 		cache:   make(map[string]string),
 	}
@@ -573,6 +578,10 @@ func (c *dependencyCollector) recordImport(repoPath string, importerPath string,
 	c.found[dep] = struct{}{}
 	if c.roots[dep] == "" {
 		c.roots[dep] = resolvedRoot
+		return
+	}
+	if c.roots[dep] != resolvedRoot {
+		c.multiRoot[dep] = struct{}{}
 	}
 }
 

@@ -429,6 +429,41 @@ func TestListDependenciesNestedWorkspaceNodeModules(t *testing.T) {
 	}
 }
 
+func TestListDependenciesWarnsWhenDependencyHasMultipleRoots(t *testing.T) {
+	repo := t.TempDir()
+	apiDir := filepath.Join(repo, "apps", "api")
+	webDir := filepath.Join(repo, "apps", "web")
+
+	if err := writeDependency(apiDir, "express", "module.exports = {}\n"); err != nil {
+		t.Fatalf("write api express dependency: %v", err)
+	}
+	if err := writeDependency(webDir, "express", "module.exports = {}\n"); err != nil {
+		t.Fatalf("write web express dependency: %v", err)
+	}
+
+	scan := ScanResult{
+		Files: []FileScan{
+			{
+				Path: filepath.Join("apps", "api", "src", testIndexJS),
+				Imports: []ImportBinding{
+					{Module: "express", ExportName: "default", LocalName: "express", Kind: ImportDefault},
+				},
+			},
+			{
+				Path: filepath.Join("apps", "web", "src", testIndexJS),
+				Imports: []ImportBinding{
+					{Module: "express", ExportName: "default", LocalName: "express", Kind: ImportDefault},
+				},
+			},
+		},
+	}
+	_, _, warnings := listDependencies(repo, scan)
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "dependency resolves to multiple node_modules roots: express") {
+		t.Fatalf("expected multi-root warning, got %#v", warnings)
+	}
+}
+
 func writeDependency(repo string, name string, entrypoint string) error {
 	depDir := filepath.Join(repo, "node_modules", name)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
