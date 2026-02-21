@@ -143,7 +143,7 @@ func collectCandidateEntrypoints(pkg packageJSON, profile runtimeProfile, surfac
 			addEntrypoint(entrypoints, entry)
 		}
 		if len(resolved) > 0 {
-			surface.Warnings = append(surface.Warnings, fmt.Sprintf("resolved exports using runtime profile %q", profile.name))
+			surface.Warnings = append(surface.Warnings, fmt.Sprintf("info: resolved exports using runtime profile %q", profile.name))
 		} else {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("no exports resolved for runtime profile %q; falling back to legacy entrypoints", profile.name))
 		}
