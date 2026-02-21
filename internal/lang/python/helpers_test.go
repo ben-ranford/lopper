@@ -82,7 +82,7 @@ func TestPythonModuleResolutionHelpers(t *testing.T) {
 }
 
 func TestPythonDirectoryAndRecommendationsHelpers(t *testing.T) {
-	if !shouldSkipDir(".venv") || shouldSkipDir("src") {
+	if !shouldSkipDir(".git") || !shouldSkipDir(".venv") || shouldSkipDir("src") {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 

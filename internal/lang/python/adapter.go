@@ -462,12 +462,13 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	switch name {
-	case ".git", ".idea", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".mypy_cache", ".pytest_cache":
-		return true
-	default:
-		return false
-	}
+	return shared.ShouldSkipDir(name, map[string]bool{
+		"__pycache__":   true,
+		".venv":         true,
+		"venv":          true,
+		".mypy_cache":   true,
+		".pytest_cache": true,
+	})
 }
 
 func pythonFileUsages(scan scanResult) []shared.FileUsage {

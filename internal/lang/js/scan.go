@@ -74,15 +74,10 @@ var supportedExtensions = map[string]bool{
 }
 
 var skipDirectories = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	"dist":         true,
-	"build":        true,
-	"out":          true,
-	"coverage":     true,
-	"vendor":       true,
-	".next":        true,
-	".turbo":       true,
+	"out":      true,
+	"coverage": true,
+	".next":    true,
+	".turbo":   true,
 }
 
 func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
@@ -129,7 +124,7 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 
 func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry fs.DirEntry) error {
 	if entry.IsDir() {
-		if skipDirectories[entry.Name()] {
+		if shared.ShouldSkipDir(entry.Name(), skipDirectories) {
 			return fs.SkipDir
 		}
 		return nil

@@ -459,12 +459,14 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	switch name {
-	case ".git", ".idea", "node_modules", "build", "target", ".gradle", ".mvn", "out", ".classpath", ".settings":
-		return true
-	default:
-		return false
-	}
+	return shared.ShouldSkipDir(name, map[string]bool{
+		"target":     true,
+		".gradle":    true,
+		".mvn":       true,
+		"out":        true,
+		".classpath": true,
+		".settings":  true,
+	})
 }
 
 type dependencyDescriptor struct {

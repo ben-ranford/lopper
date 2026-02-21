@@ -344,7 +344,7 @@ func TestAdapterDetectWalkErrorOnFileRepoPath(t *testing.T) {
 }
 
 func TestJSAdapterHelperBranches(t *testing.T) {
-	if !shouldSkipDetectDir("node_modules") || shouldSkipDetectDir("src") {
+	if !shouldSkipDetectDir("node_modules") || !shouldSkipDetectDir(".next") || shouldSkipDetectDir("src") {
 		t.Fatalf("unexpected shouldSkipDetectDir behavior")
 	}
 	if !isJSExtension(".ts") || isJSExtension(".md") {

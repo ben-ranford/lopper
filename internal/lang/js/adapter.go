@@ -115,12 +115,11 @@ func scanFilesForJSDetection(repoPath string, detection *language.Detection, roo
 }
 
 func shouldSkipDetectDir(name string) bool {
-	switch name {
-	case ".git", ".idea", "dist", "build", "vendor", "node_modules", ".next", ".turbo", "coverage":
-		return true
-	default:
-		return false
-	}
+	return shared.ShouldSkipDir(name, map[string]bool{
+		".next":    true,
+		".turbo":   true,
+		"coverage": true,
+	})
 }
 
 func isJSExtension(ext string) bool {

@@ -226,6 +226,18 @@ func TestDetectionHelpers(t *testing.T) {
 	}
 }
 
+func TestShouldSkipDir(t *testing.T) {
+	if !ShouldSkipDir(".git", nil) {
+		t.Fatalf("expected baseline skip for .git")
+	}
+	if !ShouldSkipDir(".venv", map[string]bool{".venv": true}) {
+		t.Fatalf("expected language-specific skip for .venv")
+	}
+	if ShouldSkipDir("src", nil) {
+		t.Fatalf("did not expect src to be skipped")
+	}
+}
+
 func TestApplyRootSignals(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "CMakeLists.txt"), []byte("project(x)\n"), 0o600); err != nil {
