@@ -68,7 +68,7 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		t.Fatalf("expected merged import locations, got %#v", flattened)
 	}
 
-	filtered := removeOverlaps(
+	filtered := removeOverlappingUnusedImports(
 		[]report.ImportUse{{Name: "map", Module: "lodash"}, {Name: "filter", Module: "lodash"}},
 		[]report.ImportUse{{Name: "map", Module: "lodash"}},
 	)

@@ -231,6 +231,7 @@ func buildDependencyReport(
 	return depReport, warnings
 }
 
+// dependencyUsageSummary captures intermediate usage aggregates for dependency report assembly.
 type dependencyUsageSummary struct {
 	usedExports   map[string]struct{}
 	counts        map[string]int
@@ -239,6 +240,7 @@ type dependencyUsageSummary struct {
 	warnings      []string
 }
 
+// collectDependencyUsageSummary aggregates dependency import usage into report-ready lists and warnings.
 func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dependencyUsageSummary {
 	usedExports := make(map[string]struct{})
 	counts := make(map[string]int)
@@ -255,6 +257,7 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 	}
 }
 
+// finalizeImportUsageLists flattens import maps and removes used/unused overlaps from the unused list.
 func finalizeImportUsageLists(
 	usedImports map[string]*report.ImportUse,
 	unusedImports map[string]*report.ImportUse,
@@ -466,10 +469,6 @@ func removeOverlappingUnusedImports(unused []report.ImportUse, used []report.Imp
 	}
 
 	return filtered
-}
-
-func removeOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
-	return removeOverlappingUnusedImports(unused, used)
 }
 
 func buildUnusedExports(module string, surface map[string]struct{}, used map[string]struct{}) []report.SymbolRef {
