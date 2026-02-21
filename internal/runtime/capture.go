@@ -10,6 +10,8 @@ import (
 )
 
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
+const runtimeBinDirsEnvKey = "LOPPER_RUNTIME_BIN_DIRS"
+const defaultTrustedRuntimeBinDirs = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 
 var runtimeExecutableAllowlist = map[string]struct{}{
 	"npm":    {},
@@ -83,7 +85,7 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 
 	executable := fields[0]
 	args := fields[1:]
-	executablePath, err := resolveRuntimeExecutablePath(executable, os.Getenv("PATH"))
+	executablePath, err := resolveRuntimeExecutablePath(executable, runtimeSearchDirs())
 	if err != nil {
 		return nil, err
 	}
@@ -97,12 +99,12 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	return cmd, nil
 }
 
-func resolveRuntimeExecutablePath(executable string, pathValue string) (string, error) {
+func resolveRuntimeExecutablePath(executable string, searchDirs []string) (string, error) {
 	if _, ok := runtimeExecutableAllowlist[executable]; !ok {
 		return "", fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
 
-	for _, dir := range trustedPathDirs(pathValue) {
+	for _, dir := range searchDirs {
 		candidate := filepath.Join(dir, executable)
 		info, err := os.Stat(candidate)
 		if err != nil || info.IsDir() {
@@ -114,7 +116,7 @@ func resolveRuntimeExecutablePath(executable string, pathValue string) (string, 
 		return candidate, nil
 	}
 
-	return "", fmt.Errorf("runtime test executable %q not found in trusted PATH directories", executable)
+	return "", fmt.Errorf("runtime test executable %q not found in trusted runtime directories", executable)
 }
 
 func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
@@ -126,10 +128,18 @@ func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec
 	return &exec.Cmd{}, nil
 }
 
-func trustedPathDirs(pathValue string) []string {
+func runtimeSearchDirs() []string {
+	configured := strings.TrimSpace(os.Getenv(runtimeBinDirsEnvKey))
+	if configured == "" {
+		configured = defaultTrustedRuntimeBinDirs
+	}
+	return trustedSearchDirs(configured)
+}
+
+func trustedSearchDirs(dirListValue string) []string {
 	seen := make(map[string]struct{})
 	dirs := make([]string, 0)
-	for _, raw := range filepath.SplitList(pathValue) {
+	for _, raw := range filepath.SplitList(dirListValue) {
 		dir := filepath.Clean(strings.TrimSpace(raw))
 		if dir == "" || !filepath.IsAbs(dir) {
 			continue
@@ -142,7 +152,7 @@ func trustedPathDirs(pathValue string) []string {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		// Reject group/other-writable PATH entries.
+		// Reject group/other-writable runtime search entries.
 		if info.Mode().Perm()&0o022 != 0 {
 			continue
 		}

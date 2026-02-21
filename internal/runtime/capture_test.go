@@ -99,7 +99,7 @@ func TestCaptureValidationErrors(t *testing.T) {
 }
 
 func TestCaptureExecutableNotFound(t *testing.T) {
-	t.Setenv("PATH", "")
+	t.Setenv(runtimeBinDirsEnvKey, t.TempDir())
 	repo := t.TempDir()
 	err := Capture(context.Background(), CaptureRequest{
 		RepoPath: repo,
@@ -108,13 +108,13 @@ func TestCaptureExecutableNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected executable-not-found capture error")
 	}
-	if !strings.Contains(err.Error(), "not found in trusted PATH directories") {
+	if !strings.Contains(err.Error(), "not found in trusted runtime directories") {
 		t.Fatalf("unexpected capture executable-not-found error: %v", err)
 	}
 }
 
 func TestBuildRuntimeCommandAllowlist(t *testing.T) {
-	t.Setenv("PATH", setupFakeRuntimeTools(t))
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
 
 	commands := []string{
 		npmTestCommand,
@@ -142,7 +142,7 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 	}
 }
 
-func TestTrustedPathDirs(t *testing.T) {
+func TestTrustedSearchDirs(t *testing.T) {
 	secureA := t.TempDir()
 	secureB := t.TempDir()
 	insecure := filepath.Join(t.TempDir(), "insecure")
@@ -158,7 +158,7 @@ func TestTrustedPathDirs(t *testing.T) {
 		t.Fatalf("chmod insecure: %v", err)
 	}
 
-	pathValue := strings.Join([]string{
+	dirListValue := strings.Join([]string{
 		"",
 		".",
 		secureA,
@@ -166,7 +166,7 @@ func TestTrustedPathDirs(t *testing.T) {
 		secureB,
 		secureA, // duplicate
 	}, string(os.PathListSeparator))
-	got := trustedPathDirs(pathValue)
+	got := trustedSearchDirs(dirListValue)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 trusted dirs, got %d: %v", len(got), got)
 	}
@@ -176,6 +176,11 @@ func TestTrustedPathDirs(t *testing.T) {
 	if got[1] != secureB {
 		t.Fatalf("expected secureB second, got %q", got[1])
 	}
+}
+
+func TestRuntimeSearchDirsDefault(t *testing.T) {
+	t.Setenv(runtimeBinDirsEnvKey, "")
+	_ = runtimeSearchDirs()
 }
 
 func TestBuildRuntimeCommandRequiresInput(t *testing.T) {
