@@ -10,8 +10,8 @@ It compares imported dependencies to actual usage and reports waste, risk cues, 
 Install from GitHub Releases:
 
 ```bash
-# macOS/Linux (manual download/install from latest release)
-curl -fsSL https://github.com/ben-ranford/lopper/releases/latest
+# Open latest release page and download the asset for your platform.
+gh release view --repo ben-ranford/lopper --web
 ```
 
 Run without local install:
@@ -48,7 +48,8 @@ lopper tui --repo . --language all
 
 ## Languages
 
-- Supported adapters: `js-ts`, `python`, `jvm`, `go`
+- Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`
+- Source of truth for adapter IDs: `lopper --help`
 - Language modes:
   - `auto`: choose highest-confidence adapter
   - `all`: run all matching adapters and merge results
