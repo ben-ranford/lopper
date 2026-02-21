@@ -7,6 +7,7 @@ The core contracts are in `internal/language`.
 
 - `js-ts` (JavaScript/TypeScript)
 - `python` (Python)
+- `cpp` (C/C++)
 - `jvm` (Java/Kotlin)
 - `go` (Go)
 - `php` (PHP)
