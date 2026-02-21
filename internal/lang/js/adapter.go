@@ -383,50 +383,6 @@ func isAmbiguousImportUsage(imp ImportBinding, file FileScan) bool {
 	return hasDirectIdentifierUsage(imp, file)
 }
 
-type importUsageCollector struct {
-	usedExports   map[string]struct{}
-	counts        map[string]int
-	usedImports   map[string]*report.ImportUse
-	unusedImports map[string]*report.ImportUse
-}
-
-func collectMatchingImport(
-	dependency string,
-	imp ImportBinding,
-	file FileScan,
-	usage importUsageCollector,
-) (bool, bool) {
-	if !matchesDependency(imp.Module, dependency) {
-		return false, false
-	}
-	used := applyImportUsage(imp, file, usage.usedExports, usage.counts)
-	recordDependencyImportUse(imp, used, usage.usedImports, usage.unusedImports)
-	return true, isAmbiguousWildcardUsage(imp, file)
-}
-
-func recordDependencyImportUse(
-	imp ImportBinding,
-	used bool,
-	usedImports map[string]*report.ImportUse,
-	unusedImports map[string]*report.ImportUse,
-) {
-	entry := recordImportUse(imp)
-	if used {
-		addImportUse(usedImports, entry)
-		return
-	}
-	addImportUse(unusedImports, entry)
-}
-
-func isAmbiguousWildcardUsage(imp ImportBinding, file FileScan) bool {
-	// Only flag as ambiguous if it's a wildcard/default import AND
-	// the identifier is used directly (not just through property access).
-	if imp.ExportName != "*" && imp.ExportName != "default" {
-		return false
-	}
-	return hasDirectIdentifierUsage(imp, file)
-}
-
 func dependencyUsageWarnings(dependency string, usedExports map[string]struct{}, hasWildcard bool) []string {
 	warnings := make([]string, 0)
 	if len(usedExports) == 0 {
