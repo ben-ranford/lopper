@@ -478,12 +478,7 @@ func parseIncludes(content []byte) []parsedInclude {
 		}
 		delimiter := payload[0]
 		if delimiter != '<' && delimiter != '"' {
-			includes = append(includes, parsedInclude{
-				Path:      payload,
-				Delimiter: delimiter,
-				Line:      idx + 1,
-				Column:    shared.FirstContentColumn(line),
-			})
+			appendParsedInclude(&includes, payload, delimiter, line, idx+1)
 			continue
 		}
 		closing := byte('>')
@@ -492,26 +487,25 @@ func parseIncludes(content []byte) []parsedInclude {
 		}
 		end := strings.IndexByte(payload[1:], closing)
 		if end < 0 {
-			includes = append(includes, parsedInclude{
-				Path:      payload,
-				Delimiter: delimiter,
-				Line:      idx + 1,
-				Column:    shared.FirstContentColumn(line),
-			})
+			appendParsedInclude(&includes, payload, delimiter, line, idx+1)
 			continue
 		}
 		header := strings.TrimSpace(payload[1 : 1+end])
 		if header == "" {
 			continue
 		}
-		includes = append(includes, parsedInclude{
-			Path:      filepath.ToSlash(header),
-			Delimiter: delimiter,
-			Line:      idx + 1,
-			Column:    shared.FirstContentColumn(line),
-		})
+		appendParsedInclude(&includes, filepath.ToSlash(header), delimiter, line, idx+1)
 	}
 	return includes
+}
+
+func appendParsedInclude(includes *[]parsedInclude, path string, delimiter byte, line string, lineNo int) {
+	*includes = append(*includes, parsedInclude{
+		Path:      path,
+		Delimiter: delimiter,
+		Line:      lineNo,
+		Column:    shared.FirstContentColumn(line),
+	})
 }
 
 func mapIncludeToDependency(repoPath string, sourcePath string, include parsedInclude, includeDirs []string) (string, bool) {
@@ -611,7 +605,7 @@ func isLikelyStdHeader(header string) bool {
 func buildRequestedCPPDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	switch {
 	case req.Dependency != "":
-		dependency := canonicalDependency(req.Dependency)
+		dependency := shared.NormalizeDependencyID(req.Dependency)
 		dep, warnings := buildDependencyReport(dependency, scan)
 		return []report.DependencyReport{dep}, warnings
 	case req.TopN > 0:
@@ -626,7 +620,7 @@ func buildTopCPPDependencies(topN int, scan scanResult) ([]report.DependencyRepo
 	for _, file := range scan.Files {
 		for _, include := range file.Includes {
 			if include.Dependency != "" {
-				dependencySet[canonicalDependency(include.Dependency)] = struct{}{}
+				dependencySet[shared.NormalizeDependencyID(include.Dependency)] = struct{}{}
 			}
 		}
 	}
@@ -645,7 +639,7 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 	usedImportsByHeader := make(map[string]*report.ImportUse)
 	for _, file := range scan.Files {
 		for _, include := range file.Includes {
-			if canonicalDependency(include.Dependency) != dependency {
+			if shared.NormalizeDependencyID(include.Dependency) != dependency {
 				continue
 			}
 			usedByHeader[include.Header]++
@@ -710,10 +704,6 @@ func flattenImportUses(imports map[string]*report.ImportUse, orderedKeys []strin
 	return items
 }
 
-func canonicalDependency(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
 func sortedCountKeys(values map[string]int) []string {
 	items := make([]string, 0, len(values))
 	for name := range values {
@@ -731,8 +721,7 @@ func relOrBase(repoPath, value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	_, skip := ignoredDirNames[strings.ToLower(name)]
-	return skip
+	return shared.ShouldSkipCommonDir(name)
 }
 
 func isCPPSourceFile(path string) bool {
@@ -754,11 +743,6 @@ func isCPPSourceOrHeader(path string) bool {
 	default:
 		return false
 	}
-}
-
-var ignoredDirNames = map[string]struct{}{
-	".cache": {}, ".git": {}, ".hg": {}, ".idea": {}, ".next": {}, ".svn": {},
-	"build": {}, "dist": {}, "node_modules": {}, "out": {}, "target": {}, "vendor": {},
 }
 
 var cppStdHeaderSet = map[string]struct{}{
