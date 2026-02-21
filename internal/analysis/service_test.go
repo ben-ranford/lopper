@@ -35,6 +35,7 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
 	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
 	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
+	writeFile(t, filepath.Join(repo, "src", "native", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -52,10 +53,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
-		t.Fatalf("expected js-ts, python, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
+	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "cpp") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
+		t.Fatalf("expected js-ts, python, cpp, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
 	}
-	if len(reportData.LanguageBreakdown) < 7 {
+	if len(reportData.LanguageBreakdown) < 8 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 }
@@ -199,6 +200,31 @@ public class Program { public static void Main() {} }
 	}
 	if hasRecommendationCode(withZero.Dependencies[0], "reduce-low-usage-package-surface") {
 		t.Fatalf("did not expect low-usage recommendation when threshold is 0")
+	}
+}
+
+func TestServiceAnalyseCPPAlias(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "openssl",
+		Language:   "c++",
+	})
+	if err != nil {
+		t.Fatalf("analyse c++ alias: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Language != "cpp" {
+		t.Fatalf("expected language cpp, got %q", dep.Language)
+	}
+	if dep.UsedExportsCount == 0 {
+		t.Fatalf("expected include usage to be counted")
 	}
 }
 

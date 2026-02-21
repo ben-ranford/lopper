@@ -3,12 +3,16 @@ package shared
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestFirstContentColumn(t *testing.T) {
@@ -201,5 +205,82 @@ func TestDetectionHelpers(t *testing.T) {
 		return language.Detection{}, boom
 	}); !errors.Is(err, boom) {
 		t.Fatalf("expected detect helper to propagate error, got %v", err)
+	}
+}
+
+func TestApplyRootSignals(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "CMakeLists.txt"), []byte("project(x)\n"), 0o600); err != nil {
+		t.Fatalf("write cmake: %v", err)
+	}
+
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	err := ApplyRootSignals(repo, []RootSignal{
+		{Name: "CMakeLists.txt", Confidence: 40},
+		{Name: "missing.file", Confidence: 99},
+	}, &detection, roots)
+	if err != nil {
+		t.Fatalf("apply root signals: %v", err)
+	}
+	if !detection.Matched || detection.Confidence != 40 {
+		t.Fatalf("unexpected detection from root signals: %#v", detection)
+	}
+	if _, ok := roots[repo]; !ok {
+		t.Fatalf("expected repo root to be added")
+	}
+}
+
+func TestWalkRepoFiles(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules"), 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "ignored.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write ignored.txt: %v", err)
+	}
+
+	var visited []string
+	err := WalkRepoFiles(context.Background(), repo, 1, ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
+		visited = append(visited, filepath.Base(path))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk repo files: %v", err)
+	}
+	if len(visited) != 1 {
+		t.Fatalf("expected max-file cut-off to limit to 1 visit, got %#v", visited)
+	}
+}
+
+func TestWalkRepoFilesCanceled(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if WalkRepoFiles(testutil.CanceledContext(), repo, 0, nil, func(path string, entry fs.DirEntry) error { return nil }) == nil {
+		t.Fatalf("expected context canceled error from WalkRepoFiles")
+	}
+}
+
+func TestIsPathWithin(t *testing.T) {
+	repo := t.TempDir()
+	inside := filepath.Join(repo, "src", "a.txt")
+	outside := filepath.Join(repo, "..", "outside.txt")
+
+	if !IsPathWithin(repo, inside) {
+		t.Fatalf("expected inside path to be within repo")
+	}
+	if IsPathWithin(repo, outside) {
+		t.Fatalf("expected outside path to be outside repo")
+	}
+	if IsPathWithin("\x00", inside) {
+		t.Fatalf("expected invalid root to return false")
 	}
 }
