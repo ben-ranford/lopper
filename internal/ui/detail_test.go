@@ -206,3 +206,28 @@ func TestDetailShowWarningsAndCommandBranches(t *testing.T) {
 		t.Fatalf("expected non-open command not to be a detail command")
 	}
 }
+
+func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
+	var out bytes.Buffer
+	printRemovalCandidate(&out, &report.RemovalCandidate{
+		Score:      88.2,
+		Usage:      90.1,
+		Impact:     50.0,
+		Confidence: 77.7,
+		Rationale:  []string{"reason-a", "reason-b"},
+	})
+	text := out.String()
+	for _, want := range []string{
+		"score: 88.2",
+		"usage: 90.1",
+		"impact: 50.0",
+		"confidence: 77.7",
+		"rationale:",
+		"reason-a",
+		"reason-b",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in removal candidate output, got %q", want, text)
+		}
+	}
+}
