@@ -58,8 +58,46 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 	if annotated.Dependencies[0].RuntimeUsage == nil || !annotated.Dependencies[0].RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected alpha to be runtime-only annotated")
 	}
+	if annotated.Dependencies[0].RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected alpha runtime-only correlation, got %#v", annotated.Dependencies[0].RuntimeUsage)
+	}
 	if annotated.Dependencies[1].RuntimeUsage == nil || annotated.Dependencies[1].RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected beta to be runtime annotated but not runtime-only")
+	}
+	if annotated.Dependencies[1].RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected beta overlap correlation, got %#v", annotated.Dependencies[1].RuntimeUsage)
+	}
+}
+
+func TestAnnotateStaticOnly(t *testing.T) {
+	rep := report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name: "alpha",
+				UsedImports: []report.ImportUse{
+					{Name: "map", Module: "alpha"},
+				},
+			},
+		},
+	}
+
+	annotated := Annotate(rep, Trace{DependencyLoads: map[string]int{}})
+	if annotated.Dependencies[0].RuntimeUsage != nil {
+		t.Fatalf("did not expect runtime usage when trace has no loads")
+	}
+
+	annotated = Annotate(rep, Trace{DependencyLoads: map[string]int{"other": 1}})
+	if annotated.Dependencies[0].RuntimeUsage == nil {
+		t.Fatalf("expected static-only runtime usage annotation")
+	}
+	if annotated.Dependencies[0].RuntimeUsage.Correlation != report.RuntimeCorrelationStaticOnly {
+		t.Fatalf("expected static-only correlation, got %#v", annotated.Dependencies[0].RuntimeUsage)
+	}
+	if annotated.Dependencies[0].RuntimeUsage.LoadCount != 0 {
+		t.Fatalf("expected zero load count for static-only annotation, got %d", annotated.Dependencies[0].RuntimeUsage.LoadCount)
+	}
+	if annotated.Dependencies[0].RuntimeUsage.RuntimeOnly {
+		t.Fatalf("did not expect runtime-only=true for static-only annotation")
 	}
 }
 

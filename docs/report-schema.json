@@ -175,6 +175,10 @@
       "required": ["loadCount"],
       "properties": {
         "loadCount": { "type": "integer", "minimum": 0 },
+        "correlation": {
+          "type": "string",
+          "enum": ["static-only", "runtime-only", "overlap"]
+        },
         "runtimeOnly": { "type": "boolean" }
       }
     },

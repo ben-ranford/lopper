@@ -65,16 +65,33 @@ func Annotate(rep report.Report, trace Trace) report.Report {
 			continue
 		}
 		loads := trace.DependencyLoads[dep.Name]
-		if loads == 0 {
+		hasStatic := hasStaticEvidence(*dep)
+		if loads == 0 && !hasStatic {
 			continue
 		}
-		staticImports := len(dep.UsedImports) + len(dep.UnusedImports)
+		correlation := runtimeCorrelation(hasStatic, loads > 0)
 		dep.RuntimeUsage = &report.RuntimeUsage{
 			LoadCount:   loads,
-			RuntimeOnly: staticImports == 0,
+			Correlation: correlation,
+			RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
 		}
 	}
 	return rep
+}
+
+func hasStaticEvidence(dep report.DependencyReport) bool {
+	return len(dep.UsedImports)+len(dep.UnusedImports) > 0
+}
+
+func runtimeCorrelation(hasStatic, hasRuntime bool) report.RuntimeCorrelation {
+	switch {
+	case hasStatic && hasRuntime:
+		return report.RuntimeCorrelationOverlap
+	case hasRuntime:
+		return report.RuntimeCorrelationRuntimeOnly
+	default:
+		return report.RuntimeCorrelationStaticOnly
+	}
 }
 
 func dependencyFromEvent(event Event) string {

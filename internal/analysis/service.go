@@ -296,18 +296,25 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 
 	if left.RuntimeUsage != nil || right.RuntimeUsage != nil {
 		loadCount := 0
-		runtimeOnly := true
+		hasStatic := false
+		hasRuntime := false
 		if left.RuntimeUsage != nil {
 			loadCount += left.RuntimeUsage.LoadCount
-			runtimeOnly = runtimeOnly && left.RuntimeUsage.RuntimeOnly
+			leftHasStatic, leftHasRuntime := runtimeUsageSignals(left.RuntimeUsage)
+			hasStatic = hasStatic || leftHasStatic
+			hasRuntime = hasRuntime || leftHasRuntime
 		}
 		if right.RuntimeUsage != nil {
 			loadCount += right.RuntimeUsage.LoadCount
-			runtimeOnly = runtimeOnly && right.RuntimeUsage.RuntimeOnly
+			rightHasStatic, rightHasRuntime := runtimeUsageSignals(right.RuntimeUsage)
+			hasStatic = hasStatic || rightHasStatic
+			hasRuntime = hasRuntime || rightHasRuntime
 		}
+		correlation := mergeRuntimeCorrelation(hasStatic, hasRuntime)
 		merged.RuntimeUsage = &report.RuntimeUsage{
 			LoadCount:   loadCount,
-			RuntimeOnly: runtimeOnly,
+			Correlation: correlation,
+			RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
 		}
 	}
 
@@ -351,6 +358,35 @@ func filterUsedOverlaps(unused []report.ImportUse, used []report.ImportUse) []re
 		filtered = append(filtered, item)
 	}
 	return filtered
+}
+
+func runtimeUsageSignals(usage *report.RuntimeUsage) (hasStatic bool, hasRuntime bool) {
+	if usage == nil {
+		return false, false
+	}
+	switch usage.Correlation {
+	case report.RuntimeCorrelationOverlap:
+		return true, true
+	case report.RuntimeCorrelationRuntimeOnly:
+		return false, true
+	case report.RuntimeCorrelationStaticOnly:
+		return true, false
+	}
+	if usage.RuntimeOnly {
+		return false, usage.LoadCount > 0
+	}
+	return true, usage.LoadCount > 0
+}
+
+func mergeRuntimeCorrelation(hasStatic, hasRuntime bool) report.RuntimeCorrelation {
+	switch {
+	case hasStatic && hasRuntime:
+		return report.RuntimeCorrelationOverlap
+	case hasRuntime:
+		return report.RuntimeCorrelationRuntimeOnly
+	default:
+		return report.RuntimeCorrelationStaticOnly
+	}
 }
 
 func mergeSymbolRefs(left []report.SymbolRef, right []report.SymbolRef) []report.SymbolRef {

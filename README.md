@@ -124,6 +124,8 @@ Use trace in analysis:
 ```bash
 lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lopper-runtime.ndjson
 ```
+
+With runtime traces enabled, `runtimeUsage.correlation` marks each JS/TS dependency as `static-only`, `runtime-only`, or `overlap`.
 ## Development
 
 ```bash

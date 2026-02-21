@@ -58,7 +58,11 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 		RiskCues:          []report.RiskCue{{Code: "dynamic", Severity: "low", Message: "x"}},
 		Recommendations:   []report.Recommendation{{Code: "rec-a", Priority: "high", Message: "x"}},
 		TopUsedSymbols:    []report.SymbolUsage{{Name: "map", Count: 2}},
-		RuntimeUsage:      &report.RuntimeUsage{LoadCount: 1, RuntimeOnly: true},
+		RuntimeUsage: &report.RuntimeUsage{
+			LoadCount:   1,
+			Correlation: report.RuntimeCorrelationRuntimeOnly,
+			RuntimeOnly: true,
+		},
 	}
 	right := report.DependencyReport{
 		Language:          "js-ts",
@@ -71,7 +75,10 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 		RiskCues:          []report.RiskCue{{Code: "native", Severity: "high", Message: "y"}},
 		Recommendations:   []report.Recommendation{{Code: "rec-b", Priority: "low", Message: "y"}},
 		TopUsedSymbols:    []report.SymbolUsage{{Name: "map", Count: 1}, {Name: "filter", Count: 1}},
-		RuntimeUsage:      &report.RuntimeUsage{LoadCount: 2, RuntimeOnly: false},
+		RuntimeUsage: &report.RuntimeUsage{
+			LoadCount:   2,
+			Correlation: report.RuntimeCorrelationOverlap,
+		},
 	}
 
 	merged := mergeDependency(left, right)
@@ -80,6 +87,9 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 	}
 	if merged.RuntimeUsage == nil || merged.RuntimeUsage.LoadCount != 3 || merged.RuntimeUsage.RuntimeOnly {
 		t.Fatalf("unexpected merged runtime usage: %#v", merged.RuntimeUsage)
+	}
+	if merged.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected overlap correlation, got %#v", merged.RuntimeUsage)
 	}
 	if len(merged.RiskCues) != 2 || len(merged.Recommendations) != 2 {
 		t.Fatalf("expected merged cues and recommendations")
@@ -245,5 +255,57 @@ func TestResolveRemovalCandidateWeights(t *testing.T) {
 	got := resolveRemovalCandidateWeights(custom)
 	if got.Usage != 0.2 || got.Impact != 0.3 || got.Confidence != 0.5 {
 		t.Fatalf("expected normalized custom weights, got %#v", got)
+	}
+}
+
+func TestRuntimeUsageSignalsAndMergeCorrelation(t *testing.T) {
+	cases := []struct {
+		name       string
+		usage      *report.RuntimeUsage
+		hasStatic  bool
+		hasRuntime bool
+	}{
+		{name: "nil", usage: nil, hasStatic: false, hasRuntime: false},
+		{
+			name:       "static-only correlation",
+			usage:      &report.RuntimeUsage{LoadCount: 0, Correlation: report.RuntimeCorrelationStaticOnly},
+			hasStatic:  true,
+			hasRuntime: false,
+		},
+		{
+			name:       "runtime-only correlation",
+			usage:      &report.RuntimeUsage{LoadCount: 2, Correlation: report.RuntimeCorrelationRuntimeOnly},
+			hasStatic:  false,
+			hasRuntime: true,
+		},
+		{
+			name:       "overlap correlation",
+			usage:      &report.RuntimeUsage{LoadCount: 3, Correlation: report.RuntimeCorrelationOverlap},
+			hasStatic:  true,
+			hasRuntime: true,
+		},
+		{
+			name:       "legacy runtime-only bool",
+			usage:      &report.RuntimeUsage{LoadCount: 1, RuntimeOnly: true},
+			hasStatic:  false,
+			hasRuntime: true,
+		},
+	}
+
+	for _, tc := range cases {
+		gotStatic, gotRuntime := runtimeUsageSignals(tc.usage)
+		if gotStatic != tc.hasStatic || gotRuntime != tc.hasRuntime {
+			t.Fatalf("%s: expected static/runtime %v/%v got %v/%v", tc.name, tc.hasStatic, tc.hasRuntime, gotStatic, gotRuntime)
+		}
+	}
+
+	if got := mergeRuntimeCorrelation(true, false); got != report.RuntimeCorrelationStaticOnly {
+		t.Fatalf("expected static-only merge correlation, got %q", got)
+	}
+	if got := mergeRuntimeCorrelation(false, true); got != report.RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected runtime-only merge correlation, got %q", got)
+	}
+	if got := mergeRuntimeCorrelation(true, true); got != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected overlap merge correlation, got %q", got)
 	}
 }

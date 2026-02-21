@@ -26,5 +26,6 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 ## Notes
 
 - `runtimeUsage` currently annotates JS/TS dependencies.
+- `runtimeUsage.correlation` distinguishes `static-only`, `runtime-only`, and `overlap` evidence categories.
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `schemaVersion` is currently pinned to `0.1.0`.

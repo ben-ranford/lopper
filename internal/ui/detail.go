@@ -160,6 +160,9 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
 		return
 	}
 	_, _ = fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
+	if usage.Correlation != "" {
+		_, _ = fmt.Fprintf(out, "  - correlation: %s\n", usage.Correlation)
+	}
 	if usage.RuntimeOnly {
 		_, _ = fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
 	}
