@@ -14,6 +14,7 @@ import (
 	tsxlang "github.com/smacker/go-tree-sitter/typescript/tsx"
 	tslang "github.com/smacker/go-tree-sitter/typescript/typescript"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -481,11 +482,7 @@ func parseObjectPattern(node *sitter.Node, content []byte, module string, relPat
 }
 
 func makeImportBinding(module string, exportName string, localName string, kind ImportKind, relPath string, node *sitter.Node) ImportBinding {
-	location := report.Location{
-		File:   relPath,
-		Line:   int(node.StartPoint().Row) + 1,
-		Column: int(node.StartPoint().Column) + 1,
-	}
+	location := shared.Location(relPath, int(node.StartPoint().Row)+1, int(node.StartPoint().Column)+1)
 	return ImportBinding{
 		Module:     module,
 		ExportName: exportName,

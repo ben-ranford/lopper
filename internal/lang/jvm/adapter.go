@@ -274,17 +274,15 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
-	lines := strings.Split(string(content), "\n")
-	imports := make([]importBinding, 0)
-	for index, line := range lines {
+	return shared.ParseImportLines(content, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
 		if len(matches) != 3 {
-			continue
+			return nil
 		}
 		module := strings.TrimSpace(matches[1])
 		if module == "" || shouldIgnoreImport(module, filePackage) {
-			continue
+			return nil
 		}
 
 		dependency := resolveDependency(module, depPrefixes, depAliases)
@@ -292,7 +290,7 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 			dependency = fallbackDependency(module)
 		}
 		if dependency == "" {
-			continue
+			return nil
 		}
 
 		wildcard := strings.TrimSpace(matches[2]) == ".*"
@@ -301,30 +299,21 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 			symbol = "*"
 		}
 		if symbol == "" {
-			continue
+			return nil
 		}
 
-		imports = append(imports, importBinding{
+		return []shared.ImportRecord{{
 			Dependency: dependency,
 			Module:     module,
 			Name:       symbol,
 			Local:      symbol,
 			Wildcard:   wildcard,
-			Location: report.Location{
-				File:   filePath,
-				Line:   index + 1,
-				Column: firstContentColumn(line),
-			},
-		})
-	}
-	return imports
+		}}
+	})
 }
 
 func stripLineComment(line string) string {
-	if index := strings.Index(line, "//"); index >= 0 {
-		return line[:index]
-	}
-	return line
+	return shared.StripLineComment(line, "//")
 }
 
 func shouldIgnoreImport(module string, filePackage string) bool {

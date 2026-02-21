@@ -263,25 +263,21 @@ var (
 )
 
 func parseImports(content []byte, filePath string, repoPath string) []importBinding {
-	lines := strings.Split(string(content), "\n")
-	bindings := make([]importBinding, 0)
-
-	for index, line := range lines {
+	return shared.ParseImportLines(content, filePath, func(line string, index int) []shared.ImportRecord {
 		lineNoComment := stripComment(line)
 		if strings.TrimSpace(lineNoComment) == "" {
-			continue
+			return nil
 		}
 
 		if matches := importLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 2 {
-			bindings = append(bindings, parseImportLine(matches[1], filePath, repoPath, index, lineNoComment)...)
-			continue
+			return parseImportLine(matches[1], filePath, repoPath, index, lineNoComment)
 		}
 
 		if matches := fromLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 3 {
-			bindings = append(bindings, parseFromImportLine(matches[1], matches[2], filePath, repoPath, index, lineNoComment)...)
+			return parseFromImportLine(matches[1], matches[2], filePath, repoPath, index, lineNoComment)
 		}
-	}
-	return bindings
+		return nil
+	})
 }
 
 func parseImportLine(partsText string, filePath string, repoPath string, index int, line string) []importBinding {
@@ -341,11 +337,7 @@ func parseFromImportLine(moduleValue string, symbolsValue string, filePath strin
 }
 
 func importLocation(filePath string, index int, line string) report.Location {
-	return report.Location{
-		File:   filePath,
-		Line:   index + 1,
-		Column: shared.FirstContentColumn(line),
-	}
+	return shared.LocationFromLine(filePath, index, line)
 }
 
 func splitCSV(value string) []string {
@@ -376,10 +368,7 @@ func parseImportPart(value string) (string, string) {
 }
 
 func stripComment(line string) string {
-	if index := strings.Index(line, "#"); index >= 0 {
-		return line[:index]
-	}
-	return line
+	return shared.StripLineComment(line, "#")
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
