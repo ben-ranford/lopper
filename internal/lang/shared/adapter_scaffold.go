@@ -45,13 +45,12 @@ func WalkRepoFiles(
 	}
 
 	walker := repoWalker{
-		ctx:      ctx,
 		maxFiles: maxFiles,
 		skipDir:  skipDir,
 		visit:    visit,
 	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		return walker.handle(path, entry, walkErr)
+		return walker.handle(ctx, path, entry, walkErr)
 	})
 	if err != nil && err != fs.SkipAll {
 		return err
@@ -60,19 +59,18 @@ func WalkRepoFiles(
 }
 
 type repoWalker struct {
-	ctx      context.Context
 	maxFiles int
 	skipDir  func(string) bool
 	visit    func(path string, entry fs.DirEntry) error
 	visited  int
 }
 
-func (w *repoWalker) handle(path string, entry fs.DirEntry, walkErr error) error {
+func (w *repoWalker) handle(ctx context.Context, path string, entry fs.DirEntry, walkErr error) error {
 	if walkErr != nil {
 		return walkErr
 	}
-	if w.ctx != nil && w.ctx.Err() != nil {
-		return w.ctx.Err()
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
 	}
 	if entry.IsDir() {
 		if w.skipDir(entry.Name()) {
