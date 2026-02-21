@@ -235,3 +235,15 @@ func TestMergeSortAndPriorityHelperBranches(t *testing.T) {
 		t.Fatalf("expected unknown priority rank 3, got %d", rank)
 	}
 }
+
+func TestResolveRemovalCandidateWeights(t *testing.T) {
+	defaults := report.DefaultRemovalCandidateWeights()
+	if got := resolveRemovalCandidateWeights(nil); got != defaults {
+		t.Fatalf("expected default removal candidate weights, got %#v", got)
+	}
+	custom := &report.RemovalCandidateWeights{Usage: 2, Impact: 3, Confidence: 5}
+	got := resolveRemovalCandidateWeights(custom)
+	if got.Usage != 0.2 || got.Impact != 0.3 || got.Confidence != 0.5 {
+		t.Fatalf("expected normalized custom weights, got %#v", got)
+	}
+}

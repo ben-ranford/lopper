@@ -15,6 +15,7 @@ type Request struct {
 	TopN                              int
 	RuntimeProfile                    string
 	MinUsagePercentForRecommendations *int
+	RemovalCandidateWeights           *report.RemovalCandidateWeights
 }
 
 type Detection struct {

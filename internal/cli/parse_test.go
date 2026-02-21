@@ -176,6 +176,9 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		thresholdFailFlag, "2",
 		"--threshold-low-confidence-warning", "31",
 		"--threshold-min-usage-percent", "45",
+		"--score-weight-usage", "0.7",
+		"--score-weight-impact", "0.2",
+		"--score-weight-confidence", "0.1",
 	})
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
@@ -188,6 +191,9 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.MinUsagePercentForRecommendations != 45 {
 		t.Fatalf("expected min-usage threshold 45, got %d", req.Analyse.Thresholds.MinUsagePercentForRecommendations)
+	}
+	if req.Analyse.Thresholds.RemovalCandidateWeightUsage != 0.7 || req.Analyse.Thresholds.RemovalCandidateWeightImpact != 0.2 || req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.1 {
+		t.Fatalf("expected score weights 0.7/0.2/0.1, got %+v", req.Analyse.Thresholds)
 	}
 }
 
@@ -222,6 +228,9 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 		"  fail_on_increase_percent: 4",
 		"  low_confidence_warning_percent: 27",
 		"  min_usage_percent_for_recommendations: 52",
+		"  removal_candidate_weight_usage: 0.2",
+		"  removal_candidate_weight_impact: 0.5",
+		"  removal_candidate_weight_confidence: 0.3",
 		"",
 	}, "\n")
 	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
@@ -230,6 +239,7 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 		"analyse", "--top", "10",
 		"--repo", repo,
 		"--threshold-min-usage-percent", "60",
+		"--score-weight-confidence", "0.6",
 	})
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
@@ -243,6 +253,15 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	if req.Analyse.Thresholds.MinUsagePercentForRecommendations != 60 {
 		t.Fatalf("expected CLI min-usage threshold 60, got %d", req.Analyse.Thresholds.MinUsagePercentForRecommendations)
 	}
+	if req.Analyse.Thresholds.RemovalCandidateWeightUsage != 0.2 {
+		t.Fatalf("expected config usage weight 0.2, got %f", req.Analyse.Thresholds.RemovalCandidateWeightUsage)
+	}
+	if req.Analyse.Thresholds.RemovalCandidateWeightImpact != 0.5 {
+		t.Fatalf("expected config impact weight 0.5, got %f", req.Analyse.Thresholds.RemovalCandidateWeightImpact)
+	}
+	if req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.6 {
+		t.Fatalf("expected CLI confidence weight 0.6, got %f", req.Analyse.Thresholds.RemovalCandidateWeightConfidence)
+	}
 }
 
 func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
@@ -255,6 +274,16 @@ func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseRejectsInvalidScoreWeight(t *testing.T) {
+	_, err := ParseArgs([]string{"analyse", "--top", "2", "--score-weight-usage", "-1"})
+	if err == nil {
+		t.Fatalf("expected score weight validation error")
+	}
+	if !strings.Contains(err.Error(), "removal_candidate_weight_usage") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 	args := normalizeArgs([]string{"lodash", "--top", "5", "--format=json", "--", "--literal"})
 	if len(args) == 0 {
@@ -262,6 +291,9 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 	}
 	if !flagNeedsValue(thresholdFailFlag) {
 		t.Fatalf("expected threshold flag to require value")
+	}
+	if !flagNeedsValue("--score-weight-usage") {
+		t.Fatalf("expected score weight flag to require value")
 	}
 	if flagNeedsValue("--format=json") {
 		t.Fatalf("expected equals-form flag not to require separate value")

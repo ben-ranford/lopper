@@ -55,3 +55,36 @@ func TestRemovalCandidateScore(t *testing.T) {
 		t.Fatalf("unexpected score response: score=%f ok=%v", score, ok)
 	}
 }
+
+func TestAnnotateRemovalCandidateScoresWithWeights(t *testing.T) {
+	deps := []DependencyReport{
+		{Name: "alpha", UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20},
+		{Name: "beta", UsedExportsCount: 8, TotalExportsCount: 10, UsedPercent: 80},
+	}
+	AnnotateRemovalCandidateScoresWithWeights(deps, RemovalCandidateWeights{
+		Usage:      1,
+		Impact:     0,
+		Confidence: 0,
+	})
+	if deps[0].RemovalCandidate == nil || deps[1].RemovalCandidate == nil {
+		t.Fatalf("expected candidate scores")
+	}
+	if deps[0].RemovalCandidate.Score <= deps[1].RemovalCandidate.Score {
+		t.Fatalf("expected high-usage-waste dependency to rank higher with usage-only weights")
+	}
+	if deps[0].RemovalCandidate.Weights.Usage != 1 || deps[0].RemovalCandidate.Weights.Impact != 0 || deps[0].RemovalCandidate.Weights.Confidence != 0 {
+		t.Fatalf("expected normalized usage-only weights, got %#v", deps[0].RemovalCandidate.Weights)
+	}
+}
+
+func TestNormalizeRemovalCandidateWeightsFallback(t *testing.T) {
+	defaults := DefaultRemovalCandidateWeights()
+	got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: -1, Impact: 0.5, Confidence: 0.5})
+	if got != defaults {
+		t.Fatalf("expected invalid weights to fall back to defaults, got %#v", got)
+	}
+	got = NormalizeRemovalCandidateWeights(RemovalCandidateWeights{})
+	if got != defaults {
+		t.Fatalf("expected empty weights to fall back to defaults, got %#v", got)
+	}
+}

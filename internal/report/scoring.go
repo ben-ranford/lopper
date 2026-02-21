@@ -13,10 +13,14 @@ var defaultRemovalCandidateWeights = RemovalCandidateWeights{
 }
 
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
+	AnnotateRemovalCandidateScoresWithWeights(dependencies, DefaultRemovalCandidateWeights())
+}
+
+func AnnotateRemovalCandidateScoresWithWeights(dependencies []DependencyReport, weights RemovalCandidateWeights) {
 	if len(dependencies) == 0 {
 		return
 	}
-	weights := defaultRemovalCandidateWeights
+	weights = NormalizeRemovalCandidateWeights(weights)
 	maxImpactRaw := 0.0
 	for _, dep := range dependencies {
 		impactRaw := rawImpact(dep)
@@ -27,6 +31,25 @@ func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
 
 	for i := range dependencies {
 		dependencies[i].RemovalCandidate = buildRemovalCandidate(dependencies[i], maxImpactRaw, weights)
+	}
+}
+
+func DefaultRemovalCandidateWeights() RemovalCandidateWeights {
+	return defaultRemovalCandidateWeights
+}
+
+func NormalizeRemovalCandidateWeights(weights RemovalCandidateWeights) RemovalCandidateWeights {
+	if weights.Usage < 0 || weights.Impact < 0 || weights.Confidence < 0 {
+		return defaultRemovalCandidateWeights
+	}
+	total := weights.Usage + weights.Impact + weights.Confidence
+	if total <= 0 {
+		return defaultRemovalCandidateWeights
+	}
+	return RemovalCandidateWeights{
+		Usage:      weights.Usage / total,
+		Impact:     weights.Impact / total,
+		Confidence: weights.Confidence / total,
 	}
 }
 

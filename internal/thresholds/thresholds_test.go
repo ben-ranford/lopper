@@ -14,9 +14,16 @@ func TestDefaultsValidate(t *testing.T) {
 
 func TestOverridesApply(t *testing.T) {
 	lowConfidence := 25
-	resolved := Overrides{LowConfidenceWarningPercent: &lowConfidence}.Apply(Defaults())
+	usageWeight := 0.7
+	resolved := Overrides{
+		LowConfidenceWarningPercent: &lowConfidence,
+		RemovalCandidateWeightUsage: &usageWeight,
+	}.Apply(Defaults())
 	if resolved.LowConfidenceWarningPercent != 25 {
 		t.Fatalf("expected low confidence threshold 25, got %d", resolved.LowConfidenceWarningPercent)
+	}
+	if resolved.RemovalCandidateWeightUsage != 0.7 {
+		t.Fatalf("expected usage weight 0.7, got %f", resolved.RemovalCandidateWeightUsage)
 	}
 	if resolved.FailOnIncreasePercent != Defaults().FailOnIncreasePercent {
 		t.Fatalf("expected fail-on-increase threshold default %d, got %d", Defaults().FailOnIncreasePercent, resolved.FailOnIncreasePercent)
@@ -25,9 +32,11 @@ func TestOverridesApply(t *testing.T) {
 
 func TestValuesValidateErrors(t *testing.T) {
 	tests := []Values{
-		{FailOnIncreasePercent: -1, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40},
-		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 101, MinUsagePercentForRecommendations: 40},
-		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: -2},
+		{FailOnIncreasePercent: -1, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 101, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: -2, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: -0.1, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: 0, RemovalCandidateWeightImpact: 0, RemovalCandidateWeightConfidence: 0},
 	}
 	for _, tc := range tests {
 		if tc.Validate() == nil {
@@ -40,6 +49,8 @@ func TestOverridesValidateErrors(t *testing.T) {
 	fail := -1
 	low := 200
 	min := -5
+	weight := -1.0
+	zeroWeight := 0.0
 	tests := []struct {
 		name      string
 		overrides Overrides
@@ -60,6 +71,20 @@ func TestOverridesValidateErrors(t *testing.T) {
 			overrides: Overrides{MinUsagePercentForRecommendations: &min},
 			want:      "min_usage_percent_for_recommendations",
 		},
+		{
+			name:      "invalid score weight",
+			overrides: Overrides{RemovalCandidateWeightUsage: &weight},
+			want:      "removal_candidate_weight_usage",
+		},
+		{
+			name: "all score weights zero",
+			overrides: Overrides{
+				RemovalCandidateWeightUsage:      &zeroWeight,
+				RemovalCandidateWeightImpact:     &zeroWeight,
+				RemovalCandidateWeightConfidence: &zeroWeight,
+			},
+			want: "at least one weight",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,13 +103,22 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	fail := 4
 	low := 22
 	min := 60
+	usageWeight := 0.6
+	impactWeight := 0.3
+	confidenceWeight := 0.1
 	base := Defaults()
 	got := Overrides{
 		FailOnIncreasePercent:             &fail,
 		LowConfidenceWarningPercent:       &low,
 		MinUsagePercentForRecommendations: &min,
+		RemovalCandidateWeightUsage:       &usageWeight,
+		RemovalCandidateWeightImpact:      &impactWeight,
+		RemovalCandidateWeightConfidence:  &confidenceWeight,
 	}.Apply(base)
 	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 {
 		t.Fatalf("unexpected resolved thresholds: %+v", got)
+	}
+	if got.RemovalCandidateWeightUsage != 0.6 || got.RemovalCandidateWeightImpact != 0.3 || got.RemovalCandidateWeightConfidence != 0.1 {
+		t.Fatalf("unexpected resolved score weights: %+v", got)
 	}
 }

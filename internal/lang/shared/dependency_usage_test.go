@@ -169,6 +169,21 @@ func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	}
 }
 
+func TestSortReportsByWasteWithCustomWeights(t *testing.T) {
+	reports := []report.DependencyReport{
+		{Name: "high-impact", UsedExportsCount: 50, TotalExportsCount: 100, UsedPercent: 50},
+		{Name: "high-usage-waste", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10},
+	}
+	SortReportsByWaste(reports, report.RemovalCandidateWeights{
+		Usage:      1,
+		Impact:     0,
+		Confidence: 0,
+	})
+	if reports[0].Name != "high-usage-waste" {
+		t.Fatalf("expected usage-only scoring to rank high usage waste first, got %q", reports[0].Name)
+	}
+}
+
 func TestDetectionHelpers(t *testing.T) {
 	if got := DefaultRepoPath(""); got != "." {
 		t.Fatalf("expected empty repo path to default to '.', got %q", got)

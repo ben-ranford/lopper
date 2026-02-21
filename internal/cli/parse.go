@@ -85,6 +85,9 @@ type analyseFlagValues struct {
 	thresholdFailOnIncrease       *int
 	thresholdLowConfidenceWarning *int
 	thresholdMinUsagePercent      *int
+	scoreWeightUsage              *float64
+	scoreWeightImpact             *float64
+	scoreWeightConfidence         *float64
 	languageFlag                  *string
 	runtimeProfile                *string
 	baselinePath                  *string
@@ -104,6 +107,9 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		thresholdFailOnIncrease:       fs.Int("threshold-fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "waste increase threshold for CI failure"),
 		thresholdLowConfidenceWarning: fs.Int("threshold-low-confidence-warning", req.Analyse.Thresholds.LowConfidenceWarningPercent, "low-confidence warning threshold"),
 		thresholdMinUsagePercent:      fs.Int("threshold-min-usage-percent", req.Analyse.Thresholds.MinUsagePercentForRecommendations, "minimum usage percent threshold for recommendation generation"),
+		scoreWeightUsage:              fs.Float64("score-weight-usage", req.Analyse.Thresholds.RemovalCandidateWeightUsage, "relative weight for removal-candidate usage signal"),
+		scoreWeightImpact:             fs.Float64("score-weight-impact", req.Analyse.Thresholds.RemovalCandidateWeightImpact, "relative weight for removal-candidate impact signal"),
+		scoreWeightConfidence:         fs.Float64("score-weight-confidence", req.Analyse.Thresholds.RemovalCandidateWeightConfidence, "relative weight for removal-candidate confidence signal"),
 		languageFlag:                  fs.String("language", req.Analyse.Language, "language adapter"),
 		runtimeProfile:                fs.String("runtime-profile", req.Analyse.RuntimeProfile, "conditional exports runtime profile"),
 		baselinePath:                  fs.String("baseline", req.Analyse.BaselinePath, "baseline report path"),
@@ -179,6 +185,15 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	}
 	if visited["threshold-min-usage-percent"] {
 		overrides.MinUsagePercentForRecommendations = values.thresholdMinUsagePercent
+	}
+	if visited["score-weight-usage"] {
+		overrides.RemovalCandidateWeightUsage = values.scoreWeightUsage
+	}
+	if visited["score-weight-impact"] {
+		overrides.RemovalCandidateWeightImpact = values.scoreWeightImpact
+	}
+	if visited["score-weight-confidence"] {
+		overrides.RemovalCandidateWeightConfidence = values.scoreWeightConfidence
 	}
 	return overrides, nil
 }
@@ -266,7 +281,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

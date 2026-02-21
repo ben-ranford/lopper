@@ -164,7 +164,7 @@ func buildRequestedPHPDependencies(req language.Request, scan scanResult) ([]rep
 		depReport, warnings := buildDependencyReport(dependency, scan, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations))
 		return []report.DependencyReport{depReport}, warnings
 	case req.TopN > 0:
-		return buildTopPHPDependencies(req.TopN, scan, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations))
+		return buildTopPHPDependencies(req.TopN, scan, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
@@ -177,7 +177,7 @@ func resolveMinUsageRecommendationThreshold(threshold *int) int {
 	return thresholds.Defaults().MinUsagePercentForRecommendations
 }
 
-func buildTopPHPDependencies(topN int, scan scanResult, minUsagePercent int) ([]report.DependencyReport, []string) {
+func buildTopPHPDependencies(topN int, scan scanResult, minUsagePercent int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	dependencies := allDependencies(scan)
 	if len(dependencies) == 0 {
 		return nil, []string{"no dependency data available for top-N ranking"}
@@ -190,7 +190,7 @@ func buildTopPHPDependencies(topN int, scan scanResult, minUsagePercent int) ([]
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
-	shared.SortReportsByWaste(reports)
+	shared.SortReportsByWaste(reports, weights)
 	if topN > 0 && topN < len(reports) {
 		reports = reports[:topN]
 	}
@@ -280,6 +280,13 @@ func buildRecommendations(dep report.DependencyReport, minUsagePercent int) []re
 		})
 	}
 	return recs
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 func hasRiskCue(cues []report.RiskCue, code string) bool {

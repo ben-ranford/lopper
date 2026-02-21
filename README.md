@@ -46,6 +46,20 @@ Launch the interactive TUI:
 lopper tui --repo . --language all
 ```
 
+Tune thresholds and score weights:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --threshold-fail-on-increase 2 \
+  --threshold-low-confidence-warning 35 \
+  --threshold-min-usage-percent 45 \
+  --score-weight-usage 0.50 \
+  --score-weight-impact 0.30 \
+  --score-weight-confidence 0.20
+```
+
 ## Languages
 
 - Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`
@@ -62,8 +76,54 @@ thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
   min_usage_percent_for_recommendations: 45
+  removal_candidate_weight_usage: 0.50
+  removal_candidate_weight_impact: 0.30
+  removal_candidate_weight_confidence: 0.20
 ```
 
+Threshold defaults:
+
+- `fail_on_increase_percent: 0` (disabled unless set above `0`)
+- `low_confidence_warning_percent: 40`
+- `min_usage_percent_for_recommendations: 40`
+- `removal_candidate_weight_usage: 0.50`
+- `removal_candidate_weight_impact: 0.30`
+- `removal_candidate_weight_confidence: 0.20`
+
+Threshold ranges:
+
+- `fail_on_increase_percent` must be `>= 0`
+- `low_confidence_warning_percent` must be between `0` and `100`
+- `min_usage_percent_for_recommendations` must be between `0` and `100`
+- removal candidate weights must be `>= 0` and at least one must be greater than `0`
+
+Precedence is `CLI > config > defaults`.
+
+Tuning guide with strict/balanced/noise-reduction profiles:
+
+- `docs/threshold-tuning.md`
+
+Launch TUI:
+
+```bash
+lopper tui --repo . --language all
+```
+
+## Runtime trace annotations (JS/TS)
+
+Capture a runtime trace:
+
+```bash
+export LOPPER_RUNTIME_TRACE=.artifacts/lopper-runtime.ndjson
+export NODE_OPTIONS="--require ./scripts/runtime/require-hook.cjs --loader ./scripts/runtime/loader.mjs"
+npm test
+```
+
+Use trace in analysis:
+
+```bash
+lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lopper-runtime.ndjson
+```
 ## Development
 
 ```bash

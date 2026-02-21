@@ -38,6 +38,9 @@ func TestLoadYAMLConfig(t *testing.T) {
 		"  fail_on_increase_percent: 3",
 		"  low_confidence_warning_percent: 25",
 		"  min_usage_percent_for_recommendations: 55",
+		"  removal_candidate_weight_usage: 0.6",
+		"  removal_candidate_weight_impact: 0.2",
+		"  removal_candidate_weight_confidence: 0.2",
 		"",
 	}, "\n")
 	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
@@ -59,6 +62,9 @@ func TestLoadYAMLConfig(t *testing.T) {
 	if resolved.MinUsagePercentForRecommendations != 55 {
 		t.Fatalf("expected min_usage_percent_for_recommendations=55, got %d", resolved.MinUsagePercentForRecommendations)
 	}
+	if resolved.RemovalCandidateWeightUsage != 0.6 || resolved.RemovalCandidateWeightImpact != 0.2 || resolved.RemovalCandidateWeightConfidence != 0.2 {
+		t.Fatalf("unexpected score weights: %+v", resolved)
+	}
 }
 
 func TestLoadJSONConfig(t *testing.T) {
@@ -66,7 +72,10 @@ func TestLoadJSONConfig(t *testing.T) {
 	cfg := `{
   "fail_on_increase_percent": 5,
   "low_confidence_warning_percent": 31,
-  "min_usage_percent_for_recommendations": 48
+  "min_usage_percent_for_recommendations": 48,
+  "removal_candidate_weight_usage": 0.1,
+  "removal_candidate_weight_impact": 0.2,
+  "removal_candidate_weight_confidence": 0.7
 }`
 	writeConfig(t, filepath.Join(repo, lopperJSONName), cfg)
 
@@ -77,6 +86,9 @@ func TestLoadJSONConfig(t *testing.T) {
 	resolved := overrides.Apply(Defaults())
 	if resolved.FailOnIncreasePercent != 5 || resolved.LowConfidenceWarningPercent != 31 || resolved.MinUsagePercentForRecommendations != 48 {
 		t.Fatalf("unexpected resolved thresholds: %+v", resolved)
+	}
+	if resolved.RemovalCandidateWeightUsage != 0.1 || resolved.RemovalCandidateWeightImpact != 0.2 || resolved.RemovalCandidateWeightConfidence != 0.7 {
+		t.Fatalf("unexpected resolved score weights: %+v", resolved)
 	}
 }
 
@@ -197,6 +209,18 @@ func TestLoadConfigInvalidThresholdValue(t *testing.T) {
 	}
 }
 
+func TestLoadConfigInvalidScoreWeightValue(t *testing.T) {
+	repo := t.TempDir()
+	writeConfig(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  removal_candidate_weight_usage: -1\n")
+	_, _, err := Load(repo, "")
+	if err == nil {
+		t.Fatalf("expected score weight validation error")
+	}
+	if !strings.Contains(err.Error(), "removal_candidate_weight_usage") {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
 func TestLoadConfigDiscoveryPriority(t *testing.T) {
 	repo := t.TempDir()
 	writeConfig(t, filepath.Join(repo, lopperYAMLName), "thresholds:\n  fail_on_increase_percent: 7\n")
@@ -289,6 +313,40 @@ func TestRawConfigToOverridesDuplicateNestedLowAndMinUsage(t *testing.T) {
 	}
 	if _, err := cfg.toOverrides(); err == nil {
 		t.Fatalf("expected duplicate nested min usage threshold error")
+	}
+}
+
+func TestRawConfigToOverridesDuplicateNestedScoreWeights(t *testing.T) {
+	root := 0.1
+	nested := 0.2
+	cfg := rawConfig{
+		RemovalCandidateWeightUsage: &root,
+		Thresholds: rawThresholds{
+			RemovalCandidateWeightUsage: &nested,
+		},
+	}
+	if _, err := cfg.toOverrides(); err == nil {
+		t.Fatalf("expected duplicate nested score usage weight error")
+	}
+
+	cfg = rawConfig{
+		RemovalCandidateWeightImpact: &root,
+		Thresholds: rawThresholds{
+			RemovalCandidateWeightImpact: &nested,
+		},
+	}
+	if _, err := cfg.toOverrides(); err == nil {
+		t.Fatalf("expected duplicate nested score impact weight error")
+	}
+
+	cfg = rawConfig{
+		RemovalCandidateWeightConfidence: &root,
+		Thresholds: rawThresholds{
+			RemovalCandidateWeightConfidence: &nested,
+		},
+	}
+	if _, err := cfg.toOverrides(); err == nil {
+		t.Fatalf("expected duplicate nested score confidence weight error")
 	}
 }
 

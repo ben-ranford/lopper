@@ -21,6 +21,9 @@ Options:
                               Warn in --language all mode when adapter confidence is below N
   --threshold-min-usage-percent N
                               Min used export percent before low-usage recommendations are emitted
+  --score-weight-usage N      Relative removal-candidate weight for usage signal (default: 0.50)
+  --score-weight-impact N     Relative removal-candidate weight for impact signal (default: 0.30)
+  --score-weight-confidence N Relative removal-candidate weight for confidence signal (default: 0.20)
   --snapshot PATH            Write a non-interactive TUI snapshot to file
   --filter TEXT              Filter dependency names (TUI)
   --sort name|waste          Sort TUI output (default: waste)
