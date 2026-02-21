@@ -119,10 +119,6 @@
         "locations": {
           "type": "array",
           "items": { "$ref": "#/$defs/location" }
-        },
-        "provenance": {
-          "type": "array",
-          "items": { "type": "string" }
         }
       }
     },
