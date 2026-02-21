@@ -289,9 +289,9 @@ func TestRuntimeModuleFromResolvedPathBranches(t *testing.T) {
 	}{
 		{name: "empty", resolved: "", dependency: "lodash", want: ""},
 		{name: "no marker", resolved: "/repo/src/index.js", dependency: "lodash", want: ""},
-		{name: "scoped missing package", resolved: "/repo/node_modules/@scope", dependency: "@scope/pkg", want: ""},
+		{name: "scoped missing package", resolved: "/repo/node_modules/@scope", dependency: scopePkgDependency, want: ""},
 		{name: "dependency mismatch", resolved: leftPadResolvedIndexModule, dependency: "lodash", want: ""},
-		{name: "scoped root", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: "@scope/pkg", want: "@scope/pkg/index.js"},
+		{name: "scoped root", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: scopePkgDependency, want: scopePkgDependency + "/index.js"},
 		{name: "scoped mismatch", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: "@scope/other", want: ""},
 		{name: "simple root", resolved: "/repo/node_modules/lodash/index.js", dependency: "lodash", want: "lodash/index.js"},
 	}

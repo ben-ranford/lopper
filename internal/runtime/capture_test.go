@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const npmTestCommand = "npm test"
+
 func TestDefaultTracePath(t *testing.T) {
 	repo := "/tmp/repo"
 	if got := DefaultTracePath(repo); got != filepath.Join(repo, defaultTraceRelPath) {
@@ -88,7 +90,7 @@ func assertCaptureErrorContains(t *testing.T, req CaptureRequest, wantSubstring 
 }
 
 func TestCaptureValidationErrors(t *testing.T) {
-	if Capture(context.Background(), CaptureRequest{Command: "npm test"}) == nil {
+	if Capture(context.Background(), CaptureRequest{Command: npmTestCommand}) == nil {
 		t.Fatalf("expected missing repo path error")
 	}
 	if Capture(context.Background(), CaptureRequest{RepoPath: t.TempDir()}) == nil {
@@ -101,7 +103,7 @@ func TestCaptureExecutableNotFound(t *testing.T) {
 	repo := t.TempDir()
 	err := Capture(context.Background(), CaptureRequest{
 		RepoPath: repo,
-		Command:  "npm test",
+		Command:  npmTestCommand,
 	})
 	if err == nil {
 		t.Fatalf("expected executable-not-found capture error")
@@ -113,7 +115,7 @@ func TestCaptureExecutableNotFound(t *testing.T) {
 
 func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 	commands := []string{
-		"npm test",
+		npmTestCommand,
 		"pnpm test",
 		"yarn test",
 		"bun test",
