@@ -61,29 +61,29 @@ func TestCapture(t *testing.T) {
 
 func TestCaptureCommandFailure(t *testing.T) {
 	repo := t.TempDir()
-	err := Capture(context.Background(), CaptureRequest{
+	assertCaptureErrorContains(t, CaptureRequest{
 		RepoPath: repo,
 		Command:  "make __missing_target__",
-	})
-	if err == nil {
-		t.Fatalf("expected runtime capture command failure")
-	}
-	if !strings.Contains(err.Error(), "runtime test command failed") {
-		t.Fatalf("unexpected capture error: %v", err)
-	}
+	}, "runtime test command failed")
 }
 
 func TestCaptureUnsupportedCommand(t *testing.T) {
 	repo := t.TempDir()
-	err := Capture(context.Background(), CaptureRequest{
+	assertCaptureErrorContains(t, CaptureRequest{
 		RepoPath: repo,
 		Command:  "foobar test",
-	})
+	}, "unsupported runtime test executable")
+}
+
+func assertCaptureErrorContains(t *testing.T, req CaptureRequest, wantSubstring string) {
+	t.Helper()
+
+	err := Capture(context.Background(), req)
 	if err == nil {
-		t.Fatalf("expected unsupported command error")
+		t.Fatalf("expected capture error containing %q", wantSubstring)
 	}
-	if !strings.Contains(err.Error(), "unsupported runtime test executable") {
-		t.Fatalf("unexpected unsupported command error: %v", err)
+	if !strings.Contains(err.Error(), wantSubstring) {
+		t.Fatalf("expected capture error to contain %q, got %v", wantSubstring, err)
 	}
 }
 
