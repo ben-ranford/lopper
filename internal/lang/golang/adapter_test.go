@@ -815,7 +815,7 @@ func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 		t.Fatalf("expected no replacements, got %#v", replacements)
 	}
 
-	if !shouldSkipDir("vendor") || shouldSkipDir("src") {
+	if !shouldSkipDir("vendor") || !shouldSkipDir("bin") || shouldSkipDir("src") {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 

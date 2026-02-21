@@ -136,4 +136,15 @@ func TestScanRepoEntrySkipsDirectoriesAndContextCancel(t *testing.T) {
 	if err := scanRepoEntry(context.Background(), &state, filepath.Join(repo, "dist"), dirEntry); !errors.Is(err, fs.SkipDir) {
 		t.Fatalf("expected skip dir result, got %v", err)
 	}
+
+	if err := os.MkdirAll(filepath.Join(repo, ".next"), 0o755); err != nil {
+		t.Fatalf("mkdir .next: %v", err)
+	}
+	nextEntry, err := os.Stat(filepath.Join(repo, ".next"))
+	if err != nil {
+		t.Fatalf("stat .next: %v", err)
+	}
+	if err := scanRepoEntry(context.Background(), &state, filepath.Join(repo, ".next"), fs.FileInfoToDirEntry(nextEntry)); !errors.Is(err, fs.SkipDir) {
+		t.Fatalf("expected .next skip dir result, got %v", err)
+	}
 }

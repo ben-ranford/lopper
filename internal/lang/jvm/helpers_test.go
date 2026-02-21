@@ -117,7 +117,7 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	if !matchesBuildFile(buildGradleName, []string{buildGradleName}) || matchesBuildFile("foo.txt", []string{buildGradleName}) {
 		t.Fatalf("unexpected build file matching")
 	}
-	if !shouldSkipDir(".gradle") || shouldSkipDir("src") {
+	if !shouldSkipDir(".git") || !shouldSkipDir(".gradle") || shouldSkipDir("src") {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 
