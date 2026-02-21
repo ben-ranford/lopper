@@ -461,9 +461,7 @@ func isLocalModule(repoPath string, root string) bool {
 }
 
 func normalizeDependencyID(value string) string {
-	value = strings.TrimSpace(strings.ToLower(value))
-	value = strings.ReplaceAll(value, "_", "-")
-	return value
+	return strings.ReplaceAll(shared.NormalizeDependencyID(value), "_", "-")
 }
 
 func shouldSkipDir(name string) bool {
