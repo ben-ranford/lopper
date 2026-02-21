@@ -268,6 +268,13 @@ func readPythonFile(repoPath, cleanPath string) ([]byte, string, error) {
 var (
 	importLinePattern = regexp.MustCompile(`^\s*import\s+(.+)$`)
 	fromLinePattern   = regexp.MustCompile(`^\s*from\s+([A-Za-z_][A-Za-z0-9_\.]*)\s+import\s+(.+)$`)
+	pythonSkippedDirs = map[string]bool{
+		"__pycache__":   true,
+		".venv":         true,
+		"venv":          true,
+		".mypy_cache":   true,
+		".pytest_cache": true,
+	}
 )
 
 func parseImports(content []byte, filePath string, repoPath string) []importBinding {
@@ -462,13 +469,7 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	return shared.ShouldSkipDir(name, map[string]bool{
-		"__pycache__":   true,
-		".venv":         true,
-		"venv":          true,
-		".mypy_cache":   true,
-		".pytest_cache": true,
-	})
+	return shared.ShouldSkipDir(name, pythonSkippedDirs)
 }
 
 func pythonFileUsages(scan scanResult) []shared.FileUsage {
