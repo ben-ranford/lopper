@@ -35,8 +35,11 @@ func TestStripLineCommentAndLocationHelpers(t *testing.T) {
 	if location.File != "app.py" || location.Line != 4 || location.Column != 6 {
 		t.Fatalf("unexpected location: %+v", location)
 	}
-	lineLocation := LocationFromLine("app.py", 1, "  import b")
-	if lineLocation.Line != 2 || lineLocation.Column != 3 {
-		t.Fatalf("unexpected line location: %+v", lineLocation)
+	if got := FirstContentColumn("  import b"); got != 3 {
+		t.Fatalf("unexpected first content column: %d", got)
+	}
+	locationAtLineTwo := LocationFromLine("app.py", 1, "  import b")
+	if locationAtLineTwo.Line != 2 || locationAtLineTwo.Column != 3 {
+		t.Fatalf("unexpected line location: %+v", locationAtLineTwo)
 	}
 }
