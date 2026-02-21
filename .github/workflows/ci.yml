@@ -326,11 +326,11 @@ jobs:
               const raw = String(component || '');
               return raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw;
             };
-            const isTestIssue = (issue) => {
+            const isMockOrFixtureIssue = (issue) => {
               const path = extractPath(issue.component);
-              return /(^|\/)[^/]+_test\.go$/.test(path);
+              return /(^|\/)(mock|mocks|testdata)(\/|$)/.test(path) || /(^|\/)[^/]+_mock\.go$/.test(path);
             };
-            const actionableIssues = issues.filter((issue) => !isTestIssue(issue));
+            const actionableIssues = issues.filter((issue) => !isMockOrFixtureIssue(issue));
             const excludedCount = issues.length - actionableIssues.length;
             const list = actionableIssues.slice(0, 10);
 
@@ -381,8 +381,8 @@ jobs:
               '## SonarQube (PR)',
               '',
               `Open issues: **${total}**`,
-              `Actionable issues shown (non-test files): **${actionableIssues.length}**`,
-              excludedCount > 0 ? `Excluded test-file issues: **${excludedCount}**` : null,
+              `Actionable issues shown (excluding mock/fixture files): **${actionableIssues.length}**`,
+              excludedCount > 0 ? `Excluded mock/fixture issues: **${excludedCount}**` : null,
               '',
               '### Duplication',
               duplicationSummary,
