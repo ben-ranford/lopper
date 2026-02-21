@@ -59,11 +59,17 @@ func TestCountUsage(t *testing.T) {
 }
 
 func TestCountUsageHonorsWordBoundaries(t *testing.T) {
-	imports := []ImportRecord{{Local: "foo"}}
-	content := []byte("foo foobar foo_bar _foo foo")
+	imports := []ImportRecord{{Local: "foo"}, {Local: "foo1"}, {Local: "føø"}}
+	content := []byte("foo foobar foo_bar _foo foo foo1 foo10 foo1 føø føø")
 	usage := CountUsage(content, imports)
 	if usage["foo"] != 1 {
 		t.Fatalf("expected foo usage 1, got %d", usage["foo"])
+	}
+	if usage["foo1"] != 1 {
+		t.Fatalf("expected foo1 usage 1, got %d", usage["foo1"])
+	}
+	if usage["føø"] != 0 {
+		t.Fatalf("expected føø usage 0 to match regexp word-boundary behavior, got %d", usage["føø"])
 	}
 }
 

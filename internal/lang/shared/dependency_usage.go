@@ -99,6 +99,7 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 }
 
 func isWordByte(ch byte) bool {
+	// Match regexp \w semantics used by the previous \b<local>\b approach (ASCII letters/digits/_ only).
 	return ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
 
