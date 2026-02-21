@@ -29,6 +29,7 @@ const (
 	moduleDemoLine      = "module example.com/demo"
 	moduleOriginal      = "example.com/original"
 	requirePrefix       = "require "
+	replacePrefix       = "replace "
 	versionV160         = " v1.6.0"
 	go125Block          = "\n\ngo 1.25\n"
 	errSymlinkFmt       = "symlink not supported: %v"
@@ -36,6 +37,9 @@ const (
 	packageMainLine     = "package main"
 	exampleModuleA      = "example.com/a"
 	exampleModuleX      = "example.com/x"
+	workspaceSvcALine   = "\t./svc/a"
+	sharedForkImport    = "github.com/shared/fork"
+	pkgErrorsDependency = "github.com/pkg/errors"
 	goModDemo           = moduleDemoLine + go125Block
 	goModDemoWithUUID   = moduleDemoLine + "\n\n" + requirePrefix + depUUID + versionV160 + "\n"
 	mainNoopProgram     = packageMainLine + "\n\nfunc main() {}\n"
@@ -286,7 +290,7 @@ func TestReplacementImportMapsToDependency(t *testing.T) {
 		moduleDemoLine,
 		"",
 		requirePrefix + moduleOriginal + " v1.0.0",
-		"replace " + moduleOriginal + " => github.com/fork/original v1.0.1",
+			replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.1",
 		"",
 	}, "\n")))
 	if modulePath != moduleDemo {
@@ -474,7 +478,7 @@ func TestLoadRootModuleInfoContract(t *testing.T) {
 		moduleDemoLine,
 		"",
 		requirePrefix + depUUID + versionV160,
-		"replace " + moduleOriginal + " => github.com/fork/original v1.0.0",
+		replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.0",
 		"",
 		"go 1.25",
 	}, "\n"))
@@ -510,8 +514,8 @@ func TestLoadWorkspaceModulesContract(t *testing.T) {
 		"go 1.25",
 		"",
 		"use (",
-		"\t./svc/a",
-		"\t./svc/a",
+			workspaceSvcALine,
+			workspaceSvcALine,
 		"\t./svc/missing",
 		")",
 	}, "\n"))
@@ -534,8 +538,8 @@ func TestLoadNestedModulesContract(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "nested", "x", fileGoMod), strings.Join([]string{
 		modulePrefix + exampleModuleX,
 		"",
-		"require github.com/pkg/errors v0.9.1",
-		"replace example.com/other => github.com/shared/fork v1.1.0",
+		"require " + pkgErrorsDependency + " v0.9.1",
+		replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
 		"go 1.25",
 	}, "\n"))
@@ -543,7 +547,7 @@ func TestLoadNestedModulesContract(t *testing.T) {
 	info := moduleInfo{
 		LocalModulePaths:     []string{moduleDemo},
 		DeclaredDependencies: []string{depUUID},
-		ReplacementImports:   map[string]string{"github.com/shared/fork": moduleOriginal},
+		ReplacementImports:   map[string]string{sharedForkImport: moduleOriginal},
 	}
 	if err := loadNestedModules(repo, &info); err != nil {
 		t.Fatalf("loadNestedModules: %v", err)
@@ -551,24 +555,24 @@ func TestLoadNestedModulesContract(t *testing.T) {
 	if !slices.Contains(info.LocalModulePaths, exampleModuleX) {
 		t.Fatalf("expected nested module %q in %#v", exampleModuleX, info.LocalModulePaths)
 	}
-	if !slices.Contains(info.DeclaredDependencies, "github.com/pkg/errors") {
+	if !slices.Contains(info.DeclaredDependencies, pkgErrorsDependency) {
 		t.Fatalf("expected nested dependency merge in %#v", info.DeclaredDependencies)
 	}
-	if info.ReplacementImports["github.com/shared/fork"] != moduleOriginal {
+	if info.ReplacementImports[sharedForkImport] != moduleOriginal {
 		t.Fatalf("expected existing replacement to be preserved, got %#v", info.ReplacementImports)
 	}
 }
 
 func TestFinalizeGoModuleInfoContract(t *testing.T) {
 	info := moduleInfo{
-		LocalModulePaths:     []string{"  example.com/z  ", "example.com/a", "example.com/z", ""},
-		DeclaredDependencies: []string{" github.com/pkg/errors ", depUUID, "github.com/pkg/errors", ""},
+		LocalModulePaths:     []string{"  example.com/z  ", exampleModuleA, "example.com/z", ""},
+		DeclaredDependencies: []string{" " + pkgErrorsDependency + " ", depUUID, pkgErrorsDependency, ""},
 	}
 	finalizeGoModuleInfo(&info)
-	if !slices.Equal(info.LocalModulePaths, []string{"example.com/a", "example.com/z"}) {
+	if !slices.Equal(info.LocalModulePaths, []string{exampleModuleA, "example.com/z"}) {
 		t.Fatalf("expected finalized local modules to be deduped and sorted, got %#v", info.LocalModulePaths)
 	}
-	if !slices.Equal(info.DeclaredDependencies, []string{depUUID, "github.com/pkg/errors"}) {
+	if !slices.Equal(info.DeclaredDependencies, []string{depUUID, pkgErrorsDependency}) {
 		t.Fatalf("expected finalized dependencies to be deduped and sorted, got %#v", info.DeclaredDependencies)
 	}
 	for _, value := range append(info.LocalModulePaths, info.DeclaredDependencies...) {
@@ -1395,13 +1399,13 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
 		"module example.com/root",
 		"",
-		"replace " + moduleOriginal + " => github.com/shared/fork v1.0.0",
+			replacePrefix + moduleOriginal + " => " + sharedForkImport + " v1.0.0",
 		"",
 	}, "\n"))
 	writeFile(t, filepath.Join(repo, "sub", fileGoMod), strings.Join([]string{
 		"module example.com/sub",
 		"",
-		"replace example.com/other => github.com/shared/fork v1.1.0",
+			replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
 	}, "\n"))
 
@@ -1410,7 +1414,7 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 		t.Fatalf("loadGoModuleInfo: %v", err)
 	}
 	// root replacement should win when nested module has same replacement import target
-	if got := info.ReplacementImports["github.com/shared/fork"]; got != moduleOriginal {
+	if got := info.ReplacementImports[sharedForkImport]; got != moduleOriginal {
 		t.Fatalf("expected root replacement to win, got %q", got)
 	}
 }
