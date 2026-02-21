@@ -135,6 +135,44 @@ func TestSummaryHelpers(t *testing.T) {
 	if toggleSortMode(sortByWaste) != sortByName || toggleSortMode(sortByName) != sortByWaste {
 		t.Fatalf("unexpected sort toggle behavior")
 	}
+	if page := normalizeSummaryPage(0, 3); page != 1 {
+		t.Fatalf("expected normalizeSummaryPage to floor page, got %d", page)
+	}
+	if page := normalizeSummaryPage(9, 3); page != 3 {
+		t.Fatalf("expected normalizeSummaryPage to clamp high page, got %d", page)
+	}
+	if page := normalizeSummaryPage(2, 3); page != 2 {
+		t.Fatalf("expected normalizeSummaryPage to keep in-range page, got %d", page)
+	}
+}
+
+func TestRunSummaryDependencyPipeline(t *testing.T) {
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "b", Language: "js-ts", UsedPercent: 10, TotalExportsCount: 10},
+			{Name: "a", Language: "python", UsedPercent: 90, TotalExportsCount: 10},
+			{Name: "c", Language: "go", UsedPercent: 50, TotalExportsCount: 10},
+		},
+	}
+	state := summaryState{
+		filter:   "python",
+		sortMode: sortByName,
+		page:     9,
+		pageSize: 1,
+	}
+	sorted, paged, normalized, totalPages := runSummaryDependencyPipeline(reportData, state)
+	if totalPages != 1 {
+		t.Fatalf("expected one page after filtering, got %d", totalPages)
+	}
+	if normalized.page != 1 {
+		t.Fatalf("expected page to normalize to 1, got %d", normalized.page)
+	}
+	if len(sorted) != 1 || sorted[0].Name != "a" {
+		t.Fatalf("unexpected sorted dependencies: %#v", sorted)
+	}
+	if len(paged) != 1 || paged[0].Name != "a" {
+		t.Fatalf("unexpected paged dependencies: %#v", paged)
+	}
 }
 
 func TestSummaryStartAndSnapshotBranches(t *testing.T) {
