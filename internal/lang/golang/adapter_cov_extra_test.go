@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 

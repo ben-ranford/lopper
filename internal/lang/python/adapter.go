@@ -39,8 +39,7 @@ func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	_ = ctx
-	resolvedRepoPath := shared.DefaultRepoPath(repoPath)
-	repoPath = resolvedRepoPath
+	repoPath = shared.DefaultRepoPath(repoPath)
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
