@@ -96,6 +96,9 @@ func printImportList(out io.Writer, title string, imports []report.ImportUse) {
 			locationHint = fmt.Sprintf(" (%s:%d)", imp.Locations[0].File, imp.Locations[0].Line)
 		}
 		_, _ = fmt.Fprintf(out, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint)
+		for _, provenance := range imp.Provenance {
+			_, _ = fmt.Fprintf(out, "    provenance: %s\n", provenance)
+		}
 	}
 	_, _ = fmt.Fprintln(out, "")
 }

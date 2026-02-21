@@ -301,7 +301,7 @@ func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 			usedImports := make(map[string]*report.ImportUse)
 			unusedImports := make(map[string]*report.ImportUse)
 
-			hasAmbiguous := collectDependencyImportUsage(
+			hasAmbiguous, warnings := collectDependencyImportUsage(
 				tt.scanResult,
 				tt.dependency,
 				usedExports,
@@ -312,6 +312,9 @@ func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 
 			if hasAmbiguous != tt.expectAmbiguousFlag {
 				t.Errorf("%s: hasAmbiguous = %v, want %v", tt.description, hasAmbiguous, tt.expectAmbiguousFlag)
+			}
+			if len(warnings) != 0 {
+				t.Errorf("expected no attribution warnings, got %#v", warnings)
 			}
 		})
 	}
