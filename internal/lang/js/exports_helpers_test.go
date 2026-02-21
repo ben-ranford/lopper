@@ -12,6 +12,7 @@ import (
 )
 
 const indexJSName = "index.js"
+const testExportPathA = "./a.js"
 
 func TestExportParsingHelpers(t *testing.T) {
 	parser := newSourceParser()
@@ -238,21 +239,21 @@ func TestResolveExportNodeBranches(t *testing.T) {
 		t.Fatalf("expected empty export map to fail, got ok=%v paths=%#v", ok, paths)
 	}
 
-	paths, ok := resolveExportNode([]interface{}{42, "./a.js"}, profile, "exports", surface)
-	if !ok || len(paths) != 1 || paths[0] != "./a.js" {
+	paths, ok := resolveExportNode([]interface{}{42, testExportPathA}, profile, "exports", surface)
+	if !ok || len(paths) != 1 || paths[0] != testExportPathA {
 		t.Fatalf("expected array export node to resolve first valid path, got ok=%v paths=%#v", ok, paths)
 	}
 
 	paths, ok = resolveExportNode(
 		map[string]interface{}{
 			"zz": "./z.js",
-			"aa": "./a.js",
+			"aa": testExportPathA,
 		},
 		profile,
 		"exports",
 		surface,
 	)
-	if !ok || len(paths) != 2 || paths[0] != "./a.js" || paths[1] != "./z.js" {
+	if !ok || len(paths) != 2 || paths[0] != testExportPathA || paths[1] != "./z.js" {
 		t.Fatalf("expected non-condition map traversal with sorted unique paths, got ok=%v paths=%#v", ok, paths)
 	}
 }
