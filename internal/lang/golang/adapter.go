@@ -34,6 +34,11 @@ const (
 	maxGoBuildHeaderLine = 64
 )
 
+var goSkippedDirs = map[string]bool{
+	"bin":        true,
+	".artifacts": true,
+}
+
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -1250,8 +1255,5 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	return shared.ShouldSkipDir(name, map[string]bool{
-		"bin":        true,
-		".artifacts": true,
-	})
+	return shared.ShouldSkipDir(name, goSkippedDirs)
 }
