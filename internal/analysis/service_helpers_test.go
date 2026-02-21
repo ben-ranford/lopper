@@ -11,7 +11,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-const lodashMapRuntimeModule = "lodash/map"
+const (
+	lodashMapRuntimeModule    = "lodash/map"
+	lodashFilterRuntimeModule = "lodash/filter"
+)
 
 func TestHelperFunctions(t *testing.T) {
 	if !isMultiLanguage(" ALL ") {
@@ -366,7 +369,7 @@ func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
 	symbols := mergeRuntimeSymbolUsage(
 		[]report.RuntimeSymbolUsage{
 			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1},
-			{Symbol: "filter", Module: "lodash/filter", Count: 1},
+			{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 1},
 		},
 		[]report.RuntimeSymbolUsage{
 			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 2},
@@ -381,5 +384,37 @@ func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
 	}
 	if symbols[0].Symbol != "map" || symbols[0].Count != 3 {
 		t.Fatalf("expected merged map runtime symbol first, got %#v", symbols[0])
+	}
+}
+
+func TestMergeRuntimeUsage(t *testing.T) {
+	if mergeRuntimeUsage(nil, nil) != nil {
+		t.Fatalf("expected nil runtime usage when both sides are nil")
+	}
+
+	merged := mergeRuntimeUsage(
+		&report.RuntimeUsage{
+			LoadCount:   2,
+			Correlation: report.RuntimeCorrelationRuntimeOnly,
+			RuntimeOnly: true,
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashMapRuntimeModule, Count: 1}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1}},
+		},
+		&report.RuntimeUsage{
+			LoadCount:   1,
+			Correlation: report.RuntimeCorrelationStaticOnly,
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 2}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 2}},
+		},
+	)
+
+	if merged == nil || merged.LoadCount != 3 {
+		t.Fatalf("expected merged load count 3, got %#v", merged)
+	}
+	if merged.Correlation != report.RuntimeCorrelationOverlap || merged.RuntimeOnly {
+		t.Fatalf("expected overlap non-runtime-only merge, got %#v", merged)
+	}
+	if len(merged.Modules) != 2 || len(merged.TopSymbols) != 2 {
+		t.Fatalf("expected merged runtime modules/symbols, got %#v", merged)
 	}
 }
