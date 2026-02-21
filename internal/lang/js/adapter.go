@@ -247,14 +247,23 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 	counts := make(map[string]int)
 	usedImports := make(map[string]*report.ImportUse)
 	unusedImports := make(map[string]*report.ImportUse)
-	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
+	hasWildcard, attributionWarnings := collectDependencyImportUsage(
+		scanResult,
+		dependency,
+		usedExports,
+		counts,
+		usedImports,
+		unusedImports,
+	)
 	usedImportList, unusedImportList := finalizeImportUsageLists(usedImports, unusedImports)
+	warnings := dependencyUsageWarnings(dependency, usedExports, hasWildcard)
+	warnings = append(warnings, attributionWarnings...)
 	return dependencyUsageSummary{
 		usedExports:   usedExports,
 		counts:        counts,
 		usedImports:   usedImportList,
 		unusedImports: unusedImportList,
-		warnings:      dependencyUsageWarnings(dependency, usedExports, hasWildcard),
+		warnings:      warnings,
 	}
 }
 
