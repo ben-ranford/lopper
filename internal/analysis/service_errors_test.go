@@ -111,14 +111,17 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 		t.Fatalf(registerAdapterFmt, err)
 	}
 	svc = &Service{Registry: reg}
-	_, err = svc.Analyse(context.Background(), Request{
+	rep, err = svc.Analyse(context.Background(), Request{
 		RepoPath:         ".",
 		Language:         "all",
 		TopN:             1,
 		RuntimeTracePath: filepath.Join(t.TempDir(), "missing.ndjson"),
 	})
-	if err == nil {
-		t.Fatalf("expected runtime trace load error")
+	if err != nil {
+		t.Fatalf("expected runtime trace fallback warning, got %v", err)
+	}
+	if len(rep.Warnings) == 0 {
+		t.Fatalf("expected missing runtime trace warning")
 	}
 }
 
@@ -194,10 +197,13 @@ func TestMergeReportsAndTopSymbolsBranches(t *testing.T) {
 	}
 }
 
-func TestAnnotateRuntimeTraceHelperError(t *testing.T) {
-	_, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), report.Report{})
-	if err == nil {
-		t.Fatalf("expected runtime trace annotation error")
+func TestAnnotateRuntimeTraceHelperMissingFileFallback(t *testing.T) {
+	annotated, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", report.Report{})
+	if err != nil {
+		t.Fatalf("expected missing runtime trace fallback, got %v", err)
+	}
+	if len(annotated.Warnings) == 0 {
+		t.Fatalf("expected missing runtime trace warning")
 	}
 }
 

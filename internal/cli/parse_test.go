@@ -135,6 +135,16 @@ func TestParseArgsAnalyseRuntimeProfile(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.RuntimeTestCommand != "npm test" {
+		t.Fatalf("expected runtime test command, got %q", req.Analyse.RuntimeTestCommand)
+	}
+}
+
 func TestParseArgsTUIFlags(t *testing.T) {
 	req, err := ParseArgs([]string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
 	if err != nil {

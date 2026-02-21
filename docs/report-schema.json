@@ -175,7 +175,38 @@
       "required": ["loadCount"],
       "properties": {
         "loadCount": { "type": "integer", "minimum": 0 },
-        "runtimeOnly": { "type": "boolean" }
+        "correlation": {
+          "type": "string",
+          "enum": ["static-only", "runtime-only", "overlap"]
+        },
+        "runtimeOnly": { "type": "boolean" },
+        "modules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleUsage" }
+        },
+        "topSymbols": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeSymbolUsage" }
+        }
+      }
+    },
+    "runtimeModuleUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "count"],
+      "properties": {
+        "module": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runtimeSymbolUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "count"],
+      "properties": {
+        "symbol": { "type": "string" },
+        "module": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 }
       }
     },
     "removalCandidate": {

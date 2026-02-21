@@ -11,6 +11,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const lodashMapRuntimeModule = "lodash/map"
+
 func TestHelperFunctions(t *testing.T) {
 	if !isMultiLanguage(" ALL ") {
 		t.Fatalf("expected all language match")
@@ -58,7 +60,13 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 		RiskCues:          []report.RiskCue{{Code: "dynamic", Severity: "low", Message: "x"}},
 		Recommendations:   []report.Recommendation{{Code: "rec-a", Priority: "high", Message: "x"}},
 		TopUsedSymbols:    []report.SymbolUsage{{Name: "map", Count: 2}},
-		RuntimeUsage:      &report.RuntimeUsage{LoadCount: 1, RuntimeOnly: true},
+		RuntimeUsage: &report.RuntimeUsage{
+			LoadCount:   1,
+			Correlation: report.RuntimeCorrelationRuntimeOnly,
+			RuntimeOnly: true,
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashMapRuntimeModule, Count: 1}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Count: 1}},
+		},
 	}
 	right := report.DependencyReport{
 		Language:          "js-ts",
@@ -71,7 +79,12 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 		RiskCues:          []report.RiskCue{{Code: "native", Severity: "high", Message: "y"}},
 		Recommendations:   []report.Recommendation{{Code: "rec-b", Priority: "low", Message: "y"}},
 		TopUsedSymbols:    []report.SymbolUsage{{Name: "map", Count: 1}, {Name: "filter", Count: 1}},
-		RuntimeUsage:      &report.RuntimeUsage{LoadCount: 2, RuntimeOnly: false},
+		RuntimeUsage: &report.RuntimeUsage{
+			LoadCount:   2,
+			Correlation: report.RuntimeCorrelationOverlap,
+			Modules:     []report.RuntimeModuleUsage{{Module: "lodash/filter", Count: 1}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Count: 1}},
+		},
 	}
 
 	merged := mergeDependency(left, right)
@@ -80,6 +93,15 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 	}
 	if merged.RuntimeUsage == nil || merged.RuntimeUsage.LoadCount != 3 || merged.RuntimeUsage.RuntimeOnly {
 		t.Fatalf("unexpected merged runtime usage: %#v", merged.RuntimeUsage)
+	}
+	if merged.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected overlap correlation, got %#v", merged.RuntimeUsage)
+	}
+	if len(merged.RuntimeUsage.Modules) != 2 {
+		t.Fatalf("expected merged runtime modules, got %#v", merged.RuntimeUsage.Modules)
+	}
+	if len(merged.RuntimeUsage.TopSymbols) != 2 {
+		t.Fatalf("expected merged runtime symbols, got %#v", merged.RuntimeUsage.TopSymbols)
 	}
 	if len(merged.RiskCues) != 2 || len(merged.Recommendations) != 2 {
 		t.Fatalf("expected merged cues and recommendations")
@@ -129,7 +151,7 @@ func TestAnnotateRuntimeTrace(t *testing.T) {
 	rep := report.Report{
 		Dependencies: []report.DependencyReport{{Name: "lodash", UsedImports: []report.ImportUse{{Name: "map", Module: "lodash"}}}},
 	}
-	annotated, err := annotateRuntimeTraceIfPresent("", rep)
+	annotated, err := annotateRuntimeTraceIfPresent("", "js-ts", rep)
 	if err != nil {
 		t.Fatalf("annotate without trace: %v", err)
 	}
@@ -138,16 +160,29 @@ func TestAnnotateRuntimeTrace(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "trace.ndjson")
-	trace := []byte(`{"module":"lodash/map"}` + "\n")
+	trace := []byte(`{"module":"` + lodashMapRuntimeModule + `"}` + "\n")
 	if err := os.WriteFile(path, trace, 0o600); err != nil {
 		t.Fatalf("write runtime trace: %v", err)
 	}
-	annotated, err = annotateRuntimeTraceIfPresent(path, rep)
+	annotated, err = annotateRuntimeTraceIfPresent(path, "js-ts", rep)
 	if err != nil {
 		t.Fatalf("annotate with trace: %v", err)
 	}
 	if annotated.Dependencies[0].RuntimeUsage == nil {
 		t.Fatalf("expected runtime usage annotation")
+	}
+}
+
+func TestAnnotateRuntimeTraceMissingFileFallsBackWithWarning(t *testing.T) {
+	rep := report.Report{
+		Dependencies: []report.DependencyReport{{Name: "lodash", Language: "js-ts"}},
+	}
+	annotated, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", rep)
+	if err != nil {
+		t.Fatalf("expected missing runtime trace to be non-fatal: %v", err)
+	}
+	if len(annotated.Warnings) == 0 {
+		t.Fatalf("expected warning for missing runtime trace")
 	}
 }
 
@@ -245,5 +280,106 @@ func TestResolveRemovalCandidateWeights(t *testing.T) {
 	got := resolveRemovalCandidateWeights(custom)
 	if got.Usage != 0.2 || got.Impact != 0.3 || got.Confidence != 0.5 {
 		t.Fatalf("expected normalized custom weights, got %#v", got)
+	}
+}
+
+func TestRuntimeUsageSignalsAndMergeCorrelation(t *testing.T) {
+	cases := []struct {
+		name       string
+		usage      *report.RuntimeUsage
+		hasStatic  bool
+		hasRuntime bool
+	}{
+		{name: "nil", usage: nil, hasStatic: false, hasRuntime: false},
+		{
+			name:       "static-only correlation",
+			usage:      &report.RuntimeUsage{LoadCount: 0, Correlation: report.RuntimeCorrelationStaticOnly},
+			hasStatic:  true,
+			hasRuntime: false,
+		},
+		{
+			name:       "runtime-only correlation",
+			usage:      &report.RuntimeUsage{LoadCount: 2, Correlation: report.RuntimeCorrelationRuntimeOnly},
+			hasStatic:  false,
+			hasRuntime: true,
+		},
+		{
+			name:       "overlap correlation",
+			usage:      &report.RuntimeUsage{LoadCount: 3, Correlation: report.RuntimeCorrelationOverlap},
+			hasStatic:  true,
+			hasRuntime: true,
+		},
+		{
+			name:       "legacy runtime-only bool",
+			usage:      &report.RuntimeUsage{LoadCount: 1, RuntimeOnly: true},
+			hasStatic:  false,
+			hasRuntime: true,
+		},
+	}
+
+	for _, tc := range cases {
+		gotStatic, gotRuntime := runtimeUsageSignals(tc.usage)
+		if gotStatic != tc.hasStatic || gotRuntime != tc.hasRuntime {
+			t.Fatalf("%s: expected static/runtime %v/%v got %v/%v", tc.name, tc.hasStatic, tc.hasRuntime, gotStatic, gotRuntime)
+		}
+	}
+
+	if got := mergeRuntimeCorrelation(true, false); got != report.RuntimeCorrelationStaticOnly {
+		t.Fatalf("expected static-only merge correlation, got %q", got)
+	}
+	if got := mergeRuntimeCorrelation(false, true); got != report.RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected runtime-only merge correlation, got %q", got)
+	}
+	if got := mergeRuntimeCorrelation(true, true); got != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected overlap merge correlation, got %q", got)
+	}
+}
+
+func TestSupportsJSTraceLanguage(t *testing.T) {
+	if !supportsJSTraceLanguage("all") {
+		t.Fatalf("expected all to support runtime-only rows")
+	}
+	if !supportsJSTraceLanguage("js-ts") {
+		t.Fatalf("expected js-ts to support runtime-only rows")
+	}
+	if supportsJSTraceLanguage("python") {
+		t.Fatalf("did not expect python-only mode to support runtime-only js rows")
+	}
+}
+
+func TestResolveLowConfidenceWarningThresholdOverride(t *testing.T) {
+	value := 22
+	if got := resolveLowConfidenceWarningThreshold(&value); got != 22 {
+		t.Fatalf("expected override threshold 22, got %d", got)
+	}
+}
+
+func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
+	modules := mergeRuntimeModuleUsage(
+		[]report.RuntimeModuleUsage{{Module: "a", Count: 1}},
+		[]report.RuntimeModuleUsage{{Module: "a", Count: 2}, {Module: "b", Count: 1}},
+	)
+	if len(modules) != 2 || modules[0].Module != "a" || modules[0].Count != 3 {
+		t.Fatalf("unexpected merged runtime modules: %#v", modules)
+	}
+
+	symbols := mergeRuntimeSymbolUsage(
+		[]report.RuntimeSymbolUsage{
+			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1},
+			{Symbol: "filter", Module: "lodash/filter", Count: 1},
+		},
+		[]report.RuntimeSymbolUsage{
+			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 2},
+			{Symbol: "chunk", Module: "lodash/chunk", Count: 1},
+			{Symbol: "flatten", Module: "lodash/flatten", Count: 1},
+			{Symbol: "groupBy", Module: "lodash/groupBy", Count: 1},
+			{Symbol: "pick", Module: "lodash/pick", Count: 1},
+		},
+	)
+	if len(symbols) != 5 {
+		t.Fatalf("expected top-5 merged runtime symbols, got %#v", symbols)
+	}
+	if symbols[0].Symbol != "map" || symbols[0].Count != 3 {
+		t.Fatalf("expected merged map runtime symbol first, got %#v", symbols[0])
 	}
 }

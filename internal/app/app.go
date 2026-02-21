@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/ui"
+	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 var (
@@ -67,6 +70,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		Impact:     req.Analyse.Thresholds.RemovalCandidateWeightImpact,
 		Confidence: req.Analyse.Thresholds.RemovalCandidateWeightConfidence,
 	}
+	runtimeWarnings, runtimeTracePath := prepareRuntimeTrace(ctx, req)
 
 	reportData, err := a.Analyzer.Analyse(ctx, analysis.Request{
 		RepoPath:                          req.RepoPath,
@@ -74,7 +78,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		TopN:                              req.Analyse.TopN,
 		Language:                          req.Analyse.Language,
 		RuntimeProfile:                    req.Analyse.RuntimeProfile,
-		RuntimeTracePath:                  req.Analyse.RuntimeTracePath,
+		RuntimeTracePath:                  runtimeTracePath,
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
 		RemovalCandidateWeights:           &weights,
@@ -87,6 +91,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
 	}
+	reportData.Warnings = append(reportData.Warnings, runtimeWarnings...)
 
 	reportData, formatted, err := a.applyBaselineIfNeeded(reportData, req.Analyse)
 	if err != nil {
@@ -96,6 +101,30 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		return formatted, err
 	}
 	return formatted, nil
+}
+
+func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
+	runtimeTracePath := strings.TrimSpace(req.Analyse.RuntimeTracePath)
+	runtimeCommand := strings.TrimSpace(req.Analyse.RuntimeTestCommand)
+	if runtimeCommand == "" {
+		return nil, runtimeTracePath
+	}
+
+	repoPath, _ := workspace.NormalizeRepoPath(req.RepoPath)
+	if runtimeTracePath == "" {
+		runtimeTracePath = runtime.DefaultTracePath(repoPath)
+	}
+	if err := runtime.Capture(ctx, runtime.CaptureRequest{
+		RepoPath:  repoPath,
+		TracePath: runtimeTracePath,
+		Command:   runtimeCommand,
+	}); err != nil {
+		if strings.TrimSpace(req.Analyse.RuntimeTracePath) == "" {
+			return []string{"runtime trace command failed; continuing with static analysis: " + err.Error()}, ""
+		}
+		return []string{"runtime trace command failed; continuing with static analysis: " + err.Error()}, runtimeTracePath
+	}
+	return nil, runtimeTracePath
 }
 
 func (a *App) applyBaselineIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, string, error) {

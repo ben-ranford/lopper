@@ -160,8 +160,17 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
 		return
 	}
 	_, _ = fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
+	if usage.Correlation != "" {
+		_, _ = fmt.Fprintf(out, "  - correlation: %s\n", usage.Correlation)
+	}
 	if usage.RuntimeOnly {
 		_, _ = fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
+	}
+	if len(usage.Modules) > 0 {
+		_, _ = fmt.Fprintf(out, "  - modules: %s\n", formatRuntimeModules(usage.Modules))
+	}
+	if len(usage.TopSymbols) > 0 {
+		_, _ = fmt.Fprintf(out, "  - top symbols: %s\n", formatRuntimeSymbols(usage.TopSymbols))
 	}
 	_, _ = fmt.Fprintln(out, "")
 }
@@ -184,6 +193,26 @@ func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) {
 		}
 	}
 	_, _ = fmt.Fprintln(out, "")
+}
+
+func formatRuntimeModules(modules []report.RuntimeModuleUsage) string {
+	items := make([]string, 0, len(modules))
+	for _, module := range modules {
+		items = append(items, fmt.Sprintf("%s (%d)", module.Module, module.Count))
+	}
+	return strings.Join(items, ", ")
+}
+
+func formatRuntimeSymbols(symbols []report.RuntimeSymbolUsage) string {
+	items := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		if symbol.Module != "" {
+			items = append(items, fmt.Sprintf("%s [%s] (%d)", symbol.Symbol, symbol.Module, symbol.Count))
+			continue
+		}
+		items = append(items, fmt.Sprintf("%s (%d)", symbol.Symbol, symbol.Count))
+	}
+	return strings.Join(items, ", ")
 }
 
 func isDetailCommand(input string) (string, bool) {

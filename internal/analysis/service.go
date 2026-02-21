@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -73,21 +74,30 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 		return report.Report{}, err
 	}
 	if len(reports) == 0 {
-		return report.Report{
-			SchemaVersion: report.SchemaVersion,
-			RepoPath:      repoPath,
-			Warnings:      append(warnings, "no language adapter produced results"),
-		}, nil
+		reportData := report.Report{
+			RepoPath: repoPath,
+			Warnings: append(warnings, "no language adapter produced results"),
+		}
+		reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
+		if err != nil {
+			return report.Report{}, err
+		}
+		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+		reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)
+		reportData.SchemaVersion = report.SchemaVersion
+		return reportData, nil
 	}
 
 	reportData := mergeReports(repoPath, reports)
 	reportData.Warnings = append(reportData.Warnings, warnings...)
 
-	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, reportData)
+	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
 	if err != nil {
 		return report.Report{}, err
 	}
 	report.AnnotateRemovalCandidateScoresWithWeights(reportData.Dependencies, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+	reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)
 	reportData.SchemaVersion = report.SchemaVersion
 	return reportData, nil
 }
@@ -197,15 +207,21 @@ func normalizeCandidateRoot(repoPath, root string) string {
 	return filepath.Join(repoPath, root)
 }
 
-func annotateRuntimeTraceIfPresent(runtimeTracePath string, reportData report.Report) (report.Report, error) {
+func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report) (report.Report, error) {
 	if runtimeTracePath == "" {
 		return reportData, nil
 	}
 	traceData, err := runtime.Load(runtimeTracePath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			reportData.Warnings = append(reportData.Warnings, "runtime trace file not found; continuing with static analysis")
+			return reportData, nil
+		}
 		return report.Report{}, err
 	}
-	return runtime.Annotate(reportData, traceData), nil
+	return runtime.Annotate(reportData, traceData, runtime.AnnotateOptions{
+		IncludeRuntimeOnlyRows: supportsJSTraceLanguage(languageID),
+	}), nil
 }
 
 func isMultiLanguage(languageID string) bool {
@@ -296,18 +312,35 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 
 	if left.RuntimeUsage != nil || right.RuntimeUsage != nil {
 		loadCount := 0
-		runtimeOnly := true
+		hasStatic := false
+		hasRuntime := false
+		leftModules := []report.RuntimeModuleUsage(nil)
+		leftSymbols := []report.RuntimeSymbolUsage(nil)
+		rightModules := []report.RuntimeModuleUsage(nil)
+		rightSymbols := []report.RuntimeSymbolUsage(nil)
 		if left.RuntimeUsage != nil {
 			loadCount += left.RuntimeUsage.LoadCount
-			runtimeOnly = runtimeOnly && left.RuntimeUsage.RuntimeOnly
+			leftHasStatic, leftHasRuntime := runtimeUsageSignals(left.RuntimeUsage)
+			hasStatic = hasStatic || leftHasStatic
+			hasRuntime = hasRuntime || leftHasRuntime
+			leftModules = left.RuntimeUsage.Modules
+			leftSymbols = left.RuntimeUsage.TopSymbols
 		}
 		if right.RuntimeUsage != nil {
 			loadCount += right.RuntimeUsage.LoadCount
-			runtimeOnly = runtimeOnly && right.RuntimeUsage.RuntimeOnly
+			rightHasStatic, rightHasRuntime := runtimeUsageSignals(right.RuntimeUsage)
+			hasStatic = hasStatic || rightHasStatic
+			hasRuntime = hasRuntime || rightHasRuntime
+			rightModules = right.RuntimeUsage.Modules
+			rightSymbols = right.RuntimeUsage.TopSymbols
 		}
+		correlation := mergeRuntimeCorrelation(hasStatic, hasRuntime)
 		merged.RuntimeUsage = &report.RuntimeUsage{
 			LoadCount:   loadCount,
-			RuntimeOnly: runtimeOnly,
+			Correlation: correlation,
+			RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
+			Modules:     mergeRuntimeModuleUsage(leftModules, rightModules),
+			TopSymbols:  mergeRuntimeSymbolUsage(leftSymbols, rightSymbols),
 		}
 	}
 
@@ -339,18 +372,119 @@ func mergeImportUses(left []report.ImportUse, right []report.ImportUse) []report
 }
 
 func filterUsedOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
-	usedKeys := make(map[string]struct{}, len(used))
-	for _, item := range used {
-		usedKeys[item.Module+"\x00"+item.Name] = struct{}{}
+	if len(unused) == 0 || len(used) == 0 {
+		return unused
 	}
-	filtered := make([]report.ImportUse, 0, len(unused))
-	for _, item := range unused {
-		if _, ok := usedKeys[item.Module+"\x00"+item.Name]; ok {
+
+	usedLookup := make(map[string]struct{}, len(used))
+	for i := range used {
+		usedLookup[importUseKey(used[i])] = struct{}{}
+	}
+
+	filtered := unused[:0]
+	for i := range unused {
+		item := unused[i]
+		if _, exists := usedLookup[importUseKey(item)]; exists {
 			continue
 		}
 		filtered = append(filtered, item)
 	}
 	return filtered
+}
+
+func importUseKey(item report.ImportUse) string {
+	return item.Module + "\x00" + item.Name
+}
+
+func runtimeUsageSignals(usage *report.RuntimeUsage) (hasStatic bool, hasRuntime bool) {
+	if usage == nil {
+		return false, false
+	}
+	switch usage.Correlation {
+	case report.RuntimeCorrelationOverlap:
+		return true, true
+	case report.RuntimeCorrelationRuntimeOnly:
+		return false, true
+	case report.RuntimeCorrelationStaticOnly:
+		return true, false
+	}
+	if usage.RuntimeOnly {
+		return false, usage.LoadCount > 0
+	}
+	return true, usage.LoadCount > 0
+}
+
+func mergeRuntimeCorrelation(hasStatic, hasRuntime bool) report.RuntimeCorrelation {
+	switch {
+	case hasStatic && hasRuntime:
+		return report.RuntimeCorrelationOverlap
+	case hasRuntime:
+		return report.RuntimeCorrelationRuntimeOnly
+	default:
+		return report.RuntimeCorrelationStaticOnly
+	}
+}
+
+func supportsJSTraceLanguage(languageID string) bool {
+	switch strings.TrimSpace(strings.ToLower(languageID)) {
+	case "", "auto", language.All, "js-ts":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeRuntimeModuleUsage(left, right []report.RuntimeModuleUsage) []report.RuntimeModuleUsage {
+	merged := make(map[string]report.RuntimeModuleUsage)
+	for _, item := range append(append([]report.RuntimeModuleUsage{}, left...), right...) {
+		if current, ok := merged[item.Module]; ok {
+			current.Count += item.Count
+			merged[item.Module] = current
+			continue
+		}
+		merged[item.Module] = item
+	}
+	items := make([]report.RuntimeModuleUsage, 0, len(merged))
+	for _, item := range merged {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Count == items[j].Count {
+			return items[i].Module < items[j].Module
+		}
+		return items[i].Count > items[j].Count
+	})
+	return items
+}
+
+func mergeRuntimeSymbolUsage(left, right []report.RuntimeSymbolUsage) []report.RuntimeSymbolUsage {
+	merged := make(map[string]report.RuntimeSymbolUsage)
+	for _, item := range append(append([]report.RuntimeSymbolUsage{}, left...), right...) {
+		key := item.Module + "\x00" + item.Symbol
+		if current, ok := merged[key]; ok {
+			current.Count += item.Count
+			merged[key] = current
+			continue
+		}
+		merged[key] = item
+	}
+	items := make([]report.RuntimeSymbolUsage, 0, len(merged))
+	for _, item := range merged {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Count == items[j].Count {
+			if items[i].Module == items[j].Module {
+				return items[i].Symbol < items[j].Symbol
+			}
+			return items[i].Module < items[j].Module
+		}
+		return items[i].Count > items[j].Count
+	})
+	if len(items) > 5 {
+		items = items[:5]
+	}
+	return items
 }
 
 func mergeSymbolRefs(left []report.SymbolRef, right []report.SymbolRef) []report.SymbolRef {

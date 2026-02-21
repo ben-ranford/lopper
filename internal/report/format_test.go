@@ -25,6 +25,10 @@ func TestFormatTable(t *testing.T) {
 				UsedExportsCount:     2,
 				TotalExportsCount:    10,
 				EstimatedUnusedBytes: 1024,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   3,
+					Correlation: RuntimeCorrelationOverlap,
+				},
 				TopUsedSymbols: []SymbolUsage{
 					{Name: "map", Count: 3},
 				},
@@ -50,6 +54,9 @@ func TestFormatTable(t *testing.T) {
 	}
 	if !strings.Contains(output, "map") {
 		t.Fatalf("expected output to include top symbol")
+	}
+	if !strings.Contains(output, "Runtime") || !strings.Contains(output, "overlap (3 loads)") {
+		t.Fatalf("expected runtime column and value, got %q", output)
 	}
 }
 
@@ -106,6 +113,12 @@ func TestFormattingHelpers(t *testing.T) {
 	}
 	if hasLanguageColumn([]DependencyReport{{Name: "x"}}) {
 		t.Fatalf("did not expect language column without language values")
+	}
+	if hasRuntimeColumn([]DependencyReport{{Name: "x"}}) {
+		t.Fatalf("did not expect runtime column without runtime data")
+	}
+	if !hasRuntimeColumn([]DependencyReport{{Name: "x", RuntimeUsage: &RuntimeUsage{LoadCount: 1}}}) {
+		t.Fatalf("expected runtime column with runtime data")
 	}
 }
 
@@ -200,5 +213,44 @@ func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
 	}
 	if _, err := NewFormatter().Format(reportData, FormatJSON); err == nil {
 		t.Fatalf("expected json marshal error for NaN candidate score")
+	}
+}
+
+func TestFormatRuntimeUsageFallbacks(t *testing.T) {
+	if got := formatRuntimeUsage(nil); got != "-" {
+		t.Fatalf("expected runtime dash for nil usage, got %q", got)
+	}
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 1, RuntimeOnly: true}); !strings.Contains(got, "runtime-only") {
+		t.Fatalf("expected runtime-only fallback, got %q", got)
+	}
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
+		t.Fatalf("expected static-only fallback, got %q", got)
+	}
+}
+
+func TestFormatTableRuntimeColumnWithoutLanguage(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "dep",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   1,
+					Correlation: RuntimeCorrelationOverlap,
+				},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table: %v", err)
+	}
+	if !strings.Contains(output, "Runtime") {
+		t.Fatalf("expected runtime column in table output, got %q", output)
+	}
+	if strings.Contains(output, "Language\tDependency") {
+		t.Fatalf("did not expect language column in single-language runtime table")
 	}
 }

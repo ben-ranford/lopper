@@ -35,78 +35,106 @@ func formatTable(report Report) string {
 	}
 
 	var buffer bytes.Buffer
-	if report.Summary != nil {
-		_, _ = fmt.Fprintf(
-			&buffer,
-			"Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n",
-			report.Summary.DependencyCount,
-			report.Summary.UsedExportsCount,
-			report.Summary.TotalExportsCount,
-			report.Summary.UsedPercent,
-		)
-	}
+	appendSummary(&buffer, report.Summary)
 	appendEffectiveThresholds(&buffer, report)
-	if len(report.LanguageBreakdown) > 0 {
-		buffer.WriteString("Languages:\n")
-		for _, item := range report.LanguageBreakdown {
-			buffer.WriteString("- ")
-			buffer.WriteString(item.Language)
-			buffer.WriteString(": ")
-			buffer.WriteString(fmt.Sprintf("%d deps, Used/Total: %d/%d (%.1f%%)\n", item.DependencyCount, item.UsedExportsCount, item.TotalExportsCount, item.UsedPercent))
-		}
-		buffer.WriteString("\n")
-	}
-	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
+	appendLanguageBreakdown(&buffer, report.LanguageBreakdown)
 
+	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 	showLanguage := hasLanguageColumn(report.Dependencies)
-	if showLanguage {
-		_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
-	} else {
-		_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
-	}
+	showRuntime := hasRuntimeColumn(report.Dependencies)
+	writeTableHeader(writer, showLanguage, showRuntime)
+
 	for _, dep := range report.Dependencies {
-		usedPercent := dep.UsedPercent
-		if usedPercent <= 0 && dep.TotalExportsCount > 0 {
-			usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
-		}
-		usedTotal := fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount)
-		if showLanguage {
-			_, _ = fmt.Fprintf(
-				writer,
-				"%s\t%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
-				dep.Language,
-				dep.Name,
-				usedTotal,
-				usedPercent,
-				formatBytes(dep.EstimatedUnusedBytes),
-				formatCandidateScore(dep.RemovalCandidate),
-				formatScoreComponents(dep.RemovalCandidate),
-				formatTopSymbols(dep.TopUsedSymbols),
-			)
-		} else {
-			_, _ = fmt.Fprintf(
-				writer,
-				"%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
-				dep.Name,
-				usedTotal,
-				usedPercent,
-				formatBytes(dep.EstimatedUnusedBytes),
-				formatCandidateScore(dep.RemovalCandidate),
-				formatScoreComponents(dep.RemovalCandidate),
-				formatTopSymbols(dep.TopUsedSymbols),
-			)
-		}
+		_, _ = fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime))
 	}
 
 	_ = writer.Flush()
 	appendWarnings(&buffer, report)
-
 	return buffer.String()
+}
+
+func appendSummary(buffer *bytes.Buffer, summary *Summary) {
+	if summary == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(
+		buffer,
+		"Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n",
+		summary.DependencyCount,
+		summary.UsedExportsCount,
+		summary.TotalExportsCount,
+		summary.UsedPercent,
+	)
+}
+
+func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) {
+	if len(breakdown) == 0 {
+		return
+	}
+	buffer.WriteString("Languages:\n")
+	for _, item := range breakdown {
+		buffer.WriteString("- ")
+		buffer.WriteString(item.Language)
+		buffer.WriteString(": ")
+		buffer.WriteString(fmt.Sprintf("%d deps, Used/Total: %d/%d (%.1f%%)\n", item.DependencyCount, item.UsedExportsCount, item.TotalExportsCount, item.UsedPercent))
+	}
+	buffer.WriteString("\n")
+}
+
+func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) {
+	columns := make([]string, 0, 9)
+	if showLanguage {
+		columns = append(columns, "Language")
+	}
+	columns = append(columns, "Dependency", "Used/Total", "Used%")
+	if showRuntime {
+		columns = append(columns, "Runtime")
+	}
+	columns = append(columns, "Est. Unused Size", "Candidate Score", "Score Components", "Top Symbols")
+	_, _ = fmt.Fprintln(writer, strings.Join(columns, "\t"))
+}
+
+func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string {
+	usedPercent := dep.UsedPercent
+	if usedPercent <= 0 && dep.TotalExportsCount > 0 {
+		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
+	}
+
+	columns := make([]string, 0, 9)
+	if showLanguage {
+		columns = append(columns, dep.Language)
+	}
+	columns = append(
+		columns,
+		dep.Name,
+		fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount),
+		fmt.Sprintf("%.1f", usedPercent),
+	)
+	if showRuntime {
+		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
+	}
+	columns = append(
+		columns,
+		formatBytes(dep.EstimatedUnusedBytes),
+		formatCandidateScore(dep.RemovalCandidate),
+		formatScoreComponents(dep.RemovalCandidate),
+		formatTopSymbols(dep.TopUsedSymbols),
+	)
+	return strings.Join(columns, "\t")
 }
 
 func hasLanguageColumn(dependencies []DependencyReport) bool {
 	for _, dep := range dependencies {
 		if strings.TrimSpace(dep.Language) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRuntimeColumn(dependencies []DependencyReport) bool {
+	for _, dep := range dependencies {
+		if dep.RuntimeUsage != nil {
 			return true
 		}
 	}
@@ -203,4 +231,21 @@ func formatBytes(value int64) string {
 		return "-" + formatted
 	}
 	return formatted
+}
+
+func formatRuntimeUsage(usage *RuntimeUsage) string {
+	if usage == nil {
+		return "-"
+	}
+	correlation := string(usage.Correlation)
+	if correlation == "" {
+		if usage.RuntimeOnly {
+			correlation = string(RuntimeCorrelationRuntimeOnly)
+		} else if usage.LoadCount > 0 {
+			correlation = string(RuntimeCorrelationOverlap)
+		} else {
+			correlation = string(RuntimeCorrelationStaticOnly)
+		}
+	}
+	return fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)
 }
