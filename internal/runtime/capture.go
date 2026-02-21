@@ -11,6 +11,45 @@ import (
 
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
 
+var runtimeCommandFactories = map[string]func(context.Context) *exec.Cmd{
+	"npm": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "npm")
+	},
+	"pnpm": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "pnpm")
+	},
+	"yarn": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "yarn")
+	},
+	"bun": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "bun")
+	},
+	"npx": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "npx")
+	},
+	"node": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "node")
+	},
+	"vitest": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "vitest")
+	},
+	"jest": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "jest")
+	},
+	"mocha": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "mocha")
+	},
+	"ava": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "ava")
+	},
+	"deno": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "deno")
+	},
+	"make": func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "make")
+	},
+}
+
 type CaptureRequest struct {
 	RepoPath  string
 	TracePath string
@@ -83,21 +122,7 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 }
 
 func resolveRuntimeExecutablePath(executable string, pathValue string) (string, error) {
-	switch executable {
-	case "npm":
-	case "pnpm":
-	case "yarn":
-	case "bun":
-	case "npx":
-	case "node":
-	case "vitest":
-	case "jest":
-	case "mocha":
-	case "ava":
-	case "deno":
-	case "make":
-		// allowed
-	default:
+	if _, ok := runtimeCommandFactories[executable]; !ok {
 		return "", fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
 
@@ -117,34 +142,11 @@ func resolveRuntimeExecutablePath(executable string, pathValue string) (string, 
 }
 
 func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
-	switch executable {
-	case "npm":
-		return exec.CommandContext(ctx, "npm"), nil
-	case "pnpm":
-		return exec.CommandContext(ctx, "pnpm"), nil
-	case "yarn":
-		return exec.CommandContext(ctx, "yarn"), nil
-	case "bun":
-		return exec.CommandContext(ctx, "bun"), nil
-	case "npx":
-		return exec.CommandContext(ctx, "npx"), nil
-	case "node":
-		return exec.CommandContext(ctx, "node"), nil
-	case "vitest":
-		return exec.CommandContext(ctx, "vitest"), nil
-	case "jest":
-		return exec.CommandContext(ctx, "jest"), nil
-	case "mocha":
-		return exec.CommandContext(ctx, "mocha"), nil
-	case "ava":
-		return exec.CommandContext(ctx, "ava"), nil
-	case "deno":
-		return exec.CommandContext(ctx, "deno"), nil
-	case "make":
-		return exec.CommandContext(ctx, "make"), nil
-	default:
+	factory, ok := runtimeCommandFactories[executable]
+	if !ok {
 		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
+	return factory(ctx), nil
 }
 
 func trustedPathDirs(pathValue string) []string {
