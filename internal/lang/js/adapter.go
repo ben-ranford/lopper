@@ -157,6 +157,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 			req.Dependency,
 			dependencyRootPath,
 			scanResult,
+			req.RuntimeProfile,
 			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
 		)
 		result.Dependencies = []report.DependencyReport{depReport}
@@ -170,6 +171,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 			repoPath,
 			scanResult,
 			req.TopN,
+			req.RuntimeProfile,
 			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
 		)
 		result.Dependencies = deps
@@ -190,6 +192,7 @@ func buildDependencyReport(
 	dependency string,
 	dependencyRootPath string,
 	scanResult ScanResult,
+	runtimeProfile string,
 	minUsagePercentForRecommendations int,
 ) (report.DependencyReport, []string) {
 	usedExports := make(map[string]struct{})
@@ -198,7 +201,7 @@ func buildDependencyReport(
 	unusedImports := make(map[string]*report.ImportUse)
 	warnings := make([]string, 0)
 
-	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath)
+	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile)
 	warnings = append(warnings, surfaceWarnings...)
 	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
 	warnings = append(warnings, dependencyUsageWarnings(dependency, usedExports, hasWildcard)...)
@@ -238,10 +241,15 @@ func buildDependencyReport(
 	return depReport, warnings
 }
 
-func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string) (ExportSurface, []string) {
+func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string, runtimeProfile string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
-	resolved, err := resolveDependencyExports(repoPath, dependency, dependencyRootPath)
+	resolved, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:           repoPath,
+		dependency:         dependency,
+		dependencyRootPath: dependencyRootPath,
+		runtimeProfileName: runtimeProfile,
+	})
 	if err != nil {
 		warnings = append(warnings, err.Error())
 		return surface, warnings
@@ -471,7 +479,7 @@ func matchesDependency(module string, dependency string) bool {
 	return false
 }
 
-func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
+func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
 	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
 	if len(dependencies) == 0 {
 		return nil, warnings
@@ -484,6 +492,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, minU
 			dep,
 			dependencyRoots[dep],
 			scanResult,
+			runtimeProfile,
 			minUsagePercentForRecommendations,
 		)
 		reports = append(reports, depReport)

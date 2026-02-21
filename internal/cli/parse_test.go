@@ -46,6 +46,9 @@ func TestParseArgsAnalyseDependency(t *testing.T) {
 	if req.Analyse.Language != "auto" {
 		t.Fatalf("expected language auto, got %q", req.Analyse.Language)
 	}
+	if req.Analyse.RuntimeProfile != "node-import" {
+		t.Fatalf("expected runtime profile node-import, got %q", req.Analyse.RuntimeProfile)
+	}
 }
 
 func TestParseArgsAnalyseTop(t *testing.T) {
@@ -118,6 +121,16 @@ func TestParseArgsAnalyseRuntimeTrace(t *testing.T) {
 	}
 	if req.Analyse.RuntimeTracePath != "trace.ndjson" {
 		t.Fatalf("expected runtime trace path trace.ndjson, got %q", req.Analyse.RuntimeTracePath)
+	}
+}
+
+func TestParseArgsAnalyseRuntimeProfile(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "lodash", "--runtime-profile", "browser-require"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.RuntimeProfile != "browser-require" {
+		t.Fatalf("expected runtime profile browser-require, got %q", req.Analyse.RuntimeProfile)
 	}
 }
 

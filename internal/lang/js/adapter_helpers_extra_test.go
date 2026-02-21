@@ -112,7 +112,7 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 }
 
 func TestResolveSurfaceWarningsBranches(t *testing.T) {
-	surface, warnings := resolveSurfaceWarnings("", "dep", "")
+	surface, warnings := resolveSurfaceWarnings("", "dep", "", "")
 	if len(surface.Names) != 0 {
 		t.Fatalf("expected empty surface on resolution error")
 	}
@@ -131,7 +131,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
-	surface, warnings = resolveSurfaceWarnings(repo, "wild", "")
+	surface, warnings = resolveSurfaceWarnings(repo, "wild", "", "")
 	if !surface.IncludesWildcard {
 		t.Fatalf("expected wildcard export surface")
 	}
@@ -143,7 +143,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
-	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, thresholds.Defaults().MinUsagePercentForRecommendations)
+	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations)
 	if reports != nil {
 		t.Fatalf("expected nil reports when no dependencies are discovered, got %#v", reports)
 	}

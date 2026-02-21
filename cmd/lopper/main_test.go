@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -40,5 +42,47 @@ func TestRunParseError(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("expected no stdout output for parse error, got %q", out.String())
+	}
+}
+
+func TestMainInvokesExitFuncWithRunCode(t *testing.T) {
+	oldExit := exitFunc
+	oldArgs := os.Args
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	defer func() {
+		exitFunc = oldExit
+		os.Args = oldArgs
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stdout = outW
+	os.Stderr = errW
+	defer func() {
+		_ = outR.Close()
+		_ = errR.Close()
+	}()
+
+	code := -1
+	exitFunc = func(c int) { code = c }
+	os.Args = []string{"lopper", "--help"}
+
+	main()
+	_ = outW.Close()
+	_ = errW.Close()
+	_, _ = io.ReadAll(outR)
+	_, _ = io.ReadAll(errR)
+
+	if code != 0 {
+		t.Fatalf("expected main to exit with code 0 for --help, got %d", code)
 	}
 }

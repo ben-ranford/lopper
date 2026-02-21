@@ -12,6 +12,7 @@ import (
 )
 
 const indexJSName = "index.js"
+const testExportPathA = "./a.js"
 
 func TestExportParsingHelpers(t *testing.T) {
 	parser := newSourceParser()
@@ -117,7 +118,10 @@ func TestCollectExportPathsConditionWarnings(t *testing.T) {
 func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 	repo := t.TempDir()
 
-	surface, err := resolveDependencyExports(repo, "missing", "")
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "missing",
+	})
 	if err != nil {
 		t.Fatalf("resolve missing dependency exports: %v", err)
 	}
@@ -132,7 +136,10 @@ func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(badRoot, "package.json"), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid package.json: %v", err)
 	}
-	surface, err = resolveDependencyExports(repo, "bad", "")
+	surface, err = resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "bad",
+	})
 	if err != nil {
 		t.Fatalf("resolve invalid dependency exports: %v", err)
 	}
@@ -203,5 +210,73 @@ function f(...args) { return args }
 	})
 	if !sawAssignmentPattern || !sawRestPattern {
 		t.Fatalf("expected assignment and rest patterns in parsed source")
+	}
+}
+
+func TestResolveRuntimeProfileUnknownAndSupportedList(t *testing.T) {
+	profile, warning := resolveRuntimeProfile("custom-runtime")
+	if profile.name != defaultRuntimeProfile {
+		t.Fatalf("expected default runtime profile %q, got %q", defaultRuntimeProfile, profile.name)
+	}
+	if !strings.Contains(warning, "unknown runtime profile") {
+		t.Fatalf("expected unknown-profile warning, got %q", warning)
+	}
+	for _, expected := range supportedRuntimeProfiles() {
+		if !strings.Contains(warning, expected) {
+			t.Fatalf("expected warning to include supported profile %q, got %q", expected, warning)
+		}
+	}
+}
+
+func TestResolveExportNodeBranches(t *testing.T) {
+	profile := runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}
+	surface := &ExportSurface{}
+
+	if paths, ok := resolveExportNode(42, profile, "exports", surface); ok || len(paths) != 0 {
+		t.Fatalf("expected unsupported export value type to fail, got ok=%v paths=%#v", ok, paths)
+	}
+	if paths, ok := resolveExportNode(map[string]interface{}{}, profile, "exports", surface); ok || len(paths) != 0 {
+		t.Fatalf("expected empty export map to fail, got ok=%v paths=%#v", ok, paths)
+	}
+
+	paths, ok := resolveExportNode([]interface{}{42, testExportPathA}, profile, "exports", surface)
+	if !ok || len(paths) != 1 || paths[0] != testExportPathA {
+		t.Fatalf("expected array export node to resolve first valid path, got ok=%v paths=%#v", ok, paths)
+	}
+
+	paths, ok = resolveExportNode(
+		map[string]interface{}{
+			"zz": "./z.js",
+			"aa": testExportPathA,
+		},
+		profile,
+		"exports",
+		surface,
+	)
+	if !ok || len(paths) != 2 || paths[0] != testExportPathA || paths[1] != "./z.js" {
+		t.Fatalf("expected non-condition map traversal with sorted unique paths, got ok=%v paths=%#v", ok, paths)
+	}
+}
+
+func TestCollectCandidateEntrypointsFallsBackWhenProfileResolvesNoExports(t *testing.T) {
+	surface := &ExportSurface{}
+	entrypoints := collectCandidateEntrypoints(
+		packageJSON{
+			Exports: map[string]interface{}{
+				".": map[string]interface{}{
+					"import": "./styles.css",
+				},
+			},
+			Main: "legacy.js",
+		},
+		runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}},
+		surface,
+	)
+	if _, ok := entrypoints["legacy.js"]; !ok {
+		t.Fatalf("expected fallback main entrypoint, got %#v", entrypoints)
+	}
+	joined := strings.Join(surface.Warnings, "\n")
+	if !strings.Contains(joined, "no exports resolved for runtime profile") {
+		t.Fatalf("expected fallback warning, got %#v", surface.Warnings)
 	}
 }
