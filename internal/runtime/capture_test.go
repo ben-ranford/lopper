@@ -145,17 +145,16 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 func TestTrustedPathDirs(t *testing.T) {
 	secureA := t.TempDir()
 	secureB := t.TempDir()
-	if err := os.Chmod(secureA, 0o755); err != nil {
-		t.Fatalf("chmod secureA: %v", err)
-	}
-	if err := os.Chmod(secureB, 0o555); err != nil {
-		t.Fatalf("chmod secureB: %v", err)
-	}
 	insecure := filepath.Join(t.TempDir(), "insecure")
-	if err := os.MkdirAll(insecure, 0o777); err != nil {
+	if err := os.MkdirAll(insecure, 0o700); err != nil {
 		t.Fatalf("mkdir insecure: %v", err)
 	}
-	if err := os.Chmod(insecure, 0o777); err != nil {
+	info, err := os.Stat(insecure)
+	if err != nil {
+		t.Fatalf("stat insecure: %v", err)
+	}
+	insecurePerms := info.Mode().Perm() | 0o020
+	if err := os.Chmod(insecure, insecurePerms); err != nil {
 		t.Fatalf("chmod insecure: %v", err)
 	}
 
@@ -219,7 +218,7 @@ func setupFakeRuntimeTools(t *testing.T) string {
 	}
 	for _, tool := range tools {
 		path := filepath.Join(toolDir, tool)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 			t.Fatalf("write fake runtime tool %q: %v", tool, err)
 		}
 	}
