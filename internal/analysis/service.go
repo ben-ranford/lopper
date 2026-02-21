@@ -434,7 +434,7 @@ func supportsJSTraceLanguage(languageID string) bool {
 	}
 }
 
-func mergeRuntimeModuleUsage(left []report.RuntimeModuleUsage, right []report.RuntimeModuleUsage) []report.RuntimeModuleUsage {
+func mergeRuntimeModuleUsage(left, right []report.RuntimeModuleUsage) []report.RuntimeModuleUsage {
 	merged := make(map[string]report.RuntimeModuleUsage)
 	for _, item := range append(append([]report.RuntimeModuleUsage{}, left...), right...) {
 		if current, ok := merged[item.Module]; ok {
@@ -457,7 +457,7 @@ func mergeRuntimeModuleUsage(left []report.RuntimeModuleUsage, right []report.Ru
 	return items
 }
 
-func mergeRuntimeSymbolUsage(left []report.RuntimeSymbolUsage, right []report.RuntimeSymbolUsage) []report.RuntimeSymbolUsage {
+func mergeRuntimeSymbolUsage(left, right []report.RuntimeSymbolUsage) []report.RuntimeSymbolUsage {
 	merged := make(map[string]report.RuntimeSymbolUsage)
 	for _, item := range append(append([]report.RuntimeSymbolUsage{}, left...), right...) {
 		key := item.Module + "\x00" + item.Symbol

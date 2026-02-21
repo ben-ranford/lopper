@@ -71,6 +71,15 @@ func Load(path string) (Trace, error) {
 }
 
 func Annotate(rep report.Report, trace Trace, opts AnnotateOptions) report.Report {
+	seen := annotateExistingDependencies(&rep, trace)
+	if opts.IncludeRuntimeOnlyRows {
+		appendRuntimeOnlyDependencies(&rep, trace, seen)
+		sortDependencies(rep.Dependencies)
+	}
+	return rep
+}
+
+func annotateExistingDependencies(rep *report.Report, trace Trace) map[string]struct{} {
 	seen := make(map[string]struct{}, len(rep.Dependencies))
 	for i := range rep.Dependencies {
 		dep := &rep.Dependencies[i]
@@ -78,52 +87,58 @@ func Annotate(rep report.Report, trace Trace, opts AnnotateOptions) report.Repor
 			continue
 		}
 		seen[dep.Name] = struct{}{}
-		loads := trace.DependencyLoads[dep.Name]
-		hasStatic := hasStaticEvidence(*dep)
-		if loads == 0 && !hasStatic && dep.RuntimeUsage == nil {
+		annotateDependency(dep, trace)
+	}
+	return seen
+}
+
+func annotateDependency(dep *report.DependencyReport, trace Trace) {
+	loads := trace.DependencyLoads[dep.Name]
+	hasStatic := hasStaticEvidence(*dep)
+	if loads == 0 && !hasStatic && dep.RuntimeUsage == nil {
+		return
+	}
+	correlation := runtimeCorrelation(hasStatic, loads > 0)
+	dep.RuntimeUsage = &report.RuntimeUsage{
+		LoadCount:   loads,
+		Correlation: correlation,
+		RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
+		Modules:     runtimeModules(trace.DependencyModules[dep.Name]),
+		TopSymbols:  runtimeSymbols(trace.DependencySymbols[dep.Name]),
+	}
+}
+
+func appendRuntimeOnlyDependencies(rep *report.Report, trace Trace, seen map[string]struct{}) {
+	for dependency, loads := range trace.DependencyLoads {
+		if loads == 0 {
 			continue
 		}
-		correlation := runtimeCorrelation(hasStatic, loads > 0)
-		dep.RuntimeUsage = &report.RuntimeUsage{
-			LoadCount:   loads,
-			Correlation: correlation,
-			RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
-			Modules:     runtimeModules(trace.DependencyModules[dep.Name]),
-			TopSymbols:  runtimeSymbols(trace.DependencySymbols[dep.Name]),
+		if _, ok := seen[dependency]; ok {
+			continue
 		}
-	}
-
-	if opts.IncludeRuntimeOnlyRows {
-		for dep, loads := range trace.DependencyLoads {
-			if loads == 0 {
-				continue
-			}
-			if _, ok := seen[dep]; ok {
-				continue
-			}
-			rep.Dependencies = append(rep.Dependencies, report.DependencyReport{
-				Language: "js-ts",
-				Name:     dep,
-				RuntimeUsage: &report.RuntimeUsage{
-					LoadCount:   loads,
-					Correlation: report.RuntimeCorrelationRuntimeOnly,
-					RuntimeOnly: true,
-					Modules:     runtimeModules(trace.DependencyModules[dep]),
-					TopSymbols:  runtimeSymbols(trace.DependencySymbols[dep]),
-				},
-			})
-		}
-		sort.Slice(rep.Dependencies, func(i, j int) bool {
-			left := rep.Dependencies[i]
-			right := rep.Dependencies[j]
-			if left.Language == right.Language {
-				return left.Name < right.Name
-			}
-			return left.Language < right.Language
+		rep.Dependencies = append(rep.Dependencies, report.DependencyReport{
+			Language: "js-ts",
+			Name:     dependency,
+			RuntimeUsage: &report.RuntimeUsage{
+				LoadCount:   loads,
+				Correlation: report.RuntimeCorrelationRuntimeOnly,
+				RuntimeOnly: true,
+				Modules:     runtimeModules(trace.DependencyModules[dependency]),
+				TopSymbols:  runtimeSymbols(trace.DependencySymbols[dependency]),
+			},
 		})
 	}
+}
 
-	return rep
+func sortDependencies(dependencies []report.DependencyReport) {
+	sort.Slice(dependencies, func(i, j int) bool {
+		left := dependencies[i]
+		right := dependencies[j]
+		if left.Language == right.Language {
+			return left.Name < right.Name
+		}
+		return left.Language < right.Language
+	})
 }
 
 func hasStaticEvidence(dep report.DependencyReport) bool {
@@ -175,7 +190,7 @@ func runtimeModuleFromEvent(event Event, dependency string) string {
 	return dependency
 }
 
-func runtimeModuleFromSpecifier(specifier string, dependency string) string {
+func runtimeModuleFromSpecifier(specifier, dependency string) string {
 	specifier = strings.TrimSpace(specifier)
 	if specifier == "" {
 		return ""
@@ -186,7 +201,7 @@ func runtimeModuleFromSpecifier(specifier string, dependency string) string {
 	return specifier
 }
 
-func runtimeModuleFromResolvedPath(value string, dependency string) string {
+func runtimeModuleFromResolvedPath(value, dependency string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
@@ -225,7 +240,7 @@ func runtimeModuleFromResolvedPath(value string, dependency string) string {
 	return dependency + "/" + strings.Join(parts[1:], "/")
 }
 
-func runtimeSymbolFromModule(module string, dependency string) string {
+func runtimeSymbolFromModule(module, dependency string) string {
 	if module == "" || dependency == "" {
 		return ""
 	}

@@ -13,16 +13,22 @@ import (
 
 const (
 	programFileName           = "Program.cs"
+	packageJSONFileName       = "package.json"
+	indexJSFileName           = "index.js"
+	demoPackageJSONContent    = "{\n  \"name\": \"demo\"\n}\n"
+	nodeMainPackageJSON       = "{\n  \"main\": \"index.js\"\n}\n"
+	mapExportJSContent        = "export function map() {}\n"
+	leftPadDependencyID       = "left-pad"
 	newtonsoftDependencyID    = "newtonsoft.json"
 	expectedOneDependencyText = "expected one dependency report, got %d"
 )
 
 func TestServiceAnalyseAllLanguages(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
 	writeFile(t, filepath.Join(repo, "build.gradle"), "dependencies { implementation 'org.junit.jupiter:junit-jupiter-api:5.10.0' }\n")
 	writeFile(t, filepath.Join(repo, "src", "test", "java", "ExampleTest.java"), "import org.junit.jupiter.api.Test;\nclass ExampleTest {}\n")
@@ -63,12 +69,12 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 
 func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nimport { pad } from \"left-pad\"\nmap([1], (x) => x)\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "left-pad", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "left-pad", "index.js"), "export function pad() {}\n")
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nimport { pad } from \""+leftPadDependencyID+"\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+	writeFile(t, filepath.Join(repo, "node_modules", leftPadDependencyID, packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", leftPadDependencyID, indexJSFileName), "export function pad() {}\n")
 	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
 	writeFile(t, tracePath, "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
 
@@ -92,9 +98,9 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	if lodash.RuntimeUsage == nil || lodash.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
 		t.Fatalf("expected lodash overlap correlation, got %#v", lodash.RuntimeUsage)
 	}
-	leftPad := dependencies["left-pad"]
+	leftPad := dependencies[leftPadDependencyID]
 	if leftPad.RuntimeUsage == nil || leftPad.RuntimeUsage.Correlation != report.RuntimeCorrelationStaticOnly {
-		t.Fatalf("expected left-pad static-only correlation, got %#v", leftPad.RuntimeUsage)
+		t.Fatalf("expected %s static-only correlation, got %#v", leftPadDependencyID, leftPad.RuntimeUsage)
 	}
 	chalk := dependencies["chalk"]
 	if chalk.RuntimeUsage == nil || chalk.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly {
@@ -107,10 +113,10 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 
 func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{

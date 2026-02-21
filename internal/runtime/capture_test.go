@@ -88,10 +88,10 @@ func assertCaptureErrorContains(t *testing.T, req CaptureRequest, wantSubstring 
 }
 
 func TestCaptureValidationErrors(t *testing.T) {
-	if err := Capture(context.Background(), CaptureRequest{Command: "npm test"}); err == nil {
+	if Capture(context.Background(), CaptureRequest{Command: "npm test"}) == nil {
 		t.Fatalf("expected missing repo path error")
 	}
-	if err := Capture(context.Background(), CaptureRequest{RepoPath: t.TempDir()}); err == nil {
+	if Capture(context.Background(), CaptureRequest{RepoPath: t.TempDir()}) == nil {
 		t.Fatalf("expected missing command error")
 	}
 }

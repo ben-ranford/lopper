@@ -11,6 +11,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const lodashMapRuntimeModule = "lodash/map"
+
 func TestHelperFunctions(t *testing.T) {
 	if !isMultiLanguage(" ALL ") {
 		t.Fatalf("expected all language match")
@@ -62,7 +64,7 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 			LoadCount:   1,
 			Correlation: report.RuntimeCorrelationRuntimeOnly,
 			RuntimeOnly: true,
-			Modules:     []report.RuntimeModuleUsage{{Module: "lodash/map", Count: 1}},
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashMapRuntimeModule, Count: 1}},
 			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Count: 1}},
 		},
 	}
@@ -158,7 +160,7 @@ func TestAnnotateRuntimeTrace(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "trace.ndjson")
-	trace := []byte(`{"module":"lodash/map"}` + "\n")
+	trace := []byte(`{"module":"` + lodashMapRuntimeModule + `"}` + "\n")
 	if err := os.WriteFile(path, trace, 0o600); err != nil {
 		t.Fatalf("write runtime trace: %v", err)
 	}
@@ -363,11 +365,11 @@ func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
 
 	symbols := mergeRuntimeSymbolUsage(
 		[]report.RuntimeSymbolUsage{
-			{Symbol: "map", Module: "lodash/map", Count: 1},
+			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1},
 			{Symbol: "filter", Module: "lodash/filter", Count: 1},
 		},
 		[]report.RuntimeSymbolUsage{
-			{Symbol: "map", Module: "lodash/map", Count: 2},
+			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 2},
 			{Symbol: "chunk", Module: "lodash/chunk", Count: 1},
 			{Symbol: "flatten", Module: "lodash/flatten", Count: 1},
 			{Symbol: "groupBy", Module: "lodash/groupBy", Count: 1},

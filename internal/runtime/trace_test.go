@@ -11,7 +11,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-const scopePkgDependency = "@scope/pkg"
+const (
+	scopePkgDependency         = "@scope/pkg"
+	lodashMapModule            = "lodash/map"
+	expectedGotFormat          = "%s: expected %q, got %q"
+	leftPadDependency          = "left-pad"
+	leftPadModule              = "left-pad/index"
+	leftPadResolvedIndexModule = "/repo/node_modules/left-pad/index.js"
+)
 
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 	t.Helper()
@@ -21,7 +28,7 @@ func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 func TestLoadTrace(t *testing.T) {
 	trace, err := loadTraceFromContent(
 		t,
-		`{"kind":"resolve","module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+
+		`{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+
 			`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n",
 	)
 	if err != nil {
@@ -33,10 +40,10 @@ func TestLoadTrace(t *testing.T) {
 	if trace.DependencyLoads[scopePkgDependency] != 1 {
 		t.Fatalf("expected %s load count=1, got %d", scopePkgDependency, trace.DependencyLoads[scopePkgDependency])
 	}
-	if got := trace.DependencyModules["lodash"]["lodash/map"]; got != 1 {
+	if got := trace.DependencyModules["lodash"][lodashMapModule]; got != 1 {
 		t.Fatalf("expected lodash module count 1, got %d", got)
 	}
-	if got := trace.DependencySymbols["lodash"]["lodash/map\x00map"]; got != 1 {
+	if got := trace.DependencySymbols["lodash"][lodashMapModule+"\x00map"]; got != 1 {
 		t.Fatalf("expected lodash symbol count 1, got %d", got)
 	}
 }
@@ -127,7 +134,7 @@ func TestDependencyResolutionHelpers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
-			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, tc.got)
+			t.Fatalf(expectedGotFormat, tc.name, tc.want, tc.got)
 		}
 	}
 }
@@ -172,17 +179,17 @@ func TestDependencyFromSpecifierAndResolvedPathEdgeCases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
-			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, tc.got)
+			t.Fatalf(expectedGotFormat, tc.name, tc.want, tc.got)
 		}
 	}
 }
 
 func TestDependencyFromEventPrefersModule(t *testing.T) {
 	event := Event{
-		Module:   "left-pad/index",
+		Module:   leftPadModule,
 		Resolved: "/repo/node_modules/right-pad/index.js",
 	}
-	if dep := dependencyFromEvent(event); dep != "left-pad" {
+	if dep := dependencyFromEvent(event); dep != leftPadDependency {
 		t.Fatalf("expected module-derived dependency, got %q", dep)
 	}
 }
@@ -198,7 +205,7 @@ func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
 }
 
 func TestLoadTraceSkipsBlankLines(t *testing.T) {
-	trace, err := loadTraceFromContent(t, "\n   \n{\"module\":\"lodash/map\"}\n")
+	trace, err := loadTraceFromContent(t, "\n   \n{\"module\":\""+lodashMapModule+"\"}\n")
 	if err != nil {
 		t.Fatalf("load trace: %v", err)
 	}
@@ -283,14 +290,14 @@ func TestRuntimeModuleFromResolvedPathBranches(t *testing.T) {
 		{name: "empty", resolved: "", dependency: "lodash", want: ""},
 		{name: "no marker", resolved: "/repo/src/index.js", dependency: "lodash", want: ""},
 		{name: "scoped missing package", resolved: "/repo/node_modules/@scope", dependency: "@scope/pkg", want: ""},
-		{name: "dependency mismatch", resolved: "/repo/node_modules/left-pad/index.js", dependency: "lodash", want: ""},
+		{name: "dependency mismatch", resolved: leftPadResolvedIndexModule, dependency: "lodash", want: ""},
 		{name: "scoped root", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: "@scope/pkg", want: "@scope/pkg/index.js"},
 		{name: "scoped mismatch", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: "@scope/other", want: ""},
 		{name: "simple root", resolved: "/repo/node_modules/lodash/index.js", dependency: "lodash", want: "lodash/index.js"},
 	}
 	for _, tc := range cases {
 		if got := runtimeModuleFromResolvedPath(tc.resolved, tc.dependency); got != tc.want {
-			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, got)
+			t.Fatalf(expectedGotFormat, tc.name, tc.want, got)
 		}
 	}
 }
@@ -309,7 +316,7 @@ func TestRuntimeSymbolFromModuleBranches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		if got := runtimeSymbolFromModule(tc.module, tc.dependency); got != tc.want {
-			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, got)
+			t.Fatalf(expectedGotFormat, tc.name, tc.want, got)
 		}
 	}
 }
@@ -320,9 +327,9 @@ func TestRuntimeModulesAndSymbolsFormatting(t *testing.T) {
 	}
 	modules := runtimeModules(map[string]int{
 		"lodash/filter": 1,
-		"lodash/map":    2,
+		lodashMapModule: 2,
 	})
-	if len(modules) != 2 || modules[0].Module != "lodash/map" {
+	if len(modules) != 2 || modules[0].Module != lodashMapModule {
 		t.Fatalf("expected module sorting by count, got %#v", modules)
 	}
 
@@ -330,17 +337,17 @@ func TestRuntimeModulesAndSymbolsFormatting(t *testing.T) {
 		t.Fatalf("expected nil runtime symbols for empty input, got %#v", got)
 	}
 	symbols := runtimeSymbols(map[string]int{
-		"lodash/map\x00map":       3,
-		"lodash/filter\x00filter": 1,
-		"broken":                  2,
-		"lodash/fp\x00fp":         2,
-		"lodash/reduce\x00reduce": 1,
-		"lodash/chunk\x00chunk":   1,
+		lodashMapModule + "\x00map": 3,
+		"lodash/filter\x00filter":   1,
+		"broken":                    2,
+		"lodash/fp\x00fp":           2,
+		"lodash/reduce\x00reduce":   1,
+		"lodash/chunk\x00chunk":     1,
 	})
 	if len(symbols) != 5 {
 		t.Fatalf("expected top 5 runtime symbols, got %#v", symbols)
 	}
-	if symbols[0].Symbol != "map" || symbols[0].Module != "lodash/map" {
+	if symbols[0].Symbol != "map" || symbols[0].Module != lodashMapModule {
 		t.Fatalf("expected map symbol first, got %#v", symbols[0])
 	}
 }
@@ -360,13 +367,13 @@ func TestAddCountGuards(t *testing.T) {
 }
 
 func TestRuntimeModuleFromEventFallbackBranches(t *testing.T) {
-	if got := runtimeModuleFromEvent(Event{Module: "left-pad/index"}, "left-pad"); got != "left-pad/index" {
+	if got := runtimeModuleFromEvent(Event{Module: leftPadModule}, leftPadDependency); got != leftPadModule {
 		t.Fatalf("expected module specifier match, got %q", got)
 	}
-	if got := runtimeModuleFromEvent(Event{Module: "right-pad/index", Resolved: "/repo/node_modules/left-pad/index.js"}, "left-pad"); got != "left-pad/index.js" {
+	if got := runtimeModuleFromEvent(Event{Module: "right-pad/index", Resolved: leftPadResolvedIndexModule}, leftPadDependency); got != leftPadDependency+"/index.js" {
 		t.Fatalf("expected resolved-path fallback, got %q", got)
 	}
-	if got := runtimeModuleFromEvent(Event{}, "left-pad"); got != "left-pad" {
+	if got := runtimeModuleFromEvent(Event{}, leftPadDependency); got != leftPadDependency {
 		t.Fatalf("expected dependency fallback when no module/resolved, got %q", got)
 	}
 }
