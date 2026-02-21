@@ -344,6 +344,9 @@ func NormalizeDependencyID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+// FinalizeDetection applies shared post-processing for language detection.
+// It enforces a confidence floor (35) only when matched, always caps confidence at 95,
+// and ensures matched detections have at least one root before returning sorted roots.
 func FinalizeDetection(repoPath string, detection language.Detection, roots map[string]struct{}) language.Detection {
 	if detection.Matched && detection.Confidence < 35 {
 		detection.Confidence = 35

@@ -298,6 +298,19 @@ func TestDetectionHelpers(t *testing.T) {
 		t.Fatalf("expected sorted roots, got %#v", detection.Roots)
 	}
 
+	detection = FinalizeDetection("repo", language.Detection{Matched: false, Confidence: 20}, map[string]struct{}{})
+	if detection.Confidence != 20 {
+		t.Fatalf("expected unmatched confidence to keep floorless value, got %d", detection.Confidence)
+	}
+	if detection.Roots != nil {
+		t.Fatalf("expected no fallback roots when unmatched, got %#v", detection.Roots)
+	}
+
+	detection = FinalizeDetection("repo", language.Detection{Matched: false, Confidence: 120}, map[string]struct{}{})
+	if detection.Confidence != 95 {
+		t.Fatalf("expected unmatched confidence to still respect cap 95, got %d", detection.Confidence)
+	}
+
 	matched, err := DetectMatched(context.Background(), "repo", func(context.Context, string) (language.Detection, error) {
 		return language.Detection{Matched: true}, nil
 	})

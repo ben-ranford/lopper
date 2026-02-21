@@ -52,11 +52,11 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return matchedDetection(a.DetectWithConfidence(ctx, repoPath))
+	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
-	repoPath = defaultRepo(repoPath)
+	repoPath = shared.DefaultRepoPath(repoPath)
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
@@ -79,36 +79,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	detection.Confidence = clampConfidence(detection.Confidence, detection.Matched)
-	if len(roots) == 0 && detection.Matched {
-		roots[repoPath] = struct{}{}
-	}
-	detection.Roots = shared.SortedKeys(roots)
-	return detection, nil
-}
-
-func matchedDetection(detection language.Detection, err error) (bool, error) {
-	if err != nil {
-		return false, err
-	}
-	return detection.Matched, nil
-}
-
-func defaultRepo(repoPath string) string {
-	if repoPath == "" {
-		return "."
-	}
-	return repoPath
-}
-
-func clampConfidence(confidence int, matched bool) int {
-	if matched && confidence < 35 {
-		confidence = 35
-	}
-	if confidence > 95 {
-		confidence = 95
-	}
-	return confidence
+	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
 func walkGoDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
