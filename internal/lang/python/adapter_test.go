@@ -95,3 +95,9 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 		t.Fatalf("expected detect=true with requirements.txt")
 	}
 }
+
+func TestNormalizeDependencyID(t *testing.T) {
+	if got := normalizeDependencyID(" My_Package "); got != "my-package" {
+		t.Fatalf("unexpected normalized dependency ID: %q", got)
+	}
+}

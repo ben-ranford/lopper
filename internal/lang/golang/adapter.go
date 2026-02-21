@@ -1287,7 +1287,7 @@ func stripInlineComment(line string) string {
 }
 
 func normalizeDependencyID(value string) string {
-	return strings.TrimSpace(strings.ToLower(value))
+	return shared.NormalizeDependencyID(value)
 }
 
 func shouldSkipDir(name string) bool {
