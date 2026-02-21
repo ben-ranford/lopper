@@ -263,7 +263,7 @@ func collectCompileDatabase(path string, repoPath string, includeDirSet map[stri
 	for _, entry := range entries {
 		baseDir := resolveCompileDirectory(path, entry.Directory)
 		sourcePath := resolveCompilePath(baseDir, entry.File)
-		if sourcePath != "" && isCPPSourceFile(sourcePath) && isPathUnderRepo(repoPath, sourcePath) {
+		if sourcePath != "" && isCPPSourceFile(sourcePath) {
 			sourceFileSet[sourcePath] = struct{}{}
 		}
 		args := entry.Arguments
@@ -357,12 +357,12 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) 
 		if ctx != nil && ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		if !isPathUnderRepo(repoPath, path) {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
-			continue
-		}
 		scanFile, unresolvedSamples, unresolvedCount, err := scanCPPFile(repoPath, path, compileInfo.IncludeDirs)
 		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
+				continue
+			}
 			return result, err
 		}
 		if len(scanFile.Includes) > 0 {
@@ -552,7 +552,8 @@ func includeResolvesWithinRepo(repoPath string, sourcePath string, header string
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
-		if isPathUnderRepo(repoPath, candidate) {
+		rel, err := filepath.Rel(repoPath, candidate)
+		if err == nil && (rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")) {
 			return true
 		}
 	}
@@ -753,22 +754,6 @@ func isCPPSourceOrHeader(path string) bool {
 	default:
 		return false
 	}
-}
-
-func isPathUnderRepo(repoPath string, candidate string) bool {
-	absRepo, err := filepath.Abs(repoPath)
-	if err != nil {
-		return false
-	}
-	absCandidate, err := filepath.Abs(candidate)
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(absRepo, absCandidate)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")
 }
 
 var ignoredDirNames = map[string]struct{}{

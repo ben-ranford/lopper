@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -46,6 +47,23 @@ func TestLoadCompileContextNoDatabaseWarning(t *testing.T) {
 	}
 	if !hasWarning(ctx.Warnings, "compile_commands.json not found") {
 		t.Fatalf("expected missing compile db warning, got %#v", ctx.Warnings)
+	}
+}
+
+func TestDetectWithCompileDatabaseAndCMakeSignals(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "CMakeLists.txt"), "project(demo)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "compile_commands.json"), `[
+  {"directory":".","file":"src/main.cpp","command":"c++ -Iinclude -c src/main.cpp"}
+]`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\nint main() { return 0; }\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect with confidence: %v", err)
+	}
+	if !detection.Matched || detection.Confidence <= 0 || len(detection.Roots) == 0 {
+		t.Fatalf("unexpected detection result: %#v", detection)
 	}
 }
 
@@ -183,19 +201,6 @@ func TestSourceAndPathHelpers(t *testing.T) {
 	if !isCPPSourceOrHeader("x.hpp") || isCPPSourceOrHeader("x.txt") {
 		t.Fatalf("unexpected source/header detection")
 	}
-	repo := t.TempDir()
-	if !isPathUnderRepo(repo, filepath.Join(repo, "src", "main.cpp")) {
-		t.Fatalf("expected path to be under repo")
-	}
-	if isPathUnderRepo(repo, filepath.Join(repo, "..", "other", "main.cpp")) {
-		t.Fatalf("expected parent path to be outside repo")
-	}
-	if isPathUnderRepo("\x00", filepath.Join(repo, "src", "main.cpp")) {
-		t.Fatalf("expected invalid repo path to return false")
-	}
-	if isPathUnderRepo(repo, "\x00") {
-		t.Fatalf("expected invalid candidate path to return false")
-	}
 }
 
 func TestAnalyseWithCanceledContext(t *testing.T) {
@@ -270,4 +275,36 @@ func TestScanRepoNoSources(t *testing.T) {
 	if !hasWarning(result.Warnings, "no C/C++ source files found") {
 		t.Fatalf("expected no-source warning, got %#v", result.Warnings)
 	}
+}
+
+func TestAnalyseTopNWithUnresolvedWarnings(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <openssl/ssl.h>
+#include SOME_HEADER
+#include "missing_header.hpp"
+int main() { return 0; }
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     5,
+	})
+	if err != nil {
+		t.Fatalf("analyse topN: %v", err)
+	}
+	if len(reportData.Dependencies) == 0 {
+		t.Fatalf("expected dependencies in top-N report")
+	}
+	if !hasWarning(reportData.Warnings, "compile_commands.json not found") {
+		t.Fatalf("expected compile_commands warning, got %#v", reportData.Warnings)
+	}
+	if !hasWarning(reportData.Warnings, "include mapping unresolved") {
+		t.Fatalf("expected unresolved mapping warning, got %#v", reportData.Warnings)
+	}
+}
+
+func hasWarning(warnings []string, needle string) bool {
+	return slices.ContainsFunc(warnings, func(warning string) bool {
+		return strings.Contains(strings.ToLower(warning), strings.ToLower(needle))
+	})
 }
