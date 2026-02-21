@@ -75,6 +75,21 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].Name != "filter" {
 		t.Fatalf("expected overlap removal, got %#v", filtered)
 	}
+	usedImportList, unusedImportList := finalizeImportUsageLists(
+		map[string]*report.ImportUse{
+			"lodash:map": {Name: "map", Module: "lodash"},
+		},
+		map[string]*report.ImportUse{
+			"lodash:map":    {Name: "map", Module: "lodash"},
+			"lodash:filter": {Name: "filter", Module: "lodash"},
+		},
+	)
+	if len(usedImportList) != 1 || usedImportList[0].Name != "map" {
+		t.Fatalf("expected flattened used imports, got %#v", usedImportList)
+	}
+	if len(unusedImportList) != 1 || unusedImportList[0].Name != "filter" {
+		t.Fatalf("expected overlap-filtered unused imports, got %#v", unusedImportList)
+	}
 
 	if score, ok := wasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
 		t.Fatalf("expected unknown waste score for zero exports, got score=%f ok=%v", score, ok)
