@@ -279,6 +279,7 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
             -Dsonar.organization=ben-ranford
@@ -288,7 +289,7 @@ jobs:
       - name: Post SonarQube review comments (PR)
         if: ${{ github.event_name == 'pull_request' && !env.ACT && secrets.SONAR_TOKEN != '' && steps.sonar_scan.outcome == 'success' }}
         continue-on-error: true
-        uses: RishabhTayal/sonarqube-review-comments-action@v1
+        uses: RishabhTayal/sonarqube-review-comments-action@ec6510452a09e32cd45238308151a3e817182ee2
         with:
           sonar_project_key: ben-ranford_lopper
           sonar_host_url: https://sonarcloud.io
