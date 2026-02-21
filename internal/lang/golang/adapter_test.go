@@ -290,7 +290,7 @@ func TestReplacementImportMapsToDependency(t *testing.T) {
 		moduleDemoLine,
 		"",
 		requirePrefix + moduleOriginal + " v1.0.0",
-			replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.1",
+		replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.1",
 		"",
 	}, "\n")))
 	if modulePath != moduleDemo {
@@ -514,8 +514,8 @@ func TestLoadWorkspaceModulesContract(t *testing.T) {
 		"go 1.25",
 		"",
 		"use (",
-			workspaceSvcALine,
-			workspaceSvcALine,
+		workspaceSvcALine,
+		workspaceSvcALine,
 		"\t./svc/missing",
 		")",
 	}, "\n"))
@@ -1399,13 +1399,13 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
 		"module example.com/root",
 		"",
-			replacePrefix + moduleOriginal + " => " + sharedForkImport + " v1.0.0",
+		replacePrefix + moduleOriginal + " => " + sharedForkImport + " v1.0.0",
 		"",
 	}, "\n"))
 	writeFile(t, filepath.Join(repo, "sub", fileGoMod), strings.Join([]string{
 		"module example.com/sub",
 		"",
-			replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
+		replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
 	}, "\n"))
 
