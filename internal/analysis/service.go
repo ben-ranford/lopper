@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/cpp"
 	"github.com/ben-ranford/lopper/internal/lang/dotnet"
 	"github.com/ben-ranford/lopper/internal/lang/golang"
 	"github.com/ben-ranford/lopper/internal/lang/js"
@@ -35,6 +36,9 @@ func NewService() *Service {
 	err := registry.Register(js.NewAdapter())
 	if err == nil {
 		err = registry.Register(python.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(cpp.NewAdapter())
 	}
 	if err == nil {
 		err = registry.Register(jvm.NewAdapter())
