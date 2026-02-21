@@ -211,16 +211,16 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	if req.TopN > 0 {
-		weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
-		return buildTopGoDependencies(req.TopN, scan, weights)
-	}
-	dependency := normalizeDependencyID(req.Dependency)
-	if dependency == "" {
-		return nil, []string{"no dependency or top-N target provided"}
-	}
-	depReport, warnings := buildDependencyReport(dependency, scan)
-	return []report.DependencyReport{depReport}, warnings
+	return shared.BuildRequestedDependencies(
+		req,
+		normalizeDependencyID,
+		func(dependency string) (report.DependencyReport, []string) {
+			return buildDependencyReport(dependency, scan)
+		},
+		func(topN int) ([]report.DependencyReport, []string) {
+			return buildTopGoDependencies(topN, scan, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+		},
+	)
 }
 
 func buildTopGoDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {

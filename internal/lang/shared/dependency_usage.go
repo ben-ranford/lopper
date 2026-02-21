@@ -277,6 +277,23 @@ func SortReportsByWaste(reports []report.DependencyReport, weights ...report.Rem
 	})
 }
 
+func BuildRequestedDependencies(
+	req language.Request,
+	normalizeDependencyID func(string) string,
+	buildDependency func(string) (report.DependencyReport, []string),
+	buildTop func(int) ([]report.DependencyReport, []string),
+) ([]report.DependencyReport, []string) {
+	if req.TopN > 0 {
+		return buildTop(req.TopN)
+	}
+	dependency := normalizeDependencyID(req.Dependency)
+	if dependency == "" {
+		return nil, []string{"no dependency or top-N target provided"}
+	}
+	depReport, warnings := buildDependency(dependency)
+	return []report.DependencyReport{depReport}, warnings
+}
+
 func WasteScore(dep report.DependencyReport) (float64, bool) {
 	if dep.TotalExportsCount == 0 {
 		return -1, false

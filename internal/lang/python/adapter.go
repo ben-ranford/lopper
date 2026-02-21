@@ -152,17 +152,16 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	dependency := normalizeDependencyID(req.Dependency)
-	if dependency != "" {
-		depReport, warnings := buildDependencyReport(dependency, scan)
-		return []report.DependencyReport{depReport}, warnings
-	}
-	topN := req.TopN
-	if topN > 0 {
-		weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
-		return buildTopPythonDependencies(topN, scan, weights)
-	}
-	return nil, []string{"no dependency or top-N target provided"}
+	return shared.BuildRequestedDependencies(
+		req,
+		normalizeDependencyID,
+		func(dependency string) (report.DependencyReport, []string) {
+			return buildDependencyReport(dependency, scan)
+		},
+		func(topN int) ([]report.DependencyReport, []string) {
+			return buildTopPythonDependencies(topN, scan, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+		},
+	)
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {

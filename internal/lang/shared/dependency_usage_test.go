@@ -131,6 +131,66 @@ func TestListDependenciesAndTopReports(t *testing.T) {
 	}
 }
 
+func TestBuildRequestedDependencies(t *testing.T) {
+	t.Run("dependency", func(t *testing.T) {
+		reports, warnings := BuildRequestedDependencies(
+			language.Request{Dependency: "Alpha"},
+			strings.ToLower,
+			func(dependency string) (report.DependencyReport, []string) {
+				return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
+			},
+			func(int) ([]report.DependencyReport, []string) {
+				t.Fatal("unexpected top-N builder call")
+				return nil, nil
+			},
+		)
+		if len(reports) != 1 || reports[0].Name != "alpha" {
+			t.Fatalf("unexpected dependency reports: %#v", reports)
+		}
+		if !slices.Equal(warnings, []string{"dep-warning"}) {
+			t.Fatalf("unexpected dependency warnings: %#v", warnings)
+		}
+	})
+
+	t.Run("topN", func(t *testing.T) {
+		reports, warnings := BuildRequestedDependencies(
+			language.Request{TopN: 3},
+			strings.ToLower,
+			func(string) (report.DependencyReport, []string) {
+				t.Fatal("unexpected dependency builder call")
+				return report.DependencyReport{}, nil
+			},
+			func(topN int) ([]report.DependencyReport, []string) {
+				if topN != 3 {
+					t.Fatalf("unexpected topN: %d", topN)
+				}
+				return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
+			},
+		)
+		if len(reports) != 1 || reports[0].Name != "top" {
+			t.Fatalf("unexpected top-N reports: %#v", reports)
+		}
+		if !slices.Equal(warnings, []string{"top-warning"}) {
+			t.Fatalf("unexpected top-N warnings: %#v", warnings)
+		}
+	})
+
+	t.Run("missing target", func(t *testing.T) {
+		reports, warnings := BuildRequestedDependencies(
+			language.Request{},
+			strings.ToLower,
+			func(string) (report.DependencyReport, []string) { return report.DependencyReport{}, nil },
+			func(int) ([]report.DependencyReport, []string) { return nil, nil },
+		)
+		if reports != nil {
+			t.Fatalf("expected nil reports when no target provided, got %#v", reports)
+		}
+		if !slices.Equal(warnings, []string{"no dependency or top-N target provided"}) {
+			t.Fatalf("unexpected no-target warnings: %#v", warnings)
+		}
+	})
+}
+
 func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	reports := []report.DependencyReport{
 		{Name: "unknown", TotalExportsCount: 0},
