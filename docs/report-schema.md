@@ -20,6 +20,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used).
+- `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
 
 ## Notes

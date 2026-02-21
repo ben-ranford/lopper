@@ -104,7 +104,12 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 
 	out.Reset()
 	printImportList(&out, "Used imports", nil)
-	printImportList(&out, "Used imports", []report.ImportUse{{Name: "map", Module: "lodash", Locations: []report.Location{{File: "index.js", Line: 2}}}})
+	printImportList(&out, "Used imports", []report.ImportUse{{
+		Name:       "map",
+		Module:     "lodash",
+		Locations:  []report.Location{{File: "index.js", Line: 2}},
+		Provenance: []string{"index.js -> barrel.js -> lodash#map"},
+	}})
 	printExportsList(&out, "Unused exports", nil)
 	printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}})
 	printRiskCues(&out, nil)
@@ -115,6 +120,9 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "(unknown)") {
 		t.Fatalf("expected unknown module label for empty module exports")
+	}
+	if !strings.Contains(out.String(), "provenance: index.js -> barrel.js -> lodash#map") {
+		t.Fatalf("expected provenance detail in import list output")
 	}
 
 	if dep, ok := isDetailCommand("open lodash"); !ok || dep != "lodash" {
