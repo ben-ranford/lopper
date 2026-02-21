@@ -210,15 +210,12 @@ func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]repo
 		weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 		return buildTopGoDependencies(req.TopN, scan, weights)
 	}
-	if req.Dependency == "" {
+	dependency := normalizeDependencyID(req.Dependency)
+	if dependency == "" {
 		return nil, []string{"no dependency or top-N target provided"}
 	}
-	if req.Dependency != "" {
-		dependency := normalizeDependencyID(req.Dependency)
-		depReport, warnings := buildDependencyReport(dependency, scan)
-		return []report.DependencyReport{depReport}, warnings
-	}
-	return nil, []string{"no dependency or top-N target provided"}
+	depReport, warnings := buildDependencyReport(dependency, scan)
+	return []report.DependencyReport{depReport}, warnings
 }
 
 func buildTopGoDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
