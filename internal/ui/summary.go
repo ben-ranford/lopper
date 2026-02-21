@@ -126,6 +126,7 @@ type sortMode string
 const (
 	sortByWaste sortMode = "waste"
 	sortByName  sortMode = "name"
+	sortAliasAlpha       = "alpha"
 )
 
 type summaryState struct {
@@ -193,16 +194,12 @@ func handleSortCommand(state *summaryState, fields []string) bool {
 	if len(fields) < 2 {
 		return false
 	}
-	switch fields[1] {
-	case string(sortByWaste):
-		setSortMode(state, sortByWaste)
-		return true
-	case string(sortByName):
-		setSortMode(state, sortByName)
-		return true
-	default:
+	mode, ok := parseSortModeStrict(fields[1])
+	if !ok {
 		return false
 	}
+	setSortMode(state, mode)
+	return true
 }
 
 func handlePageCommand(state *summaryState, fields []string) bool {
@@ -231,11 +228,7 @@ func handleSizeCommand(state *summaryState, fields []string) bool {
 }
 
 func handleToggleSortCommand(state *summaryState) bool {
-	if state.sortMode == sortByWaste {
-		setSortMode(state, sortByName)
-		return true
-	}
-	setSortMode(state, sortByWaste)
+	setSortMode(state, toggleSortMode(state.sortMode))
 	return true
 }
 
@@ -419,12 +412,29 @@ func buildSummaryState(opts Options) summaryState {
 }
 
 func parseSortMode(value string) sortMode {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case string(sortByName), "alpha":
-		return sortByName
-	default:
+	mode, ok := parseSortModeStrict(value)
+	if !ok {
 		return sortByWaste
 	}
+	return mode
+}
+
+func parseSortModeStrict(value string) (sortMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(sortByName), sortAliasAlpha:
+		return sortByName, true
+	case string(sortByWaste):
+		return sortByWaste, true
+	default:
+		return sortByWaste, false
+	}
+}
+
+func toggleSortMode(mode sortMode) sortMode {
+	if mode == sortByWaste {
+		return sortByName
+	}
+	return sortByWaste
 }
 
 func (s *Summary) renderSummary(reportData report.Report, state summaryState) (string, error) {
