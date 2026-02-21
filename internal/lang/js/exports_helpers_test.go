@@ -117,7 +117,10 @@ func TestCollectExportPathsConditionWarnings(t *testing.T) {
 func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 	repo := t.TempDir()
 
-	surface, err := resolveDependencyExports(repo, "missing", "", "")
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "missing",
+	})
 	if err != nil {
 		t.Fatalf("resolve missing dependency exports: %v", err)
 	}
@@ -132,7 +135,10 @@ func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(badRoot, "package.json"), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid package.json: %v", err)
 	}
-	surface, err = resolveDependencyExports(repo, "bad", "", "")
+	surface, err = resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "bad",
+	})
 	if err != nil {
 		t.Fatalf("resolve invalid dependency exports: %v", err)
 	}

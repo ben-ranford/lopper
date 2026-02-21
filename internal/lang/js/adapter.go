@@ -244,7 +244,12 @@ func buildDependencyReport(
 func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string, runtimeProfile string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
-	resolved, err := resolveDependencyExports(repoPath, dependency, dependencyRootPath, runtimeProfile)
+	resolved, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:           repoPath,
+		dependency:         dependency,
+		dependencyRootPath: dependencyRootPath,
+		runtimeProfileName: runtimeProfile,
+	})
 	if err != nil {
 		warnings = append(warnings, err.Error())
 		return surface, warnings

@@ -7,13 +7,18 @@ import (
 	"testing"
 )
 
+const resolveExportsErrFmt = "resolve exports: %v"
+
 func TestResolveDependencyExports(t *testing.T) {
 	repo := t.TempDir()
 	writeDependencyFixture(t, repo, "sample", "{\n  \"main\": \"index.js\"\n}\n", "export const alpha = 1\nexport function beta() {}\nexport default function () {}\n")
 
-	surface, err := resolveDependencyExports(repo, "sample", "", "")
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "sample",
+	})
 	if err != nil {
-		t.Fatalf("resolve exports: %v", err)
+		t.Fatalf(resolveExportsErrFmt, err)
 	}
 
 	for _, name := range []string{"alpha", "beta", "default"} {
@@ -27,9 +32,12 @@ func TestResolveDependencyExportsSkipsNonCodeAssets(t *testing.T) {
 	repo := t.TempDir()
 	writeDependencyFixture(t, repo, "styled", "{\n  \"exports\": {\n    \"default\": {\n      \"styles\": \"./styles.css\",\n      \"import\": \"./index.js\"\n    }\n  }\n}\n", "export const theme = {}\n")
 
-	surface, err := resolveDependencyExports(repo, "styled", "", "")
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "styled",
+	})
 	if err != nil {
-		t.Fatalf("resolve exports: %v", err)
+		t.Fatalf(resolveExportsErrFmt, err)
 	}
 
 	if len(surface.Names) == 0 {
@@ -48,7 +56,11 @@ func TestResolveDependencyExportsUsesRuntimeProfile(t *testing.T) {
 		"require.js": "export const requireOnly = 1\n",
 	})
 
-	importSurface, err := resolveDependencyExports(repo, "profiled", "", "node-import")
+	importSurface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:           repo,
+		dependency:         "profiled",
+		runtimeProfileName: runtimeProfileNodeImport,
+	})
 	if err != nil {
 		t.Fatalf("resolve import profile exports: %v", err)
 	}
@@ -59,7 +71,11 @@ func TestResolveDependencyExportsUsesRuntimeProfile(t *testing.T) {
 		t.Fatalf("did not expect require export in import profile")
 	}
 
-	requireSurface, err := resolveDependencyExports(repo, "profiled", "", "node-require")
+	requireSurface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:           repo,
+		dependency:         "profiled",
+		runtimeProfileName: runtimeProfileNodeRequire,
+	})
 	if err != nil {
 		t.Fatalf("resolve require profile exports: %v", err)
 	}
@@ -80,9 +96,13 @@ func TestResolveDependencyExportsWarnsOnAmbiguousConditionMap(t *testing.T) {
 		"default.js": "export const fromDefault = 1\n",
 	})
 
-	surface, err := resolveDependencyExports(repo, "ambiguous", "", "node-import")
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:           repo,
+		dependency:         "ambiguous",
+		runtimeProfileName: runtimeProfileNodeImport,
+	})
 	if err != nil {
-		t.Fatalf("resolve exports: %v", err)
+		t.Fatalf(resolveExportsErrFmt, err)
 	}
 	if _, ok := surface.Names["fromNode"]; !ok {
 		t.Fatalf("expected node branch selection for node-import profile, got %#v", surface.Names)

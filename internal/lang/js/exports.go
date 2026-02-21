@@ -32,7 +32,20 @@ type packageJSON struct {
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
 }
 
-const defaultRuntimeProfile = "node-import"
+const (
+	runtimeProfileNodeImport     = "node-import"
+	runtimeProfileNodeRequire    = "node-require"
+	runtimeProfileBrowserImport  = "browser-import"
+	runtimeProfileBrowserRequire = "browser-require"
+	defaultRuntimeProfile        = runtimeProfileNodeImport
+)
+
+type dependencyExportRequest struct {
+	repoPath           string
+	dependency         string
+	dependencyRootPath string
+	runtimeProfileName string
+}
 
 type runtimeProfile struct {
 	name       string
@@ -40,7 +53,12 @@ type runtimeProfile struct {
 }
 
 func supportedRuntimeProfiles() []string {
-	return []string{"node-import", "node-require", "browser-import", "browser-require"}
+	return []string{
+		runtimeProfileNodeImport,
+		runtimeProfileNodeRequire,
+		runtimeProfileBrowserImport,
+		runtimeProfileBrowserRequire,
+	}
 }
 
 func resolveRuntimeProfile(name string) (runtimeProfile, string) {
@@ -49,13 +67,13 @@ func resolveRuntimeProfile(name string) (runtimeProfile, string) {
 		trimmed = defaultRuntimeProfile
 	}
 	switch trimmed {
-	case "node-import":
+	case runtimeProfileNodeImport:
 		return runtimeProfile{name: trimmed, conditions: []string{"node", "import", "default"}}, ""
-	case "node-require":
+	case runtimeProfileNodeRequire:
 		return runtimeProfile{name: trimmed, conditions: []string{"node", "require", "default"}}, ""
-	case "browser-import":
+	case runtimeProfileBrowserImport:
 		return runtimeProfile{name: trimmed, conditions: []string{"browser", "import", "default"}}, ""
-	case "browser-require":
+	case runtimeProfileBrowserRequire:
 		return runtimeProfile{name: trimmed, conditions: []string{"browser", "require", "default"}}, ""
 	default:
 		return runtimeProfile{name: defaultRuntimeProfile, conditions: []string{"node", "import", "default"}},
@@ -68,15 +86,15 @@ func resolveRuntimeProfile(name string) (runtimeProfile, string) {
 	}
 }
 
-func resolveDependencyExports(repoPath string, dependency string, dependencyRootPath string, runtimeProfileName string) (ExportSurface, error) {
+func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error) {
 	surface := ExportSurface{Names: make(map[string]struct{})}
-	profile, profileWarning := resolveRuntimeProfile(runtimeProfileName)
+	profile, profileWarning := resolveRuntimeProfile(req.runtimeProfileName)
 	if profileWarning != "" {
 		surface.Warnings = append(surface.Warnings, profileWarning)
 	}
-	depPath := dependencyRootPath
+	depPath := req.dependencyRootPath
 	if depPath == "" {
-		root, err := dependencyRoot(repoPath, dependency)
+		root, err := dependencyRoot(req.repoPath, req.dependency)
 		if err != nil {
 			return surface, err
 		}
@@ -150,62 +168,79 @@ func resolveExportsEntryPaths(value interface{}, profile runtimeProfile, scope s
 func resolveExportNode(value interface{}, profile runtimeProfile, scope string, surface *ExportSurface) ([]string, bool) {
 	switch typed := value.(type) {
 	case string:
-		if !isLikelyCodeAsset(typed) {
-			if surface != nil {
-				surface.Warnings = append(surface.Warnings, fmt.Sprintf("skipping non-js export target at %s: %s", scope, typed))
-			}
-			return nil, false
-		}
-		return []string{typed}, true
+		return resolveStringExportNode(typed, scope, surface)
 	case []interface{}:
-		for idx, item := range typed {
-			paths, ok := resolveExportNode(item, profile, fmt.Sprintf("%s[%d]", scope, idx), surface)
-			if ok && len(paths) > 0 {
-				return paths, true
-			}
-		}
-		return nil, false
+		return resolveArrayExportNode(typed, profile, scope, surface)
 	case map[string]interface{}:
-		if len(typed) == 0 {
-			return nil, false
-		}
-
-		if hasSubpathExportKeys(typed) {
-			collected := make(map[string]struct{})
-			keys := sortedObjectKeys(typed)
-			for _, key := range keys {
-				if !isSubpathExportKey(key) {
-					continue
-				}
-				paths, ok := resolveExportNode(typed[key], profile, fmt.Sprintf("%s.%s", scope, key), surface)
-				if !ok {
-					continue
-				}
-				for _, path := range paths {
-					collected[path] = struct{}{}
-				}
-			}
-			return sortedMapKeys(collected), len(collected) > 0
-		}
-
-		if hasConditionKeys(typed) {
-			return resolveConditionalExportMap(typed, profile, scope, surface)
-		}
-
-		collected := make(map[string]struct{})
-		for _, key := range sortedObjectKeys(typed) {
-			paths, ok := resolveExportNode(typed[key], profile, fmt.Sprintf("%s.%s", scope, key), surface)
-			if !ok {
-				continue
-			}
-			for _, path := range paths {
-				collected[path] = struct{}{}
-			}
-		}
-		return sortedMapKeys(collected), len(collected) > 0
+		return resolveMapExportNode(typed, profile, scope, surface)
 	default:
 		return nil, false
 	}
+}
+
+func resolveStringExportNode(value string, scope string, surface *ExportSurface) ([]string, bool) {
+	if !isLikelyCodeAsset(value) {
+		if surface != nil {
+			surface.Warnings = append(surface.Warnings, fmt.Sprintf("skipping non-js export target at %s: %s", scope, value))
+		}
+		return nil, false
+	}
+	return []string{value}, true
+}
+
+func resolveArrayExportNode(values []interface{}, profile runtimeProfile, scope string, surface *ExportSurface) ([]string, bool) {
+	for idx, item := range values {
+		paths, ok := resolveExportNode(item, profile, fmt.Sprintf("%s[%d]", scope, idx), surface)
+		if ok && len(paths) > 0 {
+			return paths, true
+		}
+	}
+	return nil, false
+}
+
+func resolveMapExportNode(node map[string]interface{}, profile runtimeProfile, scope string, surface *ExportSurface) ([]string, bool) {
+	if len(node) == 0 {
+		return nil, false
+	}
+	if hasSubpathExportKeys(node) {
+		return resolveSubpathExportMap(node, profile, scope, surface)
+	}
+	if hasConditionKeys(node) {
+		return resolveConditionalExportMap(node, profile, scope, surface)
+	}
+	return resolveObjectExportMap(node, profile, scope, surface)
+}
+
+func resolveSubpathExportMap(node map[string]interface{}, profile runtimeProfile, scope string, surface *ExportSurface) ([]string, bool) {
+	collected := make(map[string]struct{})
+	keys := sortedObjectKeys(node)
+	for _, key := range keys {
+		if !isSubpathExportKey(key) {
+			continue
+		}
+		paths, ok := resolveExportNode(node[key], profile, fmt.Sprintf("%s.%s", scope, key), surface)
+		if !ok {
+			continue
+		}
+		for _, path := range paths {
+			collected[path] = struct{}{}
+		}
+	}
+	return sortedMapKeys(collected), len(collected) > 0
+}
+
+func resolveObjectExportMap(node map[string]interface{}, profile runtimeProfile, scope string, surface *ExportSurface) ([]string, bool) {
+	collected := make(map[string]struct{})
+	for _, key := range sortedObjectKeys(node) {
+		paths, ok := resolveExportNode(node[key], profile, fmt.Sprintf("%s.%s", scope, key), surface)
+		if !ok {
+			continue
+		}
+		for _, path := range paths {
+			collected[path] = struct{}{}
+		}
+	}
+	return sortedMapKeys(collected), len(collected) > 0
 }
 
 func resolveConditionalExportMap(node map[string]interface{}, profile runtimeProfile, scope string, surface *ExportSurface) ([]string, bool) {
