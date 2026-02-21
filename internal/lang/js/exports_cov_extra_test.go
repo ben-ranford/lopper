@@ -10,6 +10,14 @@ import (
 )
 
 func TestJSExportsCoverageHelpers(t *testing.T) {
+	assertJSRuntimeProfileResolution(t)
+	assertJSDependencyExportsResolution(t)
+	assertJSExportMapHelpers(t)
+	assertJSImportExportParsing(t)
+}
+
+func assertJSRuntimeProfileResolution(t *testing.T) {
+	t.Helper()
 	if profile, _ := resolveRuntimeProfile(runtimeProfileBrowserImport); profile.name != runtimeProfileBrowserImport {
 		t.Fatalf("expected browser-import runtime profile")
 	}
@@ -19,7 +27,10 @@ func TestJSExportsCoverageHelpers(t *testing.T) {
 	if _, err := resolveDependencyExports(dependencyExportRequest{}); err == nil {
 		t.Fatalf("expected dependency export resolution to error for empty request")
 	}
+}
 
+func assertJSDependencyExportsResolution(t *testing.T) {
+	t.Helper()
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "pkg")
 	if err := os.MkdirAll(depRoot, 0o755); err != nil {
@@ -39,15 +50,17 @@ func TestJSExportsCoverageHelpers(t *testing.T) {
 	if len(surface.Warnings) == 0 {
 		t.Fatalf("expected warnings for unknown profile and unresolved entrypoint")
 	}
-	if got := resolveEntrypoints(depRoot, map[string]struct{}{"./missing.js": struct{}{}}, &surface); len(got) != 0 {
+	if got := resolveEntrypoints(depRoot, map[string]struct{}{"./missing.js": {}}, &surface); len(got) != 0 {
 		t.Fatalf("expected unresolved entrypoint warning path")
 	}
+}
 
+func assertJSExportMapHelpers(t *testing.T) {
+	t.Helper()
 	entrypoints := collectCandidateEntrypoints(packageJSON{}, runtimeProfile{name: "x"}, &ExportSurface{})
 	if _, ok := entrypoints[indexJSName]; !ok {
 		t.Fatalf("expected index.js fallback entrypoint")
 	}
-
 	profile := runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}
 	paths, ok := resolveSubpathExportMap(map[string]interface{}{
 		"import": "./x.js",
@@ -62,14 +75,16 @@ func TestJSExportsCoverageHelpers(t *testing.T) {
 	if got := sortedMapKeys(map[string]struct{}{}); len(got) != 0 {
 		t.Fatalf("expected empty sorted map keys")
 	}
-
 	if paths, ok := resolveArrayExportNode([]interface{}{"./styles.css"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
 		t.Fatalf("expected array export with no code assets to fail")
 	}
 	if paths, ok := resolveObjectExportMap(map[string]interface{}{"a": "./styles.css"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
 		t.Fatalf("expected object export map with non-code entries to fail")
 	}
+}
 
+func assertJSImportExportParsing(t *testing.T) {
+	t.Helper()
 	parser := newSourceParser()
 	src := []byte("export default 1; export * from \"./x.js\"; export * as ns from \"./y.js\";")
 	tree, err := parser.Parse(context.Background(), indexJSName, src)
@@ -88,8 +103,7 @@ func TestJSExportsCoverageHelpers(t *testing.T) {
 	if !seen["default"] || !seen["*"] || !seen["ns"] {
 		t.Fatalf("expected default/star/namespace export names to be parsed")
 	}
-
-	if decl := parseExportDeclaration(tree.RootNode(), src); decl != nil {
+	if parseExportDeclaration(tree.RootNode(), src) != nil {
 		t.Fatalf("expected non-declaration node to return nil export declaration parse")
 	}
 }

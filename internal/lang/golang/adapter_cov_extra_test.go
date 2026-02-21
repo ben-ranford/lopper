@@ -14,78 +14,12 @@ import (
 const coverageDepPath = "github.com/x/y"
 
 func TestGoAdapterCoverageHelpers(t *testing.T) {
-	if got := clampConfidence(1, true); got != 35 {
-		t.Fatalf("expected clampConfidence floor when matched, got %d", got)
-	}
-	if got := clampConfidence(120, true); got != 95 {
-		t.Fatalf("expected clampConfidence cap, got %d", got)
-	}
-
-	result := &scanResult{
-		SkippedLargeFiles:       1,
-		SkippedNestedModuleDirs: 1,
-	}
-	appendScanWarnings(result, moduleInfo{})
-	if len(result.Warnings) == 0 {
-		t.Fatalf("expected warnings from appendScanWarnings")
-	}
-
-	if warnings := dependencyWarnings("dep", true); warnings != nil {
-		t.Fatalf("expected no dependency warnings when imports exist")
-	}
-	name, local, wildcard := importBindingIdentity("example.com/x/y", &ast.Ident{Name: "   "})
-	if wildcard || name != "y" || local != "y" {
-		t.Fatalf("expected blank alias to fall back to inferred name, got name=%q local=%q wildcard=%v", name, local, wildcard)
-	}
-
-	if isActiveBuildTag("") {
-		t.Fatalf("expected empty build tag to be inactive")
-	}
-	if isSupportedGoReleaseTag("not-a-go-tag") {
-		t.Fatalf("expected non-go release tag to be unsupported")
-	}
-	if _, ok := goVersionMinor("go2.1"); ok {
-		t.Fatalf("expected non-go1 version to be rejected")
-	}
-	if _, ok := leadingInt(""); ok {
-		t.Fatalf("expected empty leadingInt input to fail")
-	}
-	if isVersionSuffix("v") {
-		t.Fatalf("expected short version suffix to fail")
-	}
-	if isVersionSuffix("v1x") {
-		t.Fatalf("expected non-numeric version suffix to fail")
-	}
-
-	if parseGoModBlockControl("x", "require (", nil) {
-		t.Fatalf("expected nil inBlock pointer to return false")
-	}
-
-	replaceSet := map[string]string{}
-	addGoModReplacement("example.com/old => local/module", replaceSet)
-	if len(replaceSet) != 0 {
-		t.Fatalf("expected non-external replacement target to be ignored")
-	}
-
-	repo := t.TempDir()
-	goWork := "go 1.26\nuse ../outside\n"
-	if err := os.WriteFile(filepath.Join(repo, goWorkName), []byte(goWork), 0o600); err != nil {
-		t.Fatalf("write go.work: %v", err)
-	}
-	mods, err := loadGoWorkLocalModules(repo)
-	if err != nil {
-		t.Fatalf("loadGoWorkLocalModules: %v", err)
-	}
-	if len(mods) != 0 {
-		t.Fatalf("expected out-of-repo go.work entries to be ignored")
-	}
-
-	if _, ok := resolveRepoBoundedPath(repo, ""); ok {
-		t.Fatalf("expected empty resolveRepoBoundedPath input to fail")
-	}
-	if _, ok := resolveRepoBoundedPath(repo, "../outside"); ok {
-		t.Fatalf("expected resolveRepoBoundedPath to reject escaping path")
-	}
+	assertGoClampConfidence(t)
+	assertGoScanWarnings(t)
+	assertGoImportBindingHelpers(t)
+	assertGoTagVersionHelpers(t)
+	assertGoModHelpers(t)
+	assertGoWorkAndPathHelpers(t)
 }
 
 func TestGoAdapterCoverageHelpersMore(t *testing.T) {
@@ -139,5 +73,95 @@ func TestGoAdapterCoverageHelpersMore(t *testing.T) {
 	weights := report.RemovalCandidateWeights{Usage: 1, Impact: 0, Confidence: 0}
 	if deps, warnings := buildTopGoDependencies(1, scan, weights); len(warnings) != 0 || len(deps) == 0 {
 		t.Fatalf("expected buildTopGoDependencies to return reports, deps=%#v warnings=%#v", deps, warnings)
+	}
+}
+
+func assertGoClampConfidence(t *testing.T) {
+	t.Helper()
+	if got := clampConfidence(1, true); got != 35 {
+		t.Fatalf("expected clampConfidence floor when matched, got %d", got)
+	}
+	if got := clampConfidence(120, true); got != 95 {
+		t.Fatalf("expected clampConfidence cap, got %d", got)
+	}
+}
+
+func assertGoScanWarnings(t *testing.T) {
+	t.Helper()
+	result := &scanResult{
+		SkippedLargeFiles:       1,
+		SkippedNestedModuleDirs: 1,
+	}
+	appendScanWarnings(result, moduleInfo{})
+	if len(result.Warnings) == 0 {
+		t.Fatalf("expected warnings from appendScanWarnings")
+	}
+}
+
+func assertGoImportBindingHelpers(t *testing.T) {
+	t.Helper()
+	if dependencyWarnings("dep", true) != nil {
+		t.Fatalf("expected no dependency warnings when imports exist")
+	}
+	name, local, wildcard := importBindingIdentity("example.com/x/y", &ast.Ident{Name: "   "})
+	if wildcard || name != "y" || local != "y" {
+		t.Fatalf("expected blank alias to fall back to inferred name, got name=%q local=%q wildcard=%v", name, local, wildcard)
+	}
+}
+
+func assertGoTagVersionHelpers(t *testing.T) {
+	t.Helper()
+	if isActiveBuildTag("") {
+		t.Fatalf("expected empty build tag to be inactive")
+	}
+	if isSupportedGoReleaseTag("not-a-go-tag") {
+		t.Fatalf("expected non-go release tag to be unsupported")
+	}
+	if _, ok := goVersionMinor("go2.1"); ok {
+		t.Fatalf("expected non-go1 version to be rejected")
+	}
+	if _, ok := leadingInt(""); ok {
+		t.Fatalf("expected empty leadingInt input to fail")
+	}
+	if isVersionSuffix("v") {
+		t.Fatalf("expected short version suffix to fail")
+	}
+	if isVersionSuffix("v1x") {
+		t.Fatalf("expected non-numeric version suffix to fail")
+	}
+}
+
+func assertGoModHelpers(t *testing.T) {
+	t.Helper()
+	if parseGoModBlockControl("x", "require (", nil) {
+		t.Fatalf("expected nil inBlock pointer to return false")
+	}
+	replaceSet := map[string]string{}
+	addGoModReplacement("example.com/old => local/module", replaceSet)
+	if len(replaceSet) != 0 {
+		t.Fatalf("expected non-external replacement target to be ignored")
+	}
+}
+
+func assertGoWorkAndPathHelpers(t *testing.T) {
+	t.Helper()
+	repo := t.TempDir()
+	goWork := "go 1.26\nuse ../outside\n"
+	if err := os.WriteFile(filepath.Join(repo, goWorkName), []byte(goWork), 0o600); err != nil {
+		t.Fatalf("write go.work: %v", err)
+	}
+	mods, err := loadGoWorkLocalModules(repo)
+	if err != nil {
+		t.Fatalf("loadGoWorkLocalModules: %v", err)
+	}
+	if len(mods) != 0 {
+		t.Fatalf("expected out-of-repo go.work entries to be ignored")
+	}
+
+	if _, ok := resolveRepoBoundedPath(repo, ""); ok {
+		t.Fatalf("expected empty resolveRepoBoundedPath input to fail")
+	}
+	if _, ok := resolveRepoBoundedPath(repo, "../outside"); ok {
+		t.Fatalf("expected resolveRepoBoundedPath to reject escaping path")
 	}
 }
