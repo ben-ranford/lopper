@@ -467,6 +467,65 @@ func TestLoadGoModuleInfoNoGoMod(t *testing.T) {
 	}
 }
 
+func TestLoadGoModuleInfoOrchestrationHelpers(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
+		moduleDemoLine,
+		"",
+		requirePrefix + depUUID + versionV160,
+		"",
+		"go 1.25",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, fileGoWork), strings.Join([]string{
+		"go 1.25",
+		"",
+		"use ./svc/a",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), modulePrefix+exampleModuleA+go125Block)
+	writeFile(t, filepath.Join(repo, "nested", "x", fileGoMod), strings.Join([]string{
+		modulePrefix + exampleModuleX,
+		"",
+		"require github.com/pkg/errors v0.9.1",
+		"",
+		"go 1.25",
+	}, "\n"))
+
+	got, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+
+	helperInfo := moduleInfo{ReplacementImports: make(map[string]string)}
+	if err := loadRootModuleInfo(repo, &helperInfo); err != nil {
+		t.Fatalf("loadRootModuleInfo: %v", err)
+	}
+	if err := loadWorkspaceModules(repo, &helperInfo); err != nil {
+		t.Fatalf("loadWorkspaceModules: %v", err)
+	}
+	if err := loadNestedModules(repo, &helperInfo); err != nil {
+		t.Fatalf("loadNestedModules: %v", err)
+	}
+	finalizeGoModuleInfo(&helperInfo)
+
+	if got.ModulePath != helperInfo.ModulePath {
+		t.Fatalf("module path mismatch: got %q want %q", got.ModulePath, helperInfo.ModulePath)
+	}
+	if !slices.Equal(got.LocalModulePaths, helperInfo.LocalModulePaths) {
+		t.Fatalf("local modules mismatch: got %#v want %#v", got.LocalModulePaths, helperInfo.LocalModulePaths)
+	}
+	if !slices.Equal(got.DeclaredDependencies, helperInfo.DeclaredDependencies) {
+		t.Fatalf("declared deps mismatch: got %#v want %#v", got.DeclaredDependencies, helperInfo.DeclaredDependencies)
+	}
+	if len(got.ReplacementImports) != len(helperInfo.ReplacementImports) {
+		t.Fatalf("replacement count mismatch: got %#v want %#v", got.ReplacementImports, helperInfo.ReplacementImports)
+	}
+	for replacementImport, dependency := range helperInfo.ReplacementImports {
+		if got.ReplacementImports[replacementImport] != dependency {
+			t.Fatalf("replacement mismatch for %q: got %q want %q", replacementImport, got.ReplacementImports[replacementImport], dependency)
+		}
+	}
+}
+
 func TestLoadGoModuleInfoReadError(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {

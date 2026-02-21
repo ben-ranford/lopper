@@ -952,50 +952,6 @@ func goFileUsages(scan scanResult) []shared.FileUsage {
 	)
 }
 
-func loadGoModuleInfo(repoPath string) (moduleInfo, error) {
-	info := moduleInfo{
-		ReplacementImports: make(map[string]string),
-	}
-
-	goModPath := filepath.Join(repoPath, goModName)
-	content, err := safeio.ReadFileUnder(repoPath, goModPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return moduleInfo{}, err
-		}
-	} else {
-		modulePath, dependencies, replacements := parseGoMod(content)
-		info.ModulePath = modulePath
-		info.DeclaredDependencies = dependencies
-		info.ReplacementImports = replacements
-		info.LocalModulePaths = append(info.LocalModulePaths, modulePath)
-	}
-
-	workModules, err := loadGoWorkLocalModules(repoPath)
-	if err != nil {
-		return moduleInfo{}, err
-	}
-	info.LocalModulePaths = append(info.LocalModulePaths, workModules...)
-
-	nestedModules, nestedDeps, nestedReplacements, err := discoverNestedModules(repoPath)
-	if err != nil {
-		return moduleInfo{}, err
-	}
-	info.LocalModulePaths = append(info.LocalModulePaths, nestedModules...)
-	info.DeclaredDependencies = append(info.DeclaredDependencies, nestedDeps...)
-	for replacementImport, dependency := range nestedReplacements {
-		if _, ok := info.ReplacementImports[replacementImport]; !ok {
-			info.ReplacementImports[replacementImport] = dependency
-		}
-	}
-	info.LocalModulePaths = uniqueStrings(info.LocalModulePaths)
-	info.DeclaredDependencies = uniqueStrings(info.DeclaredDependencies)
-	sort.Strings(info.LocalModulePaths)
-	sort.Strings(info.DeclaredDependencies)
-
-	return info, nil
-}
-
 func parseGoMod(content []byte) (string, []string, map[string]string) {
 	state := goModParseState{
 		depSet:     make(map[string]struct{}),
