@@ -25,6 +25,12 @@ type Adapter struct {
 
 const jsPackageFile = "package.json"
 
+var jsDetectSkippedDirs = map[string]bool{
+	".next":    true,
+	".turbo":   true,
+	"coverage": true,
+}
+
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -115,11 +121,7 @@ func scanFilesForJSDetection(repoPath string, detection *language.Detection, roo
 }
 
 func shouldSkipDetectDir(name string) bool {
-	return shared.ShouldSkipDir(name, map[string]bool{
-		".next":    true,
-		".turbo":   true,
-		"coverage": true,
-	})
+	return shared.ShouldSkipDir(name, jsDetectSkippedDirs)
 }
 
 func isJSExtension(ext string) bool {
