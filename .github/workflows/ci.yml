@@ -272,6 +272,29 @@ jobs:
               });
             }
 
+      - name: SonarQube scan (PR)
+        id: sonar_scan
+        if: ${{ github.event_name == 'pull_request' && !env.ACT && secrets.SONAR_TOKEN != '' }}
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=ben-ranford
+            -Dsonar.projectKey=ben-ranford_lopper
+            -Dsonar.sources=.
+
+      - name: Post SonarQube review comments (PR)
+        if: ${{ github.event_name == 'pull_request' && !env.ACT && secrets.SONAR_TOKEN != '' && steps.sonar_scan.outcome == 'success' }}
+        continue-on-error: true
+        uses: RishabhTayal/sonarqube-review-comments-action@v1
+        with:
+          sonar_project_key: ben-ranford_lopper
+          sonar_host_url: https://sonarcloud.io
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          sonar_token: ${{ secrets.SONAR_TOKEN }}
+
       - name: Run coverage gate
         id: cov
         continue-on-error: true
