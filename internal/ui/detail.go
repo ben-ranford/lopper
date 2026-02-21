@@ -84,72 +84,58 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	return nil
 }
 
-func printImportList(out io.Writer, title string, imports []report.ImportUse) {
-	_, _ = fmt.Fprintf(out, "%s (%d)\n", title, len(imports))
-	if len(imports) == 0 {
+// renderList prints a titled, counted section with items formatted by the provided function.
+// If items is empty, a "(none)" placeholder is printed followed by a trailing blank line
+// (normalised from the prior per-function behaviour for consistent section separation).
+func renderList[T any](out io.Writer, title string, items []T, format func(io.Writer, T)) {
+	_, _ = fmt.Fprintf(out, "%s (%d)\n", title, len(items))
+	if len(items) == 0 {
 		_, _ = fmt.Fprintln(out, noneLabel)
+		_, _ = fmt.Fprintln(out, "")
 		return
 	}
+	for _, item := range items {
+		format(out, item)
+	}
+	_, _ = fmt.Fprintln(out, "")
+}
 
-	for _, imp := range imports {
+func printImportList(out io.Writer, title string, imports []report.ImportUse) {
+	renderList(out, title, imports, func(w io.Writer, imp report.ImportUse) {
 		locationHint := ""
 		if len(imp.Locations) > 0 {
 			locationHint = fmt.Sprintf(" (%s:%d)", imp.Locations[0].File, imp.Locations[0].Line)
 		}
-		_, _ = fmt.Fprintf(out, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint)
+		_, _ = fmt.Fprintf(w, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint)
 		for _, provenance := range imp.Provenance {
-			_, _ = fmt.Fprintf(out, "    provenance: %s\n", provenance)
+			_, _ = fmt.Fprintf(w, "    provenance: %s\n", provenance)
 		}
-	}
-	_, _ = fmt.Fprintln(out, "")
+	})
 }
 
 func printExportsList(out io.Writer, title string, exports []report.SymbolRef) {
-	_, _ = fmt.Fprintf(out, "%s (%d)\n", title, len(exports))
-	if len(exports) == 0 {
-		_, _ = fmt.Fprintln(out, noneLabel)
-		return
-	}
-
-	for _, ref := range exports {
+	renderList(out, title, exports, func(w io.Writer, ref report.SymbolRef) {
 		module := ref.Module
 		if module == "" {
 			module = "(unknown)"
 		}
-		_, _ = fmt.Fprintf(out, "  - %s (%s)\n", ref.Name, module)
-	}
-	_, _ = fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintf(w, "  - %s (%s)\n", ref.Name, module)
+	})
 }
 
 func printRiskCues(out io.Writer, cues []report.RiskCue) {
-	_, _ = fmt.Fprintf(out, "Risk cues (%d)\n", len(cues))
-	if len(cues) == 0 {
-		_, _ = fmt.Fprintln(out, noneLabel)
-		_, _ = fmt.Fprintln(out, "")
-		return
-	}
-
-	for _, cue := range cues {
-		_, _ = fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
-	}
-	_, _ = fmt.Fprintln(out, "")
+	renderList(out, "Risk cues", cues, func(w io.Writer, cue report.RiskCue) {
+		_, _ = fmt.Fprintf(w, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
+	})
 }
 
 func printRecommendations(out io.Writer, recommendations []report.Recommendation) {
-	_, _ = fmt.Fprintf(out, "Recommendations (%d)\n", len(recommendations))
-	if len(recommendations) == 0 {
-		_, _ = fmt.Fprintln(out, noneLabel)
-		_, _ = fmt.Fprintln(out, "")
-		return
-	}
-
-	for _, recommendation := range recommendations {
-		_, _ = fmt.Fprintf(out, "  - [%s] %s: %s\n", strings.ToUpper(recommendation.Priority), recommendation.Code, recommendation.Message)
-		if recommendation.Rationale != "" {
-			_, _ = fmt.Fprintf(out, "    rationale: %s\n", recommendation.Rationale)
+	renderList(out, "Recommendations", recommendations, func(w io.Writer, rec report.Recommendation) {
+		_, _ = fmt.Fprintf(w, "  - [%s] %s: %s\n", strings.ToUpper(rec.Priority), rec.Code, rec.Message)
+		if rec.Rationale != "" {
+			_, _ = fmt.Fprintf(w, "    rationale: %s\n", rec.Rationale)
 		}
-	}
-	_, _ = fmt.Fprintln(out, "")
+	})
 }
 
 func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
