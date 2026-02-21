@@ -44,7 +44,8 @@ func TestRustAdapterCoverageHelpersMore(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := scanRepoRoot(ctx, repo, repo, map[string]dependencyInfo{}, map[string]struct{}{}, new(int), &scanResult{}); err == nil {
+	err := scanRepoRoot(ctx, repo, repo, map[string]dependencyInfo{}, map[string]struct{}{}, new(int), &scanResult{})
+	if err == nil {
 		t.Fatalf("expected canceled scanRepoRoot context error")
 	}
 

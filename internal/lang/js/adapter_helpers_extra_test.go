@@ -14,6 +14,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
+const pkgLodashProvenance = "pkg:lodash"
+
 func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
 
@@ -68,13 +70,13 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		Name:       "map",
 		Module:     "lodash",
 		Locations:  []report.Location{{File: "c.js", Line: 3}},
-		Provenance: []string{"pkg:lodash", "pkg:lodash"},
+		Provenance: []string{pkgLodashProvenance, pkgLodashProvenance},
 	})
 	flattened := flattenImportUses(imports)
 	if len(flattened) != 1 || len(flattened[0].Locations) != 3 {
 		t.Fatalf("expected merged import locations, got %#v", flattened)
 	}
-	if len(flattened[0].Provenance) != 1 || flattened[0].Provenance[0] != "pkg:lodash" {
+	if len(flattened[0].Provenance) != 1 || flattened[0].Provenance[0] != pkgLodashProvenance {
 		t.Fatalf("expected deduped provenance, got %#v", flattened[0].Provenance)
 	}
 

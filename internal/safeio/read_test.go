@@ -11,6 +11,9 @@ const (
 	unexpectedErrFmt = "unexpected error: %v"
 	escapesRootErr   = "path escapes root"
 	getwdErrFmt      = "getwd: %v"
+	mkdirDeadDirFmt  = "mkdir deadDir: %v"
+	chdirDeadDirFmt  = "chdir deadDir: %v"
+	removeDeadDirFmt = "remove deadDir: %v"
 )
 
 func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
@@ -106,13 +109,13 @@ func TestReadFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 
 	deadDir := filepath.Join(t.TempDir(), "dead")
 	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf("mkdir deadDir: %v", err)
+		t.Fatalf(mkdirDeadDirFmt, err)
 	}
 	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf("chdir deadDir: %v", err)
+		t.Fatalf(chdirDeadDirFmt, err)
 	}
 	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf("remove deadDir: %v", err)
+		t.Fatalf(removeDeadDirFmt, err)
 	}
 
 	_, err = ReadFileUnder(".", "x")
@@ -136,13 +139,13 @@ func TestReadFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 	rootDir := t.TempDir()
 	deadDir := filepath.Join(t.TempDir(), "dead-target")
 	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf("mkdir deadDir: %v", err)
+		t.Fatalf(mkdirDeadDirFmt, err)
 	}
 	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf("chdir deadDir: %v", err)
+		t.Fatalf(chdirDeadDirFmt, err)
 	}
 	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf("remove deadDir: %v", err)
+		t.Fatalf(removeDeadDirFmt, err)
 	}
 
 	_, err = ReadFileUnder(rootDir, "relative-target.txt")
