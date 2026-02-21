@@ -1,6 +1,9 @@
 package report
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestAnnotateRemovalCandidateScoresDeterministic(t *testing.T) {
 	deps := []DependencyReport{
@@ -86,5 +89,15 @@ func TestNormalizeRemovalCandidateWeightsFallback(t *testing.T) {
 	got = NormalizeRemovalCandidateWeights(RemovalCandidateWeights{})
 	if got != defaults {
 		t.Fatalf("expected empty weights to fall back to defaults, got %#v", got)
+	}
+}
+
+func TestNormalizeRemovalCandidateWeightsRejectsNonFinite(t *testing.T) {
+	defaults := DefaultRemovalCandidateWeights()
+	if got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: math.NaN(), Impact: 1, Confidence: 1}); got != defaults {
+		t.Fatalf("expected NaN weights to fall back to defaults, got %#v", got)
+	}
+	if got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: math.Inf(1), Impact: 1, Confidence: 1}); got != defaults {
+		t.Fatalf("expected Inf weights to fall back to defaults, got %#v", got)
 	}
 }

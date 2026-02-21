@@ -1,6 +1,9 @@
 package thresholds
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 const (
 	DefaultFailOnIncreasePercent             = 0
@@ -89,41 +92,21 @@ func (o Overrides) Apply(base Values) Values {
 }
 
 func (o Overrides) Validate() error {
-	if o.FailOnIncreasePercent != nil {
-		if err := validateFailOnIncrease(*o.FailOnIncreasePercent); err != nil {
-			return err
-		}
+	if err := validateOptionalInt(o.FailOnIncreasePercent, validateFailOnIncrease); err != nil {
+		return err
 	}
-	if o.LowConfidenceWarningPercent != nil {
-		if err := validatePercentageRange("low_confidence_warning_percent", *o.LowConfidenceWarningPercent); err != nil {
-			return err
-		}
+	if err := validateOptionalInt(o.LowConfidenceWarningPercent, func(value int) error {
+		return validatePercentageRange("low_confidence_warning_percent", value)
+	}); err != nil {
+		return err
 	}
-	if o.MinUsagePercentForRecommendations != nil {
-		if err := validatePercentageRange("min_usage_percent_for_recommendations", *o.MinUsagePercentForRecommendations); err != nil {
-			return err
-		}
+	if err := validateOptionalInt(o.MinUsagePercentForRecommendations, func(value int) error {
+		return validatePercentageRange("min_usage_percent_for_recommendations", value)
+	}); err != nil {
+		return err
 	}
-	if o.RemovalCandidateWeightUsage != nil {
-		if err := validateWeight("removal_candidate_weight_usage", *o.RemovalCandidateWeightUsage); err != nil {
-			return err
-		}
-	}
-	if o.RemovalCandidateWeightImpact != nil {
-		if err := validateWeight("removal_candidate_weight_impact", *o.RemovalCandidateWeightImpact); err != nil {
-			return err
-		}
-	}
-	if o.RemovalCandidateWeightConfidence != nil {
-		if err := validateWeight("removal_candidate_weight_confidence", *o.RemovalCandidateWeightConfidence); err != nil {
-			return err
-		}
-	}
-	if o.RemovalCandidateWeightUsage != nil || o.RemovalCandidateWeightImpact != nil || o.RemovalCandidateWeightConfidence != nil {
-		values := o.Apply(Defaults())
-		if !hasPositiveWeight(values.RemovalCandidateWeightUsage, values.RemovalCandidateWeightImpact, values.RemovalCandidateWeightConfidence) {
-			return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
-		}
+	if err := validateOptionalWeights(o); err != nil {
+		return err
 	}
 	return nil
 }
@@ -143,6 +126,9 @@ func validatePercentageRange(name string, value int) error {
 }
 
 func validateWeight(name string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("invalid threshold %s: %v (must be finite)", name, value)
+	}
 	if value < 0 {
 		return fmt.Errorf("invalid threshold %s: %v (must be >= 0)", name, value)
 	}
@@ -156,4 +142,46 @@ func hasPositiveWeight(values ...float64) bool {
 		}
 	}
 	return false
+}
+
+func validateOptionalInt(value *int, validate func(int) error) error {
+	if value == nil {
+		return nil
+	}
+	return validate(*value)
+}
+
+func validateOptionalWeight(name string, value *float64) error {
+	if value == nil {
+		return nil
+	}
+	return validateWeight(name, *value)
+}
+
+func validateOptionalWeights(overrides Overrides) error {
+	weightChecks := []struct {
+		name  string
+		value *float64
+	}{
+		{name: "removal_candidate_weight_usage", value: overrides.RemovalCandidateWeightUsage},
+		{name: "removal_candidate_weight_impact", value: overrides.RemovalCandidateWeightImpact},
+		{name: "removal_candidate_weight_confidence", value: overrides.RemovalCandidateWeightConfidence},
+	}
+	anySet := false
+	for _, check := range weightChecks {
+		if check.value != nil {
+			anySet = true
+		}
+		if err := validateOptionalWeight(check.name, check.value); err != nil {
+			return err
+		}
+	}
+	if !anySet {
+		return nil
+	}
+	values := overrides.Apply(Defaults())
+	if !hasPositiveWeight(values.RemovalCandidateWeightUsage, values.RemovalCandidateWeightImpact, values.RemovalCandidateWeightConfidence) {
+		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
+	}
+	return nil
 }

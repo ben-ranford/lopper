@@ -1,6 +1,7 @@
 package thresholds
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -50,6 +51,8 @@ func TestOverridesValidateErrors(t *testing.T) {
 	low := 200
 	min := -5
 	weight := -1.0
+	nan := math.NaN()
+	inf := math.Inf(1)
 	zeroWeight := 0.0
 	tests := []struct {
 		name      string
@@ -75,6 +78,16 @@ func TestOverridesValidateErrors(t *testing.T) {
 			name:      "invalid score weight",
 			overrides: Overrides{RemovalCandidateWeightUsage: &weight},
 			want:      "removal_candidate_weight_usage",
+		},
+		{
+			name:      "nan score weight",
+			overrides: Overrides{RemovalCandidateWeightUsage: &nan},
+			want:      "must be finite",
+		},
+		{
+			name:      "infinite score weight",
+			overrides: Overrides{RemovalCandidateWeightImpact: &inf},
+			want:      "must be finite",
 		},
 		{
 			name: "all score weights zero",

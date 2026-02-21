@@ -17,6 +17,7 @@ const (
 	languageFlagName  = "--language"
 	failAliasFlag     = "--fail-on-increase"
 	thresholdFailFlag = "--threshold-fail-on-increase"
+	scoreWeightFlag   = "--score-weight-usage"
 )
 
 func TestParseArgsDefault(t *testing.T) {
@@ -176,7 +177,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		thresholdFailFlag, "2",
 		"--threshold-low-confidence-warning", "31",
 		"--threshold-min-usage-percent", "45",
-		"--score-weight-usage", "0.7",
+		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
 	})
@@ -275,7 +276,7 @@ func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
 }
 
 func TestParseArgsAnalyseRejectsInvalidScoreWeight(t *testing.T) {
-	_, err := ParseArgs([]string{"analyse", "--top", "2", "--score-weight-usage", "-1"})
+	_, err := ParseArgs([]string{"analyse", "--top", "2", scoreWeightFlag, "-1"})
 	if err == nil {
 		t.Fatalf("expected score weight validation error")
 	}
@@ -292,7 +293,7 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 	if !flagNeedsValue(thresholdFailFlag) {
 		t.Fatalf("expected threshold flag to require value")
 	}
-	if !flagNeedsValue("--score-weight-usage") {
+	if !flagNeedsValue(scoreWeightFlag) {
 		t.Fatalf("expected score weight flag to require value")
 	}
 	if flagNeedsValue("--format=json") {

@@ -39,10 +39,16 @@ func DefaultRemovalCandidateWeights() RemovalCandidateWeights {
 }
 
 func NormalizeRemovalCandidateWeights(weights RemovalCandidateWeights) RemovalCandidateWeights {
+	if !isFiniteWeight(weights.Usage) || !isFiniteWeight(weights.Impact) || !isFiniteWeight(weights.Confidence) {
+		return defaultRemovalCandidateWeights
+	}
 	if weights.Usage < 0 || weights.Impact < 0 || weights.Confidence < 0 {
 		return defaultRemovalCandidateWeights
 	}
 	total := weights.Usage + weights.Impact + weights.Confidence
+	if !isFiniteWeight(total) {
+		return defaultRemovalCandidateWeights
+	}
 	if total <= 0 {
 		return defaultRemovalCandidateWeights
 	}
@@ -51,6 +57,10 @@ func NormalizeRemovalCandidateWeights(weights RemovalCandidateWeights) RemovalCa
 		Impact:     weights.Impact / total,
 		Confidence: weights.Confidence / total,
 	}
+}
+
+func isFiniteWeight(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func RemovalCandidateScore(dep DependencyReport) (float64, bool) {
