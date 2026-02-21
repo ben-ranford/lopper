@@ -297,19 +297,17 @@ func collectDependencyImportUsage(
 	unusedImports map[string]*report.ImportUse,
 ) (bool, []string) {
 	hasAmbiguousWildcard := false
-	resolver := newReExportResolver(scanResult)
+	ctx := dependencyImportAttributionContext{
+		dependency:    dependency,
+		resolver:      newReExportResolver(scanResult),
+		usedExports:   usedExports,
+		counts:        counts,
+		usedImports:   usedImports,
+		unusedImports: unusedImports,
+	}
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {
-			matched, ambiguous := applyDependencyImportAttribution(
-				file,
-				imp,
-				dependency,
-				resolver,
-				usedExports,
-				counts,
-				usedImports,
-				unusedImports,
-			)
+			matched, ambiguous := applyDependencyImportAttribution(file, imp, &ctx)
 			if !matched {
 				continue
 			}
@@ -318,30 +316,34 @@ func collectDependencyImportUsage(
 			}
 		}
 	}
-	return hasAmbiguousWildcard, resolver.warnings()
+	return hasAmbiguousWildcard, ctx.resolver.warnings()
+}
+
+type dependencyImportAttributionContext struct {
+	dependency    string
+	resolver      *reExportResolver
+	usedExports   map[string]struct{}
+	counts        map[string]int
+	usedImports   map[string]*report.ImportUse
+	unusedImports map[string]*report.ImportUse
 }
 
 func applyDependencyImportAttribution(
 	file FileScan,
 	imp ImportBinding,
-	dependency string,
-	resolver *reExportResolver,
-	usedExports map[string]struct{},
-	counts map[string]int,
-	usedImports map[string]*report.ImportUse,
-	unusedImports map[string]*report.ImportUse,
+	ctx *dependencyImportAttributionContext,
 ) (matched bool, ambiguous bool) {
-	attributed, provenance := attributedImportBinding(file.Path, imp, dependency, resolver)
-	if !matchesDependency(attributed.Module, dependency) {
+	attributed, provenance := attributedImportBinding(file.Path, imp, ctx.dependency, ctx.resolver)
+	if !matchesDependency(attributed.Module, ctx.dependency) {
 		return false, false
 	}
 
-	used := applyImportUsage(attributed, file, usedExports, counts)
+	used := applyImportUsage(attributed, file, ctx.usedExports, ctx.counts)
 	entry := recordImportUse(attributed, provenance)
 	if used {
-		addImportUse(usedImports, entry)
+		addImportUse(ctx.usedImports, entry)
 	} else {
-		addImportUse(unusedImports, entry)
+		addImportUse(ctx.unusedImports, entry)
 	}
 
 	return true, isAmbiguousImportUsage(attributed, file)

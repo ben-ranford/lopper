@@ -189,7 +189,7 @@ func (r *reExportResolver) resolveExportCandidate(
 	})
 }
 
-func normalizeRequestedExport(sourceExport string, requestedExport string) string {
+func normalizeRequestedExport(sourceExport, requestedExport string) string {
 	if sourceExport == "*" {
 		return requestedExport
 	}
@@ -202,7 +202,7 @@ func appendTrail(trail []string, current string) []string {
 	return next
 }
 
-func (r *reExportResolver) dependencyExportOrigin(req resolveExportRequest, module string, exportName string) exportOrigin {
+func (r *reExportResolver) dependencyExportOrigin(req resolveExportRequest, module, exportName string) exportOrigin {
 	return exportOrigin{
 		dependencyModule: module,
 		dependencyExport: exportName,
@@ -222,7 +222,7 @@ func isLocalModuleSpecifier(module string) bool {
 	return strings.HasPrefix(module, ".")
 }
 
-func (r *reExportResolver) resolveLocalModule(importerPath string, module string) (string, bool) {
+func (r *reExportResolver) resolveLocalModule(importerPath, module string) (string, bool) {
 	key := normalizeModulePath(importerPath) + "\x00" + module
 	if value, ok := r.resolveCache[key]; ok {
 		if value == "" {
