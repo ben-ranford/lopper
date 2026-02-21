@@ -131,6 +131,93 @@ func TestListDependenciesAndTopReports(t *testing.T) {
 	}
 }
 
+func TestBuildRequestedDependenciesDependencyTarget(t *testing.T) {
+	dependencyCalled := false
+	topCalled := false
+	reports, warnings := BuildRequestedDependencies(
+		language.Request{Dependency: "Alpha"},
+		1,
+		strings.ToLower,
+		func(dependency string, scan int) (report.DependencyReport, []string) {
+			dependencyCalled = true
+			if scan != 1 {
+				t.Fatalf("unexpected scan value: %d", scan)
+			}
+			return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
+		},
+		func(_, _ int) ([]report.DependencyReport, []string) {
+			topCalled = true
+			return nil, nil
+		},
+	)
+	if !dependencyCalled || topCalled {
+		t.Fatalf("expected only dependency builder to run (dependency=%v top=%v)", dependencyCalled, topCalled)
+	}
+	if len(reports) != 1 || reports[0].Name != "alpha" {
+		t.Fatalf("unexpected dependency reports: %#v", reports)
+	}
+	if !slices.Equal(warnings, []string{"dep-warning"}) {
+		t.Fatalf("unexpected dependency warnings: %#v", warnings)
+	}
+}
+
+func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
+	dependencyCalled := false
+	topCalled := false
+	reports, warnings := BuildRequestedDependencies(
+		language.Request{TopN: 3},
+		2,
+		strings.ToLower,
+		func(string, int) (report.DependencyReport, []string) {
+			dependencyCalled = true
+			return report.DependencyReport{}, nil
+		},
+		func(topN, scan int) ([]report.DependencyReport, []string) {
+			topCalled = true
+			if topN != 3 || scan != 2 {
+				t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
+			}
+			return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
+		},
+	)
+	if dependencyCalled || !topCalled {
+		t.Fatalf("expected only top builder to run (dependency=%v top=%v)", dependencyCalled, topCalled)
+	}
+	if len(reports) != 1 || reports[0].Name != "top" {
+		t.Fatalf("unexpected top-N reports: %#v", reports)
+	}
+	if !slices.Equal(warnings, []string{"top-warning"}) {
+		t.Fatalf("unexpected top-N warnings: %#v", warnings)
+	}
+}
+
+func TestBuildRequestedDependenciesMissingTarget(t *testing.T) {
+	dependencyCalled := false
+	topCalled := false
+	reports, warnings := BuildRequestedDependencies(
+		language.Request{},
+		0,
+		strings.ToLower,
+		func(string, int) (report.DependencyReport, []string) {
+			dependencyCalled = true
+			return report.DependencyReport{}, nil
+		},
+		func(_, _ int) ([]report.DependencyReport, []string) {
+			topCalled = true
+			return nil, nil
+		},
+	)
+	if dependencyCalled || topCalled {
+		t.Fatalf("expected no builders to run (dependency=%v top=%v)", dependencyCalled, topCalled)
+	}
+	if reports != nil {
+		t.Fatalf("expected nil reports when no target provided, got %#v", reports)
+	}
+	if !slices.Equal(warnings, []string{"no dependency or top-N target provided"}) {
+		t.Fatalf("unexpected no-target warnings: %#v", warnings)
+	}
+}
+
 func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	reports := []report.DependencyReport{
 		{Name: "unknown", TotalExportsCount: 0},

@@ -159,15 +159,14 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedJVMDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	if req.Dependency != "" {
-		dependency := normalizeDependencyID(req.Dependency)
-		depReport, warnings := buildDependencyReport(dependency, scan)
-		return []report.DependencyReport{depReport}, warnings
-	}
-	if req.TopN > 0 {
-		return buildTopJVMDependencies(req.TopN, scan, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
-	}
-	return nil, []string{"no dependency or top-N target provided"}
+	return shared.BuildRequestedDependenciesWithWeights(
+		req,
+		scan,
+		normalizeDependencyID,
+		buildDependencyReport,
+		resolveRemovalCandidateWeights,
+		buildTopJVMDependencies,
+	)
 }
 
 func buildTopJVMDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
