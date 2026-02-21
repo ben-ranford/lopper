@@ -458,10 +458,7 @@ func mergeRecommendations(left []report.Recommendation, right []report.Recommend
 		return item.Code
 	}, func(items []report.Recommendation) {
 		sort.Slice(items, func(i, j int) bool {
-			if items[i].Priority == items[j].Priority {
-				return items[i].Code < items[j].Code
-			}
-			return recommendationPriorityRank(items[i].Priority) < recommendationPriorityRank(items[j].Priority)
+			return recommendationLess(items[i], items[j])
 		})
 	})
 }
@@ -557,6 +554,13 @@ func recommendationPriorityRank(priority string) int {
 	default:
 		return 3
 	}
+}
+
+func recommendationLess(left report.Recommendation, right report.Recommendation) bool {
+	if left.Priority == right.Priority {
+		return left.Code < right.Code
+	}
+	return recommendationPriorityRank(left.Priority) < recommendationPriorityRank(right.Priority)
 }
 
 func mergeImportUses(left []report.ImportUse, right []report.ImportUse) []report.ImportUse {
