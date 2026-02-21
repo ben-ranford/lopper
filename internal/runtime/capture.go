@@ -68,57 +68,43 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 
 	executable := fields[0]
 	args := fields[1:]
+	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
+	}
+
+	cmd.Args = append([]string{executable}, args...)
+	return cmd, nil
+}
+
+func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
 	switch executable {
 	case "npm":
-		cmd := exec.CommandContext(ctx, "npm")
-		cmd.Args = append([]string{"npm"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "npm"), nil
 	case "pnpm":
-		cmd := exec.CommandContext(ctx, "pnpm")
-		cmd.Args = append([]string{"pnpm"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "pnpm"), nil
 	case "yarn":
-		cmd := exec.CommandContext(ctx, "yarn")
-		cmd.Args = append([]string{"yarn"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "yarn"), nil
 	case "bun":
-		cmd := exec.CommandContext(ctx, "bun")
-		cmd.Args = append([]string{"bun"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "bun"), nil
 	case "npx":
-		cmd := exec.CommandContext(ctx, "npx")
-		cmd.Args = append([]string{"npx"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "npx"), nil
 	case "node":
-		cmd := exec.CommandContext(ctx, "node")
-		cmd.Args = append([]string{"node"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "node"), nil
 	case "vitest":
-		cmd := exec.CommandContext(ctx, "vitest")
-		cmd.Args = append([]string{"vitest"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "vitest"), nil
 	case "jest":
-		cmd := exec.CommandContext(ctx, "jest")
-		cmd.Args = append([]string{"jest"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "jest"), nil
 	case "mocha":
-		cmd := exec.CommandContext(ctx, "mocha")
-		cmd.Args = append([]string{"mocha"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "mocha"), nil
 	case "ava":
-		cmd := exec.CommandContext(ctx, "ava")
-		cmd.Args = append([]string{"ava"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "ava"), nil
 	case "deno":
-		cmd := exec.CommandContext(ctx, "deno")
-		cmd.Args = append([]string{"deno"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "deno"), nil
 	case "make":
-		cmd := exec.CommandContext(ctx, "make")
-		cmd.Args = append([]string{"make"}, args...)
-		return cmd, nil
+		return exec.CommandContext(ctx, "make"), nil
 	default:
-		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
+		return nil, fmt.Errorf("unsupported runtime test executable")
 	}
 }
 
