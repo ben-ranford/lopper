@@ -68,13 +68,52 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 
 	executable := fields[0]
 	args := fields[1:]
-	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
+	executablePath, err := resolveRuntimeExecutablePath(executable, os.Getenv("PATH"))
 	if err != nil {
-		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
+		return nil, err
 	}
 
-	cmd.Args = append([]string{executable}, args...)
+	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Path = executablePath
+	cmd.Args = append([]string{executablePath}, args...)
 	return cmd, nil
+}
+
+func resolveRuntimeExecutablePath(executable string, pathValue string) (string, error) {
+	switch executable {
+	case "npm":
+	case "pnpm":
+	case "yarn":
+	case "bun":
+	case "npx":
+	case "node":
+	case "vitest":
+	case "jest":
+	case "mocha":
+	case "ava":
+	case "deno":
+	case "make":
+		// allowed
+	default:
+		return "", fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
+	}
+
+	for _, dir := range trustedPathDirs(pathValue) {
+		candidate := filepath.Join(dir, executable)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf("runtime test executable %q not found in trusted PATH directories", executable)
 }
 
 func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
@@ -104,8 +143,35 @@ func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec
 	case "make":
 		return exec.CommandContext(ctx, "make"), nil
 	default:
-		return nil, fmt.Errorf("unsupported runtime test executable")
+		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
+}
+
+func trustedPathDirs(pathValue string) []string {
+	seen := make(map[string]struct{})
+	dirs := make([]string, 0)
+	for _, raw := range filepath.SplitList(pathValue) {
+		dir := filepath.Clean(strings.TrimSpace(raw))
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		// Reject group/other-writable PATH entries.
+		if info.Mode().Perm()&0o022 != 0 {
+			continue
+		}
+
+		seen[dir] = struct{}{}
+		dirs = append(dirs, dir)
+	}
+	return dirs
 }
 
 func withRuntimeTraceEnv(base []string, tracePath string) []string {

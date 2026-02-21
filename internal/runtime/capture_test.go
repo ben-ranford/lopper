@@ -108,12 +108,14 @@ func TestCaptureExecutableNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected executable-not-found capture error")
 	}
-	if !strings.Contains(err.Error(), "runtime test command failed") {
+	if !strings.Contains(err.Error(), "not found in trusted PATH directories") {
 		t.Fatalf("unexpected capture executable-not-found error: %v", err)
 	}
 }
 
 func TestBuildRuntimeCommandAllowlist(t *testing.T) {
+	t.Setenv("PATH", setupFakeRuntimeTools(t))
+
 	commands := []string{
 		npmTestCommand,
 		"pnpm test",
@@ -134,9 +136,46 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected %q to be allowlisted: %v", command, err)
 		}
-		if cmd.Path == "" {
+		if cmd.Path == "" || !filepath.IsAbs(cmd.Path) {
 			t.Fatalf("expected executable path for command %q", command)
 		}
+	}
+}
+
+func TestTrustedPathDirs(t *testing.T) {
+	secureA := t.TempDir()
+	secureB := t.TempDir()
+	if err := os.Chmod(secureA, 0o755); err != nil {
+		t.Fatalf("chmod secureA: %v", err)
+	}
+	if err := os.Chmod(secureB, 0o555); err != nil {
+		t.Fatalf("chmod secureB: %v", err)
+	}
+	insecure := filepath.Join(t.TempDir(), "insecure")
+	if err := os.MkdirAll(insecure, 0o777); err != nil {
+		t.Fatalf("mkdir insecure: %v", err)
+	}
+	if err := os.Chmod(insecure, 0o777); err != nil {
+		t.Fatalf("chmod insecure: %v", err)
+	}
+
+	pathValue := strings.Join([]string{
+		"",
+		".",
+		secureA,
+		insecure,
+		secureB,
+		secureA, // duplicate
+	}, string(os.PathListSeparator))
+	got := trustedPathDirs(pathValue)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 trusted dirs, got %d: %v", len(got), got)
+	}
+	if got[0] != secureA {
+		t.Fatalf("expected secureA first, got %q", got[0])
+	}
+	if got[1] != secureB {
+		t.Fatalf("expected secureB second, got %q", got[1])
 	}
 }
 
@@ -158,4 +197,31 @@ func TestMergeEnvAndReadEnvValue(t *testing.T) {
 	if got := readEnvValue(merged, "MISSING"); got != "" {
 		t.Fatalf("expected missing env value, got %q", got)
 	}
+}
+
+func setupFakeRuntimeTools(t *testing.T) string {
+	t.Helper()
+
+	toolDir := t.TempDir()
+	tools := []string{
+		"npm",
+		"pnpm",
+		"yarn",
+		"bun",
+		"npx",
+		"node",
+		"vitest",
+		"jest",
+		"mocha",
+		"ava",
+		"deno",
+		"make",
+	}
+	for _, tool := range tools {
+		path := filepath.Join(toolDir, tool)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write fake runtime tool %q: %v", tool, err)
+		}
+	}
+	return toolDir
 }
