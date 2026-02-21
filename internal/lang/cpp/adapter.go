@@ -95,28 +95,11 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		visited++
-		if visited > maxDetectFiles {
-			return fs.SkipAll
-		}
+	err := walkRepoFiles(ctx, repoPath, maxDetectFiles, func(path string, entry fs.DirEntry) error {
 		updateDetection(path, &detection, roots)
 		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil {
 		return language.Detection{}, err
 	}
 
@@ -210,16 +193,7 @@ func loadCompileContext(repoPath string) (compileContext, error) {
 	sourceFileSet := make(map[string]struct{})
 	visited := 0
 
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	err := walkRepoFiles(nil, repoPath, 0, func(path string, entry fs.DirEntry) error {
 		if filepath.Base(path) != compileCommandsFile {
 			return nil
 		}
@@ -235,7 +209,7 @@ func loadCompileContext(repoPath string) (compileContext, error) {
 		result.HasCompileDatabase = true
 		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil {
 		return result, err
 	}
 
@@ -389,6 +363,20 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) 
 
 func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	files := make([]string, 0)
+	err := walkRepoFiles(ctx, repoPath, maxScanFiles, func(path string, entry fs.DirEntry) error {
+		if isCPPSourceFile(path) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func walkRepoFiles(ctx context.Context, repoPath string, maxFiles int, visit func(path string, entry fs.DirEntry) error) error {
 	visited := 0
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -404,19 +392,15 @@ func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 			return nil
 		}
 		visited++
-		if visited > maxScanFiles {
+		if maxFiles > 0 && visited > maxFiles {
 			return fs.SkipAll
 		}
-		if isCPPSourceFile(path) {
-			files = append(files, path)
-		}
-		return nil
+		return visit(path, entry)
 	})
 	if err != nil && err != fs.SkipAll {
-		return nil, err
+		return err
 	}
-	sort.Strings(files)
-	return files, nil
+	return nil
 }
 
 func scanCPPFile(repoPath string, path string, includeDirs []string) (fileScan, []string, int, error) {
