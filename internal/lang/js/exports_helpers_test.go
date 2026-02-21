@@ -205,3 +205,71 @@ function f(...args) { return args }
 		t.Fatalf("expected assignment and rest patterns in parsed source")
 	}
 }
+
+func TestResolveRuntimeProfileUnknownAndSupportedList(t *testing.T) {
+	profile, warning := resolveRuntimeProfile("custom-runtime")
+	if profile.name != defaultRuntimeProfile {
+		t.Fatalf("expected default runtime profile %q, got %q", defaultRuntimeProfile, profile.name)
+	}
+	if !strings.Contains(warning, "unknown runtime profile") {
+		t.Fatalf("expected unknown-profile warning, got %q", warning)
+	}
+	for _, expected := range supportedRuntimeProfiles() {
+		if !strings.Contains(warning, expected) {
+			t.Fatalf("expected warning to include supported profile %q, got %q", expected, warning)
+		}
+	}
+}
+
+func TestResolveExportNodeBranches(t *testing.T) {
+	profile := runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}
+	surface := &ExportSurface{}
+
+	if paths, ok := resolveExportNode(42, profile, "exports", surface); ok || len(paths) != 0 {
+		t.Fatalf("expected unsupported export value type to fail, got ok=%v paths=%#v", ok, paths)
+	}
+	if paths, ok := resolveExportNode(map[string]interface{}{}, profile, "exports", surface); ok || len(paths) != 0 {
+		t.Fatalf("expected empty export map to fail, got ok=%v paths=%#v", ok, paths)
+	}
+
+	paths, ok := resolveExportNode([]interface{}{42, "./a.js"}, profile, "exports", surface)
+	if !ok || len(paths) != 1 || paths[0] != "./a.js" {
+		t.Fatalf("expected array export node to resolve first valid path, got ok=%v paths=%#v", ok, paths)
+	}
+
+	paths, ok = resolveExportNode(
+		map[string]interface{}{
+			"zz": "./z.js",
+			"aa": "./a.js",
+		},
+		profile,
+		"exports",
+		surface,
+	)
+	if !ok || len(paths) != 2 || paths[0] != "./a.js" || paths[1] != "./z.js" {
+		t.Fatalf("expected non-condition map traversal with sorted unique paths, got ok=%v paths=%#v", ok, paths)
+	}
+}
+
+func TestCollectCandidateEntrypointsFallsBackWhenProfileResolvesNoExports(t *testing.T) {
+	surface := &ExportSurface{}
+	entrypoints := collectCandidateEntrypoints(
+		packageJSON{
+			Exports: map[string]interface{}{
+				".": map[string]interface{}{
+					"import": "./styles.css",
+				},
+			},
+			Main: "legacy.js",
+		},
+		runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}},
+		surface,
+	)
+	if _, ok := entrypoints["legacy.js"]; !ok {
+		t.Fatalf("expected fallback main entrypoint, got %#v", entrypoints)
+	}
+	joined := strings.Join(surface.Warnings, "\n")
+	if !strings.Contains(joined, "no exports resolved for runtime profile") {
+		t.Fatalf("expected fallback warning, got %#v", surface.Warnings)
+	}
+}
