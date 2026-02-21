@@ -2,6 +2,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"io/fs"
 	"os"
@@ -28,6 +29,7 @@ const (
 	moduleDemoLine      = "module example.com/demo"
 	moduleOriginal      = "example.com/original"
 	requirePrefix       = "require "
+	replacePrefix       = "replace "
 	versionV160         = " v1.6.0"
 	go125Block          = "\n\ngo 1.25\n"
 	errSymlinkFmt       = "symlink not supported: %v"
@@ -35,6 +37,9 @@ const (
 	packageMainLine     = "package main"
 	exampleModuleA      = "example.com/a"
 	exampleModuleX      = "example.com/x"
+	workspaceSvcALine   = "\t./svc/a"
+	sharedForkImport    = "github.com/shared/fork"
+	pkgErrorsDependency = "github.com/pkg/errors"
 	goModDemo           = moduleDemoLine + go125Block
 	goModDemoWithUUID   = moduleDemoLine + "\n\n" + requirePrefix + depUUID + versionV160 + "\n"
 	mainNoopProgram     = packageMainLine + "\n\nfunc main() {}\n"
@@ -285,7 +290,7 @@ func TestReplacementImportMapsToDependency(t *testing.T) {
 		moduleDemoLine,
 		"",
 		requirePrefix + moduleOriginal + " v1.0.0",
-		"replace " + moduleOriginal + " => github.com/fork/original v1.0.1",
+		replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.1",
 		"",
 	}, "\n")))
 	if modulePath != moduleDemo {
@@ -467,62 +472,157 @@ func TestLoadGoModuleInfoNoGoMod(t *testing.T) {
 	}
 }
 
-func TestLoadGoModuleInfoOrchestrationHelpers(t *testing.T) {
+func TestLoadRootModuleInfoContract(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
 		moduleDemoLine,
 		"",
 		requirePrefix + depUUID + versionV160,
+		replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.0",
 		"",
 		"go 1.25",
 	}, "\n"))
+
+	info := moduleInfo{ReplacementImports: map[string]string{"ignored": "ignored"}}
+	err := loadRootModuleInfo(repo, &info)
+	if err != nil {
+		t.Fatalf("loadRootModuleInfo: %v", err)
+	}
+	if info.ModulePath != moduleDemo {
+		t.Fatalf("expected module path %q, got %q", moduleDemo, info.ModulePath)
+	}
+	if !slices.Equal(info.LocalModulePaths, []string{moduleDemo}) {
+		t.Fatalf("expected root module path in local modules, got %#v", info.LocalModulePaths)
+	}
+	if !slices.Equal(info.DeclaredDependencies, []string{depUUID}) {
+		t.Fatalf("expected declared dependencies %#v, got %#v", []string{depUUID}, info.DeclaredDependencies)
+	}
+	if len(info.ReplacementImports) != 1 {
+		t.Fatalf("expected one replacement import, got %#v", info.ReplacementImports)
+	}
+	if _, ok := info.ReplacementImports["ignored"]; ok {
+		t.Fatalf("expected root load to replace stale replacement entries, got %#v", info.ReplacementImports)
+	}
+	if info.ReplacementImports["github.com/fork/original"] != moduleOriginal {
+		t.Fatalf("expected replacement map to include root replacement, got %#v", info.ReplacementImports)
+	}
+}
+
+func TestLoadWorkspaceModulesContract(t *testing.T) {
+	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), strings.Join([]string{
 		"go 1.25",
 		"",
-		"use ./svc/a",
+		"use (",
+		workspaceSvcALine,
+		workspaceSvcALine,
+		"\t./svc/missing",
+		")",
 	}, "\n"))
 	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), modulePrefix+exampleModuleA+go125Block)
+
+	info := moduleInfo{LocalModulePaths: []string{moduleDemo}}
+	if err := loadWorkspaceModules(repo, &info); err != nil {
+		t.Fatalf("loadWorkspaceModules: %v", err)
+	}
+	if !slices.Equal(info.LocalModulePaths, []string{moduleDemo, exampleModuleA}) {
+		t.Fatalf("expected workspace expansion of local modules, got %#v", info.LocalModulePaths)
+	}
+	if slices.Contains(info.LocalModulePaths, "./svc/missing") {
+		t.Fatalf("expected missing workspace module to be ignored, got %#v", info.LocalModulePaths)
+	}
+}
+
+func TestLoadNestedModulesContract(t *testing.T) {
+	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "nested", "x", fileGoMod), strings.Join([]string{
 		modulePrefix + exampleModuleX,
 		"",
-		"require github.com/pkg/errors v0.9.1",
+		"require " + pkgErrorsDependency + " v0.9.1",
+		replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
 		"go 1.25",
 	}, "\n"))
 
-	got, err := loadGoModuleInfo(repo)
-	if err != nil {
-		t.Fatalf("loadGoModuleInfo: %v", err)
+	info := moduleInfo{
+		LocalModulePaths:     []string{moduleDemo},
+		DeclaredDependencies: []string{depUUID},
+		ReplacementImports:   map[string]string{sharedForkImport: moduleOriginal},
 	}
-
-	helperInfo := moduleInfo{ReplacementImports: make(map[string]string)}
-	if err := loadRootModuleInfo(repo, &helperInfo); err != nil {
-		t.Fatalf("loadRootModuleInfo: %v", err)
-	}
-	if err := loadWorkspaceModules(repo, &helperInfo); err != nil {
-		t.Fatalf("loadWorkspaceModules: %v", err)
-	}
-	if err := loadNestedModules(repo, &helperInfo); err != nil {
+	if err := loadNestedModules(repo, &info); err != nil {
 		t.Fatalf("loadNestedModules: %v", err)
 	}
-	finalizeGoModuleInfo(&helperInfo)
+	if !slices.Contains(info.LocalModulePaths, exampleModuleX) {
+		t.Fatalf("expected nested module %q in %#v", exampleModuleX, info.LocalModulePaths)
+	}
+	if !slices.Contains(info.DeclaredDependencies, pkgErrorsDependency) {
+		t.Fatalf("expected nested dependency merge in %#v", info.DeclaredDependencies)
+	}
+	if info.ReplacementImports[sharedForkImport] != moduleOriginal {
+		t.Fatalf("expected existing replacement to be preserved, got %#v", info.ReplacementImports)
+	}
+}
 
-	if got.ModulePath != helperInfo.ModulePath {
-		t.Fatalf("module path mismatch: got %q want %q", got.ModulePath, helperInfo.ModulePath)
+func TestFinalizeGoModuleInfoContract(t *testing.T) {
+	info := moduleInfo{
+		LocalModulePaths:     []string{"  example.com/z  ", exampleModuleA, "example.com/z", ""},
+		DeclaredDependencies: []string{" " + pkgErrorsDependency + " ", depUUID, pkgErrorsDependency, ""},
 	}
-	if !slices.Equal(got.LocalModulePaths, helperInfo.LocalModulePaths) {
-		t.Fatalf("local modules mismatch: got %#v want %#v", got.LocalModulePaths, helperInfo.LocalModulePaths)
+	finalizeGoModuleInfo(&info)
+	if !slices.Equal(info.LocalModulePaths, []string{exampleModuleA, "example.com/z"}) {
+		t.Fatalf("expected finalized local modules to be deduped and sorted, got %#v", info.LocalModulePaths)
 	}
-	if !slices.Equal(got.DeclaredDependencies, helperInfo.DeclaredDependencies) {
-		t.Fatalf("declared deps mismatch: got %#v want %#v", got.DeclaredDependencies, helperInfo.DeclaredDependencies)
+	if !slices.Equal(info.DeclaredDependencies, []string{depUUID, pkgErrorsDependency}) {
+		t.Fatalf("expected finalized dependencies to be deduped and sorted, got %#v", info.DeclaredDependencies)
 	}
-	if len(got.ReplacementImports) != len(helperInfo.ReplacementImports) {
-		t.Fatalf("replacement count mismatch: got %#v want %#v", got.ReplacementImports, helperInfo.ReplacementImports)
-	}
-	for replacementImport, dependency := range helperInfo.ReplacementImports {
-		if got.ReplacementImports[replacementImport] != dependency {
-			t.Fatalf("replacement mismatch for %q: got %q want %q", replacementImport, got.ReplacementImports[replacementImport], dependency)
+	for _, value := range append(info.LocalModulePaths, info.DeclaredDependencies...) {
+		if value == "" {
+			t.Fatalf("expected finalized values to omit empty entries, got %#v / %#v", info.LocalModulePaths, info.DeclaredDependencies)
 		}
+		if strings.TrimSpace(value) != value {
+			t.Fatalf("expected finalized values to be trimmed, got %q", value)
+		}
+	}
+}
+
+func TestModuleLoadingHelpersNilModuleInfo(t *testing.T) {
+	repo := t.TempDir()
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{
+			name: "loadRootModuleInfo",
+			fn: func() error {
+				return loadRootModuleInfo(repo, nil)
+			},
+		},
+		{
+			name: "loadWorkspaceModules",
+			fn: func() error {
+				return loadWorkspaceModules(repo, nil)
+			},
+		},
+		{
+			name: "loadNestedModules",
+			fn: func() error {
+				return loadNestedModules(repo, nil)
+			},
+		},
+		{
+			name: "finalizeGoModuleInfo",
+			fn: func() error {
+				return finalizeGoModuleInfo(nil)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.fn()
+			if !errors.Is(err, errNilModuleInfo) {
+				t.Fatalf("expected errNilModuleInfo, got %v", err)
+			}
+		})
 	}
 }
 
@@ -1299,13 +1399,13 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
 		"module example.com/root",
 		"",
-		"replace " + moduleOriginal + " => github.com/shared/fork v1.0.0",
+		replacePrefix + moduleOriginal + " => " + sharedForkImport + " v1.0.0",
 		"",
 	}, "\n"))
 	writeFile(t, filepath.Join(repo, "sub", fileGoMod), strings.Join([]string{
 		"module example.com/sub",
 		"",
-		"replace example.com/other => github.com/shared/fork v1.1.0",
+		replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
 	}, "\n"))
 
@@ -1314,7 +1414,7 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 		t.Fatalf("loadGoModuleInfo: %v", err)
 	}
 	// root replacement should win when nested module has same replacement import target
-	if got := info.ReplacementImports["github.com/shared/fork"]; got != moduleOriginal {
+	if got := info.ReplacementImports[sharedForkImport]; got != moduleOriginal {
 		t.Fatalf("expected root replacement to win, got %q", got)
 	}
 }

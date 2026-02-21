@@ -307,16 +307,6 @@ func NormalizeDependencyID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func ShouldSkipCommonDir(name string) bool {
-	_, skip := commonSkippedDirs[strings.ToLower(name)]
-	return skip
-}
-
-var commonSkippedDirs = map[string]struct{}{
-	".cache": {}, ".git": {}, ".hg": {}, ".idea": {}, ".next": {}, ".svn": {},
-	"build": {}, "dist": {}, "node_modules": {}, "out": {}, "target": {}, "vendor": {},
-}
-
 func FinalizeDetection(repoPath string, detection language.Detection, roots map[string]struct{}) language.Detection {
 	if detection.Matched && detection.Confidence < 35 {
 		detection.Confidence = 35

@@ -27,6 +27,15 @@ const (
 	buildGradleKTSName = "build.gradle.kts"
 )
 
+var jvmSkippedDirectories = map[string]bool{
+	"target":     true,
+	".gradle":    true,
+	".mvn":       true,
+	"out":        true,
+	".classpath": true,
+	".settings":  true,
+}
+
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -459,14 +468,7 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	return shared.ShouldSkipDir(name, map[string]bool{
-		"target":     true,
-		".gradle":    true,
-		".mvn":       true,
-		"out":        true,
-		".classpath": true,
-		".settings":  true,
-	})
+	return shared.ShouldSkipDir(name, jvmSkippedDirectories)
 }
 
 type dependencyDescriptor struct {
