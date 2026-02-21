@@ -257,6 +257,24 @@ func BuildTopReports(
 	return reports, warnings
 }
 
+func BuildRequestedDependencies[S any](
+	req language.Request,
+	scan S,
+	normalizeDependencyID func(string) string,
+	buildDependency func(string, S) (report.DependencyReport, []string),
+	buildTop func(int, S) ([]report.DependencyReport, []string),
+) ([]report.DependencyReport, []string) {
+	if req.TopN > 0 {
+		return buildTop(req.TopN, scan)
+	}
+	dependency := normalizeDependencyID(req.Dependency)
+	if dependency == "" {
+		return nil, []string{"no dependency or top-N target provided"}
+	}
+	depReport, warnings := buildDependency(dependency, scan)
+	return []report.DependencyReport{depReport}, warnings
+}
+
 // SortReportsByWaste annotates each report with a removal-candidate score before sorting.
 func SortReportsByWaste(reports []report.DependencyReport, weights ...report.RemovalCandidateWeights) {
 	scoringWeights := report.DefaultRemovalCandidateWeights()
@@ -275,23 +293,6 @@ func SortReportsByWaste(reports []report.DependencyReport, weights ...report.Rem
 		}
 		return iScore > jScore
 	})
-}
-
-func BuildRequestedDependencies(
-	req language.Request,
-	normalizeDependencyID func(string) string,
-	buildDependency func(string) (report.DependencyReport, []string),
-	buildTop func(int) ([]report.DependencyReport, []string),
-) ([]report.DependencyReport, []string) {
-	if req.TopN > 0 {
-		return buildTop(req.TopN)
-	}
-	dependency := normalizeDependencyID(req.Dependency)
-	if dependency == "" {
-		return nil, []string{"no dependency or top-N target provided"}
-	}
-	depReport, warnings := buildDependency(dependency)
-	return []report.DependencyReport{depReport}, warnings
 }
 
 func WasteScore(dep report.DependencyReport) (float64, bool) {

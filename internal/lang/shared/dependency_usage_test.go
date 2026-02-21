@@ -135,11 +135,15 @@ func TestBuildRequestedDependencies(t *testing.T) {
 	t.Run("dependency", func(t *testing.T) {
 		reports, warnings := BuildRequestedDependencies(
 			language.Request{Dependency: "Alpha"},
+			1,
 			strings.ToLower,
-			func(dependency string) (report.DependencyReport, []string) {
+			func(dependency string, scan int) (report.DependencyReport, []string) {
+				if scan != 1 {
+					t.Fatalf("unexpected scan value: %d", scan)
+				}
 				return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
 			},
-			func(int) ([]report.DependencyReport, []string) {
+			func(int, int) ([]report.DependencyReport, []string) {
 				t.Fatal("unexpected top-N builder call")
 				return nil, nil
 			},
@@ -155,14 +159,18 @@ func TestBuildRequestedDependencies(t *testing.T) {
 	t.Run("topN", func(t *testing.T) {
 		reports, warnings := BuildRequestedDependencies(
 			language.Request{TopN: 3},
+			2,
 			strings.ToLower,
-			func(string) (report.DependencyReport, []string) {
+			func(string, int) (report.DependencyReport, []string) {
 				t.Fatal("unexpected dependency builder call")
 				return report.DependencyReport{}, nil
 			},
-			func(topN int) ([]report.DependencyReport, []string) {
+			func(topN int, scan int) ([]report.DependencyReport, []string) {
 				if topN != 3 {
 					t.Fatalf("unexpected topN: %d", topN)
+				}
+				if scan != 2 {
+					t.Fatalf("unexpected scan value: %d", scan)
 				}
 				return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
 			},
@@ -178,9 +186,10 @@ func TestBuildRequestedDependencies(t *testing.T) {
 	t.Run("missing target", func(t *testing.T) {
 		reports, warnings := BuildRequestedDependencies(
 			language.Request{},
+			0,
 			strings.ToLower,
-			func(string) (report.DependencyReport, []string) { return report.DependencyReport{}, nil },
-			func(int) ([]report.DependencyReport, []string) { return nil, nil },
+			func(string, int) (report.DependencyReport, []string) { return report.DependencyReport{}, nil },
+			func(int, int) ([]report.DependencyReport, []string) { return nil, nil },
 		)
 		if reports != nil {
 			t.Fatalf("expected nil reports when no target provided, got %#v", reports)

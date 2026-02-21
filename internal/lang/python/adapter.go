@@ -154,12 +154,13 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	return shared.BuildRequestedDependencies(
 		req,
+		scan,
 		normalizeDependencyID,
-		func(dependency string) (report.DependencyReport, []string) {
-			return buildDependencyReport(dependency, scan)
+		func(dependency string, current scanResult) (report.DependencyReport, []string) {
+			return buildDependencyReport(dependency, current)
 		},
-		func(topN int) ([]report.DependencyReport, []string) {
-			return buildTopPythonDependencies(topN, scan, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+		func(topN int, current scanResult) ([]report.DependencyReport, []string) {
+			return buildTopPythonDependencies(topN, current, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 		},
 	)
 }
