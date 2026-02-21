@@ -3,8 +3,6 @@ package js
 import (
 	"context"
 	"testing"
-
-	sitter "github.com/smacker/go-tree-sitter"
 )
 
 func TestJSScanCoverageHelpers(t *testing.T) {
@@ -14,38 +12,18 @@ func TestJSScanCoverageHelpers(t *testing.T) {
 	}
 
 	source := []byte("export const foo = 1; const x = obj.prop; require(); const [a] = require(\"mod\"); import {} from \"m\"; const t = ``;")
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), indexJSName, source)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
 
-	var exportStmt, memberProp, requireCall, importStmt, tmpl *sitter.Node
-	walkNode(tree.RootNode(), func(node *sitter.Node) {
-		switch node.Type() {
-		case "export_statement":
-			if exportStmt == nil {
-				exportStmt = node
-			}
-		case "property_identifier":
-			if memberProp == nil {
-				memberProp = node
-			}
-		case "call_expression":
-			if requireCall == nil {
-				requireCall = node
-			}
-		case "import_statement":
-			if importStmt == nil {
-				importStmt = node
-			}
-		case "template_string":
-			if tmpl == nil {
-				tmpl = node
-			}
-		}
-	})
+	exportStmt := firstNodeByType(tree.RootNode(), "export_statement")
+	memberProp := firstNodeByType(tree.RootNode(), "property_identifier")
+	requireCall := firstNodeByType(tree.RootNode(), "call_expression")
+	importStmt := firstNodeByType(tree.RootNode(), "import_statement")
+	tmpl := firstNodeByType(tree.RootNode(), "template_string")
 
-	if exportStmt == nil || parseReExportStatement(exportStmt, source, "index.js", map[string][]ImportBinding{}) != nil {
+	if exportStmt == nil || parseReExportStatement(exportStmt, source, indexJSName, map[string][]ImportBinding{}) != nil {
 		t.Fatalf("expected source-less re-export statement to return nil bindings")
 	}
 
@@ -56,10 +34,10 @@ func TestJSScanCoverageHelpers(t *testing.T) {
 		t.Fatalf("expected root node without parent not to count as usage")
 	}
 
-	if len(parseRequireCall(requireCall, source, "index.js")) != 0 {
+	if len(parseRequireCall(requireCall, source, indexJSName)) != 0 {
 		t.Fatalf("expected require() with no args to produce no bindings")
 	}
-	if len(parseImportStatement(importStmt, source, "index.js")) != 1 {
+	if len(parseImportStatement(importStmt, source, indexJSName)) != 1 {
 		t.Fatalf("expected empty import clause to fall back to wildcard binding")
 	}
 	if got, ok := extractStringLiteral(tmpl, source); ok || got != "" {

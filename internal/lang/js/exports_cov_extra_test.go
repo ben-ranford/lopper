@@ -44,7 +44,7 @@ func TestJSExportsCoverageHelpers(t *testing.T) {
 	}
 
 	entrypoints := collectCandidateEntrypoints(packageJSON{}, runtimeProfile{name: "x"}, &ExportSurface{})
-	if _, ok := entrypoints["index.js"]; !ok {
+	if _, ok := entrypoints[indexJSName]; !ok {
 		t.Fatalf("expected index.js fallback entrypoint")
 	}
 
@@ -72,29 +72,20 @@ func TestJSExportsCoverageHelpers(t *testing.T) {
 
 	parser := newSourceParser()
 	src := []byte("export default 1; export * from \"./x.js\"; export * as ns from \"./y.js\";")
-	tree, err := parser.Parse(context.Background(), "index.js", src)
+	tree, err := parser.Parse(context.Background(), indexJSName, src)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
-	var sawDefault, sawStar, sawNamespace bool
+	seen := map[string]bool{"default": false, "*": false, "ns": false}
 	walkNode(tree.RootNode(), func(node *sitter.Node) {
 		if node.Type() != "export_statement" {
 			return
 		}
-		names := parseExportStatement(node, src)
-		for _, name := range names {
-			if name == "default" {
-				sawDefault = true
-			}
-			if name == "*" {
-				sawStar = true
-			}
-			if name == "ns" {
-				sawNamespace = true
-			}
+		for _, name := range parseExportStatement(node, src) {
+			seen[name] = true
 		}
 	})
-	if !sawDefault || !sawStar || !sawNamespace {
+	if !seen["default"] || !seen["*"] || !seen["ns"] {
 		t.Fatalf("expected default/star/namespace export names to be parsed")
 	}
 

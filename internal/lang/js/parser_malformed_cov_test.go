@@ -9,31 +9,23 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
+const (
+	malformedIndexJS = "index.js"
+	malformedBadJS   = "bad.js"
+	malformedModule  = "mod"
+)
+
 func TestJSMalformedSyntaxCoverageBranches(t *testing.T) {
 	parser := newSourceParser()
 	src := []byte("export; export {,a}; import from; const { :x } = require(\"m\");")
-	tree, err := parser.Parse(context.Background(), "index.js", src)
+	tree, err := parser.Parse(context.Background(), malformedIndexJS, src)
 	if err != nil {
 		t.Fatalf("parse malformed source: %v", err)
 	}
 
-	var exportStmt, importStmt, requireCall *sitter.Node
-	walkNode(tree.RootNode(), func(node *sitter.Node) {
-		switch node.Type() {
-		case "export_statement":
-			if exportStmt == nil {
-				exportStmt = node
-			}
-		case "import_statement":
-			if importStmt == nil {
-				importStmt = node
-			}
-		case "call_expression":
-			if requireCall == nil {
-				requireCall = node
-			}
-		}
-	})
+	exportStmt := firstNodeByType(tree.RootNode(), "export_statement")
+	importStmt := firstNodeByType(tree.RootNode(), "import_statement")
+	requireCall := firstNodeByType(tree.RootNode(), "call_expression")
 
 	if exportStmt == nil {
 		t.Fatalf("expected export statement in malformed source")
@@ -41,22 +33,22 @@ func TestJSMalformedSyntaxCoverageBranches(t *testing.T) {
 	_ = parseExportStatement(exportStmt, src)
 
 	if importStmt != nil {
-		_ = parseImportStatement(importStmt, src, "index.js")
+		_ = parseImportStatement(importStmt, src, malformedIndexJS)
 	}
 	if requireCall != nil {
-		_ = parseRequireCall(requireCall, src, "index.js")
+		_ = parseRequireCall(requireCall, src, malformedIndexJS)
 	}
 
 	// Explicitly exercise re-export collection guard for imports without local binding names.
 	imports := []ImportBinding{{Module: "pkg", ExportName: "*", LocalName: "", Kind: ImportNamespace}}
-	_ = collectReExportBindings(tree, src, "index.js", imports)
+	_ = collectReExportBindings(tree, src, malformedIndexJS, imports)
 }
 
 func TestJSScanDirectBranchCoverage(t *testing.T) {
 	parser := newSourceParser()
 
 	repo := t.TempDir()
-	path := filepath.Join(repo, "bad.js")
+	path := filepath.Join(repo, malformedBadJS)
 	if err := os.WriteFile(path, []byte("import a from b; const [x] = require(mod); const { :y } = require(\"m\");"), 0o600); err != nil {
 		t.Fatalf("write bad.js: %v", err)
 	}
@@ -84,34 +76,19 @@ func TestJSScanDirectBranchCoverage(t *testing.T) {
 		t.Fatalf("reparse bad.js: %v", err)
 	}
 
-	var importStmt, requireCall, propIdent, patternIdent *sitter.Node
-	walkNode(tree.RootNode(), func(node *sitter.Node) {
-		switch node.Type() {
-		case "import_statement":
-			if importStmt == nil {
-				importStmt = node
-			}
-		case "call_expression":
-			if requireCall == nil {
-				requireCall = node
-			}
-		case "property_identifier":
-			if propIdent == nil {
-				propIdent = node
-			}
-		case "identifier":
-			if patternIdent == nil && node.Parent() != nil && node.Parent().Type() == "object_pattern" {
-				patternIdent = node
-			}
-		}
+	importStmt := firstNodeByType(tree.RootNode(), "import_statement")
+	requireCall := firstNodeByType(tree.RootNode(), "call_expression")
+	propIdent := firstNodeByType(tree.RootNode(), "property_identifier")
+	patternIdent := firstNode(tree.RootNode(), func(node *sitter.Node) bool {
+		return node.Type() == "identifier" && node.Parent() != nil && node.Parent().Type() == "object_pattern"
 	})
 
 	if importStmt != nil {
-		_ = parseImportStatement(importStmt, content, "bad.js")
+		_ = parseImportStatement(importStmt, content, malformedBadJS)
 	}
 	if requireCall != nil {
-		_ = parseRequireCall(requireCall, content, "bad.js")
-		_ = parseRequireBinding(requireCall, content, "mod", "bad.js")
+		_ = parseRequireCall(requireCall, content, malformedBadJS)
+		_ = parseRequireBinding(requireCall, content, malformedModule, malformedBadJS)
 	}
 	if propIdent != nil && !isIdentifierUsage(propIdent) {
 		t.Fatalf("expected property identifier usage branch to return true")

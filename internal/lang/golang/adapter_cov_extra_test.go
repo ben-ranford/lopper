@@ -11,6 +11,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const coverageDepPath = "github.com/x/y"
+
 func TestGoAdapterCoverageHelpers(t *testing.T) {
 	if got := clampConfidence(1, true); got != 35 {
 		t.Fatalf("expected clampConfidence floor when matched, got %d", got)
@@ -106,11 +108,11 @@ func TestGoAdapterCoverageHelpersMore(t *testing.T) {
 
 	scan := scanResult{
 		Files: []fileScan{{
-			Imports: []importBinding{{Dependency: "github.com/x/y", Module: "github.com/x/y", Name: "*", Local: "y", Wildcard: true}},
+			Imports: []importBinding{{Dependency: coverageDepPath, Module: coverageDepPath, Name: "*", Local: "y", Wildcard: true}},
 			Usage:   map[string]int{"*": 1},
 		}},
 	}
-	depReport, _ := buildDependencyReport("github.com/x/y", scan)
+	depReport, _ := buildDependencyReport(coverageDepPath, scan)
 	if len(depReport.RiskCues) == 0 {
 		t.Fatalf("expected wildcard import risk cue")
 	}
