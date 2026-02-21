@@ -139,6 +139,19 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 }
 
+func TestJVMShouldSkipDirHasNoPerCallAllocations(t *testing.T) {
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = shouldSkipDir(".gradle")
+		_ = shouldSkipDir("src")
+	})
+	if allocs != 0 {
+		t.Fatalf("expected zero allocations per shouldSkipDir call, got %v", allocs)
+	}
+	if !shouldSkipDir(".gradle") || shouldSkipDir("src") {
+		t.Fatalf("unexpected shouldSkipDir behavior")
+	}
+}
+
 func TestJVMLookupStrategyBuilders(t *testing.T) {
 	prefixes := map[string]string{}
 	aliases := map[string]string{}
