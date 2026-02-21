@@ -303,6 +303,9 @@ func sortDependencies(deps []report.DependencyReport, mode sortMode) []report.De
 }
 
 func dependencyWaste(dep report.DependencyReport) (float64, bool) {
+	if score, ok := report.RemovalCandidateScore(dep); ok {
+		return score, true
+	}
 	if dep.TotalExportsCount == 0 {
 		return 0, false
 	}

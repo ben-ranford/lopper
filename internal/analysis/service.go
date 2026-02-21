@@ -87,6 +87,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+	report.AnnotateRemovalCandidateScores(reportData.Dependencies)
 	reportData.SchemaVersion = report.SchemaVersion
 	return reportData, nil
 }

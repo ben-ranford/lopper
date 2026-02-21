@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -91,10 +92,10 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		t.Fatalf("expected overlap-filtered unused imports, got %#v", unusedImportList)
 	}
 
-	if score, ok := wasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
+	if score, ok := shared.WasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
 		t.Fatalf("expected unknown waste score for zero exports, got score=%f ok=%v", score, ok)
 	}
-	if score, ok := wasteScore(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 0}); !ok || score != 75 {
+	if score, ok := shared.WasteScore(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25}); !ok || score != 75 {
 		t.Fatalf("expected computed waste score 75, got score=%f ok=%v", score, ok)
 	}
 

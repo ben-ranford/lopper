@@ -257,9 +257,10 @@ func BuildTopReports(
 }
 
 func SortReportsByWaste(reports []report.DependencyReport) {
+	report.AnnotateRemovalCandidateScores(reports)
 	sort.Slice(reports, func(i, j int) bool {
-		iScore, iKnown := WasteScore(reports[i])
-		jScore, jKnown := WasteScore(reports[j])
+		iScore, iKnown := report.RemovalCandidateScore(reports[i])
+		jScore, jKnown := report.RemovalCandidateScore(reports[j])
 		if iKnown != jKnown {
 			return iKnown
 		}

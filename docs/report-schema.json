@@ -96,6 +96,9 @@
         },
         "runtimeUsage": {
           "$ref": "#/$defs/runtimeUsage"
+        },
+        "removalCandidate": {
+          "$ref": "#/$defs/removalCandidate"
         }
       }
     },
@@ -173,6 +176,34 @@
       "properties": {
         "loadCount": { "type": "integer", "minimum": 0 },
         "runtimeOnly": { "type": "boolean" }
+      }
+    },
+    "removalCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "usage", "impact", "confidence", "weights"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0 },
+        "usage": { "type": "number", "minimum": 0, "maximum": 100 },
+        "impact": { "type": "number", "minimum": 0, "maximum": 100 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+        "weights": {
+          "$ref": "#/$defs/removalCandidateWeights"
+        },
+        "rationale": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "removalCandidateWeights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usage", "impact", "confidence"],
+      "properties": {
+        "usage": { "type": "number", "minimum": 0 },
+        "impact": { "type": "number", "minimum": 0 },
+        "confidence": { "type": "number", "minimum": 0 }
       }
     }
   }

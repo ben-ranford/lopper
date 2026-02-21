@@ -382,6 +382,50 @@ func isAmbiguousImportUsage(imp ImportBinding, file FileScan) bool {
 	return hasDirectIdentifierUsage(imp, file)
 }
 
+type importUsageCollector struct {
+	usedExports   map[string]struct{}
+	counts        map[string]int
+	usedImports   map[string]*report.ImportUse
+	unusedImports map[string]*report.ImportUse
+}
+
+func collectMatchingImport(
+	dependency string,
+	imp ImportBinding,
+	file FileScan,
+	usage importUsageCollector,
+) (bool, bool) {
+	if !matchesDependency(imp.Module, dependency) {
+		return false, false
+	}
+	used := applyImportUsage(imp, file, usage.usedExports, usage.counts)
+	recordDependencyImportUse(imp, used, usage.usedImports, usage.unusedImports)
+	return true, isAmbiguousWildcardUsage(imp, file)
+}
+
+func recordDependencyImportUse(
+	imp ImportBinding,
+	used bool,
+	usedImports map[string]*report.ImportUse,
+	unusedImports map[string]*report.ImportUse,
+) {
+	entry := recordImportUse(imp)
+	if used {
+		addImportUse(usedImports, entry)
+		return
+	}
+	addImportUse(unusedImports, entry)
+}
+
+func isAmbiguousWildcardUsage(imp ImportBinding, file FileScan) bool {
+	// Only flag as ambiguous if it's a wildcard/default import AND
+	// the identifier is used directly (not just through property access).
+	if imp.ExportName != "*" && imp.ExportName != "default" {
+		return false
+	}
+	return hasDirectIdentifierUsage(imp, file)
+}
+
 func dependencyUsageWarnings(dependency string, usedExports map[string]struct{}, hasWildcard bool) []string {
 	warnings := make([]string, 0)
 	if len(usedExports) == 0 {
@@ -600,34 +644,13 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		warnings = append(warnings, depWarnings...)
 	}
 
-	sort.Slice(reports, func(i, j int) bool {
-		iScore, iHas := wasteScore(reports[i])
-		jScore, jHas := wasteScore(reports[j])
-		if iHas != jHas {
-			return iHas
-		}
-		if iScore == jScore {
-			return reports[i].Name < reports[j].Name
-		}
-		return iScore > jScore
-	})
+	shared.SortReportsByWaste(reports)
 
 	if topN > 0 && topN < len(reports) {
 		reports = reports[:topN]
 	}
 
 	return reports, warnings
-}
-
-func wasteScore(dep report.DependencyReport) (float64, bool) {
-	if dep.TotalExportsCount == 0 {
-		return -1, false
-	}
-	usedPercent := dep.UsedPercent
-	if usedPercent <= 0 && dep.TotalExportsCount > 0 {
-		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
-	}
-	return 100 - usedPercent, true
 }
 
 func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[string]string, []string) {
