@@ -34,7 +34,8 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+	detection, err := a.DetectWithConfidence(ctx, repoPath)
+	return detection.Matched, err
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
