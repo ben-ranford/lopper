@@ -42,20 +42,11 @@ func TestResolveDependencyExportsSkipsNonCodeAssets(t *testing.T) {
 
 func TestResolveDependencyExportsUsesRuntimeProfile(t *testing.T) {
 	repo := t.TempDir()
-	depDir := filepath.Join(repo, "node_modules", "profiled")
-	if err := os.MkdirAll(depDir, 0o755); err != nil {
-		t.Fatalf("mkdir dep dir: %v", err)
-	}
 	pkg := "{\n  \"exports\": {\n    \".\": {\n      \"import\": \"./import.js\",\n      \"require\": \"./require.js\"\n    }\n  }\n}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(pkg), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depDir, "import.js"), []byte("export const importOnly = 1\n"), 0o644); err != nil {
-		t.Fatalf("write import.js: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depDir, "require.js"), []byte("export const requireOnly = 1\n"), 0o644); err != nil {
-		t.Fatalf("write require.js: %v", err)
-	}
+	writeDependencyFiles(t, repo, "profiled", pkg, map[string]string{
+		"import.js":  "export const importOnly = 1\n",
+		"require.js": "export const requireOnly = 1\n",
+	})
 
 	importSurface, err := resolveDependencyExports(repo, "profiled", "", "node-import")
 	if err != nil {
@@ -82,23 +73,12 @@ func TestResolveDependencyExportsUsesRuntimeProfile(t *testing.T) {
 
 func TestResolveDependencyExportsWarnsOnAmbiguousConditionMap(t *testing.T) {
 	repo := t.TempDir()
-	depDir := filepath.Join(repo, "node_modules", "ambiguous")
-	if err := os.MkdirAll(depDir, 0o755); err != nil {
-		t.Fatalf("mkdir dep dir: %v", err)
-	}
 	pkg := "{\n  \"exports\": {\n    \".\": {\n      \"node\": \"./node.js\",\n      \"import\": \"./import.js\",\n      \"default\": \"./default.js\"\n    }\n  }\n}\n"
-	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(pkg), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depDir, "node.js"), []byte("export const fromNode = 1\n"), 0o644); err != nil {
-		t.Fatalf("write node.js: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depDir, "import.js"), []byte("export const fromImport = 1\n"), 0o644); err != nil {
-		t.Fatalf("write import.js: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depDir, "default.js"), []byte("export const fromDefault = 1\n"), 0o644); err != nil {
-		t.Fatalf("write default.js: %v", err)
-	}
+	writeDependencyFiles(t, repo, "ambiguous", pkg, map[string]string{
+		"node.js":    "export const fromNode = 1\n",
+		"import.js":  "export const fromImport = 1\n",
+		"default.js": "export const fromDefault = 1\n",
+	})
 
 	surface, err := resolveDependencyExports(repo, "ambiguous", "", "node-import")
 	if err != nil {
@@ -125,5 +105,21 @@ func writeDependencyFixture(t *testing.T, repoPath string, depName string, packa
 	}
 	if err := os.WriteFile(filepath.Join(depDir, "index.js"), []byte(entrypoint), 0o644); err != nil {
 		t.Fatalf("write entrypoint: %v", err)
+	}
+}
+
+func writeDependencyFiles(t *testing.T, repoPath string, depName string, packageJSON string, files map[string]string) {
+	t.Helper()
+	depDir := filepath.Join(repoPath, "node_modules", depName)
+	if err := os.MkdirAll(depDir, 0o755); err != nil {
+		t.Fatalf("mkdir dep dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(depDir, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
 	}
 }
