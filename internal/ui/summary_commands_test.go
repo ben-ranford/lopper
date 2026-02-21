@@ -37,6 +37,9 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 	if !applySummaryCommand(state, "sort waste", io.Discard) || state.sortMode != sortByWaste {
 		t.Fatalf("expected sort waste to apply")
 	}
+	if !applySummaryCommand(state, "sort alpha", io.Discard) || state.sortMode != sortByName {
+		t.Fatalf("expected sort alpha alias to apply")
+	}
 	if applySummaryCommand(state, "sort nope", io.Discard) {
 		t.Fatalf("expected invalid sort command to fail")
 	}
@@ -59,8 +62,14 @@ func TestSummaryCommandHandlersPagingAndShortcuts(t *testing.T) {
 	if !applySummaryCommand(state, "s", io.Discard) {
 		t.Fatalf("expected toggle sort to work")
 	}
+	if state.sortMode != sortByName {
+		t.Fatalf("expected toggle sort to switch to name sort")
+	}
 	if !applySummaryCommand(state, "s", io.Discard) {
 		t.Fatalf("expected second toggle sort to work")
+	}
+	if state.sortMode != sortByWaste {
+		t.Fatalf("expected second toggle sort to switch back to waste sort")
 	}
 	if !applySummaryCommand(state, "w", io.Discard) || state.sortMode != sortByWaste {
 		t.Fatalf("expected w shortcut to set waste sort")
@@ -111,8 +120,58 @@ func TestSummaryHelpers(t *testing.T) {
 	if filtered := filterDependencies(deps, "PYTHON"); len(filtered) != 1 || filtered[0].Language != "python" {
 		t.Fatalf("expected filter to match language case-insensitively, got %#v", filtered)
 	}
-	if parseSortMode("alpha") != sortByName || parseSortMode("waste") != sortByWaste || parseSortMode("unknown") != sortByWaste {
+	if parseSortMode("alpha") != sortByName || parseSortMode("waste") != sortByWaste || parseSortMode("unknown") != sortByWaste || parseSortMode(" NAME ") != sortByName {
 		t.Fatalf("unexpected sort mode parsing")
+	}
+	if mode, ok := parseSortModeStrict("waste"); !ok || mode != sortByWaste {
+		t.Fatalf("expected strict parser to accept waste")
+	}
+	if mode, ok := parseSortModeStrict("alpha"); !ok || mode != sortByName {
+		t.Fatalf("expected strict parser to accept alpha alias")
+	}
+	if _, ok := parseSortModeStrict("unknown"); ok {
+		t.Fatalf("expected strict parser to reject unknown sort mode")
+	}
+	if toggleSortMode(sortByWaste) != sortByName || toggleSortMode(sortByName) != sortByWaste {
+		t.Fatalf("unexpected sort toggle behavior")
+	}
+	if page := normalizeSummaryPage(0, 3); page != 1 {
+		t.Fatalf("expected normalizeSummaryPage to floor page, got %d", page)
+	}
+	if page := normalizeSummaryPage(9, 3); page != 3 {
+		t.Fatalf("expected normalizeSummaryPage to clamp high page, got %d", page)
+	}
+	if page := normalizeSummaryPage(2, 3); page != 2 {
+		t.Fatalf("expected normalizeSummaryPage to keep in-range page, got %d", page)
+	}
+}
+
+func TestRunSummaryDependencyPipeline(t *testing.T) {
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "b", Language: "js-ts", UsedPercent: 10, TotalExportsCount: 10},
+			{Name: "a", Language: "python", UsedPercent: 90, TotalExportsCount: 10},
+			{Name: "c", Language: "go", UsedPercent: 50, TotalExportsCount: 10},
+		},
+	}
+	state := summaryState{
+		filter:   "python",
+		sortMode: sortByName,
+		page:     9,
+		pageSize: 1,
+	}
+	sorted, paged, normalized, totalPages := runSummaryDependencyPipeline(reportData, state)
+	if totalPages != 1 {
+		t.Fatalf("expected one page after filtering, got %d", totalPages)
+	}
+	if normalized.page != 1 {
+		t.Fatalf("expected page to normalize to 1, got %d", normalized.page)
+	}
+	if len(sorted) != 1 || sorted[0].Name != "a" {
+		t.Fatalf("unexpected sorted dependencies: %#v", sorted)
+	}
+	if len(paged) != 1 || paged[0].Name != "a" {
+		t.Fatalf("unexpected paged dependencies: %#v", paged)
 	}
 }
 
@@ -270,6 +329,9 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 
 	if pageCount(-1, 10) != 1 {
 		t.Fatalf("expected pageCount floor for negative totals")
+	}
+	if pageCount(10, 0) != 1 {
+		t.Fatalf("expected pageCount floor for invalid page size")
 	}
 
 	deps := []report.DependencyReport{{Name: "a"}, {Name: "b"}}

@@ -124,8 +124,9 @@ func filterDependencies(deps []report.DependencyReport, filter string) []report.
 type sortMode string
 
 const (
-	sortByWaste sortMode = "waste"
-	sortByName  sortMode = "name"
+	sortByWaste     sortMode = "waste"
+	sortByName      sortMode = "name"
+	sortByNameAlias          = "alpha"
 )
 
 type summaryState struct {
@@ -193,16 +194,12 @@ func handleSortCommand(state *summaryState, fields []string) bool {
 	if len(fields) < 2 {
 		return false
 	}
-	switch fields[1] {
-	case string(sortByWaste):
-		setSortMode(state, sortByWaste)
-		return true
-	case string(sortByName):
-		setSortMode(state, sortByName)
-		return true
-	default:
+	mode, ok := parseSortModeStrict(fields[1])
+	if !ok {
 		return false
 	}
+	setSortMode(state, mode)
+	return true
 }
 
 func handlePageCommand(state *summaryState, fields []string) bool {
@@ -231,11 +228,7 @@ func handleSizeCommand(state *summaryState, fields []string) bool {
 }
 
 func handleToggleSortCommand(state *summaryState) bool {
-	if state.sortMode == sortByWaste {
-		setSortMode(state, sortByName)
-		return true
-	}
-	setSortMode(state, sortByWaste)
+	setSortMode(state, toggleSortMode(state.sortMode))
 	return true
 }
 
@@ -317,20 +310,13 @@ func dependencyWaste(dep report.DependencyReport) (float64, bool) {
 }
 
 func pageCount(total int, pageSize int) int {
-	if total == 0 {
-		return 1
-	}
 	if pageSize <= 0 {
 		return 1
 	}
-	pages := total / pageSize
-	if total%pageSize != 0 {
-		pages++
+	if total <= 0 {
+		return 1
 	}
-	if pages < 1 {
-		pages = 1
-	}
-	return pages
+	return (total + pageSize - 1) / pageSize
 }
 
 func paginateDependencies(deps []report.DependencyReport, page int, pageSize int) []report.DependencyReport {
@@ -422,36 +408,75 @@ func buildSummaryState(opts Options) summaryState {
 }
 
 func parseSortMode(value string) sortMode {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case string(sortByName), "alpha":
-		return sortByName
-	default:
+	mode, ok := parseSortModeStrict(value)
+	if !ok {
 		return sortByWaste
+	}
+	return mode
+}
+
+func parseSortModeStrict(value string) (sortMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(sortByName), sortByNameAlias:
+		return sortByName, true
+	case string(sortByWaste):
+		return sortByWaste, true
+	default:
+		return sortByWaste, false
 	}
 }
 
-func (s *Summary) renderSummary(reportData report.Report, state summaryState) (string, error) {
+func toggleSortMode(mode sortMode) sortMode {
+	if mode == sortByWaste {
+		return sortByName
+	}
+	return sortByWaste
+}
+
+func runSummaryDependencyPipeline(
+	reportData report.Report,
+	state summaryState,
+) ([]report.DependencyReport, []report.DependencyReport, summaryState, int) {
 	filtered := filterDependencies(reportData.Dependencies, state.filter)
 	sorted := sortDependencies(filtered, state.sortMode)
 	totalPages := pageCount(len(sorted), state.pageSize)
-	if state.page > totalPages {
-		state.page = totalPages
-	}
-	if state.page < 1 {
-		state.page = 1
-	}
+	state.page = normalizeSummaryPage(state.page, totalPages)
 	paged := paginateDependencies(sorted, state.page, state.pageSize)
+	return sorted, paged, state, totalPages
+}
 
+func normalizeSummaryPage(page int, totalPages int) int {
+	if page > totalPages {
+		return totalPages
+	}
+	if page < 1 {
+		return 1
+	}
+	return page
+}
+
+func buildSummaryDisplayReport(
+	reportData report.Report,
+	sorted []report.DependencyReport,
+	paged []report.DependencyReport,
+) report.Report {
 	display := reportData
 	display.Dependencies = paged
 	display.Summary = report.ComputeSummary(sorted)
 	display.LanguageBreakdown = report.ComputeLanguageBreakdown(sorted)
+	return display
+}
 
-	formatted, err := s.Formatter.Format(display, report.FormatTable)
-	if err != nil {
-		return "", err
-	}
+func (s *Summary) formatSummaryDisplay(display report.Report) (string, error) {
+	return s.Formatter.Format(display, report.FormatTable)
+}
 
+func renderSummaryFrame(
+	formatted string,
+	state summaryState,
+	totalPages int,
+	totalDependencies int,
+) string {
 	var builder strings.Builder
 	fmt.Fprintln(&builder, "Lopper TUI (summary)")
 	fmt.Fprintf(
@@ -461,7 +486,7 @@ func (s *Summary) renderSummary(reportData report.Report, state summaryState) (s
 		state.page,
 		totalPages,
 		state.pageSize,
-		len(sorted),
+		totalDependencies,
 	)
 	if state.filter == "" {
 		fmt.Fprintln(&builder, "Filter: (none)")
@@ -474,5 +499,15 @@ func (s *Summary) renderSummary(reportData report.Report, state summaryState) (s
 	} else {
 		builder.WriteString("Commands: help | open <dependency> | q\n")
 	}
-	return builder.String(), nil
+	return builder.String()
+}
+
+func (s *Summary) renderSummary(reportData report.Report, state summaryState) (string, error) {
+	sorted, paged, state, totalPages := runSummaryDependencyPipeline(reportData, state)
+	display := buildSummaryDisplayReport(reportData, sorted, paged)
+	formatted, err := s.formatSummaryDisplay(display)
+	if err != nil {
+		return "", err
+	}
+	return renderSummaryFrame(formatted, state, totalPages, len(sorted)), nil
 }

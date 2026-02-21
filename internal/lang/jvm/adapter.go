@@ -518,31 +518,61 @@ func buildDescriptorLookups(descriptors []dependencyDescriptor) (map[string]stri
 	return prefixes, aliases
 }
 
+type lookupKeyStrategy func(group string, artifact string) ([]string, []string)
+
 func addGroupLookups(prefixes map[string]string, aliases map[string]string, name string, group string) {
-	if group == "" {
-		return
-	}
-	group = strings.TrimSpace(group)
-	prefixes[group] = name
-	aliases[group] = name
-	parts := strings.Split(group, ".")
-	if len(parts) >= 2 {
-		aliases[parts[0]+"."+parts[1]] = name
-		aliases[parts[len(parts)-1]] = name
-	}
+	addLookupByStrategy(prefixes, aliases, name, group, "", groupLookupStrategy)
 }
 
 func addArtifactLookups(prefixes map[string]string, aliases map[string]string, name string, group string, artifact string) {
+	addLookupByStrategy(prefixes, aliases, name, group, artifact, artifactLookupStrategy)
+}
+
+func addLookupByStrategy(
+	prefixes map[string]string,
+	aliases map[string]string,
+	name string,
+	group string,
+	artifact string,
+	strategy lookupKeyStrategy,
+) {
+	prefixKeys, aliasKeys := strategy(group, artifact)
+	for _, key := range prefixKeys {
+		prefixes[key] = name
+	}
+	for _, key := range aliasKeys {
+		aliases[key] = name
+	}
+}
+
+func groupLookupStrategy(group string, _ string) ([]string, []string) {
+	if group == "" {
+		return nil, nil
+	}
+	group = strings.TrimSpace(group)
+	prefixes := []string{group}
+	aliases := []string{group}
+	parts := strings.Split(group, ".")
+	if len(parts) >= 2 {
+		aliases = append(aliases, parts[0]+"."+parts[1], parts[len(parts)-1])
+	}
+	return prefixes, aliases
+}
+
+func artifactLookupStrategy(group string, artifact string) ([]string, []string) {
 	if artifact == "" {
-		return
+		return nil, nil
 	}
 	artifact = strings.ReplaceAll(strings.TrimSpace(artifact), "-", ".")
+	prefixes := make([]string, 0, 1)
+	aliases := make([]string, 0, 1)
 	if group != "" && artifact != "" {
-		prefixes[group+"."+artifact] = name
+		prefixes = append(prefixes, group+"."+artifact)
 	}
 	if artifact != "" {
-		aliases[artifact] = name
+		aliases = append(aliases, artifact)
 	}
+	return prefixes, aliases
 }
 
 func parsePomDependencies(repoPath string) []dependencyDescriptor {
