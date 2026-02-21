@@ -59,7 +59,12 @@ func resolveRuntimeProfile(name string) (runtimeProfile, string) {
 		return runtimeProfile{name: trimmed, conditions: []string{"browser", "require", "default"}}, ""
 	default:
 		return runtimeProfile{name: defaultRuntimeProfile, conditions: []string{"node", "import", "default"}},
-			fmt.Sprintf("unknown runtime profile %q; using %q", name, defaultRuntimeProfile)
+			fmt.Sprintf(
+				"unknown runtime profile %q; using %q (supported: %s)",
+				name,
+				defaultRuntimeProfile,
+				strings.Join(supportedRuntimeProfiles(), ", "),
+			)
 	}
 }
 
