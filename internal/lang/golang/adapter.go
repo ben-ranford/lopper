@@ -1243,10 +1243,8 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	switch name {
-	case ".git", ".idea", "node_modules", "vendor", "dist", "build", "bin", ".artifacts":
-		return true
-	default:
-		return false
-	}
+	return shared.ShouldSkipDir(name, map[string]bool{
+		"bin":        true,
+		".artifacts": true,
+	})
 }
