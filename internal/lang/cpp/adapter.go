@@ -91,11 +91,11 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 
-	if err := applyRootSignals(repoPath, &detection, roots); err != nil {
+	if err := shared.ApplyRootSignals(repoPath, cppRootSignals, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
 
-	err := walkRepoFiles(ctx, repoPath, maxDetectFiles, func(path string, entry fs.DirEntry) error {
+	err := shared.WalkRepoFiles(ctx, repoPath, maxDetectFiles, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
 		updateDetection(path, &detection, roots)
 		return nil
 	})
@@ -104,30 +104,6 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
-}
-
-func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	rootSignals := []struct {
-		name       string
-		confidence int
-	}{
-		{name: compileCommandsFile, confidence: 60},
-		{name: cmakeListsFile, confidence: 45},
-		{name: "Makefile", confidence: 35},
-		{name: "makefile", confidence: 35},
-		{name: "GNUmakefile", confidence: 35},
-	}
-	for _, signal := range rootSignals {
-		path := filepath.Join(repoPath, signal.name)
-		if _, err := os.Stat(path); err == nil {
-			detection.Matched = true
-			detection.Confidence += signal.confidence
-			roots[repoPath] = struct{}{}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
 }
 
 func updateDetection(path string, detection *language.Detection, roots map[string]struct{}) {
@@ -193,7 +169,7 @@ func loadCompileContext(repoPath string) (compileContext, error) {
 	sourceFileSet := make(map[string]struct{})
 	visited := 0
 
-	err := walkRepoFiles(nil, repoPath, 0, func(path string, entry fs.DirEntry) error {
+	err := shared.WalkRepoFiles(nil, repoPath, 0, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
 		if filepath.Base(path) != compileCommandsFile {
 			return nil
 		}
@@ -363,7 +339,7 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) 
 
 func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	files := make([]string, 0)
-	err := walkRepoFiles(ctx, repoPath, maxScanFiles, func(path string, entry fs.DirEntry) error {
+	err := shared.WalkRepoFiles(ctx, repoPath, maxScanFiles, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
 		if isCPPSourceFile(path) {
 			files = append(files, path)
 		}
@@ -374,33 +350,6 @@ func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
-}
-
-func walkRepoFiles(ctx context.Context, repoPath string, maxFiles int, visit func(path string, entry fs.DirEntry) error) error {
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		visited++
-		if maxFiles > 0 && visited > maxFiles {
-			return fs.SkipAll
-		}
-		return visit(path, entry)
-	})
-	if err != nil && err != fs.SkipAll {
-		return err
-	}
-	return nil
 }
 
 func scanCPPFile(repoPath string, path string, includeDirs []string) (fileScan, []string, int, error) {
@@ -530,8 +479,7 @@ func includeResolvesWithinRepo(repoPath string, sourcePath string, header string
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
-		rel, err := filepath.Rel(repoPath, candidate)
-		if err == nil && (rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")) {
+		if shared.IsPathWithin(repoPath, candidate) {
 			return true
 		}
 	}
@@ -704,10 +652,6 @@ func relOrBase(repoPath, value string) string {
 	return filepath.Base(value)
 }
 
-func shouldSkipDir(name string) bool {
-	return shared.ShouldSkipCommonDir(name)
-}
-
 func isCPPSourceFile(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".c", ".cc", ".cpp", ".cxx", ".c++":
@@ -732,4 +676,12 @@ func isCPPSourceOrHeader(path string) bool {
 var cppStdHeaderSet = map[string]struct{}{
 	"algorithm": {}, "array": {}, "atomic": {}, "bitset": {}, "cassert": {}, "cctype": {}, "cerrno": {}, "cfenv": {}, "cfloat": {}, "charconv": {}, "chrono": {}, "cinttypes": {}, "ciso646": {}, "climits": {}, "clocale": {}, "cmath": {}, "codecvt": {}, "compare": {}, "complex": {}, "condition_variable": {}, "coroutine": {}, "csetjmp": {}, "csignal": {}, "cstdarg": {}, "cstddef": {}, "cstdint": {}, "cstdio": {}, "cstdlib": {}, "cstring": {}, "ctime": {}, "cuchar": {}, "cwchar": {}, "cwctype": {}, "deque": {}, "exception": {}, "execution": {}, "filesystem": {}, "forward_list": {}, "fstream": {}, "functional": {}, "future": {}, "initializer_list": {}, "iomanip": {}, "ios": {}, "iosfwd": {}, "iostream": {}, "istream": {}, "iterator": {}, "latch": {}, "limits": {}, "list": {}, "locale": {}, "map": {}, "memory": {}, "memory_resource": {}, "mutex": {}, "new": {}, "numbers": {}, "numeric": {}, "optional": {}, "ostream": {}, "queue": {}, "random": {}, "ranges": {}, "ratio": {}, "regex": {}, "scoped_allocator": {}, "semaphore": {}, "set": {}, "shared_mutex": {}, "source_location": {}, "span": {}, "sstream": {}, "stack": {}, "stdexcept": {}, "stop_token": {}, "streambuf": {}, "string": {}, "string_view": {}, "strstream": {}, "syncstream": {}, "system_error": {}, "thread": {}, "tuple": {}, "type_traits": {}, "typeindex": {}, "typeinfo": {}, "unordered_map": {}, "unordered_set": {}, "utility": {}, "valarray": {}, "variant": {}, "vector": {},
 	"assert": {}, "ctype": {}, "errno": {}, "float": {}, "inttypes": {}, "math": {}, "setjmp": {}, "signal": {}, "stdarg": {}, "stddef": {}, "stdint": {}, "stdio": {}, "stdlib": {}, "time": {}, "wchar": {}, "wctype": {},
+}
+
+var cppRootSignals = []shared.RootSignal{
+	{Name: compileCommandsFile, Confidence: 60},
+	{Name: cmakeListsFile, Confidence: 45},
+	{Name: "Makefile", Confidence: 35},
+	{Name: "makefile", Confidence: 35},
+	{Name: "GNUmakefile", Confidence: 35},
 }
