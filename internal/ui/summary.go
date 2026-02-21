@@ -261,7 +261,7 @@ func summaryHelpText() string {
 	return strings.Join([]string{
 		"Commands:",
 		"  filter <text>        Filter dependencies by name",
-		"  sort name|waste      Sort by name or waste",
+		"  sort name|alpha|waste Sort by name or waste",
 		"  s                    Toggle sort mode",
 		"  a                    Sort by name (alpha)",
 		"  w                    Sort by waste",
