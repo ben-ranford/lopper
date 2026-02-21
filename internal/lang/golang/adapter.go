@@ -494,11 +494,7 @@ func parseImports(content []byte, relativePath string, moduleInfo moduleInfo) ([
 			Name:       name,
 			Local:      local,
 			Wildcard:   wildcard,
-			Location: report.Location{
-				File:   relativePath,
-				Line:   position.Line,
-				Column: position.Column,
-			},
+			Location:   shared.Location(relativePath, position.Line, position.Column),
 		})
 		metadata = append(metadata, importMetadata{
 			Dependency: dependency,
