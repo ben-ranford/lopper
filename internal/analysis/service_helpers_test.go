@@ -403,10 +403,10 @@ func TestMergeRuntimeUsage(t *testing.T) {
 		&report.RuntimeUsage{
 			LoadCount:   1,
 			Correlation: report.RuntimeCorrelationStaticOnly,
-				Modules:     []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 2}},
-				TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 2}},
-			},
-		)
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 2}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 2}},
+		},
+	)
 
 	if merged == nil || merged.LoadCount != 3 {
 		t.Fatalf("expected merged load count 3, got %#v", merged)
