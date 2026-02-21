@@ -2,6 +2,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"io/fs"
 	"os"
@@ -505,7 +506,9 @@ func TestLoadGoModuleInfoOrchestrationHelpers(t *testing.T) {
 	if err := loadNestedModules(repo, &helperInfo); err != nil {
 		t.Fatalf("loadNestedModules: %v", err)
 	}
-	finalizeGoModuleInfo(&helperInfo)
+	if err := finalizeGoModuleInfo(&helperInfo); err != nil {
+		t.Fatalf("finalizeGoModuleInfo: %v", err)
+	}
 
 	if got.ModulePath != helperInfo.ModulePath {
 		t.Fatalf("module path mismatch: got %q want %q", got.ModulePath, helperInfo.ModulePath)
@@ -523,6 +526,47 @@ func TestLoadGoModuleInfoOrchestrationHelpers(t *testing.T) {
 		if got.ReplacementImports[replacementImport] != dependency {
 			t.Fatalf("replacement mismatch for %q: got %q want %q", replacementImport, got.ReplacementImports[replacementImport], dependency)
 		}
+	}
+}
+
+func TestModuleLoadingHelpersNilModuleInfo(t *testing.T) {
+	repo := t.TempDir()
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{
+			name: "loadRootModuleInfo",
+			fn: func() error {
+				return loadRootModuleInfo(repo, nil)
+			},
+		},
+		{
+			name: "loadWorkspaceModules",
+			fn: func() error {
+				return loadWorkspaceModules(repo, nil)
+			},
+		},
+		{
+			name: "loadNestedModules",
+			fn: func() error {
+				return loadNestedModules(repo, nil)
+			},
+		},
+		{
+			name: "finalizeGoModuleInfo",
+			fn: func() error {
+				return finalizeGoModuleInfo(nil)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.fn()
+			if !errors.Is(err, errNilModuleInfo) {
+				t.Fatalf("expected errNilModuleInfo, got %v", err)
+			}
+		})
 	}
 }
 
