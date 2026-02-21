@@ -16,6 +16,7 @@ import (
 const (
 	junitJupiterAPIName = "junit-jupiter-api"
 	acmeLibName         = "acme-lib"
+	jvmGradleDirName    = ".gradle"
 )
 
 func TestJVMParsePackageAndImports(t *testing.T) {
@@ -117,7 +118,7 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	if !matchesBuildFile(buildGradleName, []string{buildGradleName}) || matchesBuildFile("foo.txt", []string{buildGradleName}) {
 		t.Fatalf("unexpected build file matching")
 	}
-	if !shouldSkipDir(".git") || !shouldSkipDir(".gradle") || shouldSkipDir("src") {
+	if !shouldSkipDir(".git") || !shouldSkipDir(jvmGradleDirName) || shouldSkipDir("src") {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 
@@ -136,6 +137,19 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 	if !slices.Contains(names, "junit") || !slices.Contains(names, "okhttp") {
 		t.Fatalf("expected declared dependencies from build files, got %#v", names)
+	}
+}
+
+func TestJVMShouldSkipDirHasNoPerCallAllocations(t *testing.T) {
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = shouldSkipDir(jvmGradleDirName)
+		_ = shouldSkipDir("src")
+	})
+	if allocs != 0 {
+		t.Fatalf("expected zero allocations per shouldSkipDir call, got %v", allocs)
+	}
+	if !shouldSkipDir(".gradle") || shouldSkipDir("src") {
+		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 }
 
