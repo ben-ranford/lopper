@@ -44,25 +44,19 @@ func WalkRepoFiles(
 		skipDir = ShouldSkipCommonDir
 	}
 
+	return walkRepoFilesWithConfig(ctx, repoPath, maxFiles, skipDir, visit)
+}
+
+func walkRepoFilesWithConfig(
+	ctx context.Context,
+	repoPath string,
+	maxFiles int,
+	skipDir func(string) bool,
+	visit func(path string, entry fs.DirEntry) error,
+) error {
 	visited := 0
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if skipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		visited++
-		if maxFiles > 0 && visited > maxFiles {
-			return fs.SkipAll
-		}
-		return visit(path, entry)
+		return handleWalkEntry(ctx, path, entry, walkErr, maxFiles, skipDir, visit, &visited)
 	})
 	if err != nil && err != fs.SkipAll {
 		return err
@@ -70,7 +64,36 @@ func WalkRepoFiles(
 	return nil
 }
 
-func IsPathWithin(root string, candidate string) bool {
+func handleWalkEntry(
+	ctx context.Context,
+	path string,
+	entry fs.DirEntry,
+	walkErr error,
+	maxFiles int,
+	skipDir func(string) bool,
+	visit func(path string, entry fs.DirEntry) error,
+	visited *int,
+) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if entry.IsDir() {
+		if skipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	(*visited)++
+	if maxFiles > 0 && *visited > maxFiles {
+		return fs.SkipAll
+	}
+	return visit(path, entry)
+}
+
+func IsPathWithin(root, candidate string) bool {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return false

@@ -12,9 +12,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	testMainCPPFileName = "main.cpp"
+	fmtCoreIncludeLine  = "#include <fmt/core.h>\n"
+)
+
 func TestDetectCanceledContext(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine)
 
 	_, err := NewAdapter().Detect(testutil.CanceledContext(), repo)
 	if err == nil {
@@ -54,9 +59,9 @@ func TestDetectWithCompileDatabaseAndCMakeSignals(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "CMakeLists.txt"), "project(demo)\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "compile_commands.json"), `[
-  {"directory":".","file":"src/main.cpp","command":"c++ -Iinclude -c src/main.cpp"}
+  {"directory":".","file":"src/`+testMainCPPFileName+`","command":"c++ -Iinclude -c src/`+testMainCPPFileName+`"}
 ]`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\nint main() { return 0; }\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine+"int main() { return 0; }\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -75,7 +80,7 @@ func TestResolveCompilePathAndDirectory(t *testing.T) {
 	if got := resolveCompileDirectory(dbPath, "obj"); got != filepath.Join(filepath.Dir(dbPath), "obj") {
 		t.Fatalf("expected resolved relative directory, got %q", got)
 	}
-	if got := resolveCompilePath("/tmp/build", ""); got != "" {
+	if resolveCompilePath("/tmp/build", "") != "" {
 		t.Fatalf("expected empty path for empty input")
 	}
 }
@@ -119,7 +124,7 @@ func TestParseIncludesBranches(t *testing.T) {
 
 func TestMapIncludeToDependencyBranches(t *testing.T) {
 	repo := t.TempDir()
-	source := filepath.Join(repo, "src", "main.cpp")
+	source := filepath.Join(repo, "src", testMainCPPFileName)
 	testutil.MustWriteFile(t, source, "#include \"header.hpp\"\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "header.hpp"), "// local")
 
@@ -150,7 +155,7 @@ func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	if got := dependencyFromIncludePath("bad*token/header.h"); got != "" {
 		t.Fatalf("expected invalid token to map empty, got %q", got)
 	}
-	if got := dependencyFromIncludePath("/"); got != "" {
+	if dependencyFromIncludePath("/") != "" {
 		t.Fatalf("expected slash-only include to map empty")
 	}
 	if got := dependencyFromIncludePath("../bad path"); got != "" {
@@ -205,7 +210,7 @@ func TestSourceAndPathHelpers(t *testing.T) {
 
 func TestAnalyseWithCanceledContext(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine)
 
 	_, err := loadCompileContext("")
 	if err == nil {
@@ -234,10 +239,10 @@ func TestScanRepoWithOutsideCompileSourceWarning(t *testing.T) {
 
 func TestScanRepoCanceledAndMissingFileErrors(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine)
 
 	_, err := scanRepo(testutil.CanceledContext(), repo, compileContext{
-		SourceFiles: []string{filepath.Join(repo, "src", "main.cpp")},
+		SourceFiles: []string{filepath.Join(repo, "src", testMainCPPFileName)},
 	})
 	if err == nil {
 		t.Fatalf("expected canceled context error from scanRepo")
@@ -252,7 +257,7 @@ func TestScanRepoCanceledAndMissingFileErrors(t *testing.T) {
 }
 
 func TestRelOrBaseFallbackAndHeaderDetectionBranches(t *testing.T) {
-	if got := relOrBase(".", "./internal/lang/cpp/adapter.go"); got == "" {
+	if relOrBase(".", "./internal/lang/cpp/adapter.go") == "" {
 		t.Fatalf("expected relative path from relOrBase")
 	}
 	if got := relOrBase(".", "\x00"); got != "\x00" {
