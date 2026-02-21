@@ -468,63 +468,115 @@ func TestLoadGoModuleInfoNoGoMod(t *testing.T) {
 	}
 }
 
-func TestLoadGoModuleInfoOrchestrationHelpers(t *testing.T) {
+func TestLoadRootModuleInfoContract(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
 		moduleDemoLine,
 		"",
 		requirePrefix + depUUID + versionV160,
+		"replace " + moduleOriginal + " => github.com/fork/original v1.0.0",
 		"",
 		"go 1.25",
 	}, "\n"))
+
+	info := moduleInfo{ReplacementImports: map[string]string{"ignored": "ignored"}}
+	err := loadRootModuleInfo(repo, &info)
+	if err != nil {
+		t.Fatalf("loadRootModuleInfo: %v", err)
+	}
+	if info.ModulePath != moduleDemo {
+		t.Fatalf("expected module path %q, got %q", moduleDemo, info.ModulePath)
+	}
+	if !slices.Equal(info.LocalModulePaths, []string{moduleDemo}) {
+		t.Fatalf("expected root module path in local modules, got %#v", info.LocalModulePaths)
+	}
+	if !slices.Equal(info.DeclaredDependencies, []string{depUUID}) {
+		t.Fatalf("expected declared dependencies %#v, got %#v", []string{depUUID}, info.DeclaredDependencies)
+	}
+	if len(info.ReplacementImports) != 1 {
+		t.Fatalf("expected one replacement import, got %#v", info.ReplacementImports)
+	}
+	if _, ok := info.ReplacementImports["ignored"]; ok {
+		t.Fatalf("expected root load to replace stale replacement entries, got %#v", info.ReplacementImports)
+	}
+	if info.ReplacementImports["github.com/fork/original"] != moduleOriginal {
+		t.Fatalf("expected replacement map to include root replacement, got %#v", info.ReplacementImports)
+	}
+}
+
+func TestLoadWorkspaceModulesContract(t *testing.T) {
+	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), strings.Join([]string{
 		"go 1.25",
 		"",
-		"use ./svc/a",
+		"use (",
+		"\t./svc/a",
+		"\t./svc/a",
+		"\t./svc/missing",
+		")",
 	}, "\n"))
 	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), modulePrefix+exampleModuleA+go125Block)
+
+	info := moduleInfo{LocalModulePaths: []string{moduleDemo}}
+	if err := loadWorkspaceModules(repo, &info); err != nil {
+		t.Fatalf("loadWorkspaceModules: %v", err)
+	}
+	if !slices.Equal(info.LocalModulePaths, []string{moduleDemo, exampleModuleA}) {
+		t.Fatalf("expected workspace expansion of local modules, got %#v", info.LocalModulePaths)
+	}
+	if slices.Contains(info.LocalModulePaths, "./svc/missing") {
+		t.Fatalf("expected missing workspace module to be ignored, got %#v", info.LocalModulePaths)
+	}
+}
+
+func TestLoadNestedModulesContract(t *testing.T) {
+	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "nested", "x", fileGoMod), strings.Join([]string{
 		modulePrefix + exampleModuleX,
 		"",
 		"require github.com/pkg/errors v0.9.1",
+		"replace example.com/other => github.com/shared/fork v1.1.0",
 		"",
 		"go 1.25",
 	}, "\n"))
 
-	got, err := loadGoModuleInfo(repo)
-	if err != nil {
-		t.Fatalf("loadGoModuleInfo: %v", err)
+	info := moduleInfo{
+		LocalModulePaths:     []string{moduleDemo},
+		DeclaredDependencies: []string{depUUID},
+		ReplacementImports:   map[string]string{"github.com/shared/fork": moduleOriginal},
 	}
-
-	helperInfo := moduleInfo{ReplacementImports: make(map[string]string)}
-	if err := loadRootModuleInfo(repo, &helperInfo); err != nil {
-		t.Fatalf("loadRootModuleInfo: %v", err)
-	}
-	if err := loadWorkspaceModules(repo, &helperInfo); err != nil {
-		t.Fatalf("loadWorkspaceModules: %v", err)
-	}
-	if err := loadNestedModules(repo, &helperInfo); err != nil {
+	if err := loadNestedModules(repo, &info); err != nil {
 		t.Fatalf("loadNestedModules: %v", err)
 	}
-	if err := finalizeGoModuleInfo(&helperInfo); err != nil {
-		t.Fatalf("finalizeGoModuleInfo: %v", err)
+	if !slices.Contains(info.LocalModulePaths, exampleModuleX) {
+		t.Fatalf("expected nested module %q in %#v", exampleModuleX, info.LocalModulePaths)
 	}
+	if !slices.Contains(info.DeclaredDependencies, "github.com/pkg/errors") {
+		t.Fatalf("expected nested dependency merge in %#v", info.DeclaredDependencies)
+	}
+	if info.ReplacementImports["github.com/shared/fork"] != moduleOriginal {
+		t.Fatalf("expected existing replacement to be preserved, got %#v", info.ReplacementImports)
+	}
+}
 
-	if got.ModulePath != helperInfo.ModulePath {
-		t.Fatalf("module path mismatch: got %q want %q", got.ModulePath, helperInfo.ModulePath)
+func TestFinalizeGoModuleInfoContract(t *testing.T) {
+	info := moduleInfo{
+		LocalModulePaths:     []string{"  example.com/z  ", "example.com/a", "example.com/z", ""},
+		DeclaredDependencies: []string{" github.com/pkg/errors ", depUUID, "github.com/pkg/errors", ""},
 	}
-	if !slices.Equal(got.LocalModulePaths, helperInfo.LocalModulePaths) {
-		t.Fatalf("local modules mismatch: got %#v want %#v", got.LocalModulePaths, helperInfo.LocalModulePaths)
+	finalizeGoModuleInfo(&info)
+	if !slices.Equal(info.LocalModulePaths, []string{"example.com/a", "example.com/z"}) {
+		t.Fatalf("expected finalized local modules to be deduped and sorted, got %#v", info.LocalModulePaths)
 	}
-	if !slices.Equal(got.DeclaredDependencies, helperInfo.DeclaredDependencies) {
-		t.Fatalf("declared deps mismatch: got %#v want %#v", got.DeclaredDependencies, helperInfo.DeclaredDependencies)
+	if !slices.Equal(info.DeclaredDependencies, []string{depUUID, "github.com/pkg/errors"}) {
+		t.Fatalf("expected finalized dependencies to be deduped and sorted, got %#v", info.DeclaredDependencies)
 	}
-	if len(got.ReplacementImports) != len(helperInfo.ReplacementImports) {
-		t.Fatalf("replacement count mismatch: got %#v want %#v", got.ReplacementImports, helperInfo.ReplacementImports)
-	}
-	for replacementImport, dependency := range helperInfo.ReplacementImports {
-		if got.ReplacementImports[replacementImport] != dependency {
-			t.Fatalf("replacement mismatch for %q: got %q want %q", replacementImport, got.ReplacementImports[replacementImport], dependency)
+	for _, value := range append(info.LocalModulePaths, info.DeclaredDependencies...) {
+		if value == "" {
+			t.Fatalf("expected finalized values to omit empty entries, got %#v / %#v", info.LocalModulePaths, info.DeclaredDependencies)
+		}
+		if strings.TrimSpace(value) != value {
+			t.Fatalf("expected finalized values to be trimmed, got %q", value)
 		}
 	}
 }
