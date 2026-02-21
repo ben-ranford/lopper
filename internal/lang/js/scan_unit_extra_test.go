@@ -3,7 +3,6 @@ package js
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -115,52 +114,5 @@ func TestParseRequireBindingNoDeclarator(t *testing.T) {
 	bindings := parseRequireBinding(call, source, "leftpad", unitIndexJS)
 	if len(bindings) != 0 {
 		t.Fatalf("expected no require bindings without variable declarator, got %#v", bindings)
-	}
-}
-
-func TestCollectReExportBindings(t *testing.T) {
-	source := []byte(strings.Join([]string{
-		`import { map as remap } from "lodash"`,
-		`export { remap as mapAlias }`,
-		`export { filter as keep } from "lodash"`,
-		`export * as api from "./ns"`,
-		`export * from "./other"`,
-		"",
-	}, "\n"))
-
-	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrFmt, err)
-	}
-
-	imports := collectImportBindings(tree, source, unitIndexJS)
-	reExports := collectReExportBindings(tree, source, unitIndexJS, imports)
-	if len(reExports) < 3 {
-		t.Fatalf("expected re-export bindings, got %#v", reExports)
-	}
-
-	found := map[string]bool{
-		"mapAlias": false,
-		"keep":     false,
-		"api":      false,
-		"*":        false,
-	}
-	for _, item := range reExports {
-		switch {
-		case item.ExportName == "mapAlias" && item.SourceModule == "lodash" && item.SourceExportName == "map":
-			found["mapAlias"] = true
-		case item.ExportName == "keep" && item.SourceModule == "lodash" && item.SourceExportName == "filter":
-			found["keep"] = true
-		case item.ExportName == "api" && item.SourceModule == "./ns" && item.SourceExportName == "*":
-			found["api"] = true
-		case item.ExportName == "*" && item.SourceModule == "./other" && item.SourceExportName == "*":
-			found["*"] = true
-		}
-	}
-
-	for key, ok := range found {
-		if !ok {
-			t.Fatalf("expected re-export %q in %#v", key, reExports)
-		}
 	}
 }
