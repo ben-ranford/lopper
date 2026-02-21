@@ -198,27 +198,11 @@ func TestLoadConfigInvalidYAML(t *testing.T) {
 }
 
 func TestLoadConfigInvalidThresholdValue(t *testing.T) {
-	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  low_confidence_warning_percent: 101\n")
-	_, _, err := Load(repo, "")
-	if err == nil {
-		t.Fatalf("expected threshold validation error")
-	}
-	if !strings.Contains(err.Error(), "between 0 and 100") {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	assertLoadConfigErrorContains(t, "thresholds:\n  low_confidence_warning_percent: 101\n", "between 0 and 100")
 }
 
 func TestLoadConfigInvalidScoreWeightValue(t *testing.T) {
-	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  removal_candidate_weight_usage: -1\n")
-	_, _, err := Load(repo, "")
-	if err == nil {
-		t.Fatalf("expected score weight validation error")
-	}
-	if !strings.Contains(err.Error(), "removal_candidate_weight_usage") {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	assertLoadConfigErrorContains(t, "thresholds:\n  removal_candidate_weight_usage: -1\n", "removal_candidate_weight_usage")
 }
 
 func TestLoadConfigDiscoveryPriority(t *testing.T) {
@@ -359,9 +343,7 @@ func TestParseConfigInvalidJSONDecodeError(t *testing.T) {
 func TestResolveConfigPathExplicitStatError(t *testing.T) {
 	repo := t.TempDir()
 	fileRepo := filepath.Join(repo, "repo-file")
-	if err := os.WriteFile(fileRepo, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write repo-file: %v", err)
-	}
+	writeConfig(t, fileRepo, "x")
 	_, _, err := resolveConfigPath(fileRepo, "child.yml")
 	if err == nil {
 		t.Fatalf("expected explicit stat error when repo path is not a directory")
@@ -375,5 +357,18 @@ func writeConfig(t *testing.T, path string, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func assertLoadConfigErrorContains(t *testing.T, config string, expectedText string) {
+	t.Helper()
+	repo := t.TempDir()
+	writeConfig(t, filepath.Join(repo, lopperYMLName), config)
+	_, _, err := Load(repo, "")
+	if err == nil {
+		t.Fatalf("expected config validation error")
+	}
+	if !strings.Contains(err.Error(), expectedText) {
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
