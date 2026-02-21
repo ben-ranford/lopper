@@ -139,6 +139,38 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 }
 
+func TestJVMLookupStrategyBuilders(t *testing.T) {
+	prefixes := map[string]string{}
+	aliases := map[string]string{}
+
+	addGroupLookups(prefixes, aliases, "dep", "org.junit.jupiter")
+	addArtifactLookups(prefixes, aliases, "dep", "org.junit.jupiter", "junit-jupiter-api")
+
+	if got := prefixes["org.junit.jupiter"]; got != "dep" {
+		t.Fatalf("expected group prefix lookup, got %q", got)
+	}
+	if got := prefixes["org.junit.jupiter.junit.jupiter.api"]; got != "dep" {
+		t.Fatalf("expected artifact prefix lookup, got %q", got)
+	}
+	for _, key := range []string{"org.junit.jupiter", "org.junit", "jupiter", "junit.jupiter.api"} {
+		if got := aliases[key]; got != "dep" {
+			t.Fatalf("expected alias %q to map to dep, got %q", key, got)
+		}
+	}
+
+	customPrefixes := map[string]string{}
+	customAliases := map[string]string{}
+	addLookupByStrategy(customPrefixes, customAliases, "custom", "group", "artifact", func(group string, artifact string) ([]string, []string) {
+		return []string{group + "." + artifact}, []string{artifact}
+	})
+	if got := customPrefixes["group.artifact"]; got != "custom" {
+		t.Fatalf("expected custom strategy prefix mapping, got %q", got)
+	}
+	if got := customAliases["artifact"]; got != "custom" {
+		t.Fatalf("expected custom strategy alias mapping, got %q", got)
+	}
+}
+
 func TestJVMScanAndRequestedDependencyBranches(t *testing.T) {
 	if _, err := scanRepo(context.Background(), "", nil, nil); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("expected fs.ErrInvalid for empty repo path, got %v", err)
