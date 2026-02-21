@@ -16,6 +16,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	testLocalFoo       = "foo"
+	testLocalFoo1      = "foo1"
+	testLocalFooDollar = "foo$bar"
+	testLocalDollarFoo = "$foo"
+	testLocalUnicode   = "føø"
+)
+
 func TestFirstContentColumn(t *testing.T) {
 	if got := FirstContentColumn("\t  abc"); got != 4 {
 		t.Fatalf("expected first content column 4, got %d", got)
@@ -44,11 +52,11 @@ func TestMapSliceAndMapFileUsages(t *testing.T) {
 }
 
 func TestCountUsage(t *testing.T) {
-	imports := []ImportRecord{{Local: "foo"}, {Local: "bar"}, {Local: "baz", Wildcard: true}}
+	imports := []ImportRecord{{Local: testLocalFoo}, {Local: "bar"}, {Local: "baz", Wildcard: true}}
 	content := []byte("foo(); foo(); bar(); baz();")
 	usage := CountUsage(content, imports)
-	if usage["foo"] != 1 {
-		t.Fatalf("expected foo usage 1, got %d", usage["foo"])
+	if usage[testLocalFoo] != 1 {
+		t.Fatalf("expected foo usage 1, got %d", usage[testLocalFoo])
 	}
 	if usage["bar"] != 0 {
 		t.Fatalf("expected bar usage 0, got %d", usage["bar"])
@@ -59,23 +67,50 @@ func TestCountUsage(t *testing.T) {
 }
 
 func TestCountUsageHonorsWordBoundaries(t *testing.T) {
-	imports := []ImportRecord{{Local: "foo"}, {Local: "foo1"}, {Local: "foo$bar"}, {Local: "$foo"}, {Local: "føø"}}
+	imports := []ImportRecord{
+		{Local: testLocalFoo},
+		{Local: testLocalFoo1},
+		{Local: testLocalFooDollar},
+		{Local: testLocalDollarFoo},
+		{Local: testLocalUnicode},
+	}
 	content := []byte("foo foobar foo_bar _foo foo foo1 foo10 foo1 foo$bar foo$barX foo$bar $foo $foo1 $foo føø føø")
 	usage := CountUsage(content, imports)
-	if usage["foo"] != 1 {
-		t.Fatalf("expected foo usage 1, got %d", usage["foo"])
+	if usage[testLocalFoo] != 1 {
+		t.Fatalf("expected foo usage 1, got %d", usage[testLocalFoo])
 	}
-	if usage["foo1"] != 1 {
-		t.Fatalf("expected foo1 usage 1, got %d", usage["foo1"])
+	if usage[testLocalFoo1] != 1 {
+		t.Fatalf("expected foo1 usage 1, got %d", usage[testLocalFoo1])
 	}
-	if usage["foo$bar"] != 1 {
-		t.Fatalf("expected foo$bar usage 1, got %d", usage["foo$bar"])
+	if usage[testLocalFooDollar] != 1 {
+		t.Fatalf("expected foo$bar usage 1, got %d", usage[testLocalFooDollar])
 	}
-	if usage["$foo"] != 1 {
-		t.Fatalf("expected $foo usage 1, got %d", usage["$foo"])
+	if usage[testLocalDollarFoo] != 1 {
+		t.Fatalf("expected $foo usage 1, got %d", usage[testLocalDollarFoo])
 	}
-	if usage["føø"] != 0 {
-		t.Fatalf("expected føø usage 0 to match regexp word-boundary behavior, got %d", usage["føø"])
+	if usage[testLocalUnicode] != 0 {
+		t.Fatalf("expected føø usage 0 to match regexp word-boundary behavior, got %d", usage[testLocalUnicode])
+	}
+}
+
+func TestCountUsageUnicodeIdentifierPositionsAreIgnored(t *testing.T) {
+	imports := []ImportRecord{{Local: testLocalUnicode}}
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "standalone", content: "føø"},
+		{name: "prefix", content: "føøalpha"},
+		{name: "suffix", content: "alphaføø"},
+		{name: "middle", content: "al føø ph"},
+		{name: "adjacent punctuation", content: "(føø),[føø]"},
+	}
+
+	for _, tc := range cases {
+		usage := CountUsage([]byte(tc.content), imports)
+		if usage[testLocalUnicode] != 0 {
+			t.Fatalf("%s: expected unicode identifier usage 0 with ASCII scanner, got %d", tc.name, usage[testLocalUnicode])
+		}
 	}
 }
 

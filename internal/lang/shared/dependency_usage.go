@@ -98,6 +98,10 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	return usage
 }
 
+// isWordByte implements an ASCII-only token scanner for import local names.
+// It intentionally treats '$' as part of identifiers (common in JS/PHP), so
+// tokens such as "$foo" and "foo$bar" can be matched. Non-ASCII bytes are not
+// considered word characters and therefore split/ignore Unicode identifiers.
 func isWordByte(ch byte) bool {
 	return ch == '$' || ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
