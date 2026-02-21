@@ -108,9 +108,11 @@ type Recommendation struct {
 }
 
 type RuntimeUsage struct {
-	LoadCount   int                `json:"loadCount"`
-	Correlation RuntimeCorrelation `json:"correlation,omitempty"`
-	RuntimeOnly bool               `json:"runtimeOnly,omitempty"`
+	LoadCount   int                  `json:"loadCount"`
+	Correlation RuntimeCorrelation   `json:"correlation,omitempty"`
+	RuntimeOnly bool                 `json:"runtimeOnly,omitempty"`
+	Modules     []RuntimeModuleUsage `json:"modules,omitempty"`
+	TopSymbols  []RuntimeSymbolUsage `json:"topSymbols,omitempty"`
 }
 
 type RuntimeCorrelation string
@@ -120,6 +122,17 @@ const (
 	RuntimeCorrelationRuntimeOnly RuntimeCorrelation = "runtime-only"
 	RuntimeCorrelationOverlap     RuntimeCorrelation = "overlap"
 )
+
+type RuntimeModuleUsage struct {
+	Module string `json:"module"`
+	Count  int    `json:"count"`
+}
+
+type RuntimeSymbolUsage struct {
+	Symbol string `json:"symbol"`
+	Module string `json:"module,omitempty"`
+	Count  int    `json:"count"`
+}
 
 type SymbolUsage struct {
 	Name   string `json:"name"`

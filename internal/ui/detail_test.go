@@ -28,6 +28,12 @@ func TestDetailShowsRiskCues(t *testing.T) {
 					RuntimeUsage: &report.RuntimeUsage{
 						LoadCount:   1,
 						Correlation: report.RuntimeCorrelationOverlap,
+						Modules: []report.RuntimeModuleUsage{
+							{Module: "risky/map", Count: 1},
+						},
+						TopSymbols: []report.RuntimeSymbolUsage{
+							{Symbol: "map", Count: 1},
+						},
 					},
 					Recommendations: []report.Recommendation{
 						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
@@ -55,6 +61,9 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 	if !strings.Contains(output, "correlation: overlap") {
 		t.Fatalf("expected runtime correlation in output, got: %s", output)
+	}
+	if !strings.Contains(output, "modules: risky/map (1)") || !strings.Contains(output, "top symbols: map (1)") {
+		t.Fatalf("expected runtime module/symbol output, got: %s", output)
 	}
 	if !strings.Contains(output, "Recommendations (1)") {
 		t.Fatalf("expected recommendations section, got: %s", output)
@@ -175,13 +184,26 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 			Rationale: "because",
 		},
 	})
-	printRuntimeUsage(&out, &report.RuntimeUsage{LoadCount: 2, Correlation: report.RuntimeCorrelationRuntimeOnly, RuntimeOnly: true})
+	printRuntimeUsage(&out, &report.RuntimeUsage{
+		LoadCount:   2,
+		Correlation: report.RuntimeCorrelationRuntimeOnly,
+		RuntimeOnly: true,
+		Modules: []report.RuntimeModuleUsage{
+			{Module: "pkg/index", Count: 2},
+		},
+		TopSymbols: []report.RuntimeSymbolUsage{
+			{Symbol: "index", Count: 2},
+		},
+	})
 	text := out.String()
 	if !strings.Contains(text, "rationale: because") {
 		t.Fatalf("expected rationale output, got %q", text)
 	}
 	if !strings.Contains(text, "runtime-only: true") {
 		t.Fatalf("expected runtime-only output, got %q", text)
+	}
+	if !strings.Contains(text, "modules: pkg/index (2)") || !strings.Contains(text, "top symbols: index (2)") {
+		t.Fatalf("expected runtime evidence output, got %q", text)
 	}
 }
 

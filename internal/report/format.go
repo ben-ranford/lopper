@@ -59,10 +59,19 @@ func formatTable(report Report) string {
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 
 	showLanguage := hasLanguageColumn(report.Dependencies)
+	showRuntime := hasRuntimeColumn(report.Dependencies)
 	if showLanguage {
-		_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
+		if showRuntime {
+			_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tRuntime\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
+		} else {
+			_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
+		}
 	} else {
-		_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
+		if showRuntime {
+			_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tRuntime\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
+		} else {
+			_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
+		}
 	}
 	for _, dep := range report.Dependencies {
 		usedPercent := dep.UsedPercent
@@ -70,31 +79,63 @@ func formatTable(report Report) string {
 			usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
 		}
 		usedTotal := fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount)
+		runtimeText := formatRuntimeUsage(dep.RuntimeUsage)
 		if showLanguage {
-			_, _ = fmt.Fprintf(
-				writer,
-				"%s\t%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
-				dep.Language,
-				dep.Name,
-				usedTotal,
-				usedPercent,
-				formatBytes(dep.EstimatedUnusedBytes),
-				formatCandidateScore(dep.RemovalCandidate),
-				formatScoreComponents(dep.RemovalCandidate),
-				formatTopSymbols(dep.TopUsedSymbols),
-			)
+			if showRuntime {
+				_, _ = fmt.Fprintf(
+					writer,
+					"%s\t%s\t%s\t%.1f\t%s\t%s\t%s\t%s\t%s\n",
+					dep.Language,
+					dep.Name,
+					usedTotal,
+					usedPercent,
+					runtimeText,
+					formatBytes(dep.EstimatedUnusedBytes),
+					formatCandidateScore(dep.RemovalCandidate),
+					formatScoreComponents(dep.RemovalCandidate),
+					formatTopSymbols(dep.TopUsedSymbols),
+				)
+			} else {
+				_, _ = fmt.Fprintf(
+					writer,
+					"%s\t%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
+					dep.Language,
+					dep.Name,
+					usedTotal,
+					usedPercent,
+					formatBytes(dep.EstimatedUnusedBytes),
+					formatCandidateScore(dep.RemovalCandidate),
+					formatScoreComponents(dep.RemovalCandidate),
+					formatTopSymbols(dep.TopUsedSymbols),
+				)
+			}
 		} else {
-			_, _ = fmt.Fprintf(
-				writer,
-				"%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
-				dep.Name,
-				usedTotal,
-				usedPercent,
-				formatBytes(dep.EstimatedUnusedBytes),
-				formatCandidateScore(dep.RemovalCandidate),
-				formatScoreComponents(dep.RemovalCandidate),
-				formatTopSymbols(dep.TopUsedSymbols),
-			)
+			if showRuntime {
+				_, _ = fmt.Fprintf(
+					writer,
+					"%s\t%s\t%.1f\t%s\t%s\t%s\t%s\t%s\n",
+					dep.Name,
+					usedTotal,
+					usedPercent,
+					runtimeText,
+					formatBytes(dep.EstimatedUnusedBytes),
+					formatCandidateScore(dep.RemovalCandidate),
+					formatScoreComponents(dep.RemovalCandidate),
+					formatTopSymbols(dep.TopUsedSymbols),
+				)
+			} else {
+				_, _ = fmt.Fprintf(
+					writer,
+					"%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
+					dep.Name,
+					usedTotal,
+					usedPercent,
+					formatBytes(dep.EstimatedUnusedBytes),
+					formatCandidateScore(dep.RemovalCandidate),
+					formatScoreComponents(dep.RemovalCandidate),
+					formatTopSymbols(dep.TopUsedSymbols),
+				)
+			}
 		}
 	}
 
@@ -107,6 +148,15 @@ func formatTable(report Report) string {
 func hasLanguageColumn(dependencies []DependencyReport) bool {
 	for _, dep := range dependencies {
 		if strings.TrimSpace(dep.Language) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRuntimeColumn(dependencies []DependencyReport) bool {
+	for _, dep := range dependencies {
+		if dep.RuntimeUsage != nil {
 			return true
 		}
 	}
@@ -203,4 +253,21 @@ func formatBytes(value int64) string {
 		return "-" + formatted
 	}
 	return formatted
+}
+
+func formatRuntimeUsage(usage *RuntimeUsage) string {
+	if usage == nil {
+		return "-"
+	}
+	correlation := string(usage.Correlation)
+	if correlation == "" {
+		if usage.RuntimeOnly {
+			correlation = string(RuntimeCorrelationRuntimeOnly)
+		} else if usage.LoadCount > 0 {
+			correlation = string(RuntimeCorrelationOverlap)
+		} else {
+			correlation = string(RuntimeCorrelationStaticOnly)
+		}
+	}
+	return fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)
 }

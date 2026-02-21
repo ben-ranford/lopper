@@ -119,13 +119,26 @@ export NODE_OPTIONS="--require ./scripts/runtime/require-hook.cjs --loader ./scr
 npm test
 ```
 
+Or let Lopper run the test command and capture the trace automatically:
+
+```bash
+lopper analyse --top 20 --repo . --language js-ts --runtime-test-command "npm test"
+```
+
 Use trace in analysis:
 
 ```bash
 lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lopper-runtime.ndjson
 ```
 
-With runtime traces enabled, `runtimeUsage.correlation` marks each JS/TS dependency as `static-only`, `runtime-only`, or `overlap`.
+With runtime traces enabled:
+
+- `runtimeUsage.correlation` marks each JS/TS dependency as `static-only`, `runtime-only`, or `overlap`.
+- `runtimeUsage.modules` includes runtime-loaded module paths.
+- `runtimeUsage.topSymbols` includes best-effort runtime symbol hits.
+
+If `--runtime-trace` points to a missing file, analysis continues with static results and adds a warning.
+
 ## Development
 
 ```bash

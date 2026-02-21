@@ -340,3 +340,66 @@ func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
 		t.Fatalf("expected min-usage threshold to be forwarded for rust analysis, got %#v", analyzer.lastReq.MinUsagePercentForRecommendations)
 	}
 }
+
+func TestPrepareRuntimeTraceWithRuntimeCommand(t *testing.T) {
+	repo := t.TempDir()
+	req := DefaultRequest()
+	req.RepoPath = repo
+	req.Analyse.RuntimeTestCommand = "make -v"
+
+	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect warnings from runtime capture: %#v", warnings)
+	}
+	if tracePath != filepath.Join(repo, ".artifacts", "lopper-runtime.ndjson") {
+		t.Fatalf("unexpected trace path: %q", tracePath)
+	}
+	if _, err := os.Stat(filepath.Dir(tracePath)); err != nil {
+		t.Fatalf("expected runtime trace directory to exist: %v", err)
+	}
+}
+
+func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {
+	repo := t.TempDir()
+	req := DefaultRequest()
+	req.RepoPath = repo
+	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+
+	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
+	if len(warnings) != 1 {
+		t.Fatalf("expected one runtime warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "runtime trace command failed") {
+		t.Fatalf("unexpected warning: %q", warnings[0])
+	}
+	if tracePath != "" {
+		t.Fatalf("expected trace path to be cleared on capture failure when path was auto-generated, got %q", tracePath)
+	}
+}
+
+func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = t.TempDir()
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute analyse with runtime warning: %v", err)
+	}
+	if !strings.Contains(output, "runtime trace command failed; continuing with static analysis") {
+		t.Fatalf("expected runtime warning in output, got %q", output)
+	}
+}

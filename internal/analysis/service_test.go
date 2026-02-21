@@ -61,6 +61,72 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nimport { pad } from \"left-pad\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "left-pad", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "left-pad", "index.js"), "export function pad() {}\n")
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	writeFile(t, tracePath, "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "js-ts",
+		RuntimeTracePath: tracePath,
+	})
+	if err != nil {
+		t.Fatalf("analyse runtime correlation: %v", err)
+	}
+
+	dependencies := make(map[string]report.DependencyReport, len(reportData.Dependencies))
+	for _, dep := range reportData.Dependencies {
+		dependencies[dep.Name] = dep
+	}
+
+	lodash := dependencies["lodash"]
+	if lodash.RuntimeUsage == nil || lodash.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected lodash overlap correlation, got %#v", lodash.RuntimeUsage)
+	}
+	leftPad := dependencies["left-pad"]
+	if leftPad.RuntimeUsage == nil || leftPad.RuntimeUsage.Correlation != report.RuntimeCorrelationStaticOnly {
+		t.Fatalf("expected left-pad static-only correlation, got %#v", leftPad.RuntimeUsage)
+	}
+	chalk := dependencies["chalk"]
+	if chalk.RuntimeUsage == nil || chalk.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected chalk runtime-only correlation, got %#v", chalk.RuntimeUsage)
+	}
+	if len(chalk.RuntimeUsage.TopSymbols) == 0 || chalk.RuntimeUsage.TopSymbols[0].Symbol != "index" {
+		t.Fatalf("expected runtime symbols on chalk runtime-only row, got %#v", chalk.RuntimeUsage.TopSymbols)
+	}
+}
+
+func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "js-ts",
+		RuntimeTracePath: filepath.Join(repo, ".artifacts", "missing.ndjson"),
+	})
+	if err != nil {
+		t.Fatalf("expected runtime missing trace fallback: %v", err)
+	}
+	if len(reportData.Warnings) == 0 {
+		t.Fatalf("expected warning for missing runtime trace")
+	}
+}
+
 func TestMergeRecommendationsPriorityOrder(t *testing.T) {
 	left := []report.Recommendation{
 		{Code: "consider-replacement", Priority: "low"},

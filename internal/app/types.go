@@ -20,15 +20,16 @@ type Request struct {
 }
 
 type AnalyseRequest struct {
-	Dependency       string
-	TopN             int
-	Format           report.Format
-	Language         string
-	RuntimeProfile   string
-	BaselinePath     string
-	RuntimeTracePath string
-	ConfigPath       string
-	Thresholds       thresholds.Values
+	Dependency         string
+	TopN               int
+	Format             report.Format
+	Language           string
+	RuntimeProfile     string
+	BaselinePath       string
+	RuntimeTracePath   string
+	RuntimeTestCommand string
+	ConfigPath         string
+	Thresholds         thresholds.Values
 }
 
 type TUIRequest struct {

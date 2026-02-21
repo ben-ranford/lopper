@@ -63,15 +63,16 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	req.Mode = app.ModeAnalyse
 	req.RepoPath = strings.TrimSpace(*flags.repoPath)
 	req.Analyse = app.AnalyseRequest{
-		Dependency:       dependency,
-		TopN:             *flags.top,
-		Format:           format,
-		Language:         strings.TrimSpace(*flags.languageFlag),
-		RuntimeProfile:   strings.TrimSpace(*flags.runtimeProfile),
-		BaselinePath:     strings.TrimSpace(*flags.baselinePath),
-		RuntimeTracePath: strings.TrimSpace(*flags.runtimeTracePath),
-		ConfigPath:       resolvedConfigPath,
-		Thresholds:       resolvedThresholds,
+		Dependency:         dependency,
+		TopN:               *flags.top,
+		Format:             format,
+		Language:           strings.TrimSpace(*flags.languageFlag),
+		RuntimeProfile:     strings.TrimSpace(*flags.runtimeProfile),
+		BaselinePath:       strings.TrimSpace(*flags.baselinePath),
+		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
+		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
+		ConfigPath:         resolvedConfigPath,
+		Thresholds:         resolvedThresholds,
 	}
 
 	return req, nil
@@ -92,6 +93,7 @@ type analyseFlagValues struct {
 	runtimeProfile                *string
 	baselinePath                  *string
 	runtimeTracePath              *string
+	runtimeTestCommand            *string
 	configPath                    *string
 }
 
@@ -114,6 +116,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		runtimeProfile:                fs.String("runtime-profile", req.Analyse.RuntimeProfile, "conditional exports runtime profile"),
 		baselinePath:                  fs.String("baseline", req.Analyse.BaselinePath, "baseline report path"),
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
+		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
 	}
 
@@ -281,7 +284,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false
