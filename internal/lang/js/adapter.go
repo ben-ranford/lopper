@@ -241,26 +241,24 @@ type dependencyUsageSummary struct {
 	warnings      []string
 }
 
+type dependencyImportUsage struct {
+	UsedExports          map[string]struct{}
+	Counts               map[string]int
+	UsedImports          map[string]*report.ImportUse
+	UnusedImports        map[string]*report.ImportUse
+	HasAmbiguousWildcard bool
+	Warnings             []string
+}
+
 // collectDependencyUsageSummary aggregates dependency import usage into report-ready lists and warnings.
 func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dependencyUsageSummary {
-	usedExports := make(map[string]struct{})
-	counts := make(map[string]int)
-	usedImports := make(map[string]*report.ImportUse)
-	unusedImports := make(map[string]*report.ImportUse)
-	hasWildcard, attributionWarnings := collectDependencyImportUsage(
-		scanResult,
-		dependency,
-		usedExports,
-		counts,
-		usedImports,
-		unusedImports,
-	)
-	usedImportList, unusedImportList := finalizeImportUsageLists(usedImports, unusedImports)
-	warnings := dependencyUsageWarnings(dependency, usedExports, hasWildcard)
-	warnings = append(warnings, attributionWarnings...)
+	usage := collectDependencyImportUsage(scanResult, dependency)
+	usedImportList, unusedImportList := finalizeImportUsageLists(usage.UsedImports, usage.UnusedImports)
+	warnings := dependencyUsageWarnings(dependency, usage.UsedExports, usage.HasAmbiguousWildcard)
+	warnings = append(warnings, usage.Warnings...)
 	return dependencyUsageSummary{
-		usedExports:   usedExports,
-		counts:        counts,
+		usedExports:   usage.UsedExports,
+		counts:        usage.Counts,
 		usedImports:   usedImportList,
 		unusedImports: unusedImportList,
 		warnings:      warnings,
@@ -300,19 +298,20 @@ func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath stri
 func collectDependencyImportUsage(
 	scanResult ScanResult,
 	dependency string,
-	usedExports map[string]struct{},
-	counts map[string]int,
-	usedImports map[string]*report.ImportUse,
-	unusedImports map[string]*report.ImportUse,
-) (bool, []string) {
-	hasAmbiguousWildcard := false
+) dependencyImportUsage {
+	result := dependencyImportUsage{
+		UsedExports:   make(map[string]struct{}),
+		Counts:        make(map[string]int),
+		UsedImports:   make(map[string]*report.ImportUse),
+		UnusedImports: make(map[string]*report.ImportUse),
+	}
 	ctx := dependencyImportAttributionContext{
 		dependency:    dependency,
 		resolver:      newReExportResolver(scanResult),
-		usedExports:   usedExports,
-		counts:        counts,
-		usedImports:   usedImports,
-		unusedImports: unusedImports,
+		usedExports:   result.UsedExports,
+		counts:        result.Counts,
+		usedImports:   result.UsedImports,
+		unusedImports: result.UnusedImports,
 	}
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {
@@ -321,11 +320,12 @@ func collectDependencyImportUsage(
 				continue
 			}
 			if ambiguous {
-				hasAmbiguousWildcard = true
+				result.HasAmbiguousWildcard = true
 			}
 		}
 	}
-	return hasAmbiguousWildcard, ctx.resolver.warnings()
+	result.Warnings = ctx.resolver.warnings()
+	return result
 }
 
 type dependencyImportAttributionContext struct {

@@ -296,25 +296,16 @@ func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			usedExports := make(map[string]struct{})
-			counts := make(map[string]int)
-			usedImports := make(map[string]*report.ImportUse)
-			unusedImports := make(map[string]*report.ImportUse)
-
-			hasAmbiguous, warnings := collectDependencyImportUsage(
+			usage := collectDependencyImportUsage(
 				tt.scanResult,
 				tt.dependency,
-				usedExports,
-				counts,
-				usedImports,
-				unusedImports,
 			)
 
-			if hasAmbiguous != tt.expectAmbiguousFlag {
-				t.Errorf("%s: hasAmbiguous = %v, want %v", tt.description, hasAmbiguous, tt.expectAmbiguousFlag)
+			if usage.HasAmbiguousWildcard != tt.expectAmbiguousFlag {
+				t.Errorf("%s: hasAmbiguous = %v, want %v", tt.description, usage.HasAmbiguousWildcard, tt.expectAmbiguousFlag)
 			}
-			if len(warnings) != 0 {
-				t.Errorf("expected no attribution warnings, got %#v", warnings)
+			if len(usage.Warnings) != 0 {
+				t.Errorf("expected no attribution warnings, got %#v", usage.Warnings)
 			}
 		})
 	}
