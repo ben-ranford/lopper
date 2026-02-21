@@ -579,7 +579,7 @@ func buildTopCPPDependencies(topN int, scan scanResult) ([]report.DependencyRepo
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	reportData := report.DependencyReport{Name: dependency}
+	reportData := report.DependencyReport{Name: dependency, Language: "cpp"}
 
 	usedByHeader := make(map[string]int)
 	usedImportsByHeader := make(map[string]*report.ImportUse)
