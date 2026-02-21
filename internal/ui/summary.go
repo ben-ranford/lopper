@@ -124,9 +124,9 @@ func filterDependencies(deps []report.DependencyReport, filter string) []report.
 type sortMode string
 
 const (
-	sortByWaste sortMode = "waste"
-	sortByName  sortMode = "name"
-	sortAliasAlpha       = "alpha"
+	sortByWaste     sortMode = "waste"
+	sortByName      sortMode = "name"
+	sortByNameAlias          = "alpha"
 )
 
 type summaryState struct {
@@ -421,7 +421,7 @@ func parseSortMode(value string) sortMode {
 
 func parseSortModeStrict(value string) (sortMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case string(sortByName), sortAliasAlpha:
+	case string(sortByName), sortByNameAlias:
 		return sortByName, true
 	case string(sortByWaste):
 		return sortByWaste, true
