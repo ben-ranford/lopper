@@ -383,3 +383,35 @@ func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
 		t.Fatalf("expected merged map runtime symbol first, got %#v", symbols[0])
 	}
 }
+
+func TestMergeRuntimeUsage(t *testing.T) {
+	if merged := mergeRuntimeUsage(nil, nil); merged != nil {
+		t.Fatalf("expected nil runtime usage when both sides are nil")
+	}
+
+	merged := mergeRuntimeUsage(
+		&report.RuntimeUsage{
+			LoadCount:   2,
+			Correlation: report.RuntimeCorrelationRuntimeOnly,
+			RuntimeOnly: true,
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashMapRuntimeModule, Count: 1}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1}},
+		},
+		&report.RuntimeUsage{
+			LoadCount:   1,
+			Correlation: report.RuntimeCorrelationStaticOnly,
+			Modules:     []report.RuntimeModuleUsage{{Module: "lodash/filter", Count: 2}},
+			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: "lodash/filter", Count: 2}},
+		},
+	)
+
+	if merged == nil || merged.LoadCount != 3 {
+		t.Fatalf("expected merged load count 3, got %#v", merged)
+	}
+	if merged.Correlation != report.RuntimeCorrelationOverlap || merged.RuntimeOnly {
+		t.Fatalf("expected overlap non-runtime-only merge, got %#v", merged)
+	}
+	if len(merged.Modules) != 2 || len(merged.TopSymbols) != 2 {
+		t.Fatalf("expected merged runtime modules/symbols, got %#v", merged)
+	}
+}

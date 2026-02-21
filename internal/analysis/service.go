@@ -309,67 +309,11 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 	merged.RiskCues = mergeRiskCues(left.RiskCues, right.RiskCues)
 	merged.Recommendations = mergeRecommendations(left.Recommendations, right.Recommendations)
 	merged.TopUsedSymbols = mergeTopSymbols(left.TopUsedSymbols, right.TopUsedSymbols)
-
-	if left.RuntimeUsage != nil || right.RuntimeUsage != nil {
-		loadCount := 0
-		hasStatic := false
-		hasRuntime := false
-		leftModules := []report.RuntimeModuleUsage(nil)
-		leftSymbols := []report.RuntimeSymbolUsage(nil)
-		rightModules := []report.RuntimeModuleUsage(nil)
-		rightSymbols := []report.RuntimeSymbolUsage(nil)
-		if left.RuntimeUsage != nil {
-			loadCount += left.RuntimeUsage.LoadCount
-			leftHasStatic, leftHasRuntime := runtimeUsageSignals(left.RuntimeUsage)
-			hasStatic = hasStatic || leftHasStatic
-			hasRuntime = hasRuntime || leftHasRuntime
-			leftModules = left.RuntimeUsage.Modules
-			leftSymbols = left.RuntimeUsage.TopSymbols
-		}
-		if right.RuntimeUsage != nil {
-			loadCount += right.RuntimeUsage.LoadCount
-			rightHasStatic, rightHasRuntime := runtimeUsageSignals(right.RuntimeUsage)
-			hasStatic = hasStatic || rightHasStatic
-			hasRuntime = hasRuntime || rightHasRuntime
-			rightModules = right.RuntimeUsage.Modules
-			rightSymbols = right.RuntimeUsage.TopSymbols
-		}
-		correlation := mergeRuntimeCorrelation(hasStatic, hasRuntime)
-		merged.RuntimeUsage = &report.RuntimeUsage{
-			LoadCount:   loadCount,
-			Correlation: correlation,
-			RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
-			Modules:     mergeRuntimeModuleUsage(leftModules, rightModules),
-			TopSymbols:  mergeRuntimeSymbolUsage(leftSymbols, rightSymbols),
-		}
-	}
+	merged.RuntimeUsage = mergeRuntimeUsage(left.RuntimeUsage, right.RuntimeUsage)
 
 	return merged
 }
 
-func mergeImportUses(left []report.ImportUse, right []report.ImportUse) []report.ImportUse {
-	merged := make(map[string]report.ImportUse)
-	for _, item := range append(append([]report.ImportUse{}, left...), right...) {
-		key := item.Module + "\x00" + item.Name
-		if current, ok := merged[key]; ok {
-			current.Locations = append(current.Locations, item.Locations...)
-			merged[key] = current
-			continue
-		}
-		merged[key] = item
-	}
-	items := make([]report.ImportUse, 0, len(merged))
-	for _, item := range merged {
-		items = append(items, item)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
-	})
-	return items
-}
 
 func filterUsedOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
 	if len(unused) == 0 || len(used) == 0 {
@@ -488,66 +432,91 @@ func mergeRuntimeSymbolUsage(left, right []report.RuntimeSymbolUsage) []report.R
 }
 
 func mergeSymbolRefs(left []report.SymbolRef, right []report.SymbolRef) []report.SymbolRef {
-	merged := make(map[string]report.SymbolRef)
-	for _, item := range append(append([]report.SymbolRef{}, left...), right...) {
-		merged[item.Module+"\x00"+item.Name] = item
-	}
-	items := make([]report.SymbolRef, 0, len(merged))
-	for _, item := range merged {
-		items = append(items, item)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
+	return mergeUniqueSorted(left, right, func(item report.SymbolRef) string {
+		return item.Module + "\x00" + item.Name
+	}, func(items []report.SymbolRef) {
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Module == items[j].Module {
+				return items[i].Name < items[j].Name
+			}
+			return items[i].Module < items[j].Module
+		})
 	})
-	return items
 }
 
 func mergeRiskCues(left []report.RiskCue, right []report.RiskCue) []report.RiskCue {
-	merged := make(map[string]report.RiskCue)
-	for _, item := range append(append([]report.RiskCue{}, left...), right...) {
-		merged[item.Code+"\x00"+item.Severity] = item
-	}
-	items := make([]report.RiskCue, 0, len(merged))
-	for _, item := range merged {
-		items = append(items, item)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Code < items[j].Code
+	return mergeUniqueSorted(left, right, func(item report.RiskCue) string {
+		return item.Code + "\x00" + item.Severity
+	}, func(items []report.RiskCue) {
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].Code < items[j].Code
+		})
 	})
-	return items
 }
 
 func mergeRecommendations(left []report.Recommendation, right []report.Recommendation) []report.Recommendation {
-	merged := make(map[string]report.Recommendation)
-	for _, item := range append(append([]report.Recommendation{}, left...), right...) {
-		merged[item.Code] = item
+	return mergeUniqueSorted(left, right, func(item report.Recommendation) string {
+		return item.Code
+	}, func(items []report.Recommendation) {
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Priority == items[j].Priority {
+				return items[i].Code < items[j].Code
+			}
+			return recommendationPriorityRank(items[i].Priority) < recommendationPriorityRank(items[j].Priority)
+		})
+	})
+}
+
+func mergeUniqueSorted[T any](left []T, right []T, keyFn func(T) string, sortFn func([]T)) []T {
+	merged := make(map[string]T)
+	for _, item := range left {
+		merged[keyFn(item)] = item
 	}
-	items := make([]report.Recommendation, 0, len(merged))
+	for _, item := range right {
+		merged[keyFn(item)] = item
+	}
+	items := make([]T, 0, len(merged))
 	for _, item := range merged {
 		items = append(items, item)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Priority == items[j].Priority {
-			return items[i].Code < items[j].Code
-		}
-		return recommendationPriorityRank(items[i].Priority) < recommendationPriorityRank(items[j].Priority)
-	})
+	sortFn(items)
 	return items
 }
 
-func recommendationPriorityRank(priority string) int {
-	switch strings.ToLower(strings.TrimSpace(priority)) {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	case "low":
-		return 2
-	default:
-		return 3
+func mergeRuntimeUsage(left *report.RuntimeUsage, right *report.RuntimeUsage) *report.RuntimeUsage {
+	if left == nil && right == nil {
+		return nil
+	}
+	loadCount := 0
+	hasStatic := false
+	hasRuntime := false
+	leftModules := []report.RuntimeModuleUsage(nil)
+	leftSymbols := []report.RuntimeSymbolUsage(nil)
+	rightModules := []report.RuntimeModuleUsage(nil)
+	rightSymbols := []report.RuntimeSymbolUsage(nil)
+	if left != nil {
+		loadCount += left.LoadCount
+		leftHasStatic, leftHasRuntime := runtimeUsageSignals(left)
+		hasStatic = hasStatic || leftHasStatic
+		hasRuntime = hasRuntime || leftHasRuntime
+		leftModules = left.Modules
+		leftSymbols = left.TopSymbols
+	}
+	if right != nil {
+		loadCount += right.LoadCount
+		rightHasStatic, rightHasRuntime := runtimeUsageSignals(right)
+		hasStatic = hasStatic || rightHasStatic
+		hasRuntime = hasRuntime || rightHasRuntime
+		rightModules = right.Modules
+		rightSymbols = right.TopSymbols
+	}
+	correlation := mergeRuntimeCorrelation(hasStatic, hasRuntime)
+	return &report.RuntimeUsage{
+		LoadCount:   loadCount,
+		Correlation: correlation,
+		RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
+		Modules:     mergeRuntimeModuleUsage(leftModules, rightModules),
+		TopSymbols:  mergeRuntimeSymbolUsage(leftSymbols, rightSymbols),
 	}
 }
 
@@ -575,5 +544,42 @@ func mergeTopSymbols(left []report.SymbolUsage, right []report.SymbolUsage) []re
 	if len(items) > 5 {
 		items = items[:5]
 	}
+	return items
+}
+
+func recommendationPriorityRank(priority string) int {
+	switch strings.ToLower(strings.TrimSpace(priority)) {
+	case "high":
+		return 0
+	case "medium":
+		return 1
+	case "low":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func mergeImportUses(left []report.ImportUse, right []report.ImportUse) []report.ImportUse {
+	merged := make(map[string]report.ImportUse)
+	for _, item := range append(append([]report.ImportUse{}, left...), right...) {
+		key := item.Module + "\x00" + item.Name
+		if current, ok := merged[key]; ok {
+			current.Locations = append(current.Locations, item.Locations...)
+			merged[key] = current
+			continue
+		}
+		merged[key] = item
+	}
+	items := make([]report.ImportUse, 0, len(merged))
+	for _, item := range merged {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Module == items[j].Module {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Module < items[j].Module
+	})
 	return items
 }
