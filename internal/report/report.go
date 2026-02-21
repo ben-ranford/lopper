@@ -103,10 +103,9 @@ type SymbolUsage struct {
 }
 
 type ImportUse struct {
-	Name       string     `json:"name"`
-	Module     string     `json:"module"`
-	Locations  []Location `json:"locations,omitempty"`
-	Provenance []string   `json:"provenance,omitempty"`
+	Name      string     `json:"name"`
+	Module    string     `json:"module"`
+	Locations []Location `json:"locations,omitempty"`
 }
 
 type SymbolRef struct {

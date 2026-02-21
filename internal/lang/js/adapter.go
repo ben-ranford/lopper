@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -204,15 +203,7 @@ func buildDependencyReport(
 
 	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile)
 	warnings = append(warnings, surfaceWarnings...)
-	hasWildcard, attributionWarnings := collectDependencyImportUsage(
-		scanResult,
-		dependency,
-		usedExports,
-		counts,
-		usedImports,
-		unusedImports,
-	)
-	warnings = append(warnings, attributionWarnings...)
+	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
 	warnings = append(warnings, dependencyUsageWarnings(dependency, usedExports, hasWildcard)...)
 
 	usedImportList := flattenImportUses(usedImports)
@@ -277,80 +268,28 @@ func collectDependencyImportUsage(
 	counts map[string]int,
 	usedImports map[string]*report.ImportUse,
 	unusedImports map[string]*report.ImportUse,
-) (bool, []string) {
+) bool {
 	hasAmbiguousWildcard := false
-	resolver := newReExportResolver(scanResult)
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {
-			matched, ambiguous := applyDependencyImportAttribution(
-				file,
-				imp,
-				dependency,
-				resolver,
-				usedExports,
-				counts,
-				usedImports,
-				unusedImports,
-			)
-			if !matched {
+			if !matchesDependency(imp.Module, dependency) {
 				continue
 			}
-			if ambiguous {
+			used := applyImportUsage(imp, file, usedExports, counts)
+			// Only flag as ambiguous if it's a wildcard/default import AND
+			// the identifier is used directly (not just through property access)
+			if (imp.ExportName == "*" || imp.ExportName == "default") && hasDirectIdentifierUsage(imp, file) {
 				hasAmbiguousWildcard = true
 			}
+			entry := recordImportUse(imp)
+			if used {
+				addImportUse(usedImports, entry)
+				continue
+			}
+			addImportUse(unusedImports, entry)
 		}
 	}
-	return hasAmbiguousWildcard, resolver.warnings()
-}
-
-func applyDependencyImportAttribution(
-	file FileScan,
-	imp ImportBinding,
-	dependency string,
-	resolver *reExportResolver,
-	usedExports map[string]struct{},
-	counts map[string]int,
-	usedImports map[string]*report.ImportUse,
-	unusedImports map[string]*report.ImportUse,
-) (matched bool, ambiguous bool) {
-	attributed, provenance := attributedImportBinding(file.Path, imp, dependency, resolver)
-	if !matchesDependency(attributed.Module, dependency) {
-		return false, false
-	}
-
-	used := applyImportUsage(attributed, file, usedExports, counts)
-	entry := recordImportUse(attributed, provenance)
-	if used {
-		addImportUse(usedImports, entry)
-	} else {
-		addImportUse(unusedImports, entry)
-	}
-
-	return true, isAmbiguousImportUsage(attributed, file)
-}
-
-func attributedImportBinding(
-	filePath string,
-	imp ImportBinding,
-	dependency string,
-	resolver *reExportResolver,
-) (ImportBinding, string) {
-	if resolved, ok := resolver.resolveImportAttribution(filePath, imp, dependency); ok {
-		attributed := imp
-		attributed.Module = resolved.Module
-		attributed.ExportName = resolved.ExportName
-		return attributed, resolved.Provenance
-	}
-	return imp, ""
-}
-
-func isAmbiguousImportUsage(imp ImportBinding, file FileScan) bool {
-	if imp.ExportName != "*" && imp.ExportName != "default" {
-		return false
-	}
-	// Only flag as ambiguous if it's a wildcard/default import AND the
-	// identifier is used directly (not just through property access).
-	return hasDirectIdentifierUsage(imp, file)
+	return hasAmbiguousWildcard
 }
 
 func dependencyUsageWarnings(dependency string, usedExports map[string]struct{}, hasWildcard bool) []string {
@@ -455,16 +394,11 @@ func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedEx
 	return used
 }
 
-func recordImportUse(binding ImportBinding, provenance string) report.ImportUse {
-	provenanceItems := make([]string, 0, 1)
-	if provenance != "" {
-		provenanceItems = append(provenanceItems, provenance)
-	}
+func recordImportUse(binding ImportBinding) report.ImportUse {
 	return report.ImportUse{
-		Name:       binding.ExportName,
-		Module:     binding.Module,
-		Locations:  []report.Location{binding.Location},
-		Provenance: provenanceItems,
+		Name:      binding.ExportName,
+		Module:    binding.Module,
+		Locations: []report.Location{binding.Location},
 	}
 }
 
@@ -477,12 +411,6 @@ func addImportUse(dest map[string]*report.ImportUse, entry report.ImportUse) {
 		return
 	}
 	current.Locations = append(current.Locations, entry.Locations...)
-	for _, item := range entry.Provenance {
-		if slices.Contains(current.Provenance, item) {
-			continue
-		}
-		current.Provenance = append(current.Provenance, item)
-	}
 }
 
 func flattenImportUses(source map[string]*report.ImportUse) []report.ImportUse {
