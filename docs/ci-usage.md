@@ -43,6 +43,7 @@ jobs:
 - `make build`: build local executable at `bin/lopper`
 - `make lint`: run `golangci-lint`
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
+- Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=95`)
 - `make ci`: `format-check + lint + dup-check + security + test + build`
