@@ -211,16 +211,13 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependencies(
+	return shared.BuildRequestedDependenciesWithWeights(
 		req,
 		scan,
 		normalizeDependencyID,
-		func(dependency string, current scanResult) (report.DependencyReport, []string) {
-			return buildDependencyReport(dependency, current)
-		},
-		func(topN int, current scanResult) ([]report.DependencyReport, []string) {
-			return buildTopGoDependencies(topN, current, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
-		},
+		buildDependencyReport,
+		resolveRemovalCandidateWeights,
+		buildTopGoDependencies,
 	)
 }
 

@@ -275,6 +275,25 @@ func BuildRequestedDependencies[S any](
 	return []report.DependencyReport{depReport}, warnings
 }
 
+func BuildRequestedDependenciesWithWeights[S any](
+	req language.Request,
+	scan S,
+	normalizeDependencyID func(string) string,
+	buildDependency func(string, S) (report.DependencyReport, []string),
+	resolveWeights func(*report.RemovalCandidateWeights) report.RemovalCandidateWeights,
+	buildTop func(int, S, report.RemovalCandidateWeights) ([]report.DependencyReport, []string),
+) ([]report.DependencyReport, []string) {
+	return BuildRequestedDependencies(
+		req,
+		scan,
+		normalizeDependencyID,
+		buildDependency,
+		func(topN int, current S) ([]report.DependencyReport, []string) {
+			return buildTop(topN, current, resolveWeights(req.RemovalCandidateWeights))
+		},
+	)
+}
+
 // SortReportsByWaste annotates each report with a removal-candidate score before sorting.
 func SortReportsByWaste(reports []report.DependencyReport, weights ...report.RemovalCandidateWeights) {
 	scoringWeights := report.DefaultRemovalCandidateWeights()
