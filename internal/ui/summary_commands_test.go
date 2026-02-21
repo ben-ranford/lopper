@@ -22,8 +22,8 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 	if !applySummaryCommand(state, "help", &out) || !state.showHelp {
 		t.Fatalf("expected help command to set help flag")
 	}
-	if !strings.Contains(out.String(), "Commands:") {
-		t.Fatalf("expected help text output")
+	if out.Len() != 0 {
+		t.Fatalf("expected help command to rely on re-render instead of direct output")
 	}
 	if !applySummaryCommand(state, "filter lodash", io.Discard) || state.filter != "lodash" || state.page != 1 {
 		t.Fatalf("expected filter command to set filter and reset page")
