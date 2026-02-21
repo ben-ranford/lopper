@@ -211,11 +211,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout (for changelog generation)
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - name: Download release artifacts
         uses: actions/download-artifact@v7
         with:
@@ -227,7 +222,6 @@ jobs:
         run: |
           set -euo pipefail
           current_tag="${{ needs.prepare.outputs.tag }}"
-          previous_tag="${{ needs.prepare.outputs.previous_tag }}"
           ghcr_owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           ghcr_ref="ghcr.io/${ghcr_owner}/lopper:${current_tag}"
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
@@ -242,18 +236,6 @@ jobs:
             echo
             echo "- Tagged image: \`${ghcr_ref}\`"
             echo "- Package: [GHCR lopper package](${ghcr_package_url})"
-            echo "- Pull command: \`docker pull ${ghcr_ref}\`"
-            echo
-            if [ -n "${previous_tag}" ]; then
-              echo "Changes since \`${previous_tag}\`:"
-              echo
-              git log --reverse --pretty=format:'- %h %s (%an)' "${previous_tag}..${GITHUB_SHA}"
-            else
-              echo "All commits up to \`${current_tag}\`:"
-              echo
-              git log --reverse --pretty=format:'- %h %s (%an)' "${GITHUB_SHA}"
-            fi
-            echo
             echo
             echo "---"
             echo
