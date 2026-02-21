@@ -50,7 +50,11 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 
 	reader := bufio.NewReader(s.In)
 	state := buildSummaryState(opts)
+	refreshInPlace := supportsScreenRefresh(s.Out)
 	for {
+		if refreshInPlace {
+			clearSummaryScreen(s.Out)
+		}
 		if err := s.renderSummaryOutput(reportData, state); err != nil {
 			return err
 		}
@@ -174,8 +178,8 @@ func applySummaryCommand(state *summaryState, input string, out io.Writer) bool 
 }
 
 func handleHelpCommand(state *summaryState, out io.Writer) bool {
+	_ = out
 	state.showHelp = true
-	printSummaryHelp(out)
 	return true
 }
 
@@ -237,8 +241,20 @@ func setSortMode(state *summaryState, mode sortMode) {
 	state.page = 1
 }
 
-func printSummaryHelp(out io.Writer) {
-	_, _ = fmt.Fprint(out, summaryHelpText())
+func supportsScreenRefresh(out io.Writer) bool {
+	file, ok := out.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func clearSummaryScreen(out io.Writer) {
+	_, _ = fmt.Fprint(out, "\033[H\033[2J")
 }
 
 func summaryHelpText() string {
