@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check lint dup-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -12,6 +12,10 @@ GO_TOOLCHAIN ?= go1.26.0
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 GOLANGCI_LINT_VERSION ?= v2.9.0
 GOSEC_VERSION ?= v2.22.11
+DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
+DUPLICATION_MAX ?= 3
+DUPLICATION_TOKEN_THRESHOLD ?= 55
+DUPLICATION_BASE ?= origin/main
 HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
@@ -33,6 +37,49 @@ format-check:
 lint:
 	$(GO_CMD) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
+dup-check:
+	@requested_base_ref="$(DUPLICATION_BASE)"; \
+	base_ref="$$requested_base_ref"; \
+	used_fallback=0; \
+	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
+		echo "Warning: duplication base ref '$$base_ref' not found; falling back to 'HEAD~1'. This may miss duplication introduced earlier in this branch."; \
+		base_ref="HEAD~1"; \
+		used_fallback=1; \
+	fi; \
+	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
+		echo "No valid duplication base ref found; skipping new-code duplication check."; \
+		exit 0; \
+	fi; \
+	if ! base_commit=$$(git merge-base "$$base_ref" HEAD 2>/dev/null); then \
+		echo "Base ref '$$base_ref' is not related to HEAD; skipping new-code duplication check."; \
+		exit 0; \
+	fi; \
+	added_file=$$(mktemp); \
+	dup_file=$$(mktemp); \
+	trap 'rm -f "$$added_file" "$$dup_file"' EXIT INT TERM; \
+	git diff --unified=0 --no-color "$$base_commit"..HEAD -- '*.go' | \
+	awk '/^\+\+\+ b\// { file = substr($$0, 7); next } $$1 == "@@" { line = $$3; sub(/^\+/, "", line); split(line, parts, ","); start = parts[1] + 0; count = (parts[2] == "" ? 1 : parts[2] + 0); for (i = 0; i < count; i++) if (file != "") print file ":" (start + i) }' | sort -u > "$$added_file"; \
+	added=$$(wc -l < "$$added_file" | tr -d ' '); \
+	if [ "$$added" -eq 0 ]; then \
+		if [ "$$used_fallback" -eq 1 ]; then \
+			echo "New-code duplication: 0.00% (no changed Go lines vs fallback base $$base_ref; requested $$requested_base_ref)"; \
+		else \
+			echo "New-code duplication: 0.00% (no changed Go lines vs $$base_ref)"; \
+		fi; \
+		exit 0; \
+	fi; \
+	$(GO_CMD) run github.com/mibk/dupl@$(DUPL_VERSION) -t $(DUPLICATION_TOKEN_THRESHOLD) -plumbing . | \
+	awk -F: '{ n = split($$2, r, "-"); if (n != 2 || r[1] == "" || r[2] == "") next; if (r[1] !~ /^[0-9]+$$/ || r[2] !~ /^[0-9]+$$/) next; start = r[1] + 0; end = r[2] + 0; if (start > end) next; for (i = start; i <= end; i++) print $$1 ":" i }' | sort -u > "$$dup_file"; \
+	dup_added=$$(comm -12 "$$added_file" "$$dup_file" | wc -l | tr -d ' '); \
+	pct=$$(awk -v d="$$dup_added" -v t="$$added" 'BEGIN { d += 0; t += 0; printf "%.2f", (d / t) * 100 }'); \
+	if [ "$$used_fallback" -eq 1 ]; then \
+		base_msg="fallback $$base_ref (requested $$requested_base_ref)"; \
+	else \
+		base_msg="$$base_ref"; \
+	fi; \
+	echo "New-code duplication: $$pct% (duplicated added lines: $$dup_added / $$added, max: $(DUPLICATION_MAX)%, threshold: $(DUPLICATION_TOKEN_THRESHOLD) tokens, base: $$base_msg)"; \
+	awk -v p="$$pct" 'BEGIN { exit !(p <= $(DUPLICATION_MAX)) }' || (echo "Duplication gate failed: $$pct% > $(DUPLICATION_MAX)%"; exit 1)
+
 security:
 	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) ./...
 
@@ -52,7 +99,7 @@ build:
 	mkdir -p $(BIN_DIR)
 	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-ci: format-check lint security test build
+ci: format-check lint dup-check security test build
 
 demos:
 	./scripts/demos/render.sh
