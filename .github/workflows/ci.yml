@@ -382,7 +382,7 @@ jobs:
               '',
               `Open issues: **${total}**`,
               `Actionable issues shown (excluding mock/fixture files): **${actionableIssues.length}**`,
-              excludedCount > 0 ? `Excluded mock/fixture issues: **${excludedCount}**` : null,
+              excludedCount > 0 ? `Excluded mock/fixture issues: **${excludedCount}**` : '',
               '',
               '### Duplication',
               duplicationSummary,

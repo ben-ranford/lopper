@@ -257,6 +257,7 @@ func BuildTopReports(
 	return reports, warnings
 }
 
+// SortReportsByWaste annotates each report with a removal-candidate score before sorting.
 func SortReportsByWaste(reports []report.DependencyReport, weights ...report.RemovalCandidateWeights) {
 	scoringWeights := report.DefaultRemovalCandidateWeights()
 	if len(weights) > 0 {
