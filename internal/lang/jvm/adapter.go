@@ -150,19 +150,18 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedJVMDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	switch {
-	case req.Dependency != "":
+	if req.Dependency != "" {
 		dependency := normalizeDependencyID(req.Dependency)
 		depReport, warnings := buildDependencyReport(dependency, scan)
 		return []report.DependencyReport{depReport}, warnings
-	case req.TopN > 0:
-		return buildTopJVMDependencies(req.TopN, scan)
-	default:
-		return nil, []string{"no dependency or top-N target provided"}
 	}
+	if req.TopN > 0 {
+		return buildTopJVMDependencies(req.TopN, scan, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+	}
+	return nil, []string{"no dependency or top-N target provided"}
 }
 
-func buildTopJVMDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopJVMDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	fileUsages := shared.MapFileUsages(
 		scan.Files,
 		func(file fileScan) []shared.ImportRecord { return file.Imports },
@@ -171,7 +170,14 @@ func buildTopJVMDependencies(topN int, scan scanResult) ([]report.DependencyRepo
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
 	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	})
+	}, weights)
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 type importBinding = shared.ImportRecord

@@ -1,5 +1,7 @@
 package analysis
 
+import "github.com/ben-ranford/lopper/internal/report"
+
 type Request struct {
 	RepoPath                          string
 	Dependency                        string
@@ -9,4 +11,5 @@ type Request struct {
 	RuntimeTracePath                  string
 	LowConfidenceWarningPercent       *int
 	MinUsagePercentForRecommendations *int
+	RemovalCandidateWeights           *report.RemovalCandidateWeights
 }

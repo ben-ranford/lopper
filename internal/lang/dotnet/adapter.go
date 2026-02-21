@@ -225,19 +225,20 @@ type scanResult struct {
 
 func buildRequestedDotNetDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	minUsagePercentForRecommendations := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
+	weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 	switch {
 	case req.Dependency != "":
 		dependency := normalizeDependencyID(req.Dependency)
 		dep, warnings := buildDependencyReport(dependency, scan, minUsagePercentForRecommendations)
 		return []report.DependencyReport{dep}, warnings
 	case req.TopN > 0:
-		return buildTopDotNetDependencies(req.TopN, scan, minUsagePercentForRecommendations)
+		return buildTopDotNetDependencies(req.TopN, scan, minUsagePercentForRecommendations, weights)
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
 }
 
-func buildTopDotNetDependencies(topN int, scan scanResult, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
+func buildTopDotNetDependencies(topN int, scan scanResult, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	set := make(map[string]struct{})
 	for _, dep := range scan.DeclaredDependencies {
 		if dep != "" {
@@ -265,7 +266,7 @@ func buildTopDotNetDependencies(topN int, scan scanResult, minUsagePercentForRec
 		reports = append(reports, current)
 		warnings = append(warnings, currentWarnings...)
 	}
-	shared.SortReportsByWaste(reports)
+	shared.SortReportsByWaste(reports, weights)
 	if topN > 0 && topN < len(reports) {
 		reports = reports[:topN]
 	}
@@ -351,6 +352,13 @@ func resolveMinUsageRecommendationThreshold(threshold *int) int {
 		return *threshold
 	}
 	return thresholds.Defaults().MinUsagePercentForRecommendations
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {

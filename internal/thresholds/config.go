@@ -117,15 +117,21 @@ func parseConfig(path string, data []byte) (rawConfig, error) {
 type rawConfig struct {
 	Thresholds rawThresholds `yaml:"thresholds" json:"thresholds"`
 
-	FailOnIncreasePercent             *int `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
-	LowConfidenceWarningPercent       *int `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
-	MinUsagePercentForRecommendations *int `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	FailOnIncreasePercent             *int     `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
+	LowConfidenceWarningPercent       *int     `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
+	MinUsagePercentForRecommendations *int     `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
+	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
+	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
 }
 
 type rawThresholds struct {
-	FailOnIncreasePercent             *int `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
-	LowConfidenceWarningPercent       *int `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
-	MinUsagePercentForRecommendations *int `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	FailOnIncreasePercent             *int     `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
+	LowConfidenceWarningPercent       *int     `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
+	MinUsagePercentForRecommendations *int     `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
+	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
+	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
 }
 
 func (cfg rawConfig) toOverrides() (Overrides, error) {
@@ -133,6 +139,9 @@ func (cfg rawConfig) toOverrides() (Overrides, error) {
 		FailOnIncreasePercent:             cfg.FailOnIncreasePercent,
 		LowConfidenceWarningPercent:       cfg.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: cfg.MinUsagePercentForRecommendations,
+		RemovalCandidateWeightUsage:       cfg.RemovalCandidateWeightUsage,
+		RemovalCandidateWeightImpact:      cfg.RemovalCandidateWeightImpact,
+		RemovalCandidateWeightConfidence:  cfg.RemovalCandidateWeightConfidence,
 	}
 	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, cfg.Thresholds.FailOnIncreasePercent); err != nil {
 		return Overrides{}, err
@@ -143,10 +152,30 @@ func (cfg rawConfig) toOverrides() (Overrides, error) {
 	if err := applyNestedOverride("min_usage_percent_for_recommendations", &overrides.MinUsagePercentForRecommendations, cfg.Thresholds.MinUsagePercentForRecommendations); err != nil {
 		return Overrides{}, err
 	}
+	if err := applyNestedFloatOverride("removal_candidate_weight_usage", &overrides.RemovalCandidateWeightUsage, cfg.Thresholds.RemovalCandidateWeightUsage); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedFloatOverride("removal_candidate_weight_impact", &overrides.RemovalCandidateWeightImpact, cfg.Thresholds.RemovalCandidateWeightImpact); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedFloatOverride("removal_candidate_weight_confidence", &overrides.RemovalCandidateWeightConfidence, cfg.Thresholds.RemovalCandidateWeightConfidence); err != nil {
+		return Overrides{}, err
+	}
 	return overrides, nil
 }
 
 func applyNestedOverride(name string, target **int, nested *int) error {
+	if nested == nil {
+		return nil
+	}
+	if *target != nil {
+		return fmt.Errorf("threshold %s is defined more than once", name)
+	}
+	*target = nested
+	return nil
+}
+
+func applyNestedFloatOverride(name string, target **float64, nested *float64) error {
 	if nested == nil {
 		return nil
 	}

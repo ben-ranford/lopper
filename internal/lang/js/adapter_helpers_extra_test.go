@@ -7,11 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
+
+const pkgLodashProvenance = "pkg:lodash"
 
 func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 	adapter := NewAdapter()
@@ -63,9 +66,18 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		Module:    "lodash",
 		Locations: []report.Location{{File: "b.js", Line: 2}},
 	})
+	addImportUse(imports, report.ImportUse{
+		Name:       "map",
+		Module:     "lodash",
+		Locations:  []report.Location{{File: "c.js", Line: 3}},
+		Provenance: []string{pkgLodashProvenance, pkgLodashProvenance},
+	})
 	flattened := flattenImportUses(imports)
-	if len(flattened) != 1 || len(flattened[0].Locations) != 2 {
+	if len(flattened) != 1 || len(flattened[0].Locations) != 3 {
 		t.Fatalf("expected merged import locations, got %#v", flattened)
+	}
+	if len(flattened[0].Provenance) != 1 || flattened[0].Provenance[0] != pkgLodashProvenance {
+		t.Fatalf("expected deduped provenance, got %#v", flattened[0].Provenance)
 	}
 
 	filtered := removeOverlappingUnusedImports(
@@ -91,10 +103,10 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		t.Fatalf("expected overlap-filtered unused imports, got %#v", unusedImportList)
 	}
 
-	if score, ok := wasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
+	if score, ok := shared.WasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
 		t.Fatalf("expected unknown waste score for zero exports, got score=%f ok=%v", score, ok)
 	}
-	if score, ok := wasteScore(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 0}); !ok || score != 75 {
+	if score, ok := shared.WasteScore(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25}); !ok || score != 75 {
 		t.Fatalf("expected computed waste score 75, got score=%f ok=%v", score, ok)
 	}
 
@@ -123,6 +135,13 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 
 	if warnings := dependencyUsageWarnings("dep", map[string]struct{}{}, true); len(warnings) != 2 {
 		t.Fatalf("expected both no-usage and wildcard warnings, got %#v", warnings)
+	}
+
+	if !isPathWithin(filepath.Join(repo, "sub", "a.js"), repo) {
+		t.Fatalf("expected file under repo to be within root")
+	}
+	if isPathWithin(filepath.Dir(repo), repo) {
+		t.Fatalf("expected parent directory to be outside root")
 	}
 }
 
@@ -158,7 +177,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
-	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations)
+	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights())
 	if reports != nil {
 		t.Fatalf("expected nil reports when no dependencies are discovered, got %#v", reports)
 	}

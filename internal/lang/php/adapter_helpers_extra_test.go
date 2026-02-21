@@ -503,7 +503,7 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 		t.Fatalf("expected invalid repo path error")
 	}
 
-	deps, warnings := buildTopPHPDependencies(10, scanResult{}, 40)
+	deps, warnings := buildTopPHPDependencies(10, scanResult{}, 40, report.DefaultRemovalCandidateWeights())
 	if len(deps) != 0 || !containsWarning(warnings, "no dependency data available for top-N ranking") {
 		t.Fatalf("expected empty top-n warning, deps=%#v warnings=%#v", deps, warnings)
 	}
@@ -515,7 +515,7 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 			{Imports: []importBinding{{Dependency: "b/pkg", Name: "B", Local: "B", Module: "B"}}},
 		},
 	}
-	top, _ := buildTopPHPDependencies(1, scan, 40)
+	top, _ := buildTopPHPDependencies(1, scan, 40, report.DefaultRemovalCandidateWeights())
 	if len(top) != 1 {
 		t.Fatalf("expected top-n truncation to one dependency, got %d", len(top))
 	}

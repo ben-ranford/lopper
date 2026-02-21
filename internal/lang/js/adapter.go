@@ -173,6 +173,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 			req.TopN,
 			req.RuntimeProfile,
 			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+			resolveRemovalCandidateWeights(req.RemovalCandidateWeights),
 		)
 		result.Dependencies = deps
 		result.Warnings = append(result.Warnings, warnings...)
@@ -579,7 +580,7 @@ func matchesDependency(module string, dependency string) bool {
 	return false
 }
 
-func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int) ([]report.DependencyReport, []string) {
+func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
 	if len(dependencies) == 0 {
 		return nil, warnings
@@ -599,34 +600,13 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		warnings = append(warnings, depWarnings...)
 	}
 
-	sort.Slice(reports, func(i, j int) bool {
-		iScore, iHas := wasteScore(reports[i])
-		jScore, jHas := wasteScore(reports[j])
-		if iHas != jHas {
-			return iHas
-		}
-		if iScore == jScore {
-			return reports[i].Name < reports[j].Name
-		}
-		return iScore > jScore
-	})
+	shared.SortReportsByWaste(reports, weights)
 
 	if topN > 0 && topN < len(reports) {
 		reports = reports[:topN]
 	}
 
 	return reports, warnings
-}
-
-func wasteScore(dep report.DependencyReport) (float64, bool) {
-	if dep.TotalExportsCount == 0 {
-		return -1, false
-	}
-	usedPercent := dep.UsedPercent
-	if usedPercent <= 0 && dep.TotalExportsCount > 0 {
-		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
-	}
-	return 100 - usedPercent, true
 }
 
 func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[string]string, []string) {
@@ -746,6 +726,13 @@ func resolveMinUsageRecommendationThreshold(value *int) int {
 		return *value
 	}
 	return thresholds.Defaults().MinUsagePercentForRecommendations
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 type dependencyResolutionRequest struct {

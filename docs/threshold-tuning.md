@@ -7,18 +7,26 @@ This guide explains how to tune `lopper` threshold behavior for CI quality gates
 - `fail_on_increase_percent`: fails the command when `wasteIncreasePercent` is greater than this value.
 - `low_confidence_warning_percent`: emits warning in `--language all` mode when adapter confidence is below this value.
 - `min_usage_percent_for_recommendations`: controls when low-usage recommendations are emitted for dependencies.
+- `removal_candidate_weight_usage`: relative weight for removal-candidate usage signal.
+- `removal_candidate_weight_impact`: relative weight for removal-candidate impact signal.
+- `removal_candidate_weight_confidence`: relative weight for removal-candidate confidence signal.
 
 Default values:
 
 - `fail_on_increase_percent: 0` (disabled unless set above `0`)
 - `low_confidence_warning_percent: 40`
 - `min_usage_percent_for_recommendations: 40`
+- `removal_candidate_weight_usage: 0.50`
+- `removal_candidate_weight_impact: 0.30`
+- `removal_candidate_weight_confidence: 0.20`
 
 Validation ranges:
 
 - `fail_on_increase_percent >= 0`
 - `low_confidence_warning_percent` in `[0, 100]`
 - `min_usage_percent_for_recommendations` in `[0, 100]`
+- `removal_candidate_weight_*` values must be `>= 0`
+- At least one removal-candidate weight must be greater than `0`
 
 ## Ways to set thresholds
 
@@ -30,7 +38,10 @@ lopper analyse --top 20 \
   --language all \
   --threshold-fail-on-increase 2 \
   --threshold-low-confidence-warning 35 \
-  --threshold-min-usage-percent 45
+  --threshold-min-usage-percent 45 \
+  --score-weight-usage 0.50 \
+  --score-weight-impact 0.30 \
+  --score-weight-confidence 0.20
 ```
 
 Use repo config for team defaults (`.lopper.yml`, `.lopper.yaml`, or `lopper.json` in repo root):
@@ -40,6 +51,9 @@ thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
   min_usage_percent_for_recommendations: 45
+  removal_candidate_weight_usage: 0.50
+  removal_candidate_weight_impact: 0.30
+  removal_candidate_weight_confidence: 0.20
 ```
 
 You can also pass an explicit config path:
@@ -63,6 +77,9 @@ thresholds:
   fail_on_increase_percent: 1
   low_confidence_warning_percent: 55
   min_usage_percent_for_recommendations: 60
+  removal_candidate_weight_usage: 0.60
+  removal_candidate_weight_impact: 0.25
+  removal_candidate_weight_confidence: 0.15
 ```
 
 ### Balanced default-like behavior
@@ -74,6 +91,9 @@ thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 40
   min_usage_percent_for_recommendations: 40
+  removal_candidate_weight_usage: 0.50
+  removal_candidate_weight_impact: 0.30
+  removal_candidate_weight_confidence: 0.20
 ```
 
 ### Noise reduction
@@ -85,6 +105,9 @@ thresholds:
   fail_on_increase_percent: 5
   low_confidence_warning_percent: 25
   min_usage_percent_for_recommendations: 25
+  removal_candidate_weight_usage: 0.35
+  removal_candidate_weight_impact: 0.25
+  removal_candidate_weight_confidence: 0.40
 ```
 
 ## How to verify effective values

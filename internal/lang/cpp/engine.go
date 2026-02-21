@@ -551,19 +551,20 @@ func isLikelyStdHeader(header string) bool {
 }
 
 func buildRequestedCPPDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 	switch {
 	case req.Dependency != "":
 		dependency := shared.NormalizeDependencyID(req.Dependency)
 		dep, warnings := buildDependencyReport(dependency, scan)
 		return []report.DependencyReport{dep}, warnings
 	case req.TopN > 0:
-		return buildTopCPPDependencies(req.TopN, scan)
+		return buildTopCPPDependencies(req.TopN, scan, weights)
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
 }
 
-func buildTopCPPDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopCPPDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	dependencySet := make(map[string]struct{})
 	for _, file := range scan.Files {
 		for _, include := range file.Includes {
@@ -575,7 +576,14 @@ func buildTopCPPDependencies(topN int, scan scanResult) ([]report.DependencyRepo
 	dependencies := shared.SortedKeys(dependencySet)
 	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	})
+	}, weights)
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {

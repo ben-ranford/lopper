@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -194,7 +195,7 @@ func assertEmptyDependencySelectionWarnings(t *testing.T) {
 	if len(deps) != 0 || len(warnings) == 0 {
 		t.Fatalf("expected missing target warning for buildRequestedDotNetDependencies")
 	}
-	deps, warnings = buildTopDotNetDependencies(5, empty, 40)
+	deps, warnings = buildTopDotNetDependencies(5, empty, 40, report.DefaultRemovalCandidateWeights())
 	if len(deps) != 0 || len(warnings) == 0 {
 		t.Fatalf("expected empty top-N warning")
 	}

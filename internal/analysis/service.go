@@ -87,6 +87,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+	report.AnnotateRemovalCandidateScoresWithWeights(reportData.Dependencies, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	reportData.SchemaVersion = report.SchemaVersion
 	return reportData, nil
 }
@@ -152,6 +153,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			TopN:                              req.TopN,
 			RuntimeProfile:                    req.RuntimeProfile,
 			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
+			RemovalCandidateWeights:           req.RemovalCandidateWeights,
 		})
 		if err != nil {
 			if isMultiLanguage(req.Language) {
@@ -165,6 +167,13 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		reports = append(reports, current)
 	}
 	return reports, warnings, nil
+}
+
+func resolveRemovalCandidateWeights(weights *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if weights == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*weights)
 }
 
 func resolveLowConfidenceWarningThreshold(threshold *int) int {

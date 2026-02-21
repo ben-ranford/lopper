@@ -63,19 +63,35 @@ type LanguageSummary struct {
 }
 
 type DependencyReport struct {
-	Language             string           `json:"language,omitempty"`
-	Name                 string           `json:"name"`
-	UsedExportsCount     int              `json:"usedExportsCount"`
-	TotalExportsCount    int              `json:"totalExportsCount"`
-	UsedPercent          float64          `json:"usedPercent"`
-	EstimatedUnusedBytes int64            `json:"estimatedUnusedBytes"`
-	TopUsedSymbols       []SymbolUsage    `json:"topUsedSymbols,omitempty"`
-	UsedImports          []ImportUse      `json:"usedImports,omitempty"`
-	UnusedImports        []ImportUse      `json:"unusedImports,omitempty"`
-	UnusedExports        []SymbolRef      `json:"unusedExports,omitempty"`
-	RiskCues             []RiskCue        `json:"riskCues,omitempty"`
-	Recommendations      []Recommendation `json:"recommendations,omitempty"`
-	RuntimeUsage         *RuntimeUsage    `json:"runtimeUsage,omitempty"`
+	Language             string            `json:"language,omitempty"`
+	Name                 string            `json:"name"`
+	UsedExportsCount     int               `json:"usedExportsCount"`
+	TotalExportsCount    int               `json:"totalExportsCount"`
+	UsedPercent          float64           `json:"usedPercent"`
+	EstimatedUnusedBytes int64             `json:"estimatedUnusedBytes"`
+	TopUsedSymbols       []SymbolUsage     `json:"topUsedSymbols,omitempty"`
+	UsedImports          []ImportUse       `json:"usedImports,omitempty"`
+	UnusedImports        []ImportUse       `json:"unusedImports,omitempty"`
+	UnusedExports        []SymbolRef       `json:"unusedExports,omitempty"`
+	RiskCues             []RiskCue         `json:"riskCues,omitempty"`
+	Recommendations      []Recommendation  `json:"recommendations,omitempty"`
+	RuntimeUsage         *RuntimeUsage     `json:"runtimeUsage,omitempty"`
+	RemovalCandidate     *RemovalCandidate `json:"removalCandidate,omitempty"`
+}
+
+type RemovalCandidate struct {
+	Score      float64                 `json:"score"`
+	Usage      float64                 `json:"usage"`
+	Impact     float64                 `json:"impact"`
+	Confidence float64                 `json:"confidence"`
+	Weights    RemovalCandidateWeights `json:"weights"`
+	Rationale  []string                `json:"rationale,omitempty"`
+}
+
+type RemovalCandidateWeights struct {
+	Usage      float64 `json:"usage"`
+	Impact     float64 `json:"impact"`
+	Confidence float64 `json:"confidence"`
 }
 
 type RiskCue struct {

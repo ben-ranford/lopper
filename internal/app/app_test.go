@@ -70,6 +70,9 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 		FailOnIncreasePercent:             0,
 		LowConfidenceWarningPercent:       33,
 		MinUsagePercentForRecommendations: 44,
+		RemovalCandidateWeightUsage:       0.6,
+		RemovalCandidateWeightImpact:      0.2,
+		RemovalCandidateWeightConfidence:  0.2,
 	}
 
 	output, err := application.Execute(context.Background(), req)
@@ -90,6 +93,12 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	if analyzer.lastReq.RuntimeProfile != "browser-import" {
 		t.Fatalf("expected runtime profile to be forwarded, got %q", analyzer.lastReq.RuntimeProfile)
+	}
+	if analyzer.lastReq.RemovalCandidateWeights == nil {
+		t.Fatalf("expected removal candidate weights to be forwarded")
+	}
+	if analyzer.lastReq.RemovalCandidateWeights.Usage != 0.6 || analyzer.lastReq.RemovalCandidateWeights.Impact != 0.2 || analyzer.lastReq.RemovalCandidateWeights.Confidence != 0.2 {
+		t.Fatalf("unexpected forwarded removal candidate weights: %#v", analyzer.lastReq.RemovalCandidateWeights)
 	}
 }
 

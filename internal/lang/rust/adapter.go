@@ -1089,19 +1089,20 @@ func lineColumn(content string, offset int) (int, int) {
 
 func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	minUsageThreshold := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
+	weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 	switch {
 	case req.Dependency != "":
 		dependency := normalizeDependencyID(req.Dependency)
 		depReport := buildDependencyReport(dependency, scan, minUsageThreshold)
 		return []report.DependencyReport{depReport}, nil
 	case req.TopN > 0:
-		return buildTopRustDependencies(req.TopN, scan, minUsageThreshold)
+		return buildTopRustDependencies(req.TopN, scan, minUsageThreshold, weights)
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
 }
 
-func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int) ([]report.DependencyReport, []string) {
+func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	fileUsages := shared.MapFileUsages(
 		scan.Files,
 		func(file fileScan) []shared.ImportRecord { return file.Imports },
@@ -1110,7 +1111,14 @@ func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int) 
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
 	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan, minUsageThreshold), nil
-	})
+	}, weights)
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int) report.DependencyReport {

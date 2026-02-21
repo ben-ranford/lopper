@@ -152,24 +152,32 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	switch {
-	case req.Dependency != "":
-		dependency := normalizeDependencyID(req.Dependency)
+	dependency := normalizeDependencyID(req.Dependency)
+	if dependency != "" {
 		depReport, warnings := buildDependencyReport(dependency, scan)
 		return []report.DependencyReport{depReport}, warnings
-	case req.TopN > 0:
-		return buildTopPythonDependencies(req.TopN, scan)
-	default:
-		return nil, []string{"no dependency or top-N target provided"}
 	}
+	topN := req.TopN
+	if topN > 0 {
+		weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
+		return buildTopPythonDependencies(topN, scan, weights)
+	}
+	return nil, []string{"no dependency or top-N target provided"}
 }
 
-func buildTopPythonDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	fileUsages := pythonFileUsages(scan)
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
 	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	})
+	}, weights)
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 type importBinding = shared.ImportRecord

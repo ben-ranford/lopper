@@ -65,6 +65,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	_, _ = fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
 	_, _ = fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
 	_, _ = fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
+	printRemovalCandidate(d.Out, dep.RemovalCandidate)
 	printRuntimeUsage(d.Out, dep.RuntimeUsage)
 	printRiskCues(d.Out, dep.RiskCues)
 	printRecommendations(d.Out, dep.Recommendations)
@@ -161,6 +162,26 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
 	_, _ = fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
 	if usage.RuntimeOnly {
 		_, _ = fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
+	}
+	_, _ = fmt.Fprintln(out, "")
+}
+
+func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) {
+	_, _ = fmt.Fprintln(out, "Removal candidate scoring")
+	if candidate == nil {
+		_, _ = fmt.Fprintln(out, noneLabel)
+		_, _ = fmt.Fprintln(out, "")
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  - score: %.1f\n", candidate.Score)
+	_, _ = fmt.Fprintf(out, "  - usage: %.1f\n", candidate.Usage)
+	_, _ = fmt.Fprintf(out, "  - impact: %.1f\n", candidate.Impact)
+	_, _ = fmt.Fprintf(out, "  - confidence: %.1f\n", candidate.Confidence)
+	if len(candidate.Rationale) > 0 {
+		_, _ = fmt.Fprintln(out, "  - rationale:")
+		for _, line := range candidate.Rationale {
+			_, _ = fmt.Fprintf(out, "    - %s\n", line)
+		}
 	}
 	_, _ = fmt.Fprintln(out, "")
 }

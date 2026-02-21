@@ -206,19 +206,19 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	switch {
-	case req.Dependency != "":
-		dependency := normalizeDependencyID(req.Dependency)
-		depReport, warnings := buildDependencyReport(dependency, scan)
-		return []report.DependencyReport{depReport}, warnings
-	case req.TopN > 0:
-		return buildTopGoDependencies(req.TopN, scan)
-	default:
+	if req.TopN > 0 {
+		weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
+		return buildTopGoDependencies(req.TopN, scan, weights)
+	}
+	dependency := normalizeDependencyID(req.Dependency)
+	if dependency == "" {
 		return nil, []string{"no dependency or top-N target provided"}
 	}
+	depReport, warnings := buildDependencyReport(dependency, scan)
+	return []report.DependencyReport{depReport}, warnings
 }
 
-func buildTopGoDependencies(topN int, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopGoDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	importRecords := func(file fileScan) []shared.ImportRecord { return file.Imports }
 	usageRecords := func(file fileScan) map[string]int { return file.Usage }
 	fileUsages := shared.MapFileUsages(
@@ -227,14 +227,21 @@ func buildTopGoDependencies(topN int, scan scanResult) ([]report.DependencyRepor
 		usageRecords,
 	)
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
-	return buildTopGoReports(topN, dependencies, scan)
+	return buildTopGoReports(topN, dependencies, scan, weights)
 }
 
-func buildTopGoReports(topN int, dependencies []string, scan scanResult) ([]report.DependencyReport, []string) {
+func buildTopGoReports(topN int, dependencies []string, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	builder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
-	return shared.BuildTopReports(topN, dependencies, builder)
+	return shared.BuildTopReports(topN, dependencies, builder, weights)
+}
+
+func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+	if value == nil {
+		return report.DefaultRemovalCandidateWeights()
+	}
+	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
 type importBinding = shared.ImportRecord

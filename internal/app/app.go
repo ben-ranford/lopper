@@ -62,6 +62,11 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
 	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
+	weights := report.RemovalCandidateWeights{
+		Usage:      req.Analyse.Thresholds.RemovalCandidateWeightUsage,
+		Impact:     req.Analyse.Thresholds.RemovalCandidateWeightImpact,
+		Confidence: req.Analyse.Thresholds.RemovalCandidateWeightConfidence,
+	}
 
 	reportData, err := a.Analyzer.Analyse(ctx, analysis.Request{
 		RepoPath:                          req.RepoPath,
@@ -72,6 +77,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		RuntimeTracePath:                  req.Analyse.RuntimeTracePath,
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
+		RemovalCandidateWeights:           &weights,
 	})
 	if err != nil {
 		return "", err

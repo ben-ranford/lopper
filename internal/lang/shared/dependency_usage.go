@@ -238,6 +238,7 @@ func BuildTopReports(
 	topN int,
 	dependencies []string,
 	buildReport func(string) (report.DependencyReport, []string),
+	weights ...report.RemovalCandidateWeights,
 ) ([]report.DependencyReport, []string) {
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	warnings := make([]string, 0)
@@ -246,7 +247,7 @@ func BuildTopReports(
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
-	SortReportsByWaste(reports)
+	SortReportsByWaste(reports, weights...)
 	if topN > 0 && topN < len(reports) {
 		reports = reports[:topN]
 	}
@@ -256,10 +257,16 @@ func BuildTopReports(
 	return reports, warnings
 }
 
-func SortReportsByWaste(reports []report.DependencyReport) {
+// SortReportsByWaste annotates each report with a removal-candidate score before sorting.
+func SortReportsByWaste(reports []report.DependencyReport, weights ...report.RemovalCandidateWeights) {
+	scoringWeights := report.DefaultRemovalCandidateWeights()
+	if len(weights) > 0 {
+		scoringWeights = weights[0]
+	}
+	report.AnnotateRemovalCandidateScoresWithWeights(reports, scoringWeights)
 	sort.Slice(reports, func(i, j int) bool {
-		iScore, iKnown := WasteScore(reports[i])
-		jScore, jKnown := WasteScore(reports[j])
+		iScore, iKnown := report.RemovalCandidateScore(reports[i])
+		jScore, jKnown := report.RemovalCandidateScore(reports[j])
 		if iKnown != jKnown {
 			return iKnown
 		}

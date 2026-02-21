@@ -60,9 +60,9 @@ func formatTable(report Report) string {
 
 	showLanguage := hasLanguageColumn(report.Dependencies)
 	if showLanguage {
-		_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+		_, _ = fmt.Fprintln(writer, "Language\tDependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
 	} else {
-		_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tTop Symbols")
+		_, _ = fmt.Fprintln(writer, "Dependency\tUsed/Total\tUsed%\tEst. Unused Size\tCandidate Score\tScore Components\tTop Symbols")
 	}
 	for _, dep := range report.Dependencies {
 		usedPercent := dep.UsedPercent
@@ -73,22 +73,26 @@ func formatTable(report Report) string {
 		if showLanguage {
 			_, _ = fmt.Fprintf(
 				writer,
-				"%s\t%s\t%s\t%.1f\t%s\t%s\n",
+				"%s\t%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
 				dep.Language,
 				dep.Name,
 				usedTotal,
 				usedPercent,
 				formatBytes(dep.EstimatedUnusedBytes),
+				formatCandidateScore(dep.RemovalCandidate),
+				formatScoreComponents(dep.RemovalCandidate),
 				formatTopSymbols(dep.TopUsedSymbols),
 			)
 		} else {
 			_, _ = fmt.Fprintf(
 				writer,
-				"%s\t%s\t%.1f\t%s\t%s\n",
+				"%s\t%s\t%.1f\t%s\t%s\t%s\t%s\n",
 				dep.Name,
 				usedTotal,
 				usedPercent,
 				formatBytes(dep.EstimatedUnusedBytes),
+				formatCandidateScore(dep.RemovalCandidate),
+				formatScoreComponents(dep.RemovalCandidate),
 				formatTopSymbols(dep.TopUsedSymbols),
 			)
 		}
@@ -154,6 +158,20 @@ func formatTopSymbols(symbols []SymbolUsage) string {
 		}
 	}
 	return strings.Join(items, ", ")
+}
+
+func formatCandidateScore(candidate *RemovalCandidate) string {
+	if candidate == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f", candidate.Score)
+}
+
+func formatScoreComponents(candidate *RemovalCandidate) string {
+	if candidate == nil {
+		return "-"
+	}
+	return fmt.Sprintf("U:%.1f I:%.1f C:%.1f", candidate.Usage, candidate.Impact, candidate.Confidence)
 }
 
 func formatBytes(value int64) string {
