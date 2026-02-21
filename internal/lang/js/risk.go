@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -30,7 +31,7 @@ func assessRiskCues(repoPath string, dependency string, dependencyRootPath strin
 
 	pkg, warnings := loadDependencyPackageJSON(depRoot)
 	cues := make([]report.RiskCue, 0, 3)
-	cues, warnings = appendDynamicRiskCue(cues, warnings, dependency, surface.EntryPoints)
+	cues, warnings = appendDynamicRiskCue(cues, warnings, dependency, depRoot, surface.EntryPoints)
 	cues, warnings = appendNativeRiskCue(cues, warnings, dependency, depRoot, pkg)
 	cues, warnings = appendDepthRiskCue(cues, warnings, dependency, repoPath, depRoot, pkg)
 
@@ -40,8 +41,8 @@ func assessRiskCues(repoPath string, dependency string, dependencyRootPath strin
 	return cues, warnings
 }
 
-func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency string, entrypoints []string) ([]report.RiskCue, []string) {
-	dynamicCount, samples, err := detectDynamicLoaderUsage(entrypoints)
+func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency string, depRoot string, entrypoints []string) ([]report.RiskCue, []string) {
+	dynamicCount, samples, err := detectDynamicLoaderUsage(depRoot, entrypoints)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("dynamic loader scan failed for %q: %v", dependency, err))
 		return cues, warnings
@@ -105,8 +106,7 @@ func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency str
 
 func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	pkgPath := filepath.Join(depRoot, "package.json")
-	// #nosec G304 -- depRoot is resolved under repoPath/node_modules for the selected dependency.
-	data, err := os.ReadFile(pkgPath)
+	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}
@@ -118,7 +118,7 @@ func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	return pkg, nil
 }
 
-func detectDynamicLoaderUsage(entrypoints []string) (int, []string, error) {
+func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []string, error) {
 	count := 0
 	samples := make([]string, 0, 3)
 
@@ -126,8 +126,7 @@ func detectDynamicLoaderUsage(entrypoints []string) (int, []string, error) {
 		if !isLikelyCodeAsset(entry) {
 			continue
 		}
-		// #nosec G304 -- entrypoints are resolved from dependency exports under depRoot.
-		content, err := os.ReadFile(entry)
+		content, err := safeio.ReadFileUnder(depRoot, entry)
 		if err != nil {
 			return 0, nil, err
 		}

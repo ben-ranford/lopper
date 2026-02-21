@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 var ErrBaselineMissing = errors.New("baseline report is missing summary data")
 
 func Load(path string) (Report, error) {
-	// #nosec G304 -- baseline file path is user-provided configuration input.
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		return Report{}, err
 	}

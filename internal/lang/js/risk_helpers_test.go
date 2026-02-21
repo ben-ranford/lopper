@@ -99,7 +99,8 @@ func TestAssessRiskCueWarningBranches(t *testing.T) {
 }
 
 func TestDetectDynamicLoaderUsageReadError(t *testing.T) {
-	_, _, err := detectDynamicLoaderUsage([]string{filepath.Join(t.TempDir(), "missing.js")})
+	depRoot := t.TempDir()
+	_, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")})
 	if err == nil {
 		t.Fatalf("expected read error for missing entrypoint")
 	}

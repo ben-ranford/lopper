@@ -103,6 +103,7 @@ func assertBuildFileEntryBranches(t *testing.T, repo string) {
 	collected := []dependencyDescriptor{}
 	for _, entry := range entries {
 		err := parseBuildFileEntry(
+			repo,
 			filepath.Join(repo, entry.Name()),
 			entry,
 			[]string{pomXMLName},
@@ -123,6 +124,7 @@ func assertBuildFileEntryBranches(t *testing.T, repo string) {
 		t.Fatalf("expected descriptor dedupe in parseBuildFileEntry, got %#v", collected)
 	}
 	err = parseBuildFileEntry(
+		repo,
 		filepath.Join(repo, "missing-pom.xml"),
 		entries[0],
 		[]string{pomXMLName},
@@ -151,6 +153,7 @@ func assertGradleDirSkipBranch(t *testing.T, repo string) {
 		}
 		collected := []dependencyDescriptor{}
 		err := parseBuildFileEntry(
+			repo,
 			filepath.Join(repo, gradleDirName),
 			entry,
 			[]string{pomXMLName},

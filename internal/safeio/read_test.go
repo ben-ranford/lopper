@@ -10,6 +10,7 @@ import (
 const (
 	unexpectedErrFmt = "unexpected error: %v"
 	escapesRootErr   = "path escapes root"
+	getwdErrFmt      = "getwd: %v"
 )
 
 func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
@@ -97,7 +98,7 @@ func TestReadFileUnderRejectsNonDirectoryRoot(t *testing.T) {
 func TestReadFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf(getwdErrFmt, err)
 	}
 	t.Cleanup(func() {
 		_ = os.Chdir(originalWD)
@@ -126,7 +127,7 @@ func TestReadFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 func TestReadFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf(getwdErrFmt, err)
 	}
 	t.Cleanup(func() {
 		_ = os.Chdir(originalWD)
@@ -171,5 +172,47 @@ func TestReadFileUnderRootPathAsTargetReturnsError(t *testing.T) {
 	_, err := ReadFileUnder(rootDir, rootDir)
 	if err == nil {
 		t.Fatal("expected error when target is root directory")
+	}
+}
+
+func TestReadFileReadsAbsoluteAndRelativePaths(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "target.txt")
+	if err := os.WriteFile(targetPath, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+
+	content, err := ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile absolute path: %v", err)
+	}
+	if string(content) != "content" {
+		t.Fatalf("unexpected content from absolute path: %q", string(content))
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf(getwdErrFmt, err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(originalWD)
+	})
+	if err := os.Chdir(rootDir); err != nil {
+		t.Fatalf("chdir rootDir: %v", err)
+	}
+
+	content, err = ReadFile("target.txt")
+	if err != nil {
+		t.Fatalf("ReadFile relative path: %v", err)
+	}
+	if string(content) != "content" {
+		t.Fatalf("unexpected content from relative path: %q", string(content))
+	}
+}
+
+func TestReadFileReturnsErrorForMissingFile(t *testing.T) {
+	_, err := ReadFile(filepath.Join(t.TempDir(), "missing.txt"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }

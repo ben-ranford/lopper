@@ -88,8 +88,7 @@ func readConfigFile(repoPath, path string, explicitProvided bool) ([]byte, error
 	if !explicitProvided || isPathUnderRoot(repoPath, path) {
 		return safeio.ReadFileUnder(repoPath, path)
 	}
-	// #nosec G304 -- explicit config path may intentionally live outside repo root.
-	return os.ReadFile(path)
+	return safeio.ReadFile(path)
 }
 
 func parseConfig(path string, data []byte) (rawConfig, error) {

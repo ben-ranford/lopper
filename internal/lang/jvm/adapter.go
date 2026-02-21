@@ -13,6 +13,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -222,8 +223,15 @@ func scanJVMSourceFile(repoPath string, path string, depPrefixes map[string]stri
 	if !isSourceFile(path) {
 		return nil
 	}
-	// #nosec G304 -- path originates from filepath.WalkDir rooted at repoPath.
-	content, err := os.ReadFile(path)
+	var (
+		content []byte
+		err     error
+	)
+	if strings.TrimSpace(repoPath) == "" {
+		content, err = safeio.ReadFile(path)
+	} else {
+		content, err = safeio.ReadFileUnder(repoPath, path)
+	}
 	if err != nil {
 		return err
 	}
@@ -589,7 +597,7 @@ func parseBuildFiles(repoPath string, primaryName string, parser func(content st
 		if err != nil {
 			return err
 		}
-		return parseBuildFileEntry(path, entry, names, parser, seen, &descriptors)
+		return parseBuildFileEntry(repoPath, path, entry, names, parser, seen, &descriptors)
 	})
 	if err != nil {
 		return descriptors
@@ -598,6 +606,7 @@ func parseBuildFiles(repoPath string, primaryName string, parser func(content st
 }
 
 func parseBuildFileEntry(
+	repoPath string,
 	path string,
 	entry fs.DirEntry,
 	names []string,
@@ -616,8 +625,7 @@ func parseBuildFileEntry(
 		return nil
 	}
 
-	// #nosec G304 -- build file path originates from filepath.WalkDir rooted at repoPath.
-	content, err := os.ReadFile(path)
+	content, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {
 		return nil
 	}

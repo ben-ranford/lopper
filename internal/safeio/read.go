@@ -42,3 +42,27 @@ func ReadFileUnder(rootDir, targetPath string) ([]byte, error) {
 
 	return io.ReadAll(file)
 }
+
+// ReadFile reads the exact targetPath by opening its parent directory as a root.
+func ReadFile(targetPath string) ([]byte, error) {
+	targetAbs, err := filepath.Abs(targetPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve target path: %w", err)
+	}
+	parentDir := filepath.Dir(targetAbs)
+	fileName := filepath.Base(targetAbs)
+
+	root, err := os.OpenRoot(parentDir)
+	if err != nil {
+		return nil, fmt.Errorf("open parent root: %w", err)
+	}
+	defer root.Close()
+
+	file, err := root.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	return io.ReadAll(file)
+}
