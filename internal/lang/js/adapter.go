@@ -195,30 +195,20 @@ func buildDependencyReport(
 	runtimeProfile string,
 	minUsagePercentForRecommendations int,
 ) (report.DependencyReport, []string) {
-	usedExports := make(map[string]struct{})
-	counts := make(map[string]int)
-	usedImports := make(map[string]*report.ImportUse)
-	unusedImports := make(map[string]*report.ImportUse)
 	warnings := make([]string, 0)
 
 	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile)
 	warnings = append(warnings, surfaceWarnings...)
-	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
-	warnings = append(warnings, dependencyUsageWarnings(dependency, usedExports, hasWildcard)...)
-
-	usedImportList := flattenImportUses(usedImports)
-	unusedImportList := flattenImportUses(unusedImports)
-	unusedImportList = removeOverlaps(unusedImportList, usedImportList)
-
-	topSymbols := buildTopSymbols(counts)
+	usage := collectDependencyUsageSummary(scanResult, dependency)
+	warnings = append(warnings, usage.warnings...)
 
 	totalExports := totalExportCount(surface)
-	unusedExports := buildUnusedExports(dependency, surface.Names, usedExports)
-	usedPercent := exportUsedPercent(surface, usedExports, totalExports)
+	unusedExports := buildUnusedExports(dependency, surface.Names, usage.usedExports)
+	usedPercent := exportUsedPercent(surface, usage.usedExports, totalExports)
 
-	usedExportCount := countUsedExports(surface.Names, usedExports)
+	usedExportCount := countUsedExports(surface.Names, usage.usedExports)
 	if usedExportCount == 0 && totalExports == 0 {
-		usedExportCount = len(usedExports)
+		usedExportCount = len(usage.usedExports)
 	}
 
 	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, dependencyRootPath, surface)
@@ -231,14 +221,47 @@ func buildDependencyReport(
 		TotalExportsCount:    totalExports,
 		UsedPercent:          usedPercent,
 		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       topSymbols,
-		UsedImports:          usedImportList,
-		UnusedImports:        unusedImportList,
+		TopUsedSymbols:       buildTopSymbols(usage.counts),
+		UsedImports:          usage.usedImports,
+		UnusedImports:        usage.unusedImports,
 		UnusedExports:        unusedExports,
 		RiskCues:             riskCues,
 	}
 	depReport.Recommendations = buildRecommendations(dependency, depReport, minUsagePercentForRecommendations)
 	return depReport, warnings
+}
+
+type dependencyUsageSummary struct {
+	usedExports   map[string]struct{}
+	counts        map[string]int
+	usedImports   []report.ImportUse
+	unusedImports []report.ImportUse
+	warnings      []string
+}
+
+func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dependencyUsageSummary {
+	usedExports := make(map[string]struct{})
+	counts := make(map[string]int)
+	usedImports := make(map[string]*report.ImportUse)
+	unusedImports := make(map[string]*report.ImportUse)
+	hasWildcard := collectDependencyImportUsage(scanResult, dependency, usedExports, counts, usedImports, unusedImports)
+	usedImportList, unusedImportList := finalizeImportUsageLists(usedImports, unusedImports)
+	return dependencyUsageSummary{
+		usedExports:   usedExports,
+		counts:        counts,
+		usedImports:   usedImportList,
+		unusedImports: unusedImportList,
+		warnings:      dependencyUsageWarnings(dependency, usedExports, hasWildcard),
+	}
+}
+
+func finalizeImportUsageLists(
+	usedImports map[string]*report.ImportUse,
+	unusedImports map[string]*report.ImportUse,
+) ([]report.ImportUse, []report.ImportUse) {
+	usedImportList := flattenImportUses(usedImports)
+	unusedImportList := flattenImportUses(unusedImports)
+	return usedImportList, removeOverlappingUnusedImports(unusedImportList, usedImportList)
 }
 
 func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string, runtimeProfile string) (ExportSurface, []string) {
@@ -427,7 +450,7 @@ func flattenImportUses(source map[string]*report.ImportUse) []report.ImportUse {
 	return items
 }
 
-func removeOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
+func removeOverlappingUnusedImports(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
 	usedKeys := make(map[string]struct{}, len(used))
 	for _, entry := range used {
 		usedKeys[fmt.Sprintf("%s:%s", entry.Module, entry.Name)] = struct{}{}
@@ -443,6 +466,10 @@ func removeOverlaps(unused []report.ImportUse, used []report.ImportUse) []report
 	}
 
 	return filtered
+}
+
+func removeOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
+	return removeOverlappingUnusedImports(unused, used)
 }
 
 func buildUnusedExports(module string, surface map[string]struct{}, used map[string]struct{}) []report.SymbolRef {
