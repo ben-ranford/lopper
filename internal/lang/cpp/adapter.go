@@ -243,8 +243,8 @@ func loadCompileContext(repoPath string) (compileContext, error) {
 		result.Warnings = append(result.Warnings, "compile_commands.json not found; using include-graph heuristics without translation unit context")
 	}
 
-	result.IncludeDirs = sortedKeys(includeDirSet)
-	result.SourceFiles = sortedKeys(sourceFileSet)
+	result.IncludeDirs = shared.SortedKeys(includeDirSet)
+	result.SourceFiles = shared.SortedKeys(sourceFileSet)
 	return result, nil
 }
 
@@ -610,7 +610,7 @@ func isLikelyStdHeader(header string) bool {
 func buildRequestedCPPDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	switch {
 	case req.Dependency != "":
-		dependency := normalizeDependencyID(req.Dependency)
+		dependency := canonicalDependency(req.Dependency)
 		dep, warnings := buildDependencyReport(dependency, scan)
 		return []report.DependencyReport{dep}, warnings
 	case req.TopN > 0:
@@ -625,11 +625,11 @@ func buildTopCPPDependencies(topN int, scan scanResult) ([]report.DependencyRepo
 	for _, file := range scan.Files {
 		for _, include := range file.Includes {
 			if include.Dependency != "" {
-				dependencySet[normalizeDependencyID(include.Dependency)] = struct{}{}
+				dependencySet[canonicalDependency(include.Dependency)] = struct{}{}
 			}
 		}
 	}
-	dependencies := sortedKeys(dependencySet)
+	dependencies := shared.SortedKeys(dependencySet)
 	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	})
@@ -644,7 +644,7 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 	usedImportsByHeader := make(map[string]*report.ImportUse)
 	for _, file := range scan.Files {
 		for _, include := range file.Includes {
-			if normalizeDependencyID(include.Dependency) != dependency {
+			if canonicalDependency(include.Dependency) != dependency {
 				continue
 			}
 			usedByHeader[include.Header]++
@@ -709,23 +709,14 @@ func flattenImportUses(imports map[string]*report.ImportUse, orderedKeys []strin
 	return items
 }
 
-func normalizeDependencyID(value string) string {
+func canonicalDependency(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func sortedKeys(set map[string]struct{}) []string {
-	items := make([]string, 0, len(set))
-	for item := range set {
-		items = append(items, item)
-	}
-	sort.Strings(items)
-	return items
 }
 
 func sortedCountKeys(values map[string]int) []string {
 	items := make([]string, 0, len(values))
-	for item := range values {
-		items = append(items, item)
+	for name := range values {
+		items = append(items, name)
 	}
 	sort.Strings(items)
 	return items
@@ -739,12 +730,8 @@ func relOrBase(repoPath, value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	switch strings.ToLower(name) {
-	case ".git", ".hg", ".svn", "node_modules", "vendor", "dist", "build", "out", "target", ".next", ".cache", ".idea":
-		return true
-	default:
-		return false
-	}
+	_, skip := ignoredDirNames[strings.ToLower(name)]
+	return skip
 }
 
 func isCPPSourceFile(path string) bool {
@@ -782,6 +769,11 @@ func isPathUnderRepo(repoPath string, candidate string) bool {
 		return false
 	}
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")
+}
+
+var ignoredDirNames = map[string]struct{}{
+	".cache": {}, ".git": {}, ".hg": {}, ".idea": {}, ".next": {}, ".svn": {},
+	"build": {}, "dist": {}, "node_modules": {}, "out": {}, "target": {}, "vendor": {},
 }
 
 var cppStdHeaderSet = map[string]struct{}{

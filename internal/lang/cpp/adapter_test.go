@@ -14,13 +14,7 @@ import (
 func TestAdapterDetectWithCompileDatabaseAndCMake(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(demo)\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "compile_commands.json"), `[
-  {
-    "directory": ".",
-    "file": "src/main.cpp",
-    "command": "c++ -Iinclude -c src/main.cpp"
-  }
-]`)
+	writeCompileCommands(t, repo, "c++ -Iinclude -c src/main.cpp")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\nint main() { return 0; }\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -40,13 +34,7 @@ func TestAdapterDetectWithCompileDatabaseAndCMake(t *testing.T) {
 
 func TestAdapterAnalyseDependency(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "compile_commands.json"), `[
-  {
-    "directory": ".",
-    "file": "src/main.cpp",
-    "command": "c++ -Iinclude -isystem /usr/include -c src/main.cpp"
-  }
-]`)
+	writeCompileCommands(t, repo, "c++ -Iinclude -isystem /usr/include -c src/main.cpp")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <fmt/core.h>
 #include <fmt/format.h>
 #include <vector>
@@ -108,10 +96,10 @@ int main() { return 0; }
 	if !slices.Contains(names, "openssl") {
 		t.Fatalf("expected openssl dependency, got %#v", names)
 	}
-	if !containsWarning(reportData.Warnings, "compile_commands.json not found") {
+	if !hasWarning(reportData.Warnings, "compile_commands.json not found") {
 		t.Fatalf("expected compile database warning, got %#v", reportData.Warnings)
 	}
-	if !containsWarning(reportData.Warnings, "include mapping unresolved") {
+	if !hasWarning(reportData.Warnings, "include mapping unresolved") {
 		t.Fatalf("expected unresolved include warning, got %#v", reportData.Warnings)
 	}
 }
@@ -127,11 +115,19 @@ func TestAdapterMetadataAndAliases(t *testing.T) {
 	}
 }
 
-func containsWarning(warnings []string, needle string) bool {
-	for _, warning := range warnings {
-		if strings.Contains(strings.ToLower(warning), strings.ToLower(needle)) {
-			return true
-		}
-	}
-	return false
+func writeCompileCommands(t *testing.T, repo string, command string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, "compile_commands.json"), `[
+  {
+    "directory": ".",
+    "file": "src/main.cpp",
+    "command": "`+command+`"
+  }
+]`)
+}
+
+func hasWarning(warnings []string, needle string) bool {
+	return slices.ContainsFunc(warnings, func(warning string) bool {
+		return strings.Contains(strings.ToLower(warning), strings.ToLower(needle))
+	})
 }
