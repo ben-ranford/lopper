@@ -161,7 +161,7 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	missingFile := filepath.Join(repo, "missing.js")
 
 	surface := &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface([]string{jsFile, jsFile, badFile, missingFile}, surface)
+	parseEntrypointsIntoSurface(repo, []string{jsFile, jsFile, badFile, missingFile}, surface)
 
 	if _, ok := surface.Names["value"]; !ok {
 		t.Fatalf("expected parsed export name from valid entrypoint")

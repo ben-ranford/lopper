@@ -2,13 +2,14 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type Event struct {
@@ -22,15 +23,13 @@ type Trace struct {
 }
 
 func Load(path string) (Trace, error) {
-	// #nosec G304 -- caller intentionally selects the runtime trace file path.
-	file, err := os.Open(path)
+	content, err := safeio.ReadFile(path)
 	if err != nil {
 		return Trace{}, err
 	}
-	defer func() { _ = file.Close() }()
 
 	trace := Trace{DependencyLoads: make(map[string]int)}
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(bytes.NewReader(content))
 	line := 0
 	for scanner.Scan() {
 		line++

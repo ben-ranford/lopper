@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/javascript"
 	tsxlang "github.com/smacker/go-tree-sitter/typescript/tsx"
@@ -142,8 +142,15 @@ func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry
 }
 
 func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string, path string) ([]byte, *sitter.Tree, string, error) {
-	// #nosec G304 -- path originates from filepath.WalkDir rooted at repoPath.
-	content, readErr := os.ReadFile(path)
+	var (
+		content []byte
+		readErr error
+	)
+	if strings.TrimSpace(repoPath) == "" {
+		content, readErr = safeio.ReadFile(path)
+	} else {
+		content, readErr = safeio.ReadFileUnder(repoPath, path)
+	}
 	if readErr != nil {
 		return nil, nil, "", readErr
 	}

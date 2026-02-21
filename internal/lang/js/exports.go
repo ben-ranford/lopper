@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
@@ -116,15 +117,14 @@ func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error
 		return surface, nil
 	}
 
-	parseEntrypointsIntoSurface(resolved, &surface)
+	parseEntrypointsIntoSurface(depPath, resolved, &surface)
 
 	return surface, nil
 }
 
 func loadPackageJSONForSurface(depPath string) (packageJSON, []string, error) {
 	pkgPath := filepath.Join(depPath, "package.json")
-	// #nosec G304 -- depPath is resolved under repoPath/node_modules for the selected dependency.
-	data, err := os.ReadFile(pkgPath)
+	data, err := safeio.ReadFileUnder(depPath, pkgPath)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
 	}
@@ -323,7 +323,7 @@ func resolveEntrypoints(depPath string, entrypoints map[string]struct{}, surface
 	return resolved
 }
 
-func parseEntrypointsIntoSurface(resolved []string, surface *ExportSurface) {
+func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *ExportSurface) {
 	parser := newSourceParser()
 	seenEntries := make(map[string]struct{})
 	for _, entry := range resolved {
@@ -332,8 +332,7 @@ func parseEntrypointsIntoSurface(resolved []string, surface *ExportSurface) {
 		}
 		seenEntries[entry] = struct{}{}
 
-		// #nosec G304 -- entrypoints are resolved from dependency exports under depPath.
-		content, err := os.ReadFile(entry)
+		content, err := safeio.ReadFileUnder(depPath, entry)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
 			continue
