@@ -332,7 +332,7 @@ jobs:
             };
             const actionableIssues = issues.filter((issue) => !isMockOrFixtureIssue(issue));
             const excludedCount = issues.length - actionableIssues.length;
-            const list = actionableIssues.slice(0, 10);
+            const list = actionableIssues;
 
             let duplicationSummary = '_Duplication metrics unavailable for this PR._';
             try {
@@ -389,9 +389,14 @@ jobs:
               '',
               '### Issues',
               '',
+              '<details>',
+              `<summary>Open Sonar issues (${actionableIssues.length})</summary>`,
+              '',
               '| # | Severity | Rule | Location | Message |',
               '| --- | --- | --- | --- | --- |',
               issueRows,
+              '',
+              '</details>',
               '',
               `Source: [SonarCloud PR view](${host}/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${prNumber}&resolved=false)`,
             ].join('\n');
