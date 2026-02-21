@@ -1,12 +1,15 @@
 package golang
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+var errNilModuleInfo = errors.New("module info is nil")
 
 func loadGoModuleInfo(repoPath string) (moduleInfo, error) {
 	info := moduleInfo{
@@ -23,13 +26,15 @@ func loadGoModuleInfo(repoPath string) (moduleInfo, error) {
 		return moduleInfo{}, err
 	}
 
-	finalizeGoModuleInfo(&info)
+	if err := finalizeGoModuleInfo(&info); err != nil {
+		return moduleInfo{}, err
+	}
 	return info, nil
 }
 
 func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	if info == nil {
-		return nil
+		return errNilModuleInfo
 	}
 
 	goModPath := filepath.Join(repoPath, goModName)
@@ -51,7 +56,7 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 
 func loadWorkspaceModules(repoPath string, info *moduleInfo) error {
 	if info == nil {
-		return nil
+		return errNilModuleInfo
 	}
 
 	workModules, err := loadGoWorkLocalModules(repoPath)
@@ -64,7 +69,7 @@ func loadWorkspaceModules(repoPath string, info *moduleInfo) error {
 
 func loadNestedModules(repoPath string, info *moduleInfo) error {
 	if info == nil {
-		return nil
+		return errNilModuleInfo
 	}
 
 	nestedModules, nestedDeps, nestedReplacements, err := discoverNestedModules(repoPath)
@@ -81,13 +86,14 @@ func loadNestedModules(repoPath string, info *moduleInfo) error {
 	return nil
 }
 
-func finalizeGoModuleInfo(info *moduleInfo) {
+func finalizeGoModuleInfo(info *moduleInfo) error {
 	if info == nil {
-		return
+		return errNilModuleInfo
 	}
 
 	info.LocalModulePaths = uniqueStrings(info.LocalModulePaths)
 	info.DeclaredDependencies = uniqueStrings(info.DeclaredDependencies)
 	sort.Strings(info.LocalModulePaths)
 	sort.Strings(info.DeclaredDependencies)
+	return nil
 }
