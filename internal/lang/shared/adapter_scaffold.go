@@ -44,19 +44,14 @@ func WalkRepoFiles(
 		skipDir = ShouldSkipCommonDir
 	}
 
-	return walkRepoFilesWithConfig(ctx, repoPath, maxFiles, skipDir, visit)
-}
-
-func walkRepoFilesWithConfig(
-	ctx context.Context,
-	repoPath string,
-	maxFiles int,
-	skipDir func(string) bool,
-	visit func(path string, entry fs.DirEntry) error,
-) error {
-	visited := 0
+	walker := repoWalker{
+		ctx:      ctx,
+		maxFiles: maxFiles,
+		skipDir:  skipDir,
+		visit:    visit,
+	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		return handleWalkEntry(ctx, path, entry, walkErr, maxFiles, skipDir, visit, &visited)
+		return walker.handle(path, entry, walkErr)
 	})
 	if err != nil && err != fs.SkipAll {
 		return err
@@ -64,33 +59,32 @@ func walkRepoFilesWithConfig(
 	return nil
 }
 
-func handleWalkEntry(
-	ctx context.Context,
-	path string,
-	entry fs.DirEntry,
-	walkErr error,
-	maxFiles int,
-	skipDir func(string) bool,
-	visit func(path string, entry fs.DirEntry) error,
-	visited *int,
-) error {
+type repoWalker struct {
+	ctx      context.Context
+	maxFiles int
+	skipDir  func(string) bool
+	visit    func(path string, entry fs.DirEntry) error
+	visited  int
+}
+
+func (w *repoWalker) handle(path string, entry fs.DirEntry, walkErr error) error {
 	if walkErr != nil {
 		return walkErr
 	}
-	if ctx != nil && ctx.Err() != nil {
-		return ctx.Err()
+	if w.ctx != nil && w.ctx.Err() != nil {
+		return w.ctx.Err()
 	}
 	if entry.IsDir() {
-		if skipDir(entry.Name()) {
+		if w.skipDir(entry.Name()) {
 			return filepath.SkipDir
 		}
 		return nil
 	}
-	(*visited)++
-	if maxFiles > 0 && *visited > maxFiles {
+	w.visited++
+	if w.maxFiles > 0 && w.visited > w.maxFiles {
 		return fs.SkipAll
 	}
-	return visit(path, entry)
+	return w.visit(path, entry)
 }
 
 func IsPathWithin(root, candidate string) bool {

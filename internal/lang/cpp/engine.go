@@ -20,6 +20,9 @@ import (
 const (
 	compileCommandsFile = "compile_commands.json"
 	cmakeListsFile      = "CMakeLists.txt"
+	includeFlag         = "-I"
+	isystemFlag         = "-isystem"
+	iquoteFlag          = "-iquote"
 	maxDetectFiles      = 2048
 	maxScanFiles        = 4096
 	maxCompileDatabases = 64
@@ -240,18 +243,18 @@ func extractIncludeDirs(args []string, baseDir string) []string {
 			continue
 		}
 		switch {
-		case arg == "-I" || arg == "-isystem" || arg == "-iquote":
+		case arg == includeFlag || arg == isystemFlag || arg == iquoteFlag:
 			if i+1 >= len(args) {
 				continue
 			}
 			i++
 			addIncludeDir(resolveCompilePath(baseDir, args[i]), seen, &items)
-		case strings.HasPrefix(arg, "-I") && len(arg) > 2:
-			addIncludeDir(resolveCompilePath(baseDir, arg[2:]), seen, &items)
-		case strings.HasPrefix(arg, "-isystem") && len(arg) > len("-isystem"):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len("-isystem"):]), seen, &items)
-		case strings.HasPrefix(arg, "-iquote") && len(arg) > len("-iquote"):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len("-iquote"):]), seen, &items)
+		case strings.HasPrefix(arg, includeFlag) && len(arg) > len(includeFlag):
+			addIncludeDir(resolveCompilePath(baseDir, arg[len(includeFlag):]), seen, &items)
+		case strings.HasPrefix(arg, isystemFlag) && len(arg) > len(isystemFlag):
+			addIncludeDir(resolveCompilePath(baseDir, arg[len(isystemFlag):]), seen, &items)
+		case strings.HasPrefix(arg, iquoteFlag) && len(arg) > len(iquoteFlag):
+			addIncludeDir(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), seen, &items)
 		}
 	}
 	sort.Strings(items)
@@ -272,13 +275,9 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 
 func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) (scanResult, error) {
 	result := scanResult{}
-	files := compileInfo.SourceFiles
-	if len(files) == 0 {
-		discovered, err := walkCPPFiles(ctx, repoPath)
-		if err != nil {
-			return result, err
-		}
-		files = discovered
+	files, err := resolveScanFiles(ctx, repoPath, compileInfo)
+	if err != nil {
+		return result, err
 	}
 
 	if len(files) == 0 {
@@ -287,37 +286,60 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) 
 	}
 
 	for _, path := range files {
-		if ctx != nil && ctx.Err() != nil {
-			return result, ctx.Err()
-		}
-		scanFile, unresolvedSamples, unresolvedCount, err := scanCPPFile(repoPath, path, compileInfo.IncludeDirs)
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
-				continue
-			}
+		if err := processScanFile(ctx, repoPath, path, compileInfo.IncludeDirs, &result); err != nil {
 			return result, err
-		}
-		if len(scanFile.Includes) > 0 {
-			result.Files = append(result.Files, scanFile)
-		}
-		result.UnresolvedCount += unresolvedCount
-		for _, sample := range unresolvedSamples {
-			if len(result.UnresolvedSamples) >= maxWarningSamples {
-				break
-			}
-			result.UnresolvedSamples = append(result.UnresolvedSamples, sample)
 		}
 	}
 
-	if result.UnresolvedCount > 0 {
-		message := fmt.Sprintf("cpp include mapping unresolved for %d directive(s)", result.UnresolvedCount)
-		if len(result.UnresolvedSamples) > 0 {
-			message += ": " + strings.Join(result.UnresolvedSamples, ", ")
-		}
-		result.Warnings = append(result.Warnings, message)
-	}
+	appendUnresolvedSummaryWarning(&result)
 	return result, nil
+}
+
+func resolveScanFiles(ctx context.Context, repoPath string, compileInfo compileContext) ([]string, error) {
+	if len(compileInfo.SourceFiles) > 0 {
+		return compileInfo.SourceFiles, nil
+	}
+	return walkCPPFiles(ctx, repoPath)
+}
+
+func processScanFile(ctx context.Context, repoPath string, path string, includeDirs []string, result *scanResult) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	scanFile, unresolvedSamples, unresolvedCount, err := scanCPPFile(repoPath, path, includeDirs)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
+			return nil
+		}
+		return err
+	}
+	if len(scanFile.Includes) > 0 {
+		result.Files = append(result.Files, scanFile)
+	}
+	result.UnresolvedCount += unresolvedCount
+	appendSampleWarnings(result, unresolvedSamples)
+	return nil
+}
+
+func appendSampleWarnings(result *scanResult, samples []string) {
+	for _, sample := range samples {
+		if len(result.UnresolvedSamples) >= maxWarningSamples {
+			return
+		}
+		result.UnresolvedSamples = append(result.UnresolvedSamples, sample)
+	}
+}
+
+func appendUnresolvedSummaryWarning(result *scanResult) {
+	if result.UnresolvedCount == 0 {
+		return
+	}
+	message := fmt.Sprintf("cpp include mapping unresolved for %d directive(s)", result.UnresolvedCount)
+	if len(result.UnresolvedSamples) > 0 {
+		message += ": " + strings.Join(result.UnresolvedSamples, ", ")
+	}
+	result.Warnings = append(result.Warnings, message)
 }
 
 func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
@@ -380,48 +402,61 @@ func parseIncludes(content []byte) []parsedInclude {
 	lines := strings.Split(string(content), "\n")
 	includes := make([]parsedInclude, 0)
 	for idx, line := range lines {
-		trimmed := strings.TrimLeft(line, " \t")
-		if !strings.HasPrefix(trimmed, "#") {
+		include, ok := parseIncludeLine(line, idx+1)
+		if !ok {
 			continue
 		}
-		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
-		if !strings.HasPrefix(rest, "include") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(rest, "include"))
-		if payload == "" {
-			continue
-		}
-		delimiter := payload[0]
-		if delimiter != '<' && delimiter != '"' {
-			appendParsedInclude(&includes, payload, delimiter, line, idx+1)
-			continue
-		}
-		closing := byte('>')
-		if delimiter == '"' {
-			closing = '"'
-		}
-		end := strings.IndexByte(payload[1:], closing)
-		if end < 0 {
-			appendParsedInclude(&includes, payload, delimiter, line, idx+1)
-			continue
-		}
-		header := strings.TrimSpace(payload[1 : 1+end])
-		if header == "" {
-			continue
-		}
-		appendParsedInclude(&includes, filepath.ToSlash(header), delimiter, line, idx+1)
+		includes = append(includes, include)
 	}
 	return includes
 }
 
-func appendParsedInclude(includes *[]parsedInclude, path string, delimiter byte, line string, lineNo int) {
-	*includes = append(*includes, parsedInclude{
+func parseIncludeLine(line string, lineNo int) (parsedInclude, bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(trimmed, "#") {
+		return parsedInclude{}, false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+	if !strings.HasPrefix(rest, "include") {
+		return parsedInclude{}, false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(rest, "include"))
+	if payload == "" {
+		return parsedInclude{}, false
+	}
+	delimiter := payload[0]
+	if delimiter != '<' && delimiter != '"' {
+		return makeParsedInclude(payload, delimiter, line, lineNo), true
+	}
+	header, ok := extractDelimitedHeader(payload, delimiter)
+	if !ok {
+		return makeParsedInclude(payload, delimiter, line, lineNo), true
+	}
+	if header == "" {
+		return parsedInclude{}, false
+	}
+	return makeParsedInclude(filepath.ToSlash(header), delimiter, line, lineNo), true
+}
+
+func extractDelimitedHeader(payload string, delimiter byte) (string, bool) {
+	closing := byte('>')
+	if delimiter == '"' {
+		closing = '"'
+	}
+	end := strings.IndexByte(payload[1:], closing)
+	if end < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(payload[1 : 1+end]), true
+}
+
+func makeParsedInclude(path string, delimiter byte, line string, lineNo int) parsedInclude {
+	return parsedInclude{
 		Path:      path,
 		Delimiter: delimiter,
 		Line:      lineNo,
 		Column:    shared.FirstContentColumn(line),
-	})
+	}
 }
 
 func mapIncludeToDependency(repoPath string, sourcePath string, include parsedInclude, includeDirs []string) (string, bool) {
