@@ -24,6 +24,7 @@ type AnalyseRequest struct {
 	TopN             int
 	Format           report.Format
 	Language         string
+	RuntimeProfile   string
 	BaselinePath     string
 	RuntimeTracePath string
 	ConfigPath       string
@@ -44,9 +45,10 @@ func DefaultRequest() Request {
 		Mode:     ModeTUI,
 		RepoPath: ".",
 		Analyse: AnalyseRequest{
-			Format:     report.FormatTable,
-			Language:   "auto",
-			Thresholds: thresholds.Defaults(),
+			Format:         report.FormatTable,
+			Language:       "auto",
+			RuntimeProfile: "node-import",
+			Thresholds:     thresholds.Defaults(),
 		},
 		TUI: TUIRequest{
 			Language: "auto",

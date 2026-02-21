@@ -13,6 +13,7 @@ type Request struct {
 	RepoPath                          string
 	Dependency                        string
 	TopN                              int
+	RuntimeProfile                    string
 	MinUsagePercentForRecommendations *int
 }
 

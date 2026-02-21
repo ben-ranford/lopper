@@ -146,6 +146,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			RepoPath:                          normalizedRoot,
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,
+			RuntimeProfile:                    req.RuntimeProfile,
 			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
 		})
 		if err != nil {

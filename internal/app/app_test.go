@@ -65,6 +65,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req.Mode = ModeAnalyse
 	req.Analyse.TopN = 1
 	req.Analyse.Format = report.FormatJSON
+	req.Analyse.RuntimeProfile = "browser-import"
 	req.Analyse.Thresholds = thresholds.Values{
 		FailOnIncreasePercent:             0,
 		LowConfidenceWarningPercent:       33,
@@ -86,6 +87,9 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	if analyzer.lastReq.MinUsagePercentForRecommendations == nil || *analyzer.lastReq.MinUsagePercentForRecommendations != 44 {
 		t.Fatalf("expected min usage threshold forwarded to analysis, got %#v", analyzer.lastReq.MinUsagePercentForRecommendations)
+	}
+	if analyzer.lastReq.RuntimeProfile != "browser-import" {
+		t.Fatalf("expected runtime profile to be forwarded, got %q", analyzer.lastReq.RuntimeProfile)
 	}
 }
 

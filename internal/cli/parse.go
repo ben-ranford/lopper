@@ -67,6 +67,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		TopN:             *flags.top,
 		Format:           format,
 		Language:         strings.TrimSpace(*flags.languageFlag),
+		RuntimeProfile:   strings.TrimSpace(*flags.runtimeProfile),
 		BaselinePath:     strings.TrimSpace(*flags.baselinePath),
 		RuntimeTracePath: strings.TrimSpace(*flags.runtimeTracePath),
 		ConfigPath:       resolvedConfigPath,
@@ -85,6 +86,7 @@ type analyseFlagValues struct {
 	thresholdLowConfidenceWarning *int
 	thresholdMinUsagePercent      *int
 	languageFlag                  *string
+	runtimeProfile                *string
 	baselinePath                  *string
 	runtimeTracePath              *string
 	configPath                    *string
@@ -103,6 +105,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		thresholdLowConfidenceWarning: fs.Int("threshold-low-confidence-warning", req.Analyse.Thresholds.LowConfidenceWarningPercent, "low-confidence warning threshold"),
 		thresholdMinUsagePercent:      fs.Int("threshold-min-usage-percent", req.Analyse.Thresholds.MinUsagePercentForRecommendations, "minimum usage percent threshold for recommendation generation"),
 		languageFlag:                  fs.String("language", req.Analyse.Language, "language adapter"),
+		runtimeProfile:                fs.String("runtime-profile", req.Analyse.RuntimeProfile, "conditional exports runtime profile"),
 		baselinePath:                  fs.String("baseline", req.Analyse.BaselinePath, "baseline report path"),
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
@@ -263,7 +266,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--language", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

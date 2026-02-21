@@ -68,6 +68,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		Dependency:                        req.Analyse.Dependency,
 		TopN:                              req.Analyse.TopN,
 		Language:                          req.Analyse.Language,
+		RuntimeProfile:                    req.Analyse.RuntimeProfile,
 		RuntimeTracePath:                  req.Analyse.RuntimeTracePath,
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
