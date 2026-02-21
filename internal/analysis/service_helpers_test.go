@@ -11,7 +11,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-const lodashMapRuntimeModule = "lodash/map"
+const (
+	lodashMapRuntimeModule    = "lodash/map"
+	lodashFilterRuntimeModule = "lodash/filter"
+)
 
 func TestHelperFunctions(t *testing.T) {
 	if !isMultiLanguage(" ALL ") {
@@ -366,7 +369,7 @@ func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
 	symbols := mergeRuntimeSymbolUsage(
 		[]report.RuntimeSymbolUsage{
 			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1},
-			{Symbol: "filter", Module: "lodash/filter", Count: 1},
+			{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 1},
 		},
 		[]report.RuntimeSymbolUsage{
 			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 2},
@@ -385,7 +388,7 @@ func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
 }
 
 func TestMergeRuntimeUsage(t *testing.T) {
-	if merged := mergeRuntimeUsage(nil, nil); merged != nil {
+	if mergeRuntimeUsage(nil, nil) != nil {
 		t.Fatalf("expected nil runtime usage when both sides are nil")
 	}
 
@@ -400,10 +403,10 @@ func TestMergeRuntimeUsage(t *testing.T) {
 		&report.RuntimeUsage{
 			LoadCount:   1,
 			Correlation: report.RuntimeCorrelationStaticOnly,
-			Modules:     []report.RuntimeModuleUsage{{Module: "lodash/filter", Count: 2}},
-			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: "lodash/filter", Count: 2}},
-		},
-	)
+				Modules:     []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 2}},
+				TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 2}},
+			},
+		)
 
 	if merged == nil || merged.LoadCount != 3 {
 		t.Fatalf("expected merged load count 3, got %#v", merged)

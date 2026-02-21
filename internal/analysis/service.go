@@ -479,7 +479,7 @@ func mergeUniqueSorted[T any](left []T, right []T, keyFn func(T) string, sortFn 
 	return items
 }
 
-func mergeRuntimeUsage(left *report.RuntimeUsage, right *report.RuntimeUsage) *report.RuntimeUsage {
+func mergeRuntimeUsage(left, right *report.RuntimeUsage) *report.RuntimeUsage {
 	if left == nil && right == nil {
 		return nil
 	}
@@ -556,7 +556,7 @@ func recommendationPriorityRank(priority string) int {
 	}
 }
 
-func recommendationLess(left report.Recommendation, right report.Recommendation) bool {
+func recommendationLess(left, right report.Recommendation) bool {
 	if left.Priority == right.Priority {
 		return left.Code < right.Code
 	}
