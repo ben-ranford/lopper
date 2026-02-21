@@ -460,7 +460,7 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 }
 
 func normalizeDependencyID(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return shared.NormalizeDependencyID(value)
 }
 
 func shouldSkipDir(name string) bool {

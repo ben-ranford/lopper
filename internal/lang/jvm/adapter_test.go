@@ -127,3 +127,9 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 		t.Fatalf("expected detect=true when pom.xml exists")
 	}
 }
+
+func TestNormalizeDependencyID(t *testing.T) {
+	if got := normalizeDependencyID(" Org.Example.Lib "); got != "org.example.lib" {
+		t.Fatalf("unexpected normalized dependency ID: %q", got)
+	}
+}

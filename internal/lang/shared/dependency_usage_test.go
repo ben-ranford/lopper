@@ -176,6 +176,9 @@ func TestDetectionHelpers(t *testing.T) {
 	if got := DefaultRepoPath("repo"); got != "repo" {
 		t.Fatalf("expected non-empty repo path to pass through, got %q", got)
 	}
+	if got := NormalizeDependencyID(" Example.Dependency "); got != "example.dependency" {
+		t.Fatalf("unexpected normalized dependency ID: %q", got)
+	}
 
 	detection := FinalizeDetection("repo", language.Detection{Matched: true, Confidence: 20}, map[string]struct{}{})
 	if detection.Confidence != 35 {
