@@ -275,7 +275,7 @@ jobs:
       - name: Post SonarQube review comments (PR)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        if: ${{ github.event_name == 'pull_request' && !env.ACT && env.SONAR_TOKEN != '' && steps.sonar_scan.outcome == 'success' }}
+        if: ${{ github.event_name == 'pull_request' && !env.ACT }}
         continue-on-error: true
         uses: RishabhTayal/sonarqube-review-comments-action@ec6510452a09e32cd45238308151a3e817182ee2
         with:
