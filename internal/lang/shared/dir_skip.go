@@ -1,5 +1,7 @@
 package shared
 
+import "strings"
+
 var baselineSkipDirectories = map[string]bool{
 	".git":         true,
 	".idea":        true,
@@ -14,4 +16,17 @@ func ShouldSkipDir(name string, languageSpecific map[string]bool) bool {
 		return true
 	}
 	return languageSpecific[name]
+}
+
+var commonAdditionalSkippedDirectories = map[string]bool{
+	".cache": true,
+	".hg":    true,
+	".next":  true,
+	".svn":   true,
+	"out":    true,
+	"target": true,
+}
+
+func ShouldSkipCommonDir(name string) bool {
+	return ShouldSkipDir(strings.ToLower(name), commonAdditionalSkippedDirectories)
 }

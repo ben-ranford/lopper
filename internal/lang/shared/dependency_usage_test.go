@@ -230,6 +230,12 @@ func TestShouldSkipDir(t *testing.T) {
 	if !ShouldSkipDir(".git", nil) {
 		t.Fatalf("expected baseline skip for .git")
 	}
+	if !ShouldSkipCommonDir(".git") {
+		t.Fatalf("expected common skip to include baseline .git")
+	}
+	if !ShouldSkipCommonDir(".cache") {
+		t.Fatalf("expected common skip for .cache")
+	}
 	if !ShouldSkipDir(".venv", map[string]bool{".venv": true}) {
 		t.Fatalf("expected language-specific skip for .venv")
 	}
