@@ -7,10 +7,25 @@ It compares imported dependencies to actual usage and reports waste, risk cues, 
 
 ## Install
 
-Install from GitHub Releases:
+macOS/Linux (Homebrew tap, stable):
 
 ```bash
-# Open latest release page and download the asset for your platform.
+brew tap ben-ranford/tap
+brew install lopper
+```
+
+macOS/Linux (Homebrew tap, rolling):
+
+```bash
+brew install ben-ranford/tap/lopper-rolling
+```
+
+`lopper-rolling` tracks `main` and is not a stable semver release.
+
+Windows (GitHub Releases):
+
+```bash
+# Open latest release page and download the Windows asset for your platform.
 gh release view --repo ben-ranford/lopper --web
 ```
 
@@ -59,6 +74,20 @@ lopper analyse --top 20 \
   --score-weight-impact 0.30 \
   --score-weight-confidence 0.20
 ```
+
+## Terminal demos
+
+Regenerate all demo assets from source tapes:
+
+```bash
+make demos
+```
+
+| Demo | What it demonstrates | GIF preview |
+| --- | --- | --- |
+| Quick start ranking | End-to-end `--top` workflow and waste-ranked dependency table for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
+| Single dependency deep dive | Focused analysis of one dependency with detailed usage signal and recommendation context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
+| Baseline gate in CI flow | Baseline comparison and increase gating to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
 
 ## Languages
 
