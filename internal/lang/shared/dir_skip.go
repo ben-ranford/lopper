@@ -18,10 +18,6 @@ func ShouldSkipDir(name string, languageSpecific map[string]bool) bool {
 	return languageSpecific[name]
 }
 
-func ShouldSkipCommonDir(name string) bool {
-	return ShouldSkipDir(strings.ToLower(name), commonAdditionalSkippedDirectories)
-}
-
 var commonAdditionalSkippedDirectories = map[string]bool{
 	".cache": true,
 	".hg":    true,
@@ -29,4 +25,8 @@ var commonAdditionalSkippedDirectories = map[string]bool{
 	".svn":   true,
 	"out":    true,
 	"target": true,
+}
+
+func ShouldSkipCommonDir(name string) bool {
+	return ShouldSkipDir(strings.ToLower(name), commonAdditionalSkippedDirectories)
 }
