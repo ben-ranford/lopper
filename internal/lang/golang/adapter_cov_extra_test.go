@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -14,7 +15,7 @@ import (
 const coverageDepPath = "github.com/x/y"
 
 func TestGoAdapterCoverageHelpers(t *testing.T) {
-	assertGoClampConfidence(t)
+	assertGoFinalizeDetection(t)
 	assertGoScanWarnings(t)
 	assertGoImportBindingHelpers(t)
 	assertGoTagVersionHelpers(t)
@@ -76,13 +77,18 @@ func TestGoAdapterCoverageHelpersMore(t *testing.T) {
 	}
 }
 
-func assertGoClampConfidence(t *testing.T) {
+func assertGoFinalizeDetection(t *testing.T) {
 	t.Helper()
-	if got := clampConfidence(1, true); got != 35 {
-		t.Fatalf("expected clampConfidence floor when matched, got %d", got)
+	detection := shared.FinalizeDetection("repo", language.Detection{Matched: true, Confidence: 1}, map[string]struct{}{})
+	if detection.Confidence != 35 {
+		t.Fatalf("expected confidence floor when matched, got %d", detection.Confidence)
 	}
-	if got := clampConfidence(120, true); got != 95 {
-		t.Fatalf("expected clampConfidence cap, got %d", got)
+	if len(detection.Roots) == 0 || detection.Roots[0] != "repo" {
+		t.Fatalf("expected fallback root assignment, got %#v", detection.Roots)
+	}
+	detection = shared.FinalizeDetection("repo", language.Detection{Matched: true, Confidence: 120}, map[string]struct{}{})
+	if detection.Confidence != 95 {
+		t.Fatalf("expected confidence cap, got %d", detection.Confidence)
 	}
 }
 
