@@ -277,7 +277,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_PROJECT_KEY: ben-ranford_lopper
           SONAR_HOST_URL: https://sonarcloud.io
-        if: ${{ github.event_name == 'pull_request' && !env.ACT }}
+        if: ${{ github.event_name == 'pull_request' && !env.ACT && env.SONAR_TOKEN != '' }}
         continue-on-error: true
         uses: actions/github-script@v8
         with:
