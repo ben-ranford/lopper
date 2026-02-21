@@ -1,6 +1,7 @@
 package report
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -141,5 +142,63 @@ func TestFormatBytesGB(t *testing.T) {
 	value := int64(1024 * 1024 * 1024)
 	if got := formatBytes(value); !strings.Contains(got, "GB") {
 		t.Fatalf("expected GB output, got %q", got)
+	}
+}
+
+func TestFormatCandidateFields(t *testing.T) {
+	candidate := &RemovalCandidate{
+		Score:      87.34,
+		Usage:      91.2,
+		Impact:     45.6,
+		Confidence: 78.9,
+	}
+	if got := formatCandidateScore(candidate); got != "87.3" {
+		t.Fatalf("unexpected candidate score format: %q", got)
+	}
+	if got := formatScoreComponents(candidate); got != "U:91.2 I:45.6 C:78.9" {
+		t.Fatalf("unexpected score components format: %q", got)
+	}
+}
+
+func TestFormatTopSymbolsSingleCountOmitsCounter(t *testing.T) {
+	if got := formatTopSymbols([]SymbolUsage{{Name: "uniq", Count: 1}}); got != "uniq" {
+		t.Fatalf("expected single-count symbol without annotation, got %q", got)
+	}
+}
+
+func TestFormatTableIncludesSummary(t *testing.T) {
+	reportData := Report{
+		Summary: &Summary{
+			DependencyCount:   1,
+			UsedExportsCount:  2,
+			TotalExportsCount: 4,
+			UsedPercent:       50,
+		},
+		Dependencies: []DependencyReport{
+			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with summary: %v", err)
+	}
+	if !strings.Contains(output, "Summary: 1 deps, Used/Total: 2/4 (50.0%)") {
+		t.Fatalf("expected summary header in output, got %q", output)
+	}
+}
+
+func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name: "dep",
+				RemovalCandidate: &RemovalCandidate{
+					Score: math.NaN(),
+				},
+			},
+		},
+	}
+	if _, err := NewFormatter().Format(reportData, FormatJSON); err == nil {
+		t.Fatalf("expected json marshal error for NaN candidate score")
 	}
 }

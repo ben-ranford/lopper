@@ -64,9 +64,18 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		Module:    "lodash",
 		Locations: []report.Location{{File: "b.js", Line: 2}},
 	})
+	addImportUse(imports, report.ImportUse{
+		Name:       "map",
+		Module:     "lodash",
+		Locations:  []report.Location{{File: "c.js", Line: 3}},
+		Provenance: []string{"pkg:lodash", "pkg:lodash"},
+	})
 	flattened := flattenImportUses(imports)
-	if len(flattened) != 1 || len(flattened[0].Locations) != 2 {
+	if len(flattened) != 1 || len(flattened[0].Locations) != 3 {
 		t.Fatalf("expected merged import locations, got %#v", flattened)
+	}
+	if len(flattened[0].Provenance) != 1 || flattened[0].Provenance[0] != "pkg:lodash" {
+		t.Fatalf("expected deduped provenance, got %#v", flattened[0].Provenance)
 	}
 
 	filtered := removeOverlappingUnusedImports(
@@ -124,6 +133,13 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 
 	if warnings := dependencyUsageWarnings("dep", map[string]struct{}{}, true); len(warnings) != 2 {
 		t.Fatalf("expected both no-usage and wildcard warnings, got %#v", warnings)
+	}
+
+	if !isPathWithin(filepath.Join(repo, "sub", "a.js"), repo) {
+		t.Fatalf("expected file under repo to be within root")
+	}
+	if isPathWithin(filepath.Dir(repo), repo) {
+		t.Fatalf("expected parent directory to be outside root")
 	}
 }
 

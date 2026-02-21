@@ -100,4 +100,29 @@ func TestNormalizeRemovalCandidateWeightsRejectsNonFinite(t *testing.T) {
 	if got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: math.Inf(1), Impact: 1, Confidence: 1}); got != defaults {
 		t.Fatalf("expected Inf weights to fall back to defaults, got %#v", got)
 	}
+	if got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: math.MaxFloat64, Impact: math.MaxFloat64, Confidence: 1}); got != defaults {
+		t.Fatalf("expected infinite totals to fall back to defaults, got %#v", got)
+	}
+}
+
+func TestAnnotateRemovalCandidateScoresWithWeightsEmptyInput(t *testing.T) {
+	AnnotateRemovalCandidateScoresWithWeights(nil, RemovalCandidateWeights{Usage: 1, Impact: 0, Confidence: 0})
+}
+
+func TestDependencyConfidenceSignalSeverityBranches(t *testing.T) {
+	high, _ := dependencyConfidenceSignal(DependencyReport{RiskCues: []RiskCue{{Severity: "high"}}})
+	medium, _ := dependencyConfidenceSignal(DependencyReport{RiskCues: []RiskCue{{Severity: "medium"}}})
+	low, _ := dependencyConfidenceSignal(DependencyReport{RiskCues: []RiskCue{{Severity: "low"}}})
+	if !(high < medium && medium < low) {
+		t.Fatalf("expected severity penalties high > medium > low, got high=%f medium=%f low=%f", high, medium, low)
+	}
+}
+
+func TestClampBounds(t *testing.T) {
+	if got := clamp(-2, 0, 100); got != 0 {
+		t.Fatalf("expected clamp lower bound, got %f", got)
+	}
+	if got := clamp(120, 0, 100); got != 100 {
+		t.Fatalf("expected clamp upper bound, got %f", got)
+	}
 }
