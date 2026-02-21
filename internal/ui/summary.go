@@ -307,20 +307,13 @@ func dependencyWaste(dep report.DependencyReport) (float64, bool) {
 }
 
 func pageCount(total int, pageSize int) int {
-	if total == 0 {
-		return 1
-	}
 	if pageSize <= 0 {
 		return 1
 	}
-	pages := total / pageSize
-	if total%pageSize != 0 {
-		pages++
+	if total <= 0 {
+		return 1
 	}
-	if pages < 1 {
-		pages = 1
-	}
-	return pages
+	return (total + pageSize - 1) / pageSize
 }
 
 func paginateDependencies(deps []report.DependencyReport, page int, pageSize int) []report.DependencyReport {

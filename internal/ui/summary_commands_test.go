@@ -330,6 +330,9 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 	if pageCount(-1, 10) != 1 {
 		t.Fatalf("expected pageCount floor for negative totals")
 	}
+	if pageCount(10, 0) != 1 {
+		t.Fatalf("expected pageCount floor for invalid page size")
+	}
 
 	deps := []report.DependencyReport{{Name: "a"}, {Name: "b"}}
 	if got := paginateDependencies(deps, 0, 1); len(got) != 1 || got[0].Name != "a" {
