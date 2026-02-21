@@ -2,119 +2,25 @@
 [![Release](https://github.com/ben-ranford/lopper/actions/workflows/release.yml/badge.svg)](https://github.com/ben-ranford/lopper/actions/workflows/release.yml)
 [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ben-ranford_lopper&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ben-ranford_lopper)
 
-Lopper is a local-first CLI/TUI for measuring dependency surface area in source repositories.
-It analyzes what you import and what you actually use, then reports waste, risk cues, and
-recommendations across supported languages.
+Lopper is a local-first CLI/TUI for measuring dependency surface area in source repos.
+It compares imported dependencies to actual usage and reports waste, risk cues, and recommendations.
 
-## Features
+## Install
 
-- Analyze a single dependency or rank top dependencies by waste
-- Multi-language mode (`--language all`) with per-language breakdowns
-- JSON and table output formats
-- Optional runtime trace annotations for JS/TS dependency loads
-- Baseline comparison and CI-friendly waste increase gating
-- Tunable thresholds via CLI flags or repo config (`.lopper.yml` / `lopper.json`)
-- Interactive terminal summary/detail view (`lopper` / `lopper tui`)
-
-## Supported language adapters
-
-- `js-ts` (JavaScript/TypeScript)
-- `python` (Python)
-- `cpp` (C/C++ include graph analysis)
-  aliases: `c++`, `c`, `cc`, `cxx`
-- `jvm` (Java/Kotlin import analysis)
-- `go` (Go module import analysis)
-- `php` (Composer/PSR-4 import analysis)
-- `rust` (Cargo crate import analysis)
-- `dotnet` (C#/.NET project and namespace analysis)
-  aliases: `csharp`, `cs`, `fsharp`, `fs`
-
-Language selection modes:
-
-- `auto`: choose the highest-confidence detected adapter
-- `all`: run all matching adapters and merge results
-- `<id>`: force one adapter (`js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`)
-
-## Quick start
-
-Install from Homebrew tap (stable semver releases):
+Install from GitHub Releases:
 
 ```bash
-brew tap ben-ranford/tap
-brew install lopper
+# macOS/Linux (manual download/install from latest release)
+curl -fsSL https://github.com/ben-ranford/lopper/releases/latest
 ```
 
-Install rolling channel from Homebrew tap:
-
-```bash
-brew install ben-ranford/tap/lopper-rolling
-```
-
-Switch from stable to rolling:
-
-```bash
-brew uninstall lopper
-brew install ben-ranford/tap/lopper-rolling
-```
-
-Switch from rolling to stable:
-
-```bash
-brew uninstall lopper-rolling
-brew install lopper
-```
-
-Update to the latest stable tap release:
-
-```bash
-brew update
-brew upgrade ben-ranford/tap/lopper
-```
-
-Uninstall:
-
-```bash
-brew uninstall lopper
-```
-
-Install binary from GitHub Releases:
-
-```bash
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64) ARCH=amd64 ;;
-  arm64|aarch64) ARCH=arm64 ;;
-  *) echo "unsupported arch: $ARCH" && exit 1 ;;
-esac
-
-asset_url="$(
-  curl -fsSL https://api.github.com/repos/ben-ranford/lopper/releases/latest \
-  | jq -r --arg os "$OS" --arg arch "$ARCH" \
-    '.assets[] | select(.name | test("^lopper_.*_" + $os + "_" + $arch + "\\.tar\\.gz$")) | .browser_download_url' \
-  | head -n1
-)"
-[ -n "$asset_url" ] || { echo "No matching asset for ${OS}/${ARCH}"; exit 1; }
-
-curl -fsSL -o /tmp/lopper.tar.gz "$asset_url"
-tmpdir="$(mktemp -d)"
-tar -xzf /tmp/lopper.tar.gz -C "$tmpdir"
-sudo install "$(find "$tmpdir" -type f -name lopper | head -n1)" /usr/local/bin/lopper
-```
-
-Release channels:
-
-- Stable semver release (`vX.Y.Z`): published weekly on Saturday at 12:00 UTC when changes exist since the previous stable tag
-- Rolling prerelease (`rolling-*`): published on merge to `main`, marked as non-stable
-- Rolling GitHub prerelease assets: Linux/Windows/Darwin binaries plus source bundle
-- Docker tags: `latest` = latest stable semver, `rolling` = latest rolling build
-- Homebrew formulas: `lopper` = latest stable semver, `lopper-rolling` = latest rolling build
-
-Run without local install (Docker):
+Run without local install:
 
 ```bash
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
+
+## Quick Start
 
 Analyze one dependency:
 
@@ -122,54 +28,31 @@ Analyze one dependency:
 lopper analyse lodash --repo . --language js-ts
 ```
 
-Analyze a Go dependency:
-
-```bash
-lopper analyse github.com/google/uuid --repo . --language go
-```
-
-Rank dependencies:
+Rank top dependencies by waste:
 
 ```bash
 lopper analyse --top 20 --repo . --language all --format table
 ```
 
-Emit JSON report:
+Emit JSON:
 
 ```bash
 lopper analyse --top 20 --repo . --language all --format json
 ```
 
-Run with explicit threshold tuning:
+Launch the interactive TUI:
 
 ```bash
-lopper analyse --top 20 \
-  --repo . \
-  --language all \
-  --threshold-fail-on-increase 2 \
-  --threshold-low-confidence-warning 35 \
-  --threshold-min-usage-percent 45
+lopper tui --repo . --language all
 ```
 
-## Terminal demos
+## Languages
 
-Regenerate all demo assets from source tapes:
-
-```bash
-make demos
-```
-
-Quick start (`--top` ranking):
-
-![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif)
-
-Single dependency deep dive:
-
-![Single dependency demo](docs/demos/assets/single-dependency.gif)
-
-Baseline gating workflow:
-
-![Baseline gating demo](docs/demos/assets/baseline-gate.gif)
+- Supported adapters: `js-ts`, `python`, `jvm`, `go`
+- Language modes:
+  - `auto`: choose highest-confidence adapter
+  - `all`: run all matching adapters and merge results
+  - `<id>`: force one adapter
 
 Repo-level config example (`.lopper.yml`):
 
@@ -178,46 +61,6 @@ thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
   min_usage_percent_for_recommendations: 45
-```
-
-Threshold defaults:
-
-- `fail_on_increase_percent: 0` (disabled unless set above `0`)
-- `low_confidence_warning_percent: 40`
-- `min_usage_percent_for_recommendations: 40`
-
-Threshold ranges:
-
-- `fail_on_increase_percent` must be `>= 0`
-- `low_confidence_warning_percent` must be between `0` and `100`
-- `min_usage_percent_for_recommendations` must be between `0` and `100`
-
-Precedence is `CLI > config > defaults`.
-
-Tuning guide with strict/balanced/noise-reduction profiles:
-
-- `docs/threshold-tuning.md`
-
-Launch TUI:
-
-```bash
-lopper tui --repo . --language all
-```
-
-## Runtime trace annotations (JS/TS)
-
-Capture a runtime trace:
-
-```bash
-export LOPPER_RUNTIME_TRACE=.artifacts/lopper-runtime.ndjson
-export NODE_OPTIONS="--require ./scripts/runtime/require-hook.cjs --loader ./scripts/runtime/loader.mjs"
-npm test
-```
-
-Use trace in analysis:
-
-```bash
-lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lopper-runtime.ndjson
 ```
 
 ## Development
@@ -231,27 +74,11 @@ make cov
 make build
 ```
 
-CI/release helper targets:
-
-```bash
-make ci
-make cov
-make demos
-make release VERSION=v0.1.0
-make toolchain-check
-make toolchain-install
-make hooks-install
-```
-
-Git pre-commit hook:
-
-- Run `make hooks-install` once per clone to enable the repository hook.
-- The pre-commit hook runs `make fmt`, `make ci`, and `make cov`.
-
-## Documentation
+## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
 - Threshold tuning: `docs/threshold-tuning.md`
+- Runtime trace annotations: `scripts/runtime/`
 - Adapter and architecture extensibility: `docs/extensibility.md`
 - CI and release workflow: `docs/ci-usage.md`
 - Contribution guide: `CONTRIBUTING.md`
