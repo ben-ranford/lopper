@@ -2,16 +2,12 @@ package shared
 
 import (
 	"context"
-	"regexp"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
-
-var usagePatternCache sync.Map
 
 type ImportRecord struct {
 	Dependency string
@@ -78,10 +74,22 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	}
 
 	usage := make(map[string]int, len(importCount))
-	text := string(content)
+	for i := 0; i < len(content); {
+		if !isWordByte(content[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(content) && isWordByte(content[i]) {
+			i++
+		}
+		token := string(content[start:i])
+		if _, ok := importCount[token]; ok {
+			usage[token]++
+		}
+	}
 	for local, count := range importCount {
-		pattern := usagePattern(local)
-		occurrences := len(pattern.FindAllStringIndex(text, -1)) - count
+		occurrences := usage[local] - count
 		if occurrences < 0 {
 			occurrences = 0
 		}
@@ -90,13 +98,8 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	return usage
 }
 
-func usagePattern(local string) *regexp.Regexp {
-	if cached, ok := usagePatternCache.Load(local); ok {
-		return cached.(*regexp.Regexp)
-	}
-	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(local) + `\b`)
-	actual, _ := usagePatternCache.LoadOrStore(local, pattern)
-	return actual.(*regexp.Regexp)
+func isWordByte(ch byte) bool {
+	return ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
 
 func BuildDependencyStats(dependency string, files []FileUsage, normalize func(string) string) DependencyStats {

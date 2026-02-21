@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -57,12 +58,64 @@ func TestCountUsage(t *testing.T) {
 	}
 }
 
-func TestUsagePatternCacheReusesCompiledRegex(t *testing.T) {
-	first := usagePattern("foo")
-	second := usagePattern("foo")
-	if first != second {
-		t.Fatalf("expected cached regex instance reuse")
+func TestCountUsageHonorsWordBoundaries(t *testing.T) {
+	imports := []ImportRecord{{Local: "foo"}}
+	content := []byte("foo foobar foo_bar _foo foo")
+	usage := CountUsage(content, imports)
+	if usage["foo"] != 1 {
+		t.Fatalf("expected foo usage 1, got %d", usage["foo"])
 	}
+}
+
+func BenchmarkCountUsage(b *testing.B) {
+	imports, content := benchmarkImportsAndContent()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = CountUsage(content, imports)
+	}
+}
+
+func BenchmarkCountUsageRegexPerIdentifier(b *testing.B) {
+	imports, content := benchmarkImportsAndContent()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = countUsageRegexPerIdentifier(content, imports)
+	}
+}
+
+func benchmarkImportsAndContent() ([]ImportRecord, []byte) {
+	imports := make([]ImportRecord, 0, 120)
+	var source strings.Builder
+	for i := 0; i < 120; i++ {
+		local := "depSymbol" + strings.Repeat("x", i%7) + string(rune('A'+(i%26)))
+		imports = append(imports, ImportRecord{Local: local})
+		source.WriteString(local)
+		source.WriteString("();")
+		source.WriteString(local)
+		source.WriteString("();otherToken();")
+	}
+	return imports, []byte(source.String())
+}
+
+func countUsageRegexPerIdentifier(content []byte, imports []ImportRecord) map[string]int {
+	importCount := make(map[string]int)
+	for _, imported := range imports {
+		if imported.Wildcard || imported.Local == "" {
+			continue
+		}
+		importCount[imported.Local]++
+	}
+	usage := make(map[string]int, len(importCount))
+	text := string(content)
+	for local, count := range importCount {
+		pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(local) + `\b`)
+		occurrences := len(pattern.FindAllStringIndex(text, -1)) - count
+		if occurrences < 0 {
+			occurrences = 0
+		}
+		usage[local] = occurrences
+	}
+	return usage
 }
 
 func TestBuildDependencyStats(t *testing.T) {
