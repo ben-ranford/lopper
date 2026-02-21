@@ -10,6 +10,23 @@ import (
 )
 
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
+const runtimeBinDirsEnvKey = "LOPPER_RUNTIME_BIN_DIRS"
+const defaultTrustedRuntimeBinDirs = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+
+var runtimeExecutableAllowlist = map[string]struct{}{
+	"npm":    {},
+	"pnpm":   {},
+	"yarn":   {},
+	"bun":    {},
+	"npx":    {},
+	"node":   {},
+	"vitest": {},
+	"jest":   {},
+	"mocha":  {},
+	"ava":    {},
+	"deno":   {},
+	"make":   {},
+}
 
 type CaptureRequest struct {
 	RepoPath  string
@@ -68,25 +85,82 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 
 	executable := fields[0]
 	args := fields[1:]
-	allowedExecutables := map[string]struct{}{
-		"npm":    {},
-		"pnpm":   {},
-		"yarn":   {},
-		"bun":    {},
-		"npx":    {},
-		"node":   {},
-		"vitest": {},
-		"jest":   {},
-		"mocha":  {},
-		"ava":    {},
-		"deno":   {},
-		"make":   {},
+	executablePath, err := resolveRuntimeExecutablePath(executable, runtimeSearchDirs())
+	if err != nil {
+		return nil, err
 	}
-	if _, ok := allowedExecutables[executable]; !ok {
+
+	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Path = executablePath
+	cmd.Args = append([]string{executablePath}, args...)
+	return cmd, nil
+}
+
+func resolveRuntimeExecutablePath(executable string, searchDirs []string) (string, error) {
+	if _, ok := runtimeExecutableAllowlist[executable]; !ok {
+		return "", fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
+	}
+
+	for _, dir := range searchDirs {
+		candidate := filepath.Join(dir, executable)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf("runtime test executable %q not found in trusted runtime directories", executable)
+}
+
+func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
+	_, ok := runtimeExecutableAllowlist[executable]
+	if !ok {
 		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
-	// #nosec G204 -- executable is allowlisted and this path is only reached via explicit user opt-in flag.
-	return exec.CommandContext(ctx, executable, args...), nil
+	_ = ctx
+	return &exec.Cmd{}, nil
+}
+
+func runtimeSearchDirs() []string {
+	configured := strings.TrimSpace(os.Getenv(runtimeBinDirsEnvKey))
+	if configured == "" {
+		configured = defaultTrustedRuntimeBinDirs
+	}
+	return trustedSearchDirs(configured)
+}
+
+func trustedSearchDirs(dirListValue string) []string {
+	seen := make(map[string]struct{})
+	dirs := make([]string, 0)
+	for _, raw := range filepath.SplitList(dirListValue) {
+		dir := filepath.Clean(strings.TrimSpace(raw))
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		// Reject group/other-writable runtime search entries.
+		if info.Mode().Perm()&0o022 != 0 {
+			continue
+		}
+
+		seen[dir] = struct{}{}
+		dirs = append(dirs, dir)
+	}
+	return dirs
 }
 
 func withRuntimeTraceEnv(base []string, tracePath string) []string {
