@@ -305,23 +305,53 @@ jobs:
               p: '1',
               ps: '20',
             });
-            const endpoint = `${host}/api/issues/search?${params.toString()}`;
             const auth = `Basic ${Buffer.from(`${token}:`).toString('base64')}`;
-            const response = await fetch(endpoint, {
-              headers: {
-                Authorization: auth,
-                Accept: 'application/json',
-              },
-            });
+            const jsonHeaders = {
+              Authorization: auth,
+              Accept: 'application/json',
+            };
+            const fetchJSON = async (path, searchParams) => {
+              const endpoint = `${host}${path}?${searchParams.toString()}`;
+              const response = await fetch(endpoint, { headers: jsonHeaders });
+              if (!response.ok) {
+                throw new Error(`Sonar API request failed (${response.status}): ${await response.text()}`);
+              }
+              return response.json();
+            };
 
-            if (!response.ok) {
-              throw new Error(`Sonar API request failed (${response.status}): ${await response.text()}`);
-            }
-
-            const payload = await response.json();
+            const payload = await fetchJSON('/api/issues/search', params);
             const issues = Array.isArray(payload.issues) ? payload.issues : [];
             const total = Number.isFinite(payload.total) ? payload.total : issues.length;
             const list = issues.slice(0, 10);
+
+            let duplicationSummary = '_Duplication metrics unavailable for this PR._';
+            try {
+              const measureParams = new URLSearchParams({
+                component: projectKey,
+                pullRequest: String(prNumber),
+                metricKeys: 'duplicated_lines,duplicated_lines_density,new_duplicated_lines,new_duplicated_lines_density',
+              });
+              const measurePayload = await fetchJSON('/api/measures/component', measureParams);
+              const measures = Array.isArray(measurePayload?.component?.measures) ? measurePayload.component.measures : [];
+              const getMeasure = (metric) => measures.find((m) => m?.metric === metric)?.value;
+              const fmtPercent = (value) => {
+                const n = Number(value);
+                return Number.isFinite(n) ? `${n.toFixed(2)}%` : 'n/a';
+              };
+              const fmtInt = (value) => {
+                const n = Number(value);
+                return Number.isFinite(n) ? `${Math.round(n)}` : 'n/a';
+              };
+              duplicationSummary = [
+                `- Overall duplicated lines: **${fmtInt(getMeasure('duplicated_lines'))}**`,
+                `- Overall duplication density: **${fmtPercent(getMeasure('duplicated_lines_density'))}**`,
+                `- New duplicated lines: **${fmtInt(getMeasure('new_duplicated_lines'))}**`,
+                `- New duplication density: **${fmtPercent(getMeasure('new_duplicated_lines_density'))}**`,
+              ].join('\n');
+            } catch (error) {
+              core.warning(`Failed to fetch Sonar duplication measures: ${error.message}`);
+            }
+
             const issueRows =
               list.length > 0
                 ? list
@@ -341,6 +371,11 @@ jobs:
               '## SonarQube (PR)',
               '',
               `Open issues: **${total}**`,
+              '',
+              '### Duplication',
+              duplicationSummary,
+              '',
+              '### Issues',
               '',
               '| # | Severity | Rule | Location | Message |',
               '| --- | --- | --- | --- | --- |',
