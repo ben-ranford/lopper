@@ -253,6 +253,40 @@ func TestFormatTableIncludesCacheMetadata(t *testing.T) {
 	}
 }
 
+func TestFormatTableIncludesBaselineComparison(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "commit:abc123",
+			CurrentKey:  "commit:def456",
+			SummaryDelta: SummaryDelta{
+				WastePercentDelta: 1.5,
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "lodash", WastePercentDelta: 3.5, UsedPercentDelta: -3.5},
+			},
+			Regressions: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "lodash", WastePercentDelta: 3.5, UsedPercentDelta: -3.5},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "lodash", Language: "js-ts", UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with baseline comparison: %v", err)
+	}
+	if !strings.Contains(output, "Baseline comparison:") {
+		t.Fatalf("expected baseline comparison section, got %q", output)
+	}
+	if !strings.Contains(output, "baseline_key: commit:abc123") {
+		t.Fatalf("expected baseline key in output, got %q", output)
+	}
+	if !strings.Contains(output, "regression js-ts/lodash") {
+		t.Fatalf("expected regression line in output, got %q", output)
+	}
+}
+
 func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{

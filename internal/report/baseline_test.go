@@ -3,8 +3,10 @@ package report
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyBaselineComputesDelta(t *testing.T) {
@@ -116,6 +118,90 @@ func TestLoadInvalidJSON(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatalf("expected load parse error for invalid JSON")
+	}
+}
+
+func TestSaveSnapshotAndLoadWithKey(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path, err := SaveSnapshot(dir, "label:weekly", Report{
+		SchemaVersion: "0.1.0",
+		RepoPath:      ".",
+		Dependencies: []DependencyReport{
+			{Name: "dep-a", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25},
+		},
+	}, now)
+	if err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+	if !strings.HasSuffix(path, ".json") {
+		t.Fatalf("expected snapshot path to be json, got %q", path)
+	}
+
+	rep, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("load with key: %v", err)
+	}
+	if key != "label:weekly" {
+		t.Fatalf("expected saved key, got %q", key)
+	}
+	if rep.Summary == nil || rep.Summary.DependencyCount != 1 {
+		t.Fatalf("expected computed summary in loaded report, got %#v", rep.Summary)
+	}
+
+	_, err = SaveSnapshot(dir, "label:weekly", Report{RepoPath: "."}, now)
+	if err == nil || !strings.Contains(err.Error(), ErrBaselineAlreadyExists.Error()) {
+		t.Fatalf("expected immutable snapshot exists error, got %v", err)
+	}
+}
+
+func TestLoadWithKeySupportsLegacyReportFile(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "legacy.json")
+	content := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"language":"js-ts","name":"dep","usedExportsCount":1,"totalExportsCount":2,"usedPercent":50,"estimatedUnusedBytes":0}]}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write legacy report: %v", err)
+	}
+	rep, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("load legacy report: %v", err)
+	}
+	if key != "" {
+		t.Fatalf("expected empty key for legacy report, got %q", key)
+	}
+	if rep.Summary == nil || rep.Summary.TotalExportsCount != 2 {
+		t.Fatalf("expected computed summary from legacy report, got %#v", rep.Summary)
+	}
+}
+
+func TestComputeBaselineComparisonDeterministic(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{
+			{Name: "b", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25, EstimatedUnusedBytes: 100},
+			{Name: "a", Language: "go", UsedExportsCount: 3, TotalExportsCount: 3, UsedPercent: 100, EstimatedUnusedBytes: 0},
+		},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{
+			{Name: "b", Language: "js-ts", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50, EstimatedUnusedBytes: 50},
+			{Name: "c", Language: "python", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50, EstimatedUnusedBytes: 10},
+		},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	gotOrder := make([]string, 0, len(comparison.Dependencies))
+	for _, dep := range comparison.Dependencies {
+		gotOrder = append(gotOrder, dep.Language+"/"+dep.Name)
+	}
+	wantOrder := []string{"go/a", "js-ts/b", "python/c"}
+	if !slices.Equal(gotOrder, wantOrder) {
+		t.Fatalf("unexpected deterministic delta ordering: got=%v want=%v", gotOrder, wantOrder)
+	}
+	if len(comparison.Added) != 1 || comparison.Added[0].Name != "a" {
+		t.Fatalf("expected one added dependency, got %#v", comparison.Added)
+	}
+	if len(comparison.Removed) != 1 || comparison.Removed[0].Name != "c" {
+		t.Fatalf("expected one removed dependency, got %#v", comparison.Removed)
 	}
 }
 

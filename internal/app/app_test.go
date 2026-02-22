@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -205,15 +206,15 @@ func TestApplyBaselineIfNeededWithBaselineFile(t *testing.T) {
 			{Name: "dep", UsedExportsCount: 4, TotalExportsCount: 10, UsedPercent: 40},
 		},
 	}
-	updated, formatted, err := application.applyBaselineIfNeeded(current, AnalyseRequest{BaselinePath: path, Format: report.FormatJSON})
+	updated, err := application.applyBaselineIfNeeded(current, ".", AnalyseRequest{BaselinePath: path, Format: report.FormatJSON})
 	if err != nil {
 		t.Fatalf("apply baseline: %v", err)
 	}
 	if updated.WasteIncreasePercent == nil {
 		t.Fatalf("expected waste increase to be computed")
 	}
-	if !strings.Contains(formatted, "\"wasteIncreasePercent\"") {
-		t.Fatalf("expected formatted output to include wasteIncreasePercent")
+	if updated.BaselineComparison == nil {
+		t.Fatalf("expected baseline comparison details to be present")
 	}
 }
 
@@ -245,17 +246,20 @@ func TestExecuteAnalyseAnalyzerError(t *testing.T) {
 func TestApplyBaselineIfNeededFormatAndLoadErrors(t *testing.T) {
 	application := &App{Formatter: report.NewFormatter()}
 
-	_, _, err := application.applyBaselineIfNeeded(report.Report{}, AnalyseRequest{Format: report.Format("invalid")})
-	if err == nil {
-		t.Fatalf("expected formatter error for invalid format")
-	}
-
-	_, _, err = application.applyBaselineIfNeeded(report.Report{}, AnalyseRequest{
+	_, err := application.applyBaselineIfNeeded(report.Report{}, ".", AnalyseRequest{
 		Format:       report.FormatJSON,
 		BaselinePath: filepath.Join(t.TempDir(), "missing.json"),
 	})
 	if err == nil {
 		t.Fatalf("expected missing baseline load error")
+	}
+
+	_, err = application.applyBaselineIfNeeded(report.Report{}, ".", AnalyseRequest{
+		Format:            report.FormatJSON,
+		BaselineStorePath: filepath.Join(t.TempDir(), "baselines"),
+	})
+	if err == nil {
+		t.Fatalf("expected baseline-store comparison error without key/commit")
 	}
 }
 
@@ -313,9 +317,40 @@ func TestExecuteAnalyseBaselineAndApplyBaselineErrors(t *testing.T) {
 	if err := os.WriteFile(baselinePath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write baseline file: %v", err)
 	}
-	_, _, err := application.applyBaselineIfNeeded(report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}}}, AnalyseRequest{BaselinePath: baselinePath, Format: report.FormatJSON})
+	_, err := application.applyBaselineIfNeeded(
+		report.Report{
+			Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+		},
+		".",
+		AnalyseRequest{BaselinePath: baselinePath, Format: report.FormatJSON},
+	)
 	if err == nil {
 		t.Fatalf("expected baseline application error for zero baseline totals")
+	}
+}
+
+func TestSaveBaselineIfNeeded(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	base := report.Report{
+		SchemaVersion: "0.1.0",
+		RepoPath:      ".",
+		Dependencies: []report.DependencyReport{
+			{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		},
+	}
+	dir := t.TempDir()
+	now := testTime()
+
+	updated, err := application.saveBaselineIfNeeded(base, ".", AnalyseRequest{
+		SaveBaseline:      true,
+		BaselineStorePath: dir,
+		BaselineLabel:     "nightly",
+	}, now)
+	if err != nil {
+		t.Fatalf("save baseline: %v", err)
+	}
+	if len(updated.Warnings) == 0 || !strings.Contains(updated.Warnings[0], "saved immutable baseline snapshot:") {
+		t.Fatalf("expected save warning, got %#v", updated.Warnings)
 	}
 }
 
@@ -365,6 +400,10 @@ func TestPrepareRuntimeTraceWithRuntimeCommand(t *testing.T) {
 	if _, err := os.Stat(filepath.Dir(tracePath)); err != nil {
 		t.Fatalf("expected runtime trace directory to exist: %v", err)
 	}
+}
+
+func testTime() time.Time {
+	return time.Date(2026, time.February, 22, 15, 0, 0, 0, time.UTC)
 }
 
 func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {

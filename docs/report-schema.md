@@ -24,6 +24,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used).
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
+- `baselineComparison`: deterministic dependency-level deltas between baseline and current run.
 
 ## Notes
 
@@ -34,3 +35,4 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `cache.invalidations` entries identify deterministic invalidation reasons (for example `input-changed`).
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `schemaVersion` is currently pinned to `0.1.0`.
+- Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed.

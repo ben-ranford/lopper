@@ -131,6 +131,31 @@ func TestParseArgsAnalyseBaseline(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseBaselineSnapshotFlags(t *testing.T) {
+	req, err := ParseArgs([]string{
+		"analyse", "--top", "5",
+		"--baseline-store", ".artifacts/baselines",
+		"--baseline-key", "commit:abc123",
+		"--save-baseline",
+		"--baseline-label", "release-candidate",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.BaselineStorePath != ".artifacts/baselines" {
+		t.Fatalf("expected baseline store path, got %q", req.Analyse.BaselineStorePath)
+	}
+	if req.Analyse.BaselineKey != "commit:abc123" {
+		t.Fatalf("expected baseline key, got %q", req.Analyse.BaselineKey)
+	}
+	if !req.Analyse.SaveBaseline {
+		t.Fatalf("expected save baseline true")
+	}
+	if req.Analyse.BaselineLabel != "release-candidate" {
+		t.Fatalf("expected baseline label, got %q", req.Analyse.BaselineLabel)
+	}
+}
+
 func TestParseArgsAnalyseRuntimeTrace(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", "--runtime-trace", "trace.ndjson"})
 	if err != nil {

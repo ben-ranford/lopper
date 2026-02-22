@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -100,12 +102,32 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 	}
 	reportData.Warnings = append(reportData.Warnings, runtimeWarnings...)
 
-	reportData, formatted, err := a.applyBaselineIfNeeded(reportData, req.Analyse)
+	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)
 	if err != nil {
+		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
+		if formatErr != nil {
+			return "", err
+		}
 		return formatted, err
 	}
 	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
+		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
+		if formatErr != nil {
+			return "", err
+		}
 		return formatted, err
+	}
+	reportData, err = a.saveBaselineIfNeeded(reportData, req.RepoPath, req.Analyse, time.Now())
+	if err != nil {
+		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
+		if formatErr != nil {
+			return "", err
+		}
+		return formatted, err
+	}
+	formatted, err := a.Formatter.Format(reportData, req.Analyse.Format)
+	if err != nil {
+		return "", err
 	}
 	return formatted, nil
 }
@@ -142,28 +164,92 @@ func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
 	return warnings, runtimeTracePath
 }
 
-func (a *App) applyBaselineIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, string, error) {
-	formatted, err := a.Formatter.Format(reportData, req.Format)
+func (a *App) applyBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest) (report.Report, error) {
+	baselinePath, baselineKey, currentKey, shouldApply, err := resolveBaselineComparisonPaths(repoPath, req)
 	if err != nil {
-		return report.Report{}, "", err
+		return reportData, err
 	}
-	if req.BaselinePath == "" {
-		return reportData, formatted, nil
+	if !shouldApply {
+		return reportData, nil
 	}
 
-	baseline, err := report.Load(req.BaselinePath)
+	baseline, loadedKey, err := report.LoadWithKey(baselinePath)
 	if err != nil {
-		return reportData, formatted, err
+		return reportData, err
 	}
-	reportData, err = report.ApplyBaseline(reportData, baseline)
+	if strings.TrimSpace(baselineKey) == "" {
+		baselineKey = loadedKey
+	}
+	reportData, err = report.ApplyBaselineWithKeys(reportData, baseline, baselineKey, currentKey)
 	if err != nil {
-		return reportData, formatted, err
+		return reportData, err
 	}
-	formatted, err = a.Formatter.Format(reportData, req.Format)
+	return reportData, nil
+}
+
+func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string, string, string, bool, error) {
+	if strings.TrimSpace(req.BaselinePath) != "" {
+		return strings.TrimSpace(req.BaselinePath), "", resolveCurrentBaselineKey(repoPath), true, nil
+	}
+
+	storePath := strings.TrimSpace(req.BaselineStorePath)
+	if storePath == "" {
+		return "", "", "", false, nil
+	}
+
+	baselineKey := strings.TrimSpace(req.BaselineKey)
+	if baselineKey == "" {
+		baselineKey = resolveCurrentBaselineKey(repoPath)
+	}
+	if baselineKey == "" {
+		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
+	}
+
+	baselinePath := report.BaselineSnapshotPath(storePath, baselineKey)
+	currentKey := resolveCurrentBaselineKey(repoPath)
+	return baselinePath, baselineKey, currentKey, true, nil
+}
+
+func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
+	if !req.SaveBaseline {
+		return reportData, nil
+	}
+	storePath := strings.TrimSpace(req.BaselineStorePath)
+	if storePath == "" {
+		return reportData, fmt.Errorf("--save-baseline requires --baseline-store")
+	}
+	saveKey, err := resolveSaveBaselineKey(repoPath, req)
 	if err != nil {
-		return report.Report{}, "", err
+		return reportData, err
 	}
-	return reportData, formatted, nil
+	savedPath, err := report.SaveSnapshot(storePath, saveKey, reportData, now)
+	if err != nil {
+		return reportData, err
+	}
+	reportData.Warnings = append(reportData.Warnings, "saved immutable baseline snapshot: "+savedPath)
+	return reportData, nil
+}
+
+func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
+	if label := strings.TrimSpace(req.BaselineLabel); label != "" {
+		return "label:" + label, nil
+	}
+	if key := strings.TrimSpace(req.BaselineKey); key != "" {
+		return key, nil
+	}
+	key := resolveCurrentBaselineKey(repoPath)
+	if key == "" {
+		return "", fmt.Errorf("unable to resolve git commit for baseline key; pass --baseline-label or --baseline-key")
+	}
+	return key, nil
+}
+
+func resolveCurrentBaselineKey(repoPath string) string {
+	sha, err := workspace.CurrentCommitSHA(repoPath)
+	if err != nil || strings.TrimSpace(sha) == "" {
+		return ""
+	}
+	return "commit:" + sha
 }
 
 func validateFailOnIncrease(reportData report.Report, threshold int) error {

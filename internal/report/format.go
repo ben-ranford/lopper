@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"text/tabwriter"
 )
@@ -41,6 +42,7 @@ func formatTable(report Report) (string, error) {
 	appendCacheMetadata(&buffer, report.Cache)
 	appendEffectiveThresholds(&buffer, report)
 	appendLanguageBreakdown(&buffer, report.LanguageBreakdown)
+	appendBaselineComparison(&buffer, report.BaselineComparison)
 
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 	showLanguage := hasLanguageColumn(report.Dependencies)
@@ -183,6 +185,63 @@ func appendWarnings(buffer *bytes.Buffer, report Report) {
 		buffer.WriteString(warning)
 		buffer.WriteString("\n")
 	}
+}
+
+func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparison) {
+	if comparison == nil {
+		return
+	}
+	buffer.WriteString("Baseline comparison:\n")
+	if strings.TrimSpace(comparison.BaselineKey) != "" {
+		buffer.WriteString("- baseline_key: ")
+		buffer.WriteString(comparison.BaselineKey)
+		buffer.WriteString("\n")
+	}
+	if strings.TrimSpace(comparison.CurrentKey) != "" {
+		buffer.WriteString("- current_key: ")
+		buffer.WriteString(comparison.CurrentKey)
+		buffer.WriteString("\n")
+	}
+	buffer.WriteString(fmt.Sprintf("- summary_delta: deps %+d, used %% %+0.1f, waste %% %+0.1f, unused bytes %+d\n", comparison.SummaryDelta.DependencyCountDelta, comparison.SummaryDelta.UsedPercentDelta, comparison.SummaryDelta.WastePercentDelta, comparison.SummaryDelta.UnusedBytesDelta))
+	buffer.WriteString(fmt.Sprintf("- changed: %d, regressions: %d, progressions: %d, added: %d, removed: %d, unchanged: %d\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows))
+
+	for _, delta := range topWasteDeltas(comparison.Regressions, 3) {
+		buffer.WriteString(fmt.Sprintf("  regression %s/%s waste %+0.1f%% used %+0.1f%%\n", delta.Language, delta.Name, delta.WastePercentDelta, delta.UsedPercentDelta))
+	}
+	for _, delta := range topWasteDeltas(comparison.Progressions, 3) {
+		buffer.WriteString(fmt.Sprintf("  progression %s/%s waste %+0.1f%% used %+0.1f%%\n", delta.Language, delta.Name, delta.WastePercentDelta, delta.UsedPercentDelta))
+	}
+	buffer.WriteString("\n")
+}
+
+func topWasteDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
+	if len(deltas) == 0 || limit <= 0 {
+		return nil
+	}
+	copied := append([]DependencyDelta(nil), deltas...)
+	sort.Slice(copied, func(i, j int) bool {
+		left := copied[i]
+		right := copied[j]
+		leftMagnitude := left.WastePercentDelta
+		if leftMagnitude < 0 {
+			leftMagnitude = -leftMagnitude
+		}
+		rightMagnitude := right.WastePercentDelta
+		if rightMagnitude < 0 {
+			rightMagnitude = -rightMagnitude
+		}
+		if leftMagnitude != rightMagnitude {
+			return leftMagnitude > rightMagnitude
+		}
+		if left.Language != right.Language {
+			return left.Language < right.Language
+		}
+		return left.Name < right.Name
+	})
+	if len(copied) < limit {
+		return copied
+	}
+	return copied[:limit]
 }
 
 func formatTopSymbols(symbols []SymbolUsage) string {

@@ -123,5 +123,9 @@ lopper analyse --top 20 --repo . --language all --format json | jq '.effectiveTh
 ## CI usage notes
 
 - If `fail_on_increase_percent` is above `0`, you need `--baseline PATH` for compare mode.
+- You can use immutable keyed snapshots instead of a raw file path:
+  - Save baseline: `--baseline-store DIR --save-baseline` (defaults key to `commit:<sha>`)
+  - Save labeled baseline: add `--baseline-label LABEL`
+  - Compare baseline: `--baseline-store DIR --baseline-key KEY`
 - Legacy alias `--fail-on-increase` is supported and maps to `--threshold-fail-on-increase`.
 - Avoid defining the same threshold key twice in config (for example both top-level and under `thresholds`) because that returns a validation error.
