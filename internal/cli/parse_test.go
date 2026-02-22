@@ -53,28 +53,27 @@ func TestParseArgsAnalyseDependency(t *testing.T) {
 }
 
 func TestParseArgsAnalyseTop(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", "json"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
+	cases := []struct {
+		name   string
+		format string
+		want   report.Format
+	}{
+		{name: "json", format: "json", want: report.FormatJSON},
+		{name: "sarif", format: "sarif", want: report.FormatSARIF},
 	}
-	if req.Analyse.TopN != 5 {
-		t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
-	}
-	if req.Analyse.Format != report.FormatJSON {
-		t.Fatalf("expected format %q, got %q", report.FormatJSON, req.Analyse.Format)
-	}
-}
-
-func TestParseArgsAnalyseTopSARIF(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", "sarif"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if req.Analyse.TopN != 5 {
-		t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
-	}
-	if req.Analyse.Format != report.FormatSARIF {
-		t.Fatalf("expected format %q, got %q", report.FormatSARIF, req.Analyse.Format)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", tc.format})
+			if err != nil {
+				t.Fatalf(unexpectedErrFmt, err)
+			}
+			if req.Analyse.TopN != 5 {
+				t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
+			}
+			if req.Analyse.Format != tc.want {
+				t.Fatalf("expected format %q, got %q", tc.want, req.Analyse.Format)
+			}
+		})
 	}
 }
 

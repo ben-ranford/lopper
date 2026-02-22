@@ -77,6 +77,19 @@ type sarifRuleBuilder struct {
 	rules map[string]sarifRule
 }
 
+type sarifSignal struct {
+	RuleID           string
+	RuleName         string
+	RuleShort        string
+	RuleHelp         string
+	RuleCategory     string
+	RuleCode         string
+	Level            string
+	Message          string
+	MessageFieldName string
+	MessageFieldVal  string
+}
+
 func newSARIFRuleBuilder() *sarifRuleBuilder {
 	return &sarifRuleBuilder{rules: make(map[string]sarifRule)}
 }
@@ -203,62 +216,8 @@ func buildSARIFResults(rep Report, rules *sarifRuleBuilder) []sarifResult {
 			results = append(results, result)
 		}
 
-		for _, cue := range dep.RiskCues {
-			ruleID := "lopper/risk/" + normalizeRuleToken(cue.Code)
-			rules.add(sarifRule{
-				ID:               ruleID,
-				Name:             cue.Code,
-				ShortDescription: sarifMessage{Text: "Dependency risk cue"},
-				Help:             &sarifMessage{Text: "Review risk cues to reduce dependency attack surface and operational uncertainty."},
-				Properties: map[string]interface{}{
-					"category": "risk",
-					"code":     cue.Code,
-				},
-			})
-
-			result := sarifResult{
-				RuleID:  ruleID,
-				Level:   severityToSARIFLevel(cue.Severity),
-				Message: sarifMessage{Text: fmt.Sprintf("%s: %s", dep.Name, cue.Message)},
-				Properties: map[string]interface{}{
-					"dependency": dep.Name,
-					"language":   dep.Language,
-					"severity":   cue.Severity,
-				},
-			}
-			if anchor != nil {
-				result.Locations = []sarifLocation{*anchor}
-			}
-			results = append(results, result)
-		}
-
-		for _, rec := range dep.Recommendations {
-			ruleID := "lopper/recommendation/" + normalizeRuleToken(rec.Code)
-			rules.add(sarifRule{
-				ID:               ruleID,
-				Name:             rec.Code,
-				ShortDescription: sarifMessage{Text: "Dependency optimization recommendation"},
-				Help:             &sarifMessage{Text: "Apply recommendations to reduce unused dependency surface area."},
-				Properties: map[string]interface{}{
-					"category": "recommendation",
-					"code":     rec.Code,
-				},
-			})
-
-			result := sarifResult{
-				RuleID:  ruleID,
-				Level:   priorityToSARIFLevel(rec.Priority),
-				Message: sarifMessage{Text: fmt.Sprintf("%s: %s", dep.Name, rec.Message)},
-				Properties: map[string]interface{}{
-					"dependency": dep.Name,
-					"language":   dep.Language,
-					"priority":   rec.Priority,
-				},
-			}
-			if anchor != nil {
-				result.Locations = []sarifLocation{*anchor}
-			}
-			results = append(results, result)
+		for _, signal := range dependencySignals(dep) {
+			results = appendSignalResult(results, rules, dep, anchor, signal)
 		}
 	}
 
@@ -294,6 +253,92 @@ func buildSARIFResults(rep Report, rules *sarifRuleBuilder) []sarifResult {
 	})
 
 	return results
+}
+
+func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, signal sarifSignal) []sarifResult {
+	rules.add(sarifRule{
+		ID:               signal.RuleID,
+		Name:             signal.RuleName,
+		ShortDescription: sarifMessage{Text: signal.RuleShort},
+		Help:             &sarifMessage{Text: signal.RuleHelp},
+		Properties: map[string]interface{}{
+			"category": signal.RuleCategory,
+			"code":     signal.RuleCode,
+		},
+	})
+
+	props := map[string]interface{}{
+		"dependency": dep.Name,
+		"language":   dep.Language,
+	}
+	props[signal.MessageFieldName] = signal.MessageFieldVal
+
+	result := sarifResult{
+		RuleID:     signal.RuleID,
+		Level:      signal.Level,
+		Message:    sarifMessage{Text: fmt.Sprintf("%s: %s", dep.Name, signal.Message)},
+		Properties: props,
+	}
+	if anchor != nil {
+		result.Locations = []sarifLocation{*anchor}
+	}
+	return append(results, result)
+}
+
+func dependencySignals(dep DependencyReport) []sarifSignal {
+	signals := make([]sarifSignal, 0, len(dep.RiskCues)+len(dep.Recommendations))
+	for _, cue := range dep.RiskCues {
+		signals = append(signals, newSignal(
+			"lopper/risk/",
+			cue.Code,
+			"Dependency risk cue",
+			"Review risk cues to reduce dependency attack surface and operational uncertainty.",
+			"risk",
+			severityToSARIFLevel(cue.Severity),
+			cue.Message,
+			"severity",
+			cue.Severity,
+		))
+	}
+	for _, recommendation := range dep.Recommendations {
+		signals = append(signals, newSignal(
+			"lopper/recommendation/",
+			recommendation.Code,
+			"Dependency optimization recommendation",
+			"Apply recommendations to reduce unused dependency surface area.",
+			"recommendation",
+			priorityToSARIFLevel(recommendation.Priority),
+			recommendation.Message,
+			"priority",
+			recommendation.Priority,
+		))
+	}
+	return signals
+}
+
+func newSignal(
+	idPrefix string,
+	code string,
+	shortText string,
+	helpText string,
+	category string,
+	level string,
+	message string,
+	messageFieldName string,
+	messageFieldVal string,
+) sarifSignal {
+	return sarifSignal{
+		RuleID:           idPrefix + normalizeRuleToken(code),
+		RuleName:         code,
+		RuleShort:        shortText,
+		RuleHelp:         helpText,
+		RuleCategory:     category,
+		RuleCode:         code,
+		Level:            level,
+		Message:          message,
+		MessageFieldName: messageFieldName,
+		MessageFieldVal:  messageFieldVal,
+	}
 }
 
 func dependencyAnchorLocation(dep DependencyReport) *sarifLocation {
