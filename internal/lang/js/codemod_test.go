@@ -14,10 +14,13 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-const lodashFixturePackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
+const (
+	lodashFixturePackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
+	mapImportFixtureSource   = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
+)
 
 func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
-	repo, sourcePath, original := setupLodashFixture(t, "import { map } from \"lodash\";\nmap([1], (x) => x)\n")
+	repo, sourcePath, original := setupLodashFixture(t, mapImportFixtureSource)
 
 	reportData := analyseSuggestOnly(t, repo)
 	if len(reportData.Dependencies) != 1 {
@@ -86,7 +89,7 @@ func TestAdapterAnalyseSuggestOnlySkipsUnsafeTransforms(t *testing.T) {
 }
 
 func TestSuggestOnlyPatchPreviewAppliesCleanlyOnFixture(t *testing.T) {
-	repo, _, original := setupLodashFixture(t, "import { map } from \"lodash\";\nmap([1], (x) => x)\n")
+	repo, _, original := setupLodashFixture(t, mapImportFixtureSource)
 
 	reportData := analyseSuggestOnly(t, repo)
 	codemod := reportData.Dependencies[0].Codemod
@@ -104,54 +107,12 @@ func TestSuggestOnlyPatchPreviewAppliesCleanlyOnFixture(t *testing.T) {
 }
 
 func TestSuggestOnlyBehavioralParityAfterApplyingPatch(t *testing.T) {
-	repo, sourcePath, original := setupLodashFixture(t, "import { map } from \"lodash\";\nmap([1], (x) => x)\n")
-	adapter := NewAdapter()
-
-	beforeScan, err := ScanRepo(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("scan before patch: %v", err)
-	}
-	if len(beforeScan.Files) == 0 {
-		t.Fatalf("expected scanned files before patch")
-	}
-	beforeMapUsage := beforeScan.Files[0].IdentifierUsage["map"]
-
-	before, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "lodash"})
-	if err != nil {
-		t.Fatalf("analyse before patch: %v", err)
-	}
-	if len(before.Dependencies) != 1 || len(before.Dependencies[0].UsedImports) == 0 {
-		t.Fatalf("expected used imports before patch, got %#v", before.Dependencies)
-	}
-
-	suggest := analyseSuggestOnly(t, repo)
-	codemod := suggest.Dependencies[0].Codemod
-	if codemod == nil || len(codemod.Suggestions) == 0 {
-		t.Fatalf("expected codemod suggestion for parity test")
-	}
-	patchedContent, err := applySingleLineUnifiedPatch(original, codemod.Suggestions[0].Patch)
-	if err != nil {
-		t.Fatalf("apply patch: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte(patchedContent), 0o644); err != nil {
-		t.Fatalf("write patched source: %v", err)
-	}
-
-	after, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "lodash"})
-	if err != nil {
-		t.Fatalf("analyse after patch: %v", err)
-	}
-	if len(after.Dependencies) != 1 || len(after.Dependencies[0].UsedImports) == 0 {
-		t.Fatalf("expected used imports after patch, got %#v", after.Dependencies)
-	}
-	afterScan, err := ScanRepo(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("scan after patch: %v", err)
-	}
-	if len(afterScan.Files) == 0 {
-		t.Fatalf("expected scanned files after patch")
-	}
-	afterMapUsage := afterScan.Files[0].IdentifierUsage["map"]
+	repo, sourcePath, original := setupLodashFixture(t, mapImportFixtureSource)
+	beforeMapUsage := mapIdentifierUsage(t, repo, "before")
+	before := analyseDependency(t, repo)
+	applyFirstSuggestionPatch(t, repo, sourcePath, original)
+	after := analyseDependency(t, repo)
+	afterMapUsage := mapIdentifierUsage(t, repo, "after")
 	if beforeMapUsage != afterMapUsage {
 		t.Fatalf("expected local map identifier usage parity, before=%d after=%d", beforeMapUsage, afterMapUsage)
 	}
@@ -196,6 +157,49 @@ func analyseSuggestOnly(t *testing.T, repo string) report.Report {
 		t.Fatalf("analyse suggest-only: %v", err)
 	}
 	return result
+}
+
+func analyseDependency(t *testing.T, repo string) report.Report {
+	t.Helper()
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+	})
+	if err != nil {
+		t.Fatalf("analyse dependency: %v", err)
+	}
+	if len(result.Dependencies) != 1 || len(result.Dependencies[0].UsedImports) == 0 {
+		t.Fatalf("expected used imports for lodash, got %#v", result.Dependencies)
+	}
+	return result
+}
+
+func mapIdentifierUsage(t *testing.T, repo, stage string) int {
+	t.Helper()
+	scan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan %s patch: %v", stage, err)
+	}
+	if len(scan.Files) == 0 {
+		t.Fatalf("expected scanned files %s patch", stage)
+	}
+	return scan.Files[0].IdentifierUsage["map"]
+}
+
+func applyFirstSuggestionPatch(t *testing.T, repo, sourcePath, original string) {
+	t.Helper()
+	suggest := analyseSuggestOnly(t, repo)
+	codemod := suggest.Dependencies[0].Codemod
+	if codemod == nil || len(codemod.Suggestions) == 0 {
+		t.Fatalf("expected codemod suggestion for patch apply")
+	}
+	patchedContent, err := applySingleLineUnifiedPatch(original, codemod.Suggestions[0].Patch)
+	if err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(patchedContent), 0o644); err != nil {
+		t.Fatalf("write patched source: %v", err)
+	}
 }
 
 func applySingleLineUnifiedPatch(content, patch string) (string, error) {

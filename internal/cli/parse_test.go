@@ -15,6 +15,7 @@ const (
 	unexpectedErrFmt  = "unexpected error: %v"
 	modeMismatchFmt   = "expected mode %q, got %q"
 	languageFlagName  = "--language"
+	suggestOnlyFlag   = "--suggest-only"
 	failAliasFlag     = "--fail-on-increase"
 	thresholdFailFlag = "--threshold-fail-on-increase"
 	scoreWeightFlag   = "--score-weight-usage"
@@ -183,7 +184,7 @@ func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 }
 
 func TestParseArgsAnalyseSuggestOnly(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", "--suggest-only"})
+	req, err := ParseArgs([]string{"analyse", "lodash", suggestOnlyFlag})
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
@@ -383,10 +384,10 @@ func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
 	if _, err := ParseArgs([]string{"analyse", "lodash", "--top", "2"}); err != ErrConflictingTargets {
 		t.Fatalf("expected conflicting-targets error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"analyse", "--top", "2", "--suggest-only"}); err == nil {
+	if _, err := ParseArgs([]string{"analyse", "--top", "2", suggestOnlyFlag}); err == nil {
 		t.Fatalf("expected suggest-only with top target to fail")
 	}
-	if _, err := ParseArgs([]string{"analyse", "--suggest-only"}); err == nil {
+	if _, err := ParseArgs([]string{"analyse", suggestOnlyFlag}); err == nil {
 		t.Fatalf("expected suggest-only without dependency to fail")
 	}
 	if _, err := ParseArgs([]string{"analyse", "--top", "-1"}); err == nil {

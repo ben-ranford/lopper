@@ -37,73 +37,10 @@ func BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath string, 
 	lineWarnings := make([]string, 0)
 
 	for _, file := range scanResult.Files {
-		for _, imp := range file.Imports {
-			if imp.Module != dependency {
-				continue
-			}
-			reasonCode, reasonMessage := codemodSkipReason(imp, file)
-			if reasonCode != "" {
-				skips = append(skips, newCodemodSkip(file.Path, imp, reasonCode, reasonMessage))
-				continue
-			}
-
-			targetModule, ok := resolver.Resolve(dependency, imp.ExportName)
-			if !ok {
-				skips = append(skips, newCodemodSkip(
-					file.Path,
-					imp,
-					codemodReasonNoSubpathTarget,
-					"no deterministic subpath target was found for this export",
-				))
-				continue
-			}
-
-			lines, ok := lineCache[file.Path]
-			if !ok {
-				content, err := safeio.ReadFileUnder(repoPath, filepath.Join(repoPath, file.Path))
-				if err != nil {
-					lineWarnings = append(lineWarnings, fmt.Sprintf("codemod preview skipped for %s: %v", file.Path, err))
-					break
-				}
-				lines = strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
-				lineCache[file.Path] = lines
-			}
-
-			if imp.Location.Line <= 0 || imp.Location.Line > len(lines) {
-				skips = append(skips, newCodemodSkip(
-					file.Path,
-					imp,
-					codemodReasonUnsupportedLine,
-					"unable to map import location to source line",
-				))
-				continue
-			}
-
-			oldLine := lines[imp.Location.Line-1]
-			newLine, ok := rewriteImportLine(oldLine, dependency, imp.ExportName, targetModule)
-			if !ok {
-				skips = append(skips, newCodemodSkip(
-					file.Path,
-					imp,
-					codemodReasonUnsupportedLine,
-					"import statement is not in a supported single-binding form",
-				))
-				continue
-			}
-			if oldLine == newLine {
-				continue
-			}
-			suggestions = append(suggestions, report.CodemodSuggestion{
-				File:        file.Path,
-				Line:        imp.Location.Line,
-				ImportName:  imp.ExportName,
-				FromModule:  dependency,
-				ToModule:    targetModule,
-				Original:    oldLine,
-				Replacement: newLine,
-				Patch:       buildSingleLinePatch(file.Path, imp.Location.Line, oldLine, newLine),
-			})
-		}
+		fileSuggestions, fileSkips, fileWarnings := buildCodemodForFile(repoPath, dependency, resolver, file, lineCache)
+		suggestions = append(suggestions, fileSuggestions...)
+		skips = append(skips, fileSkips...)
+		lineWarnings = append(lineWarnings, fileWarnings...)
 	}
 
 	sort.Slice(suggestions, func(i, j int) bool {
@@ -114,6 +51,108 @@ func BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath string, 
 	})
 
 	return &report.CodemodReport{Mode: codemodModeSuggestOnly, Suggestions: suggestions, Skips: skips}, dedupeStrings(lineWarnings)
+}
+
+func buildCodemodForFile(
+	repoPath string,
+	dependency string,
+	resolver subpathResolver,
+	file FileScan,
+	lineCache map[string][]string,
+) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
+	suggestions := make([]report.CodemodSuggestion, 0)
+	skips := make([]report.CodemodSkip, 0)
+	warnings := make([]string, 0)
+	for _, imp := range file.Imports {
+		if imp.Module != dependency {
+			continue
+		}
+		outcome, warning, stop := buildCodemodOutcome(repoPath, dependency, resolver, file, imp, lineCache)
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+		if outcome.skip != nil {
+			skips = append(skips, *outcome.skip)
+		}
+		if outcome.suggestion != nil {
+			suggestions = append(suggestions, *outcome.suggestion)
+		}
+		if stop {
+			break
+		}
+	}
+	return suggestions, skips, warnings
+}
+
+type codemodOutcome struct {
+	suggestion *report.CodemodSuggestion
+	skip       *report.CodemodSkip
+}
+
+func buildCodemodOutcome(
+	repoPath string,
+	dependency string,
+	resolver subpathResolver,
+	file FileScan,
+	imp ImportBinding,
+	lineCache map[string][]string,
+) (codemodOutcome, string, bool) {
+	reasonCode, reasonMessage := codemodSkipReason(imp, file)
+	if reasonCode != "" {
+		skip := newCodemodSkip(file.Path, imp, reasonCode, reasonMessage)
+		return codemodOutcome{skip: &skip}, "", false
+	}
+
+	targetModule, ok := resolver.Resolve(dependency, imp.ExportName)
+	if !ok {
+		skip := newCodemodSkip(file.Path, imp, codemodReasonNoSubpathTarget, "no deterministic subpath target was found for this export")
+		return codemodOutcome{skip: &skip}, "", false
+	}
+
+	lines, warning, loaded := loadSourceLines(repoPath, file.Path, lineCache)
+	if !loaded {
+		return codemodOutcome{}, warning, true
+	}
+
+	if imp.Location.Line <= 0 || imp.Location.Line > len(lines) {
+		skip := newCodemodSkip(file.Path, imp, codemodReasonUnsupportedLine, "unable to map import location to source line")
+		return codemodOutcome{skip: &skip}, "", false
+	}
+
+	oldLine := lines[imp.Location.Line-1]
+	newLine, ok := rewriteImportLine(oldLine, dependency, imp.ExportName, targetModule)
+	if !ok {
+		skip := newCodemodSkip(file.Path, imp, codemodReasonUnsupportedLine, "import statement is not in a supported single-binding form")
+		return codemodOutcome{skip: &skip}, "", false
+	}
+	if oldLine == newLine {
+		return codemodOutcome{}, "", false
+	}
+
+	suggestion := report.CodemodSuggestion{
+		File:        file.Path,
+		Line:        imp.Location.Line,
+		ImportName:  imp.ExportName,
+		FromModule:  dependency,
+		ToModule:    targetModule,
+		Original:    oldLine,
+		Replacement: newLine,
+		Patch:       buildSingleLinePatch(file.Path, imp.Location.Line, oldLine, newLine),
+	}
+	return codemodOutcome{suggestion: &suggestion}, "", false
+}
+
+func loadSourceLines(repoPath, filePath string, lineCache map[string][]string) ([]string, string, bool) {
+	if lines, ok := lineCache[filePath]; ok {
+		return lines, "", true
+	}
+	content, err := safeio.ReadFileUnder(repoPath, filepath.Join(repoPath, filePath))
+	if err != nil {
+		return nil, fmt.Sprintf("codemod preview skipped for %s: %v", filePath, err), false
+	}
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+	lineCache[filePath] = lines
+	return lines, "", true
 }
 
 func codemodSuggestionOrder(item report.CodemodSuggestion) string {

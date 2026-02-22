@@ -11,7 +11,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-const showDetailErrFmt = "show detail: %v"
+const (
+	showDetailErrFmt = "show detail: %v"
+	indexJSFile      = "index.js"
+)
 
 func TestDetailShowsRiskCues(t *testing.T) {
 	analyzer := stubAnalyzer{
@@ -41,10 +44,10 @@ func TestDetailShowsRiskCues(t *testing.T) {
 					Codemod: &report.CodemodReport{
 						Mode: "suggest-only",
 						Suggestions: []report.CodemodSuggestion{
-							{File: "index.js", Line: 1, FromModule: "risky", ToModule: "risky/map"},
+							{File: indexJSFile, Line: 1, FromModule: "risky", ToModule: "risky/map"},
 						},
 						Skips: []report.CodemodSkip{
-							{File: "index.js", Line: 2, ReasonCode: "namespace-import", Message: "namespace imports are not safe to rewrite automatically"},
+							{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "namespace imports are not safe to rewrite automatically"},
 						},
 					},
 				},
@@ -135,8 +138,8 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	printImportList(&out, "Used imports", []report.ImportUse{{
 		Name:       "map",
 		Module:     "lodash",
-		Locations:  []report.Location{{File: "index.js", Line: 2}},
-		Provenance: []string{"index.js -> barrel.js -> lodash#map"},
+		Locations:  []report.Location{{File: indexJSFile, Line: 2}},
+		Provenance: []string{indexJSFile + " -> barrel.js -> lodash#map"},
 	}})
 	printExportsList(&out, "Unused exports", nil)
 	printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}})
@@ -149,7 +152,7 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(out.String(), "(unknown)") {
 		t.Fatalf("expected unknown module label for empty module exports")
 	}
-	if !strings.Contains(out.String(), "provenance: index.js -> barrel.js -> lodash#map") {
+	if !strings.Contains(out.String(), "provenance: "+indexJSFile+" -> barrel.js -> lodash#map") {
 		t.Fatalf("expected provenance detail in import list output")
 	}
 
