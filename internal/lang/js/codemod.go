@@ -107,28 +107,21 @@ func BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath string, 
 	}
 
 	sort.Slice(suggestions, func(i, j int) bool {
-		if suggestions[i].File == suggestions[j].File {
-			if suggestions[i].Line == suggestions[j].Line {
-				return suggestions[i].ImportName < suggestions[j].ImportName
-			}
-			return suggestions[i].Line < suggestions[j].Line
-		}
-		return suggestions[i].File < suggestions[j].File
+		return codemodSuggestionOrder(suggestions[i]) < codemodSuggestionOrder(suggestions[j])
 	})
 	sort.Slice(skips, func(i, j int) bool {
-		if skips[i].File == skips[j].File {
-			if skips[i].Line == skips[j].Line {
-				if skips[i].ReasonCode == skips[j].ReasonCode {
-					return skips[i].ImportName < skips[j].ImportName
-				}
-				return skips[i].ReasonCode < skips[j].ReasonCode
-			}
-			return skips[i].Line < skips[j].Line
-		}
-		return skips[i].File < skips[j].File
+		return codemodSkipOrder(skips[i]) < codemodSkipOrder(skips[j])
 	})
 
 	return &report.CodemodReport{Mode: codemodModeSuggestOnly, Suggestions: suggestions, Skips: skips}, dedupeStrings(lineWarnings)
+}
+
+func codemodSuggestionOrder(item report.CodemodSuggestion) string {
+	return item.File + "\x00" + fmt.Sprintf("%09d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ToModule
+}
+
+func codemodSkipOrder(item report.CodemodSkip) string {
+	return item.File + "\x00" + fmt.Sprintf("%09d", item.Line) + "\x00" + item.ReasonCode + "\x00" + item.ImportName
 }
 
 func codemodSkipReason(imp ImportBinding, file FileScan) (string, string) {

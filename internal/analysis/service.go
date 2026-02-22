@@ -533,29 +533,14 @@ func mergeCodemodReport(left, right *report.CodemodReport) *report.CodemodReport
 		return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ToModule
 	}, func(items []report.CodemodSuggestion) {
 		sort.Slice(items, func(i, j int) bool {
-			if items[i].File == items[j].File {
-				if items[i].Line == items[j].Line {
-					return items[i].ImportName < items[j].ImportName
-				}
-				return items[i].Line < items[j].Line
-			}
-			return items[i].File < items[j].File
+			return mergedSuggestionSortKey(items[i]) < mergedSuggestionSortKey(items[j])
 		})
 	})
 	skips := mergeUniqueSorted(left.Skips, right.Skips, func(item report.CodemodSkip) string {
 		return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ReasonCode
 	}, func(items []report.CodemodSkip) {
 		sort.Slice(items, func(i, j int) bool {
-			if items[i].File == items[j].File {
-				if items[i].Line == items[j].Line {
-					if items[i].ReasonCode == items[j].ReasonCode {
-						return items[i].ImportName < items[j].ImportName
-					}
-					return items[i].ReasonCode < items[j].ReasonCode
-				}
-				return items[i].Line < items[j].Line
-			}
-			return items[i].File < items[j].File
+			return mergedSkipSortKey(items[i]) < mergedSkipSortKey(items[j])
 		})
 	})
 	return &report.CodemodReport{
@@ -563,6 +548,14 @@ func mergeCodemodReport(left, right *report.CodemodReport) *report.CodemodReport
 		Suggestions: suggestions,
 		Skips:       skips,
 	}
+}
+
+func mergedSuggestionSortKey(item report.CodemodSuggestion) string {
+	return fmt.Sprintf("%s|%09d|%s|%s", item.File, item.Line, item.ImportName, item.ToModule)
+}
+
+func mergedSkipSortKey(item report.CodemodSkip) string {
+	return fmt.Sprintf("%s|%09d|%s|%s", item.File, item.Line, item.ReasonCode, item.ImportName)
 }
 
 func mergeUniqueSorted[T any](left []T, right []T, keyFn func(T) string, sortFn func([]T)) []T {

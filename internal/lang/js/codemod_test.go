@@ -2,47 +2,24 @@ package js
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const lodashFixturePackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
+
 func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
-	repo := t.TempDir()
-	source := "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
-	sourcePath := filepath.Join(repo, "index.js")
-	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	repo, sourcePath, original := setupLodashFixture(t, "import { map } from \"lodash\";\nmap([1], (x) => x)\n")
 
-	depRoot := filepath.Join(repo, "node_modules", "lodash")
-	if err := os.MkdirAll(depRoot, 0o755); err != nil {
-		t.Fatalf("mkdir dependency root: %v", err)
-	}
-	packageJSON := "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(packageJSON), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export { map } from './map.js'\n"), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "map.js"), []byte("export default function map() {}\n"), 0o644); err != nil {
-		t.Fatalf("write map.js: %v", err)
-	}
-
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:       repo,
-		Dependency:     "lodash",
-		SuggestOnly:    true,
-		RuntimeProfile: "node-import",
-	})
-	if err != nil {
-		t.Fatalf("analyse suggest-only: %v", err)
-	}
+	reportData := analyseSuggestOnly(t, repo)
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected 1 dependency report, got %d", len(reportData.Dependencies))
 	}
@@ -71,47 +48,21 @@ func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read source after analyse: %v", err)
 	}
-	if string(contentAfter) != source {
+	if string(contentAfter) != original {
 		t.Fatalf("expected suggest-only mode to avoid mutating source, got %q", string(contentAfter))
 	}
 }
 
 func TestAdapterAnalyseSuggestOnlySkipsUnsafeTransforms(t *testing.T) {
-	repo := t.TempDir()
-	source := strings.Join([]string{
+	repo, _, _ := setupLodashFixture(t, strings.Join([]string{
 		"import \"lodash\"",
 		"import * as lodash from \"lodash\"",
 		"import { map as mapAlias } from \"lodash\"",
 		"mapAlias([1], (x) => x)",
 		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	}, "\n"))
 
-	depRoot := filepath.Join(repo, "node_modules", "lodash")
-	if err := os.MkdirAll(depRoot, 0o755); err != nil {
-		t.Fatalf("mkdir dependency root: %v", err)
-	}
-	packageJSON := "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(packageJSON), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export { map } from './map.js'\n"), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "map.js"), []byte("export default function map() {}\n"), 0o644); err != nil {
-		t.Fatalf("write map.js: %v", err)
-	}
-
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:    repo,
-		Dependency:  "lodash",
-		SuggestOnly: true,
-	})
-	if err != nil {
-		t.Fatalf("analyse suggest-only skips: %v", err)
-	}
+	reportData := analyseSuggestOnly(t, repo)
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected single dependency report, got %d", len(reportData.Dependencies))
 	}
@@ -132,4 +83,149 @@ func TestAdapterAnalyseSuggestOnlySkipsUnsafeTransforms(t *testing.T) {
 			t.Fatalf("expected skip reason %q, got %#v", expected, reasons)
 		}
 	}
+}
+
+func TestSuggestOnlyPatchPreviewAppliesCleanlyOnFixture(t *testing.T) {
+	repo, _, original := setupLodashFixture(t, "import { map } from \"lodash\";\nmap([1], (x) => x)\n")
+
+	reportData := analyseSuggestOnly(t, repo)
+	codemod := reportData.Dependencies[0].Codemod
+	if codemod == nil || len(codemod.Suggestions) == 0 {
+		t.Fatalf("expected codemod suggestions, got %#v", codemod)
+	}
+	patch := codemod.Suggestions[0].Patch
+	updated, err := applySingleLineUnifiedPatch(original, patch)
+	if err != nil {
+		t.Fatalf("expected patch to apply cleanly: %v\npatch:\n%s", err, patch)
+	}
+	if !strings.Contains(updated, "import map from \"lodash/map\";") {
+		t.Fatalf("expected patched import line, got %q", updated)
+	}
+}
+
+func TestSuggestOnlyBehavioralParityAfterApplyingPatch(t *testing.T) {
+	repo, sourcePath, original := setupLodashFixture(t, "import { map } from \"lodash\";\nmap([1], (x) => x)\n")
+	adapter := NewAdapter()
+
+	beforeScan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan before patch: %v", err)
+	}
+	if len(beforeScan.Files) == 0 {
+		t.Fatalf("expected scanned files before patch")
+	}
+	beforeMapUsage := beforeScan.Files[0].IdentifierUsage["map"]
+
+	before, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "lodash"})
+	if err != nil {
+		t.Fatalf("analyse before patch: %v", err)
+	}
+	if len(before.Dependencies) != 1 || len(before.Dependencies[0].UsedImports) == 0 {
+		t.Fatalf("expected used imports before patch, got %#v", before.Dependencies)
+	}
+
+	suggest := analyseSuggestOnly(t, repo)
+	codemod := suggest.Dependencies[0].Codemod
+	if codemod == nil || len(codemod.Suggestions) == 0 {
+		t.Fatalf("expected codemod suggestion for parity test")
+	}
+	patchedContent, err := applySingleLineUnifiedPatch(original, codemod.Suggestions[0].Patch)
+	if err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(patchedContent), 0o644); err != nil {
+		t.Fatalf("write patched source: %v", err)
+	}
+
+	after, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "lodash"})
+	if err != nil {
+		t.Fatalf("analyse after patch: %v", err)
+	}
+	if len(after.Dependencies) != 1 || len(after.Dependencies[0].UsedImports) == 0 {
+		t.Fatalf("expected used imports after patch, got %#v", after.Dependencies)
+	}
+	afterScan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan after patch: %v", err)
+	}
+	if len(afterScan.Files) == 0 {
+		t.Fatalf("expected scanned files after patch")
+	}
+	afterMapUsage := afterScan.Files[0].IdentifierUsage["map"]
+	if beforeMapUsage != afterMapUsage {
+		t.Fatalf("expected local map identifier usage parity, before=%d after=%d", beforeMapUsage, afterMapUsage)
+	}
+	if len(before.Dependencies[0].UsedImports) != len(after.Dependencies[0].UsedImports) {
+		t.Fatalf("expected same used import count before/after patch, before=%d after=%d", len(before.Dependencies[0].UsedImports), len(after.Dependencies[0].UsedImports))
+	}
+}
+
+func setupLodashFixture(t *testing.T, source string) (repo string, sourcePath string, original string) {
+	t.Helper()
+	repo = t.TempDir()
+	sourcePath = filepath.Join(repo, "index.js")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	depRoot := filepath.Join(repo, "node_modules", "lodash")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(lodashFixturePackageJSON), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export { map } from './map.js'\n"), 0o644); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "map.js"), []byte("export default function map() {}\n"), 0o644); err != nil {
+		t.Fatalf("write map.js: %v", err)
+	}
+	return repo, sourcePath, source
+}
+
+func analyseSuggestOnly(t *testing.T, repo string) report.Report {
+	t.Helper()
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:       repo,
+		Dependency:     "lodash",
+		SuggestOnly:    true,
+		RuntimeProfile: "node-import",
+	})
+	if err != nil {
+		t.Fatalf("analyse suggest-only: %v", err)
+	}
+	return result
+}
+
+func applySingleLineUnifiedPatch(content, patch string) (string, error) {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	patchLines := strings.Split(strings.ReplaceAll(strings.TrimSpace(patch), "\r\n", "\n"), "\n")
+	if len(patchLines) < 5 {
+		return "", fmt.Errorf("invalid patch, expected at least 5 lines")
+	}
+	hunk := patchLines[2]
+	if !strings.HasPrefix(hunk, "@@ -") {
+		return "", fmt.Errorf("invalid hunk header: %q", hunk)
+	}
+	parts := strings.Fields(strings.Trim(hunk, "@ "))
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid hunk parts: %q", hunk)
+	}
+	oldPos := strings.TrimPrefix(parts[0], "-")
+	lineNumPart := strings.SplitN(oldPos, ",", 2)[0]
+	lineNum, err := strconv.Atoi(lineNumPart)
+	if err != nil || lineNum <= 0 {
+		return "", fmt.Errorf("invalid line number in hunk: %q", oldPos)
+	}
+	if lineNum > len(lines) {
+		return "", fmt.Errorf("hunk line out of range: %d", lineNum)
+	}
+	oldLine := strings.TrimPrefix(patchLines[3], "-")
+	newLine := strings.TrimPrefix(patchLines[4], "+")
+	if lines[lineNum-1] != oldLine {
+		return "", fmt.Errorf("source line mismatch at %d: got %q want %q", lineNum, lines[lineNum-1], oldLine)
+	}
+	lines[lineNum-1] = newLine
+	return strings.Join(lines, "\n"), nil
 }
