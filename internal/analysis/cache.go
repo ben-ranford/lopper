@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
@@ -132,7 +133,6 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 		"dependency":     req.Dependency,
 		"topN":           req.TopN,
 		"runtimeProfile": req.RuntimeProfile,
-		"language":       req.Language,
 		"configPath":     strings.TrimSpace(req.ConfigPath),
 	}
 	if req.MinUsagePercentForRecommendations != nil {
@@ -316,13 +316,11 @@ func buildFileRecord(rootPath, path string) (string, error) {
 }
 
 func shouldSkipCacheDir(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	switch name {
-	case ".git", ".idea", ".vscode", "node_modules", "vendor", "dist", "build", ".next", ".turbo", "coverage", "tmp", "cache", "target", "bin", "obj", "__pycache__", ".pytest_cache", ".mypy_cache", ".lopper-cache":
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == ".lopper-cache" {
 		return true
-	default:
-		return false
 	}
+	return shared.ShouldSkipCommonDir(normalized)
 }
 
 func isCacheRelevantFile(path string) bool {
@@ -386,16 +384,28 @@ func sha256Hex(data []byte) string {
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	return nil
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err == nil {
+		return nil
+	}
+	_ = os.Remove(tmpPath)
+	// Windows cannot atomically rename over existing files; fall back to overwrite.
+	return os.WriteFile(path, data, 0o600)
 }
