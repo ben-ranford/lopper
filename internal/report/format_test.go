@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -68,6 +69,69 @@ func TestFormatJSON(t *testing.T) {
 	}
 	if !strings.Contains(output, "repoPath") {
 		t.Fatalf("expected json output to include repoPath")
+	}
+}
+
+func TestFormatSARIF(t *testing.T) {
+	wasteIncrease := 2.5
+	reportData := Report{
+		SchemaVersion: "0.1.0",
+		Dependencies: []DependencyReport{
+			{
+				Language: "js-ts",
+				Name:     "lodash",
+				UsedImports: []ImportUse{
+					{
+						Name:   "map",
+						Module: "lodash/map",
+						Locations: []Location{
+							{File: "src/main.ts", Line: 12, Column: 4},
+						},
+					},
+				},
+				UnusedImports: []ImportUse{
+					{
+						Name:   "debounce",
+						Module: "lodash",
+						Locations: []Location{
+							{File: "src/main.ts", Line: 3, Column: 1},
+						},
+					},
+				},
+				UnusedExports: []SymbolRef{
+					{Name: "omit", Module: "lodash"},
+				},
+				RiskCues: []RiskCue{
+					{Code: "dynamic-loader", Severity: "medium", Message: "dynamic module loading detected"},
+				},
+				Recommendations: []Recommendation{
+					{Code: "prefer-subpath-imports", Priority: "high", Message: "switch to subpath imports"},
+				},
+			},
+		},
+		WasteIncreasePercent: &wasteIncrease,
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if !strings.Contains(output, "\"version\": \"2.1.0\"") {
+		t.Fatalf("expected SARIF version in output")
+	}
+	if !strings.Contains(output, "lopper/waste/unused-import") {
+		t.Fatalf("expected unused-import rule in output")
+	}
+	if !strings.Contains(output, "src/main.ts") {
+		t.Fatalf("expected source locations in output")
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected valid SARIF JSON: %v", err)
+	}
+	if payload["version"] != "2.1.0" {
+		t.Fatalf("expected SARIF version 2.1.0, got %#v", payload["version"])
 	}
 }
 

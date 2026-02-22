@@ -65,6 +65,19 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseTopSARIF(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", "sarif"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.TopN != 5 {
+		t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
+	}
+	if req.Analyse.Format != report.FormatSARIF {
+		t.Fatalf("expected format %q, got %q", report.FormatSARIF, req.Analyse.Format)
+	}
+}
+
 func TestParseArgsAnalyseLanguage(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", languageFlagName, "js-ts"})
 	if err != nil {

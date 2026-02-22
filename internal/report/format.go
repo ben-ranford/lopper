@@ -24,6 +24,8 @@ func (f Formatter) Format(report Report, format Format) (string, error) {
 			return "", err
 		}
 		return string(payload) + "\n", nil
+	case FormatSARIF:
+		return formatSARIF(report)
 	default:
 		return "", ErrUnknownFormat
 	}
