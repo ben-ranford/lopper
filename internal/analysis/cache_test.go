@@ -10,6 +10,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	cacheTestJSIndexFileName     = "index.js"
+	cacheTestPackageJSONFileName = "package.json"
+)
+
 type countingAdapter struct {
 	id    string
 	calls int
@@ -36,8 +41,8 @@ func (a *countingAdapter) Analyse(context.Context, language.Request) (report.Rep
 
 func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
 
 	adapter := &countingAdapter{id: "cachelang"}
 	reg := language.NewRegistry()
@@ -79,7 +84,7 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 		t.Fatalf("unexpected second cache metadata: %#v", second.Cache)
 	}
 
-	writeFile(t, filepath.Join(repo, "index.js"), "import { filter } from \"lodash\"\nfilter([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { filter } from \"lodash\"\nfilter([1], (x) => x)\n")
 	third, err := svc.Analyse(context.Background(), req)
 	if err != nil {
 		t.Fatalf("third analyse: %v", err)
@@ -97,7 +102,7 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 
 func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
+	writeFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 
 	adapter := &countingAdapter{id: "cachelang"}
 	reg := language.NewRegistry()

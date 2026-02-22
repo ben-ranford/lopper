@@ -173,7 +173,7 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, err
 	}
 	var pointer cachePointer
-	if err := json.Unmarshal(pointerData, &pointer); err != nil {
+	if err = json.Unmarshal(pointerData, &pointer); err != nil {
 		c.metadata.Misses++
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "pointer-corrupt"})
 		return report.Report{}, false, nil
@@ -197,7 +197,7 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	}
 
 	var payload cachedPayload
-	if err := json.Unmarshal(objectData, &payload); err != nil {
+	if err = json.Unmarshal(objectData, &payload); err != nil {
 		c.metadata.Misses++
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
 		return report.Report{}, false, nil
@@ -239,7 +239,7 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	return nil
 }
 
-func (c *analysisCache) computeInputDigest(rootPath string, configPath string) (string, error) {
+func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
 	rootPath = filepath.Clean(rootPath)
 	records, err := c.collectRelevantFiles(rootPath)
 	if err != nil {
@@ -266,39 +266,53 @@ func (c *analysisCache) computeInputDigest(rootPath string, configPath string) (
 func (c *analysisCache) collectRelevantFiles(rootPath string) ([]string, error) {
 	records := make([]string, 0, 128)
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == rootPath {
-			return nil
-		}
-		if d.IsDir() {
-			if shouldSkipCacheDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if !isCacheRelevantFile(path) {
-			return nil
-		}
-		rel, err := filepath.Rel(rootPath, path)
-		if err != nil {
-			return err
-		}
-		digest, err := hashFile(path)
-		if err != nil {
-			return err
-		}
-		records = append(records, filepath.ToSlash(rel)+"\x00"+digest)
-		return nil
+		return collectFileRecord(rootPath, path, d, walkErr, &records)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return records, nil
+}
+
+func collectFileRecord(rootPath, path string, d fs.DirEntry, walkErr error, records *[]string) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if path == rootPath {
+		return nil
+	}
+	if shouldSkipDirEntry(d) {
+		return filepath.SkipDir
+	}
+	if !shouldHashFile(path, d) {
+		return nil
+	}
+	record, err := buildFileRecord(rootPath, path)
+	if err != nil {
+		return err
+	}
+	*records = append(*records, record)
+	return nil
+}
+
+func shouldSkipDirEntry(d fs.DirEntry) bool {
+	return d.IsDir() && shouldSkipCacheDir(d.Name())
+}
+
+func shouldHashFile(path string, d fs.DirEntry) bool {
+	return d.Type().IsRegular() && isCacheRelevantFile(path)
+}
+
+func buildFileRecord(rootPath, path string) (string, error) {
+	rel, err := filepath.Rel(rootPath, path)
+	if err != nil {
+		return "", err
+	}
+	digest, err := hashFile(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel) + "\x00" + digest, nil
 }
 
 func shouldSkipCacheDir(name string) bool {

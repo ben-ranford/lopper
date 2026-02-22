@@ -156,25 +156,16 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 	rootSeen := make(map[string]struct{})
 	for _, root := range candidateRoots(candidate.Detection.Roots, repoPath) {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)
-		if _, ok := rootSeen[normalizedRoot]; ok {
+		if alreadySeenRoot(rootSeen, normalizedRoot) {
 			continue
 		}
-		rootSeen[normalizedRoot] = struct{}{}
 
-		cacheEntry, err := cache.prepareEntry(req, candidate.Adapter.ID(), normalizedRoot)
-		if err != nil {
-			cache.warn("analysis cache skipped for " + candidate.Adapter.ID() + ":" + normalizedRoot + ": " + err.Error())
-			cacheEntry = cacheEntryDescriptor{}
-		} else if cacheEntry.KeyDigest != "" {
-			cachedReport, hit, lookupErr := cache.lookup(cacheEntry)
-			if lookupErr != nil {
-				cache.warn("analysis cache lookup failed for " + candidate.Adapter.ID() + ":" + normalizedRoot + ": " + lookupErr.Error())
-			} else if hit {
-				applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
-				adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
-				reports = append(reports, cachedReport)
-				continue
-			}
+		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot)
+		if hit {
+			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
+			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			reports = append(reports, cachedReport)
+			continue
 		}
 
 		current, err := candidate.Adapter.Analyse(ctx, language.Request{
@@ -192,16 +183,46 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			}
 			return nil, nil, err
 		}
-		if cacheEntry.KeyDigest != "" {
-			if storeErr := cache.store(cacheEntry, current); storeErr != nil {
-				cache.warn("analysis cache store failed for " + candidate.Adapter.ID() + ":" + normalizedRoot + ": " + storeErr.Error())
-			}
-		}
+		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
 		reports = append(reports, current)
 	}
 	return reports, warnings, nil
+}
+
+func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
+	if _, ok := seen[normalizedRoot]; ok {
+		return true
+	}
+	seen[normalizedRoot] = struct{}{}
+	return false
+}
+
+func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string) (cacheEntryDescriptor, report.Report, bool) {
+	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot)
+	if err != nil {
+		cache.warn("analysis cache skipped for " + adapterID + ":" + normalizedRoot + ": " + err.Error())
+		return cacheEntryDescriptor{}, report.Report{}, false
+	}
+	if cacheEntry.KeyDigest == "" {
+		return cacheEntry, report.Report{}, false
+	}
+	cachedReport, hit, lookupErr := cache.lookup(cacheEntry)
+	if lookupErr != nil {
+		cache.warn("analysis cache lookup failed for " + adapterID + ":" + normalizedRoot + ": " + lookupErr.Error())
+		return cacheEntry, report.Report{}, false
+	}
+	return cacheEntry, cachedReport, hit
+}
+
+func storeCachedReport(cache *analysisCache, adapterID, normalizedRoot string, cacheEntry cacheEntryDescriptor, current report.Report) {
+	if cacheEntry.KeyDigest == "" {
+		return
+	}
+	if storeErr := cache.store(cacheEntry, current); storeErr != nil {
+		cache.warn("analysis cache store failed for " + adapterID + ":" + normalizedRoot + ": " + storeErr.Error())
+	}
 }
 
 func resolveRemovalCandidateWeights(weights *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
