@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -68,6 +69,32 @@ func TestFormatJSON(t *testing.T) {
 	}
 	if !strings.Contains(output, "repoPath") {
 		t.Fatalf("expected json output to include repoPath")
+	}
+}
+
+func TestFormatSARIF(t *testing.T) {
+	reportData := sampleSARIFReport()
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if !strings.Contains(output, "\"version\": \"2.1.0\"") {
+		t.Fatalf("expected SARIF version in output")
+	}
+	if !strings.Contains(output, "lopper/waste/unused-import") {
+		t.Fatalf("expected unused-import rule in output")
+	}
+	if !strings.Contains(output, "src/main.ts") {
+		t.Fatalf("expected source locations in output")
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected valid SARIF JSON: %v", err)
+	}
+	if payload["version"] != "2.1.0" {
+		t.Fatalf("expected SARIF version 2.1.0, got %#v", payload["version"])
 	}
 }
 

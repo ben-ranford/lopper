@@ -55,6 +55,12 @@ Emit JSON:
 lopper analyse --top 20 --repo . --language all --format json
 ```
 
+Emit SARIF for code scanning:
+
+```bash
+lopper analyse --top 20 --repo . --language all --format sarif > lopper.sarif
+```
+
 Launch the interactive TUI:
 
 ```bash
@@ -182,6 +188,7 @@ make build
 ## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Runtime trace annotations: `scripts/runtime/`
 - Adapter and architecture extensibility: `docs/extensibility.md`
