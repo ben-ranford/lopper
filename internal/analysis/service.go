@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -172,6 +173,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			RepoPath:                          normalizedRoot,
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,
+			SuggestOnly:                       req.SuggestOnly,
 			RuntimeProfile:                    req.RuntimeProfile,
 			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
 			RemovalCandidateWeights:           req.RemovalCandidateWeights,
@@ -354,6 +356,7 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 	merged.UnusedExports = mergeSymbolRefs(left.UnusedExports, right.UnusedExports)
 	merged.RiskCues = mergeRiskCues(left.RiskCues, right.RiskCues)
 	merged.Recommendations = mergeRecommendations(left.Recommendations, right.Recommendations)
+	merged.Codemod = mergeCodemodReport(left.Codemod, right.Codemod)
 	merged.TopUsedSymbols = mergeTopSymbols(left.TopUsedSymbols, right.TopUsedSymbols)
 	merged.RuntimeUsage = mergeRuntimeUsage(left.RuntimeUsage, right.RuntimeUsage)
 
@@ -507,6 +510,59 @@ func mergeRecommendations(left []report.Recommendation, right []report.Recommend
 			return recommendationLess(items[i], items[j])
 		})
 	})
+}
+
+func mergeCodemodReport(left, right *report.CodemodReport) *report.CodemodReport {
+	if left == nil && right == nil {
+		return nil
+	}
+	if left == nil {
+		copyRight := *right
+		return &copyRight
+	}
+	if right == nil {
+		copyLeft := *left
+		return &copyLeft
+	}
+
+	mode := left.Mode
+	if strings.TrimSpace(mode) == "" {
+		mode = right.Mode
+	}
+	suggestions := mergeUniqueSorted(left.Suggestions, right.Suggestions, func(item report.CodemodSuggestion) string {
+		return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ToModule
+	}, func(items []report.CodemodSuggestion) {
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].File == items[j].File {
+				if items[i].Line == items[j].Line {
+					return items[i].ImportName < items[j].ImportName
+				}
+				return items[i].Line < items[j].Line
+			}
+			return items[i].File < items[j].File
+		})
+	})
+	skips := mergeUniqueSorted(left.Skips, right.Skips, func(item report.CodemodSkip) string {
+		return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ReasonCode
+	}, func(items []report.CodemodSkip) {
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].File == items[j].File {
+				if items[i].Line == items[j].Line {
+					if items[i].ReasonCode == items[j].ReasonCode {
+						return items[i].ImportName < items[j].ImportName
+					}
+					return items[i].ReasonCode < items[j].ReasonCode
+				}
+				return items[i].Line < items[j].Line
+			}
+			return items[i].File < items[j].File
+		})
+	})
+	return &report.CodemodReport{
+		Mode:        mode,
+		Suggestions: suggestions,
+		Skips:       skips,
+	}
 }
 
 func mergeUniqueSorted[T any](left []T, right []T, keyFn func(T) string, sortFn func([]T)) []T {

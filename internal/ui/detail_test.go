@@ -38,6 +38,15 @@ func TestDetailShowsRiskCues(t *testing.T) {
 					Recommendations: []report.Recommendation{
 						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
 					},
+					Codemod: &report.CodemodReport{
+						Mode: "suggest-only",
+						Suggestions: []report.CodemodSuggestion{
+							{File: "index.js", Line: 1, FromModule: "risky", ToModule: "risky/map"},
+						},
+						Skips: []report.CodemodSkip{
+							{File: "index.js", Line: 2, ReasonCode: "namespace-import", Message: "namespace imports are not safe to rewrite automatically"},
+						},
+					},
 				},
 			},
 		},
@@ -70,6 +79,12 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 	if !strings.Contains(output, "[MEDIUM] prefer-subpath-imports") {
 		t.Fatalf("expected recommendation entry, got: %s", output)
+	}
+	if !strings.Contains(output, "Codemod preview") || !strings.Contains(output, "mode: suggest-only") {
+		t.Fatalf("expected codemod section, got: %s", output)
+	}
+	if !strings.Contains(output, "[namespace-import]") {
+		t.Fatalf("expected codemod skip reason code in output, got: %s", output)
 	}
 }
 

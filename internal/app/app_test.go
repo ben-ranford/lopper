@@ -65,6 +65,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req.Mode = ModeAnalyse
 	req.Analyse.TopN = 1
 	req.Analyse.Format = report.FormatJSON
+	req.Analyse.SuggestOnly = true
 	req.Analyse.RuntimeProfile = "browser-import"
 	req.Analyse.CacheEnabled = false
 	req.Analyse.CachePath = "/tmp/lopper-cache"
@@ -102,6 +103,9 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	if analyzer.lastReq.Cache.Enabled || analyzer.lastReq.Cache.Path != "/tmp/lopper-cache" || !analyzer.lastReq.Cache.ReadOnly {
 		t.Fatalf("unexpected cache options forwarded: %#v", analyzer.lastReq.Cache)
+	}
+	if !analyzer.lastReq.SuggestOnly {
+		t.Fatalf("expected suggest-only flag to be forwarded")
 	}
 	if analyzer.lastReq.RemovalCandidateWeights == nil {
 		t.Fatalf("expected removal candidate weights to be forwarded")

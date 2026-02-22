@@ -69,6 +69,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	printRuntimeUsage(d.Out, dep.RuntimeUsage)
 	printRiskCues(d.Out, dep.RiskCues)
 	printRecommendations(d.Out, dep.Recommendations)
+	printCodemod(d.Out, dep.Codemod)
 
 	printImportList(d.Out, "Used imports", dep.UsedImports)
 	printImportList(d.Out, "Unused imports", dep.UnusedImports)
@@ -136,6 +137,27 @@ func printRecommendations(out io.Writer, recommendations []report.Recommendation
 			_, _ = fmt.Fprintf(w, "    rationale: %s\n", rec.Rationale)
 		}
 	})
+}
+
+func printCodemod(out io.Writer, codemod *report.CodemodReport) {
+	_, _ = fmt.Fprintln(out, "Codemod preview")
+	if codemod == nil {
+		_, _ = fmt.Fprintln(out, noneLabel)
+		_, _ = fmt.Fprintln(out, "")
+		return
+	}
+	if codemod.Mode != "" {
+		_, _ = fmt.Fprintf(out, "  - mode: %s\n", codemod.Mode)
+	}
+	_, _ = fmt.Fprintf(out, "  - suggestions: %d\n", len(codemod.Suggestions))
+	for _, suggestion := range codemod.Suggestions {
+		_, _ = fmt.Fprintf(out, "    - %s:%d %s -> %s\n", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule)
+	}
+	_, _ = fmt.Fprintf(out, "  - skips: %d\n", len(codemod.Skips))
+	for _, skip := range codemod.Skips {
+		_, _ = fmt.Fprintf(out, "    - %s:%d [%s] %s\n", skip.File, skip.Line, skip.ReasonCode, skip.Message)
+	}
+	_, _ = fmt.Fprintln(out, "")
 }
 
 func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {

@@ -161,6 +161,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 			scanResult,
 			req.RuntimeProfile,
 			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+			req.SuggestOnly,
 		)
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
@@ -197,6 +198,7 @@ func buildDependencyReport(
 	scanResult ScanResult,
 	runtimeProfile string,
 	minUsagePercentForRecommendations int,
+	suggestOnly bool,
 ) (report.DependencyReport, []string) {
 	warnings := make([]string, 0)
 
@@ -231,6 +233,11 @@ func buildDependencyReport(
 		RiskCues:             riskCues,
 	}
 	depReport.Recommendations = buildRecommendations(dependency, depReport, minUsagePercentForRecommendations)
+	if suggestOnly {
+		codemod, codemodWarnings := BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath, scanResult)
+		depReport.Codemod = codemod
+		warnings = append(warnings, codemodWarnings...)
+	}
 	return depReport, warnings
 }
 
@@ -597,6 +604,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 			scanResult,
 			runtimeProfile,
 			minUsagePercentForRecommendations,
+			false,
 		)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)

@@ -22,6 +22,7 @@ type Request struct {
 type AnalyseRequest struct {
 	Dependency         string
 	TopN               int
+	SuggestOnly        bool
 	Format             report.Format
 	Language           string
 	CacheEnabled       bool
