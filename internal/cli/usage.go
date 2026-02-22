@@ -3,14 +3,17 @@ package cli
 const usage = `Usage:
   lopper [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  lopper analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH]
-  lopper analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--fail-on-increase PERCENT]
+  lopper analyse <dependency> [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH]
+  lopper analyse --top N [--repo PATH] [--format table|json] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)
   --top N                    Rank top N dependencies by waste
   --format table|json        Output format for analyse (default: table)
   --language ID              Language adapter (default: auto)
+  --cache=true|false         Enable or disable incremental analysis cache (default: true)
+  --cache-path PATH          Cache directory path (default: <repo>/.lopper-cache)
+  --cache-readonly           Read cache entries but do not write misses
   --runtime-profile PROFILE  Conditional exports runtime profile (default: node-import)
   --baseline PATH            Baseline report (JSON) for comparison
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations

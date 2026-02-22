@@ -135,6 +135,28 @@ func TestParseArgsAnalyseRuntimeProfile(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseCacheFlags(t *testing.T) {
+	req, err := ParseArgs([]string{
+		"analyse",
+		"lodash",
+		"--cache=false",
+		"--cache-path", "/tmp/lopper-cache",
+		"--cache-readonly",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.CacheEnabled {
+		t.Fatalf("expected cache to be disabled")
+	}
+	if req.Analyse.CachePath != "/tmp/lopper-cache" {
+		t.Fatalf("expected cache path /tmp/lopper-cache, got %q", req.Analyse.CachePath)
+	}
+	if !req.Analyse.CacheReadOnly {
+		t.Fatalf("expected cache readonly mode enabled")
+	}
+}
+
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if err != nil {

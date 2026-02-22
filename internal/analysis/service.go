@@ -68,15 +68,18 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+	cache := newAnalysisCache(req, repoPath)
 
-	reports, warnings, err := s.runCandidates(ctx, req, repoPath, candidates)
+	reports, warnings, err := s.runCandidates(ctx, req, repoPath, candidates, cache)
 	if err != nil {
 		return report.Report{}, err
 	}
+	warnings = append(warnings, cache.takeWarnings()...)
 	if len(reports) == 0 {
 		reportData := report.Report{
 			RepoPath: repoPath,
 			Warnings: append(warnings, "no language adapter produced results"),
+			Cache:    cache.metadataSnapshot(),
 		}
 		reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
 		if err != nil {
@@ -90,6 +93,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 
 	reportData := mergeReports(repoPath, reports)
 	reportData.Warnings = append(reportData.Warnings, warnings...)
+	reportData.Cache = cache.metadataSnapshot()
 
 	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
 	if err != nil {
@@ -120,13 +124,13 @@ func (s *Service) prepareAnalysis(ctx context.Context, req Request) (string, []l
 	return repoPath, candidates, nil
 }
 
-func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate) ([]report.Report, []string, error) {
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate)
+		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -146,7 +150,7 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
 }
 
-func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate) ([]report.Report, []string, error) {
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
 	rootSeen := make(map[string]struct{})
@@ -156,6 +160,22 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			continue
 		}
 		rootSeen[normalizedRoot] = struct{}{}
+
+		cacheEntry, err := cache.prepareEntry(req, candidate.Adapter.ID(), normalizedRoot)
+		if err != nil {
+			cache.warn("analysis cache skipped for " + candidate.Adapter.ID() + ":" + normalizedRoot + ": " + err.Error())
+			cacheEntry = cacheEntryDescriptor{}
+		} else if cacheEntry.KeyDigest != "" {
+			cachedReport, hit, lookupErr := cache.lookup(cacheEntry)
+			if lookupErr != nil {
+				cache.warn("analysis cache lookup failed for " + candidate.Adapter.ID() + ":" + normalizedRoot + ": " + lookupErr.Error())
+			} else if hit {
+				applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
+				adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+				reports = append(reports, cachedReport)
+				continue
+			}
+		}
 
 		current, err := candidate.Adapter.Analyse(ctx, language.Request{
 			RepoPath:                          normalizedRoot,
@@ -171,6 +191,11 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 				continue
 			}
 			return nil, nil, err
+		}
+		if cacheEntry.KeyDigest != "" {
+			if storeErr := cache.store(cacheEntry, current); storeErr != nil {
+				cache.warn("analysis cache store failed for " + candidate.Adapter.ID() + ":" + normalizedRoot + ": " + storeErr.Error())
+			}
 		}
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)

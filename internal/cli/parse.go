@@ -67,6 +67,9 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		TopN:               *flags.top,
 		Format:             format,
 		Language:           strings.TrimSpace(*flags.languageFlag),
+		CacheEnabled:       *flags.cacheEnabled,
+		CachePath:          strings.TrimSpace(*flags.cachePath),
+		CacheReadOnly:      *flags.cacheReadOnly,
 		RuntimeProfile:     strings.TrimSpace(*flags.runtimeProfile),
 		BaselinePath:       strings.TrimSpace(*flags.baselinePath),
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
@@ -82,6 +85,9 @@ type analyseFlagValues struct {
 	repoPath                      *string
 	top                           *int
 	formatFlag                    *string
+	cacheEnabled                  *bool
+	cachePath                     *string
+	cacheReadOnly                 *bool
 	legacyFailOnIncrease          *int
 	thresholdFailOnIncrease       *int
 	thresholdLowConfidenceWarning *int
@@ -105,6 +111,9 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
 		top:                           fs.Int("top", 0, "top N dependencies"),
 		formatFlag:                    fs.String("format", string(req.Analyse.Format), "output format"),
+		cacheEnabled:                  fs.Bool("cache", req.Analyse.CacheEnabled, "enable incremental analysis cache"),
+		cachePath:                     fs.String("cache-path", req.Analyse.CachePath, "analysis cache directory path"),
+		cacheReadOnly:                 fs.Bool("cache-readonly", req.Analyse.CacheReadOnly, "read cache without writing new entries"),
 		legacyFailOnIncrease:          fs.Int("fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "fail if waste increases beyond threshold"),
 		thresholdFailOnIncrease:       fs.Int("threshold-fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "waste increase threshold for CI failure"),
 		thresholdLowConfidenceWarning: fs.Int("threshold-low-confidence-warning", req.Analyse.Thresholds.LowConfidenceWarningPercent, "low-confidence warning threshold"),
@@ -284,7 +293,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

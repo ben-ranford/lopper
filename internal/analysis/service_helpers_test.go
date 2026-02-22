@@ -225,7 +225,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 		},
 	}
 	svc := &Service{}
-	reports, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all", TopN: 1}, ".", candidate)
+	reports, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all", TopN: 1}, ".", candidate, nil)
 	if err != nil {
 		t.Fatalf("runCandidateOnRoots: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 			Matched: true,
 		},
 	}
-	if _, _, err := svc.runCandidates(context.Background(), Request{RepoPath: ".", Language: "js-ts", TopN: 1}, ".", []language.Candidate{broken}); err == nil {
+	if _, _, err := svc.runCandidates(context.Background(), Request{RepoPath: ".", Language: "js-ts", TopN: 1}, ".", []language.Candidate{broken}, nil); err == nil {
 		t.Fatalf("expected runCandidates error for single-language adapter failure")
 	}
 }

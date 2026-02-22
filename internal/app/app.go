@@ -77,11 +77,17 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		Dependency:                        req.Analyse.Dependency,
 		TopN:                              req.Analyse.TopN,
 		Language:                          req.Analyse.Language,
+		ConfigPath:                        req.Analyse.ConfigPath,
 		RuntimeProfile:                    req.Analyse.RuntimeProfile,
 		RuntimeTracePath:                  runtimeTracePath,
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
 		RemovalCandidateWeights:           &weights,
+		Cache: &analysis.CacheOptions{
+			Enabled:  req.Analyse.CacheEnabled,
+			Path:     req.Analyse.CachePath,
+			ReadOnly: req.Analyse.CacheReadOnly,
+		},
 	})
 	if err != nil {
 		return "", err

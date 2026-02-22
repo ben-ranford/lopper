@@ -24,6 +24,9 @@ type AnalyseRequest struct {
 	TopN               int
 	Format             report.Format
 	Language           string
+	CacheEnabled       bool
+	CachePath          string
+	CacheReadOnly      bool
 	RuntimeProfile     string
 	BaselinePath       string
 	RuntimeTracePath   string
@@ -48,6 +51,7 @@ func DefaultRequest() Request {
 		Analyse: AnalyseRequest{
 			Format:         report.FormatTable,
 			Language:       "auto",
+			CacheEnabled:   true,
 			RuntimeProfile: "node-import",
 			Thresholds:     thresholds.Defaults(),
 		},

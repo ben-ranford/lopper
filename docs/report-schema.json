@@ -18,6 +18,7 @@
       "type": "array",
       "items": { "$ref": "#/$defs/languageSummary" }
     },
+    "cache": { "$ref": "#/$defs/cacheMetadata" },
     "effectiveThresholds": { "$ref": "#/$defs/effectiveThresholds" },
     "warnings": {
       "type": "array",
@@ -57,6 +58,32 @@
         "failOnIncreasePercent": { "type": "integer", "minimum": 0 },
         "lowConfidenceWarningPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
         "minUsagePercentForRecommendations": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "cacheMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "hits", "misses", "writes"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "path": { "type": "string" },
+        "readOnly": { "type": "boolean" },
+        "hits": { "type": "integer", "minimum": 0 },
+        "misses": { "type": "integer", "minimum": 0 },
+        "writes": { "type": "integer", "minimum": 0 },
+        "invalidations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/cacheInvalidation" }
+        }
+      }
+    },
+    "cacheInvalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "reason"],
+      "properties": {
+        "key": { "type": "string" },
+        "reason": { "type": "string" }
       }
     },
     "dependencyReport": {
