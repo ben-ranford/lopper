@@ -36,9 +36,25 @@ type Report struct {
 	Dependencies         []DependencyReport   `json:"dependencies"`
 	Summary              *Summary             `json:"summary,omitempty"`
 	LanguageBreakdown    []LanguageSummary    `json:"languageBreakdown,omitempty"`
+	Cache                *CacheMetadata       `json:"cache,omitempty"`
 	EffectiveThresholds  *EffectiveThresholds `json:"effectiveThresholds,omitempty"`
 	Warnings             []string             `json:"warnings,omitempty"`
 	WasteIncreasePercent *float64             `json:"wasteIncreasePercent,omitempty"`
+}
+
+type CacheMetadata struct {
+	Enabled       bool                `json:"enabled"`
+	Path          string              `json:"path,omitempty"`
+	ReadOnly      bool                `json:"readOnly,omitempty"`
+	Hits          int                 `json:"hits"`
+	Misses        int                 `json:"misses"`
+	Writes        int                 `json:"writes"`
+	Invalidations []CacheInvalidation `json:"invalidations,omitempty"`
+}
+
+type CacheInvalidation struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
 }
 
 type EffectiveThresholds struct {

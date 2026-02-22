@@ -16,6 +16,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `summary`: aggregated totals across all dependency rows.
 - `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`).
 - `effectiveThresholds`: resolved thresholds applied for this run (`CLI > config > defaults`).
+- `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
 - `dependencies[].language`: language tag for each dependency row.
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
@@ -29,5 +30,6 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `runtimeUsage.correlation` distinguishes `static-only`, `runtime-only`, and `overlap` evidence categories.
 - `runtimeUsage.modules` lists runtime-loaded module paths seen for a dependency.
 - `runtimeUsage.topSymbols` lists best-effort runtime symbol hits derived from module subpaths.
+- `cache.invalidations` entries identify deterministic invalidation reasons (for example `input-changed`).
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `schemaVersion` is currently pinned to `0.1.0`.

@@ -68,15 +68,18 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+	cache := newAnalysisCache(req, repoPath)
 
-	reports, warnings, err := s.runCandidates(ctx, req, repoPath, candidates)
+	reports, warnings, err := s.runCandidates(ctx, req, repoPath, candidates, cache)
 	if err != nil {
 		return report.Report{}, err
 	}
+	warnings = append(warnings, cache.takeWarnings()...)
 	if len(reports) == 0 {
 		reportData := report.Report{
 			RepoPath: repoPath,
 			Warnings: append(warnings, "no language adapter produced results"),
+			Cache:    cache.metadataSnapshot(),
 		}
 		reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
 		if err != nil {
@@ -90,6 +93,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 
 	reportData := mergeReports(repoPath, reports)
 	reportData.Warnings = append(reportData.Warnings, warnings...)
+	reportData.Cache = cache.metadataSnapshot()
 
 	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
 	if err != nil {
@@ -120,13 +124,13 @@ func (s *Service) prepareAnalysis(ctx context.Context, req Request) (string, []l
 	return repoPath, candidates, nil
 }
 
-func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate) ([]report.Report, []string, error) {
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate)
+		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -146,16 +150,23 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
 }
 
-func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate) ([]report.Report, []string, error) {
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
 	rootSeen := make(map[string]struct{})
 	for _, root := range candidateRoots(candidate.Detection.Roots, repoPath) {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)
-		if _, ok := rootSeen[normalizedRoot]; ok {
+		if alreadySeenRoot(rootSeen, normalizedRoot) {
 			continue
 		}
-		rootSeen[normalizedRoot] = struct{}{}
+
+		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot)
+		if hit {
+			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
+			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			reports = append(reports, cachedReport)
+			continue
+		}
 
 		current, err := candidate.Adapter.Analyse(ctx, language.Request{
 			RepoPath:                          normalizedRoot,
@@ -172,11 +183,46 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			}
 			return nil, nil, err
 		}
+		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
 		reports = append(reports, current)
 	}
 	return reports, warnings, nil
+}
+
+func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
+	if _, ok := seen[normalizedRoot]; ok {
+		return true
+	}
+	seen[normalizedRoot] = struct{}{}
+	return false
+}
+
+func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string) (cacheEntryDescriptor, report.Report, bool) {
+	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot)
+	if err != nil {
+		cache.warn("analysis cache skipped for " + adapterID + ":" + normalizedRoot + ": " + err.Error())
+		return cacheEntryDescriptor{}, report.Report{}, false
+	}
+	if cacheEntry.KeyDigest == "" {
+		return cacheEntry, report.Report{}, false
+	}
+	cachedReport, hit, lookupErr := cache.lookup(cacheEntry)
+	if lookupErr != nil {
+		cache.warn("analysis cache lookup failed for " + adapterID + ":" + normalizedRoot + ": " + lookupErr.Error())
+		return cacheEntry, report.Report{}, false
+	}
+	return cacheEntry, cachedReport, hit
+}
+
+func storeCachedReport(cache *analysisCache, adapterID, normalizedRoot string, cacheEntry cacheEntryDescriptor, current report.Report) {
+	if cacheEntry.KeyDigest == "" {
+		return
+	}
+	if storeErr := cache.store(cacheEntry, current); storeErr != nil {
+		cache.warn("analysis cache store failed for " + adapterID + ":" + normalizedRoot + ": " + storeErr.Error())
+	}
 }
 
 func resolveRemovalCandidateWeights(weights *report.RemovalCandidateWeights) report.RemovalCandidateWeights {

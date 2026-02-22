@@ -55,7 +55,7 @@ func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
 	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
 	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 10, Roots: []string{"."}}}
 	svc := &Service{}
-	reports, warnings, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all"}, ".", candidate)
+	reports, warnings, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all"}, ".", candidate, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestRunCandidateOnRootsSingleLanguageError(t *testing.T) {
 	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
 	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 10, Roots: []string{"."}}}
 	svc := &Service{}
-	_, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "js-ts"}, ".", candidate)
+	_, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "js-ts"}, ".", candidate, nil)
 	if err == nil {
 		t.Fatalf("expected error in single-language mode")
 	}

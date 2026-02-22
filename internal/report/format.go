@@ -36,6 +36,7 @@ func formatTable(report Report) string {
 
 	var buffer bytes.Buffer
 	appendSummary(&buffer, report.Summary)
+	appendCacheMetadata(&buffer, report.Cache)
 	appendEffectiveThresholds(&buffer, report)
 	appendLanguageBreakdown(&buffer, report.LanguageBreakdown)
 
@@ -65,6 +66,27 @@ func appendSummary(buffer *bytes.Buffer, summary *Summary) {
 		summary.TotalExportsCount,
 		summary.UsedPercent,
 	)
+}
+
+func appendCacheMetadata(buffer *bytes.Buffer, cache *CacheMetadata) {
+	if cache == nil {
+		return
+	}
+	buffer.WriteString("Cache:\n")
+	buffer.WriteString(fmt.Sprintf("- enabled: %t\n", cache.Enabled))
+	if cache.Path != "" {
+		buffer.WriteString(fmt.Sprintf("- path: %s\n", cache.Path))
+	}
+	buffer.WriteString(fmt.Sprintf("- readonly: %t\n", cache.ReadOnly))
+	buffer.WriteString(fmt.Sprintf("- hits: %d\n", cache.Hits))
+	buffer.WriteString(fmt.Sprintf("- misses: %d\n", cache.Misses))
+	buffer.WriteString(fmt.Sprintf("- writes: %d\n", cache.Writes))
+	if len(cache.Invalidations) > 0 {
+		for _, invalidation := range cache.Invalidations {
+			buffer.WriteString(fmt.Sprintf("- invalidation: %s (%s)\n", invalidation.Key, invalidation.Reason))
+		}
+	}
+	buffer.WriteString("\n")
 }
 
 func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) {

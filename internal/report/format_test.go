@@ -200,6 +200,32 @@ func TestFormatTableIncludesSummary(t *testing.T) {
 	}
 }
 
+func TestFormatTableIncludesCacheMetadata(t *testing.T) {
+	reportData := Report{
+		Cache: &CacheMetadata{
+			Enabled:  true,
+			Path:     "/tmp/lopper-cache",
+			ReadOnly: true,
+			Hits:     3,
+			Misses:   1,
+			Writes:   0,
+			Invalidations: []CacheInvalidation{
+				{Key: "js-ts:/repo", Reason: "input-changed"},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with cache metadata: %v", err)
+	}
+	if !strings.Contains(output, "Cache:") || !strings.Contains(output, "hits: 3") || !strings.Contains(output, "invalidation: js-ts:/repo (input-changed)") {
+		t.Fatalf("expected cache metadata in output, got %q", output)
+	}
+}
+
 func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{
