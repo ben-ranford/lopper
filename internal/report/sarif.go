@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -21,7 +22,7 @@ type sarifLog struct {
 
 type sarifRun struct {
 	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results,omitempty"`
+	Results []sarifResult `json:"results"`
 }
 
 type sarifTool struct {
@@ -404,7 +405,7 @@ func toSARIFLocations(locations []Location) []sarifLocation {
 		if !ok {
 			continue
 		}
-		key := location.File + "\x00" + fmt.Sprintf("%d:%d", location.Line, location.Column)
+		key := sarifLocationKey(loc)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -438,12 +439,23 @@ func toSARIFLocations(locations []Location) []sarifLocation {
 	return result
 }
 
+func sarifLocationKey(location sarifLocation) string {
+	line := 0
+	column := 0
+	if location.PhysicalLocation.Region != nil {
+		line = location.PhysicalLocation.Region.StartLine
+		column = location.PhysicalLocation.Region.StartColumn
+	}
+	return location.PhysicalLocation.ArtifactLocation.URI + "\x00" + fmt.Sprintf("%d:%d", line, column)
+}
+
 func toSARIFLocation(location Location) (sarifLocation, bool) {
 	file := strings.TrimSpace(location.File)
 	if file == "" {
 		return sarifLocation{}, false
 	}
-	file = filepath.ToSlash(filepath.Clean(file))
+	file = strings.ReplaceAll(file, "\\", "/")
+	file = path.Clean(file)
 	loc := sarifLocation{
 		PhysicalLocation: sarifPhysicalLocation{
 			ArtifactLocation: sarifArtifactLocation{URI: file},

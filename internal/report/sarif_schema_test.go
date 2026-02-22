@@ -1,6 +1,7 @@
 package report
 
 import (
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ func TestFormatSARIFValidatesAgainstSchema(t *testing.T) {
 	}
 
 	result, err := gojsonschema.Validate(
-		gojsonschema.NewReferenceLoader("file://"+schemaPath),
+		gojsonschema.NewReferenceLoader(fileURLFromPath(schemaPath)),
 		gojsonschema.NewStringLoader(formatted),
 	)
 	if err != nil {
@@ -35,4 +36,43 @@ func TestFormatSARIFValidatesAgainstSchema(t *testing.T) {
 		messages = append(messages, item.String())
 	}
 	t.Fatalf("sarif output failed schema validation: %s", strings.Join(messages, "; "))
+}
+
+func fileURLFromPath(path string) string {
+	slashed := strings.ReplaceAll(path, "\\", "/")
+	slashed = filepath.ToSlash(slashed)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{
+		Scheme: "file",
+		Path:   slashed,
+	}).String()
+}
+
+func TestFileURLFromPath(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "unix absolute path",
+			in:   "/tmp/sarif schema.json",
+			want: "file:///tmp/sarif%20schema.json",
+		},
+		{
+			name: "windows absolute path",
+			in:   "C:\\tmp\\sarif schema.json",
+			want: "file:///C:/tmp/sarif%20schema.json",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileURLFromPath(tc.in); got != tc.want {
+				t.Fatalf("fileURLFromPath(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
 }

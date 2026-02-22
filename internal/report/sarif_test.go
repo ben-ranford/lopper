@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,9 @@ func TestFormatSARIFEmptyReport(t *testing.T) {
 	output, err := NewFormatter().Format(Report{}, FormatSARIF)
 	if err != nil {
 		t.Fatalf("format empty sarif report: %v", err)
+	}
+	if !strings.Contains(output, "\"results\": []") {
+		t.Fatalf("expected empty results array in sarif output")
 	}
 
 	var payload sarifLog
@@ -145,8 +149,8 @@ func TestToSARIFLocationsEdgeCases(t *testing.T) {
 		{File: testFileGo, Line: -1, Column: -5},
 	}
 	got := toSARIFLocations(locations)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 valid locations, got %d", len(got))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 valid location, got %d", len(got))
 	}
 	for _, location := range got {
 		if location.PhysicalLocation.ArtifactLocation.URI == "" {
@@ -163,5 +167,76 @@ func TestToSARIFLocationsDeduplicates(t *testing.T) {
 	got := toSARIFLocations(locations)
 	if len(got) != 1 {
 		t.Fatalf("expected duplicate locations to be deduplicated, got %d", len(got))
+	}
+}
+
+func TestToSARIFLocationsDeduplicatesNormalizedPaths(t *testing.T) {
+	locations := []Location{
+		{File: "./pkg/file.go", Line: 10, Column: 5},
+		{File: "pkg/file.go", Line: 10, Column: 5},
+		{File: "pkg/sub/../file.go", Line: 10, Column: 5},
+	}
+	got := toSARIFLocations(locations)
+	if len(got) != 1 {
+		t.Fatalf("expected normalized duplicate locations to be deduplicated, got %d", len(got))
+	}
+}
+
+func TestToSARIFLocationsNilAndOnlyInvalid(t *testing.T) {
+	if got := toSARIFLocations(nil); got != nil {
+		t.Fatalf("expected nil for nil input, got %v", got)
+	}
+	if got := toSARIFLocations([]Location{{File: "   "}}); got != nil {
+		t.Fatalf("expected nil for invalid-only input, got %v", got)
+	}
+}
+
+func TestSortSARIFResultsAndLocationKey(t *testing.T) {
+	results := []sarifResult{
+		{RuleID: "b", Message: sarifMessage{Text: "z"}},
+		{
+			RuleID:  "a",
+			Message: sarifMessage{Text: "m"},
+			Locations: []sarifLocation{
+				{
+					PhysicalLocation: sarifPhysicalLocation{
+						ArtifactLocation: sarifArtifactLocation{URI: "z.go"},
+						Region:           &sarifRegion{StartLine: 2, StartColumn: 3},
+					},
+				},
+			},
+		},
+		{
+			RuleID:  "a",
+			Message: sarifMessage{Text: "m"},
+			Locations: []sarifLocation{
+				{
+					PhysicalLocation: sarifPhysicalLocation{
+						ArtifactLocation: sarifArtifactLocation{URI: "a.go"},
+						Region:           &sarifRegion{StartLine: 1, StartColumn: 1},
+					},
+				},
+			},
+		},
+		{RuleID: "a", Message: sarifMessage{Text: "a"}},
+	}
+
+	sortSARIFResults(results)
+
+	if results[0].RuleID != "a" || results[0].Message.Text != "a" {
+		t.Fatalf("expected first result sorted by rule/message")
+	}
+	if results[1].Locations[0].PhysicalLocation.ArtifactLocation.URI != "a.go" {
+		t.Fatalf("expected second result sorted by location URI")
+	}
+	if results[2].Locations[0].PhysicalLocation.ArtifactLocation.URI != "z.go" {
+		t.Fatalf("expected third result sorted by location URI")
+	}
+	if results[3].RuleID != "b" {
+		t.Fatalf("expected last result to have highest rule id")
+	}
+
+	if got := resultLocationKey(sarifResult{}); got != "" {
+		t.Fatalf("expected empty location key for no locations, got %q", got)
 	}
 }
