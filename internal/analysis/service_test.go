@@ -161,6 +161,41 @@ func TestMergeRecommendationsPriorityOrder(t *testing.T) {
 	}
 }
 
+func TestMergeCodemodReport(t *testing.T) {
+	left := &report.CodemodReport{
+		Mode: "suggest-only",
+		Suggestions: []report.CodemodSuggestion{
+			{File: "a.js", Line: 3, ImportName: "map", ToModule: "lodash/map"},
+		},
+		Skips: []report.CodemodSkip{
+			{File: "b.js", Line: 2, ImportName: "*", ReasonCode: "namespace-import"},
+		},
+	}
+	right := &report.CodemodReport{
+		Suggestions: []report.CodemodSuggestion{
+			{File: "a.js", Line: 3, ImportName: "map", ToModule: "lodash/map"},
+			{File: "c.js", Line: 8, ImportName: "filter", ToModule: "lodash/filter"},
+		},
+		Skips: []report.CodemodSkip{
+			{File: "d.js", Line: 5, ImportName: "map", ReasonCode: "alias-conflict"},
+		},
+	}
+
+	merged := mergeCodemodReport(left, right)
+	if merged == nil {
+		t.Fatalf("expected merged codemod report")
+	}
+	if merged.Mode != "suggest-only" {
+		t.Fatalf("expected mode suggest-only, got %q", merged.Mode)
+	}
+	if len(merged.Suggestions) != 2 {
+		t.Fatalf("expected deduped suggestions, got %#v", merged.Suggestions)
+	}
+	if len(merged.Skips) != 2 {
+		t.Fatalf("expected merged skips, got %#v", merged.Skips)
+	}
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

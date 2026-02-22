@@ -12,6 +12,7 @@ type Request struct {
 	RepoPath                          string
 	Dependency                        string
 	TopN                              int
+	SuggestOnly                       bool
 	Language                          string
 	ConfigPath                        string
 	RuntimeProfile                    string

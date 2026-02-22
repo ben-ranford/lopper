@@ -13,6 +13,7 @@ type Request struct {
 	RepoPath                          string
 	Dependency                        string
 	TopN                              int
+	SuggestOnly                       bool
 	RuntimeProfile                    string
 	MinUsagePercentForRecommendations *int
 	RemovalCandidateWeights           *report.RemovalCandidateWeights

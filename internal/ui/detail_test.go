@@ -11,7 +11,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-const showDetailErrFmt = "show detail: %v"
+const (
+	showDetailErrFmt = "show detail: %v"
+	indexJSFile      = "index.js"
+)
 
 func TestDetailShowsRiskCues(t *testing.T) {
 	analyzer := stubAnalyzer{
@@ -37,6 +40,15 @@ func TestDetailShowsRiskCues(t *testing.T) {
 					},
 					Recommendations: []report.Recommendation{
 						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
+					},
+					Codemod: &report.CodemodReport{
+						Mode: "suggest-only",
+						Suggestions: []report.CodemodSuggestion{
+							{File: indexJSFile, Line: 1, FromModule: "risky", ToModule: "risky/map"},
+						},
+						Skips: []report.CodemodSkip{
+							{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "namespace imports are not safe to rewrite automatically"},
+						},
 					},
 				},
 			},
@@ -70,6 +82,12 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 	if !strings.Contains(output, "[MEDIUM] prefer-subpath-imports") {
 		t.Fatalf("expected recommendation entry, got: %s", output)
+	}
+	if !strings.Contains(output, "Codemod preview") || !strings.Contains(output, "mode: suggest-only") {
+		t.Fatalf("expected codemod section, got: %s", output)
+	}
+	if !strings.Contains(output, "[namespace-import]") {
+		t.Fatalf("expected codemod skip reason code in output, got: %s", output)
 	}
 }
 
@@ -120,8 +138,8 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	printImportList(&out, "Used imports", []report.ImportUse{{
 		Name:       "map",
 		Module:     "lodash",
-		Locations:  []report.Location{{File: "index.js", Line: 2}},
-		Provenance: []string{"index.js -> barrel.js -> lodash#map"},
+		Locations:  []report.Location{{File: indexJSFile, Line: 2}},
+		Provenance: []string{indexJSFile + " -> barrel.js -> lodash#map"},
 	}})
 	printExportsList(&out, "Unused exports", nil)
 	printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}})
@@ -134,7 +152,7 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(out.String(), "(unknown)") {
 		t.Fatalf("expected unknown module label for empty module exports")
 	}
-	if !strings.Contains(out.String(), "provenance: index.js -> barrel.js -> lodash#map") {
+	if !strings.Contains(out.String(), "provenance: "+indexJSFile+" -> barrel.js -> lodash#map") {
 		t.Fatalf("expected provenance detail in import list output")
 	}
 

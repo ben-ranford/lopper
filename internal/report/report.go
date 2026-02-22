@@ -94,8 +94,35 @@ type DependencyReport struct {
 	UnusedExports        []SymbolRef       `json:"unusedExports,omitempty"`
 	RiskCues             []RiskCue         `json:"riskCues,omitempty"`
 	Recommendations      []Recommendation  `json:"recommendations,omitempty"`
+	Codemod              *CodemodReport    `json:"codemod,omitempty"`
 	RuntimeUsage         *RuntimeUsage     `json:"runtimeUsage,omitempty"`
 	RemovalCandidate     *RemovalCandidate `json:"removalCandidate,omitempty"`
+}
+
+type CodemodReport struct {
+	Mode        string              `json:"mode"`
+	Suggestions []CodemodSuggestion `json:"suggestions,omitempty"`
+	Skips       []CodemodSkip       `json:"skips,omitempty"`
+}
+
+type CodemodSuggestion struct {
+	File        string `json:"file"`
+	Line        int    `json:"line"`
+	ImportName  string `json:"importName"`
+	FromModule  string `json:"fromModule"`
+	ToModule    string `json:"toModule"`
+	Original    string `json:"original"`
+	Replacement string `json:"replacement"`
+	Patch       string `json:"patch"`
+}
+
+type CodemodSkip struct {
+	File       string `json:"file"`
+	Line       int    `json:"line"`
+	ImportName string `json:"importName"`
+	Module     string `json:"module"`
+	ReasonCode string `json:"reasonCode"`
+	Message    string `json:"message"`
 }
 
 type RemovalCandidate struct {

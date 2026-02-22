@@ -76,6 +76,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		RepoPath:                          req.RepoPath,
 		Dependency:                        req.Analyse.Dependency,
 		TopN:                              req.Analyse.TopN,
+		SuggestOnly:                       req.Analyse.SuggestOnly,
 		Language:                          req.Analyse.Language,
 		ConfigPath:                        req.Analyse.ConfigPath,
 		RuntimeProfile:                    req.Analyse.RuntimeProfile,

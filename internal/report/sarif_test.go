@@ -12,6 +12,7 @@ const (
 	errParseSARIFOutput = "parse sarif output: %v"
 	errExpectedOneRun   = "expected one run, got %d"
 	testFileGo          = "file.go"
+	testAFileGo         = "a/file.go"
 )
 
 func TestFormatSARIFGolden(t *testing.T) {
@@ -238,5 +239,58 @@ func TestSortSARIFResultsAndLocationKey(t *testing.T) {
 
 	if got := resultLocationKey(sarifResult{}); got != "" {
 		t.Fatalf("expected empty location key for no locations, got %q", got)
+	}
+}
+
+func TestDependencyAnchorLocationBranches(t *testing.T) {
+	if anchor := dependencyAnchorLocation(DependencyReport{}); anchor != nil {
+		t.Fatalf("expected nil anchor without locations, got %#v", anchor)
+	}
+
+	dep := DependencyReport{
+		UsedImports: []ImportUse{
+			{Locations: []Location{{File: " ", Line: 1, Column: 1}}},
+		},
+	}
+	if anchor := dependencyAnchorLocation(dep); anchor != nil {
+		t.Fatalf("expected nil anchor when first location is invalid, got %#v", anchor)
+	}
+
+	dep = DependencyReport{
+		UsedImports: []ImportUse{
+			{Locations: []Location{{File: "b/file.go", Line: 2, Column: 2}}},
+		},
+		UnusedImports: []ImportUse{
+			{Locations: []Location{{File: "a/file.go", Line: 3, Column: 1}}},
+		},
+	}
+	anchor := dependencyAnchorLocation(dep)
+	if anchor == nil {
+		t.Fatalf("expected non-nil anchor")
+	}
+	if anchor.PhysicalLocation.ArtifactLocation.URI != "a/file.go" {
+		t.Fatalf("expected sorted anchor path, got %#v", anchor)
+	}
+}
+
+func TestToSARIFLocationsSortWithAndWithoutRegions(t *testing.T) {
+	locations := []Location{
+		{File: "z/file.go", Line: 10, Column: 3},
+		{File: testAFileGo, Line: 0, Column: 0},
+		{File: testAFileGo, Line: 5, Column: 2},
+		{File: testAFileGo, Line: 5, Column: 1},
+	}
+	got := toSARIFLocations(locations)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 locations, got %d", len(got))
+	}
+	if got[0].PhysicalLocation.ArtifactLocation.URI != testAFileGo || got[0].PhysicalLocation.Region != nil {
+		t.Fatalf("expected region-less a/file.go first, got %#v", got[0])
+	}
+	if got[1].PhysicalLocation.Region == nil || got[1].PhysicalLocation.Region.StartColumn != 1 {
+		t.Fatalf("expected second location sorted by column, got %#v", got[1])
+	}
+	if got[2].PhysicalLocation.Region == nil || got[2].PhysicalLocation.Region.StartColumn != 2 {
+		t.Fatalf("expected third location sorted by column, got %#v", got[2])
 	}
 }

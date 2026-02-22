@@ -49,6 +49,9 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	if err != nil {
 		return req, err
 	}
+	if err := validateSuggestOnlyTarget(*flags.suggestOnly, dependency, *flags.top); err != nil {
+		return req, err
+	}
 
 	format, err := report.ParseFormat(*flags.formatFlag)
 	if err != nil {
@@ -65,6 +68,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	req.Analyse = app.AnalyseRequest{
 		Dependency:         dependency,
 		TopN:               *flags.top,
+		SuggestOnly:        *flags.suggestOnly,
 		Format:             format,
 		Language:           strings.TrimSpace(*flags.languageFlag),
 		CacheEnabled:       *flags.cacheEnabled,
@@ -84,6 +88,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 type analyseFlagValues struct {
 	repoPath                      *string
 	top                           *int
+	suggestOnly                   *bool
 	formatFlag                    *string
 	cacheEnabled                  *bool
 	cachePath                     *string
@@ -110,6 +115,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 	values := analyseFlagValues{
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
 		top:                           fs.Int("top", 0, "top N dependencies"),
+		suggestOnly:                   fs.Bool("suggest-only", false, "generate codemod patch previews without mutating source files"),
 		formatFlag:                    fs.String("format", string(req.Analyse.Format), "output format"),
 		cacheEnabled:                  fs.Bool("cache", req.Analyse.CacheEnabled, "enable incremental analysis cache"),
 		cachePath:                     fs.String("cache-path", req.Analyse.CachePath, "analysis cache directory path"),
@@ -161,6 +167,19 @@ func validateAnalyseTarget(remaining []string, top int) (string, error) {
 		return "", fmt.Errorf("missing dependency name or --top")
 	}
 	return dependency, nil
+}
+
+func validateSuggestOnlyTarget(suggestOnly bool, dependency string, top int) error {
+	if !suggestOnly {
+		return nil
+	}
+	if top > 0 {
+		return fmt.Errorf("--suggest-only requires a specific dependency target")
+	}
+	if strings.TrimSpace(dependency) == "" {
+		return fmt.Errorf("--suggest-only requires a dependency argument")
+	}
+	return nil
 }
 
 func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, string, error) {

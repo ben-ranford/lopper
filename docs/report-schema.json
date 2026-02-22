@@ -121,6 +121,9 @@
           "type": "array",
           "items": { "$ref": "#/$defs/recommendation" }
         },
+        "codemod": {
+          "$ref": "#/$defs/codemodReport"
+        },
         "runtimeUsage": {
           "$ref": "#/$defs/runtimeUsage"
         },
@@ -194,6 +197,50 @@
         "priority": { "type": "string", "enum": ["low", "medium", "high"] },
         "message": { "type": "string" },
         "rationale": { "type": "string" }
+      }
+    },
+    "codemodReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["suggest-only"] },
+        "suggestions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/codemodSuggestion" }
+        },
+        "skips": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/codemodSkip" }
+        }
+      }
+    },
+    "codemodSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "importName", "fromModule", "toModule", "original", "replacement", "patch"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "importName": { "type": "string" },
+        "fromModule": { "type": "string" },
+        "toModule": { "type": "string" },
+        "original": { "type": "string" },
+        "replacement": { "type": "string" },
+        "patch": { "type": "string" }
+      }
+    },
+    "codemodSkip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "importName", "module", "reasonCode", "message"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "importName": { "type": "string" },
+        "module": { "type": "string" },
+        "reasonCode": { "type": "string" },
+        "message": { "type": "string" }
       }
     },
     "runtimeUsage": {
