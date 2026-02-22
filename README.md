@@ -145,6 +145,7 @@ Repo-level config example (`.lopper.yml`):
 policy:
   packs:
     - ./policies/org-defaults.yml
+    - https://example.com/lopper/policy.yml#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35

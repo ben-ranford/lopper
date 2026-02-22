@@ -1,6 +1,11 @@
 package thresholds
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -417,15 +422,69 @@ func TestLoadWithPolicyPackCycle(t *testing.T) {
 	}
 }
 
-func TestLoadWithPolicyRejectsRemotePack(t *testing.T) {
+func TestLoadWithPolicyRejectsRemotePackWithoutPin(t *testing.T) {
 	repo := t.TempDir()
 	writeConfig(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - https://example.com/policy.yml\n")
 	_, err := LoadWithPolicy(repo, "")
 	if err == nil {
 		t.Fatalf("expected remote pack rejection")
 	}
-	if !strings.Contains(err.Error(), "remote policy packs are not supported") {
+	if !strings.Contains(err.Error(), "must include a sha256 pin") {
 		t.Fatalf("unexpected remote rejection error: %v", err)
+	}
+}
+
+func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
+	repo := t.TempDir()
+	packBody := strings.Join([]string{
+		"thresholds:",
+		"  low_confidence_warning_percent: 19",
+		"  removal_candidate_weight_usage: 0.6",
+		"  removal_candidate_weight_impact: 0.2",
+		"  removal_candidate_weight_confidence: 0.2",
+		"",
+	}, "\n")
+	sum := sha256.Sum256([]byte(packBody))
+	pin := hex.EncodeToString(sum[:])
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/org.yml" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(packBody))
+	}))
+	defer server.Close()
+
+	writeConfig(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin))
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with pinned remote pack: %v", err)
+	}
+	if result.Resolved.FailOnIncreasePercent != 3 {
+		t.Fatalf("expected repo override, got %d", result.Resolved.FailOnIncreasePercent)
+	}
+	if result.Resolved.LowConfidenceWarningPercent != 19 {
+		t.Fatalf("expected remote pack threshold low_confidence_warning_percent=19, got %d", result.Resolved.LowConfidenceWarningPercent)
+	}
+	if len(result.PolicySources) < 3 || !strings.Contains(result.PolicySources[1], server.URL+"/org.yml#sha256="+pin) {
+		t.Fatalf("expected remote policy source in precedence output, got %#v", result.PolicySources)
+	}
+}
+
+func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
+	repo := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("thresholds:\n  low_confidence_warning_percent: 12\n"))
+	}))
+	defer server.Close()
+	writeConfig(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
+
+	_, err := LoadWithPolicy(repo, "")
+	if err == nil {
+		t.Fatalf("expected remote pin mismatch error")
+	}
+	if !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("expected sha256 mismatch error, got %v", err)
 	}
 }
 

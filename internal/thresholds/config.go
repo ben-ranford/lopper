@@ -2,11 +2,17 @@ package thresholds
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"gopkg.in/yaml.v3"
@@ -15,7 +21,11 @@ import (
 const (
 	readConfigFileErrFmt = "read config file %s: %w"
 	defaultPolicySource  = "defaults"
+	remotePolicyPinKey   = "sha256"
+	maxRemotePolicyBytes = 1 << 20
 )
+
+var remotePolicyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 type LoadResult struct {
 	Overrides     Overrides
@@ -110,7 +120,7 @@ func readConfigFile(repoPath, path string, explicitProvided bool) ([]byte, error
 
 func parseConfig(path string, data []byte) (rawConfig, error) {
 	var cfg rawConfig
-	ext := strings.ToLower(filepath.Ext(path))
+	ext := configExtension(path)
 	switch ext {
 	case ".json":
 		decoder := json.NewDecoder(bytes.NewReader(data))
@@ -129,6 +139,13 @@ func parseConfig(path string, data []byte) (rawConfig, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func configExtension(location string) string {
+	if parsed, ok := parseRemoteURL(location); ok {
+		return strings.ToLower(filepath.Ext(parsed.Path))
+	}
+	return strings.ToLower(filepath.Ext(location))
 }
 
 type rawConfig struct {
@@ -265,22 +282,18 @@ func newPackResolver(repoPath string) *packResolver {
 }
 
 func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveMergeResult, error) {
-	canonical := filepath.Clean(path)
-	if !filepath.IsAbs(canonical) {
-		var err error
-		canonical, err = filepath.Abs(canonical)
-		if err != nil {
-			return resolveMergeResult{}, fmt.Errorf("resolve policy path: %w", err)
-		}
+	canonical, remote, err := canonicalPolicyLocation(path)
+	if err != nil {
+		return resolveMergeResult{}, err
 	}
 	if err := r.push(canonical); err != nil {
 		return resolveMergeResult{}, err
 	}
 	defer r.pop(canonical)
 
-	data, err := readConfigFile(r.repoPath, canonical, explicitProvided)
+	data, err := readPolicyLocation(r.repoPath, canonical, explicitProvided, remote)
 	if err != nil {
-		return resolveMergeResult{}, fmt.Errorf(readConfigFileErrFmt, canonical, err)
+		return resolveMergeResult{}, err
 	}
 
 	cfg, err := parseConfig(canonical, data)
@@ -318,13 +331,145 @@ func resolvePackRef(currentPath, ref string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("pack reference must not be empty")
 	}
-	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
-		return "", fmt.Errorf("remote policy packs are not supported; use local file paths")
+
+	if parentURL, ok := parseRemoteURL(currentPath); ok {
+		parentBase := *parentURL
+		parentBase.Fragment = ""
+		relativeRef, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("invalid remote pack reference %q: %w", trimmed, err)
+		}
+		return canonicalRemotePolicyURL(parentBase.ResolveReference(relativeRef).String())
+	}
+
+	if _, ok := parseRemoteURL(trimmed); ok {
+		return canonicalRemotePolicyURL(trimmed)
 	}
 	if filepath.IsAbs(trimmed) {
 		return filepath.Clean(trimmed), nil
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(currentPath), trimmed)), nil
+}
+
+func canonicalPolicyLocation(path string) (string, bool, error) {
+	if _, ok := parseRemoteURL(path); ok {
+		canonical, err := canonicalRemotePolicyURL(path)
+		if err != nil {
+			return "", false, err
+		}
+		return canonical, true, nil
+	}
+	canonical := filepath.Clean(path)
+	if !filepath.IsAbs(canonical) {
+		var err error
+		canonical, err = filepath.Abs(canonical)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve policy path: %w", err)
+		}
+	}
+	return canonical, false, nil
+}
+
+func readPolicyLocation(repoPath, location string, explicitProvided, remote bool) ([]byte, error) {
+	if remote {
+		data, err := readRemotePolicyFile(location)
+		if err != nil {
+			return nil, fmt.Errorf("read remote policy file %s: %w", location, err)
+		}
+		return data, nil
+	}
+	data, err := readConfigFile(repoPath, location, explicitProvided)
+	if err != nil {
+		return nil, fmt.Errorf(readConfigFileErrFmt, location, err)
+	}
+	return data, nil
+}
+
+func parseRemoteURL(raw string) (*url.URL, bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return nil, false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, false
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func canonicalRemotePolicyURL(raw string) (string, error) {
+	parsed, ok := parseRemoteURL(raw)
+	if !ok {
+		return "", fmt.Errorf("invalid remote policy URL: %s", raw)
+	}
+	pin, err := extractRemotePolicyPin(parsed.Fragment)
+	if err != nil {
+		return "", err
+	}
+	parsed.Fragment = remotePolicyPinKey + "=" + pin
+	return parsed.String(), nil
+}
+
+func extractRemotePolicyPin(fragment string) (string, error) {
+	trimmed := strings.TrimSpace(fragment)
+	if trimmed == "" {
+		return "", fmt.Errorf("remote policy packs must include a sha256 pin (example: #sha256=<hex>)")
+	}
+	key, value, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "", fmt.Errorf("invalid remote policy pin %q; expected sha256=<hex>", fragment)
+	}
+	if strings.ToLower(strings.TrimSpace(key)) != remotePolicyPinKey {
+		return "", fmt.Errorf("unsupported remote policy pin key %q; expected sha256", key)
+	}
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if len(normalized) != 64 {
+		return "", fmt.Errorf("invalid remote policy sha256 pin length: got %d, expected 64", len(normalized))
+	}
+	if _, err := hex.DecodeString(normalized); err != nil {
+		return "", fmt.Errorf("invalid remote policy sha256 pin: %w", err)
+	}
+	return normalized, nil
+}
+
+func readRemotePolicyFile(location string) ([]byte, error) {
+	parsed, err := url.Parse(location)
+	if err != nil {
+		return nil, fmt.Errorf("parse remote policy URL: %w", err)
+	}
+	expectedHash, err := extractRemotePolicyPin(parsed.Fragment)
+	if err != nil {
+		return nil, err
+	}
+	parsed.Fragment = ""
+
+	response, err := remotePolicyHTTPClient.Get(parsed.String())
+	if err != nil {
+		return nil, fmt.Errorf("fetch remote policy: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return nil, fmt.Errorf("fetch remote policy: unexpected status %d", response.StatusCode)
+	}
+
+	limited := io.LimitReader(response.Body, maxRemotePolicyBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("read remote policy response: %w", err)
+	}
+	if len(data) > maxRemotePolicyBytes {
+		return nil, fmt.Errorf("remote policy exceeded size limit of %d bytes", maxRemotePolicyBytes)
+	}
+
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	if got != expectedHash {
+		return nil, fmt.Errorf("remote policy sha256 mismatch: expected %s, got %s", expectedHash, got)
+	}
+	return data, nil
 }
 
 func dedupeStable(values []string) []string {
