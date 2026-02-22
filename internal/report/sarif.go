@@ -90,6 +90,18 @@ type sarifSignal struct {
 	MessageFieldVal  string
 }
 
+type sarifSignalSpec struct {
+	IDPrefix         string
+	Code             string
+	ShortText        string
+	HelpText         string
+	Category         string
+	Level            string
+	Message          string
+	MessageFieldName string
+	MessageFieldVal  string
+}
+
 func newSARIFRuleBuilder() *sarifRuleBuilder {
 	return &sarifRuleBuilder{rules: make(map[string]sarifRule)}
 }
@@ -155,93 +167,116 @@ func buildSARIFResults(rep Report, rules *sarifRuleBuilder) []sarifResult {
 	results := make([]sarifResult, 0)
 
 	for _, dep := range rep.Dependencies {
-		anchor := dependencyAnchorLocation(dep)
-
-		for _, imp := range dep.UnusedImports {
-			ruleID := "lopper/waste/unused-import"
-			rules.add(sarifRule{
-				ID:               ruleID,
-				Name:             "unused-import",
-				ShortDescription: sarifMessage{Text: "Imported symbol is not referenced"},
-				Help:             &sarifMessage{Text: "Remove unused imports or narrow dependency usage to reduce surface area."},
-				Properties: map[string]interface{}{
-					"category": "waste",
-				},
-			})
-
-			locations := toSARIFLocations(imp.Locations)
-			if len(locations) == 0 && anchor != nil {
-				locations = []sarifLocation{*anchor}
-			}
-			results = append(results, sarifResult{
-				RuleID:    ruleID,
-				Level:     "warning",
-				Message:   sarifMessage{Text: fmt.Sprintf("%s imports %q from %q but it is unused.", dep.Name, imp.Name, imp.Module)},
-				Locations: locations,
-				Properties: map[string]interface{}{
-					"dependency": dep.Name,
-					"language":   dep.Language,
-					"module":     imp.Module,
-					"symbol":     imp.Name,
-				},
-			})
-		}
-
-		for _, sym := range dep.UnusedExports {
-			ruleID := "lopper/waste/unused-export"
-			rules.add(sarifRule{
-				ID:               ruleID,
-				Name:             "unused-export",
-				ShortDescription: sarifMessage{Text: "Dependency export appears unused"},
-				Help:             &sarifMessage{Text: "Prefer subpath imports or alternatives that avoid shipping unused exports."},
-				Properties: map[string]interface{}{
-					"category": "waste",
-				},
-			})
-
-			result := sarifResult{
-				RuleID:  ruleID,
-				Level:   "warning",
-				Message: sarifMessage{Text: fmt.Sprintf("%s does not appear to use export %q from %q.", dep.Name, sym.Name, sym.Module)},
-				Properties: map[string]interface{}{
-					"dependency": dep.Name,
-					"language":   dep.Language,
-					"module":     sym.Module,
-					"symbol":     sym.Name,
-				},
-			}
-			if anchor != nil {
-				result.Locations = []sarifLocation{*anchor}
-			}
-			results = append(results, result)
-		}
-
-		for _, signal := range dependencySignals(dep) {
-			results = appendSignalResult(results, rules, dep, anchor, signal)
-		}
+		results = append(results, dependencySARIFResults(dep, rules)...)
 	}
 
-	if rep.WasteIncreasePercent != nil {
-		ruleID := "lopper/waste/increase"
+	appendWasteIncreaseResult(&results, rules, rep.WasteIncreasePercent)
+	sortSARIFResults(results)
+
+	return results
+}
+
+func dependencySARIFResults(dep DependencyReport, rules *sarifRuleBuilder) []sarifResult {
+	anchor := dependencyAnchorLocation(dep)
+	results := make([]sarifResult, 0, len(dep.UnusedImports)+len(dep.UnusedExports)+len(dep.RiskCues)+len(dep.Recommendations))
+	results = appendUnusedImportResults(results, rules, dep, anchor)
+	results = appendUnusedExportResults(results, rules, dep, anchor)
+	for _, signal := range dependencySignals(dep) {
+		results = appendSignalResult(results, rules, dep, anchor, signal)
+	}
+	return results
+}
+
+func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation) []sarifResult {
+	for _, imp := range dep.UnusedImports {
+		ruleID := "lopper/waste/unused-import"
 		rules.add(sarifRule{
 			ID:               ruleID,
-			Name:             "waste-increase",
-			ShortDescription: sarifMessage{Text: "Dependency waste increased versus baseline"},
-			Help:             &sarifMessage{Text: "Compare current and baseline reports to identify the dependencies causing additional waste."},
+			Name:             "unused-import",
+			ShortDescription: sarifMessage{Text: "Imported symbol is not referenced"},
+			Help:             &sarifMessage{Text: "Remove unused imports or narrow dependency usage to reduce surface area."},
 			Properties: map[string]interface{}{
 				"category": "waste",
 			},
 		})
+
+		locations := toSARIFLocations(imp.Locations)
+		if len(locations) == 0 && anchor != nil {
+			locations = []sarifLocation{*anchor}
+		}
 		results = append(results, sarifResult{
-			RuleID:  ruleID,
-			Level:   "warning",
-			Message: sarifMessage{Text: fmt.Sprintf("Overall dependency waste increased by %.1f%% compared with baseline.", *rep.WasteIncreasePercent)},
+			RuleID:    ruleID,
+			Level:     "warning",
+			Message:   sarifMessage{Text: fmt.Sprintf("%s imports %q from %q but it is unused.", dep.Name, imp.Name, imp.Module)},
+			Locations: locations,
 			Properties: map[string]interface{}{
-				"wasteIncreasePercent": *rep.WasteIncreasePercent,
+				"dependency": dep.Name,
+				"language":   dep.Language,
+				"module":     imp.Module,
+				"symbol":     imp.Name,
 			},
 		})
 	}
+	return results
+}
 
+func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation) []sarifResult {
+	for _, sym := range dep.UnusedExports {
+		ruleID := "lopper/waste/unused-export"
+		rules.add(sarifRule{
+			ID:               ruleID,
+			Name:             "unused-export",
+			ShortDescription: sarifMessage{Text: "Dependency export appears unused"},
+			Help:             &sarifMessage{Text: "Prefer subpath imports or alternatives that avoid shipping unused exports."},
+			Properties: map[string]interface{}{
+				"category": "waste",
+			},
+		})
+
+		result := sarifResult{
+			RuleID:  ruleID,
+			Level:   "warning",
+			Message: sarifMessage{Text: fmt.Sprintf("%s does not appear to use export %q from %q.", dep.Name, sym.Name, sym.Module)},
+			Properties: map[string]interface{}{
+				"dependency": dep.Name,
+				"language":   dep.Language,
+				"module":     sym.Module,
+				"symbol":     sym.Name,
+			},
+		}
+		if anchor != nil {
+			result.Locations = []sarifLocation{*anchor}
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, wasteIncreasePercent *float64) {
+	if wasteIncreasePercent == nil {
+		return
+	}
+	ruleID := "lopper/waste/increase"
+	rules.add(sarifRule{
+		ID:               ruleID,
+		Name:             "waste-increase",
+		ShortDescription: sarifMessage{Text: "Dependency waste increased versus baseline"},
+		Help:             &sarifMessage{Text: "Compare current and baseline reports to identify the dependencies causing additional waste."},
+		Properties: map[string]interface{}{
+			"category": "waste",
+		},
+	})
+	*results = append(*results, sarifResult{
+		RuleID:  ruleID,
+		Level:   "warning",
+		Message: sarifMessage{Text: fmt.Sprintf("Overall dependency waste increased by %.1f%% compared with baseline.", *wasteIncreasePercent)},
+		Properties: map[string]interface{}{
+			"wasteIncreasePercent": *wasteIncreasePercent,
+		},
+	})
+}
+
+func sortSARIFResults(results []sarifResult) {
 	sort.SliceStable(results, func(i, j int) bool {
 		if results[i].RuleID != results[j].RuleID {
 			return results[i].RuleID < results[j].RuleID
@@ -251,8 +286,6 @@ func buildSARIFResults(rep Report, rules *sarifRuleBuilder) []sarifResult {
 		}
 		return resultLocationKey(results[i]) < resultLocationKey(results[j])
 	})
-
-	return results
 }
 
 func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, signal sarifSignal) []sarifResult {
@@ -288,56 +321,46 @@ func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep Depe
 func dependencySignals(dep DependencyReport) []sarifSignal {
 	signals := make([]sarifSignal, 0, len(dep.RiskCues)+len(dep.Recommendations))
 	for _, cue := range dep.RiskCues {
-		signals = append(signals, newSignal(
-			"lopper/risk/",
-			cue.Code,
-			"Dependency risk cue",
-			"Review risk cues to reduce dependency attack surface and operational uncertainty.",
-			"risk",
-			severityToSARIFLevel(cue.Severity),
-			cue.Message,
-			"severity",
-			cue.Severity,
-		))
+		signals = append(signals, newSignal(sarifSignalSpec{
+			IDPrefix:         "lopper/risk/",
+			Code:             cue.Code,
+			ShortText:        "Dependency risk cue",
+			HelpText:         "Review risk cues to reduce dependency attack surface and operational uncertainty.",
+			Category:         "risk",
+			Level:            severityToSARIFLevel(cue.Severity),
+			Message:          cue.Message,
+			MessageFieldName: "severity",
+			MessageFieldVal:  cue.Severity,
+		}))
 	}
 	for _, recommendation := range dep.Recommendations {
-		signals = append(signals, newSignal(
-			"lopper/recommendation/",
-			recommendation.Code,
-			"Dependency optimization recommendation",
-			"Apply recommendations to reduce unused dependency surface area.",
-			"recommendation",
-			priorityToSARIFLevel(recommendation.Priority),
-			recommendation.Message,
-			"priority",
-			recommendation.Priority,
-		))
+		signals = append(signals, newSignal(sarifSignalSpec{
+			IDPrefix:         "lopper/recommendation/",
+			Code:             recommendation.Code,
+			ShortText:        "Dependency optimization recommendation",
+			HelpText:         "Apply recommendations to reduce unused dependency surface area.",
+			Category:         "recommendation",
+			Level:            priorityToSARIFLevel(recommendation.Priority),
+			Message:          recommendation.Message,
+			MessageFieldName: "priority",
+			MessageFieldVal:  recommendation.Priority,
+		}))
 	}
 	return signals
 }
 
-func newSignal(
-	idPrefix string,
-	code string,
-	shortText string,
-	helpText string,
-	category string,
-	level string,
-	message string,
-	messageFieldName string,
-	messageFieldVal string,
-) sarifSignal {
+func newSignal(spec sarifSignalSpec) sarifSignal {
 	return sarifSignal{
-		RuleID:           idPrefix + normalizeRuleToken(code),
-		RuleName:         code,
-		RuleShort:        shortText,
-		RuleHelp:         helpText,
-		RuleCategory:     category,
-		RuleCode:         code,
-		Level:            level,
-		Message:          message,
-		MessageFieldName: messageFieldName,
-		MessageFieldVal:  messageFieldVal,
+		RuleID:           spec.IDPrefix + normalizeRuleToken(spec.Code),
+		RuleName:         spec.Code,
+		RuleShort:        spec.ShortText,
+		RuleHelp:         spec.HelpText,
+		RuleCategory:     spec.Category,
+		RuleCode:         spec.Code,
+		Level:            spec.Level,
+		Message:          spec.Message,
+		MessageFieldName: spec.MessageFieldName,
+		MessageFieldVal:  spec.MessageFieldVal,
 	}
 }
 
