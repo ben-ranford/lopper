@@ -12,6 +12,7 @@ const (
 	errParseSARIFOutput = "parse sarif output: %v"
 	errExpectedOneRun   = "expected one run, got %d"
 	testFileGo          = "file.go"
+	testAFileGo         = "a/file.go"
 )
 
 func TestFormatSARIFGolden(t *testing.T) {
@@ -275,15 +276,15 @@ func TestDependencyAnchorLocationBranches(t *testing.T) {
 func TestToSARIFLocationsSortWithAndWithoutRegions(t *testing.T) {
 	locations := []Location{
 		{File: "z/file.go", Line: 10, Column: 3},
-		{File: "a/file.go", Line: 0, Column: 0},
-		{File: "a/file.go", Line: 5, Column: 2},
-		{File: "a/file.go", Line: 5, Column: 1},
+		{File: testAFileGo, Line: 0, Column: 0},
+		{File: testAFileGo, Line: 5, Column: 2},
+		{File: testAFileGo, Line: 5, Column: 1},
 	}
 	got := toSARIFLocations(locations)
 	if len(got) != 4 {
 		t.Fatalf("expected 4 locations, got %d", len(got))
 	}
-	if got[0].PhysicalLocation.ArtifactLocation.URI != "a/file.go" || got[0].PhysicalLocation.Region != nil {
+	if got[0].PhysicalLocation.ArtifactLocation.URI != testAFileGo || got[0].PhysicalLocation.Region != nil {
 		t.Fatalf("expected region-less a/file.go first, got %#v", got[0])
 	}
 	if got[1].PhysicalLocation.Region == nil || got[1].PhysicalLocation.Region.StartColumn != 1 {
