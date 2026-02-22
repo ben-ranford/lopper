@@ -340,6 +340,95 @@ func TestResolveConfigPathExplicitStatError(t *testing.T) {
 	}
 }
 
+func TestLoadWithPolicyPackPrecedenceAndSources(t *testing.T) {
+	repo := t.TempDir()
+	base := strings.Join([]string{
+		"thresholds:",
+		"  low_confidence_warning_percent: 21",
+		"  removal_candidate_weight_usage: 0.1",
+		"  removal_candidate_weight_impact: 0.7",
+		"  removal_candidate_weight_confidence: 0.2",
+		"",
+	}, "\n")
+	overlay := strings.Join([]string{
+		"policy:",
+		"  packs:",
+		"    - base.yml",
+		"thresholds:",
+		"  low_confidence_warning_percent: 33",
+		"",
+	}, "\n")
+	root := strings.Join([]string{
+		"policy:",
+		"  packs:",
+		"    - packs/overlay.yml",
+		"thresholds:",
+		"  fail_on_increase_percent: 4",
+		"",
+	}, "\n")
+	writeConfig(t, filepath.Join(repo, "packs", "base.yml"), base)
+	writeConfig(t, filepath.Join(repo, "packs", "overlay.yml"), overlay)
+	writeConfig(t, filepath.Join(repo, lopperYMLName), root)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with policy packs: %v", err)
+	}
+
+	if result.Resolved.FailOnIncreasePercent != 4 {
+		t.Fatalf("expected repo override fail_on_increase_percent=4, got %d", result.Resolved.FailOnIncreasePercent)
+	}
+	if result.Resolved.LowConfidenceWarningPercent != 33 {
+		t.Fatalf("expected imported overlay low confidence=33, got %d", result.Resolved.LowConfidenceWarningPercent)
+	}
+	if result.Resolved.RemovalCandidateWeightImpact != 0.7 {
+		t.Fatalf("expected inherited pack weight impact=0.7, got %f", result.Resolved.RemovalCandidateWeightImpact)
+	}
+
+	if len(result.PolicySources) != 4 {
+		t.Fatalf("expected 4 policy sources, got %#v", result.PolicySources)
+	}
+	if !strings.HasSuffix(result.PolicySources[0], lopperYMLName) {
+		t.Fatalf("expected highest-precedence source to be repo config, got %#v", result.PolicySources)
+	}
+	if !strings.HasSuffix(result.PolicySources[1], filepath.Join("packs", "overlay.yml")) {
+		t.Fatalf("expected overlay pack source, got %#v", result.PolicySources)
+	}
+	if !strings.HasSuffix(result.PolicySources[2], filepath.Join("packs", "base.yml")) {
+		t.Fatalf("expected base pack source, got %#v", result.PolicySources)
+	}
+	if result.PolicySources[3] != defaultPolicySource {
+		t.Fatalf("expected defaults source, got %#v", result.PolicySources)
+	}
+}
+
+func TestLoadWithPolicyPackCycle(t *testing.T) {
+	repo := t.TempDir()
+	writeConfig(t, filepath.Join(repo, "packs", "a.yml"), "policy:\n  packs:\n    - b.yml\n")
+	writeConfig(t, filepath.Join(repo, "packs", "b.yml"), "policy:\n  packs:\n    - a.yml\n")
+	writeConfig(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - packs/a.yml\n")
+
+	_, err := LoadWithPolicy(repo, "")
+	if err == nil {
+		t.Fatalf("expected cycle error")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("expected cycle error text, got %v", err)
+	}
+}
+
+func TestLoadWithPolicyRejectsRemotePack(t *testing.T) {
+	repo := t.TempDir()
+	writeConfig(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - https://example.com/policy.yml\n")
+	_, err := LoadWithPolicy(repo, "")
+	if err == nil {
+		t.Fatalf("expected remote pack rejection")
+	}
+	if !strings.Contains(err.Error(), "remote policy packs are not supported") {
+		t.Fatalf("unexpected remote rejection error: %v", err)
+	}
+}
+
 func writeConfig(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

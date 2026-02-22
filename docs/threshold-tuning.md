@@ -62,9 +62,20 @@ You can also pass an explicit config path:
 lopper analyse --top 20 --repo . --config path/to/lopper.yml
 ```
 
-Precedence is always:
+Use reusable policy packs in config:
 
-`CLI > config > defaults`
+```yaml
+policy:
+  packs:
+    - ./policies/org-defaults.yml
+    - ./policies/team-overrides.yml
+thresholds:
+  fail_on_increase_percent: 2
+```
+
+Policy precedence is deterministic:
+
+`CLI > repo config > imported policy packs > defaults`
 
 ## Recommended tuning profiles
 
@@ -118,6 +129,12 @@ JSON output includes `effectiveThresholds`:
 
 ```bash
 lopper analyse --top 20 --repo . --language all --format json | jq '.effectiveThresholds'
+```
+
+The full merged policy is available as `effectivePolicy` (sources, thresholds, and removal-candidate weights):
+
+```bash
+lopper analyse --top 20 --repo . --language all --format json | jq '.effectivePolicy'
 ```
 
 ## CI usage notes

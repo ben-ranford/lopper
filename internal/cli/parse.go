@@ -58,7 +58,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		return req, err
 	}
 
-	resolvedThresholds, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
+	resolvedThresholds, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
 	if err != nil {
 		return req, err
 	}
@@ -83,6 +83,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
 		ConfigPath:         resolvedConfigPath,
+		PolicySources:      policySources,
 		Thresholds:         resolvedThresholds,
 	}
 
@@ -194,22 +195,26 @@ func validateSuggestOnlyTarget(suggestOnly bool, dependency string, top int) err
 	return nil
 }
 
-func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, string, error) {
-	configOverrides, resolvedConfigPath, err := thresholds.Load(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
+func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, []string, string, error) {
+	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, "", err
+		return thresholds.Values{}, nil, "", err
 	}
 
-	resolvedThresholds := configOverrides.Apply(thresholds.Defaults())
+	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visitedFlags(fs), values)
 	if err != nil {
-		return thresholds.Values{}, "", err
+		return thresholds.Values{}, nil, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, "", err
+		return thresholds.Values{}, nil, "", err
 	}
-	return resolvedThresholds, resolvedConfigPath, nil
+	policySources := append([]string{}, loadResult.PolicySources...)
+	if hasThresholdOverrides(cliOverrides) {
+		policySources = append([]string{"cli"}, policySources...)
+	}
+	return resolvedThresholds, policySources, loadResult.ConfigPath, nil
 }
 
 func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
@@ -239,6 +244,15 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 		overrides.RemovalCandidateWeightConfidence = values.scoreWeightConfidence
 	}
 	return overrides, nil
+}
+
+func hasThresholdOverrides(overrides thresholds.Overrides) bool {
+	return overrides.FailOnIncreasePercent != nil ||
+		overrides.LowConfidenceWarningPercent != nil ||
+		overrides.MinUsagePercentForRecommendations != nil ||
+		overrides.RemovalCandidateWeightUsage != nil ||
+		overrides.RemovalCandidateWeightImpact != nil ||
+		overrides.RemovalCandidateWeightConfidence != nil
 }
 
 func parseTUI(args []string, req app.Request) (app.Request, error) {

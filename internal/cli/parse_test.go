@@ -339,6 +339,59 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalysePolicyPackSources(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "packs", "org.yml"), strings.Join([]string{
+		"thresholds:",
+		"  low_confidence_warning_percent: 22",
+		"  removal_candidate_weight_usage: 0.4",
+		"  removal_candidate_weight_impact: 0.4",
+		"  removal_candidate_weight_confidence: 0.2",
+		"",
+	}, "\n"))
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), strings.Join([]string{
+		"policy:",
+		"  packs:",
+		"    - packs/org.yml",
+		"thresholds:",
+		"  fail_on_increase_percent: 5",
+		"",
+	}, "\n"))
+
+	req, err := ParseArgs([]string{"analyse", "--top", "3", "--repo", repo})
+	if err != nil {
+		t.Fatalf("parse args with policy pack: %v", err)
+	}
+	if len(req.Analyse.PolicySources) != 3 {
+		t.Fatalf("expected repo, pack, defaults policy sources; got %#v", req.Analyse.PolicySources)
+	}
+	if !strings.HasSuffix(req.Analyse.PolicySources[0], ".lopper.yml") {
+		t.Fatalf("expected repo config source first, got %#v", req.Analyse.PolicySources)
+	}
+	if !strings.HasSuffix(req.Analyse.PolicySources[1], filepath.Join("packs", "org.yml")) {
+		t.Fatalf("expected pack source second, got %#v", req.Analyse.PolicySources)
+	}
+	if req.Analyse.PolicySources[2] != "defaults" {
+		t.Fatalf("expected defaults source last, got %#v", req.Analyse.PolicySources)
+	}
+	if req.Analyse.Thresholds.FailOnIncreasePercent != 5 {
+		t.Fatalf("expected fail-on-increase from repo config")
+	}
+	if req.Analyse.Thresholds.LowConfidenceWarningPercent != 22 {
+		t.Fatalf("expected low-confidence from policy pack")
+	}
+}
+
+func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "1", "--threshold-low-confidence-warning", "23"})
+	if err != nil {
+		t.Fatalf("parse args: %v", err)
+	}
+	if len(req.Analyse.PolicySources) == 0 || req.Analyse.PolicySources[0] != "cli" {
+		t.Fatalf("expected cli source precedence, got %#v", req.Analyse.PolicySources)
+	}
+}
+
 func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
 	_, err := ParseArgs([]string{"analyse", "--top", "2", "--threshold-low-confidence-warning", "101"})
 	if err == nil {

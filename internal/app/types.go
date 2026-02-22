@@ -37,6 +37,7 @@ type AnalyseRequest struct {
 	RuntimeTracePath   string
 	RuntimeTestCommand string
 	ConfigPath         string
+	PolicySources      []string
 	Thresholds         thresholds.Values
 }
 

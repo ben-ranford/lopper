@@ -16,6 +16,19 @@ func TestFormatTable(t *testing.T) {
 			LowConfidenceWarningPercent:       35,
 			MinUsagePercentForRecommendations: 45,
 		},
+		EffectivePolicy: &EffectivePolicy{
+			Sources: []string{"repo", "defaults"},
+			Thresholds: EffectiveThresholds{
+				FailOnIncreasePercent:             2,
+				LowConfidenceWarningPercent:       35,
+				MinUsagePercentForRecommendations: 45,
+			},
+			RemovalCandidateWeights: RemovalCandidateWeights{
+				Usage:      0.6,
+				Impact:     0.2,
+				Confidence: 0.2,
+			},
+		},
 		LanguageBreakdown: []LanguageSummary{
 			{Language: "js-ts", DependencyCount: 1, UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20.0},
 		},
@@ -52,6 +65,9 @@ func TestFormatTable(t *testing.T) {
 	}
 	if !strings.Contains(output, "Effective thresholds:") {
 		t.Fatalf("expected output to include effective thresholds")
+	}
+	if !strings.Contains(output, "Effective policy:") || !strings.Contains(output, "sources: repo > defaults") {
+		t.Fatalf("expected output to include effective policy section")
 	}
 	if !strings.Contains(output, "map") {
 		t.Fatalf("expected output to include top symbol")
@@ -106,6 +122,19 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 			LowConfidenceWarningPercent:       40,
 			MinUsagePercentForRecommendations: 35,
 		},
+		EffectivePolicy: &EffectivePolicy{
+			Sources: []string{"defaults"},
+			Thresholds: EffectiveThresholds{
+				FailOnIncreasePercent:             1,
+				LowConfidenceWarningPercent:       40,
+				MinUsagePercentForRecommendations: 35,
+			},
+			RemovalCandidateWeights: RemovalCandidateWeights{
+				Usage:      0.5,
+				Impact:     0.3,
+				Confidence: 0.2,
+			},
+		},
 	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
@@ -119,6 +148,9 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 	}
 	if !strings.Contains(output, "fail_on_increase_percent") {
 		t.Fatalf("expected threshold values in empty report output")
+	}
+	if !strings.Contains(output, "Effective policy:") {
+		t.Fatalf("expected policy values in empty report output")
 	}
 }
 

@@ -15,7 +15,8 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 
 - `summary`: aggregated totals across all dependency rows.
 - `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`).
-- `effectiveThresholds`: resolved thresholds applied for this run (`CLI > config > defaults`).
+- `effectiveThresholds`: resolved threshold values applied for this run.
+- `effectivePolicy`: resolved policy object, including precedence sources and scoring weights (`CLI > repo config > imported policy packs > defaults`).
 - `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
 - `dependencies[].language`: language tag for each dependency row.
 - `dependencies[].riskCues`: heuristic risk signals.

@@ -71,6 +71,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req.Analyse.CacheEnabled = false
 	req.Analyse.CachePath = "/tmp/lopper-cache"
 	req.Analyse.CacheReadOnly = true
+	req.Analyse.PolicySources = []string{"cli", "defaults"}
 	req.Analyse.Thresholds = thresholds.Values{
 		FailOnIncreasePercent:             0,
 		LowConfidenceWarningPercent:       33,
@@ -86,6 +87,12 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	if !strings.Contains(output, "\"effectiveThresholds\"") {
 		t.Fatalf("expected effectiveThresholds in output JSON")
+	}
+	if !strings.Contains(output, "\"effectivePolicy\"") {
+		t.Fatalf("expected effectivePolicy in output JSON")
+	}
+	if !strings.Contains(output, "\"sources\": [") || !strings.Contains(output, "\"cli\"") {
+		t.Fatalf("expected policy sources in output JSON")
 	}
 	if !strings.Contains(output, "\"lowConfidenceWarningPercent\": 33") {
 		t.Fatalf("expected lowConfidenceWarningPercent value in output JSON")
