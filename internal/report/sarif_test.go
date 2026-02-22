@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+const (
+	errParseSARIFOutput = "parse sarif output: %v"
+	errExpectedOneRun   = "expected one run, got %d"
+	testFileGo          = "file.go"
+)
+
 func TestFormatSARIFGolden(t *testing.T) {
 	reportData := sampleSARIFReport()
 
@@ -27,10 +33,10 @@ func TestFormatSARIFGolden(t *testing.T) {
 
 	var payload sarifLog
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		t.Fatalf("parse sarif output: %v", err)
+		t.Fatalf(errParseSARIFOutput, err)
 	}
 	if len(payload.Runs) != 1 {
-		t.Fatalf("expected one run, got %d", len(payload.Runs))
+		t.Fatalf(errExpectedOneRun, len(payload.Runs))
 	}
 	if len(payload.Runs[0].Tool.Driver.Rules) == 0 {
 		t.Fatalf("expected at least one rule")
@@ -48,10 +54,10 @@ func TestFormatSARIFEmptyReport(t *testing.T) {
 
 	var payload sarifLog
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		t.Fatalf("parse sarif output: %v", err)
+		t.Fatalf(errParseSARIFOutput, err)
 	}
 	if len(payload.Runs) != 1 {
-		t.Fatalf("expected one run, got %d", len(payload.Runs))
+		t.Fatalf(errExpectedOneRun, len(payload.Runs))
 	}
 	if len(payload.Runs[0].Results) != 0 {
 		t.Fatalf("expected no results for empty report, got %d", len(payload.Runs[0].Results))
@@ -67,10 +73,10 @@ func TestFormatSARIFWasteOnlyReport(t *testing.T) {
 
 	var payload sarifLog
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		t.Fatalf("parse sarif output: %v", err)
+		t.Fatalf(errParseSARIFOutput, err)
 	}
 	if len(payload.Runs) != 1 {
-		t.Fatalf("expected one run, got %d", len(payload.Runs))
+		t.Fatalf(errExpectedOneRun, len(payload.Runs))
 	}
 	if len(payload.Runs[0].Results) != 1 {
 		t.Fatalf("expected one result for waste-only report, got %d", len(payload.Runs[0].Results))
@@ -135,8 +141,8 @@ func testLevelMapping(t *testing.T, name string, fn func(string) string, cases [
 func TestToSARIFLocationsEdgeCases(t *testing.T) {
 	locations := []Location{
 		{File: "", Line: 1, Column: 1},
-		{File: "file.go", Line: 0, Column: 0},
-		{File: "file.go", Line: -1, Column: -5},
+		{File: testFileGo, Line: 0, Column: 0},
+		{File: testFileGo, Line: -1, Column: -5},
 	}
 	got := toSARIFLocations(locations)
 	if len(got) != 2 {
@@ -151,8 +157,8 @@ func TestToSARIFLocationsEdgeCases(t *testing.T) {
 
 func TestToSARIFLocationsDeduplicates(t *testing.T) {
 	locations := []Location{
-		{File: "file.go", Line: 10, Column: 5},
-		{File: "file.go", Line: 10, Column: 5},
+		{File: testFileGo, Line: 10, Column: 5},
+		{File: testFileGo, Line: 10, Column: 5},
 	}
 	got := toSARIFLocations(locations)
 	if len(got) != 1 {
