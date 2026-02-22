@@ -402,7 +402,7 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err == nil {
+	if os.Rename(tmpPath, path) == nil {
 		return nil
 	}
 	_ = os.Remove(tmpPath)
