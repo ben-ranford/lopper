@@ -99,40 +99,37 @@ func TestNormalizeRuleToken(t *testing.T) {
 	}
 }
 
-func TestSeverityToSARIFLevel(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
+func TestSARIFLevelMappings(t *testing.T) {
+	testLevelMapping(t, "severity", severityToSARIFLevel, []levelMapping{
 		{input: "critical", want: "error"},
 		{input: "high", want: "error"},
 		{input: "medium", want: "warning"},
 		{input: "low", want: "note"},
 		{input: "", want: "note"},
-	}
-	for _, tc := range tests {
-		if got := severityToSARIFLevel(tc.input); got != tc.want {
-			t.Fatalf("severityToSARIFLevel(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-func TestPriorityToSARIFLevel(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
+	})
+	testLevelMapping(t, "priority", priorityToSARIFLevel, []levelMapping{
 		{input: "critical", want: "warning"},
 		{input: "high", want: "warning"},
 		{input: "medium", want: "note"},
 		{input: "low", want: "note"},
 		{input: "", want: "note"},
-	}
-	for _, tc := range tests {
-		if got := priorityToSARIFLevel(tc.input); got != tc.want {
-			t.Fatalf("priorityToSARIFLevel(%q) = %q, want %q", tc.input, got, tc.want)
+	})
+}
+
+type levelMapping struct {
+	input string
+	want  string
+}
+
+func testLevelMapping(t *testing.T, name string, fn func(string) string, cases []levelMapping) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		for _, tc := range cases {
+			if got := fn(tc.input); got != tc.want {
+				t.Fatalf("%s(%q) = %q, want %q", name, tc.input, got, tc.want)
+			}
 		}
-	}
+	})
 }
 
 func TestToSARIFLocationsEdgeCases(t *testing.T) {
