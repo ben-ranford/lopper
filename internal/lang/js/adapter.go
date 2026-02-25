@@ -252,7 +252,7 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 }
 
 // finalizeImportUsageLists flattens import maps and removes used/unused overlaps from the unused list.
-func finalizeImportUsageLists(usedImports map[string]*report.ImportUse, unusedImports map[string]*report.ImportUse) ([]report.ImportUse, []report.ImportUse) {
+func finalizeImportUsageLists(usedImports, unusedImports map[string]*report.ImportUse) ([]report.ImportUse, []report.ImportUse) {
 	usedImportList := flattenImportUses(usedImports)
 	unusedImportList := flattenImportUses(unusedImports)
 	return usedImportList, removeOverlappingUnusedImports(unusedImportList, usedImportList)

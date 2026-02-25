@@ -65,7 +65,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	return printWarnings(d.Out, reportData.Warnings)
 }
 
-func parseDependencyLanguage(defaultLanguage string, dependency string) (string, string) {
+func parseDependencyLanguage(defaultLanguage, dependency string) (string, string) {
 	if parts := strings.SplitN(dependency, ":", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
 		return parts[0], parts[1]
 	}

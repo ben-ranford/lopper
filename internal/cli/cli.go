@@ -35,12 +35,14 @@ func (c *CommandLine) Run(ctx context.Context, args []string) int {
 	}
 
 	output, runErr := c.Executor.Execute(ctx, req)
-	if err := c.writeOutput(output); err != nil {
+	writeErr := c.writeOutput(output)
+	if writeErr != nil {
 		return 1
 	}
 
 	if runErr != nil {
-		if err := c.writeErrln(runErr.Error()); err != nil {
+		writeErr = c.writeErrln(runErr.Error())
+		if writeErr != nil {
 			return 1
 		}
 		return exitCodeForRunError(runErr)
