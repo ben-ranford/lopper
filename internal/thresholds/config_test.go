@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -39,7 +41,7 @@ func TestLoadNoConfigFile(t *testing.T) {
 func TestLoadYAMLConfig(t *testing.T) {
 	repo := t.TempDir()
 	cfg := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 3", " low_confidence_warning_percent: 25", " min_usage_percent_for_recommendations: 55", " removal_candidate_weight_usage: 0.6", " removal_candidate_weight_impact: 0.2", " removal_candidate_weight_confidence: 0.2", ""}, "\n")
-	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), cfg)
 
 	overrides, path, err := Load(repo, "")
 	if err != nil {
@@ -73,7 +75,7 @@ func TestLoadJSONConfig(t *testing.T) {
   "removal_candidate_weight_impact": 0.2,
   "removal_candidate_weight_confidence": 0.7
 }`
-	writeConfig(t, filepath.Join(repo, lopperJSONName), cfg)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperJSONName), cfg)
 
 	overrides, _, err := Load(repo, "")
 	if err != nil {
@@ -90,7 +92,7 @@ func TestLoadJSONConfig(t *testing.T) {
 
 func TestLoadConfigRejectsUnknownFields(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  unknown: 1\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  unknown: 1\n")
 
 	_, _, err := Load(repo, "")
 	if err == nil {
@@ -104,7 +106,7 @@ func TestLoadConfigRejectsUnknownFields(t *testing.T) {
 func TestLoadConfigRejectsDuplicateFields(t *testing.T) {
 	repo := t.TempDir()
 	cfg := strings.Join([]string{"fail_on_increase_percent: 1", "thresholds:", " fail_on_increase_percent: 2", ""}, "\n")
-	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), cfg)
 
 	_, _, err := Load(repo, "")
 	if err == nil {
@@ -117,7 +119,7 @@ func TestLoadConfigRejectsDuplicateFields(t *testing.T) {
 
 func TestLoadConfigFromExplicitPath(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, customConfigName), "thresholds:\n  low_confidence_warning_percent: 11\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), "thresholds:\n  low_confidence_warning_percent: 11\n")
 
 	overrides, path, err := Load(repo, customConfigName)
 	if err != nil {
@@ -136,7 +138,7 @@ func TestLoadConfigFromExplicitPathOutsideRepo(t *testing.T) {
 	repo := t.TempDir()
 	externalDir := t.TempDir()
 	externalPath := filepath.Join(externalDir, customConfigName)
-	writeConfig(t, externalPath, "thresholds:\n  low_confidence_warning_percent: 17\n")
+	testutil.MustWriteFile(t, externalPath, "thresholds:\n  low_confidence_warning_percent: 17\n")
 
 	overrides, path, err := Load(repo, externalPath)
 	if err != nil {
@@ -165,7 +167,7 @@ func TestLoadConfigExplicitPathMissing(t *testing.T) {
 func TestLoadConfigInvalidJSONMultipleValues(t *testing.T) {
 	repo := t.TempDir()
 	cfg := `{"thresholds":{"fail_on_increase_percent":1}} {"thresholds":{"fail_on_increase_percent":2}}`
-	writeConfig(t, filepath.Join(repo, lopperJSONName), cfg)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperJSONName), cfg)
 
 	_, _, err := Load(repo, "")
 	if err == nil {
@@ -178,7 +180,7 @@ func TestLoadConfigInvalidJSONMultipleValues(t *testing.T) {
 
 func TestLoadConfigInvalidYAML(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYAMLName), "thresholds: [\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYAMLName), "thresholds: [\n")
 	_, _, err := Load(repo, "")
 	if err == nil {
 		t.Fatalf("expected invalid YAML error")
@@ -198,8 +200,8 @@ func TestLoadConfigInvalidScoreWeightValue(t *testing.T) {
 
 func TestLoadConfigDiscoveryPriority(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYAMLName), "thresholds:\n  fail_on_increase_percent: 7\n")
-	writeConfig(t, filepath.Join(repo, lopperJSONName), `{"thresholds":{"fail_on_increase_percent":2}}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYAMLName), "thresholds:\n  fail_on_increase_percent: 7\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperJSONName), `{"thresholds":{"fail_on_increase_percent":2}}`)
 
 	overrides, path, err := Load(repo, "")
 	if err != nil {
@@ -338,7 +340,7 @@ func TestParseConfigInvalidJSONDecodeError(t *testing.T) {
 func TestResolveConfigPathExplicitStatError(t *testing.T) {
 	repo := t.TempDir()
 	fileRepo := filepath.Join(repo, "repo-file")
-	writeConfig(t, fileRepo, "x")
+	testutil.MustWriteFile(t, fileRepo, "x")
 	_, _, err := resolveConfigPath(fileRepo, "child.yml")
 	if err == nil {
 		t.Fatalf("expected explicit stat error when repo path is not a directory")
@@ -365,9 +367,9 @@ thresholds:
 thresholds:
   fail_on_increase_percent: 4
 `
-	writeConfig(t, filepath.Join(repo, "packs", "base.yml"), basePolicy)
-	writeConfig(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
-	writeConfig(t, filepath.Join(repo, lopperYMLName), rootPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "base.yml"), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
 
 	result, err := LoadWithPolicy(repo, "")
 	if err != nil {
@@ -403,9 +405,9 @@ thresholds:
 
 func TestLoadWithPolicyPackCycle(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, "packs", "a.yml"), "policy:\n  packs:\n    - b.yml\n")
-	writeConfig(t, filepath.Join(repo, "packs", "b.yml"), "policy:\n  packs:\n    - a.yml\n")
-	writeConfig(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - packs/a.yml\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "a.yml"), "policy:\n  packs:\n    - b.yml\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "b.yml"), "policy:\n  packs:\n    - a.yml\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - packs/a.yml\n")
 
 	_, err := LoadWithPolicy(repo, "")
 	if err == nil {
@@ -418,7 +420,7 @@ func TestLoadWithPolicyPackCycle(t *testing.T) {
 
 func TestLoadWithPolicyRejectsRemotePackWithoutPin(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - https://example.com/policy.yml\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - https://example.com/policy.yml\n")
 	_, err := LoadWithPolicy(repo, "")
 	if err == nil {
 		t.Fatalf("expected remote pack rejection")
@@ -450,7 +452,7 @@ func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
 	defer server.Close()
 
 	policy := fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin)
-	writeConfig(t, filepath.Join(repo, lopperYMLName), policy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), policy)
 	result, err := LoadWithPolicy(repo, "")
 	if err != nil {
 		t.Fatalf("load with pinned remote pack: %v", err)
@@ -474,7 +476,7 @@ func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	writeConfig(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
 
 	_, err := LoadWithPolicy(repo, "")
 	if err == nil {
@@ -625,20 +627,10 @@ func TestPackResolverPopAndPathRootHelpers(t *testing.T) {
 	}
 }
 
-func writeConfig(t *testing.T, path string, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
 func assertLoadConfigErrorContains(t *testing.T, config string, expectedText string) {
 	t.Helper()
 	repo := t.TempDir()
-	writeConfig(t, filepath.Join(repo, lopperYMLName), config)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), config)
 	_, _, err := Load(repo, "")
 	if err == nil {
 		t.Fatalf("expected config validation error")

@@ -1,13 +1,13 @@
 package cli
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
@@ -91,43 +91,18 @@ func TestParseArgsAnalyseLanguage(t *testing.T) {
 	}
 }
 
-func TestParseArgsAnalyseLanguageAll(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, "all"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if req.Analyse.Language != "all" {
-		t.Fatalf("expected language all, got %q", req.Analyse.Language)
-	}
-}
-
-func TestParseArgsAnalyseLanguageJVM(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, "jvm"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if req.Analyse.Language != "jvm" {
-		t.Fatalf("expected language jvm, got %q", req.Analyse.Language)
-	}
-}
-
-func TestParseArgsAnalyseLanguageRust(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, "rust"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if req.Analyse.Language != "rust" {
-		t.Fatalf("expected language rust, got %q", req.Analyse.Language)
-	}
-}
-
-func TestParseArgsAnalyseBaseline(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", "--baseline", "baseline.json"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if req.Analyse.BaselinePath != "baseline.json" {
-		t.Fatalf("expected baseline path baseline.json, got %q", req.Analyse.BaselinePath)
+func TestParseArgsAnalyseLanguages(t *testing.T) {
+	cases := []string{"all", "jvm", "rust"}
+	for _, language := range cases {
+		t.Run(language, func(t *testing.T) {
+			req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, language})
+			if err != nil {
+				t.Fatalf(unexpectedErrFmt, err)
+			}
+			if req.Analyse.Language != language {
+				t.Fatalf("expected language %q, got %q", language, req.Analyse.Language)
+			}
+		})
 	}
 }
 
@@ -156,23 +131,48 @@ func TestParseArgsAnalyseBaselineSnapshotFlags(t *testing.T) {
 	}
 }
 
-func TestParseArgsAnalyseRuntimeTrace(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", "--runtime-trace", "trace.ndjson"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
+func TestParseArgsAnalyseStringFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+		got  func(app.Request) string
+	}{
+		{
+			name: "baseline_path",
+			args: []string{"analyse", "lodash", "--baseline", "baseline.json"},
+			want: "baseline.json",
+			got: func(req app.Request) string {
+				return req.Analyse.BaselinePath
+			},
+		},
+		{
+			name: "runtime_trace_path",
+			args: []string{"analyse", "lodash", "--runtime-trace", "trace.ndjson"},
+			want: "trace.ndjson",
+			got: func(req app.Request) string {
+				return req.Analyse.RuntimeTracePath
+			},
+		},
+		{
+			name: "runtime_profile",
+			args: []string{"analyse", "lodash", "--runtime-profile", "browser-require"},
+			want: "browser-require",
+			got: func(req app.Request) string {
+				return req.Analyse.RuntimeProfile
+			},
+		},
 	}
-	if req.Analyse.RuntimeTracePath != "trace.ndjson" {
-		t.Fatalf("expected runtime trace path trace.ndjson, got %q", req.Analyse.RuntimeTracePath)
-	}
-}
-
-func TestParseArgsAnalyseRuntimeProfile(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", "--runtime-profile", "browser-require"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if req.Analyse.RuntimeProfile != "browser-require" {
-		t.Fatalf("expected runtime profile browser-require, got %q", req.Analyse.RuntimeProfile)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := ParseArgs(tc.args)
+			if err != nil {
+				t.Fatalf(unexpectedErrFmt, err)
+			}
+			if got := tc.got(req); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
 	}
 }
 
@@ -308,7 +308,7 @@ func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
 func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	repo := t.TempDir()
 	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", ""}, "\n")
-	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
+	testutil.MustWriteFile(t, filepath.Join(repo, ".lopper.yml"), config)
 
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "10",
@@ -353,8 +353,8 @@ func TestParseArgsAnalysePolicyPackSources(t *testing.T) {
 thresholds:
   fail_on_increase_percent: 5
 `
-	writeFile(t, filepath.Join(repo, "packs", "org.yml"), orgPolicy)
-	writeFile(t, filepath.Join(repo, ".lopper.yml"), repoPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "org.yml"), orgPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, ".lopper.yml"), repoPolicy)
 
 	req, err := ParseArgs([]string{"analyse", "--top", "3", "--repo", repo})
 	if err != nil {
@@ -503,15 +503,5 @@ func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
 	}
 	if _, err := ParseArgs([]string{"tui", "--top"}); err == nil {
 		t.Fatalf("expected tui flag parse error for missing value")
-	}
-}
-
-func writeFile(t *testing.T, path string, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
 	}
 }
