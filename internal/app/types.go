@@ -30,6 +30,10 @@ type AnalyseRequest struct {
 	CacheReadOnly      bool
 	RuntimeProfile     string
 	BaselinePath       string
+	BaselineStorePath  string
+	BaselineKey        string
+	BaselineLabel      string
+	SaveBaseline       bool
 	RuntimeTracePath   string
 	RuntimeTestCommand string
 	ConfigPath         string

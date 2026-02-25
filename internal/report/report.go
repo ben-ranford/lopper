@@ -43,6 +43,47 @@ type Report struct {
 	EffectiveThresholds  *EffectiveThresholds `json:"effectiveThresholds,omitempty"`
 	Warnings             []string             `json:"warnings,omitempty"`
 	WasteIncreasePercent *float64             `json:"wasteIncreasePercent,omitempty"`
+	BaselineComparison   *BaselineComparison  `json:"baselineComparison,omitempty"`
+}
+
+type BaselineComparison struct {
+	BaselineKey   string            `json:"baselineKey"`
+	CurrentKey    string            `json:"currentKey,omitempty"`
+	SummaryDelta  SummaryDelta      `json:"summaryDelta"`
+	Dependencies  []DependencyDelta `json:"dependencies,omitempty"`
+	Regressions   []DependencyDelta `json:"regressions,omitempty"`
+	Progressions  []DependencyDelta `json:"progressions,omitempty"`
+	Added         []DependencyDelta `json:"added,omitempty"`
+	Removed       []DependencyDelta `json:"removed,omitempty"`
+	UnchangedRows int               `json:"unchangedRows,omitempty"`
+}
+
+type SummaryDelta struct {
+	DependencyCountDelta   int     `json:"dependencyCountDelta"`
+	UsedExportsCountDelta  int     `json:"usedExportsCountDelta"`
+	TotalExportsCountDelta int     `json:"totalExportsCountDelta"`
+	UsedPercentDelta       float64 `json:"usedPercentDelta"`
+	WastePercentDelta      float64 `json:"wastePercentDelta"`
+	UnusedBytesDelta       int64   `json:"unusedBytesDelta"`
+}
+
+type DependencyDeltaKind string
+
+const (
+	DependencyDeltaAdded   DependencyDeltaKind = "added"
+	DependencyDeltaRemoved DependencyDeltaKind = "removed"
+	DependencyDeltaChanged DependencyDeltaKind = "changed"
+)
+
+type DependencyDelta struct {
+	Kind                      DependencyDeltaKind `json:"kind"`
+	Language                  string              `json:"language,omitempty"`
+	Name                      string              `json:"name"`
+	UsedExportsCountDelta     int                 `json:"usedExportsCountDelta"`
+	TotalExportsCountDelta    int                 `json:"totalExportsCountDelta"`
+	UsedPercentDelta          float64             `json:"usedPercentDelta"`
+	EstimatedUnusedBytesDelta int64               `json:"estimatedUnusedBytesDelta"`
+	WastePercentDelta         float64             `json:"wastePercentDelta"`
 }
 
 type CacheMetadata struct {

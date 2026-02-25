@@ -76,6 +76,10 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		CacheReadOnly:      *flags.cacheReadOnly,
 		RuntimeProfile:     strings.TrimSpace(*flags.runtimeProfile),
 		BaselinePath:       strings.TrimSpace(*flags.baselinePath),
+		BaselineStorePath:  strings.TrimSpace(*flags.baselineStorePath),
+		BaselineKey:        strings.TrimSpace(*flags.baselineKey),
+		BaselineLabel:      strings.TrimSpace(*flags.baselineLabel),
+		SaveBaseline:       *flags.saveBaseline,
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
 		ConfigPath:         resolvedConfigPath,
@@ -103,6 +107,10 @@ type analyseFlagValues struct {
 	languageFlag                  *string
 	runtimeProfile                *string
 	baselinePath                  *string
+	baselineStorePath             *string
+	baselineKey                   *string
+	baselineLabel                 *string
+	saveBaseline                  *bool
 	runtimeTracePath              *string
 	runtimeTestCommand            *string
 	configPath                    *string
@@ -130,6 +138,10 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		languageFlag:                  fs.String("language", req.Analyse.Language, "language adapter"),
 		runtimeProfile:                fs.String("runtime-profile", req.Analyse.RuntimeProfile, "conditional exports runtime profile"),
 		baselinePath:                  fs.String("baseline", req.Analyse.BaselinePath, "baseline report path"),
+		baselineStorePath:             fs.String("baseline-store", req.Analyse.BaselineStorePath, "baseline snapshot directory"),
+		baselineKey:                   fs.String("baseline-key", req.Analyse.BaselineKey, "baseline snapshot key for comparison"),
+		baselineLabel:                 fs.String("baseline-label", req.Analyse.BaselineLabel, "label to use when saving a baseline snapshot"),
+		saveBaseline:                  fs.Bool("save-baseline", req.Analyse.SaveBaseline, "save current run as immutable baseline snapshot"),
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
 		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
@@ -312,7 +324,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

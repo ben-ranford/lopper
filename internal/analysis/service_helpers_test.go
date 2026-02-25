@@ -341,6 +341,51 @@ func TestSupportsJSTraceLanguage(t *testing.T) {
 	}
 }
 
+func TestMergeCodemodReportBranches(t *testing.T) {
+	if got := mergeCodemodReport(nil, nil); got != nil {
+		t.Fatalf("expected nil codemod merge result, got %#v", got)
+	}
+
+	right := &report.CodemodReport{
+		Mode: "suggest-only",
+		Suggestions: []report.CodemodSuggestion{
+			{File: "b.ts", Line: 2, ImportName: "map", ToModule: "lodash/map"},
+		},
+	}
+	got := mergeCodemodReport(nil, right)
+	if got == nil || got.Mode != "suggest-only" || len(got.Suggestions) != 1 {
+		t.Fatalf("expected right-only codemod copy, got %#v", got)
+	}
+
+	left := &report.CodemodReport{
+		Mode: "",
+		Suggestions: []report.CodemodSuggestion{
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+		},
+		Skips: []report.CodemodSkip{
+			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
+		},
+	}
+	right = &report.CodemodReport{
+		Mode: "suggest-only",
+		Suggestions: []report.CodemodSuggestion{
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: "lodash/filter"},
+		},
+		Skips: []report.CodemodSkip{
+			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
+			{File: "z.ts", Line: 9, ReasonCode: "dynamic", ImportName: "filter"},
+		},
+	}
+	got = mergeCodemodReport(left, right)
+	if got == nil || got.Mode != "suggest-only" {
+		t.Fatalf("expected merged codemod mode fallback from right, got %#v", got)
+	}
+	if len(got.Suggestions) != 2 || len(got.Skips) != 2 {
+		t.Fatalf("expected deduped merged codemod entries, got %#v", got)
+	}
+}
+
 func TestResolveLowConfidenceWarningThresholdOverride(t *testing.T) {
 	value := 22
 	if got := resolveLowConfidenceWarningThreshold(&value); got != 22 {

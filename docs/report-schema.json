@@ -24,7 +24,8 @@
       "type": "array",
       "items": { "type": "string" }
     },
-    "wasteIncreasePercent": { "type": "number" }
+    "wasteIncreasePercent": { "type": "number" },
+    "baselineComparison": { "$ref": "#/$defs/baselineComparison" }
   },
   "$defs": {
     "summary": {
@@ -309,6 +310,80 @@
         "usage": { "type": "number", "minimum": 0 },
         "impact": { "type": "number", "minimum": 0 },
         "confidence": { "type": "number", "minimum": 0 }
+      }
+    },
+    "baselineComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summaryDelta"],
+      "properties": {
+        "baselineKey": { "type": "string" },
+        "currentKey": { "type": "string" },
+        "summaryDelta": { "$ref": "#/$defs/summaryDelta" },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "regressions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "progressions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "added": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "removed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "unchangedRows": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "summaryDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dependencyCountDelta",
+        "usedExportsCountDelta",
+        "totalExportsCountDelta",
+        "usedPercentDelta",
+        "wastePercentDelta",
+        "unusedBytesDelta"
+      ],
+      "properties": {
+        "dependencyCountDelta": { "type": "integer" },
+        "usedExportsCountDelta": { "type": "integer" },
+        "totalExportsCountDelta": { "type": "integer" },
+        "usedPercentDelta": { "type": "number" },
+        "wastePercentDelta": { "type": "number" },
+        "unusedBytesDelta": { "type": "integer" }
+      }
+    },
+    "dependencyDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "usedExportsCountDelta",
+        "totalExportsCountDelta",
+        "usedPercentDelta",
+        "estimatedUnusedBytesDelta",
+        "wastePercentDelta"
+      ],
+      "properties": {
+        "kind": { "type": "string", "enum": ["added", "removed", "changed"] },
+        "language": { "type": "string" },
+        "name": { "type": "string" },
+        "usedExportsCountDelta": { "type": "integer" },
+        "totalExportsCountDelta": { "type": "integer" },
+        "usedPercentDelta": { "type": "number" },
+        "estimatedUnusedBytesDelta": { "type": "integer" },
+        "wastePercentDelta": { "type": "number" }
       }
     }
   }

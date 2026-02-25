@@ -81,6 +81,41 @@ lopper analyse --top 20 \
   --score-weight-confidence 0.20
 ```
 
+Save an immutable baseline snapshot keyed by commit:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --format json \
+  --baseline-store .artifacts/lopper-baselines \
+  --save-baseline
+```
+
+Save using a human label key:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --format json \
+  --baseline-store .artifacts/lopper-baselines \
+  --save-baseline \
+  --baseline-label release-candidate
+```
+
+Compare against a stored baseline key and gate CI:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --format json \
+  --baseline-store .artifacts/lopper-baselines \
+  --baseline-key commit:abc123 \
+  --threshold-fail-on-increase 2
+```
+
 ## Terminal demos
 
 Regenerate all demo assets from source tapes:

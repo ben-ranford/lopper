@@ -3,8 +3,8 @@ package cli
 const usage = `Usage:
   lopper [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  lopper analyse <dependency> [--repo PATH] [--format table|json|sarif] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--suggest-only]
-  lopper analyse --top N [--repo PATH] [--format table|json|sarif] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--fail-on-increase PERCENT]
+  lopper analyse <dependency> [--repo PATH] [--format table|json|sarif] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--suggest-only]
+  lopper analyse --top N [--repo PATH] [--format table|json|sarif] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)
@@ -16,6 +16,10 @@ Options:
   --cache-readonly           Read cache entries but do not write misses
   --runtime-profile PROFILE  Conditional exports runtime profile (default: node-import)
   --baseline PATH            Baseline report (JSON) for comparison
+  --baseline-store DIR       Directory for immutable keyed baseline snapshots
+  --baseline-key KEY         Key to load from baseline snapshot directory
+  --save-baseline            Save current run as immutable baseline snapshot
+  --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
   --runtime-test-command CMD Run command with JS/TS runtime hooks to capture trace before analysis
   --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)

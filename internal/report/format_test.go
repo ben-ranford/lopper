@@ -253,6 +253,40 @@ func TestFormatTableIncludesCacheMetadata(t *testing.T) {
 	}
 }
 
+func TestFormatTableIncludesBaselineComparison(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "commit:abc123",
+			CurrentKey:  "commit:def456",
+			SummaryDelta: SummaryDelta{
+				WastePercentDelta: 1.5,
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "lodash", WastePercentDelta: 3.5, UsedPercentDelta: -3.5},
+			},
+			Regressions: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "lodash", WastePercentDelta: 3.5, UsedPercentDelta: -3.5},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "lodash", Language: "js-ts", UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with baseline comparison: %v", err)
+	}
+	if !strings.Contains(output, "Baseline comparison:") {
+		t.Fatalf("expected baseline comparison section, got %q", output)
+	}
+	if !strings.Contains(output, "baseline_key: commit:abc123") {
+		t.Fatalf("expected baseline key in output, got %q", output)
+	}
+	if !strings.Contains(output, "regression js-ts/lodash") {
+		t.Fatalf("expected regression line in output, got %q", output)
+	}
+}
+
 func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{
@@ -278,6 +312,32 @@ func TestFormatRuntimeUsageFallbacks(t *testing.T) {
 	}
 	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
 		t.Fatalf("expected static-only fallback, got %q", got)
+	}
+}
+
+func TestTopWasteDeltasSortingAndLimit(t *testing.T) {
+	if got := topWasteDeltas(nil, 3); len(got) != 0 {
+		t.Fatalf("expected nil for empty deltas, got %#v", got)
+	}
+	if got := topWasteDeltas([]DependencyDelta{{Name: "x", WastePercentDelta: 1}}, 0); len(got) != 0 {
+		t.Fatalf("expected nil when limit is zero, got %#v", got)
+	}
+
+	input := []DependencyDelta{
+		{Name: "c", Language: "js-ts", WastePercentDelta: 1},
+		{Name: "a", Language: "go", WastePercentDelta: -5},
+		{Name: "b", Language: "go", WastePercentDelta: 5},
+		{Name: "d", Language: "python", WastePercentDelta: 2},
+	}
+	got := topWasteDeltas(input, 3)
+	if len(got) != 3 {
+		t.Fatalf("expected top 3 deltas, got %#v", got)
+	}
+	if got[0].Language != "go" || got[0].Name != "a" {
+		t.Fatalf("expected tie-break by language/name for equal magnitudes, got %#v", got[0])
+	}
+	if got[1].Language != "go" || got[1].Name != "b" {
+		t.Fatalf("expected second tie-break result to be go/b, got %#v", got[1])
 	}
 }
 
