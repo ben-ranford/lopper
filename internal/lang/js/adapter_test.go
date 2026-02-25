@@ -213,14 +213,7 @@ func TestAdapterAnalyseRecommendations(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(lodashRoot, testPackageJSONName), []byte(pkg), 0o644); err != nil {
 		t.Fatalf("write package: %v", err)
 	}
-	entry := strings.Join([]string{
-		"export function map() {}",
-		"export function filter() {}",
-		"export function reduce() {}",
-		"export function chunk() {}",
-		"export function uniq() {}",
-		"",
-	}, "\n")
+	entry := strings.Join([]string{"export function map() {}", "export function filter() {}", "export function reduce() {}", "export function chunk() {}", "export function uniq() {}", ""}, "\n")
 	if err := os.WriteFile(filepath.Join(lodashRoot, testIndexJS), []byte(entry), 0o644); err != nil {
 		t.Fatalf(testWriteEntrypointFmt, err)
 	}
@@ -259,14 +252,7 @@ func TestAdapterAnalyseRecommendationsHonoursThreshold(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(lodashRoot, testPackageJSONName), []byte(testPackageJSONMain), 0o644); err != nil {
 		t.Fatalf("write package: %v", err)
 	}
-	entry := strings.Join([]string{
-		"export function map() {}",
-		"export function filter() {}",
-		"export function reduce() {}",
-		"export function chunk() {}",
-		"export function uniq() {}",
-		"",
-	}, "\n")
+	entry := strings.Join([]string{"export function map() {}", "export function filter() {}", "export function reduce() {}", "export function chunk() {}", "export function uniq() {}", ""}, "\n")
 	if err := os.WriteFile(filepath.Join(lodashRoot, testIndexJS), []byte(entry), 0o644); err != nil {
 		t.Fatalf(testWriteEntrypointFmt, err)
 	}

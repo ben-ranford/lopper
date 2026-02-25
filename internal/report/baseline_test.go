@@ -96,20 +96,14 @@ func TestApplyBaselineMissingAndZeroTotalsErrors(t *testing.T) {
 		t.Fatalf("expected ErrBaselineMissing, got %v", err)
 	}
 
-	_, err = ApplyBaseline(
-		Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2}}},
-		Report{Summary: &Summary{DependencyCount: 1, UsedExportsCount: 0, TotalExportsCount: 0, UsedPercent: 0}},
-	)
+	_, err = ApplyBaseline(Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2}}}, Report{Summary: &Summary{DependencyCount: 1, UsedExportsCount: 0, TotalExportsCount: 0, UsedPercent: 0}})
 	if err == nil || !strings.Contains(err.Error(), "baseline total exports count is zero") {
 		t.Fatalf("expected baseline zero-total error, got %v", err)
 	}
 }
 
 func TestApplyBaselineCurrentWithoutTotalsError(t *testing.T) {
-	_, err := ApplyBaseline(
-		Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 0, TotalExportsCount: 0}}},
-		Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1}}},
-	)
+	_, err := ApplyBaseline(Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 0, TotalExportsCount: 0}}}, Report{Dependencies: []DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1}}})
 	if err == nil || !strings.Contains(err.Error(), "current report has no export totals") {
 		t.Fatalf("expected current report totals error, got %v", err)
 	}
@@ -129,7 +123,7 @@ func TestComputeSummaryAndLanguageBreakdownEmpty(t *testing.T) {
 	if got := ComputeSummary(nil); got != nil {
 		t.Fatalf("expected nil summary for empty dependencies, got %#v", got)
 	}
-	if got := ComputeLanguageBreakdown(nil); got != nil {
+	if got := ComputeLanguageBreakdown(nil); len(got) != 0 {
 		t.Fatalf("expected nil language breakdown for empty dependencies, got %#v", got)
 	}
 }

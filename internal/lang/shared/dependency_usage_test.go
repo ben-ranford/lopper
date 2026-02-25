@@ -234,22 +234,18 @@ func TestListDependenciesAndTopReports(t *testing.T) {
 func TestBuildRequestedDependenciesDependencyTarget(t *testing.T) {
 	dependencyCalled := false
 	topCalled := false
-	reports, warnings := BuildRequestedDependencies(
-		language.Request{Dependency: "Alpha"},
-		1,
-		strings.ToLower,
-		func(dependency string, scan int) (report.DependencyReport, []string) {
-			dependencyCalled = true
-			if scan != 1 {
-				t.Fatalf("unexpected scan value: %d", scan)
-			}
-			return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
-		},
-		func(_, _ int) ([]report.DependencyReport, []string) {
-			topCalled = true
-			return nil, nil
-		},
-	)
+	dependencyBuilder := func(dependency string, scan int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		if scan != 1 {
+			t.Fatalf("unexpected scan value: %d", scan)
+		}
+		return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
+	}
+	topBuilder := func(_, _ int) ([]report.DependencyReport, []string) {
+		topCalled = true
+		return nil, nil
+	}
+	reports, warnings := BuildRequestedDependencies(language.Request{Dependency: "Alpha"}, 1, strings.ToLower, dependencyBuilder, topBuilder)
 	if !dependencyCalled || topCalled {
 		t.Fatalf("expected only dependency builder to run (dependency=%v top=%v)", dependencyCalled, topCalled)
 	}
@@ -264,22 +260,18 @@ func TestBuildRequestedDependenciesDependencyTarget(t *testing.T) {
 func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 	dependencyCalled := false
 	topCalled := false
-	reports, warnings := BuildRequestedDependencies(
-		language.Request{TopN: 3},
-		2,
-		strings.ToLower,
-		func(string, int) (report.DependencyReport, []string) {
-			dependencyCalled = true
-			return report.DependencyReport{}, nil
-		},
-		func(topN, scan int) ([]report.DependencyReport, []string) {
-			topCalled = true
-			if topN != 3 || scan != 2 {
-				t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
-			}
-			return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
-		},
-	)
+	dependencyBuilder := func(string, int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		return report.DependencyReport{}, nil
+	}
+	topBuilder := func(topN, scan int) ([]report.DependencyReport, []string) {
+		topCalled = true
+		if topN != 3 || scan != 2 {
+			t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
+		}
+		return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
+	}
+	reports, warnings := BuildRequestedDependencies(language.Request{TopN: 3}, 2, strings.ToLower, dependencyBuilder, topBuilder)
 	if dependencyCalled || !topCalled {
 		t.Fatalf("expected only top builder to run (dependency=%v top=%v)", dependencyCalled, topCalled)
 	}
@@ -294,23 +286,19 @@ func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 func TestBuildRequestedDependenciesMissingTarget(t *testing.T) {
 	dependencyCalled := false
 	topCalled := false
-	reports, warnings := BuildRequestedDependencies(
-		language.Request{},
-		0,
-		strings.ToLower,
-		func(string, int) (report.DependencyReport, []string) {
-			dependencyCalled = true
-			return report.DependencyReport{}, nil
-		},
-		func(_, _ int) ([]report.DependencyReport, []string) {
-			topCalled = true
-			return nil, nil
-		},
-	)
+	dependencyBuilder := func(string, int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		return report.DependencyReport{}, nil
+	}
+	topBuilder := func(_, _ int) ([]report.DependencyReport, []string) {
+		topCalled = true
+		return nil, nil
+	}
+	reports, warnings := BuildRequestedDependencies(language.Request{}, 0, strings.ToLower, dependencyBuilder, topBuilder)
 	if dependencyCalled || topCalled {
 		t.Fatalf("expected no builders to run (dependency=%v top=%v)", dependencyCalled, topCalled)
 	}
-	if reports != nil {
+	if len(reports) != 0 {
 		t.Fatalf("expected nil reports when no target provided, got %#v", reports)
 	}
 	if !slices.Equal(warnings, []string{"no dependency or top-N target provided"}) {
@@ -340,7 +328,7 @@ func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	if !slices.Equal(keys, []string{"a", "z"}) {
 		t.Fatalf("unexpected sorted keys: %#v", keys)
 	}
-	if got := SortedKeys(nil); got != nil {
+	if got := SortedKeys(nil); len(got) != 0 {
 		t.Fatalf("expected nil sorted keys for nil map, got %#v", got)
 	}
 
@@ -402,7 +390,7 @@ func TestDetectionHelpers(t *testing.T) {
 	if detection.Confidence != 20 {
 		t.Fatalf("expected unmatched confidence to keep floorless value, got %d", detection.Confidence)
 	}
-	if detection.Roots != nil {
+	if len(detection.Roots) != 0 {
 		t.Fatalf("expected no fallback roots when unmatched, got %#v", detection.Roots)
 	}
 
@@ -452,10 +440,7 @@ func TestApplyRootSignals(t *testing.T) {
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
-	err := ApplyRootSignals(repo, []RootSignal{
-		{Name: "CMakeLists.txt", Confidence: 40},
-		{Name: "missing.file", Confidence: 99},
-	}, &detection, roots)
+	err := ApplyRootSignals(repo, []RootSignal{{Name: "CMakeLists.txt", Confidence: 40}, {Name: "missing.file", Confidence: 99}}, &detection, roots)
 	if err != nil {
 		t.Fatalf("apply root signals: %v", err)
 	}

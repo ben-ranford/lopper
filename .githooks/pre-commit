@@ -4,10 +4,7 @@ set -eu
 echo "[pre-commit] running make fmt"
 make fmt
 
-echo "[pre-commit] running make ci"
+echo "[pre-commit] running make ci (includes gostyle, duplication, security, tests, build, coverage)"
 make ci
-
-echo "[pre-commit] running make cov"
-make cov
 
 echo "[pre-commit] checks passed"

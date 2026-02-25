@@ -21,13 +21,15 @@ const testPHPHeader = "<?php\n"
 
 func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{
+	composerTemplate := `{
   "name": "acme/app",
   "require": {
-    "%s": "^3.0"
+    %q: "^3.0"
   }
 }
-`, testMonologDependency))
+`
+	composerContent := fmt.Sprintf(composerTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerJSON), composerContent)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader)
 	writeFile(t, filepath.Join(repo, "packages", "plugin", testComposerJSON), `{"name":"acme/plugin"}`)
 
@@ -49,12 +51,12 @@ func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 
 func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{
+	composerTemplate := `{
   "name": "acme/app",
   "require": {
     "php": "^8.2",
     "ext-json": "*",
-    "%s": "^3.0",
+    %q: "^3.0",
     "symfony/yaml": "^6.0"
   },
   "require-dev": {
@@ -66,11 +68,13 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
     }
   }
 }
-`, testMonologDependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), fmt.Sprintf(`{
+`
+	composerContent := fmt.Sprintf(composerTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerJSON), composerContent)
+	lockTemplate := `{
   "packages": [
     {
-      "name": "%s",
+      "name": %q,
       "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
     },
     {
@@ -85,7 +89,9 @@ func TestPHPAdapterAnalyseDependencyAndTopN(t *testing.T) {
     }
   ]
 }
-`, testMonologDependency))
+`
+	lockContent := fmt.Sprintf(lockTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerLock), lockContent)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
 use Monolog\Logger;
 use Monolog\{Handler\StreamHandler, Formatter\LineFormatter as LineFmt};
@@ -191,16 +197,18 @@ Yaml::parse("foo: bar");
 
 func TestPHPAdapterParsesNamespaceReferencesWithoutUseStatement(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{"%s":"^3.0"}}`, testMonologDependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), fmt.Sprintf(`{
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))
+	lockTemplate := `{
   "packages": [
     {
-      "name": "%s",
+      "name": %q,
       "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
     }
   ]
 }
-`, testMonologDependency))
+`
+	lockContent := fmt.Sprintf(lockTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerLock), lockContent)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
 $logger = new \Monolog\Logger("app");
 `)

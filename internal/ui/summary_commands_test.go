@@ -117,8 +117,8 @@ func TestSummaryHelpers(t *testing.T) {
 	if len(paged) != 2 {
 		t.Fatalf("expected paged size 2, got %d", len(paged))
 	}
-	if paged := paginateDependencies(deps, 99, 2); paged != nil {
-		t.Fatalf("expected nil for page out of range, got %#v", paged)
+	if paged := paginateDependencies(deps, 99, 2); len(paged) != 0 {
+		t.Fatalf("expected empty page for out-of-range index, got %#v", paged)
 	}
 	if filtered := filterDependencies(deps, "PYTHON"); len(filtered) != 1 || filtered[0].Language != "python" {
 		t.Fatalf("expected filter to match language case-insensitively, got %#v", filtered)
@@ -180,7 +180,7 @@ func TestRunSummaryDependencyPipeline(t *testing.T) {
 
 func TestSummaryStartAndSnapshotBranches(t *testing.T) {
 	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}}}
-	analyzer := stubAnalyzer{report: rep}
+	analyzer := &stubAnalyzer{report: rep}
 
 	var out bytes.Buffer
 	summary := NewSummary(&out, strings.NewReader("help\nopen lodash\nnoop\nq\n"), analyzer, report.NewFormatter())
@@ -217,13 +217,13 @@ type errorAnalyzer struct {
 	err error
 }
 
-func (e errorAnalyzer) Analyse(context.Context, analysis.Request) (report.Report, error) {
+func (e *errorAnalyzer) Analyse(context.Context, analysis.Request) (report.Report, error) {
 	return report.Report{}, e.err
 }
 
 func TestSummaryStartAndSnapshotAnalyzerErrors(t *testing.T) {
 	expected := errors.New("analyse failed")
-	summary := NewSummary(io.Discard, strings.NewReader("q\n"), errorAnalyzer{err: expected}, report.NewFormatter())
+	summary := NewSummary(io.Discard, strings.NewReader("q\n"), &errorAnalyzer{err: expected}, report.NewFormatter())
 	if err := summary.Start(context.Background(), Options{RepoPath: "."}); !errors.Is(err, expected) {
 		t.Fatalf("expected start analyzer error, got %v", err)
 	}
@@ -234,7 +234,7 @@ func TestSummaryStartAndSnapshotAnalyzerErrors(t *testing.T) {
 
 func TestSummarySnapshotWriteError(t *testing.T) {
 	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}}}
-	summary := NewSummary(io.Discard, strings.NewReader(""), stubAnalyzer{report: rep}, report.NewFormatter())
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
 	outPath := filepath.Join(t.TempDir(), "missing", "snapshot.txt")
 	if summary.Snapshot(context.Background(), Options{RepoPath: "."}, outPath) == nil {
 		t.Fatalf("expected write error for non-existent output directory")
@@ -249,7 +249,7 @@ func TestSummaryRenderAndInputBranches(t *testing.T) {
 		},
 	}
 	var out bytes.Buffer
-	summary := NewSummary(&out, strings.NewReader(""), stubAnalyzer{report: rep}, report.NewFormatter())
+	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
 
 	state := summaryState{
 		filter:   "",
@@ -284,7 +284,7 @@ func TestSummaryRenderAndInputBranches(t *testing.T) {
 
 func TestSummarySnapshotStdoutWhenOutNil(t *testing.T) {
 	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}}}
-	summary := NewSummary(nil, strings.NewReader(""), stubAnalyzer{report: rep}, report.NewFormatter())
+	summary := NewSummary(nil, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
 
 	// Avoid polluting test output by temporarily redirecting stdout.
 	originalStdout := os.Stdout
@@ -295,15 +295,22 @@ func TestSummarySnapshotStdoutWhenOutNil(t *testing.T) {
 	os.Stdout = writePipe
 	t.Cleanup(func() {
 		os.Stdout = originalStdout
-		_ = readPipe.Close()
+		if err := readPipe.Close(); err != nil {
+			t.Fatalf("close read pipe: %v", err)
+		}
 	})
 
 	if err := summary.Snapshot(context.Background(), Options{RepoPath: "."}, "-"); err != nil {
 		t.Fatalf("snapshot to stdout with nil Out: %v", err)
 	}
-	_ = writePipe.Close()
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close write pipe: %v", err)
+	}
 	buf := make([]byte, 4096)
-	n, _ := readPipe.Read(buf)
+	n, readErr := readPipe.Read(buf)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		t.Fatalf("read stdout buffer: %v", readErr)
+	}
 	if n == 0 {
 		t.Fatalf("expected snapshot output on stdout")
 	}
@@ -352,10 +359,113 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 }
 
 func TestSummaryHandleDetailErrorBranch(t *testing.T) {
-	summary := NewSummary(io.Discard, strings.NewReader(""), errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
+	summary := NewSummary(io.Discard, strings.NewReader(""), &errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
 	state := summaryState{}
 	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, &state, "open dep")
 	if err == nil {
 		t.Fatalf("expected detail error to propagate")
+	}
+}
+
+type sequenceErrorAnalyzer struct {
+	calls int
+}
+
+func (a *sequenceErrorAnalyzer) Analyse(context.Context, analysis.Request) (report.Report, error) {
+	defer func() { a.calls++ }()
+	if a.calls == 0 {
+		return report.Report{
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+			},
+		}, nil
+	}
+	return report.Report{}, errors.New("detail failed")
+}
+
+func TestSummaryStartErrorBranches(t *testing.T) {
+	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}}}
+
+	// renderSummaryOutput failure path.
+	writeErr := errors.New("write failed")
+	failWriter := &failAfterWriter{failAt: 0, err: writeErr}
+	summary := NewSummary(failWriter, strings.NewReader("q\n"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	if err := summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1}); !errors.Is(err, writeErr) {
+		t.Fatalf("expected output write error, got %v", err)
+	}
+
+	// readSummaryInput failure path.
+	summary = NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
+	if err := summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1}); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF from input reader, got %v", err)
+	}
+
+	// handleSummaryInput failure path via open detail command.
+	seqAnalyzer := &sequenceErrorAnalyzer{}
+	summary = NewSummary(io.Discard, strings.NewReader("open dep\n"), seqAnalyzer, report.NewFormatter())
+	if summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}) == nil {
+		t.Fatalf("expected detail-open error from handleSummaryInput")
+	}
+}
+
+func TestSummaryHelperBranches(t *testing.T) {
+	if supportsScreenRefresh(&bytes.Buffer{}) {
+		t.Fatalf("expected non-file writer not to support screen refresh")
+	}
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "summary-screen-*.tmp")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if supportsScreenRefresh(tmpFile) {
+		t.Fatalf("expected regular file not to be a character device")
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+	if supportsScreenRefresh(tmpFile) {
+		t.Fatalf("expected closed file stat to fail and return false")
+	}
+
+	var out bytes.Buffer
+	if err := clearSummaryScreen(&out); err != nil {
+		t.Fatalf("clearSummaryScreen: %v", err)
+	}
+
+	deps := []report.DependencyReport{
+		{Name: "same", Language: "z"},
+		{Name: "same", Language: "a"},
+	}
+	sortedByName := sortDependencies(deps, sortByName)
+	if sortedByName[0].Language != "a" {
+		t.Fatalf("expected language tie-break for name sort, got %#v", sortedByName)
+	}
+
+	waste, ok := dependencyWaste(report.DependencyReport{
+		RemovalCandidate:  &report.RemovalCandidate{Score: 42},
+		TotalExportsCount: 10,
+	})
+	if !ok || waste != 42 {
+		t.Fatalf("expected removal-candidate score branch, got waste=%f ok=%v", waste, ok)
+	}
+
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: report.Report{}}, report.NewFormatter())
+	applied := summary.applyDefaults(Options{})
+	if applied.RepoPath != "." {
+		t.Fatalf("expected applyDefaults to set repo path, got %q", applied.RepoPath)
+	}
+
+	frame := renderSummaryFrame("body\n", summaryState{filter: "lodash", sortMode: sortByWaste, page: 1, pageSize: 10}, 1, 1)
+	if !strings.Contains(frame, `Filter: "lodash"`) {
+		t.Fatalf("expected quoted filter in frame, got %q", frame)
+	}
+}
+
+func TestSummarySnapshotStdoutWriteError(t *testing.T) {
+	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}}}
+	writeErr := errors.New("stdout write failed")
+	summary := NewSummary(&failAfterWriter{failAt: 0, err: writeErr}, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
+	if err := summary.Snapshot(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1}, "-"); !errors.Is(err, writeErr) {
+		t.Fatalf("expected snapshot stdout write error, got %v", err)
 	}
 }

@@ -57,13 +57,7 @@ func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
 }
 
 func TestAdapterAnalyseSuggestOnlySkipsUnsafeTransforms(t *testing.T) {
-	repo, _, _ := setupLodashFixture(t, strings.Join([]string{
-		"import \"lodash\"",
-		"import * as lodash from \"lodash\"",
-		"import { map as mapAlias } from \"lodash\"",
-		"mapAlias([1], (x) => x)",
-		"",
-	}, "\n"))
+	repo, _, _ := setupLodashFixture(t, strings.Join([]string{"import \"lodash\"", "import * as lodash from \"lodash\"", "import { map as mapAlias } from \"lodash\"", "mapAlias([1], (x) => x)", ""}, "\n"))
 
 	reportData := analyseSuggestOnly(t, repo)
 	if len(reportData.Dependencies) != 1 {
@@ -217,19 +211,19 @@ func applySingleLineUnifiedPatch(content, patch string) (string, error) {
 		return "", fmt.Errorf("invalid hunk parts: %q", hunk)
 	}
 	oldPos := strings.TrimPrefix(parts[0], "-")
-	lineNumPart := strings.SplitN(oldPos, ",", 2)[0]
-	lineNum, err := strconv.Atoi(lineNumPart)
-	if err != nil || lineNum <= 0 {
+	linePart := strings.SplitN(oldPos, ",", 2)[0]
+	line, err := strconv.Atoi(linePart)
+	if err != nil || line <= 0 {
 		return "", fmt.Errorf("invalid line number in hunk: %q", oldPos)
 	}
-	if lineNum > len(lines) {
-		return "", fmt.Errorf("hunk line out of range: %d", lineNum)
+	if line > len(lines) {
+		return "", fmt.Errorf("hunk line out of range: %d", line)
 	}
 	oldLine := strings.TrimPrefix(patchLines[3], "-")
 	newLine := strings.TrimPrefix(patchLines[4], "+")
-	if lines[lineNum-1] != oldLine {
-		return "", fmt.Errorf("source line mismatch at %d: got %q want %q", lineNum, lines[lineNum-1], oldLine)
+	if lines[line-1] != oldLine {
+		return "", fmt.Errorf("source line mismatch at %d: got %q want %q", line, lines[line-1], oldLine)
 	}
-	lines[lineNum-1] = newLine
+	lines[line-1] = newLine
 	return strings.Join(lines, "\n"), nil
 }

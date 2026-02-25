@@ -15,14 +15,14 @@ type fakeRunner struct {
 	err    error
 }
 
-func (f fakeRunner) Execute(context.Context, app.Request) (string, error) {
+func (f *fakeRunner) Execute(context.Context, app.Request) (string, error) {
 	return f.output, f.err
 }
 
 func TestNew(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(fakeRunner{}, &out, &errOut)
+	c := New(&fakeRunner{}, &out, &errOut)
 	if c == nil {
 		t.Fatalf("expected cli to be created")
 	}
@@ -31,7 +31,7 @@ func TestNew(t *testing.T) {
 func TestRunHelp(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(fakeRunner{}, &out, &errOut)
+	c := New(&fakeRunner{}, &out, &errOut)
 	code := c.Run(context.Background(), []string{"--help"})
 	if code != 0 {
 		t.Fatalf("expected code 0, got %d", code)
@@ -44,7 +44,7 @@ func TestRunHelp(t *testing.T) {
 func TestRunParseError(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(fakeRunner{}, &out, &errOut)
+	c := New(&fakeRunner{}, &out, &errOut)
 	code := c.Run(context.Background(), []string{"nope"})
 	if code != 2 {
 		t.Fatalf("expected parse error code 2, got %d", code)
@@ -57,7 +57,7 @@ func TestRunParseError(t *testing.T) {
 func TestRunFailOnIncreaseError(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(fakeRunner{err: app.ErrFailOnIncrease}, &out, &errOut)
+	c := New(&fakeRunner{err: app.ErrFailOnIncrease}, &out, &errOut)
 	code := c.Run(context.Background(), []string{"analyse", "lodash"})
 	if code != 3 {
 		t.Fatalf("expected fail-on-increase exit code 3, got %d", code)
@@ -67,7 +67,7 @@ func TestRunFailOnIncreaseError(t *testing.T) {
 func TestRunGenericRunnerError(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(fakeRunner{err: errors.New("boom")}, &out, &errOut)
+	c := New(&fakeRunner{err: errors.New("boom")}, &out, &errOut)
 	code := c.Run(context.Background(), []string{"analyse", "lodash"})
 	if code != 1 {
 		t.Fatalf("expected generic error code 1, got %d", code)
@@ -80,7 +80,7 @@ func TestRunGenericRunnerError(t *testing.T) {
 func TestRunOutputNewlineHandling(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(fakeRunner{output: "ok"}, &out, &errOut)
+	c := New(&fakeRunner{output: "ok"}, &out, &errOut)
 	code := c.Run(context.Background(), []string{"analyse", "lodash"})
 	if code != 0 {
 		t.Fatalf("expected success code 0, got %d", code)

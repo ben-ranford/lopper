@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -257,8 +258,12 @@ func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string,
 	sort.Strings(records)
 	hasher := sha256.New()
 	for _, record := range records {
-		_, _ = io.WriteString(hasher, record)
-		_, _ = io.WriteString(hasher, "\n")
+		if _, err := io.WriteString(hasher, record); err != nil {
+			return "", err
+		}
+		if _, err := io.WriteString(hasher, "\n"); err != nil {
+			return "", err
+		}
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
@@ -394,18 +399,39 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	tmpPath := tmpFile.Name()
 	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return err
+		return errors.Join(err, cleanupTempFile(tmpFile, tmpPath))
 	}
 	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
+		return errors.Join(err, removeIfPresent(tmpPath))
 	}
-	if os.Rename(tmpPath, path) == nil {
+	renameErr := os.Rename(tmpPath, path)
+	if renameErr == nil {
 		return nil
 	}
-	_ = os.Remove(tmpPath)
+	if err := removeIfPresent(tmpPath); err != nil {
+		return err
+	}
 	// Windows cannot atomically rename over existing files; fall back to overwrite.
 	return os.WriteFile(path, data, 0o600)
+}
+
+func cleanupTempFile(tmpFile *os.File, tmpPath string) error {
+	return errors.Join(closeIfPresent(tmpFile), removeIfPresent(tmpPath))
+}
+
+func closeIfPresent(tmpFile *os.File) error {
+	if tmpFile == nil {
+		return nil
+	}
+	if err := tmpFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
+	return nil
+}
+
+func removeIfPresent(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

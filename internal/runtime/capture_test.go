@@ -63,18 +63,12 @@ func TestCapture(t *testing.T) {
 
 func TestCaptureCommandFailure(t *testing.T) {
 	repo := t.TempDir()
-	assertCaptureErrorContains(t, CaptureRequest{
-		RepoPath: repo,
-		Command:  "make __missing_target__",
-	}, "runtime test command failed")
+	assertCaptureErrorContains(t, CaptureRequest{RepoPath: repo, Command: "make __missing_target__"}, "runtime test command failed")
 }
 
 func TestCaptureUnsupportedCommand(t *testing.T) {
 	repo := t.TempDir()
-	assertCaptureErrorContains(t, CaptureRequest{
-		RepoPath: repo,
-		Command:  "foobar test",
-	}, "unsupported runtime test executable")
+	assertCaptureErrorContains(t, CaptureRequest{RepoPath: repo, Command: "foobar test"}, "unsupported runtime test executable")
 }
 
 func assertCaptureErrorContains(t *testing.T, req CaptureRequest, wantSubstring string) {
@@ -158,14 +152,15 @@ func TestTrustedSearchDirs(t *testing.T) {
 		t.Fatalf("chmod insecure: %v", err)
 	}
 
-	dirListValue := strings.Join([]string{
+	dirEntries := []string{
 		"",
 		".",
 		secureA,
 		insecure,
 		secureB,
 		secureA, // duplicate
-	}, string(os.PathListSeparator))
+	}
+	dirListValue := strings.Join(dirEntries, string(os.PathListSeparator))
 	got := trustedSearchDirs(dirListValue)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 trusted dirs, got %d: %v", len(got), got)

@@ -37,19 +37,19 @@ type sarifDriver struct {
 }
 
 type sarifRule struct {
-	ID               string                 `json:"id"`
-	Name             string                 `json:"name,omitempty"`
-	ShortDescription sarifMessage           `json:"shortDescription"`
-	Help             *sarifMessage          `json:"help,omitempty"`
-	Properties       map[string]interface{} `json:"properties,omitempty"`
+	ID               string         `json:"id"`
+	Name             string         `json:"name,omitempty"`
+	ShortDescription sarifMessage   `json:"shortDescription"`
+	Help             *sarifMessage  `json:"help,omitempty"`
+	Properties       map[string]any `json:"properties,omitempty"`
 }
 
 type sarifResult struct {
-	RuleID     string                 `json:"ruleId"`
-	Level      string                 `json:"level,omitempty"`
-	Message    sarifMessage           `json:"message"`
-	Locations  []sarifLocation        `json:"locations,omitempty"`
-	Properties map[string]interface{} `json:"properties,omitempty"`
+	RuleID     string          `json:"ruleId"`
+	Level      string          `json:"level,omitempty"`
+	Message    sarifMessage    `json:"message"`
+	Locations  []sarifLocation `json:"locations,omitempty"`
+	Properties map[string]any  `json:"properties,omitempty"`
 }
 
 type sarifMessage struct {
@@ -196,7 +196,7 @@ func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, d
 			Name:             "unused-import",
 			ShortDescription: sarifMessage{Text: "Imported symbol is not referenced"},
 			Help:             &sarifMessage{Text: "Remove unused imports or narrow dependency usage to reduce surface area."},
-			Properties: map[string]interface{}{
+			Properties: map[string]any{
 				"category": "waste",
 			},
 		})
@@ -210,7 +210,7 @@ func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, d
 			Level:     "warning",
 			Message:   sarifMessage{Text: fmt.Sprintf("%s imports %q from %q but it is unused.", dep.Name, imp.Name, imp.Module)},
 			Locations: locations,
-			Properties: map[string]interface{}{
+			Properties: map[string]any{
 				"dependency": dep.Name,
 				"language":   dep.Language,
 				"module":     imp.Module,
@@ -229,7 +229,7 @@ func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, d
 			Name:             "unused-export",
 			ShortDescription: sarifMessage{Text: "Dependency export appears unused"},
 			Help:             &sarifMessage{Text: "Prefer subpath imports or alternatives that avoid shipping unused exports."},
-			Properties: map[string]interface{}{
+			Properties: map[string]any{
 				"category": "waste",
 			},
 		})
@@ -238,7 +238,7 @@ func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, d
 			RuleID:  ruleID,
 			Level:   "warning",
 			Message: sarifMessage{Text: fmt.Sprintf("%s does not appear to use export %q from %q.", dep.Name, sym.Name, sym.Module)},
-			Properties: map[string]interface{}{
+			Properties: map[string]any{
 				"dependency": dep.Name,
 				"language":   dep.Language,
 				"module":     sym.Module,
@@ -263,7 +263,7 @@ func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, 
 		Name:             "waste-increase",
 		ShortDescription: sarifMessage{Text: "Dependency waste increased versus baseline"},
 		Help:             &sarifMessage{Text: "Compare current and baseline reports to identify the dependencies causing additional waste."},
-		Properties: map[string]interface{}{
+		Properties: map[string]any{
 			"category": "waste",
 		},
 	})
@@ -271,7 +271,7 @@ func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, 
 		RuleID:  ruleID,
 		Level:   "warning",
 		Message: sarifMessage{Text: fmt.Sprintf("Overall dependency waste increased by %.1f%% compared with baseline.", *wasteIncreasePercent)},
-		Properties: map[string]interface{}{
+		Properties: map[string]any{
 			"wasteIncreasePercent": *wasteIncreasePercent,
 		},
 	})
@@ -295,13 +295,13 @@ func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep Depe
 		Name:             signal.RuleName,
 		ShortDescription: sarifMessage{Text: signal.RuleShort},
 		Help:             &sarifMessage{Text: signal.RuleHelp},
-		Properties: map[string]interface{}{
+		Properties: map[string]any{
 			"category": signal.RuleCategory,
 			"code":     signal.RuleCode,
 		},
 	})
 
-	props := map[string]interface{}{
+	props := map[string]any{
 		"dependency": dep.Name,
 		"language":   dep.Language,
 	}

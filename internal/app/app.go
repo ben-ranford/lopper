@@ -20,8 +20,8 @@ var (
 )
 
 type App struct {
-	Analyzer  analysis.Analyzer
-	Formatter report.Formatter
+	Analyzer  analysis.Analyser
+	Formatter *report.Formatter
 	TUI       ui.TUI
 }
 
@@ -117,7 +117,15 @@ func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
 		return nil, runtimeTracePath
 	}
 
-	repoPath, _ := workspace.NormalizeRepoPath(req.RepoPath)
+	warnings := make([]string, 0, 1)
+	repoPath, normalizeErr := workspace.NormalizeRepoPath(req.RepoPath)
+	if normalizeErr != nil {
+		repoPath = strings.TrimSpace(req.RepoPath)
+		if repoPath == "" {
+			repoPath = req.RepoPath
+		}
+		warnings = append(warnings, "runtime trace setup: using raw repo path due to normalization error: "+normalizeErr.Error())
+	}
 	if runtimeTracePath == "" {
 		runtimeTracePath = runtime.DefaultTracePath(repoPath)
 	}
@@ -127,11 +135,11 @@ func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
 		Command:   runtimeCommand,
 	}); err != nil {
 		if strings.TrimSpace(req.Analyse.RuntimeTracePath) == "" {
-			return []string{"runtime trace command failed; continuing with static analysis: " + err.Error()}, ""
+			return append(warnings, "runtime trace command failed; continuing with static analysis: "+err.Error()), ""
 		}
-		return []string{"runtime trace command failed; continuing with static analysis: " + err.Error()}, runtimeTracePath
+		return append(warnings, "runtime trace command failed; continuing with static analysis: "+err.Error()), runtimeTracePath
 	}
-	return nil, runtimeTracePath
+	return warnings, runtimeTracePath
 }
 
 func (a *App) applyBaselineIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, string, error) {

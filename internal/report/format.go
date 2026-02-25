@@ -10,14 +10,14 @@ import (
 
 type Formatter struct{}
 
-func NewFormatter() Formatter {
-	return Formatter{}
+func NewFormatter() *Formatter {
+	return &Formatter{}
 }
 
-func (f Formatter) Format(report Report, format Format) (string, error) {
+func (f *Formatter) Format(report Report, format Format) (string, error) {
 	switch format {
 	case FormatTable:
-		return formatTable(report), nil
+		return formatTable(report)
 	case FormatJSON:
 		payload, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
@@ -31,9 +31,9 @@ func (f Formatter) Format(report Report, format Format) (string, error) {
 	}
 }
 
-func formatTable(report Report) string {
+func formatTable(report Report) (string, error) {
 	if len(report.Dependencies) == 0 {
-		return formatEmpty(report)
+		return formatEmpty(report), nil
 	}
 
 	var buffer bytes.Buffer
@@ -45,29 +45,28 @@ func formatTable(report Report) string {
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 	showLanguage := hasLanguageColumn(report.Dependencies)
 	showRuntime := hasRuntimeColumn(report.Dependencies)
-	writeTableHeader(writer, showLanguage, showRuntime)
-
-	for _, dep := range report.Dependencies {
-		_, _ = fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime))
+	if err := writeTableHeader(writer, showLanguage, showRuntime); err != nil {
+		return "", err
 	}
 
-	_ = writer.Flush()
+	for _, dep := range report.Dependencies {
+		if _, err := fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime)); err != nil {
+			return "", err
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return "", err
+	}
 	appendWarnings(&buffer, report)
-	return buffer.String()
+	return buffer.String(), nil
 }
 
 func appendSummary(buffer *bytes.Buffer, summary *Summary) {
 	if summary == nil {
 		return
 	}
-	_, _ = fmt.Fprintf(
-		buffer,
-		"Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n",
-		summary.DependencyCount,
-		summary.UsedExportsCount,
-		summary.TotalExportsCount,
-		summary.UsedPercent,
-	)
+	buffer.WriteString(fmt.Sprintf("Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n", summary.DependencyCount, summary.UsedExportsCount, summary.TotalExportsCount, summary.UsedPercent))
 }
 
 func appendCacheMetadata(buffer *bytes.Buffer, cache *CacheMetadata) {
@@ -105,7 +104,7 @@ func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) 
 	buffer.WriteString("\n")
 }
 
-func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) {
+func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) error {
 	columns := make([]string, 0, 9)
 	if showLanguage {
 		columns = append(columns, "Language")
@@ -115,7 +114,8 @@ func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) 
 		columns = append(columns, "Runtime")
 	}
 	columns = append(columns, "Est. Unused Size", "Candidate Score", "Score Components", "Top Symbols")
-	_, _ = fmt.Fprintln(writer, strings.Join(columns, "\t"))
+	_, err := fmt.Fprintln(writer, strings.Join(columns, "\t"))
+	return err
 }
 
 func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string {
@@ -128,22 +128,11 @@ func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string
 	if showLanguage {
 		columns = append(columns, dep.Language)
 	}
-	columns = append(
-		columns,
-		dep.Name,
-		fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount),
-		fmt.Sprintf("%.1f", usedPercent),
-	)
+	columns = append(columns, dep.Name, fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount), fmt.Sprintf("%.1f", usedPercent))
 	if showRuntime {
 		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
 	}
-	columns = append(
-		columns,
-		formatBytes(dep.EstimatedUnusedBytes),
-		formatCandidateScore(dep.RemovalCandidate),
-		formatScoreComponents(dep.RemovalCandidate),
-		formatTopSymbols(dep.TopUsedSymbols),
-	)
+	columns = append(columns, formatBytes(dep.EstimatedUnusedBytes), formatCandidateScore(dep.RemovalCandidate), formatScoreComponents(dep.RemovalCandidate), formatTopSymbols(dep.TopUsedSymbols))
 	return strings.Join(columns, "\t")
 }
 
@@ -231,26 +220,26 @@ func formatBytes(value int64) string {
 		return "0 B"
 	}
 
-	floatValue := float64(value)
-	if floatValue < 0 {
-		floatValue = -floatValue
+	scaled := float64(value)
+	if scaled < 0 {
+		scaled = -scaled
 	}
 
 	unit := "B"
-	if floatValue >= 1024 {
-		floatValue /= 1024
+	if scaled >= 1024 {
+		scaled /= 1024
 		unit = "KB"
-		if floatValue >= 1024 {
-			floatValue /= 1024
+		if scaled >= 1024 {
+			scaled /= 1024
 			unit = "MB"
-			if floatValue >= 1024 {
-				floatValue /= 1024
+			if scaled >= 1024 {
+				scaled /= 1024
 				unit = "GB"
 			}
 		}
 	}
 
-	formatted := fmt.Sprintf("%.1f %s", floatValue, unit)
+	formatted := fmt.Sprintf("%.1f %s", scaled, unit)
 	if value < 0 {
 		return "-" + formatted
 	}

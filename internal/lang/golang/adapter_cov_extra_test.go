@@ -106,7 +106,7 @@ func assertGoScanWarnings(t *testing.T) {
 
 func assertGoImportBindingHelpers(t *testing.T) {
 	t.Helper()
-	if dependencyWarnings("dep", true) != nil {
+	if len(dependencyWarnings("dep", true)) != 0 {
 		t.Fatalf("expected no dependency warnings when imports exist")
 	}
 	name, local, wildcard := importBindingIdentity("example.com/x/y", &ast.Ident{Name: "   "})

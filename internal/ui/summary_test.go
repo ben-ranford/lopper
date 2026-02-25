@@ -17,7 +17,7 @@ type stubAnalyzer struct {
 	report report.Report
 }
 
-func (s stubAnalyzer) Analyse(ctx context.Context, req analysis.Request) (report.Report, error) {
+func (s *stubAnalyzer) Analyse(ctx context.Context, req analysis.Request) (report.Report, error) {
 	return s.report, nil
 }
 
@@ -36,7 +36,7 @@ func TestSummarySnapshotGolden(t *testing.T) {
 		},
 	}
 
-	analyzer := stubAnalyzer{report: reportData}
+	analyzer := &stubAnalyzer{report: reportData}
 	summary := NewSummary(io.Discard, strings.NewReader(""), analyzer, report.NewFormatter())
 
 	opts := Options{

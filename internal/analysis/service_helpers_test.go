@@ -196,7 +196,7 @@ func TestServiceAnalyseErrorBranches(t *testing.T) {
 	}
 
 	reg := language.NewRegistry()
-	if err := reg.Register(testServiceAdapter{
+	if err := reg.Register(&testServiceAdapter{
 		id:     "js-ts",
 		detect: language.Detection{Matched: true, Confidence: 10},
 		err:    errors.New("analyse failed"),
@@ -211,7 +211,7 @@ func TestServiceAnalyseErrorBranches(t *testing.T) {
 
 func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 	candidate := language.Candidate{
-		Adapter: testServiceAdapter{
+		Adapter: &testServiceAdapter{
 			id:     "ok",
 			detect: language.Detection{Matched: true, Confidence: 50},
 			analyse: report.Report{
@@ -234,7 +234,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 	}
 
 	broken := language.Candidate{
-		Adapter: testServiceAdapter{id: "broken", detect: language.Detection{Matched: true}, err: errors.New("boom")},
+		Adapter: &testServiceAdapter{id: "broken", detect: language.Detection{Matched: true}, err: errors.New("boom")},
 		Detection: language.Detection{
 			Matched: true,
 		},
@@ -245,26 +245,17 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 }
 
 func TestMergeSortAndPriorityHelperBranches(t *testing.T) {
-	imports := mergeImportUses(
-		[]report.ImportUse{{Module: "b", Name: "x"}},
-		[]report.ImportUse{{Module: "a", Name: "x"}},
-	)
+	imports := mergeImportUses([]report.ImportUse{{Module: "b", Name: "x"}}, []report.ImportUse{{Module: "a", Name: "x"}})
 	if len(imports) != 2 || imports[0].Module != "a" {
 		t.Fatalf("expected import sort by module, got %#v", imports)
 	}
 
-	refs := mergeSymbolRefs(
-		[]report.SymbolRef{{Module: "z", Name: "a"}},
-		[]report.SymbolRef{{Module: "a", Name: "a"}},
-	)
+	refs := mergeSymbolRefs([]report.SymbolRef{{Module: "z", Name: "a"}}, []report.SymbolRef{{Module: "a", Name: "a"}})
 	if len(refs) != 2 || refs[0].Module != "a" {
 		t.Fatalf("expected symbol ref sort by module, got %#v", refs)
 	}
 
-	recs := mergeRecommendations(
-		[]report.Recommendation{{Code: "b", Priority: "medium"}},
-		[]report.Recommendation{{Code: "a", Priority: "medium"}},
-	)
+	recs := mergeRecommendations([]report.Recommendation{{Code: "b", Priority: "medium"}}, []report.Recommendation{{Code: "a", Priority: "medium"}})
 	if len(recs) != 2 || recs[0].Code != "a" {
 		t.Fatalf("expected recommendation tie-break sort by code, got %#v", recs)
 	}
@@ -358,27 +349,12 @@ func TestResolveLowConfidenceWarningThresholdOverride(t *testing.T) {
 }
 
 func TestMergeRuntimeModuleAndSymbolUsage(t *testing.T) {
-	modules := mergeRuntimeModuleUsage(
-		[]report.RuntimeModuleUsage{{Module: "a", Count: 1}},
-		[]report.RuntimeModuleUsage{{Module: "a", Count: 2}, {Module: "b", Count: 1}},
-	)
+	modules := mergeRuntimeModuleUsage([]report.RuntimeModuleUsage{{Module: "a", Count: 1}}, []report.RuntimeModuleUsage{{Module: "a", Count: 2}, {Module: "b", Count: 1}})
 	if len(modules) != 2 || modules[0].Module != "a" || modules[0].Count != 3 {
 		t.Fatalf("unexpected merged runtime modules: %#v", modules)
 	}
 
-	symbols := mergeRuntimeSymbolUsage(
-		[]report.RuntimeSymbolUsage{
-			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1},
-			{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 1},
-		},
-		[]report.RuntimeSymbolUsage{
-			{Symbol: "map", Module: lodashMapRuntimeModule, Count: 2},
-			{Symbol: "chunk", Module: "lodash/chunk", Count: 1},
-			{Symbol: "flatten", Module: "lodash/flatten", Count: 1},
-			{Symbol: "groupBy", Module: "lodash/groupBy", Count: 1},
-			{Symbol: "pick", Module: "lodash/pick", Count: 1},
-		},
-	)
+	symbols := mergeRuntimeSymbolUsage([]report.RuntimeSymbolUsage{{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1}, {Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 1}}, []report.RuntimeSymbolUsage{{Symbol: "map", Module: lodashMapRuntimeModule, Count: 2}, {Symbol: "chunk", Module: "lodash/chunk", Count: 1}, {Symbol: "flatten", Module: "lodash/flatten", Count: 1}, {Symbol: "groupBy", Module: "lodash/groupBy", Count: 1}, {Symbol: "pick", Module: "lodash/pick", Count: 1}})
 	if len(symbols) != 5 {
 		t.Fatalf("expected top-5 merged runtime symbols, got %#v", symbols)
 	}
@@ -392,21 +368,7 @@ func TestMergeRuntimeUsage(t *testing.T) {
 		t.Fatalf("expected nil runtime usage when both sides are nil")
 	}
 
-	merged := mergeRuntimeUsage(
-		&report.RuntimeUsage{
-			LoadCount:   2,
-			Correlation: report.RuntimeCorrelationRuntimeOnly,
-			RuntimeOnly: true,
-			Modules:     []report.RuntimeModuleUsage{{Module: lodashMapRuntimeModule, Count: 1}},
-			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1}},
-		},
-		&report.RuntimeUsage{
-			LoadCount:   1,
-			Correlation: report.RuntimeCorrelationStaticOnly,
-			Modules:     []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 2}},
-			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 2}},
-		},
-	)
+	merged := mergeRuntimeUsage(&report.RuntimeUsage{LoadCount: 2, Correlation: report.RuntimeCorrelationRuntimeOnly, RuntimeOnly: true, Modules: []report.RuntimeModuleUsage{{Module: lodashMapRuntimeModule, Count: 1}}, TopSymbols: []report.RuntimeSymbolUsage{{Symbol: "map", Module: lodashMapRuntimeModule, Count: 1}}}, &report.RuntimeUsage{LoadCount: 1, Correlation: report.RuntimeCorrelationStaticOnly, Modules: []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 2}}, TopSymbols: []report.RuntimeSymbolUsage{{Symbol: "filter", Module: lodashFilterRuntimeModule, Count: 2}}})
 
 	if merged == nil || merged.LoadCount != 3 {
 		t.Fatalf("expected merged load count 3, got %#v", merged)

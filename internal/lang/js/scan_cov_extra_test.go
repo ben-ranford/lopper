@@ -23,7 +23,7 @@ func TestJSScanCoverageHelpers(t *testing.T) {
 	importStmt := firstNodeByType(tree.RootNode(), "import_statement")
 	tmpl := firstNodeByType(tree.RootNode(), "template_string")
 
-	if exportStmt == nil || parseReExportStatement(exportStmt, source, indexJSName, map[string][]ImportBinding{}) != nil {
+	if exportStmt == nil || len(parseReExportStatement(exportStmt, source, indexJSName, map[string][]ImportBinding{})) != 0 {
 		t.Fatalf("expected source-less re-export statement to return nil bindings")
 	}
 

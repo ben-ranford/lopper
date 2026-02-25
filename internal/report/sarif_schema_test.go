@@ -20,10 +20,7 @@ func TestFormatSARIFValidatesAgainstSchema(t *testing.T) {
 		t.Fatalf("resolve schema path: %v", err)
 	}
 
-	result, err := gojsonschema.Validate(
-		gojsonschema.NewReferenceLoader(fileURLFromPath(schemaPath)),
-		gojsonschema.NewStringLoader(formatted),
-	)
+	result, err := gojsonschema.Validate(gojsonschema.NewReferenceLoader(fileURLFromPath(schemaPath)), gojsonschema.NewStringLoader(formatted))
 	if err != nil {
 		t.Fatalf("validate sarif schema: %v", err)
 	}

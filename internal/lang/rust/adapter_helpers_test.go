@@ -55,25 +55,7 @@ func TestAdapterIdentityAndDetect(t *testing.T) {
 }
 
 func TestManifestParsingHelpers(t *testing.T) {
-	manifest := strings.Join([]string{
-		"[package]",
-		`name = "demo"`,
-		"",
-		workspaceSection,
-		`members = [`,
-		`  "crates/a",`,
-		`  "crates/b",`,
-		`  "crates/a"`,
-		"]",
-		"",
-		"[dependencies]",
-		fmt.Sprintf(`serde_json = { package = "%s", version = "1.0" }`, serdeJSONDep),
-		`local_dep = { path = "./crates/local_dep" }`,
-		"",
-		"[target.'cfg(unix)'.dependencies]",
-		`clap = "4"`,
-		"",
-	}, "\n")
+	manifest := strings.Join([]string{"[package]", `name = "demo"`, "", workspaceSection, `members = [`, `  "crates/a",`, `  "crates/b",`, `  "crates/a"`, "]", "", "[dependencies]", fmt.Sprintf(`serde_json = { package = %q, version = "1.0" }`, serdeJSONDep), `local_dep = { path = "./crates/local_dep" }`, "", "[target.'cfg(unix)'.dependencies]", `clap = "4"`, ""}, "\n")
 
 	meta := parseCargoManifestContent(manifest)
 	if !meta.HasPackage {
@@ -102,7 +84,7 @@ func TestManifestParsingHelpers(t *testing.T) {
 		t.Fatalf("expected invalid assignment")
 	}
 
-	fields := parseInlineFields(fmt.Sprintf(`{ package = "%s", path = "./x" }`, serdeJSONDep))
+	fields := parseInlineFields(fmt.Sprintf(`{ package = %q, path = "./x" }`, serdeJSONDep))
 	if fields["package"] != serdeJSONDep || fields["path"] != "./x" {
 		t.Fatalf("unexpected inline fields: %#v", fields)
 	}
@@ -117,11 +99,12 @@ func TestManifestParsingHelpers(t *testing.T) {
 
 func TestManifestDiscoveryAndWorkspaceResolution(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join([]string{
+	workspaceManifestLines := []string{
 		workspaceSection,
 		`members = ["crates/*", "missing/*"]`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join(workspaceManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname = \"a\"\nversion = \"0.1.0\"\n")
 
 	paths, warnings, err := discoverManifestPaths(repo)
@@ -362,13 +345,7 @@ func TestImportParsingAndResolveWarnings(t *testing.T) {
 	}
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 
-	content := strings.Join([]string{
-		"extern crate serde as serde_alias;",
-		"use serde::de::DeserializeOwned;",
-		"use unknown_crate::Thing;",
-		"use crate::localmod::run;",
-		"",
-	}, "\n")
+	content := strings.Join([]string{"extern crate serde as serde_alias;", "use serde::de::DeserializeOwned;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
 
 	extern := parseExternCrateImports(content, srcLibRS, repo, lookup, scan)
 	if len(extern) != 1 || extern[0].Dependency != "serde" {
@@ -393,11 +370,12 @@ func TestDetectAndScanBranches(t *testing.T) {
 
 func setupDetectAndScanRepo(t *testing.T) string {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join([]string{
+	rootManifestLines := []string{
 		workspaceSection,
-		fmt.Sprintf(`members = ["%s"]`, workspaceMembersGlob),
+		fmt.Sprintf(`members = [%q]`, workspaceMembersGlob),
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join(rootManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, cargoLockFile), cargoLockVersion3)
 	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n")
 	writeFile(t, filepath.Join(repo, "crates", "a", "src", rustLibFile), "use anyhow::Result;\nmy_macro!();\n")
@@ -483,7 +461,7 @@ func mustFindDirEntryByName(t *testing.T, dir, name string) os.DirEntry {
 
 func TestScanRustSourceFileLargeAndManifestDataAmbiguity(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cargoManifestFile), fmt.Sprintf("%s\nmembers = [\"%s\"]\n", workspaceSection, workspaceMembersGlob))
+	writeFile(t, filepath.Join(repo, cargoManifestFile), fmt.Sprintf("%s\nmembers = [%q]\n", workspaceSection, workspaceMembersGlob))
 	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { package = \"crate-a\", version = \"1\" }\n")
 	writeFile(t, filepath.Join(repo, "crates", "b", cargoManifestFile), "[package]\nname=\"b\"\nversion=\"0.1.0\"\n[dependencies]\nfoo = { package = \"crate-b\", version = \"1\" }\n")
 	writeFile(t, filepath.Join(repo, "crates", "a", "src", rustLibFile), "use foo::X;\n")
@@ -525,7 +503,7 @@ func TestScanRustSourceFileLargeAndManifestDataAmbiguity(t *testing.T) {
 
 func TestBuildRequestedRustDependenciesNoTargetAndLineColumn(t *testing.T) {
 	deps, warnings := buildRequestedRustDependencies(language.Request{}, scanResult{})
-	if deps != nil || len(warnings) != 1 {
+	if len(deps) != 0 || len(warnings) != 1 {
 		t.Fatalf("expected no-target warning, got deps=%#v warnings=%#v", deps, warnings)
 	}
 	line, col := lineColumn("abc", -1)
@@ -593,7 +571,11 @@ func TestDetectWithConfidenceDefaultRepoAndCanceledContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
+		}
+	})
 	if err := os.Chdir(repo); err != nil {
 		t.Fatalf("chdir repo: %v", err)
 	}
@@ -628,7 +610,7 @@ func TestDiscoverManifestPathsRootPackageAndResolveMembersErrors(t *testing.T) {
 		t.Fatalf("expected no warnings for simple package, got %#v", warnings)
 	}
 
-	if got := resolveWorkspaceMembers(repo, "["); got != nil {
+	if got := resolveWorkspaceMembers(repo, "["); len(got) != 0 {
 		t.Fatalf("expected nil on invalid glob, got %#v", got)
 	}
 
@@ -704,26 +686,30 @@ func TestDiscoveryAndRootSignalErrorBranches(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	restricted := filepath.Join(repo, "restricted")
-	if err := os.MkdirAll(restricted, 0o700); err != nil {
-		t.Fatalf("mkdir restricted: %v", err)
+	blockedDir := filepath.Join(repo, "restrictedPath")
+	if err := os.MkdirAll(blockedDir, 0o700); err != nil {
+		t.Fatalf("mkdir restrictedPath: %v", err)
 	}
-	if err := os.Chmod(restricted, 0o000); err != nil {
-		t.Fatalf("chmod restricted: %v", err)
+	if err := os.Chmod(blockedDir, 0o000); err != nil {
+		t.Fatalf("chmod restrictedPath: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(restricted, 0o700) })
-	if _, err := os.ReadDir(restricted); err == nil {
+	t.Cleanup(func() {
+		if err := os.Chmod(blockedDir, 0o700); err != nil {
+			t.Fatalf("restore mode on %s: %v", blockedDir, err)
+		}
+	})
+	if _, err := os.ReadDir(blockedDir); err == nil {
 		t.Skip("skipping permission-based test: directory remains readable after chmod 000")
 	}
 
-	_, _, err := discoverManifestPaths(restricted)
+	_, _, err := discoverManifestPaths(blockedDir)
 	if err == nil {
 		t.Fatalf("expected discoverManifestPaths error on unreadable directory")
 	}
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
-	_, err = applyRustRootSignals(restricted, &detection, roots)
+	_, err = applyRustRootSignals(blockedDir, &detection, roots)
 	if err == nil {
 		t.Fatalf("expected applyRustRootSignals error on unreadable directory")
 	}
@@ -742,7 +728,11 @@ func TestAnalyseErrorBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
+		}
+	})
 	deadDir := t.TempDir()
 	if err := os.Chdir(deadDir); err != nil {
 		t.Fatalf("chdir deaddir: %v", err)
@@ -773,7 +763,7 @@ func TestAdditionalHelperBranches(t *testing.T) {
 
 func TestRootSignalsAndManifestDiscoveryVariants(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join([]string{
+	rootManifestLines := []string{
 		"[package]",
 		`name = "root-pkg"`,
 		`version = "0.1.0"`,
@@ -781,7 +771,8 @@ func TestRootSignalsAndManifestDiscoveryVariants(t *testing.T) {
 		workspaceSection,
 		`members = ["crates/a"]`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, cargoManifestFile), strings.Join(rootManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, cargoLockFile), cargoLockVersion3)
 	writeFile(t, filepath.Join(repo, "crates", "a", cargoManifestFile), "[package]\nname=\"a\"\nversion=\"0.1.0\"\n")
 

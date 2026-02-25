@@ -11,6 +11,7 @@ const (
 	unexpectedErrFmt = "unexpected error: %v"
 	escapesRootErr   = "path escapes root"
 	getwdErrFmt      = "getwd: %v"
+	restoreWDErrFmt  = "restore wd %s: %v"
 	mkdirDeadDirFmt  = "mkdir deadDir: %v"
 	chdirDeadDirFmt  = "chdir deadDir: %v"
 	removeDeadDirFmt = "remove deadDir: %v"
@@ -104,7 +105,9 @@ func TestReadFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatalf(getwdErrFmt, err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chdir(originalWD)
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf(restoreWDErrFmt, originalWD, err)
+		}
 	})
 
 	deadDir := filepath.Join(t.TempDir(), "dead")
@@ -133,7 +136,9 @@ func TestReadFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatalf(getwdErrFmt, err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chdir(originalWD)
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf(restoreWDErrFmt, originalWD, err)
+		}
 	})
 
 	rootDir := t.TempDir()
@@ -198,7 +203,9 @@ func TestReadFileReadsAbsoluteAndRelativePaths(t *testing.T) {
 		t.Fatalf(getwdErrFmt, err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chdir(originalWD)
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf(restoreWDErrFmt, originalWD, err)
+		}
 	})
 	if err := os.Chdir(rootDir); err != nil {
 		t.Fatalf("chdir rootDir: %v", err)
@@ -242,7 +249,9 @@ func TestReadFileTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatalf(getwdErrFmt, err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chdir(originalWD)
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf(restoreWDErrFmt, originalWD, err)
+		}
 	})
 
 	deadDir := filepath.Join(t.TempDir(), "dead-readfile")

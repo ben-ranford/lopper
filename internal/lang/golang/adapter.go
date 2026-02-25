@@ -182,24 +182,13 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(
-		req,
-		scan,
-		normalizeDependencyID,
-		buildDependencyReport,
-		resolveRemovalCandidateWeights,
-		buildTopGoDependencies,
-	)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopGoDependencies)
 }
 
 func buildTopGoDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	importRecords := func(file fileScan) []shared.ImportRecord { return file.Imports }
 	usageRecords := func(file fileScan) map[string]int { return file.Usage }
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		importRecords,
-		usageRecords,
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, importRecords, usageRecords)
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
 	return buildTopGoReports(topN, dependencies, scan, weights)
 }
@@ -339,10 +328,7 @@ func appendUndeclaredDependencyWarnings(result *scanResult) {
 		return
 	}
 	for dependency, count := range result.UndeclaredImportsByDependency {
-		result.Warnings = append(
-			result.Warnings,
-			fmt.Sprintf("found %d import(s) mapped to %q that are not declared in go.mod", count, dependency),
-		)
+		result.Warnings = append(result.Warnings, fmt.Sprintf("found %d import(s) mapped to %q that are not declared in go.mod", count, dependency))
 	}
 }
 
@@ -926,11 +912,7 @@ func appendDotImportRecommendation(recs []report.Recommendation, dep report.Depe
 }
 
 func goFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }
 
 func parseGoMod(content []byte) (string, []string, map[string]string) {

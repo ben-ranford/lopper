@@ -159,26 +159,16 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedJVMDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(
-		req,
-		scan,
-		normalizeDependencyID,
-		buildDependencyReport,
-		resolveRemovalCandidateWeights,
-		buildTopJVMDependencies,
-	)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopJVMDependencies)
 }
 
 func buildTopJVMDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
-	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	}, weights)
+	}
+	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
@@ -408,11 +398,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 	warnings := make([]string, 0)
 	if !stats.HasImports {
@@ -531,14 +517,7 @@ func addArtifactLookups(prefixes map[string]string, aliases map[string]string, n
 	addLookupByStrategy(prefixes, aliases, name, group, artifact, artifactLookupStrategy)
 }
 
-func addLookupByStrategy(
-	prefixes map[string]string,
-	aliases map[string]string,
-	name string,
-	group string,
-	artifact string,
-	strategy lookupKeyStrategy,
-) {
+func addLookupByStrategy(prefixes map[string]string, aliases map[string]string, name string, group string, artifact string, strategy lookupKeyStrategy) {
 	prefixKeys, aliasKeys := strategy(group, artifact)
 	for _, key := range prefixKeys {
 		prefixes[key] = name
@@ -587,9 +566,10 @@ func parsePomDependencies(repoPath string) []dependencyDescriptor {
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 	pattern := regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
-	return parseBuildFiles(repoPath, buildGradleName, func(content string) []dependencyDescriptor {
+	gradleParser := func(content string) []dependencyDescriptor {
 		return parseGradleMatches(content, pattern)
-	}, buildGradleKTSName)
+	}
+	return parseBuildFiles(repoPath, buildGradleName, gradleParser, buildGradleKTSName)
 }
 
 func parseGradleMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
@@ -633,15 +613,7 @@ func parseBuildFiles(repoPath string, primaryName string, parser func(content st
 	return descriptors
 }
 
-func parseBuildFileEntry(
-	repoPath string,
-	path string,
-	entry fs.DirEntry,
-	names []string,
-	parser func(content string) []dependencyDescriptor,
-	seen map[string]struct{},
-	descriptors *[]dependencyDescriptor,
-) error {
+func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir

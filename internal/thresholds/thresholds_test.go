@@ -16,10 +16,7 @@ func TestDefaultsValidate(t *testing.T) {
 func TestOverridesApply(t *testing.T) {
 	lowConfidence := 25
 	usageWeight := 0.7
-	resolved := Overrides{
-		LowConfidenceWarningPercent: &lowConfidence,
-		RemovalCandidateWeightUsage: &usageWeight,
-	}.Apply(Defaults())
+	resolved := (&Overrides{LowConfidenceWarningPercent: &lowConfidence, RemovalCandidateWeightUsage: &usageWeight}).Apply(Defaults())
 	if resolved.LowConfidenceWarningPercent != 25 {
 		t.Fatalf("expected low confidence threshold 25, got %d", resolved.LowConfidenceWarningPercent)
 	}
@@ -120,14 +117,7 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	impactWeight := 0.3
 	confidenceWeight := 0.1
 	base := Defaults()
-	got := Overrides{
-		FailOnIncreasePercent:             &fail,
-		LowConfidenceWarningPercent:       &low,
-		MinUsagePercentForRecommendations: &min,
-		RemovalCandidateWeightUsage:       &usageWeight,
-		RemovalCandidateWeightImpact:      &impactWeight,
-		RemovalCandidateWeightConfidence:  &confidenceWeight,
-	}.Apply(base)
+	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &min, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight}).Apply(base)
 	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 {
 		t.Fatalf("unexpected resolved thresholds: %+v", got)
 	}

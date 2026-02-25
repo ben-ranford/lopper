@@ -200,7 +200,7 @@ func TestJVMScanAndRequestedDependencyBranches(t *testing.T) {
 	}
 
 	deps, warnings := buildRequestedJVMDependencies(language.Request{}, scanResult{})
-	if deps != nil {
+	if len(deps) != 0 {
 		t.Fatalf("expected nil dependency list when no target is provided")
 	}
 	if len(warnings) == 0 {

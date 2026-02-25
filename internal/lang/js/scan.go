@@ -273,12 +273,7 @@ func collectReExportBindings(tree *sitter.Tree, content []byte, relPath string, 
 	return bindings
 }
 
-func parseReExportStatement(
-	node *sitter.Node,
-	content []byte,
-	relPath string,
-	importsByLocal map[string][]ImportBinding,
-) []ReExportBinding {
+func parseReExportStatement(node *sitter.Node, content []byte, relPath string, importsByLocal map[string][]ImportBinding) []ReExportBinding {
 	sourceNode := node.ChildByFieldName("source")
 	sourceModule, hasSource := extractStringLiteral(sourceNode, content)
 
@@ -305,14 +300,7 @@ func parseReExportStatement(
 	return nil
 }
 
-func parseReExportClause(
-	node *sitter.Node,
-	content []byte,
-	relPath string,
-	hasSource bool,
-	sourceModule string,
-	importsByLocal map[string][]ImportBinding,
-) []ReExportBinding {
+func parseReExportClause(node *sitter.Node, content []byte, relPath string, hasSource bool, sourceModule string, importsByLocal map[string][]ImportBinding) []ReExportBinding {
 	bindings := make([]ReExportBinding, 0)
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
@@ -344,10 +332,7 @@ func parseReExportClause(
 		}
 
 		for _, imp := range importsByLocal[sourceExportName] {
-			bindings = append(
-				bindings,
-				makeReExportBinding(imp.Module, imp.ExportName, exportName, relPath, child),
-			)
+			bindings = append(bindings, makeReExportBinding(imp.Module, imp.ExportName, exportName, relPath, child))
 		}
 	}
 	return bindings

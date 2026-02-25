@@ -45,12 +45,7 @@ func TestJSScanFilesForDetectionMaxFiles(t *testing.T) {
 func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 	usedExports := map[string]struct{}{}
 	counts := map[string]int{}
-	used := applyImportUsage(
-		ImportBinding{Kind: ImportKind("other"), ExportName: "x", LocalName: "x"},
-		FileScan{},
-		usedExports,
-		counts,
-	)
+	used := applyImportUsage(ImportBinding{Kind: ImportKind("other"), ExportName: "x", LocalName: "x"}, FileScan{}, usedExports, counts)
 	if used {
 		t.Fatalf("expected unsupported import kind to return false")
 	}
@@ -80,22 +75,11 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 		t.Fatalf("expected deduped provenance, got %#v", flattened[0].Provenance)
 	}
 
-	filtered := removeOverlappingUnusedImports(
-		[]report.ImportUse{{Name: "map", Module: "lodash"}, {Name: "filter", Module: "lodash"}},
-		[]report.ImportUse{{Name: "map", Module: "lodash"}},
-	)
+	filtered := removeOverlappingUnusedImports([]report.ImportUse{{Name: "map", Module: "lodash"}, {Name: "filter", Module: "lodash"}}, []report.ImportUse{{Name: "map", Module: "lodash"}})
 	if len(filtered) != 1 || filtered[0].Name != "filter" {
 		t.Fatalf("expected overlap removal, got %#v", filtered)
 	}
-	usedImportList, unusedImportList := finalizeImportUsageLists(
-		map[string]*report.ImportUse{
-			"lodash:map": {Name: "map", Module: "lodash"},
-		},
-		map[string]*report.ImportUse{
-			"lodash:map":    {Name: "map", Module: "lodash"},
-			"lodash:filter": {Name: "filter", Module: "lodash"},
-		},
-	)
+	usedImportList, unusedImportList := finalizeImportUsageLists(map[string]*report.ImportUse{"lodash:map": {Name: "map", Module: "lodash"}}, map[string]*report.ImportUse{"lodash:map": {Name: "map", Module: "lodash"}, "lodash:filter": {Name: "filter", Module: "lodash"}})
 	if len(usedImportList) != 1 || usedImportList[0].Name != "map" {
 		t.Fatalf("expected flattened used imports, got %#v", usedImportList)
 	}
@@ -157,11 +141,9 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "wild")
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"index.js"}`)
-	source := strings.Join([]string{
-		`export * from "./other.js"`,
-		`export const keep = 1`,
-		"",
-	}, "\n")
+	sourceLines := []string{`export * from "./other.js"`, `export const keep = 1`, ""}
+	source := strings.Join(sourceLines, "\n")
+
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
@@ -178,7 +160,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
 	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights())
-	if reports != nil {
+	if len(reports) != 0 {
 		t.Fatalf("expected nil reports when no dependencies are discovered, got %#v", reports)
 	}
 	if len(warnings) != 0 {

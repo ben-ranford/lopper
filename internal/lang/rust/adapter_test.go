@@ -23,17 +23,19 @@ const (
 
 func TestDetectWithConfidenceWorkspaceMembers(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join([]string{
+	workspaceManifestLines := []string{
 		"[workspace]",
 		`members = ["crates/*"]`,
 		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, "crates", "alpha", testCargoToml), strings.Join([]string{
+	}
+	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join(workspaceManifestLines, "\n"))
+	alphaManifestLines := []string{
 		testCargoSectionPackage,
 		`name = "alpha"`,
 		`version = "0.1.0"`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, "crates", "alpha", testCargoToml), strings.Join(alphaManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, "crates", "alpha", "src", testRustLibRS), "pub fn run() {}\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -54,7 +56,7 @@ func TestDetectWithConfidenceWorkspaceMembers(t *testing.T) {
 
 func TestAnalyseRenamedAndPathDependencyHandling(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join([]string{
+	rootManifestLines := []string{
 		testCargoSectionPackage,
 		`name = "demo"`,
 		`version = "0.1.0"`,
@@ -63,19 +65,22 @@ func TestAnalyseRenamedAndPathDependencyHandling(t *testing.T) {
 		`serde_json = { package = "serde-json", version = "1.0" }`,
 		`local_dep = { path = "./crates/local_dep" }`,
 		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, "src", testRustMainRS), strings.Join([]string{
+	}
+	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join(rootManifestLines, "\n"))
+	mainSourceLines := []string{
 		"use serde_json::Value;",
 		"use local_dep::helper;",
 		"fn main() { let _v = Value::Null; helper(); }",
 		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, "crates", "local_dep", testCargoToml), strings.Join([]string{
+	}
+	writeFile(t, filepath.Join(repo, "src", testRustMainRS), strings.Join(mainSourceLines, "\n"))
+	localDepManifestLines := []string{
 		testCargoSectionPackage,
 		`name = "local-dep"`,
 		`version = "0.1.0"`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, "crates", "local_dep", testCargoToml), strings.Join(localDepManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, "crates", "local_dep", "src", testRustLibRS), "pub fn helper() {}\n")
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -109,13 +114,14 @@ func TestAnalyseRenamedAndPathDependencyHandling(t *testing.T) {
 
 func TestAnalyseTopWorkspaceDependencies(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join([]string{
+	workspaceManifestLines := []string{
 		"[workspace]",
 		`members = ["crates/a", "crates/b"]`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join(workspaceManifestLines, "\n"))
 
-	writeFile(t, filepath.Join(repo, "crates", "a", testCargoToml), strings.Join([]string{
+	crateAManifestLines := []string{
 		testCargoSectionPackage,
 		`name = "a"`,
 		`version = "0.1.0"`,
@@ -123,10 +129,11 @@ func TestAnalyseTopWorkspaceDependencies(t *testing.T) {
 		testCargoSectionDependencies,
 		`anyhow = "1.0"`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, "crates", "a", testCargoToml), strings.Join(crateAManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, "crates", "a", "src", testRustLibRS), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
 
-	writeFile(t, filepath.Join(repo, "crates", "b", testCargoToml), strings.Join([]string{
+	crateBManifestLines := []string{
 		testCargoSectionPackage,
 		`name = "b"`,
 		`version = "0.1.0"`,
@@ -134,7 +141,8 @@ func TestAnalyseTopWorkspaceDependencies(t *testing.T) {
 		testCargoSectionDependencies,
 		`anyhow = "1.0"`,
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, "crates", "b", testCargoToml), strings.Join(crateBManifestLines, "\n"))
 	writeFile(t, filepath.Join(repo, "crates", "b", "src", testRustLibRS), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -157,7 +165,7 @@ func TestAnalyseTopWorkspaceDependencies(t *testing.T) {
 
 func TestAnalyseWildcardAndNestedUseRegression(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join([]string{
+	manifestLines := []string{
 		testCargoSectionPackage,
 		`name = "demo"`,
 		`version = "0.1.0"`,
@@ -165,12 +173,14 @@ func TestAnalyseWildcardAndNestedUseRegression(t *testing.T) {
 		testCargoSectionDependencies,
 		`serde = "1.0"`,
 		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, "src", testRustMainRS), strings.Join([]string{
+	}
+	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join(manifestLines, "\n"))
+	mainSourceLines := []string{
 		"use serde::{de::DeserializeOwned, *};",
 		"fn main() {}",
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, "src", testRustMainRS), strings.Join(mainSourceLines, "\n"))
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath: repo,
@@ -197,7 +207,7 @@ func TestAnalyseWildcardAndNestedUseRegression(t *testing.T) {
 
 func TestRustMinUsageThresholdControlsLowUsageRecommendation(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join([]string{
+	manifestLines := []string{
 		testCargoSectionPackage,
 		`name = "demo"`,
 		`version = "0.1.0"`,
@@ -205,14 +215,16 @@ func TestRustMinUsageThresholdControlsLowUsageRecommendation(t *testing.T) {
 		testCargoSectionDependencies,
 		`serde = "1.0"`,
 		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, "src", testRustMainRS), strings.Join([]string{
+	}
+	writeFile(t, filepath.Join(repo, testCargoToml), strings.Join(manifestLines, "\n"))
+	mainSourceLines := []string{
 		"use serde::{Deserialize, Serialize};",
 		"#[derive(Serialize)]",
 		"struct Person { id: u64 }",
 		"fn main() {}",
 		"",
-	}, "\n"))
+	}
+	writeFile(t, filepath.Join(repo, "src", testRustMainRS), strings.Join(mainSourceLines, "\n"))
 
 	highThreshold := 80
 	reportWithRec, err := NewAdapter().Analyse(context.Background(), language.Request{

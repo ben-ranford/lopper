@@ -574,9 +574,10 @@ func buildTopCPPDependencies(topN int, scan scanResult, weights report.RemovalCa
 		}
 	}
 	dependencies := shared.SortedKeys(dependencySet)
-	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	}, weights)
+	}
+	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
