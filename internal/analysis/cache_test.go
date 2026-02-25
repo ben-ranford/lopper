@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -41,28 +42,37 @@ func (a *countingAdapter) Analyse(context.Context, language.Request) (report.Rep
 	}, nil
 }
 
-func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
-	writeFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
-
+func newCacheTestService(t *testing.T) (*Service, *countingAdapter) {
+	t.Helper()
 	adapter := &countingAdapter{id: "cachelang"}
 	reg := language.NewRegistry()
 	if err := reg.Register(adapter); err != nil {
 		t.Fatalf("register adapter: %v", err)
 	}
-	svc := &Service{Registry: reg}
-	cacheDir := filepath.Join(repo, "analysis-cache")
+	return &Service{Registry: reg}, adapter
+}
 
-	req := Request{
+func newCacheRequest(repo, cacheDir string, readOnly bool) Request {
+	return Request{
 		RepoPath: repo,
 		Language: "cachelang",
 		TopN:     1,
 		Cache: &CacheOptions{
-			Enabled: true,
-			Path:    cacheDir,
+			Enabled:  true,
+			Path:     cacheDir,
+			ReadOnly: readOnly,
 		},
 	}
+}
+
+func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
+
+	svc, adapter := newCacheTestService(t)
+	cacheDir := filepath.Join(repo, "analysis-cache")
+	req := newCacheRequest(repo, cacheDir, false)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -86,7 +96,7 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 		t.Fatalf("unexpected second cache metadata: %#v", second.Cache)
 	}
 
-	writeFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { filter } from \"lodash\"\nfilter([1], (x) => x)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { filter } from \"lodash\"\nfilter([1], (x) => x)\n")
 	third, err := svc.Analyse(context.Background(), req)
 	if err != nil {
 		t.Fatalf("third analyse: %v", err)
@@ -104,25 +114,10 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 
 func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 
-	adapter := &countingAdapter{id: "cachelang"}
-	reg := language.NewRegistry()
-	if err := reg.Register(adapter); err != nil {
-		t.Fatalf("register adapter: %v", err)
-	}
-	svc := &Service{Registry: reg}
-
-	req := Request{
-		RepoPath: repo,
-		Language: "cachelang",
-		TopN:     1,
-		Cache: &CacheOptions{
-			Enabled:  true,
-			Path:     filepath.Join(repo, "analysis-cache"),
-			ReadOnly: true,
-		},
-	}
+	svc, adapter := newCacheTestService(t)
+	req := newCacheRequest(repo, filepath.Join(repo, "analysis-cache"), true)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -247,6 +242,17 @@ func TestWriteFileAtomicSuccessAndFallbackError(t *testing.T) {
 	}
 }
 
+func writePointerJSON(t *testing.T, keyPath, inputDigest, objectDigest string) {
+	t.Helper()
+	pointerBytes, err := json.Marshal(cachePointer{InputDigest: inputDigest, ObjectDigest: objectDigest})
+	if err != nil {
+		t.Fatalf("marshal pointer: %v", err)
+	}
+	if err := os.WriteFile(keyPath, pointerBytes, 0o600); err != nil {
+		t.Fatalf("write pointer: %v", err)
+	}
+}
+
 func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "cache")
@@ -271,13 +277,7 @@ func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 		t.Fatalf("expected pointer-corrupt invalidation, got %#v", cache.metadata.Invalidations)
 	}
 
-	pointerBytes, err := json.Marshal(cachePointer{InputDigest: "input-b", ObjectDigest: "obj"})
-	if err != nil {
-		t.Fatalf("marshal pointer: %v", err)
-	}
-	if err := os.WriteFile(keyPath, pointerBytes, 0o600); err != nil {
-		t.Fatalf("write mismatch pointer: %v", err)
-	}
+	writePointerJSON(t, keyPath, "input-b", "obj")
 	if _, hit, err := cache.lookup(entry); err != nil || hit {
 		t.Fatalf("expected miss for input mismatch, hit=%v err=%v", hit, err)
 	}
@@ -285,13 +285,7 @@ func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 		t.Fatalf("expected input-changed invalidation, got %#v", cache.metadata.Invalidations)
 	}
 
-	pointerBytes, err = json.Marshal(cachePointer{InputDigest: entry.InputDigest, ObjectDigest: "missing-object"})
-	if err != nil {
-		t.Fatalf("marshal missing pointer: %v", err)
-	}
-	if err := os.WriteFile(keyPath, pointerBytes, 0o600); err != nil {
-		t.Fatalf("write missing pointer: %v", err)
-	}
+	writePointerJSON(t, keyPath, entry.InputDigest, "missing-object")
 	if _, hit, err := cache.lookup(entry); err != nil || hit {
 		t.Fatalf("expected miss for missing object, hit=%v err=%v", hit, err)
 	}
@@ -303,13 +297,7 @@ func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	if err := os.WriteFile(objectPath, []byte("{"), 0o600); err != nil {
 		t.Fatalf("write corrupt object: %v", err)
 	}
-	pointerBytes, err = json.Marshal(cachePointer{InputDigest: entry.InputDigest, ObjectDigest: "obj-corrupt"})
-	if err != nil {
-		t.Fatalf("marshal corrupt object pointer: %v", err)
-	}
-	if err := os.WriteFile(keyPath, pointerBytes, 0o600); err != nil {
-		t.Fatalf("write corrupt object pointer: %v", err)
-	}
+	writePointerJSON(t, keyPath, entry.InputDigest, "obj-corrupt")
 	if _, hit, err := cache.lookup(entry); err != nil || hit {
 		t.Fatalf("expected miss for corrupt object, hit=%v err=%v", hit, err)
 	}
