@@ -9,6 +9,31 @@ import (
 
 const unexpectedErrFmt = "unexpected error: %v"
 
+func assertOutputContains(t *testing.T, output string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected output to contain %q", value)
+		}
+	}
+}
+
+func sampleEffectivePolicy(source string, failOnIncrease, lowConfidence, minUsage int, usageWeight, impactWeight, confidenceWeight float64) *EffectivePolicy {
+	return &EffectivePolicy{
+		Sources: []string{source},
+		Thresholds: EffectiveThresholds{
+			FailOnIncreasePercent:             failOnIncrease,
+			LowConfidenceWarningPercent:       lowConfidence,
+			MinUsagePercentForRecommendations: minUsage,
+		},
+		RemovalCandidateWeights: RemovalCandidateWeights{
+			Usage:      usageWeight,
+			Impact:     impactWeight,
+			Confidence: confidenceWeight,
+		},
+	}
+}
+
 func TestFormatTable(t *testing.T) {
 	reportData := Report{
 		EffectiveThresholds: &EffectiveThresholds{
@@ -16,6 +41,7 @@ func TestFormatTable(t *testing.T) {
 			LowConfidenceWarningPercent:       35,
 			MinUsagePercentForRecommendations: 45,
 		},
+		EffectivePolicy: sampleEffectivePolicy("repo", 2, 35, 45, 0.6, 0.2, 0.2),
 		LanguageBreakdown: []LanguageSummary{
 			{Language: "js-ts", DependencyCount: 1, UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20.0},
 		},
@@ -36,29 +62,24 @@ func TestFormatTable(t *testing.T) {
 			},
 		},
 	}
+	reportData.EffectivePolicy.Sources = []string{"repo", "defaults"}
 
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "lodash") {
-		t.Fatalf("expected output to include dependency name")
+	expected := []string{
+		"lodash",
+		"Language",
+		"Languages:",
+		"Effective thresholds:",
+		"Effective policy:",
+		"sources: repo > defaults",
+		"map",
+		"Runtime",
+		"overlap (3 loads)",
 	}
-	if !strings.Contains(output, "Language") {
-		t.Fatalf("expected output to include language column")
-	}
-	if !strings.Contains(output, "Languages:") {
-		t.Fatalf("expected output to include language breakdown")
-	}
-	if !strings.Contains(output, "Effective thresholds:") {
-		t.Fatalf("expected output to include effective thresholds")
-	}
-	if !strings.Contains(output, "map") {
-		t.Fatalf("expected output to include top symbol")
-	}
-	if !strings.Contains(output, "Runtime") || !strings.Contains(output, "overlap (3 loads)") {
-		t.Fatalf("expected runtime column and value, got %q", output)
-	}
+	assertOutputContains(t, output, expected...)
 }
 
 func TestFormatJSON(t *testing.T) {
@@ -67,9 +88,7 @@ func TestFormatJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "repoPath") {
-		t.Fatalf("expected json output to include repoPath")
-	}
+	assertOutputContains(t, output, "repoPath")
 }
 
 func TestFormatSARIF(t *testing.T) {
@@ -79,15 +98,7 @@ func TestFormatSARIF(t *testing.T) {
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "\"version\": \"2.1.0\"") {
-		t.Fatalf("expected SARIF version in output")
-	}
-	if !strings.Contains(output, "lopper/waste/unused-import") {
-		t.Fatalf("expected unused-import rule in output")
-	}
-	if !strings.Contains(output, "src/main.ts") {
-		t.Fatalf("expected source locations in output")
-	}
+	assertOutputContains(t, output, "\"version\": \"2.1.0\"", "lopper/waste/unused-import", "src/main.ts")
 
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
@@ -106,20 +117,13 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 			LowConfidenceWarningPercent:       40,
 			MinUsagePercentForRecommendations: 35,
 		},
+		EffectivePolicy: sampleEffectivePolicy("defaults", 1, 40, 35, 0.5, 0.3, 0.2),
 	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "No dependencies to report.") {
-		t.Fatalf("expected empty report marker")
-	}
-	if !strings.Contains(output, "Warnings:") {
-		t.Fatalf("expected warnings section")
-	}
-	if !strings.Contains(output, "fail_on_increase_percent") {
-		t.Fatalf("expected threshold values in empty report output")
-	}
+	assertOutputContains(t, output, "No dependencies to report.", "Warnings:", "fail_on_increase_percent", "Effective policy:")
 }
 
 func TestFormattingHelpers(t *testing.T) {

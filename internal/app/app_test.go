@@ -16,7 +16,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/ui"
 )
 
-const testSnapshotPath = "snapshot.txt"
+const (
+	testSnapshotPath        = "snapshot.txt"
+	missingBaselineFileName = "missing.json"
+)
 
 type fakeAnalyzer struct {
 	report  report.Report
@@ -51,6 +54,35 @@ func (f *fakeTUI) Snapshot(_ context.Context, opts ui.Options, outputPath string
 	return f.snapshotErr
 }
 
+func assertContainsAll(t *testing.T, output string, expected []string) {
+	t.Helper()
+	for _, value := range expected {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected output to include %q", value)
+		}
+	}
+}
+
+func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
+	t.Helper()
+	checks := []struct {
+		name string
+		ok   bool
+	}{
+		{"low confidence threshold", got.LowConfidenceWarningPercent != nil && *got.LowConfidenceWarningPercent == 33},
+		{"min usage threshold", got.MinUsagePercentForRecommendations != nil && *got.MinUsagePercentForRecommendations == 44},
+		{"runtime profile", got.RuntimeProfile == "browser-import"},
+		{"cache options", got.Cache != nil && !got.Cache.Enabled && got.Cache.Path == "/tmp/lopper-cache" && got.Cache.ReadOnly},
+		{"suggest only", got.SuggestOnly},
+		{"removal candidate weights", got.RemovalCandidateWeights != nil && got.RemovalCandidateWeights.Usage == 0.6 && got.RemovalCandidateWeights.Impact == 0.2 && got.RemovalCandidateWeights.Confidence == 0.2},
+	}
+	for _, check := range checks {
+		if !check.ok {
+			t.Fatalf("expected forwarded analyse request field: %s (got=%#v)", check.name, got)
+		}
+	}
+}
+
 func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
@@ -71,6 +103,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req.Analyse.CacheEnabled = false
 	req.Analyse.CachePath = "/tmp/lopper-cache"
 	req.Analyse.CacheReadOnly = true
+	req.Analyse.PolicySources = []string{"cli", "defaults"}
 	req.Analyse.Thresholds = thresholds.Values{
 		FailOnIncreasePercent:             0,
 		LowConfidenceWarningPercent:       33,
@@ -84,36 +117,8 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute analyse: %v", err)
 	}
-	if !strings.Contains(output, "\"effectiveThresholds\"") {
-		t.Fatalf("expected effectiveThresholds in output JSON")
-	}
-	if !strings.Contains(output, "\"lowConfidenceWarningPercent\": 33") {
-		t.Fatalf("expected lowConfidenceWarningPercent value in output JSON")
-	}
-	if analyzer.lastReq.LowConfidenceWarningPercent == nil || *analyzer.lastReq.LowConfidenceWarningPercent != 33 {
-		t.Fatalf("expected low confidence threshold forwarded to analysis, got %#v", analyzer.lastReq.LowConfidenceWarningPercent)
-	}
-	if analyzer.lastReq.MinUsagePercentForRecommendations == nil || *analyzer.lastReq.MinUsagePercentForRecommendations != 44 {
-		t.Fatalf("expected min usage threshold forwarded to analysis, got %#v", analyzer.lastReq.MinUsagePercentForRecommendations)
-	}
-	if analyzer.lastReq.RuntimeProfile != "browser-import" {
-		t.Fatalf("expected runtime profile to be forwarded, got %q", analyzer.lastReq.RuntimeProfile)
-	}
-	if analyzer.lastReq.Cache == nil {
-		t.Fatalf("expected cache options to be forwarded")
-	}
-	if analyzer.lastReq.Cache.Enabled || analyzer.lastReq.Cache.Path != "/tmp/lopper-cache" || !analyzer.lastReq.Cache.ReadOnly {
-		t.Fatalf("unexpected cache options forwarded: %#v", analyzer.lastReq.Cache)
-	}
-	if !analyzer.lastReq.SuggestOnly {
-		t.Fatalf("expected suggest-only flag to be forwarded")
-	}
-	if analyzer.lastReq.RemovalCandidateWeights == nil {
-		t.Fatalf("expected removal candidate weights to be forwarded")
-	}
-	if analyzer.lastReq.RemovalCandidateWeights.Usage != 0.6 || analyzer.lastReq.RemovalCandidateWeights.Impact != 0.2 || analyzer.lastReq.RemovalCandidateWeights.Confidence != 0.2 {
-		t.Fatalf("unexpected forwarded removal candidate weights: %#v", analyzer.lastReq.RemovalCandidateWeights)
-	}
+	assertContainsAll(t, output, []string{`"effectiveThresholds"`, `"effectivePolicy"`, `"sources": [`, `"cli"`, `"lowConfidenceWarningPercent": 33`})
+	assertForwardedAnalyseRequest(t, analyzer.lastReq)
 }
 
 func TestNewApp(t *testing.T) {
@@ -248,7 +253,7 @@ func TestApplyBaselineIfNeededFormatAndLoadErrors(t *testing.T) {
 
 	_, err := application.applyBaselineIfNeeded(report.Report{}, ".", AnalyseRequest{
 		Format:       report.FormatJSON,
-		BaselinePath: filepath.Join(t.TempDir(), "missing.json"),
+		BaselinePath: filepath.Join(t.TempDir(), missingBaselineFileName),
 	})
 	if err == nil {
 		t.Fatalf("expected missing baseline load error")
@@ -306,7 +311,7 @@ func TestExecuteAnalyseBaselineAndApplyBaselineErrors(t *testing.T) {
 	req.Mode = ModeAnalyse
 	req.Analyse.Dependency = "dep"
 	req.Analyse.Format = report.FormatJSON
-	req.Analyse.BaselinePath = filepath.Join(t.TempDir(), "missing.json")
+	req.Analyse.BaselinePath = filepath.Join(t.TempDir(), missingBaselineFileName)
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected execute analyse error when baseline path is missing")
 	}
@@ -526,5 +531,89 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 	}
 	if !strings.Contains(output, "runtime trace command failed; continuing with static analysis") {
 		t.Fatalf("expected runtime warning in output, got %q", output)
+	}
+}
+
+func TestSaveBaselineIfNeededDisabledNoop(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	input := report.Report{RepoPath: ".", Warnings: []string{"keep"}}
+	updated, err := application.saveBaselineIfNeeded(input, ".", AnalyseRequest{}, testTime())
+	if err != nil {
+		t.Fatalf("save baseline noop: %v", err)
+	}
+	if len(updated.Warnings) != 1 || updated.Warnings[0] != "keep" {
+		t.Fatalf("expected unchanged report on noop save baseline, got %#v", updated)
+	}
+}
+
+func TestExecuteAnalyseApplyBaselineErrorPreservesOriginalWhenFormatFails(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.Format("invalid")
+	req.Analyse.BaselinePath = filepath.Join(t.TempDir(), missingBaselineFileName)
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected apply-baseline error")
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "unknown format") {
+		t.Fatalf("expected original baseline error, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseFailOnIncreasePreservesOriginalWhenFormatFails(t *testing.T) {
+	delta := 5.0
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:             ".",
+			WasteIncreasePercent: &delta,
+			Dependencies:         []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.Format("invalid")
+	req.Analyse.Thresholds.FailOnIncreasePercent = 1
+
+	_, err := application.Execute(context.Background(), req)
+	if err != ErrFailOnIncrease {
+		t.Fatalf("expected ErrFailOnIncrease, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseSaveBaselineErrorPreservesOriginalWhenFormatFails(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.Format("invalid")
+	req.Analyse.SaveBaseline = true
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected save-baseline error")
+	}
+	if !strings.Contains(err.Error(), "--save-baseline requires --baseline-store") {
+		t.Fatalf("expected save-baseline store error, got %v", err)
 	}
 }

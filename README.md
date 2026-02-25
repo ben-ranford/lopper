@@ -142,6 +142,10 @@ make demos
 Repo-level config example (`.lopper.yml`):
 
 ```yaml
+policy:
+  packs:
+    - ./policies/org-defaults.yml
+    - https://example.com/lopper/policy.yml#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
@@ -167,7 +171,7 @@ Threshold ranges:
 - `min_usage_percent_for_recommendations` must be between `0` and `100`
 - removal candidate weights must be `>= 0` and at least one must be greater than `0`
 
-Precedence is `CLI > config > defaults`.
+Precedence is `CLI > repo config > imported policy packs > defaults`.
 
 Tuning guide with strict/balanced/noise-reduction profiles:
 

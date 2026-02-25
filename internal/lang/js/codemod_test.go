@@ -115,6 +115,49 @@ func TestSuggestOnlyBehavioralParityAfterApplyingPatch(t *testing.T) {
 	}
 }
 
+func TestCodemodSuggestionOrder(t *testing.T) {
+	early := report.CodemodSuggestion{
+		File:       "a.js",
+		Line:       2,
+		ImportName: "map",
+		ToModule:   "lodash/map",
+	}
+	late := report.CodemodSuggestion{
+		File:       "b.js",
+		Line:       1,
+		ImportName: "filter",
+		ToModule:   "lodash/filter",
+	}
+	if codemodSuggestionOrder(early) >= codemodSuggestionOrder(late) {
+		t.Fatalf("expected lexical codemod suggestion ordering")
+	}
+}
+
+func TestHasResolvableSubpathFile(t *testing.T) {
+	depRoot := t.TempDir()
+	if hasResolvableSubpathFile(depRoot, "map") {
+		t.Fatalf("did not expect missing subpath to resolve")
+	}
+
+	if err := os.WriteFile(filepath.Join(depRoot, "map.js"), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write map.js: %v", err)
+	}
+	if !hasResolvableSubpathFile(depRoot, "map") {
+		t.Fatalf("expected .js subpath resolution")
+	}
+
+	nested := filepath.Join(depRoot, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "index.cjs"), []byte("module.exports = {}\n"), 0o644); err != nil {
+		t.Fatalf("write nested index: %v", err)
+	}
+	if !hasResolvableSubpathFile(depRoot, "nested") {
+		t.Fatalf("expected nested index subpath resolution")
+	}
+}
+
 func setupLodashFixture(t *testing.T, source string) (repo string, sourcePath string, original string) {
 	t.Helper()
 	repo = t.TempDir()

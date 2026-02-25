@@ -30,6 +30,24 @@ func TestCurrentCommitSHA(t *testing.T) {
 	}
 }
 
+func TestCurrentCommitSHAErrorsForNonRepoPath(t *testing.T) {
+	_, err := CurrentCommitSHA(t.TempDir())
+	if err == nil {
+		t.Fatalf("expected non-repo path to fail commit lookup")
+	}
+}
+
+func TestCurrentCommitSHAErrorsWhenGitBinaryUnavailable(t *testing.T) {
+	original := fixedGitPaths
+	t.Cleanup(func() { fixedGitPaths = original })
+	fixedGitPaths = []string{filepath.Join(t.TempDir(), "missing-git")}
+
+	_, err := CurrentCommitSHA(".")
+	if err == nil {
+		t.Fatalf("expected error when git binary candidates are unavailable")
+	}
+}
+
 func TestResolveGitBinaryPath(t *testing.T) {
 	original := fixedGitPaths
 	t.Cleanup(func() { fixedGitPaths = original })

@@ -20,6 +20,7 @@
     },
     "cache": { "$ref": "#/$defs/cacheMetadata" },
     "effectiveThresholds": { "$ref": "#/$defs/effectiveThresholds" },
+    "effectivePolicy": { "$ref": "#/$defs/effectivePolicy" },
     "warnings": {
       "type": "array",
       "items": { "type": "string" }
@@ -85,6 +86,19 @@
       "properties": {
         "key": { "type": "string" },
         "reason": { "type": "string" }
+      }
+    },
+    "effectivePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thresholds", "removalCandidateWeights"],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "thresholds": { "$ref": "#/$defs/effectiveThresholds" },
+        "removalCandidateWeights": { "$ref": "#/$defs/removalCandidateWeights" }
       }
     },
     "dependencyReport": {

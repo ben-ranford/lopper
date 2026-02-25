@@ -100,6 +100,19 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
 	}
+	reportData.EffectivePolicy = &report.EffectivePolicy{
+		Sources: req.Analyse.PolicySources,
+		Thresholds: report.EffectiveThresholds{
+			FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,
+			LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
+			MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
+		},
+		RemovalCandidateWeights: report.RemovalCandidateWeights{
+			Usage:      req.Analyse.Thresholds.RemovalCandidateWeightUsage,
+			Impact:     req.Analyse.Thresholds.RemovalCandidateWeightImpact,
+			Confidence: req.Analyse.Thresholds.RemovalCandidateWeightConfidence,
+		},
+	}
 	reportData.Warnings = append(reportData.Warnings, runtimeWarnings...)
 
 	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)

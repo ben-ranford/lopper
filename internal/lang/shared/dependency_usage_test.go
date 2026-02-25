@@ -3,6 +3,7 @@ package shared
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
+
+const topWarning = "top-warning"
 
 const (
 	testLocalFoo       = "foo"
@@ -269,7 +272,7 @@ func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 		if topN != 3 || scan != 2 {
 			t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
 		}
-		return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
+		return []report.DependencyReport{{Name: "top"}}, []string{topWarning}
 	}
 	reports, warnings := BuildRequestedDependencies(language.Request{TopN: 3}, 2, strings.ToLower, dependencyBuilder, topBuilder)
 	if dependencyCalled || !topCalled {
@@ -278,8 +281,55 @@ func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 	if len(reports) != 1 || reports[0].Name != "top" {
 		t.Fatalf("unexpected top-N reports: %#v", reports)
 	}
-	if !slices.Equal(warnings, []string{"top-warning"}) {
+	if !slices.Equal(warnings, []string{topWarning}) {
 		t.Fatalf("unexpected top-N warnings: %#v", warnings)
+	}
+}
+
+func TestBuildRequestedDependenciesWithWeights(t *testing.T) {
+	normalizeCalled := false
+	dependencyCalled := false
+	topCalled := false
+
+	resolvedWeights := report.RemovalCandidateWeights{Usage: 0.7, Impact: 0.2, Confidence: 0.1}
+	req := language.Request{
+		TopN:                    3,
+		RemovalCandidateWeights: &report.RemovalCandidateWeights{Usage: 0.1, Impact: 0.8, Confidence: 0.1},
+	}
+	normalizeFn := func(value string) string {
+		normalizeCalled = true
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	dependencyFn := func(dependency string, scan int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		return report.DependencyReport{Name: dependency}, []string{fmt.Sprintf("dep-%d", scan)}
+	}
+	resolveWeightsFn := func(input *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+		if input == nil || input.Usage != 0.1 || input.Impact != 0.8 {
+			t.Fatalf("unexpected input weights: %#v", input)
+		}
+		return resolvedWeights
+	}
+	topFn := func(topN int, scan int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
+		topCalled = true
+		if topN != 3 || scan != 5 {
+			t.Fatalf("unexpected top arguments: topN=%d scan=%d", topN, scan)
+		}
+		if weights != resolvedWeights {
+			t.Fatalf("unexpected resolved weights: %#v", weights)
+		}
+		return []report.DependencyReport{{Name: "top"}}, []string{topWarning}
+	}
+	reports, warnings := BuildRequestedDependenciesWithWeights(req, 5, normalizeFn, dependencyFn, resolveWeightsFn, topFn)
+
+	if !topCalled || dependencyCalled || normalizeCalled {
+		t.Fatalf("expected top path only (top=%v dependency=%v normalize=%v)", topCalled, dependencyCalled, normalizeCalled)
+	}
+	if len(reports) != 1 || reports[0].Name != "top" {
+		t.Fatalf("unexpected reports: %#v", reports)
+	}
+	if len(warnings) != 1 || warnings[0] != topWarning {
+		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 }
 

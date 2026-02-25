@@ -41,6 +41,7 @@ func formatTable(report Report) (string, error) {
 	appendSummary(&buffer, report.Summary)
 	appendCacheMetadata(&buffer, report.Cache)
 	appendEffectiveThresholds(&buffer, report)
+	appendEffectivePolicy(&buffer, report)
 	appendLanguageBreakdown(&buffer, report.LanguageBreakdown)
 	appendBaselineComparison(&buffer, report.BaselineComparison)
 
@@ -160,6 +161,7 @@ func formatEmpty(report Report) string {
 	var buffer bytes.Buffer
 	buffer.WriteString("No dependencies to report.\n")
 	appendEffectiveThresholds(&buffer, report)
+	appendEffectivePolicy(&buffer, report)
 	appendWarnings(&buffer, report)
 	return buffer.String()
 }
@@ -172,6 +174,25 @@ func appendEffectiveThresholds(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString(fmt.Sprintf("- fail_on_increase_percent: %d\n", report.EffectiveThresholds.FailOnIncreasePercent))
 	buffer.WriteString(fmt.Sprintf("- low_confidence_warning_percent: %d\n", report.EffectiveThresholds.LowConfidenceWarningPercent))
 	buffer.WriteString(fmt.Sprintf("- min_usage_percent_for_recommendations: %d\n", report.EffectiveThresholds.MinUsagePercentForRecommendations))
+	buffer.WriteString("\n")
+}
+
+func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
+	if report.EffectivePolicy == nil {
+		return
+	}
+	buffer.WriteString("Effective policy:\n")
+	if len(report.EffectivePolicy.Sources) > 0 {
+		buffer.WriteString("- sources: ")
+		buffer.WriteString(strings.Join(report.EffectivePolicy.Sources, " > "))
+		buffer.WriteString("\n")
+	}
+	buffer.WriteString(fmt.Sprintf("- fail_on_increase_percent: %d\n", report.EffectivePolicy.Thresholds.FailOnIncreasePercent))
+	buffer.WriteString(fmt.Sprintf("- low_confidence_warning_percent: %d\n", report.EffectivePolicy.Thresholds.LowConfidenceWarningPercent))
+	buffer.WriteString(fmt.Sprintf("- min_usage_percent_for_recommendations: %d\n", report.EffectivePolicy.Thresholds.MinUsagePercentForRecommendations))
+	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_usage: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Usage))
+	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_impact: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Impact))
+	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_confidence: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Confidence))
 	buffer.WriteString("\n")
 }
 

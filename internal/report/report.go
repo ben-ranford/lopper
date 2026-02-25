@@ -41,6 +41,7 @@ type Report struct {
 	LanguageBreakdown    []LanguageSummary    `json:"languageBreakdown,omitempty"`
 	Cache                *CacheMetadata       `json:"cache,omitempty"`
 	EffectiveThresholds  *EffectiveThresholds `json:"effectiveThresholds,omitempty"`
+	EffectivePolicy      *EffectivePolicy     `json:"effectivePolicy,omitempty"`
 	Warnings             []string             `json:"warnings,omitempty"`
 	WasteIncreasePercent *float64             `json:"wasteIncreasePercent,omitempty"`
 	BaselineComparison   *BaselineComparison  `json:"baselineComparison,omitempty"`
@@ -105,6 +106,12 @@ type EffectiveThresholds struct {
 	FailOnIncreasePercent             int `json:"failOnIncreasePercent"`
 	LowConfidenceWarningPercent       int `json:"lowConfidenceWarningPercent"`
 	MinUsagePercentForRecommendations int `json:"minUsagePercentForRecommendations"`
+}
+
+type EffectivePolicy struct {
+	Sources                 []string                `json:"sources,omitempty"`
+	Thresholds              EffectiveThresholds     `json:"thresholds"`
+	RemovalCandidateWeights RemovalCandidateWeights `json:"removalCandidateWeights"`
 }
 
 type Summary struct {
