@@ -118,7 +118,7 @@ func TestSummaryHelpers(t *testing.T) {
 		t.Fatalf("expected paged size 2, got %d", len(paged))
 	}
 	if paged := paginateDependencies(deps, 99, 2); len(paged) != 0 {
-		t.Fatalf("expected nil for page out of range, got %#v", paged)
+		t.Fatalf("expected empty page for out-of-range index, got %#v", paged)
 	}
 	if filtered := filterDependencies(deps, "PYTHON"); len(filtered) != 1 || filtered[0].Language != "python" {
 		t.Fatalf("expected filter to match language case-insensitively, got %#v", filtered)
