@@ -93,14 +93,7 @@ func applyPHPRootSignals(repoPath string, detection *language.Detection, roots m
 	return nil
 }
 
-func walkPHPDetectionEntry(
-	path string,
-	entry fs.DirEntry,
-	roots map[string]struct{},
-	detection *language.Detection,
-	visited *int,
-	maxFiles int,
-) error {
+func walkPHPDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
@@ -385,14 +378,7 @@ func contextErr(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func scanEntry(
-	repoPath string,
-	path string,
-	entry fs.DirEntry,
-	resolver dependencyResolver,
-	result *scanResult,
-	state *scanState,
-) error {
+func scanEntry(repoPath string, path string, entry fs.DirEntry, resolver dependencyResolver, result *scanResult, state *scanState) error {
 	if entry.IsDir() {
 		return scanDirEntry(repoPath, path, entry, state)
 	}
@@ -410,13 +396,7 @@ func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanSt
 	return nil
 }
 
-func scanFileEntry(
-	repoPath string,
-	path string,
-	resolver dependencyResolver,
-	result *scanResult,
-	state *scanState,
-) error {
+func scanFileEntry(repoPath string, path string, resolver dependencyResolver, result *scanResult, state *scanState) error {
 	state.visited++
 	if state.visited > maxScanFiles {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("scan stopped after %d files to keep analysis bounded", maxScanFiles))
@@ -508,11 +488,7 @@ func hasComposerManifest(path string) bool {
 }
 
 func phpFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }
 
 type dependencyResolver struct {
@@ -529,7 +505,7 @@ func newDependencyResolver(data composerData) dependencyResolver {
 	}
 }
 
-func (r dependencyResolver) dependencyFromModule(module string) (string, bool) {
+func (r *dependencyResolver) dependencyFromModule(module string) (string, bool) {
 	module = normalizeNamespace(module)
 	if module == "" {
 		return "", false
@@ -546,7 +522,7 @@ func (r dependencyResolver) dependencyFromModule(module string) (string, bool) {
 	return "", true
 }
 
-func (r dependencyResolver) isLocalNamespace(module string) bool {
+func (r *dependencyResolver) isLocalNamespace(module string) bool {
 	for namespace := range r.localNamespace {
 		if namespace == "" {
 			continue
@@ -558,7 +534,7 @@ func (r dependencyResolver) isLocalNamespace(module string) bool {
 	return false
 }
 
-func (r dependencyResolver) resolveWithPSR4(module string) string {
+func (r *dependencyResolver) resolveWithPSR4(module string) string {
 	longest := ""
 	selected := ""
 	for prefix, dependency := range r.namespaceToDep {
@@ -576,7 +552,7 @@ func (r dependencyResolver) resolveWithPSR4(module string) string {
 	return selected
 }
 
-func (r dependencyResolver) resolveByNamespaceHeuristic(module string) string {
+func (r *dependencyResolver) resolveByNamespaceHeuristic(module string) string {
 	parts := strings.Split(module, `\`)
 	if len(parts) < 2 {
 		return ""
@@ -639,13 +615,7 @@ func parseNamespaceReferences(content []byte, filePath string, resolver dependen
 	return imports, unresolved
 }
 
-func parseNamespaceReference(
-	text string,
-	match []int,
-	filePath string,
-	resolver dependencyResolver,
-	seen map[string]struct{},
-) (importBinding, int, bool) {
+func parseNamespaceReference(text string, match []int, filePath string, resolver dependencyResolver, seen map[string]struct{}) (importBinding, int, bool) {
 	module, line, local, ok := parseNamespaceReferenceMetadata(text, match)
 	if !ok {
 		return importBinding{}, 0, false
@@ -703,12 +673,7 @@ func namespaceImportBinding(filePath string, line int, local string, module stri
 	return newImportBinding(filePath, line, dependency, module, local, local, true)
 }
 
-func newImportBinding(
-	filePath string,
-	line int,
-	dependency, module, local, name string,
-	wildcard bool,
-) importBinding {
+func newImportBinding(filePath string, line int, dependency, module, local, name string, wildcard bool) importBinding {
 	if name == "" {
 		name = local
 	}
@@ -762,11 +727,7 @@ func parseUseStatement(statement, filePath string, line int, resolver dependency
 	return parseFlatUseStatement(statement, filePath, line, resolver)
 }
 
-func parseGroupedUseStatement(
-	statement, filePath string,
-	line int,
-	resolver dependencyResolver,
-) ([]importBinding, map[string]struct{}, int, bool) {
+func parseGroupedUseStatement(statement, filePath string, line int, resolver dependencyResolver) ([]importBinding, map[string]struct{}, int, bool) {
 	open := strings.Index(statement, "{")
 	close := strings.LastIndex(statement, "}")
 	if open < 0 || close <= open {
@@ -783,13 +744,7 @@ func parseFlatUseStatement(statement, filePath string, line int, resolver depend
 	return imports, map[string]struct{}{}, unresolved
 }
 
-func parseUseParts(
-	parts []string,
-	base, filePath string,
-	line int,
-	resolver dependencyResolver,
-	collectGroupedDeps bool,
-) ([]importBinding, map[string]struct{}, int) {
+func parseUseParts(parts []string, base, filePath string, line int, resolver dependencyResolver, collectGroupedDeps bool) ([]importBinding, map[string]struct{}, int) {
 	imports := make([]importBinding, 0)
 	groupedDeps := make(map[string]struct{})
 	unresolved := 0

@@ -89,7 +89,7 @@ func TestFormatSARIF(t *testing.T) {
 		t.Fatalf("expected source locations in output")
 	}
 
-	var payload map[string]interface{}
+	var payload map[string]any
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		t.Fatalf("expected valid SARIF JSON: %v", err)
 	}

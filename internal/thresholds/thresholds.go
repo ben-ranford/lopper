@@ -43,7 +43,7 @@ func Defaults() Values {
 	}
 }
 
-func (v Values) Validate() error {
+func (v *Values) Validate() error {
 	if err := validateFailOnIncrease(v.FailOnIncreasePercent); err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func (v Values) Validate() error {
 	return nil
 }
 
-func (o Overrides) Apply(base Values) Values {
+func (o *Overrides) Apply(base Values) Values {
 	resolved := base
 	if o.FailOnIncreasePercent != nil {
 		resolved.FailOnIncreasePercent = *o.FailOnIncreasePercent
@@ -91,7 +91,7 @@ func (o Overrides) Apply(base Values) Values {
 	return resolved
 }
 
-func (o Overrides) Validate() error {
+func (o *Overrides) Validate() error {
 	if err := validateOptionalInt(o.FailOnIncreasePercent, validateFailOnIncrease); err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func validateOptionalWeight(name string, value *float64) error {
 	return validateWeight(name, *value)
 }
 
-func validateOptionalWeights(overrides Overrides) error {
+func validateOptionalWeights(overrides *Overrides) error {
 	weightChecks := []struct {
 		name  string
 		value *float64

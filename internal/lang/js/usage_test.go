@@ -296,10 +296,7 @@ func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			usage := collectDependencyImportUsage(
-				tt.scanResult,
-				tt.dependency,
-			)
+			usage := collectDependencyImportUsage(tt.scanResult, tt.dependency)
 
 			if usage.HasAmbiguousWildcard != tt.expectAmbiguousFlag {
 				t.Errorf("%s: hasAmbiguous = %v, want %v", tt.description, usage.HasAmbiguousWildcard, tt.expectAmbiguousFlag)
@@ -347,7 +344,7 @@ func TestExtractPropertyStringBackticksAndRaw(t *testing.T) {
 		t.Fatalf("parse source: %v", err)
 	}
 	root := tree.RootNode()
-	found := []string{}
+	var found []string
 	walkNode(root, func(node *sitter.Node) {
 		if node.Type() == "template_string" || node.Type() == "string" {
 			found = append(found, extractPropertyString(node, source))

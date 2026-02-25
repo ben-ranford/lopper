@@ -33,13 +33,7 @@ func ApplyRootSignals(repoPath string, signals []RootSignal, detection *language
 	return nil
 }
 
-func WalkRepoFiles(
-	ctx context.Context,
-	repoPath string,
-	maxFiles int,
-	skipDir func(string) bool,
-	visit func(path string, entry fs.DirEntry) error,
-) error {
+func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) error {
 	if skipDir == nil {
 		skipDir = ShouldSkipCommonDir
 	}

@@ -53,13 +53,7 @@ func BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath string, 
 	return &report.CodemodReport{Mode: codemodModeSuggestOnly, Suggestions: suggestions, Skips: skips}, dedupeStrings(lineWarnings)
 }
 
-func buildCodemodForFile(
-	repoPath string,
-	dependency string,
-	resolver subpathResolver,
-	file FileScan,
-	lineCache map[string][]string,
-) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
+func buildCodemodForFile(repoPath string, dependency string, resolver subpathResolver, file FileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
 	suggestions := make([]report.CodemodSuggestion, 0)
 	skips := make([]report.CodemodSkip, 0)
 	warnings := make([]string, 0)
@@ -89,14 +83,7 @@ type codemodOutcome struct {
 	skip       *report.CodemodSkip
 }
 
-func buildCodemodOutcome(
-	repoPath string,
-	dependency string,
-	resolver subpathResolver,
-	file FileScan,
-	imp ImportBinding,
-	lineCache map[string][]string,
-) (codemodOutcome, string, bool) {
+func buildCodemodOutcome(repoPath string, dependency string, resolver subpathResolver, file FileScan, imp ImportBinding, lineCache map[string][]string) (codemodOutcome, string, bool) {
 	reasonCode, reasonMessage := codemodSkipReason(imp, file)
 	if reasonCode != "" {
 		skip := newCodemodSkip(file.Path, imp, reasonCode, reasonMessage)
@@ -219,13 +206,7 @@ func rewriteImportLine(line, dependency, exportName, targetModule string) (strin
 }
 
 func buildSingleLinePatch(file string, line int, oldLine, newLine string) string {
-	return strings.Join([]string{
-		fmt.Sprintf("--- a/%s", file),
-		fmt.Sprintf("+++ b/%s", file),
-		fmt.Sprintf("@@ -%d +%d @@", line, line),
-		"-" + oldLine,
-		"+" + newLine,
-	}, "\n")
+	return strings.Join([]string{fmt.Sprintf("--- a/%s", file), fmt.Sprintf("+++ b/%s", file), fmt.Sprintf("@@ -%d +%d @@", line, line), "-" + oldLine, "+" + newLine}, "\n")
 }
 
 type subpathResolver struct {
@@ -245,7 +226,7 @@ func newSubpathResolver(dependencyRoot string) subpathResolver {
 	if err != nil {
 		return resolver
 	}
-	exportsMap, ok := pkg.Exports.(map[string]interface{})
+	exportsMap, ok := pkg.Exports.(map[string]any)
 	if !ok {
 		return resolver
 	}
@@ -262,7 +243,7 @@ func newSubpathResolver(dependencyRoot string) subpathResolver {
 	return resolver
 }
 
-func (r subpathResolver) Resolve(dependency, exportName string) (string, bool) {
+func (r *subpathResolver) Resolve(dependency, exportName string) (string, bool) {
 	exportName = strings.TrimSpace(exportName)
 	if exportName == "" || exportName == "default" || exportName == "*" || strings.Contains(exportName, " ") {
 		return "", false

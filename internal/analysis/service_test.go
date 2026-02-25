@@ -211,7 +211,7 @@ func TestLowConfidenceWarningThreshold(t *testing.T) {
 		Adapter:   nil,
 		Detection: language.Detection{Confidence: 30},
 	}
-	candidate.Adapter = stubAdapter{id: "js-ts"}
+	candidate.Adapter = &stubAdapter{id: "js-ts"}
 
 	warnings := lowConfidenceWarning("all", candidate, 40)
 	if len(warnings) == 0 {
@@ -348,12 +348,12 @@ type stubAdapter struct {
 	id string
 }
 
-func (s stubAdapter) ID() string { return s.id }
+func (s *stubAdapter) ID() string { return s.id }
 
-func (s stubAdapter) Aliases() []string { return nil }
+func (s *stubAdapter) Aliases() []string { return nil }
 
-func (s stubAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
+func (s *stubAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
 
-func (s stubAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+func (s *stubAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
 	return report.Report{}, nil
 }

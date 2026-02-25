@@ -2,6 +2,8 @@ package js
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,9 +64,13 @@ func TestJSScanDirectBranchCoverage(t *testing.T) {
 	if err != nil || len(entry) == 0 {
 		t.Fatalf("readdir repo: %v", err)
 	}
-	_ = os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove bad.js: %v", err)
+	}
 	state := scanRepoState{parser: parser, repoPath: repo, result: &ScanResult{}}
-	_ = scanRepoEntry(context.Background(), &state, path, entry[0])
+	if err := scanRepoEntry(context.Background(), &state, path, entry[0]); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("scan entry after delete: %v", err)
+	}
 
 	// Recreate file for AST-level helper branch exercises.
 	if err := os.WriteFile(path, []byte("import a from b; const [x] = require(mod); const { :y } = require(\"m\"); const p = obj.prop;"), 0o600); err != nil {

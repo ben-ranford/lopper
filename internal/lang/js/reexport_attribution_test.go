@@ -12,11 +12,12 @@ import (
 
 func TestAdapterAnalyseReExportAttributionNestedAlias(t *testing.T) {
 	repo := t.TempDir()
-	mustWriteFile(t, filepath.Join(repo, "src", "index.ts"), strings.Join([]string{
+	indexLines := []string{
 		`import { mapAlias as m } from "./barrel"`,
 		`m([1], (x) => x)`,
 		"",
-	}, "\n"))
+	}
+	mustWriteFile(t, filepath.Join(repo, "src", "index.ts"), strings.Join(indexLines, "\n"))
 	mustWriteFile(t, filepath.Join(repo, "src", "barrel.ts"), `export { remap as mapAlias } from "./leaf"`)
 	mustWriteFile(t, filepath.Join(repo, "src", "leaf.ts"), `export { map as remap } from "lodash"`)
 
@@ -58,11 +59,12 @@ func TestAdapterAnalyseReExportAttributionNestedAlias(t *testing.T) {
 
 func TestAdapterAnalyseReExportCycleWarning(t *testing.T) {
 	repo := t.TempDir()
-	mustWriteFile(t, filepath.Join(repo, "src", "index.ts"), strings.Join([]string{
+	indexLines := []string{
 		`import { x } from "./a"`,
 		`console.log(x)`,
 		"",
-	}, "\n"))
+	}
+	mustWriteFile(t, filepath.Join(repo, "src", "index.ts"), strings.Join(indexLines, "\n"))
 	mustWriteFile(t, filepath.Join(repo, "src", "a.ts"), `export { x } from "./b"`)
 	mustWriteFile(t, filepath.Join(repo, "src", "b.ts"), `export { x } from "./a"`)
 

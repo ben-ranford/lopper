@@ -33,7 +33,7 @@ func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
 	if len(warnings) != 1 || warnings[0] != "cache warning" {
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
-	if cache.takeWarnings() != nil {
+	if len(cache.takeWarnings()) != 0 {
 		t.Fatalf("expected warnings to be drained")
 	}
 
@@ -216,22 +216,14 @@ func TestAnalysisCacheHelperErrorBranches(t *testing.T) {
 		mustWriteFile(t, configPath, []byte("thresholds: {}\n"))
 
 		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: filepath.Join(repo, cacheDirName)}, cacheable: true}
-		entry, err := cache.prepareEntry(Request{
-			Dependency:                        "lodash",
-			TopN:                              1,
-			RuntimeProfile:                    "node-import",
-			ConfigPath:                        configPath,
-			LowConfidenceWarningPercent:       intPtr(30),
-			MinUsagePercentForRecommendations: intPtr(40),
-			RemovalCandidateWeights:           &report.RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2},
-		}, "js-ts", root)
+		entry, err := cache.prepareEntry(Request{Dependency: "lodash", TopN: 1, RuntimeProfile: "node-import", ConfigPath: configPath, LowConfidenceWarningPercent: intPtr(30), MinUsagePercentForRecommendations: intPtr(40), RemovalCandidateWeights: &report.RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2}}, "js-ts", root)
 		if err != nil {
 			t.Fatalf("prepare entry: %v", err)
 		}
 		if entry.KeyDigest == "" || entry.InputDigest == "" {
 			t.Fatalf("expected non-empty cache entry digests: %#v", entry)
 		}
-		if _, err := hashJSON(map[string]interface{}{"bad": make(chan int)}); err == nil {
+		if _, err := hashJSON(map[string]any{"bad": make(chan int)}); err == nil {
 			t.Fatalf("expected hashJSON to fail for unsupported value")
 		}
 	})
@@ -290,7 +282,7 @@ func TestAnalysisCacheHelperErrorBranches(t *testing.T) {
 			t.Fatalf("expected cache store warning on invalid path")
 		}
 		storeCachedReport(cache, "js-ts", repo, cacheEntryDescriptor{}, report.Report{})
-		if cache.takeWarnings() != nil {
+		if len(cache.takeWarnings()) != 0 {
 			t.Fatalf("expected no warning for empty key digest")
 		}
 	})

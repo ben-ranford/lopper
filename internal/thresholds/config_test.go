@@ -33,16 +33,7 @@ func TestLoadNoConfigFile(t *testing.T) {
 
 func TestLoadYAMLConfig(t *testing.T) {
 	repo := t.TempDir()
-	cfg := strings.Join([]string{
-		"thresholds:",
-		"  fail_on_increase_percent: 3",
-		"  low_confidence_warning_percent: 25",
-		"  min_usage_percent_for_recommendations: 55",
-		"  removal_candidate_weight_usage: 0.6",
-		"  removal_candidate_weight_impact: 0.2",
-		"  removal_candidate_weight_confidence: 0.2",
-		"",
-	}, "\n")
+	cfg := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 3", " low_confidence_warning_percent: 25", " min_usage_percent_for_recommendations: 55", " removal_candidate_weight_usage: 0.6", " removal_candidate_weight_impact: 0.2", " removal_candidate_weight_confidence: 0.2", ""}, "\n")
 	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
 
 	overrides, path, err := Load(repo, "")
@@ -107,12 +98,7 @@ func TestLoadConfigRejectsUnknownFields(t *testing.T) {
 
 func TestLoadConfigRejectsDuplicateFields(t *testing.T) {
 	repo := t.TempDir()
-	cfg := strings.Join([]string{
-		"fail_on_increase_percent: 1",
-		"thresholds:",
-		"  fail_on_increase_percent: 2",
-		"",
-	}, "\n")
+	cfg := strings.Join([]string{"fail_on_increase_percent: 1", "thresholds:", " fail_on_increase_percent: 2", ""}, "\n")
 	writeConfig(t, filepath.Join(repo, lopperYMLName), cfg)
 
 	_, _, err := Load(repo, "")
@@ -228,7 +214,11 @@ func TestLoadConfigRepoPathResolutionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
+		}
+	})
 
 	deadDir := filepath.Join(t.TempDir(), "dead-repo")
 	if err := os.MkdirAll(deadDir, 0o755); err != nil {

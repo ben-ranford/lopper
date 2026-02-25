@@ -119,14 +119,8 @@ func TestParseRequireBindingNoDeclarator(t *testing.T) {
 }
 
 func TestCollectReExportBindings(t *testing.T) {
-	source := []byte(strings.Join([]string{
-		`import { map as remap } from "lodash"`,
-		`export { remap as mapAlias }`,
-		`export { filter as keep } from "lodash"`,
-		`export * as api from "./ns"`,
-		`export * from "./other"`,
-		"",
-	}, "\n"))
+	sourceLines := []string{`import { map as remap } from "lodash"`, `export { remap as mapAlias }`, `export { filter as keep } from "lodash"`, `export * as api from "./ns"`, `export * from "./other"`, ""}
+	source := []byte(strings.Join(sourceLines, "\n"))
 
 	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
 	if err != nil {

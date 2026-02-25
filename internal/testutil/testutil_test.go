@@ -176,7 +176,9 @@ func TestChdir(t *testing.T) {
 	t.Cleanup(func() {
 		wd2, err := os.Getwd()
 		if err == nil && wd2 != original {
-			_ = os.Chdir(original)
+			if chdirErr := os.Chdir(original); chdirErr != nil {
+				t.Fatalf("restore wd %s: %v", original, chdirErr)
+			}
 		}
 	})
 }

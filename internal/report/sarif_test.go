@@ -184,10 +184,10 @@ func TestToSARIFLocationsDeduplicatesNormalizedPaths(t *testing.T) {
 }
 
 func TestToSARIFLocationsNilAndOnlyInvalid(t *testing.T) {
-	if got := toSARIFLocations(nil); got != nil {
+	if got := toSARIFLocations(nil); len(got) != 0 {
 		t.Fatalf("expected nil for nil input, got %v", got)
 	}
-	if got := toSARIFLocations([]Location{{File: "   "}}); got != nil {
+	if got := toSARIFLocations([]Location{{File: "   "}}); len(got) != 0 {
 		t.Fatalf("expected nil for invalid-only input, got %v", got)
 	}
 }

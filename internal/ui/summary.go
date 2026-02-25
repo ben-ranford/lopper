@@ -15,8 +15,8 @@ import (
 )
 
 type Summary struct {
-	Analyzer  analysis.Analyzer
-	Formatter report.Formatter
+	Analyzer  analysis.Analyser
+	Formatter *report.Formatter
 	Out       io.Writer
 	In        io.Reader
 	TopN      int
@@ -24,7 +24,7 @@ type Summary struct {
 	Language  string
 }
 
-func NewSummary(out io.Writer, in io.Reader, analyzer analysis.Analyzer, formatter report.Formatter) *Summary {
+func NewSummary(out io.Writer, in io.Reader, analyzer analysis.Analyser, formatter *report.Formatter) *Summary {
 	return &Summary{
 		Analyzer:  analyzer,
 		Formatter: formatter,
@@ -53,7 +53,9 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 	refreshInPlace := supportsScreenRefresh(s.Out)
 	for {
 		if refreshInPlace {
-			clearSummaryScreen(s.Out)
+			if err := clearSummaryScreen(s.Out); err != nil {
+				return err
+			}
 		}
 		if err := s.renderSummaryOutput(reportData, state); err != nil {
 			return err
@@ -78,8 +80,8 @@ func (s *Summary) renderSummaryOutput(reportData report.Report, state summarySta
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprint(s.Out, output)
-	return nil
+	_, err = fmt.Fprint(s.Out, output)
+	return err
 }
 
 func readSummaryInput(reader *bufio.Reader) (string, error) {
@@ -105,7 +107,9 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, state *s
 		return false, nil
 	}
 	if !applySummaryCommand(state, input, s.Out) {
-		_, _ = fmt.Fprintln(s.Out, "Unknown command. Type 'help' for options.")
+		if _, err := fmt.Fprintln(s.Out, "Unknown command. Type 'help' for options."); err != nil {
+			return false, err
+		}
 	}
 	return false, nil
 }
@@ -253,28 +257,26 @@ func supportsScreenRefresh(out io.Writer) bool {
 	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
-func clearSummaryScreen(out io.Writer) {
-	_, _ = fmt.Fprint(out, "\033[H\033[2J")
+func clearSummaryScreen(out io.Writer) error {
+	_, err := fmt.Fprint(out, "\033[H\033[2J")
+	return err
 }
 
 func summaryHelpText() string {
-	return strings.Join([]string{
-		"Commands:",
-		"  filter <text>        Filter dependencies by name",
-		"  sort name|alpha|waste  Sort by name or waste",
-		"  s                    Toggle sort mode",
-		"  a                    Sort by name (alpha)",
-		"  w                    Sort by waste",
-		"  page <n>             Jump to page number",
-		"  next | prev          Page navigation",
-		"  n | p                Page shortcuts",
-		"  size <n>             Change page size",
-		"  open <dependency>    Show dependency detail",
-		"  open <lang>:<dep>    Detail in multi-language mode",
-		"  refresh              Re-render the current view",
-		"  q                    Quit",
-		"",
-	}, "\n")
+	return "Commands:\n" +
+		"  filter <text>        Filter dependencies by name\n" +
+		"  sort name|alpha|waste  Sort by name or waste\n" +
+		"  s                    Toggle sort mode\n" +
+		"  a                    Sort by name (alpha)\n" +
+		"  w                    Sort by waste\n" +
+		"  page <n>             Jump to page number\n" +
+		"  next | prev          Page navigation\n" +
+		"  n | p                Page shortcuts\n" +
+		"  size <n>             Change page size\n" +
+		"  open <dependency>    Show dependency detail\n" +
+		"  open <lang>:<dep>    Detail in multi-language mode\n" +
+		"  refresh              Re-render the current view\n" +
+		"  q                    Quit\n\n"
 }
 
 func parsePositiveInt(value string) (int, error) {
@@ -449,10 +451,7 @@ func toggleSortMode(mode sortMode) sortMode {
 	return sortByWaste
 }
 
-func runSummaryDependencyPipeline(
-	reportData report.Report,
-	state summaryState,
-) ([]report.DependencyReport, []report.DependencyReport, summaryState, int) {
+func runSummaryDependencyPipeline(reportData report.Report, state summaryState) ([]report.DependencyReport, []report.DependencyReport, summaryState, int) {
 	filtered := filterDependencies(reportData.Dependencies, state.filter)
 	sorted := sortDependencies(filtered, state.sortMode)
 	totalPages := pageCount(len(sorted), state.pageSize)
@@ -471,11 +470,7 @@ func normalizeSummaryPage(page int, totalPages int) int {
 	return page
 }
 
-func buildSummaryDisplayReport(
-	reportData report.Report,
-	sorted []report.DependencyReport,
-	paged []report.DependencyReport,
-) report.Report {
+func buildSummaryDisplayReport(reportData report.Report, sorted []report.DependencyReport, paged []report.DependencyReport) report.Report {
 	display := reportData
 	display.Dependencies = paged
 	display.Summary = report.ComputeSummary(sorted)
@@ -487,23 +482,10 @@ func (s *Summary) formatSummaryDisplay(display report.Report) (string, error) {
 	return s.Formatter.Format(display, report.FormatTable)
 }
 
-func renderSummaryFrame(
-	formatted string,
-	state summaryState,
-	totalPages int,
-	totalDependencies int,
-) string {
+func renderSummaryFrame(formatted string, state summaryState, totalPages int, totalDependencies int) string {
 	var builder strings.Builder
 	fmt.Fprintln(&builder, "Lopper TUI (summary)")
-	fmt.Fprintf(
-		&builder,
-		"Sort: %s | Page: %d/%d | Page size: %d | Total deps: %d\n",
-		state.sortMode,
-		state.page,
-		totalPages,
-		state.pageSize,
-		totalDependencies,
-	)
+	fmt.Fprintf(&builder, "Sort: %s | Page: %d/%d | Page size: %d | Total deps: %d\n", state.sortMode, state.page, totalPages, state.pageSize, totalDependencies)
 	if state.filter == "" {
 		fmt.Fprintln(&builder, "Filter: (none)")
 	} else {

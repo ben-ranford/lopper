@@ -26,11 +26,8 @@ func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 }
 
 func TestLoadTrace(t *testing.T) {
-	trace, err := loadTraceFromContent(
-		t,
-		`{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+
-			`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n",
-	)
+	trace, err := loadTraceFromContent(t, `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n")
+
 	if err != nil {
 		t.Fatalf("load trace: %v", err)
 	}
@@ -61,12 +58,7 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 		},
 	}
 
-	annotated := Annotate(rep, Trace{
-		DependencyLoads: map[string]int{
-			"alpha": 2,
-			"beta":  1,
-		},
-	}, AnnotateOptions{})
+	annotated := Annotate(rep, Trace{DependencyLoads: map[string]int{"alpha": 2, "beta": 1}}, AnnotateOptions{})
 
 	if annotated.Dependencies[0].RuntimeUsage == nil || !annotated.Dependencies[0].RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected alpha to be runtime-only annotated")
@@ -267,10 +259,7 @@ func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 }
 
 func TestRuntimeModuleAndSymbolExtraction(t *testing.T) {
-	module := runtimeModuleFromEvent(
-		Event{Resolved: "/repo/node_modules/lodash/fp/map.js"},
-		"lodash",
-	)
+	module := runtimeModuleFromEvent(Event{Resolved: "/repo/node_modules/lodash/fp/map.js"}, "lodash")
 	if module != "lodash/fp/map.js" {
 		t.Fatalf("unexpected runtime module: %q", module)
 	}
@@ -322,7 +311,7 @@ func TestRuntimeSymbolFromModuleBranches(t *testing.T) {
 }
 
 func TestRuntimeModulesAndSymbolsFormatting(t *testing.T) {
-	if got := runtimeModules(nil); got != nil {
+	if got := runtimeModules(nil); len(got) != 0 {
 		t.Fatalf("expected nil runtime modules for empty input, got %#v", got)
 	}
 	modules := runtimeModules(map[string]int{
@@ -333,7 +322,7 @@ func TestRuntimeModulesAndSymbolsFormatting(t *testing.T) {
 		t.Fatalf("expected module sorting by count, got %#v", modules)
 	}
 
-	if got := runtimeSymbols(nil); got != nil {
+	if got := runtimeSymbols(nil); len(got) != 0 {
 		t.Fatalf("expected nil runtime symbols for empty input, got %#v", got)
 	}
 	symbols := runtimeSymbols(map[string]int{

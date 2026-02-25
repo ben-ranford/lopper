@@ -89,13 +89,13 @@ func TestEntrypointAndPathHelpers(t *testing.T) {
 func TestCollectExportPathsConditionWarnings(t *testing.T) {
 	dest := make(map[string]struct{})
 	surface := &ExportSurface{}
-	exports := map[string]interface{}{
+	exports := map[string]any{
 		"import": "./index.js",
 		"types":  "./index.d.ts",
-		"browser": map[string]interface{}{
+		"browser": map[string]any{
 			"default": "./bundle.css",
 		},
-		"nested": []interface{}{"./sub.js"},
+		"nested": []any{"./sub.js"},
 	}
 	collectExportPaths(exports, dest, surface)
 	if len(dest) == 0 {
@@ -235,24 +235,16 @@ func TestResolveExportNodeBranches(t *testing.T) {
 	if paths, ok := resolveExportNode(42, profile, "exports", surface); ok || len(paths) != 0 {
 		t.Fatalf("expected unsupported export value type to fail, got ok=%v paths=%#v", ok, paths)
 	}
-	if paths, ok := resolveExportNode(map[string]interface{}{}, profile, "exports", surface); ok || len(paths) != 0 {
+	if paths, ok := resolveExportNode(map[string]any{}, profile, "exports", surface); ok || len(paths) != 0 {
 		t.Fatalf("expected empty export map to fail, got ok=%v paths=%#v", ok, paths)
 	}
 
-	paths, ok := resolveExportNode([]interface{}{42, testExportPathA}, profile, "exports", surface)
+	paths, ok := resolveExportNode([]any{42, testExportPathA}, profile, "exports", surface)
 	if !ok || len(paths) != 1 || paths[0] != testExportPathA {
 		t.Fatalf("expected array export node to resolve first valid path, got ok=%v paths=%#v", ok, paths)
 	}
 
-	paths, ok = resolveExportNode(
-		map[string]interface{}{
-			"zz": "./z.js",
-			"aa": testExportPathA,
-		},
-		profile,
-		"exports",
-		surface,
-	)
+	paths, ok = resolveExportNode(map[string]any{"zz": "./z.js", "aa": testExportPathA}, profile, "exports", surface)
 	if !ok || len(paths) != 2 || paths[0] != testExportPathA || paths[1] != "./z.js" {
 		t.Fatalf("expected non-condition map traversal with sorted unique paths, got ok=%v paths=%#v", ok, paths)
 	}
@@ -260,18 +252,7 @@ func TestResolveExportNodeBranches(t *testing.T) {
 
 func TestCollectCandidateEntrypointsFallsBackWhenProfileResolvesNoExports(t *testing.T) {
 	surface := &ExportSurface{}
-	entrypoints := collectCandidateEntrypoints(
-		packageJSON{
-			Exports: map[string]interface{}{
-				".": map[string]interface{}{
-					"import": "./styles.css",
-				},
-			},
-			Main: "legacy.js",
-		},
-		runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}},
-		surface,
-	)
+	entrypoints := collectCandidateEntrypoints(packageJSON{Exports: map[string]any{".": map[string]any{"import": "./styles.css"}}, Main: "legacy.js"}, runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}, surface)
 	if _, ok := entrypoints["legacy.js"]; !ok {
 		t.Fatalf("expected fallback main entrypoint, got %#v", entrypoints)
 	}

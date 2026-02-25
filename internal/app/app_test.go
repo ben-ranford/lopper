@@ -313,12 +313,7 @@ func TestExecuteAnalyseBaselineAndApplyBaselineErrors(t *testing.T) {
 	if err := os.WriteFile(baselinePath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write baseline file: %v", err)
 	}
-	_, _, err := application.applyBaselineIfNeeded(
-		report.Report{
-			Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
-		},
-		AnalyseRequest{BaselinePath: baselinePath, Format: report.FormatJSON},
-	)
+	_, _, err := application.applyBaselineIfNeeded(report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}}}, AnalyseRequest{BaselinePath: baselinePath, Format: report.FormatJSON})
 	if err == nil {
 		t.Fatalf("expected baseline application error for zero baseline totals")
 	}

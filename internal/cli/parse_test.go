@@ -282,16 +282,7 @@ func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
 
 func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	repo := t.TempDir()
-	config := strings.Join([]string{
-		"thresholds:",
-		"  fail_on_increase_percent: 4",
-		"  low_confidence_warning_percent: 27",
-		"  min_usage_percent_for_recommendations: 52",
-		"  removal_candidate_weight_usage: 0.2",
-		"  removal_candidate_weight_impact: 0.5",
-		"  removal_candidate_weight_confidence: 0.3",
-		"",
-	}, "\n")
+	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", ""}, "\n")
 	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
 
 	req, err := ParseArgs([]string{

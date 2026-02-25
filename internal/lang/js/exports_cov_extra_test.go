@@ -62,23 +62,20 @@ func assertJSExportMapHelpers(t *testing.T) {
 		t.Fatalf("expected index.js fallback entrypoint")
 	}
 	profile := runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}
-	paths, ok := resolveSubpathExportMap(map[string]interface{}{
-		"import": "./x.js",
-		".":      "./index.js",
-	}, profile, "exports", &ExportSurface{})
+	paths, ok := resolveSubpathExportMap(map[string]any{"import": "./x.js", ".": "./index.js"}, profile, "exports", &ExportSurface{})
 	if !ok || len(paths) != 1 || paths[0] != "./index.js" {
 		t.Fatalf("expected subpath-only resolution, got ok=%v paths=%#v", ok, paths)
 	}
-	if paths, ok := resolveConditionalExportMap(map[string]interface{}{"browser": "./x.js"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
+	if paths, ok := resolveConditionalExportMap(map[string]any{"browser": "./x.js"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
 		t.Fatalf("expected conditional export miss for unmatched profile")
 	}
 	if got := sortedMapKeys(map[string]struct{}{}); len(got) != 0 {
 		t.Fatalf("expected empty sorted map keys")
 	}
-	if paths, ok := resolveArrayExportNode([]interface{}{"./styles.css"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
+	if paths, ok := resolveArrayExportNode([]any{"./styles.css"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
 		t.Fatalf("expected array export with no code assets to fail")
 	}
-	if paths, ok := resolveObjectExportMap(map[string]interface{}{"a": "./styles.css"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
+	if paths, ok := resolveObjectExportMap(map[string]any{"a": "./styles.css"}, profile, "exports", &ExportSurface{}); ok || len(paths) != 0 {
 		t.Fatalf("expected object export map with non-code entries to fail")
 	}
 }
@@ -103,7 +100,7 @@ func assertJSImportExportParsing(t *testing.T) {
 	if !seen["default"] || !seen["*"] || !seen["ns"] {
 		t.Fatalf("expected default/star/namespace export names to be parsed")
 	}
-	if parseExportDeclaration(tree.RootNode(), src) != nil {
+	if len(parseExportDeclaration(tree.RootNode(), src)) != 0 {
 		t.Fatalf("expected non-declaration node to return nil export declaration parse")
 	}
 }

@@ -134,31 +134,31 @@ type rawThresholds struct {
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
 }
 
-func (cfg rawConfig) toOverrides() (Overrides, error) {
+func (c *rawConfig) toOverrides() (Overrides, error) {
 	overrides := Overrides{
-		FailOnIncreasePercent:             cfg.FailOnIncreasePercent,
-		LowConfidenceWarningPercent:       cfg.LowConfidenceWarningPercent,
-		MinUsagePercentForRecommendations: cfg.MinUsagePercentForRecommendations,
-		RemovalCandidateWeightUsage:       cfg.RemovalCandidateWeightUsage,
-		RemovalCandidateWeightImpact:      cfg.RemovalCandidateWeightImpact,
-		RemovalCandidateWeightConfidence:  cfg.RemovalCandidateWeightConfidence,
+		FailOnIncreasePercent:             c.FailOnIncreasePercent,
+		LowConfidenceWarningPercent:       c.LowConfidenceWarningPercent,
+		MinUsagePercentForRecommendations: c.MinUsagePercentForRecommendations,
+		RemovalCandidateWeightUsage:       c.RemovalCandidateWeightUsage,
+		RemovalCandidateWeightImpact:      c.RemovalCandidateWeightImpact,
+		RemovalCandidateWeightConfidence:  c.RemovalCandidateWeightConfidence,
 	}
-	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, cfg.Thresholds.FailOnIncreasePercent); err != nil {
+	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, c.Thresholds.FailOnIncreasePercent); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedOverride("low_confidence_warning_percent", &overrides.LowConfidenceWarningPercent, cfg.Thresholds.LowConfidenceWarningPercent); err != nil {
+	if err := applyNestedOverride("low_confidence_warning_percent", &overrides.LowConfidenceWarningPercent, c.Thresholds.LowConfidenceWarningPercent); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedOverride("min_usage_percent_for_recommendations", &overrides.MinUsagePercentForRecommendations, cfg.Thresholds.MinUsagePercentForRecommendations); err != nil {
+	if err := applyNestedOverride("min_usage_percent_for_recommendations", &overrides.MinUsagePercentForRecommendations, c.Thresholds.MinUsagePercentForRecommendations); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedFloatOverride("removal_candidate_weight_usage", &overrides.RemovalCandidateWeightUsage, cfg.Thresholds.RemovalCandidateWeightUsage); err != nil {
+	if err := applyNestedFloatOverride("removal_candidate_weight_usage", &overrides.RemovalCandidateWeightUsage, c.Thresholds.RemovalCandidateWeightUsage); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedFloatOverride("removal_candidate_weight_impact", &overrides.RemovalCandidateWeightImpact, cfg.Thresholds.RemovalCandidateWeightImpact); err != nil {
+	if err := applyNestedFloatOverride("removal_candidate_weight_impact", &overrides.RemovalCandidateWeightImpact, c.Thresholds.RemovalCandidateWeightImpact); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedFloatOverride("removal_candidate_weight_confidence", &overrides.RemovalCandidateWeightConfidence, cfg.Thresholds.RemovalCandidateWeightConfidence); err != nil {
+	if err := applyNestedFloatOverride("removal_candidate_weight_confidence", &overrides.RemovalCandidateWeightConfidence, c.Thresholds.RemovalCandidateWeightConfidence); err != nil {
 		return Overrides{}, err
 	}
 	return overrides, nil

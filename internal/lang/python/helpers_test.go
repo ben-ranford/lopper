@@ -156,7 +156,7 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 		{module: "os", symbols: "path", line: "from os import path"},
 	}
 	for _, tc := range fromImportCases {
-		if got := parseFromImportLine(tc.module, tc.symbols, "x.py", repo, 0, tc.line); got != nil {
+		if got := parseFromImportLine(tc.module, tc.symbols, "x.py", repo, 0, tc.line); len(got) != 0 {
 			t.Fatalf("expected from-import %q to be ignored, got %#v", tc.line, got)
 		}
 	}
@@ -170,7 +170,7 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 
 func TestPythonRequestedDependencyBranches(t *testing.T) {
 	deps, warnings := buildRequestedPythonDependencies(language.Request{}, scanResult{})
-	if deps != nil {
+	if len(deps) != 0 {
 		t.Fatalf("expected nil dependencies when no target is provided")
 	}
 	if len(warnings) == 0 {

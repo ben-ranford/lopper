@@ -9,6 +9,7 @@ Requirements:
 - Go `1.26.x`
 - `zig` (required for cross-CGO release builds)
 - `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
+- `gostyle` (optional for faster local runs; `make lint` auto-runs a pinned version)
 
 Install dependencies and run checks:
 

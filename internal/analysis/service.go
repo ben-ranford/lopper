@@ -24,7 +24,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
-type Analyzer interface {
+type Analyser interface {
 	Analyse(ctx context.Context, req Request) (report.Report, error)
 }
 
@@ -480,36 +480,15 @@ func mergeRuntimeSymbolUsage(left, right []report.RuntimeSymbolUsage) []report.R
 }
 
 func mergeSymbolRefs(left []report.SymbolRef, right []report.SymbolRef) []report.SymbolRef {
-	return mergeUniqueSorted(left, right, func(item report.SymbolRef) string {
-		return item.Module + "\x00" + item.Name
-	}, func(items []report.SymbolRef) {
-		sort.Slice(items, func(i, j int) bool {
-			if items[i].Module == items[j].Module {
-				return items[i].Name < items[j].Name
-			}
-			return items[i].Module < items[j].Module
-		})
-	})
+	return mergeUniqueSorted(left, right, symbolRefKey, sortSymbolRefs)
 }
 
 func mergeRiskCues(left []report.RiskCue, right []report.RiskCue) []report.RiskCue {
-	return mergeUniqueSorted(left, right, func(item report.RiskCue) string {
-		return item.Code + "\x00" + item.Severity
-	}, func(items []report.RiskCue) {
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].Code < items[j].Code
-		})
-	})
+	return mergeUniqueSorted(left, right, riskCueKey, sortRiskCues)
 }
 
 func mergeRecommendations(left []report.Recommendation, right []report.Recommendation) []report.Recommendation {
-	return mergeUniqueSorted(left, right, func(item report.Recommendation) string {
-		return item.Code
-	}, func(items []report.Recommendation) {
-		sort.Slice(items, func(i, j int) bool {
-			return recommendationLess(items[i], items[j])
-		})
-	})
+	return mergeUniqueSorted(left, right, recommendationKey, sortRecommendations)
 }
 
 func mergeCodemodReport(left, right *report.CodemodReport) *report.CodemodReport {
@@ -529,20 +508,8 @@ func mergeCodemodReport(left, right *report.CodemodReport) *report.CodemodReport
 	if strings.TrimSpace(mode) == "" {
 		mode = right.Mode
 	}
-	suggestions := mergeUniqueSorted(left.Suggestions, right.Suggestions, func(item report.CodemodSuggestion) string {
-		return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ToModule
-	}, func(items []report.CodemodSuggestion) {
-		sort.Slice(items, func(i, j int) bool {
-			return mergedSuggestionSortKey(items[i]) < mergedSuggestionSortKey(items[j])
-		})
-	})
-	skips := mergeUniqueSorted(left.Skips, right.Skips, func(item report.CodemodSkip) string {
-		return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ReasonCode
-	}, func(items []report.CodemodSkip) {
-		sort.Slice(items, func(i, j int) bool {
-			return mergedSkipSortKey(items[i]) < mergedSkipSortKey(items[j])
-		})
-	})
+	suggestions := mergeUniqueSorted(left.Suggestions, right.Suggestions, codemodSuggestionKey, sortCodemodSuggestions)
+	skips := mergeUniqueSorted(left.Skips, right.Skips, codemodSkipKey, sortCodemodSkips)
 	return &report.CodemodReport{
 		Mode:        mode,
 		Suggestions: suggestions,
@@ -558,17 +525,70 @@ func mergedSkipSortKey(item report.CodemodSkip) string {
 	return fmt.Sprintf("%s|%09d|%s|%s", item.File, item.Line, item.ReasonCode, item.ImportName)
 }
 
+func symbolRefKey(item report.SymbolRef) string {
+	return item.Module + "\x00" + item.Name
+}
+
+func sortSymbolRefs(items []report.SymbolRef) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Module == items[j].Module {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Module < items[j].Module
+	})
+}
+
+func riskCueKey(item report.RiskCue) string {
+	return item.Code + "\x00" + item.Severity
+}
+
+func sortRiskCues(items []report.RiskCue) {
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Code < items[j].Code
+	})
+}
+
+func recommendationKey(item report.Recommendation) string {
+	return item.Code
+}
+
+func sortRecommendations(items []report.Recommendation) {
+	sort.Slice(items, func(i, j int) bool {
+		return recommendationLess(items[i], items[j])
+	})
+}
+
+func codemodSuggestionKey(item report.CodemodSuggestion) string {
+	return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ToModule
+}
+
+func sortCodemodSuggestions(items []report.CodemodSuggestion) {
+	sort.Slice(items, func(i, j int) bool {
+		return mergedSuggestionSortKey(items[i]) < mergedSuggestionSortKey(items[j])
+	})
+}
+
+func codemodSkipKey(item report.CodemodSkip) string {
+	return item.File + "\x00" + fmt.Sprintf("%d", item.Line) + "\x00" + item.ImportName + "\x00" + item.ReasonCode
+}
+
+func sortCodemodSkips(items []report.CodemodSkip) {
+	sort.Slice(items, func(i, j int) bool {
+		return mergedSkipSortKey(items[i]) < mergedSkipSortKey(items[j])
+	})
+}
+
 func mergeUniqueSorted[T any](left []T, right []T, keyFn func(T) string, sortFn func([]T)) []T {
 	merged := make(map[string]T)
-	for _, item := range left {
-		merged[keyFn(item)] = item
+	for _, elem := range left {
+		merged[keyFn(elem)] = elem
 	}
-	for _, item := range right {
-		merged[keyFn(item)] = item
+	for _, elem := range right {
+		merged[keyFn(elem)] = elem
 	}
 	items := make([]T, 0, len(merged))
-	for _, item := range merged {
-		items = append(items, item)
+	for _, elem := range merged {
+		items = append(items, elem)
 	}
 	sortFn(items)
 	return items

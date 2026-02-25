@@ -23,7 +23,7 @@ func parseRootNode(t *testing.T, source []byte) *sitter.Node {
 }
 
 func collectReferencesByNodeType(root *sitter.Node, source []byte) []NamespaceReference {
-	refs := []NamespaceReference{}
+	var refs []NamespaceReference
 	walkNode(root, func(node *sitter.Node) {
 		switch node.Type() {
 		case "member_expression":
@@ -58,7 +58,7 @@ call().name;
 		t.Fatalf("expected member and subscript nodes")
 	}
 
-	refs := []NamespaceReference{}
+	var refs []NamespaceReference
 	addMemberReference(memberNode, source, &refs)
 	addSubscriptReference(subscriptNode, source, &refs)
 	if len(refs) == 0 {
@@ -132,7 +132,7 @@ c.#value;
 		t.Fatalf("expected member expression node with private property")
 	}
 
-	refs := []NamespaceReference{}
+	var refs []NamespaceReference
 	addMemberReference(member, source, &refs)
 	if len(refs) != 0 {
 		t.Fatalf("expected no refs for private member expression, got %#v", refs)
@@ -193,7 +193,7 @@ value["name"];
 		t.Fatalf("expected member and subscript nodes")
 	}
 
-	refs := []NamespaceReference{}
+	var refs []NamespaceReference
 	// These calls intentionally mismatch node kinds to cover nil field early-return paths.
 	addMemberReference(subscriptNode, source, &refs)
 	addSubscriptReference(memberNode, source, &refs)

@@ -26,9 +26,7 @@ const (
 func TestDetectAndRootSignalBranches(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, appProjectName), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "App.sln"),
-		"Project(\"{FAKE}\") = \"App\", \"src\\\\App\\\\"+appProjectName+"\", \"{ONE}\"\nEndProject\n",
-	)
+	testutil.MustWriteFile(t, filepath.Join(repo, "App.sln"), "Project(\"{FAKE}\") = \"App\", \"src\\\\App\\\\"+appProjectName+"\", \"{ONE}\"\nEndProject\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", appProjectName), `<Project Sdk="Microsoft.NET.Sdk"></Project>`)
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", programSourceName), "using System;\n")
 
@@ -234,7 +232,7 @@ func assertRiskyDependencyReport(t *testing.T) {
 }
 
 func TestCaptureMatchesAndSolutionRootsBranches(t *testing.T) {
-	if captureMatches(nil) != nil {
+	if len(captureMatches(nil)) != 0 {
 		t.Fatalf("expected nil matches result")
 	}
 	if got := captureMatches([][][]byte{{[]byte("only-one-element")}}); len(got) != 0 {
@@ -288,10 +286,10 @@ func TestDetectAndScanFileLimitsAndAnalysisWarnings(t *testing.T) {
 		t.Fatalf("expected scan cap warning, got %#v", scan.Warnings)
 	}
 
-	noManifestRepo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(noManifestRepo, programSourceName), "using Missing.Package;\n")
+	noManifestPath := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(noManifestPath, programSourceName), "using Missing.Package;\n")
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath: noManifestRepo,
+		RepoPath: noManifestPath,
 		TopN:     1,
 	})
 	if err != nil {
