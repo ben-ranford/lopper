@@ -20,6 +20,7 @@ import (
 
 const (
 	readConfigFileErrFmt = "read config file %s: %w"
+	parseConfigErrFmt    = "parse config file %s: %w"
 	defaultPolicySource  = "defaults"
 	remotePolicyPinKey   = "sha256"
 	maxRemotePolicyBytes = 1 << 20
@@ -66,13 +67,13 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 		return LoadResult{}, err
 	}
 	if err := mergeResult.overrides.Validate(); err != nil {
-		return LoadResult{}, fmt.Errorf("parse config file %s: %w", configPath, err)
+		return LoadResult{}, fmt.Errorf(parseConfigErrFmt, configPath, err)
 	}
 
 	policySources := mergeResult.policySourcesHighToLow()
 	resolved := mergeResult.overrides.Apply(Defaults())
 	if err := resolved.Validate(); err != nil {
-		return LoadResult{}, fmt.Errorf("parse config file %s: %w", configPath, err)
+		return LoadResult{}, fmt.Errorf(parseConfigErrFmt, configPath, err)
 	}
 
 	return LoadResult{
@@ -226,7 +227,7 @@ func applyNestedFloatOverride(name string, target **float64, nested *float64) er
 	return nil
 }
 
-func mergeOverrides(base Overrides, higher Overrides) Overrides {
+func mergeOverrides(base, higher Overrides) Overrides {
 	merged := base
 	if higher.FailOnIncreasePercent != nil {
 		merged.FailOnIncreasePercent = higher.FailOnIncreasePercent
@@ -318,7 +319,7 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 
 	selfOverrides, err := cfg.toOverrides()
 	if err != nil {
-		return resolveMergeResult{}, fmt.Errorf("parse config file %s: %w", canonical, err)
+		return resolveMergeResult{}, fmt.Errorf(parseConfigErrFmt, canonical, err)
 	}
 	merged = mergeOverrides(merged, selfOverrides)
 	sources = append(sources, canonical)

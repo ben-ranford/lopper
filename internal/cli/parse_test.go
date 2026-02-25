@@ -12,13 +12,15 @@ import (
 )
 
 const (
-	unexpectedErrFmt  = "unexpected error: %v"
-	modeMismatchFmt   = "expected mode %q, got %q"
-	languageFlagName  = "--language"
-	suggestOnlyFlag   = "--suggest-only"
-	failAliasFlag     = "--fail-on-increase"
-	thresholdFailFlag = "--threshold-fail-on-increase"
-	scoreWeightFlag   = "--score-weight-usage"
+	unexpectedErrFmt     = "unexpected error: %v"
+	modeMismatchFmt      = "expected mode %q, got %q"
+	languageFlagName     = "--language"
+	suggestOnlyFlag      = "--suggest-only"
+	failAliasFlag        = "--fail-on-increase"
+	thresholdFailFlag    = "--threshold-fail-on-increase"
+	thresholdLowWarnFlag = "--threshold-low-confidence-warning"
+	scoreWeightFlag      = "--score-weight-usage"
+	parseConfigFileName  = ".lopper.yml"
 )
 
 func TestParseArgsDefault(t *testing.T) {
@@ -258,7 +260,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		"analyse",
 		"--top", "4",
 		thresholdFailFlag, "2",
-		"--threshold-low-confidence-warning", "31",
+		thresholdLowWarnFlag, "31",
 		"--threshold-min-usage-percent", "45",
 		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
@@ -308,7 +310,7 @@ func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
 func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	repo := t.TempDir()
 	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", ""}, "\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, ".lopper.yml"), config)
+	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
 
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "10",
@@ -354,7 +356,7 @@ thresholds:
   fail_on_increase_percent: 5
 `
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "org.yml"), orgPolicy)
-	testutil.MustWriteFile(t, filepath.Join(repo, ".lopper.yml"), repoPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), repoPolicy)
 
 	req, err := ParseArgs([]string{"analyse", "--top", "3", "--repo", repo})
 	if err != nil {
@@ -363,7 +365,7 @@ thresholds:
 	if len(req.Analyse.PolicySources) != 3 {
 		t.Fatalf("expected repo, pack, defaults policy sources; got %#v", req.Analyse.PolicySources)
 	}
-	if !strings.HasSuffix(req.Analyse.PolicySources[0], ".lopper.yml") {
+	if !strings.HasSuffix(req.Analyse.PolicySources[0], parseConfigFileName) {
 		t.Fatalf("expected repo config source first, got %#v", req.Analyse.PolicySources)
 	}
 	if !strings.HasSuffix(req.Analyse.PolicySources[1], filepath.Join("packs", "org.yml")) {
@@ -381,7 +383,7 @@ thresholds:
 }
 
 func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "1", "--threshold-low-confidence-warning", "23"})
+	req, err := ParseArgs([]string{"analyse", "--top", "1", thresholdLowWarnFlag, "23"})
 	if err != nil {
 		t.Fatalf("parse args: %v", err)
 	}
@@ -391,7 +393,7 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 }
 
 func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
-	_, err := ParseArgs([]string{"analyse", "--top", "2", "--threshold-low-confidence-warning", "101"})
+	_, err := ParseArgs([]string{"analyse", "--top", "2", thresholdLowWarnFlag, "101"})
 	if err == nil {
 		t.Fatalf("expected range validation error")
 	}

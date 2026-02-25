@@ -237,7 +237,7 @@ func TestWriteFileAtomicSuccessAndFallbackError(t *testing.T) {
 	if err := os.MkdirAll(dirTarget, 0o755); err != nil {
 		t.Fatalf("mkdir dirTarget: %v", err)
 	}
-	if err := writeFileAtomic(dirTarget, []byte("x")); err == nil {
+	if writeFileAtomic(dirTarget, []byte("x")) == nil {
 		t.Fatalf("expected error when target path is an existing directory")
 	}
 }
@@ -250,6 +250,16 @@ func writePointerJSON(t *testing.T, keyPath, inputDigest, objectDigest string) {
 	}
 	if err := os.WriteFile(keyPath, pointerBytes, 0o600); err != nil {
 		t.Fatalf("write pointer: %v", err)
+	}
+}
+
+func assertLookupMissWithReason(t *testing.T, cache *analysisCache, entry cacheEntryDescriptor, expectedReason string) {
+	t.Helper()
+	if _, hit, err := cache.lookup(entry); err != nil || hit {
+		t.Fatalf("expected miss, hit=%v err=%v", hit, err)
+	}
+	if len(cache.metadata.Invalidations) == 0 || cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != expectedReason {
+		t.Fatalf("expected %s invalidation, got %#v", expectedReason, cache.metadata.Invalidations)
 	}
 }
 
@@ -270,40 +280,20 @@ func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("{"), 0o600); err != nil {
 		t.Fatalf("write corrupt pointer: %v", err)
 	}
-	if _, hit, err := cache.lookup(entry); err != nil || hit {
-		t.Fatalf("expected miss for corrupt pointer, hit=%v err=%v", hit, err)
-	}
-	if len(cache.metadata.Invalidations) == 0 || cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != "pointer-corrupt" {
-		t.Fatalf("expected pointer-corrupt invalidation, got %#v", cache.metadata.Invalidations)
-	}
+	assertLookupMissWithReason(t, cache, entry, "pointer-corrupt")
 
 	writePointerJSON(t, keyPath, "input-b", "obj")
-	if _, hit, err := cache.lookup(entry); err != nil || hit {
-		t.Fatalf("expected miss for input mismatch, hit=%v err=%v", hit, err)
-	}
-	if cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != "input-changed" {
-		t.Fatalf("expected input-changed invalidation, got %#v", cache.metadata.Invalidations)
-	}
+	assertLookupMissWithReason(t, cache, entry, "input-changed")
 
 	writePointerJSON(t, keyPath, entry.InputDigest, "missing-object")
-	if _, hit, err := cache.lookup(entry); err != nil || hit {
-		t.Fatalf("expected miss for missing object, hit=%v err=%v", hit, err)
-	}
-	if cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != "object-missing" {
-		t.Fatalf("expected object-missing invalidation, got %#v", cache.metadata.Invalidations)
-	}
+	assertLookupMissWithReason(t, cache, entry, "object-missing")
 
 	objectPath := filepath.Join(cachePath, "objects", "obj-corrupt.json")
 	if err := os.WriteFile(objectPath, []byte("{"), 0o600); err != nil {
 		t.Fatalf("write corrupt object: %v", err)
 	}
 	writePointerJSON(t, keyPath, entry.InputDigest, "obj-corrupt")
-	if _, hit, err := cache.lookup(entry); err != nil || hit {
-		t.Fatalf("expected miss for corrupt object, hit=%v err=%v", hit, err)
-	}
-	if cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != "object-corrupt" {
-		t.Fatalf("expected object-corrupt invalidation, got %#v", cache.metadata.Invalidations)
-	}
+	assertLookupMissWithReason(t, cache, entry, "object-corrupt")
 }
 
 func TestResolveCacheOptionsDefaultsAndOverrides(t *testing.T) {

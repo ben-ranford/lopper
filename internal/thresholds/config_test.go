@@ -21,6 +21,7 @@ const (
 	lopperYAMLName   = ".lopper.yaml"
 	lopperJSONName   = "lopper.json"
 	customConfigName = "custom.yml"
+	basePackFileName = "base.yml"
 )
 
 func TestLoadNoConfigFile(t *testing.T) {
@@ -357,7 +358,7 @@ func TestLoadWithPolicyPackPrecedenceAndSources(t *testing.T) {
 `
 	overlayPolicy := `policy:
   packs:
-    - base.yml
+    - ` + basePackFileName + `
 thresholds:
   low_confidence_warning_percent: 33
 `
@@ -367,7 +368,7 @@ thresholds:
 thresholds:
   fail_on_increase_percent: 4
 `
-	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "base.yml"), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
 
@@ -395,7 +396,7 @@ thresholds:
 	if !strings.HasSuffix(result.PolicySources[1], filepath.Join("packs", "overlay.yml")) {
 		t.Fatalf("expected overlay pack source, got %#v", result.PolicySources)
 	}
-	if !strings.HasSuffix(result.PolicySources[2], filepath.Join("packs", "base.yml")) {
+	if !strings.HasSuffix(result.PolicySources[2], filepath.Join("packs", basePackFileName)) {
 		t.Fatalf("expected base pack source, got %#v", result.PolicySources)
 	}
 	if result.PolicySources[3] != defaultPolicySource {
@@ -487,100 +488,96 @@ func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
 	}
 }
 
-func TestResolvePackRefVariants(t *testing.T) {
-	t.Run("empty_ref_rejected", func(t *testing.T) {
-		if _, err := resolvePackRef("/repo/.lopper.yml", "   "); err == nil {
-			t.Fatalf("expected empty ref rejection")
-		}
-	})
-
-	t.Run("remote_parent_bad_relative_ref", func(t *testing.T) {
-		current := "https://example.com/policies/root.yml#sha256=" + strings.Repeat("a", 64)
-		_, err := resolvePackRef(current, "http://%zz")
-		if err == nil || !strings.Contains(err.Error(), "invalid remote pack reference") {
-			t.Fatalf("expected invalid remote pack reference error, got %v", err)
-		}
-	})
-
-	t.Run("absolute_and_relative_local_paths", func(t *testing.T) {
-		gotAbs, err := resolvePackRef("/repo/policies/root.yml", "/tmp/packs/base.yml")
-		if err != nil {
-			t.Fatalf("resolve abs ref: %v", err)
-		}
-		if gotAbs != filepath.Clean("/tmp/packs/base.yml") {
-			t.Fatalf("unexpected abs ref: %q", gotAbs)
-		}
-
-		gotRel, err := resolvePackRef("/repo/policies/root.yml", "../shared/base.yml")
-		if err != nil {
-			t.Fatalf("resolve rel ref: %v", err)
-		}
-		want := filepath.Clean("/repo/shared/base.yml")
-		if gotRel != want {
-			t.Fatalf("unexpected rel ref: got %q want %q", gotRel, want)
-		}
-	})
-
-	t.Run("remote_ref_is_canonicalized", func(t *testing.T) {
-		remote := "https://example.com/org.yml#SHA256=" + strings.Repeat("B", 64)
-		got, err := resolvePackRef("/repo/.lopper.yml", remote)
-		if err != nil {
-			t.Fatalf("resolve remote ref: %v", err)
-		}
-		want := "https://example.com/org.yml#sha256=" + strings.Repeat("b", 64)
-		if got != want {
-			t.Fatalf("unexpected canonical remote ref: got %q want %q", got, want)
-		}
-	})
+func TestResolvePackRefRejectsEmptyReference(t *testing.T) {
+	if _, err := resolvePackRef("/repo/.lopper.yml", "   "); err == nil {
+		t.Fatalf("expected empty ref rejection")
+	}
 }
 
-func TestCanonicalPolicyLocationVariants(t *testing.T) {
-	t.Run("remote_location", func(t *testing.T) {
-		raw := "https://example.com/policy.yml#SHA256=" + strings.Repeat("C", 64)
-		got, remote, err := canonicalPolicyLocation(raw)
-		if err != nil {
-			t.Fatalf("canonical remote: %v", err)
-		}
-		if !remote {
-			t.Fatalf("expected remote=true")
-		}
-		want := "https://example.com/policy.yml#sha256=" + strings.Repeat("c", 64)
-		if got != want {
-			t.Fatalf("unexpected canonical remote location: got %q want %q", got, want)
+func TestResolvePackRefRejectsInvalidRemoteReference(t *testing.T) {
+	current := "https://example.com/policies/root.yml#sha256=" + strings.Repeat("a", 64)
+	_, err := resolvePackRef(current, "http://%zz")
+	if err == nil || !strings.Contains(err.Error(), "invalid remote pack reference") {
+		t.Fatalf("expected invalid remote pack reference error, got %v", err)
+	}
+}
+
+func TestResolvePackRefSupportsAbsoluteAndRelativePaths(t *testing.T) {
+	gotAbs, err := resolvePackRef("/repo/policies/root.yml", "/tmp/packs/base.yml")
+	if err != nil {
+		t.Fatalf("resolve abs ref: %v", err)
+	}
+	if gotAbs != filepath.Clean("/tmp/packs/base.yml") {
+		t.Fatalf("unexpected abs ref: %q", gotAbs)
+	}
+
+	gotRel, err := resolvePackRef("/repo/policies/root.yml", "../shared/base.yml")
+	if err != nil {
+		t.Fatalf("resolve rel ref: %v", err)
+	}
+	want := filepath.Clean("/repo/shared/base.yml")
+	if gotRel != want {
+		t.Fatalf("unexpected rel ref: got %q want %q", gotRel, want)
+	}
+}
+
+func TestResolvePackRefCanonicalizesRemoteReference(t *testing.T) {
+	remote := "https://example.com/org.yml#SHA256=" + strings.Repeat("B", 64)
+	got, err := resolvePackRef("/repo/.lopper.yml", remote)
+	if err != nil {
+		t.Fatalf("resolve remote ref: %v", err)
+	}
+	want := "https://example.com/org.yml#sha256=" + strings.Repeat("b", 64)
+	if got != want {
+		t.Fatalf("unexpected canonical remote ref: got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalPolicyLocationRemote(t *testing.T) {
+	raw := "https://example.com/policy.yml#SHA256=" + strings.Repeat("C", 64)
+	got, remote, err := canonicalPolicyLocation(raw)
+	if err != nil {
+		t.Fatalf("canonical remote: %v", err)
+	}
+	if !remote {
+		t.Fatalf("expected remote=true")
+	}
+	want := "https://example.com/policy.yml#sha256=" + strings.Repeat("c", 64)
+	if got != want {
+		t.Fatalf("unexpected canonical remote location: got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalPolicyLocationRelativeLocal(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(cwd); chdirErr != nil {
+			t.Fatalf("restore wd: %v", chdirErr)
 		}
 	})
+	repo := t.TempDir()
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
 
-	t.Run("relative_local_location", func(t *testing.T) {
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("getwd: %v", err)
-		}
-		t.Cleanup(func() {
-			if chdirErr := os.Chdir(cwd); chdirErr != nil {
-				t.Fatalf("restore wd: %v", chdirErr)
-			}
-		})
-		repo := t.TempDir()
-		if err := os.Chdir(repo); err != nil {
-			t.Fatalf("chdir repo: %v", err)
-		}
-
-		got, remote, err := canonicalPolicyLocation("policies/./base.yml")
-		if err != nil {
-			t.Fatalf("canonical local: %v", err)
-		}
-		if remote {
-			t.Fatalf("expected remote=false")
-		}
-		want, err := filepath.Abs("policies/./base.yml")
-		if err != nil {
-			t.Fatalf("abs expected path: %v", err)
-		}
-		want = filepath.Clean(want)
-		if got != want {
-			t.Fatalf("unexpected canonical local location: got %q want %q", got, want)
-		}
-	})
+	got, remote, err := canonicalPolicyLocation("policies/./base.yml")
+	if err != nil {
+		t.Fatalf("canonical local: %v", err)
+	}
+	if remote {
+		t.Fatalf("expected remote=false")
+	}
+	want, err := filepath.Abs("policies/./base.yml")
+	if err != nil {
+		t.Fatalf("abs expected path: %v", err)
+	}
+	want = filepath.Clean(want)
+	if got != want {
+		t.Fatalf("unexpected canonical local location: got %q want %q", got, want)
+	}
 }
 
 func TestExtractRemotePolicyPinValidation(t *testing.T) {

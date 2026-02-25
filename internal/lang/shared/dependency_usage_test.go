@@ -17,6 +17,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const topWarning = "top-warning"
+
 const (
 	testLocalFoo       = "foo"
 	testLocalFoo1      = "foo1"
@@ -270,7 +272,7 @@ func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 		if topN != 3 || scan != 2 {
 			t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
 		}
-		return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
+		return []report.DependencyReport{{Name: "top"}}, []string{topWarning}
 	}
 	reports, warnings := BuildRequestedDependencies(language.Request{TopN: 3}, 2, strings.ToLower, dependencyBuilder, topBuilder)
 	if dependencyCalled || !topCalled {
@@ -279,7 +281,7 @@ func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 	if len(reports) != 1 || reports[0].Name != "top" {
 		t.Fatalf("unexpected top-N reports: %#v", reports)
 	}
-	if !slices.Equal(warnings, []string{"top-warning"}) {
+	if !slices.Equal(warnings, []string{topWarning}) {
 		t.Fatalf("unexpected top-N warnings: %#v", warnings)
 	}
 }
@@ -316,7 +318,7 @@ func TestBuildRequestedDependenciesWithWeights(t *testing.T) {
 		if weights != resolvedWeights {
 			t.Fatalf("unexpected resolved weights: %#v", weights)
 		}
-		return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
+		return []report.DependencyReport{{Name: "top"}}, []string{topWarning}
 	}
 	reports, warnings := BuildRequestedDependenciesWithWeights(req, 5, normalizeFn, dependencyFn, resolveWeightsFn, topFn)
 
@@ -326,7 +328,7 @@ func TestBuildRequestedDependenciesWithWeights(t *testing.T) {
 	if len(reports) != 1 || reports[0].Name != "top" {
 		t.Fatalf("unexpected reports: %#v", reports)
 	}
-	if len(warnings) != 1 || warnings[0] != "top-warning" {
+	if len(warnings) != 1 || warnings[0] != topWarning {
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 }

@@ -128,7 +128,7 @@ func TestCodemodSuggestionOrder(t *testing.T) {
 		ImportName: "filter",
 		ToModule:   "lodash/filter",
 	}
-	if !(codemodSuggestionOrder(early) < codemodSuggestionOrder(late)) {
+	if codemodSuggestionOrder(early) >= codemodSuggestionOrder(late) {
 		t.Fatalf("expected lexical codemod suggestion ordering")
 	}
 }
