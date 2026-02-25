@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const safeExecPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+var fixedGitPaths = []string{
+	"/usr/bin/git",
+	"/bin/git",
+}
 
 func NormalizeRepoPath(path string) (string, error) {
 	if path == "" {
@@ -23,9 +26,12 @@ func CurrentCommitSHA(repoPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	gitPath, err := resolveGitBinaryPath()
+	if err != nil {
+		return "", err
+	}
 	// #nosec G204 -- arguments are fixed and repoPath is normalized to an absolute directory.
-	cmd := exec.Command("git", "-C", normalized, "rev-parse", "--verify", "HEAD")
-	cmd.Env = append(nonPathEnv(os.Environ()), safeExecPath)
+	cmd := exec.Command(gitPath, "-C", normalized, "rev-parse", "--verify", "HEAD")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -35,13 +41,19 @@ func CurrentCommitSHA(repoPath string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func nonPathEnv(env []string) []string {
-	filtered := make([]string, 0, len(env))
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "PATH=") {
+func resolveGitBinaryPath() (string, error) {
+	for _, candidate := range fixedGitPaths {
+		info, err := os.Stat(candidate)
+		if err != nil {
 			continue
 		}
-		filtered = append(filtered, entry)
+		if info.IsDir() {
+			continue
+		}
+		if info.Mode()&0o111 == 0 {
+			continue
+		}
+		return candidate, nil
 	}
-	return filtered
+	return "", fmt.Errorf("git binary not found in fixed system paths")
 }
