@@ -347,33 +347,27 @@ func TestResolveConfigPathExplicitStatError(t *testing.T) {
 
 func TestLoadWithPolicyPackPrecedenceAndSources(t *testing.T) {
 	repo := t.TempDir()
-	base := strings.Join([]string{
-		"thresholds:",
-		"  low_confidence_warning_percent: 21",
-		"  removal_candidate_weight_usage: 0.1",
-		"  removal_candidate_weight_impact: 0.7",
-		"  removal_candidate_weight_confidence: 0.2",
-		"",
-	}, "\n")
-	overlay := strings.Join([]string{
-		"policy:",
-		"  packs:",
-		"    - base.yml",
-		"thresholds:",
-		"  low_confidence_warning_percent: 33",
-		"",
-	}, "\n")
-	root := strings.Join([]string{
-		"policy:",
-		"  packs:",
-		"    - packs/overlay.yml",
-		"thresholds:",
-		"  fail_on_increase_percent: 4",
-		"",
-	}, "\n")
-	writeConfig(t, filepath.Join(repo, "packs", "base.yml"), base)
-	writeConfig(t, filepath.Join(repo, "packs", "overlay.yml"), overlay)
-	writeConfig(t, filepath.Join(repo, lopperYMLName), root)
+	basePolicy := `thresholds:
+  low_confidence_warning_percent: 21
+  removal_candidate_weight_usage: 0.1
+  removal_candidate_weight_impact: 0.7
+  removal_candidate_weight_confidence: 0.2
+`
+	overlayPolicy := `policy:
+  packs:
+    - base.yml
+thresholds:
+  low_confidence_warning_percent: 33
+`
+	rootPolicy := `policy:
+  packs:
+    - packs/overlay.yml
+thresholds:
+  fail_on_increase_percent: 4
+`
+	writeConfig(t, filepath.Join(repo, "packs", "base.yml"), basePolicy)
+	writeConfig(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
+	writeConfig(t, filepath.Join(repo, lopperYMLName), rootPolicy)
 
 	result, err := LoadWithPolicy(repo, "")
 	if err != nil {
@@ -436,14 +430,12 @@ func TestLoadWithPolicyRejectsRemotePackWithoutPin(t *testing.T) {
 
 func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
 	repo := t.TempDir()
-	packBody := strings.Join([]string{
-		"thresholds:",
-		"  low_confidence_warning_percent: 19",
-		"  removal_candidate_weight_usage: 0.6",
-		"  removal_candidate_weight_impact: 0.2",
-		"  removal_candidate_weight_confidence: 0.2",
-		"",
-	}, "\n")
+	packBody := `thresholds:
+  low_confidence_warning_percent: 19
+  removal_candidate_weight_usage: 0.6
+  removal_candidate_weight_impact: 0.2
+  removal_candidate_weight_confidence: 0.2
+`
 	sum := sha256.Sum256([]byte(packBody))
 	pin := hex.EncodeToString(sum[:])
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -451,11 +443,14 @@ func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(packBody))
+		if _, err := w.Write([]byte(packBody)); err != nil {
+			t.Fatalf("write remote pack response: %v", err)
+		}
 	}))
 	defer server.Close()
 
-	writeConfig(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin))
+	policy := fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin)
+	writeConfig(t, filepath.Join(repo, lopperYMLName), policy)
 	result, err := LoadWithPolicy(repo, "")
 	if err != nil {
 		t.Fatalf("load with pinned remote pack: %v", err)
@@ -474,7 +469,9 @@ func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
 func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
 	repo := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("thresholds:\n  low_confidence_warning_percent: 12\n"))
+		if _, err := w.Write([]byte("thresholds:\n  low_confidence_warning_percent: 12\n")); err != nil {
+			t.Fatalf("write mismatch response: %v", err)
+		}
 	}))
 	defer server.Close()
 	writeConfig(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
@@ -485,6 +482,146 @@ func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sha256 mismatch") {
 		t.Fatalf("expected sha256 mismatch error, got %v", err)
+	}
+}
+
+func TestResolvePackRefVariants(t *testing.T) {
+	t.Run("empty_ref_rejected", func(t *testing.T) {
+		if _, err := resolvePackRef("/repo/.lopper.yml", "   "); err == nil {
+			t.Fatalf("expected empty ref rejection")
+		}
+	})
+
+	t.Run("remote_parent_bad_relative_ref", func(t *testing.T) {
+		current := "https://example.com/policies/root.yml#sha256=" + strings.Repeat("a", 64)
+		_, err := resolvePackRef(current, "http://%zz")
+		if err == nil || !strings.Contains(err.Error(), "invalid remote pack reference") {
+			t.Fatalf("expected invalid remote pack reference error, got %v", err)
+		}
+	})
+
+	t.Run("absolute_and_relative_local_paths", func(t *testing.T) {
+		gotAbs, err := resolvePackRef("/repo/policies/root.yml", "/tmp/packs/base.yml")
+		if err != nil {
+			t.Fatalf("resolve abs ref: %v", err)
+		}
+		if gotAbs != filepath.Clean("/tmp/packs/base.yml") {
+			t.Fatalf("unexpected abs ref: %q", gotAbs)
+		}
+
+		gotRel, err := resolvePackRef("/repo/policies/root.yml", "../shared/base.yml")
+		if err != nil {
+			t.Fatalf("resolve rel ref: %v", err)
+		}
+		want := filepath.Clean("/repo/shared/base.yml")
+		if gotRel != want {
+			t.Fatalf("unexpected rel ref: got %q want %q", gotRel, want)
+		}
+	})
+
+	t.Run("remote_ref_is_canonicalized", func(t *testing.T) {
+		remote := "https://example.com/org.yml#SHA256=" + strings.Repeat("B", 64)
+		got, err := resolvePackRef("/repo/.lopper.yml", remote)
+		if err != nil {
+			t.Fatalf("resolve remote ref: %v", err)
+		}
+		want := "https://example.com/org.yml#sha256=" + strings.Repeat("b", 64)
+		if got != want {
+			t.Fatalf("unexpected canonical remote ref: got %q want %q", got, want)
+		}
+	})
+}
+
+func TestCanonicalPolicyLocationVariants(t *testing.T) {
+	t.Run("remote_location", func(t *testing.T) {
+		raw := "https://example.com/policy.yml#SHA256=" + strings.Repeat("C", 64)
+		got, remote, err := canonicalPolicyLocation(raw)
+		if err != nil {
+			t.Fatalf("canonical remote: %v", err)
+		}
+		if !remote {
+			t.Fatalf("expected remote=true")
+		}
+		want := "https://example.com/policy.yml#sha256=" + strings.Repeat("c", 64)
+		if got != want {
+			t.Fatalf("unexpected canonical remote location: got %q want %q", got, want)
+		}
+	})
+
+	t.Run("relative_local_location", func(t *testing.T) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd: %v", err)
+		}
+		t.Cleanup(func() {
+			if chdirErr := os.Chdir(cwd); chdirErr != nil {
+				t.Fatalf("restore wd: %v", chdirErr)
+			}
+		})
+		repo := t.TempDir()
+		if err := os.Chdir(repo); err != nil {
+			t.Fatalf("chdir repo: %v", err)
+		}
+
+		got, remote, err := canonicalPolicyLocation("policies/./base.yml")
+		if err != nil {
+			t.Fatalf("canonical local: %v", err)
+		}
+		if remote {
+			t.Fatalf("expected remote=false")
+		}
+		want, err := filepath.Abs("policies/./base.yml")
+		if err != nil {
+			t.Fatalf("abs expected path: %v", err)
+		}
+		want = filepath.Clean(want)
+		if got != want {
+			t.Fatalf("unexpected canonical local location: got %q want %q", got, want)
+		}
+	})
+}
+
+func TestExtractRemotePolicyPinValidation(t *testing.T) {
+	valid := strings.Repeat("d", 64)
+	got, err := extractRemotePolicyPin("SHA256=" + strings.ToUpper(valid))
+	if err != nil {
+		t.Fatalf("extract valid pin: %v", err)
+	}
+	if got != valid {
+		t.Fatalf("expected normalized pin %q, got %q", valid, got)
+	}
+
+	cases := []string{"", "sha256", "sha512=" + valid, "sha256=abc", "sha256=" + strings.Repeat("z", 64)}
+	for _, tc := range cases {
+		if _, err := extractRemotePolicyPin(tc); err == nil {
+			t.Fatalf("expected validation failure for %q", tc)
+		}
+	}
+}
+
+func TestPackResolverPopAndPathRootHelpers(t *testing.T) {
+	resolver := &packResolver{}
+
+	resolver.pop("missing")
+
+	resolver.stack = []string{"a", "b", "c"}
+	resolver.pop("c")
+	if got := strings.Join(resolver.stack, ","); got != "a,b" {
+		t.Fatalf("unexpected stack after top pop: %s", got)
+	}
+
+	resolver.stack = []string{"a", "b", "c"}
+	resolver.pop("b")
+	if got := strings.Join(resolver.stack, ","); got != "a,c" {
+		t.Fatalf("unexpected stack after middle pop: %s", got)
+	}
+
+	root := filepath.Clean(filepath.Join(string(os.PathSeparator), "repo"))
+	if !isPathUnderRoot(root, filepath.Join(root, "policies", "base.yml")) {
+		t.Fatalf("expected nested path to be under root")
+	}
+	if isPathUnderRoot(root, filepath.Clean(filepath.Join(root, "..", "outside.yml"))) {
+		t.Fatalf("expected outside path to be rejected")
 	}
 }
 

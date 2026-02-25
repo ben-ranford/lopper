@@ -341,22 +341,20 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 
 func TestParseArgsAnalysePolicyPackSources(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "packs", "org.yml"), strings.Join([]string{
-		"thresholds:",
-		"  low_confidence_warning_percent: 22",
-		"  removal_candidate_weight_usage: 0.4",
-		"  removal_candidate_weight_impact: 0.4",
-		"  removal_candidate_weight_confidence: 0.2",
-		"",
-	}, "\n"))
-	writeFile(t, filepath.Join(repo, ".lopper.yml"), strings.Join([]string{
-		"policy:",
-		"  packs:",
-		"    - packs/org.yml",
-		"thresholds:",
-		"  fail_on_increase_percent: 5",
-		"",
-	}, "\n"))
+	orgPolicy := `thresholds:
+  low_confidence_warning_percent: 22
+  removal_candidate_weight_usage: 0.4
+  removal_candidate_weight_impact: 0.4
+  removal_candidate_weight_confidence: 0.2
+`
+	repoPolicy := `policy:
+  packs:
+    - packs/org.yml
+thresholds:
+  fail_on_increase_percent: 5
+`
+	writeFile(t, filepath.Join(repo, "packs", "org.yml"), orgPolicy)
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), repoPolicy)
 
 	req, err := ParseArgs([]string{"analyse", "--top", "3", "--repo", repo})
 	if err != nil {

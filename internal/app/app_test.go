@@ -535,3 +535,87 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 		t.Fatalf("expected runtime warning in output, got %q", output)
 	}
 }
+
+func TestSaveBaselineIfNeededDisabledNoop(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	input := report.Report{RepoPath: ".", Warnings: []string{"keep"}}
+	updated, err := application.saveBaselineIfNeeded(input, ".", AnalyseRequest{}, testTime())
+	if err != nil {
+		t.Fatalf("save baseline noop: %v", err)
+	}
+	if len(updated.Warnings) != 1 || updated.Warnings[0] != "keep" {
+		t.Fatalf("expected unchanged report on noop save baseline, got %#v", updated)
+	}
+}
+
+func TestExecuteAnalyseApplyBaselineErrorPreservesOriginalWhenFormatFails(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.Format("invalid")
+	req.Analyse.BaselinePath = filepath.Join(t.TempDir(), "missing.json")
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected apply-baseline error")
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "unknown format") {
+		t.Fatalf("expected original baseline error, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseFailOnIncreasePreservesOriginalWhenFormatFails(t *testing.T) {
+	delta := 5.0
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:             ".",
+			WasteIncreasePercent: &delta,
+			Dependencies:         []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.Format("invalid")
+	req.Analyse.Thresholds.FailOnIncreasePercent = 1
+
+	_, err := application.Execute(context.Background(), req)
+	if err != ErrFailOnIncrease {
+		t.Fatalf("expected ErrFailOnIncrease, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseSaveBaselineErrorPreservesOriginalWhenFormatFails(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.Format("invalid")
+	req.Analyse.SaveBaseline = true
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected save-baseline error")
+	}
+	if !strings.Contains(err.Error(), "--save-baseline requires --baseline-store") {
+		t.Fatalf("expected save-baseline store error, got %v", err)
+	}
+}

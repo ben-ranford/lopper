@@ -161,7 +161,7 @@ func TestAnalysisCacheWarnTakeWarningsAndSnapshot(t *testing.T) {
 	if len(gotWarnings) != 2 || gotWarnings[0] != "warn-1" || gotWarnings[1] != "warn-2" {
 		t.Fatalf("unexpected warnings: %#v", gotWarnings)
 	}
-	if again := cache.takeWarnings(); again != nil {
+	if again := cache.takeWarnings(); len(again) != 0 {
 		t.Fatalf("expected nil warnings after drain, got %#v", again)
 	}
 
@@ -186,12 +186,13 @@ func TestNewAnalysisCacheUnavailablePathWarns(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write blocker file: %v", err)
 	}
-	cache := newAnalysisCache(Request{
+	cacheReq := Request{
 		Cache: &CacheOptions{
 			Enabled: true,
 			Path:    blocker,
 		},
-	}, repo)
+	}
+	cache := newAnalysisCache(cacheReq, repo)
 	if cache.cacheable {
 		t.Fatalf("expected non-cacheable when cache path cannot be prepared")
 	}
@@ -249,9 +250,10 @@ func TestWriteFileAtomicSuccessAndFallbackError(t *testing.T) {
 func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "cache")
-	cache := newAnalysisCache(Request{
+	cacheReq := Request{
 		Cache: &CacheOptions{Enabled: true, Path: cachePath},
-	}, repo)
+	}
+	cache := newAnalysisCache(cacheReq, repo)
 	if !cache.cacheable {
 		t.Fatalf("expected cacheable test setup")
 	}
@@ -313,5 +315,81 @@ func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	}
 	if cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != "object-corrupt" {
 		t.Fatalf("expected object-corrupt invalidation, got %#v", cache.metadata.Invalidations)
+	}
+}
+
+func TestResolveCacheOptionsDefaultsAndOverrides(t *testing.T) {
+	defaults := resolveCacheOptions(nil, "/repo")
+	if !defaults.Enabled || defaults.Path != filepath.Join("/repo", ".lopper-cache") || defaults.ReadOnly {
+		t.Fatalf("unexpected default cache options: %#v", defaults)
+	}
+
+	requested := &CacheOptions{
+		Enabled:  false,
+		Path:     "  /tmp/cache  ",
+		ReadOnly: true,
+	}
+	overrides := resolveCacheOptions(requested, "/repo")
+	if overrides.Enabled || overrides.Path != "/tmp/cache" || !overrides.ReadOnly {
+		t.Fatalf("unexpected override cache options: %#v", overrides)
+	}
+}
+
+func TestAnalysisCachePrepareEntryBypassBranches(t *testing.T) {
+	entry, err := (*analysisCache)(nil).prepareEntry(Request{}, "adapter", "/repo")
+	if err != nil || entry != (cacheEntryDescriptor{}) {
+		t.Fatalf("expected nil-cache prepareEntry bypass, entry=%#v err=%v", entry, err)
+	}
+
+	cache := &analysisCache{
+		options:   resolvedCacheOptions{Enabled: true},
+		cacheable: false,
+	}
+	entry, err = cache.prepareEntry(Request{}, "adapter", "/repo")
+	if err != nil || entry != (cacheEntryDescriptor{}) {
+		t.Fatalf("expected non-cacheable prepareEntry bypass, entry=%#v err=%v", entry, err)
+	}
+}
+
+func TestAnalysisCacheLookupBypassBranches(t *testing.T) {
+	got, hit, err := (*analysisCache)(nil).lookup(cacheEntryDescriptor{})
+	if err != nil || hit || len(got.Dependencies) != 0 || got.RepoPath != "" {
+		t.Fatalf("expected nil-cache lookup bypass, got=%#v hit=%v err=%v", got, hit, err)
+	}
+
+	cache := &analysisCache{
+		options:   resolvedCacheOptions{Enabled: false},
+		cacheable: true,
+	}
+	got, hit, err = cache.lookup(cacheEntryDescriptor{})
+	if err != nil || hit || len(got.Dependencies) != 0 || got.RepoPath != "" {
+		t.Fatalf("expected disabled-cache lookup bypass, got=%#v hit=%v err=%v", got, hit, err)
+	}
+}
+
+func TestCacheCleanupHelpers(t *testing.T) {
+	if err := closeIfPresent(nil); err != nil {
+		t.Fatalf("closeIfPresent nil: %v", err)
+	}
+
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "file.tmp")
+	file, err := os.Create(filePath)
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+	if err := closeIfPresent(file); err != nil {
+		t.Fatalf("closeIfPresent already-closed file: %v", err)
+	}
+
+	missing := filepath.Join(tmp, "missing.tmp")
+	if err := removeIfPresent(missing); err != nil {
+		t.Fatalf("removeIfPresent missing: %v", err)
+	}
+	if err := cleanupTempFile(nil, missing); err != nil {
+		t.Fatalf("cleanupTempFile nil+missing: %v", err)
 	}
 }

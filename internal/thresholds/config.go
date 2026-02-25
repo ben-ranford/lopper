@@ -259,7 +259,7 @@ type resolveMergeResult struct {
 	appliedSourcesLow []string
 }
 
-func (r resolveMergeResult) policySourcesHighToLow() []string {
+func (r *resolveMergeResult) policySourcesHighToLow() []string {
 	sources := make([]string, 0, len(r.appliedSourcesLow)+1)
 	seen := map[string]struct{}{defaultPolicySource: {}}
 	for i := len(r.appliedSourcesLow) - 1; i >= 0; i-- {
