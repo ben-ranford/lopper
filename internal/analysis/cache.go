@@ -404,7 +404,8 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := tmpFile.Close(); err != nil {
 		return errors.Join(err, removeIfPresent(tmpPath))
 	}
-	if err := os.Rename(tmpPath, path); err == nil {
+	renameErr := os.Rename(tmpPath, path)
+	if renameErr == nil {
 		return nil
 	}
 	if err := removeIfPresent(tmpPath); err != nil {

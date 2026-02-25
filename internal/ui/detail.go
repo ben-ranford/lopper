@@ -38,11 +38,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return fmt.Errorf("dependency name is required")
 	}
 
-	languageID := d.Language
-	if parts := strings.SplitN(dependency, ":", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-		languageID = parts[0]
-		dependency = parts[1]
-	}
+	languageID, dependency := parseDependencyLanguage(d.Language, dependency)
 
 	reportData, err := d.Analyzer.Analyse(ctx, analysis.Request{
 		RepoPath:   d.RepoPath,
@@ -60,60 +56,71 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 	}
 
 	dep := reportData.Dependencies[0]
-	if err := writef(d.Out, "Dependency detail: %s\n", dep.Name); err != nil {
+	if err := printDependencyHeader(d.Out, dep); err != nil {
+		return err
+	}
+	if err := printDependencySections(d.Out, dep); err != nil {
+		return err
+	}
+	return printWarnings(d.Out, reportData.Warnings)
+}
+
+func parseDependencyLanguage(defaultLanguage string, dependency string) (string, string) {
+	if parts := strings.SplitN(dependency, ":", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0], parts[1]
+	}
+	return defaultLanguage, dependency
+}
+
+func printDependencyHeader(out io.Writer, dep report.DependencyReport) error {
+	if err := writef(out, "Dependency detail: %s\n", dep.Name); err != nil {
 		return err
 	}
 	if dep.Language != "" {
-		if err := writef(d.Out, "Language: %s\n", dep.Language); err != nil {
+		if err := writef(out, "Language: %s\n", dep.Language); err != nil {
 			return err
 		}
 	}
-	if err := writef(d.Out, "Used exports: %d\n", dep.UsedExportsCount); err != nil {
+	if err := writef(out, "Used exports: %d\n", dep.UsedExportsCount); err != nil {
 		return err
 	}
-	if err := writef(d.Out, "Total exports: %d\n", dep.TotalExportsCount); err != nil {
+	if err := writef(out, "Total exports: %d\n", dep.TotalExportsCount); err != nil {
 		return err
 	}
-	if err := writef(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent); err != nil {
-		return err
-	}
-	if err := printRemovalCandidate(d.Out, dep.RemovalCandidate); err != nil {
-		return err
-	}
-	if err := printRuntimeUsage(d.Out, dep.RuntimeUsage); err != nil {
-		return err
-	}
-	if err := printRiskCues(d.Out, dep.RiskCues); err != nil {
-		return err
-	}
-	if err := printRecommendations(d.Out, dep.Recommendations); err != nil {
-		return err
-	}
-	if err := printCodemod(d.Out, dep.Codemod); err != nil {
-		return err
-	}
+	return writef(out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
+}
 
-	if err := printImportList(d.Out, "Used imports", dep.UsedImports); err != nil {
-		return err
+func printDependencySections(out io.Writer, dep report.DependencyReport) error {
+	printers := []func(io.Writer) error{
+		func(w io.Writer) error { return printRemovalCandidate(w, dep.RemovalCandidate) },
+		func(w io.Writer) error { return printRuntimeUsage(w, dep.RuntimeUsage) },
+		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
+		func(w io.Writer) error { return printRecommendations(w, dep.Recommendations) },
+		func(w io.Writer) error { return printCodemod(w, dep.Codemod) },
+		func(w io.Writer) error { return printImportList(w, "Used imports", dep.UsedImports) },
+		func(w io.Writer) error { return printImportList(w, "Unused imports", dep.UnusedImports) },
+		func(w io.Writer) error { return printExportsList(w, "Unused exports", dep.UnusedExports) },
 	}
-	if err := printImportList(d.Out, "Unused imports", dep.UnusedImports); err != nil {
-		return err
-	}
-	if err := printExportsList(d.Out, "Unused exports", dep.UnusedExports); err != nil {
-		return err
-	}
-
-	if len(reportData.Warnings) > 0 {
-		if err := writeln(d.Out, "Warnings:"); err != nil {
+	for _, printer := range printers {
+		if err := printer(out); err != nil {
 			return err
 		}
-		for _, warning := range reportData.Warnings {
-			if err := writef(d.Out, "- %s\n", warning); err != nil {
-				return err
-			}
+	}
+	return nil
+}
+
+func printWarnings(out io.Writer, warnings []string) error {
+	if len(warnings) == 0 {
+		return nil
+	}
+	if err := writeln(out, "Warnings:"); err != nil {
+		return err
+	}
+	for _, warning := range warnings {
+		if err := writef(out, "- %s\n", warning); err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
@@ -223,31 +230,23 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) error {
 		return err
 	}
 	if usage == nil {
-		if err := writeln(out, noneLabel); err != nil {
-			return err
-		}
-		return writeln(out, "")
+		return writeNoneAndBlankLine(out)
 	}
-	if err := writef(out, "  - load count: %d\n", usage.LoadCount); err != nil {
-		return err
-	}
+	lines := []string{fmt.Sprintf("  - load count: %d", usage.LoadCount)}
 	if usage.Correlation != "" {
-		if err := writef(out, "  - correlation: %s\n", usage.Correlation); err != nil {
-			return err
-		}
+		lines = append(lines, fmt.Sprintf("  - correlation: %s", usage.Correlation))
 	}
 	if usage.RuntimeOnly {
-		if err := writeln(out, "  - runtime-only: true (no static imports detected)"); err != nil {
-			return err
-		}
+		lines = append(lines, "  - runtime-only: true (no static imports detected)")
 	}
 	if len(usage.Modules) > 0 {
-		if err := writef(out, "  - modules: %s\n", formatRuntimeModules(usage.Modules)); err != nil {
-			return err
-		}
+		lines = append(lines, fmt.Sprintf("  - modules: %s", formatRuntimeModules(usage.Modules)))
 	}
 	if len(usage.TopSymbols) > 0 {
-		if err := writef(out, "  - top symbols: %s\n", formatRuntimeSymbols(usage.TopSymbols)); err != nil {
+		lines = append(lines, fmt.Sprintf("  - top symbols: %s", formatRuntimeSymbols(usage.TopSymbols)))
+	}
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
 			return err
 		}
 	}
@@ -259,32 +258,36 @@ func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) er
 		return err
 	}
 	if candidate == nil {
-		if err := writeln(out, noneLabel); err != nil {
+		return writeNoneAndBlankLine(out)
+	}
+	lines := []string{
+		fmt.Sprintf("  - score: %.1f", candidate.Score),
+		fmt.Sprintf("  - usage: %.1f", candidate.Usage),
+		fmt.Sprintf("  - impact: %.1f", candidate.Impact),
+		fmt.Sprintf("  - confidence: %.1f", candidate.Confidence),
+	}
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
 			return err
 		}
+	}
+	if len(candidate.Rationale) == 0 {
 		return writeln(out, "")
 	}
-	if err := writef(out, "  - score: %.1f\n", candidate.Score); err != nil {
+	if err := writeln(out, "  - rationale:"); err != nil {
 		return err
 	}
-	if err := writef(out, "  - usage: %.1f\n", candidate.Usage); err != nil {
-		return err
-	}
-	if err := writef(out, "  - impact: %.1f\n", candidate.Impact); err != nil {
-		return err
-	}
-	if err := writef(out, "  - confidence: %.1f\n", candidate.Confidence); err != nil {
-		return err
-	}
-	if len(candidate.Rationale) > 0 {
-		if err := writeln(out, "  - rationale:"); err != nil {
+	for _, line := range candidate.Rationale {
+		if err := writef(out, "    - %s\n", line); err != nil {
 			return err
 		}
-		for _, line := range candidate.Rationale {
-			if err := writef(out, "    - %s\n", line); err != nil {
-				return err
-			}
-		}
+	}
+	return writeln(out, "")
+}
+
+func writeNoneAndBlankLine(out io.Writer) error {
+	if err := writeln(out, noneLabel); err != nil {
+		return err
 	}
 	return writeln(out, "")
 }

@@ -403,7 +403,7 @@ func TestSummaryStartErrorBranches(t *testing.T) {
 	// handleSummaryInput failure path via open detail command.
 	seqAnalyzer := &sequenceErrorAnalyzer{}
 	summary = NewSummary(io.Discard, strings.NewReader("open dep\n"), seqAnalyzer, report.NewFormatter())
-	if err := summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}); err == nil {
+	if summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}) == nil {
 		t.Fatalf("expected detail-open error from handleSummaryInput")
 	}
 }

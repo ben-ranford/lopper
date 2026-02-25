@@ -14,6 +14,7 @@ import (
 const (
 	showDetailErrFmt = "show detail: %v"
 	indexJSFile      = "index.js"
+	depMapModule     = "dep/map"
 )
 
 func TestDetailShowsRiskCues(t *testing.T) {
@@ -319,8 +320,8 @@ func TestDetailWriteErrorPropagation(t *testing.T) {
 					LoadCount:   2,
 					Correlation: report.RuntimeCorrelationRuntimeOnly,
 					RuntimeOnly: true,
-					Modules:     []report.RuntimeModuleUsage{{Module: "dep/map", Count: 2}},
-					TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Module: "dep/map", Count: 2}},
+					Modules:     []report.RuntimeModuleUsage{{Module: depMapModule, Count: 2}},
+					TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Module: depMapModule, Count: 2}},
 				},
 				RiskCues: []report.RiskCue{
 					{Code: "dynamic-loader", Severity: "high", Message: "dynamic require"},
@@ -331,17 +332,17 @@ func TestDetailWriteErrorPropagation(t *testing.T) {
 				Codemod: &report.CodemodReport{
 					Mode: "suggest-only",
 					Suggestions: []report.CodemodSuggestion{
-						{File: "index.js", Line: 1, FromModule: "dep", ToModule: "dep/map"},
+						{File: indexJSFile, Line: 1, FromModule: "dep", ToModule: depMapModule},
 					},
 					Skips: []report.CodemodSkip{
-						{File: "index.js", Line: 2, ReasonCode: "namespace-import", Message: "unsafe"},
+						{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "unsafe"},
 					},
 				},
 				UsedImports: []report.ImportUse{
-					{Name: "map", Module: "dep", Locations: []report.Location{{File: "index.js", Line: 1}}, Provenance: []string{"index.js -> dep#map"}},
+					{Name: "map", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 1}}, Provenance: []string{indexJSFile + " -> dep#map"}},
 				},
 				UnusedImports: []report.ImportUse{
-					{Name: "filter", Module: "dep", Locations: []report.Location{{File: "index.js", Line: 2}}},
+					{Name: "filter", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 2}}},
 				},
 				UnusedExports: []report.SymbolRef{
 					{Name: "unused", Module: "dep"},

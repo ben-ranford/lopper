@@ -51,15 +51,41 @@ func TestJSScanDirectBranchCoverage(t *testing.T) {
 
 	repo := t.TempDir()
 	path := filepath.Join(repo, malformedBadJS)
-	if err := os.WriteFile(path, []byte("import a from b; const [x] = require(mod); const { :y } = require(\"m\");"), 0o600); err != nil {
+	writeMalformedJS(t, path, "import a from b; const [x] = require(mod); const { :y } = require(\"m\");")
+	parseFile(t, parser, path, "parse bad.js")
+	exerciseScanRepoEntryDeleteBranch(t, parser, repo, path)
+	content, tree := rewriteAndParseMalformedJS(t, parser, path)
+	exerciseASTBranchCoverage(t, tree, content)
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	return content
+}
+
+func writeMalformedJS(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write bad.js: %v", err)
 	}
-	tree, err := parser.Parse(context.Background(), path, mustReadFile(t, path))
-	if err != nil {
-		t.Fatalf("parse bad.js: %v", err)
-	}
+}
 
-	// Force scanRepoEntry read error branch by deleting file after obtaining entry metadata.
+func parseFile(t *testing.T, parser *sourceParser, path string, label string) (*sitter.Tree, []byte) {
+	t.Helper()
+	content := mustReadFile(t, path)
+	tree, err := parser.Parse(context.Background(), path, content)
+	if err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	return tree, content
+}
+
+func exerciseScanRepoEntryDeleteBranch(t *testing.T, parser *sourceParser, repo string, path string) {
+	t.Helper()
 	entry, err := os.ReadDir(repo)
 	if err != nil || len(entry) == 0 {
 		t.Fatalf("readdir repo: %v", err)
@@ -68,20 +94,21 @@ func TestJSScanDirectBranchCoverage(t *testing.T) {
 		t.Fatalf("remove bad.js: %v", err)
 	}
 	state := scanRepoState{parser: parser, repoPath: repo, result: &ScanResult{}}
-	if err := scanRepoEntry(context.Background(), &state, path, entry[0]); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	err = scanRepoEntry(context.Background(), &state, path, entry[0])
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("scan entry after delete: %v", err)
 	}
+}
 
-	// Recreate file for AST-level helper branch exercises.
-	if err := os.WriteFile(path, []byte("import a from b; const [x] = require(mod); const { :y } = require(\"m\"); const p = obj.prop;"), 0o600); err != nil {
-		t.Fatalf("rewrite bad.js: %v", err)
-	}
-	content := mustReadFile(t, path)
-	tree, err = parser.Parse(context.Background(), path, content)
-	if err != nil {
-		t.Fatalf("reparse bad.js: %v", err)
-	}
+func rewriteAndParseMalformedJS(t *testing.T, parser *sourceParser, path string) ([]byte, *sitter.Tree) {
+	t.Helper()
+	writeMalformedJS(t, path, "import a from b; const [x] = require(mod); const { :y } = require(\"m\"); const p = obj.prop;")
+	tree, content := parseFile(t, parser, path, "reparse bad.js")
+	return content, tree
+}
 
+func exerciseASTBranchCoverage(t *testing.T, tree *sitter.Tree, content []byte) {
+	t.Helper()
 	importStmt := firstNodeByType(tree.RootNode(), "import_statement")
 	requireCall := firstNodeByType(tree.RootNode(), "call_expression")
 	propIdent := firstNodeByType(tree.RootNode(), "property_identifier")
@@ -102,13 +129,4 @@ func TestJSScanDirectBranchCoverage(t *testing.T) {
 	if patternIdent != nil && isIdentifierUsage(patternIdent) {
 		t.Fatalf("expected object pattern identifier usage branch to return false")
 	}
-}
-
-func mustReadFile(t *testing.T, path string) []byte {
-	t.Helper()
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-	return content
 }

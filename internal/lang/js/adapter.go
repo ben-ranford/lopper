@@ -258,7 +258,7 @@ func finalizeImportUsageLists(usedImports map[string]*report.ImportUse, unusedIm
 	return usedImportList, removeOverlappingUnusedImports(unusedImportList, usedImportList)
 }
 
-func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string, runtimeProfile string) (ExportSurface, []string) {
+func resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
 	resolved, err := resolveDependencyExports(dependencyExportRequest{

@@ -31,47 +31,63 @@ func New(executor Executor, out io.Writer, errOut io.Writer) *CommandLine {
 func (c *CommandLine) Run(ctx context.Context, args []string) int {
 	req, err := ParseArgs(args)
 	if err != nil {
-		if errors.Is(err, ErrHelpRequested) {
-			if writeErr := c.writeOut(Usage()); writeErr != nil {
-				return 1
-			}
-			return 0
-		}
-		if writeErr := c.writeErrf("error: %v\n\n", err); writeErr != nil {
-			return 1
-		}
-		if writeErr := c.writeErr(Usage()); writeErr != nil {
-			return 1
-		}
-		return 2
+		return c.handleParseError(err)
 	}
 
 	output, runErr := c.Executor.Execute(ctx, req)
-	if output != "" {
-		if writeErr := c.writeOut(output); writeErr != nil {
-			return 1
-		}
-		if !strings.HasSuffix(output, "\n") {
-			if writeErr := c.writeOutln(); writeErr != nil {
-				return 1
-			}
-		}
-	}
-
-	if runErr != nil {
-		if errors.Is(runErr, app.ErrFailOnIncrease) {
-			if writeErr := c.writeErrln(runErr.Error()); writeErr != nil {
-				return 1
-			}
-			return 3
-		}
-		if writeErr := c.writeErrln(runErr.Error()); writeErr != nil {
-			return 1
-		}
+	if err := c.writeOutput(output); err != nil {
 		return 1
 	}
 
+	if runErr != nil {
+		if err := c.writeErrln(runErr.Error()); err != nil {
+			return 1
+		}
+		return exitCodeForRunError(runErr)
+	}
+
 	return 0
+}
+
+func (c *CommandLine) handleParseError(parseErr error) int {
+	if errors.Is(parseErr, ErrHelpRequested) {
+		if c.writeOut(Usage()) != nil {
+			return 1
+		}
+		return 0
+	}
+	if c.writeErrf("error: %v\n\n", parseErr) != nil {
+		return 1
+	}
+	if c.writeErr(Usage()) != nil {
+		return 1
+	}
+	return 2
+}
+
+func (c *CommandLine) writeOutput(output string) error {
+	if output == "" {
+		return nil
+	}
+	err := c.writeOut(output)
+	if err != nil {
+		return err
+	}
+	if strings.HasSuffix(output, "\n") {
+		return nil
+	}
+	err = c.writeOutln()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func exitCodeForRunError(runErr error) int {
+	if errors.Is(runErr, app.ErrFailOnIncrease) {
+		return 3
+	}
+	return 1
 }
 
 func (c *CommandLine) writeOut(value string) error {
