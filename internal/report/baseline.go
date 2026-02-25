@@ -49,7 +49,7 @@ func LoadWithKey(path string) (Report, string, error) {
 		if snapshot.Report.Summary == nil {
 			snapshot.Report.Summary = ComputeSummary(snapshot.Report.Dependencies)
 		}
-		if snapshot.Report.LanguageBreakdown == nil {
+		if len(snapshot.Report.LanguageBreakdown) == 0 {
 			snapshot.Report.LanguageBreakdown = ComputeLanguageBreakdown(snapshot.Report.Dependencies)
 		}
 		return snapshot.Report, strings.TrimSpace(snapshot.Key), nil
@@ -62,7 +62,7 @@ func LoadWithKey(path string) (Report, string, error) {
 	if rep.Summary == nil {
 		rep.Summary = ComputeSummary(rep.Dependencies)
 	}
-	if rep.LanguageBreakdown == nil {
+	if len(rep.LanguageBreakdown) == 0 {
 		rep.LanguageBreakdown = ComputeLanguageBreakdown(rep.Dependencies)
 	}
 	return rep, "", nil
@@ -125,7 +125,7 @@ func normalizeSnapshotReport(rep Report) Report {
 	if normalized.Summary == nil {
 		normalized.Summary = ComputeSummary(normalized.Dependencies)
 	}
-	if normalized.LanguageBreakdown == nil {
+	if len(normalized.LanguageBreakdown) == 0 {
 		normalized.LanguageBreakdown = ComputeLanguageBreakdown(normalized.Dependencies)
 	}
 	if strings.TrimSpace(normalized.SchemaVersion) == "" {

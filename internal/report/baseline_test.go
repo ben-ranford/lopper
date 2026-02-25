@@ -124,13 +124,14 @@ func TestLoadInvalidJSON(t *testing.T) {
 func TestSaveSnapshotAndLoadWithKey(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
-	path, err := SaveSnapshot(dir, "label:weekly", Report{
+	reportData := Report{
 		SchemaVersion: "0.1.0",
 		RepoPath:      ".",
 		Dependencies: []DependencyReport{
 			{Name: "dep-a", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25},
 		},
-	}, now)
+	}
+	path, err := SaveSnapshot(dir, "label:weekly", reportData, now)
 	if err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
@@ -202,6 +203,75 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	}
 	if len(comparison.Removed) != 1 || comparison.Removed[0].Name != "c" {
 		t.Fatalf("expected one removed dependency, got %#v", comparison.Removed)
+	}
+}
+
+func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "snapshot.json")
+	content := `{"baselineSchemaVersion":"9.9.9","key":"label:bad","savedAt":"2026-01-01T00:00:00Z","report":{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[]}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	if _, _, err := LoadWithKey(path); err == nil || !strings.Contains(err.Error(), "unsupported baseline schema version") {
+		t.Fatalf("expected unsupported schema error, got %v", err)
+	}
+}
+
+func TestSaveSnapshotValidationErrors(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	if _, err := SaveSnapshot("", "label:x", Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline store directory is required") {
+		t.Fatalf("expected missing directory validation error, got %v", err)
+	}
+	if _, err := SaveSnapshot(t.TempDir(), "  ", Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline key is required") {
+		t.Fatalf("expected missing key validation error, got %v", err)
+	}
+}
+
+func TestBaselineSnapshotPathSanitizesKey(t *testing.T) {
+	path := BaselineSnapshotPath("/tmp/baselines", " label:release candidate/1 ")
+	if !strings.HasSuffix(path, "label_release_candidate_1.json") {
+		t.Fatalf("expected sanitized snapshot path, got %q", path)
+	}
+}
+
+func TestSaveSnapshotMkdirFailure(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	blocking := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocking, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	if _, err := SaveSnapshot(filepath.Join(blocking, "nested"), "label:x", Report{}, now); err == nil {
+		t.Fatalf("expected mkdir failure when parent is a file")
+	}
+}
+
+func TestSaveSnapshotSortsDependenciesDeterministically(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{Name: "zeta", Language: "python"},
+			{Name: "alpha", Language: "go"},
+			{Name: "beta", Language: "go"},
+		},
+	}
+	path, err := SaveSnapshot(t.TempDir(), "label:sorted", reportData, now)
+	if err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+	rep, _, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	gotOrder := []string{
+		rep.Dependencies[0].Language + "/" + rep.Dependencies[0].Name,
+		rep.Dependencies[1].Language + "/" + rep.Dependencies[1].Name,
+		rep.Dependencies[2].Language + "/" + rep.Dependencies[2].Name,
+	}
+	wantOrder := []string{"go/alpha", "go/beta", "python/zeta"}
+	if !slices.Equal(gotOrder, wantOrder) {
+		t.Fatalf("unexpected dependency order: got=%v want=%v", gotOrder, wantOrder)
 	}
 }
 

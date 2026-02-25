@@ -68,6 +68,27 @@ func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
 	}
 }
 
+func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	keysDir := filepath.Join(cachePath, cacheKeysDirName)
+	objectsPath := filepath.Join(cachePath, cacheObjectsDirName)
+	if err := os.MkdirAll(keysDir, 0o750); err != nil {
+		t.Fatalf("mkdir keys dir: %v", err)
+	}
+	if err := os.WriteFile(objectsPath, []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("write blocking objects file: %v", err)
+	}
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if cache.cacheable {
+		t.Fatalf("expected cache to be non-cacheable when objects dir init fails")
+	}
+	if len(cache.takeWarnings()) == 0 {
+		t.Fatalf("expected warning when objects dir init fails")
+	}
+}
+
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	missingPath := filepath.Join(dir, "missing.txt")
@@ -89,6 +110,13 @@ func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	}
 	if digest == "" || digest == "missing" {
 		t.Fatalf("expected real digest for existing file, got %q", digest)
+	}
+}
+
+func TestHashFileOrMissingReturnsErrorForUnreadablePath(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := hashFileOrMissing(dir); err == nil {
+		t.Fatalf("expected hashFileOrMissing to fail for directory path")
 	}
 }
 
@@ -323,6 +351,50 @@ func TestCacheServiceBranchWithNoRootSeen(t *testing.T) {
 		Cache:    &CacheOptions{Enabled: true, Path: filepath.Join(repo, "cache")},
 	}); err != nil {
 		t.Fatalf("analyse with cache branch: %v", err)
+	}
+}
+
+func TestCacheFileCleanupHelpers(t *testing.T) {
+	if err := closeIfPresent(nil); err != nil {
+		t.Fatalf("closeIfPresent(nil): %v", err)
+	}
+
+	f, err := os.CreateTemp(t.TempDir(), "close-if-present-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := closeIfPresent(f); err != nil {
+		t.Fatalf("closeIfPresent(open): %v", err)
+	}
+	if err := closeIfPresent(f); err != nil {
+		t.Fatalf("closeIfPresent(closed): %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "cleanup.txt")
+	cleanupFile, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create cleanup file: %v", err)
+	}
+	if err := cleanupTempFile(cleanupFile, path); err != nil {
+		t.Fatalf("cleanupTempFile: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected cleanupTempFile to remove file, stat err=%v", err)
+	}
+}
+
+func TestRemoveIfPresentErrorBranch(t *testing.T) {
+	dir := t.TempDir()
+	nonEmpty := filepath.Join(dir, "non-empty")
+	if err := os.MkdirAll(nonEmpty, 0o750); err != nil {
+		t.Fatalf("mkdir non-empty: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(nonEmpty, "child.txt"), []byte("x"))
+	if err := removeIfPresent(nonEmpty); err == nil {
+		t.Fatalf("expected removeIfPresent to fail for non-empty directory")
+	}
+	if err := removeIfPresent(filepath.Join(dir, "missing.txt")); err != nil {
+		t.Fatalf("removeIfPresent missing should be nil: %v", err)
 	}
 }
 

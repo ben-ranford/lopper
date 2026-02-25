@@ -315,6 +315,32 @@ func TestFormatRuntimeUsageFallbacks(t *testing.T) {
 	}
 }
 
+func TestTopWasteDeltasSortingAndLimit(t *testing.T) {
+	if got := topWasteDeltas(nil, 3); len(got) != 0 {
+		t.Fatalf("expected nil for empty deltas, got %#v", got)
+	}
+	if got := topWasteDeltas([]DependencyDelta{{Name: "x", WastePercentDelta: 1}}, 0); len(got) != 0 {
+		t.Fatalf("expected nil when limit is zero, got %#v", got)
+	}
+
+	input := []DependencyDelta{
+		{Name: "c", Language: "js-ts", WastePercentDelta: 1},
+		{Name: "a", Language: "go", WastePercentDelta: -5},
+		{Name: "b", Language: "go", WastePercentDelta: 5},
+		{Name: "d", Language: "python", WastePercentDelta: 2},
+	}
+	got := topWasteDeltas(input, 3)
+	if len(got) != 3 {
+		t.Fatalf("expected top 3 deltas, got %#v", got)
+	}
+	if got[0].Language != "go" || got[0].Name != "a" {
+		t.Fatalf("expected tie-break by language/name for equal magnitudes, got %#v", got[0])
+	}
+	if got[1].Language != "go" || got[1].Name != "b" {
+		t.Fatalf("expected second tie-break result to be go/b, got %#v", got[1])
+	}
+}
+
 func TestFormatTableRuntimeColumnWithoutLanguage(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{
