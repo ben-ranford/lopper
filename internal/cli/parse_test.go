@@ -12,22 +12,24 @@ import (
 )
 
 const (
-	unexpectedErrFmt     = "unexpected error: %v"
-	modeMismatchFmt      = "expected mode %q, got %q"
-	languageFlagName     = "--language"
-	includeFlagName      = "--include"
-	excludeFlagName      = "--exclude"
-	suggestOnlyFlag      = "--suggest-only"
-	failAliasFlag        = "--fail-on-increase"
-	thresholdFailFlag    = "--threshold-fail-on-increase"
-	thresholdLowWarnFlag = "--threshold-low-confidence-warning"
-	scoreWeightFlag      = "--score-weight-usage"
-	scopeGoGlob          = "src/**/*.go"
-	scopeExcludeTestGlob = "**/*_test.go"
-	scopeVendorGlob      = "vendor/**"
-	scopeIncludeCombined = "src/**/*.go,internal/**/*.go,cmd/**/*.go"
-	parseConfigFileName  = ".lopper.yml"
-	repoFlagName         = "--repo"
+	unexpectedErrFmt            = "unexpected error: %v"
+	unexpectedValidationErrFmt  = "unexpected validation error: %v"
+	modeMismatchFmt             = "expected mode %q, got %q"
+	languageFlagName            = "--language"
+	includeFlagName             = "--include"
+	excludeFlagName             = "--exclude"
+	suggestOnlyFlag             = "--suggest-only"
+	failAliasFlag               = "--fail-on-increase"
+	thresholdFailFlag           = "--threshold-fail-on-increase"
+	thresholdLowWarnFlag        = "--threshold-low-confidence-warning"
+	scoreWeightFlag             = "--score-weight-usage"
+	lockfileDriftPolicyFlagName = "--lockfile-drift-policy"
+	scopeGoGlob                 = "src/**/*.go"
+	scopeExcludeTestGlob        = "**/*_test.go"
+	scopeVendorGlob             = "vendor/**"
+	scopeIncludeCombined        = "src/**/*.go,internal/**/*.go,cmd/**/*.go"
+	parseConfigFileName         = ".lopper.yml"
+	repoFlagName                = "--repo"
 )
 
 func mustParseArgs(t *testing.T, args []string) app.Request {
@@ -328,7 +330,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
-		"--lockfile-drift-policy", "fail",
+		lockfileDriftPolicyFlagName, "fail",
 	})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 2 {
 		t.Fatalf("expected fail threshold 2, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
@@ -378,7 +380,7 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 		repoFlagName, repo,
 		"--threshold-min-usage-percent", "60",
 		"--score-weight-confidence", "0.6",
-		"--lockfile-drift-policy", "fail",
+		lockfileDriftPolicyFlagName, "fail",
 	})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 4 {
 		t.Fatalf("expected config fail threshold 4, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
@@ -469,24 +471,24 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
 	err := expectParseArgsError(t, []string{"analyse", "--top", "2", thresholdLowWarnFlag, "101"}, "expected range validation error")
 	if !strings.Contains(err.Error(), "between 0 and 100") {
-		t.Fatalf("unexpected validation error: %v", err)
+		t.Fatalf(unexpectedValidationErrFmt, err)
 	}
 }
 
 func TestParseArgsAnalyseRejectsInvalidScoreWeight(t *testing.T) {
 	err := expectParseArgsError(t, []string{"analyse", "--top", "2", scoreWeightFlag, "-1"}, "expected score weight validation error")
 	if !strings.Contains(err.Error(), "removal_candidate_weight_usage") {
-		t.Fatalf("unexpected validation error: %v", err)
+		t.Fatalf(unexpectedValidationErrFmt, err)
 	}
 }
 
 func TestParseArgsAnalyseRejectsInvalidLockfileDriftPolicy(t *testing.T) {
-	_, err := ParseArgs([]string{"analyse", "--top", "2", "--lockfile-drift-policy", "bad"})
+	_, err := ParseArgs([]string{"analyse", "--top", "2", lockfileDriftPolicyFlagName, "bad"})
 	if err == nil {
 		t.Fatalf("expected lockfile drift policy validation error")
 	}
 	if !strings.Contains(err.Error(), "lockfile_drift_policy") {
-		t.Fatalf("unexpected validation error: %v", err)
+		t.Fatalf(unexpectedValidationErrFmt, err)
 	}
 }
 

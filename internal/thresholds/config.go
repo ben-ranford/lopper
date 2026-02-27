@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	readConfigFileErrFmt = "read config file %s: %w"
-	parseConfigErrFmt    = "parse config file %s: %w"
-	defaultPolicySource  = "defaults"
-	remotePolicyPinKey   = "sha256"
-	maxRemotePolicyBytes = 1 << 20
+	readConfigFileErrFmt     = "read config file %s: %w"
+	parseConfigErrFmt        = "parse config file %s: %w"
+	duplicateThresholdErrFmt = "threshold %s is defined more than once"
+	defaultPolicySource      = "defaults"
+	remotePolicyPinKey       = "sha256"
+	maxRemotePolicyBytes     = 1 << 20
 )
 
 var remotePolicyHTTPClient = &http.Client{Timeout: 10 * time.Second}
@@ -230,7 +231,7 @@ func applyNestedOverride(name string, target **int, nested *int) error {
 		return nil
 	}
 	if *target != nil {
-		return fmt.Errorf("threshold %s is defined more than once", name)
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
 	*target = nested
 	return nil
@@ -241,7 +242,7 @@ func applyNestedFloatOverride(name string, target **float64, nested *float64) er
 		return nil
 	}
 	if *target != nil {
-		return fmt.Errorf("threshold %s is defined more than once", name)
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
 	*target = nested
 	return nil
@@ -252,7 +253,7 @@ func applyNestedStringOverride(name string, target **string, nested *string) err
 		return nil
 	}
 	if *target != nil {
-		return fmt.Errorf("threshold %s is defined more than once", name)
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
 	*target = nested
 	return nil
