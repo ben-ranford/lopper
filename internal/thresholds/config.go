@@ -31,8 +31,14 @@ var remotePolicyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 type LoadResult struct {
 	Overrides     Overrides
 	Resolved      Values
+	Scope         PathScope
 	ConfigPath    string
 	PolicySources []string
+}
+
+type PathScope struct {
+	Include []string
+	Exclude []string
 }
 
 func Load(repoPath, explicitPath string) (Overrides, string, error) {
@@ -57,6 +63,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	if !found {
 		return LoadResult{
 			Resolved:      Defaults(),
+			Scope:         PathScope{},
 			PolicySources: []string{defaultPolicySource},
 		}, nil
 	}
@@ -79,6 +86,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	return LoadResult{
 		Overrides:     mergeResult.overrides,
 		Resolved:      resolved,
+		Scope:         mergeResult.scope,
 		ConfigPath:    configPath,
 		PolicySources: policySources,
 	}, nil
@@ -151,6 +159,7 @@ func configExtension(location string) string {
 
 type rawConfig struct {
 	Policy rawPolicy `yaml:"policy" json:"policy"`
+	Scope  rawScope  `yaml:"scope" json:"scope"`
 
 	Thresholds rawThresholds `yaml:"thresholds" json:"thresholds"`
 
@@ -164,6 +173,11 @@ type rawConfig struct {
 
 type rawPolicy struct {
 	Packs []string `yaml:"packs" json:"packs"`
+}
+
+type rawScope struct {
+	Include []string `yaml:"include" json:"include"`
+	Exclude []string `yaml:"exclude" json:"exclude"`
 }
 
 type rawThresholds struct {
@@ -250,6 +264,47 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	return merged
 }
 
+func (s rawScope) toPathScope() PathScope {
+	return PathScope{
+		Include: normalizePathPatterns(s.Include),
+		Exclude: normalizePathPatterns(s.Exclude),
+	}
+}
+
+func normalizePathPatterns(patterns []string) []string {
+	if len(patterns) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(patterns))
+	normalized := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func mergeScope(base, higher PathScope) PathScope {
+	merged := base
+	if len(higher.Include) > 0 {
+		merged.Include = append([]string{}, higher.Include...)
+	}
+	if len(higher.Exclude) > 0 {
+		merged.Exclude = append([]string{}, higher.Exclude...)
+	}
+	return merged
+}
+
 type packResolver struct {
 	repoPath string
 	stack    []string
@@ -257,6 +312,7 @@ type packResolver struct {
 
 type resolveMergeResult struct {
 	overrides         Overrides
+	scope             PathScope
 	appliedSourcesLow []string
 }
 
@@ -303,6 +359,7 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 	}
 
 	merged := Overrides{}
+	mergedScope := PathScope{}
 	sources := make([]string, 0, len(cfg.Policy.Packs)+1)
 	for idx, packRef := range cfg.Policy.Packs {
 		resolvedRef, err := resolvePackRef(canonical, packRef)
@@ -314,6 +371,7 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 			return resolveMergeResult{}, err
 		}
 		merged = mergeOverrides(merged, packResult.overrides)
+		mergedScope = mergeScope(mergedScope, packResult.scope)
 		sources = append(sources, packResult.appliedSourcesLow...)
 	}
 
@@ -322,9 +380,10 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 		return resolveMergeResult{}, fmt.Errorf(parseConfigErrFmt, canonical, err)
 	}
 	merged = mergeOverrides(merged, selfOverrides)
+	mergedScope = mergeScope(mergedScope, cfg.Scope.toPathScope())
 	sources = append(sources, canonical)
 
-	return resolveMergeResult{overrides: merged, appliedSourcesLow: dedupeStable(sources)}, nil
+	return resolveMergeResult{overrides: merged, scope: mergedScope, appliedSourcesLow: dedupeStable(sources)}, nil
 }
 
 func resolvePackRef(currentPath, ref string) (string, error) {

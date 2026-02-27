@@ -69,12 +69,18 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
-	cache := newAnalysisCache(req, repoPath)
-
-	reports, warnings, err := s.runCandidates(ctx, req, repoPath, candidates, cache)
+	analysisRepoPath, scopeWarnings, cleanupScope, err := applyPathScope(repoPath, req.IncludePatterns, req.ExcludePatterns)
 	if err != nil {
 		return report.Report{}, err
 	}
+	defer cleanupScope()
+	cache := newAnalysisCache(req, analysisRepoPath)
+
+	reports, warnings, err := s.runCandidates(ctx, req, analysisRepoPath, candidates, cache)
+	if err != nil {
+		return report.Report{}, err
+	}
+	warnings = append(scopeWarnings, warnings...)
 	warnings = append(warnings, cache.takeWarnings()...)
 	if len(reports) == 0 {
 		reportData := report.Report{

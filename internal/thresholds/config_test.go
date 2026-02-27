@@ -404,6 +404,44 @@ thresholds:
 	}
 }
 
+func TestLoadWithPolicyScopePrecedence(t *testing.T) {
+	repo := t.TempDir()
+	basePolicy := `scope:
+  include:
+    - src/**
+  exclude:
+    - "**/*_test.go"
+`
+	overlayPolicy := `policy:
+  packs:
+    - ` + basePackFileName + `
+scope:
+  include:
+    - internal/**
+`
+	rootPolicy := `policy:
+  packs:
+    - packs/overlay.yml
+scope:
+  exclude:
+    - vendor/**
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with policy scope: %v", err)
+	}
+	if got := strings.Join(result.Scope.Include, ","); got != "internal/**" {
+		t.Fatalf("expected include from overlay scope, got %q", got)
+	}
+	if got := strings.Join(result.Scope.Exclude, ","); got != "vendor/**" {
+		t.Fatalf("expected exclude from root scope, got %q", got)
+	}
+}
+
 func TestLoadWithPolicyPackCycle(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "a.yml"), "policy:\n  packs:\n    - b.yml\n")

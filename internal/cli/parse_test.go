@@ -201,6 +201,24 @@ func TestParseArgsAnalyseCacheFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseScopeFlags(t *testing.T) {
+	req, err := ParseArgs([]string{
+		"analyse",
+		"--top", "3",
+		"--include", "src/**/*.go,internal/**/*.go",
+		"--exclude", "**/*_test.go",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go" {
+		t.Fatalf("unexpected include patterns: %q", got)
+	}
+	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != "**/*_test.go" {
+		t.Fatalf("unexpected exclude patterns: %q", got)
+	}
+}
+
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if err != nil {
@@ -339,6 +357,34 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.6 {
 		t.Fatalf("expected CLI confidence weight 0.6, got %f", req.Analyse.Thresholds.RemovalCandidateWeightConfidence)
+	}
+}
+
+func TestParseArgsAnalyseScopeConfigPrecedence(t *testing.T) {
+	repo := t.TempDir()
+	config := strings.Join([]string{
+		"scope:",
+		" include:",
+		"  - \"src/**/*.go\"",
+		" exclude:",
+		"  - \"**/*_test.go\"",
+		"",
+	}, "\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
+
+	req, err := ParseArgs([]string{
+		"analyse", "--top", "5",
+		"--repo", repo,
+		"--exclude", "vendor/**",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go" {
+		t.Fatalf("expected include patterns from config, got %q", got)
+	}
+	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != "vendor/**" {
+		t.Fatalf("expected CLI exclude override, got %q", got)
 	}
 }
 

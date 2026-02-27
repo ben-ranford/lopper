@@ -58,7 +58,8 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		return req, err
 	}
 
-	resolvedThresholds, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
+	visited := visitedFlags(fs)
+	resolvedThresholds, resolvedScope, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
 	if err != nil {
 		return req, err
 	}
@@ -82,6 +83,8 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		SaveBaseline:       *flags.saveBaseline,
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
+		IncludePatterns:    resolveScopePatterns(visited, "include", *flags.includePatterns, resolvedScope.Include),
+		ExcludePatterns:    resolveScopePatterns(visited, "exclude", *flags.excludePatterns, resolvedScope.Exclude),
 		ConfigPath:         resolvedConfigPath,
 		PolicySources:      policySources,
 		Thresholds:         resolvedThresholds,
@@ -115,6 +118,8 @@ type analyseFlagValues struct {
 	runtimeTracePath              *string
 	runtimeTestCommand            *string
 	configPath                    *string
+	includePatterns               *string
+	excludePatterns               *string
 }
 
 func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
@@ -146,6 +151,8 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
 		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
+		includePatterns:               fs.String("include", strings.Join(req.Analyse.IncludePatterns, ","), "comma-separated include path globs"),
+		excludePatterns:               fs.String("exclude", strings.Join(req.Analyse.ExcludePatterns, ","), "comma-separated exclude path globs"),
 	}
 
 	return fs, values
@@ -195,26 +202,26 @@ func validateSuggestOnlyTarget(suggestOnly bool, dependency string, top int) err
 	return nil
 }
 
-func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, []string, string, error) {
+func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, thresholds.PathScope, []string, string, error) {
 	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
 	}
 
 	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visitedFlags(fs), values)
 	if err != nil {
-		return thresholds.Values{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
 	}
 	policySources := append([]string{}, loadResult.PolicySources...)
 	if hasThresholdOverrides(cliOverrides) {
 		policySources = append([]string{"cli"}, policySources...)
 	}
-	return resolvedThresholds, policySources, loadResult.ConfigPath, nil
+	return resolvedThresholds, loadResult.Scope, policySources, loadResult.ConfigPath, nil
 }
 
 func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
@@ -253,6 +260,34 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.RemovalCandidateWeightUsage != nil ||
 		overrides.RemovalCandidateWeightImpact != nil ||
 		overrides.RemovalCandidateWeightConfidence != nil
+}
+
+func resolveScopePatterns(visited map[string]bool, flagName string, cliValue string, configValues []string) []string {
+	if visited[flagName] {
+		return splitPatternList(cliValue)
+	}
+	return append([]string{}, configValues...)
+}
+
+func splitPatternList(value string) []string {
+	parts := strings.Split(value, ",")
+	seen := make(map[string]struct{}, len(parts))
+	patterns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		patterns = append(patterns, trimmed)
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	return patterns
 }
 
 func parseTUI(args []string, req app.Request) (app.Request, error) {
@@ -338,7 +373,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false
