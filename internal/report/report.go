@@ -10,9 +10,10 @@ import (
 type Format string
 
 const (
-	FormatTable Format = "table"
-	FormatJSON  Format = "json"
-	FormatSARIF Format = "sarif"
+	FormatTable     Format = "table"
+	FormatJSON      Format = "json"
+	FormatSARIF     Format = "sarif"
+	FormatPRComment Format = "pr-comment"
 )
 
 const SchemaVersion = "0.1.0"
@@ -27,6 +28,8 @@ func ParseFormat(value string) (Format, error) {
 		return FormatJSON, nil
 	case string(FormatSARIF):
 		return FormatSARIF, nil
+	case string(FormatPRComment):
+		return FormatPRComment, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrUnknownFormat, value)
 	}

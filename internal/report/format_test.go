@@ -109,6 +109,31 @@ func TestFormatSARIF(t *testing.T) {
 	}
 }
 
+func TestFormatPRComment(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{
+				DependencyCountDelta: 2,
+				UsedPercentDelta:     -1.2,
+				WastePercentDelta:    1.2,
+				UnusedBytesDelta:     1024,
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Name: "lodash", Language: "js-ts", UsedPercentDelta: -2.5, UsedExportsCountDelta: -1, TotalExportsCountDelta: 0, EstimatedUnusedBytesDelta: 512},
+			},
+			Regressions: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Name: "lodash", Language: "js-ts", WastePercentDelta: 2.5},
+			},
+			UnchangedRows: 3,
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment: %v", err)
+	}
+	assertOutputContains(t, output, "## Lopper (Delta)", "| Dependency count | +2 |", "### Dependency deltas", "`lodash`")
+}
+
 func TestFormatEmptyAndWarnings(t *testing.T) {
 	reportData := Report{
 		Warnings: []string{"warning-1"},

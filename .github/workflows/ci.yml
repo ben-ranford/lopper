@@ -52,14 +52,6 @@ jobs:
       - name: Verify demo assets are up to date
         run: make demos-check
 
-      - name: Run lopper self-analysis (PR)
-        id: lopper
-        if: ${{ github.event_name == 'pull_request' }}
-        continue-on-error: true
-        run: |
-          mkdir -p .artifacts
-          bin/lopper analyse --top 10 --repo . --language all --format json > .artifacts/lopper-pr.json
-
       - name: Run lopper self-analysis (base branch)
         id: lopper_base
         if: ${{ github.event_name == 'pull_request' }}
@@ -71,166 +63,42 @@ jobs:
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
+      - name: Run lopper delta summary (PR)
+        id: lopper_delta
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        run: |
+          mkdir -p .artifacts
+          bin/lopper analyse --top 10 --repo . --language all --baseline .artifacts/lopper-base.json --format pr-comment > .artifacts/lopper-pr-comment.md
+
       - name: Comment lopper report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
         uses: actions/github-script@v8
         env:
-          LOPPER_OUTCOME: ${{ steps.lopper.outcome }}
           LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
+          LOPPER_DELTA_OUTCOME: ${{ steps.lopper_delta.outcome }}
         with:
           script: |
             const fs = require('node:fs');
 
             const marker = '<!-- lopper-pr-report -->';
-            const reportPath = '.artifacts/lopper-pr.json';
-            const baseReportPath = '.artifacts/lopper-base.json';
+            const deltaCommentPath = '.artifacts/lopper-pr-comment.md';
 
-            const escapeTable = (value) => String(value ?? 'n/a').replace(/\|/g, '\\|').replace(/`/g, "'");
-            const pct = (value) => (typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : 'n/a');
-            const signedPct = (value) =>
-              typeof value === 'number' && Number.isFinite(value)
-                ? `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
-                : 'n/a';
-            const intFmt = (value) =>
-              typeof value === 'number' && Number.isFinite(value)
-                ? Math.round(value).toLocaleString('en-US')
-                : 'n/a';
-            const signedInt = (value) =>
-              typeof value === 'number' && Number.isFinite(value)
-                ? `${value >= 0 ? '+' : ''}${Math.round(value).toLocaleString('en-US')}`
-                : 'n/a';
-            const depKey = (dep) => `${dep.language || 'unknown'}::${dep.name || 'unknown'}`;
-            const toMap = (deps) => {
-              const map = new Map();
-              for (const dep of deps || []) map.set(depKey(dep), dep);
-              return map;
-            };
+            const failureBody = [
+              marker,
+              '## Lopper (Delta)',
+              '',
+              '❌ Lopper delta analysis failed in CI.',
+              '',
+              'Re-run the workflow, or run local head/base analyses and compare outputs.',
+            ].join('\n');
 
-            let body = null;
-            let noChange = false;
-            if (
-              process.env.LOPPER_OUTCOME !== 'success' ||
+            const body =
               process.env.LOPPER_BASE_OUTCOME !== 'success' ||
-              !fs.existsSync(reportPath) ||
-              !fs.existsSync(baseReportPath)
-            ) {
-              body = [
-                marker,
-                '## Lopper (Delta)',
-                '',
-                '❌ Lopper delta analysis failed in CI.',
-                '',
-                'Re-run the workflow, or run local head/base analyses and compare JSON outputs.',
-              ].join('\n');
-            } else {
-              const head = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-              const base = JSON.parse(fs.readFileSync(baseReportPath, 'utf8'));
-              const headSummary = head.summary || {};
-              const baseSummary = base.summary || {};
-              const headDeps = Array.isArray(head.dependencies) ? head.dependencies : [];
-              const baseDeps = Array.isArray(base.dependencies) ? base.dependencies : [];
-
-              const headMap = toMap(headDeps);
-              const baseMap = toMap(baseDeps);
-              const keys = new Set([...headMap.keys(), ...baseMap.keys()]);
-
-              const deltas = [];
-              for (const key of keys) {
-                const h = headMap.get(key);
-                const b = baseMap.get(key);
-
-                if (h && !b) {
-                  deltas.push({
-                    type: 'added',
-                    name: h.name,
-                    language: h.language,
-                    deltaUnused: h.estimatedUnusedBytes ?? 0,
-                    deltaUsedPercent: null,
-                    deltaUsedExports: h.usedExportsCount ?? 0,
-                    deltaTotalExports: h.totalExportsCount ?? 0,
-                  });
-                  continue;
-                }
-
-                if (!h && b) {
-                  deltas.push({
-                    type: 'removed',
-                    name: b.name,
-                    language: b.language,
-                    deltaUnused: -(b.estimatedUnusedBytes ?? 0),
-                    deltaUsedPercent: null,
-                    deltaUsedExports: -(b.usedExportsCount ?? 0),
-                    deltaTotalExports: -(b.totalExportsCount ?? 0),
-                  });
-                  continue;
-                }
-
-                const deltaUnused = (h?.estimatedUnusedBytes ?? 0) - (b?.estimatedUnusedBytes ?? 0);
-                const deltaUsedPercent = (h?.usedPercent ?? 0) - (b?.usedPercent ?? 0);
-                const deltaUsedExports = (h?.usedExportsCount ?? 0) - (b?.usedExportsCount ?? 0);
-                const deltaTotalExports = (h?.totalExportsCount ?? 0) - (b?.totalExportsCount ?? 0);
-                const changed =
-                  deltaUnused !== 0 ||
-                  deltaUsedExports !== 0 ||
-                  deltaTotalExports !== 0;
-                if (changed) {
-                  deltas.push({
-                    type: 'changed',
-                    name: h?.name,
-                    language: h?.language,
-                    deltaUnused,
-                    deltaUsedPercent,
-                    deltaUsedExports,
-                    deltaTotalExports,
-                  });
-                }
-              }
-
-              deltas.sort((a, b) => Math.abs(b.deltaUnused) - Math.abs(a.deltaUnused));
-              const topDeltas = deltas.slice(0, 15);
-              const deltaRows = topDeltas.length
-                ? topDeltas
-                    .map(
-                      (row, idx) =>
-                        `| ${idx + 1} | ${row.type} | \`${escapeTable(row.name)}\` | ${escapeTable(row.language)} | ${signedPct(row.deltaUsedPercent)} | ${signedInt(row.deltaUsedExports)} | ${signedInt(row.deltaTotalExports)} | ${signedInt(row.deltaUnused)} |`,
-                    )
-                    .join('\n')
-                : '| - | _No dependency deltas detected_ | - | - | - | - | - | - |';
-
-              const depCountDelta = (headSummary.dependencyCount ?? 0) - (baseSummary.dependencyCount ?? 0);
-              const usedPctDelta = (headSummary.usedPercent ?? 0) - (baseSummary.usedPercent ?? 0);
-              const unusedBytesHead = headDeps.reduce((sum, dep) => sum + (dep.estimatedUnusedBytes ?? 0), 0);
-              const unusedBytesBase = baseDeps.reduce((sum, dep) => sum + (dep.estimatedUnusedBytes ?? 0), 0);
-              const unusedBytesDelta = unusedBytesHead - unusedBytesBase;
-              const hasSummaryDelta =
-                depCountDelta !== 0 || Math.abs(usedPctDelta) > 1e-9 || unusedBytesDelta !== 0;
-              const hasDependencyDelta = deltas.length > 0;
-
-              if (!hasSummaryDelta && !hasDependencyDelta) {
-                noChange = true;
-              } else {
-                body = [
-                  marker,
-                  '## Lopper (Delta)',
-                  '',
-                  '**Compared:** PR head vs base branch',
-                  '',
-                  '| Metric delta | Value |',
-                  '| --- | --- |',
-                  `| Dependency count | ${signedInt(depCountDelta)} |`,
-                  `| Used percent | ${signedPct(usedPctDelta)} |`,
-                  `| Estimated unused bytes | ${signedInt(unusedBytesDelta)} |`,
-                  '',
-                  '_Used percent is weighted: sum(usedExportsCount) / sum(totalExportsCount)._',
-                  '',
-                  '### Dependency deltas',
-                  '',
-                  '| # | Change | Dependency | Language | Used % delta | Used exports delta | Total exports delta | Unused bytes delta |',
-                  '| --- | --- | --- | --- | --- | --- | --- | --- |',
-                  deltaRows,
-                ].join('\n');
-              }
-            }
+              process.env.LOPPER_DELTA_OUTCOME !== 'success' ||
+              !fs.existsSync(deltaCommentPath)
+                ? failureBody
+                : `${marker}\n${fs.readFileSync(deltaCommentPath, 'utf8').trim()}`;
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -238,31 +106,27 @@ jobs:
               issue_number: context.issue.number,
             });
 
-            const existing = comments.find(
+            const existing = comments.filter(
               (comment) =>
                 comment.user?.type === 'Bot' &&
                 typeof comment.body === 'string' &&
                 comment.body.includes(marker),
             );
 
-            if (noChange) {
-              if (existing) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: existing.id,
-                });
-              }
-              return;
-            }
-
-            if (existing) {
+            if (existing.length > 0) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                comment_id: existing.id,
+                comment_id: existing[0].id,
                 body,
               });
+              for (const duplicate of existing.slice(1)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
