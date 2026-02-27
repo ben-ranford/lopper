@@ -45,6 +45,44 @@ func TestGlobMatchSupportsDoubleStar(t *testing.T) {
 	}
 }
 
+func TestApplyPathScopeNoPatternsReturnsOriginalPath(t *testing.T) {
+	repo := t.TempDir()
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, nil, nil)
+	if err != nil {
+		t.Fatalf("apply path scope without patterns: %v", err)
+	}
+	defer cleanup()
+	if scopedPath != repo {
+		t.Fatalf("expected original repo path when no scope patterns are set")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no scope warnings without scope patterns, got %#v", warnings)
+	}
+}
+
+func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
+	repo := t.TempDir()
+	scoped := t.TempDir()
+	if err := copyFile(repo, scoped, "../escape.txt"); err == nil {
+		t.Fatalf("expected unsafe relative path rejection")
+	}
+}
+
+func TestPathWithinAndSafeRelativePath(t *testing.T) {
+	if !pathWithin("/tmp/demo", "/tmp/demo/a.txt") {
+		t.Fatalf("expected candidate path within root")
+	}
+	if pathWithin("/tmp/demo", "/tmp/other/a.txt") {
+		t.Fatalf("expected outside candidate path to be rejected")
+	}
+	if isSafeRelativePath("../x") {
+		t.Fatalf("expected upward traversal path to be unsafe")
+	}
+	if !isSafeRelativePath("src/x.go") {
+		t.Fatalf("expected nested relative path to be safe")
+	}
+}
+
 func containsWarning(warnings []string, expected string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, expected) {

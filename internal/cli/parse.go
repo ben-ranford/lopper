@@ -266,6 +266,9 @@ func resolveScopePatterns(visited map[string]bool, flagName string, cliValue str
 	if visited[flagName] {
 		return splitPatternList(cliValue)
 	}
+	if len(configValues) == 0 {
+		return nil
+	}
 	return append([]string{}, configValues...)
 }
 

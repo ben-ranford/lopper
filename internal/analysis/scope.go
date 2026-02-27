@@ -54,8 +54,7 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 		slashed := filepath.ToSlash(filepath.Clean(relativePath))
 		includeMatched, includePattern := matchFirstPattern(slashed, includePatterns)
 		excludeMatched, excludePattern := matchFirstPattern(slashed, excludePatterns)
-		shouldInclude := len(includePatterns) == 0 || includeMatched
-		shouldSkip := !shouldInclude || excludeMatched
+		shouldSkip := (len(includePatterns) > 0 && !includeMatched) || excludeMatched
 		if shouldSkip {
 			if includeMatched {
 				includeMatches[includePattern]++
@@ -75,8 +74,7 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 		if includeMatched {
 			includeMatches[includePattern]++
 		}
-		targetPath := filepath.Join(scopedRoot, relativePath)
-		if copyErr := copyFile(currentPath, targetPath); copyErr != nil {
+		if copyErr := copyFile(repoPath, scopedRoot, relativePath); copyErr != nil {
 			return copyErr
 		}
 		keptFiles++
@@ -176,17 +174,28 @@ func formatPatternMatches(patterns []string, matches map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-func copyFile(sourcePath string, targetPath string) error {
+func copyFile(repoPath string, scopedRoot string, relativePath string) error {
+	if !isSafeRelativePath(relativePath) {
+		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
+	}
+	sourcePath := filepath.Join(repoPath, relativePath)
+	targetPath := filepath.Join(scopedRoot, relativePath)
+	if !pathWithin(repoPath, sourcePath) {
+		return fmt.Errorf("source path escapes repository scope: %s", sourcePath)
+	}
+	if !pathWithin(scopedRoot, targetPath) {
+		return fmt.Errorf("target path escapes scoped workspace: %s", targetPath)
+	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return err
 	}
-	// #nosec G304 -- sourcePath originates from WalkDir over the normalized repository root.
+	// #nosec G304 -- sourcePath originates from WalkDir over the repository root and passes pathWithin checks above.
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
-	// #nosec G304 -- targetPath is created from scopedRoot + filepath.Rel output.
+	// #nosec G304 -- targetPath is derived from validated relativePath and constrained by pathWithin checks above.
 	target, err := os.Create(targetPath)
 	if err != nil {
 		return err
@@ -196,4 +205,23 @@ func copyFile(sourcePath string, targetPath string) error {
 		return err
 	}
 	return nil
+}
+
+func pathWithin(root string, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func isSafeRelativePath(relativePath string) bool {
+	if filepath.IsAbs(relativePath) {
+		return false
+	}
+	cleaned := filepath.Clean(relativePath)
+	if cleaned == "." {
+		return false
+	}
+	return cleaned != ".." && !strings.HasPrefix(cleaned, ".."+string(filepath.Separator))
 }
