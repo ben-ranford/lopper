@@ -25,9 +25,11 @@ type fakeAnalyzer struct {
 	report  report.Report
 	err     error
 	lastReq analysis.Request
+	called  bool
 }
 
 func (f *fakeAnalyzer) Analyse(_ context.Context, req analysis.Request) (report.Report, error) {
+	f.called = true
 	f.lastReq = req
 	return f.report, f.err
 }
@@ -565,6 +567,66 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 	}
 	if !strings.Contains(output, "runtime trace command failed; continuing with static analysis") {
 		t.Fatalf("expected runtime warning in output, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseLockfileDriftWarnPolicy(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Thresholds.LockfileDriftPolicy = "warn"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute analyse with lockfile drift warn: %v", err)
+	}
+	if !strings.Contains(output, "lockfile drift detected") {
+		t.Fatalf("expected lockfile drift warning in output, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseLockfileDriftFailPolicy(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n"), 0o600); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.TopN = 1
+	req.Analyse.Thresholds.LockfileDriftPolicy = "fail"
+
+	_, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Fatalf("expected ErrLockfileDrift, got %v", err)
+	}
+	if analyzer.called {
+		t.Fatalf("expected pre-analysis lockfile check to fail before analyzer execution")
 	}
 }
 

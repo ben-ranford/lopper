@@ -19,6 +19,7 @@ var (
 	ErrUnknownMode      = errors.New("unknown mode")
 	ErrFailOnIncrease   = errors.New("dependency waste increased beyond threshold")
 	ErrBaselineRequired = errors.New("baseline report is required for fail-on-increase")
+	ErrLockfileDrift    = errors.New("lockfile drift detected")
 )
 
 type App struct {
@@ -65,6 +66,11 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 }
 
 func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
+	lockfileWarnings, err := evaluateLockfileDriftPolicy(req.RepoPath, req.Analyse.Thresholds.LockfileDriftPolicy)
+	if err != nil {
+		return "", err
+	}
+
 	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
 	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
 	weights := report.RemovalCandidateWeights{
@@ -116,6 +122,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		},
 	}
 	reportData.Warnings = append(reportData.Warnings, runtimeWarnings...)
+	reportData.Warnings = append(reportData.Warnings, lockfileWarnings...)
 
 	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)
 	if err != nil {

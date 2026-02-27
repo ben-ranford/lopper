@@ -328,6 +328,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
+		"--lockfile-drift-policy", "fail",
 	})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 2 {
 		t.Fatalf("expected fail threshold 2, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
@@ -340,6 +341,9 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.RemovalCandidateWeightUsage != 0.7 || req.Analyse.Thresholds.RemovalCandidateWeightImpact != 0.2 || req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.1 {
 		t.Fatalf("expected score weights 0.7/0.2/0.1, got %+v", req.Analyse.Thresholds)
+	}
+	if req.Analyse.Thresholds.LockfileDriftPolicy != "fail" {
+		t.Fatalf("expected lockfile drift policy fail, got %q", req.Analyse.Thresholds.LockfileDriftPolicy)
 	}
 }
 
@@ -366,7 +370,7 @@ func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
 
 func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	repo := t.TempDir()
-	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", ""}, "\n")
+	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", " lockfile_drift_policy: warn", ""}, "\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
 
 	req := mustParseArgs(t, []string{
@@ -374,6 +378,7 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 		repoFlagName, repo,
 		"--threshold-min-usage-percent", "60",
 		"--score-weight-confidence", "0.6",
+		"--lockfile-drift-policy", "fail",
 	})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 4 {
 		t.Fatalf("expected config fail threshold 4, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
@@ -392,6 +397,9 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.6 {
 		t.Fatalf("expected CLI confidence weight 0.6, got %f", req.Analyse.Thresholds.RemovalCandidateWeightConfidence)
+	}
+	if req.Analyse.Thresholds.LockfileDriftPolicy != "fail" {
+		t.Fatalf("expected CLI lockfile drift policy fail, got %q", req.Analyse.Thresholds.LockfileDriftPolicy)
 	}
 }
 
@@ -468,6 +476,16 @@ func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
 func TestParseArgsAnalyseRejectsInvalidScoreWeight(t *testing.T) {
 	err := expectParseArgsError(t, []string{"analyse", "--top", "2", scoreWeightFlag, "-1"}, "expected score weight validation error")
 	if !strings.Contains(err.Error(), "removal_candidate_weight_usage") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestParseArgsAnalyseRejectsInvalidLockfileDriftPolicy(t *testing.T) {
+	_, err := ParseArgs([]string{"analyse", "--top", "2", "--lockfile-drift-policy", "bad"})
+	if err == nil {
+		t.Fatalf("expected lockfile drift policy validation error")
+	}
+	if !strings.Contains(err.Error(), "lockfile_drift_policy") {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }

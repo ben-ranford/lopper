@@ -57,6 +57,14 @@ func TestOverridesValidateErrors(t *testing.T) {
 		want      string
 	}{
 		{
+			name: "invalid lockfile drift policy",
+			overrides: func() Overrides {
+				policy := "invalid"
+				return Overrides{LockfileDriftPolicy: &policy}
+			}(),
+			want: "lockfile_drift_policy",
+		},
+		{
 			name:      "invalid fail_on_increase",
 			overrides: Overrides{FailOnIncreasePercent: &fail},
 			want:      "fail_on_increase_percent",
@@ -116,12 +124,16 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	usageWeight := 0.6
 	impactWeight := 0.3
 	confidenceWeight := 0.1
+	policy := "fail"
 	base := Defaults()
-	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &min, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight}).Apply(base)
+	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &min, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight, LockfileDriftPolicy: &policy}).Apply(base)
 	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 {
 		t.Fatalf("unexpected resolved thresholds: %+v", got)
 	}
 	if got.RemovalCandidateWeightUsage != 0.6 || got.RemovalCandidateWeightImpact != 0.3 || got.RemovalCandidateWeightConfidence != 0.1 {
 		t.Fatalf("unexpected resolved score weights: %+v", got)
+	}
+	if got.LockfileDriftPolicy != "fail" {
+		t.Fatalf("unexpected lockfile drift policy: %+v", got)
 	}
 }
