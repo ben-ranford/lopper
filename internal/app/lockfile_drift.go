@@ -19,7 +19,7 @@ type lockfileRule struct {
 }
 
 var lockfileRules = []lockfileRule{
-	{manager: "npm", manifest: "package.json", lockfiles: []string{"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"}, remedy: "run your package manager install command and commit the updated manifest and lockfile"},
+	{manager: "npm", manifest: "package.json", lockfiles: []string{"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"}, remedy: "run npm install for package-lock.json/npm-shrinkwrap.json, yarn install for yarn.lock, pnpm install for pnpm-lock.yaml, or bun install for bun.lockb; then commit the updated manifest and lockfile"},
 	{manager: "Composer", manifest: "composer.json", lockfiles: []string{"composer.lock"}, remedy: "run composer update --lock (or composer install) and commit the updated files"},
 	{manager: "Cargo", manifest: "Cargo.toml", lockfiles: []string{"Cargo.lock"}, remedy: "run cargo generate-lockfile (or cargo build) and commit the updated files"},
 	{manager: "Go modules", manifest: "go.mod", lockfiles: []string{"go.sum"}, remedy: "run go mod tidy and commit the updated files"},
@@ -46,7 +46,7 @@ func detectLockfileDrift(repoPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	warnings := make([]string, 0, 2)
+	warnings := make([]string, 0, len(lockfileRules))
 	err = filepath.WalkDir(normalizedPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -59,7 +59,7 @@ func detectLockfileDrift(repoPath string) ([]string, error) {
 		}
 		fileInfos, readErr := readDirectoryFiles(path)
 		if readErr != nil {
-			return nil
+			return readErr
 		}
 		for _, rule := range lockfileRules {
 			warnings = append(warnings, detectDriftForRule(normalizedPath, path, fileInfos, rule)...)

@@ -124,9 +124,9 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	usageWeight := 0.6
 	impactWeight := 0.3
 	confidenceWeight := 0.1
-	policy := "fail"
+	lockfileDriftPolicy := "fail"
 	base := Defaults()
-	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &min, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight, LockfileDriftPolicy: &policy}).Apply(base)
+	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &min, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight, LockfileDriftPolicy: &lockfileDriftPolicy}).Apply(base)
 	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 {
 		t.Fatalf("unexpected resolved thresholds: %+v", got)
 	}

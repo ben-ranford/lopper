@@ -3,6 +3,7 @@ package thresholds
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 const (
@@ -14,6 +15,14 @@ const (
 	DefaultRemovalCandidateWeightConfidence  = 0.20
 	DefaultLockfileDriftPolicy               = "warn"
 )
+
+var validLockfileDriftPolicies = map[string]struct{}{
+	"off":  {},
+	"warn": {},
+	"fail": {},
+}
+
+var lockfileDriftPolicyValues = []string{"off", "warn", "fail"}
 
 type Values struct {
 	FailOnIncreasePercent             int
@@ -132,12 +141,10 @@ func validateFailOnIncrease(value int) error {
 }
 
 func validateLockfileDriftPolicy(value string) error {
-	switch value {
-	case "off", "warn", "fail":
+	if _, ok := validLockfileDriftPolicies[value]; ok {
 		return nil
-	default:
-		return fmt.Errorf("invalid threshold lockfile_drift_policy: %q (must be one of: off, warn, fail)", value)
 	}
+	return fmt.Errorf("invalid threshold lockfile_drift_policy: %q (must be one of: %s)", value, strings.Join(lockfileDriftPolicyValues, ", "))
 }
 
 func validatePercentageRange(name string, value int) error {
