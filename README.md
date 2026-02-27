@@ -118,12 +118,6 @@ lopper analyse --top 20 \
 
 ## Terminal demos
 
-Regenerate all demo assets from source tapes:
-
-```bash
-make demos
-```
-
 | Demo | What it demonstrates | GIF preview |
 | --- | --- | --- |
 | Quick start ranking | End-to-end `--top` workflow and waste-ranked dependency table for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
@@ -215,14 +209,7 @@ If `--runtime-trace` points to a missing file, analysis continues with static re
 
 ## Development
 
-```bash
-make setup
-make fmt
-make test
-make lint
-make cov
-make build
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and commands.
 
 ## Docs
 
