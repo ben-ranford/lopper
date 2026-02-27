@@ -7,13 +7,15 @@ import (
 	"testing"
 )
 
+const scopeJSGlob = "src/**/*.js"
+
 func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	repo := t.TempDir()
 	writeScopeFile(t, filepath.Join(repo, "src", "keep.js"), "export const keep = true\n")
 	writeScopeFile(t, filepath.Join(repo, "src", "skip.test.js"), "export const skip = true\n")
 	writeScopeFile(t, filepath.Join(repo, "README.md"), "doc\n")
 
-	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{"src/**/*.js"}, []string{"**/*.test.js"})
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, []string{"**/*.test.js"})
 	if err != nil {
 		t.Fatalf("apply path scope: %v", err)
 	}
@@ -37,10 +39,10 @@ func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 }
 
 func TestGlobMatchSupportsDoubleStar(t *testing.T) {
-	if !globMatch("src/**/*.js", "src/a/b/c.js") {
+	if !globMatch(scopeJSGlob, "src/a/b/c.js") {
 		t.Fatalf("expected recursive glob to match nested file")
 	}
-	if globMatch("src/**/*.js", "src/a/b/c.ts") {
+	if globMatch(scopeJSGlob, "src/a/b/c.ts") {
 		t.Fatalf("expected extension mismatch not to match")
 	}
 }
@@ -63,7 +65,7 @@ func TestApplyPathScopeNoPatternsReturnsOriginalPath(t *testing.T) {
 func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 	repo := t.TempDir()
 	scoped := t.TempDir()
-	if err := copyFile(repo, scoped, "../escape.txt"); err == nil {
+	if copyFile(repo, scoped, "../escape.txt") == nil {
 		t.Fatalf("expected unsafe relative path rejection")
 	}
 }

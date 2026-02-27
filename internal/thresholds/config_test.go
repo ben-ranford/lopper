@@ -22,6 +22,7 @@ const (
 	lopperJSONName   = "lopper.json"
 	customConfigName = "custom.yml"
 	basePackFileName = "base.yml"
+	overlayPackName  = "overlay.yml"
 )
 
 func TestLoadNoConfigFile(t *testing.T) {
@@ -369,7 +370,7 @@ thresholds:
   fail_on_increase_percent: 4
 `
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
-	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
 
 	result, err := LoadWithPolicy(repo, "")
@@ -393,7 +394,7 @@ thresholds:
 	if !strings.HasSuffix(result.PolicySources[0], lopperYMLName) {
 		t.Fatalf("expected highest-precedence source to be repo config, got %#v", result.PolicySources)
 	}
-	if !strings.HasSuffix(result.PolicySources[1], filepath.Join("packs", "overlay.yml")) {
+	if !strings.HasSuffix(result.PolicySources[1], filepath.Join("packs", overlayPackName)) {
 		t.Fatalf("expected overlay pack source, got %#v", result.PolicySources)
 	}
 	if !strings.HasSuffix(result.PolicySources[2], filepath.Join("packs", basePackFileName)) {
@@ -427,7 +428,7 @@ scope:
     - vendor/**
 `
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
-	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
 
 	result, err := LoadWithPolicy(repo, "")

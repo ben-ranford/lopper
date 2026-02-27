@@ -13,11 +13,31 @@ import (
 
 const maxScopeDiagnostics = 5
 
+func noOpCleanup() {
+	// Intentionally empty: when no scope patterns are configured, there is no temporary workspace to clean up.
+}
+
+type scopeStats struct {
+	includeMatches     map[string]int
+	excludeMatches     map[string]int
+	skippedDiagnostics []string
+	keptFiles          int
+	totalFiles         int
+}
+
+func newScopeStats(includePatterns []string, excludePatterns []string) *scopeStats {
+	return &scopeStats{
+		includeMatches:     make(map[string]int, len(includePatterns)),
+		excludeMatches:     make(map[string]int, len(excludePatterns)),
+		skippedDiagnostics: make([]string, 0, maxScopeDiagnostics),
+	}
+}
+
 func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
 	includePatterns = normalizePatterns(includePatterns)
 	excludePatterns = normalizePatterns(excludePatterns)
 	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
-		return repoPath, nil, func() {}, nil
+		return repoPath, nil, noOpCleanup, nil
 	}
 
 	scopedRoot, err := os.MkdirTemp("", "lopper-scope-*")
@@ -30,55 +50,10 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 		}
 	}
 
-	includeMatches := make(map[string]int, len(includePatterns))
-	excludeMatches := make(map[string]int, len(excludePatterns))
-	skippedDiagnostics := make([]string, 0, maxScopeDiagnostics)
-	keptFiles := 0
-	totalFiles := 0
+	stats := newScopeStats(includePatterns, excludePatterns)
 
 	walkErr := filepath.WalkDir(repoPath, func(currentPath string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if entry.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		totalFiles++
-		relativePath, relErr := filepath.Rel(repoPath, currentPath)
-		if relErr != nil {
-			return relErr
-		}
-		slashed := filepath.ToSlash(filepath.Clean(relativePath))
-		includeMatched, includePattern := matchFirstPattern(slashed, includePatterns)
-		excludeMatched, excludePattern := matchFirstPattern(slashed, excludePatterns)
-		shouldSkip := (len(includePatterns) > 0 && !includeMatched) || excludeMatched
-		if shouldSkip {
-			if includeMatched {
-				includeMatches[includePattern]++
-			}
-			if excludeMatched {
-				excludeMatches[excludePattern]++
-			}
-			if len(skippedDiagnostics) < maxScopeDiagnostics {
-				reason := "did not match include patterns"
-				if excludeMatched {
-					reason = "matched exclude pattern " + excludePattern
-				}
-				skippedDiagnostics = append(skippedDiagnostics, slashed+" ("+reason+")")
-			}
-			return nil
-		}
-		if includeMatched {
-			includeMatches[includePattern]++
-		}
-		if copyErr := copyFile(repoPath, scopedRoot, relativePath); copyErr != nil {
-			return copyErr
-		}
-		keptFiles++
-		return nil
+		return walkScopedPath(repoPath, scopedRoot, includePatterns, excludePatterns, stats, currentPath, entry, err)
 	})
 	if walkErr != nil {
 		cleanup()
@@ -86,18 +61,68 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	}
 
 	warnings := []string{
-		fmt.Sprintf("analysis scope applied: kept %d/%d files", keptFiles, totalFiles),
+		fmt.Sprintf("analysis scope applied: kept %d/%d files", stats.keptFiles, stats.totalFiles),
 	}
 	if len(includePatterns) > 0 {
-		warnings = append(warnings, "analysis scope include matches: "+formatPatternMatches(includePatterns, includeMatches))
+		warnings = append(warnings, "analysis scope include matches: "+formatPatternMatches(includePatterns, stats.includeMatches))
 	}
 	if len(excludePatterns) > 0 {
-		warnings = append(warnings, "analysis scope exclude matches: "+formatPatternMatches(excludePatterns, excludeMatches))
+		warnings = append(warnings, "analysis scope exclude matches: "+formatPatternMatches(excludePatterns, stats.excludeMatches))
 	}
-	for _, item := range skippedDiagnostics {
+	for _, item := range stats.skippedDiagnostics {
 		warnings = append(warnings, "analysis scope skipped file: "+item)
 	}
 	return scopedRoot, warnings, cleanup, nil
+}
+
+func walkScopedPath(repoPath string, scopedRoot string, includePatterns []string, excludePatterns []string, stats *scopeStats, currentPath string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		if entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	stats.totalFiles++
+	relativePath, err := filepath.Rel(repoPath, currentPath)
+	if err != nil {
+		return err
+	}
+	slashed := filepath.ToSlash(filepath.Clean(relativePath))
+	includeMatched, includePattern := matchFirstPattern(slashed, includePatterns)
+	excludeMatched, excludePattern := matchFirstPattern(slashed, excludePatterns)
+	shouldSkip := (len(includePatterns) > 0 && !includeMatched) || excludeMatched
+	if shouldSkip {
+		recordScopeSkip(stats, slashed, includeMatched, includePattern, excludeMatched, excludePattern)
+		return nil
+	}
+	if includeMatched {
+		stats.includeMatches[includePattern]++
+	}
+	if err := copyFile(repoPath, scopedRoot, relativePath); err != nil {
+		return err
+	}
+	stats.keptFiles++
+	return nil
+}
+
+func recordScopeSkip(stats *scopeStats, slashed string, includeMatched bool, includePattern string, excludeMatched bool, excludePattern string) {
+	if includeMatched {
+		stats.includeMatches[includePattern]++
+	}
+	if excludeMatched {
+		stats.excludeMatches[excludePattern]++
+	}
+	if len(stats.skippedDiagnostics) >= maxScopeDiagnostics {
+		return
+	}
+	reason := "did not match include patterns"
+	if excludeMatched {
+		reason = "matched exclude pattern " + excludePattern
+	}
+	stats.skippedDiagnostics = append(stats.skippedDiagnostics, slashed+" ("+reason+")")
 }
 
 func normalizePatterns(patterns []string) []string {
@@ -126,7 +151,7 @@ func matchFirstPattern(path string, patterns []string) (bool, string) {
 	return false, ""
 }
 
-func globMatch(pattern string, value string) bool {
+func globMatch(pattern, value string) bool {
 	expression := globToRegexp(pattern)
 	matched, err := regexp.MatchString(expression, value)
 	return err == nil && matched
@@ -139,17 +164,9 @@ func globToRegexp(pattern string) string {
 	for index := 0; index < len(pattern); index++ {
 		char := pattern[index]
 		if char == '*' {
-			if index+1 < len(pattern) && pattern[index+1] == '*' {
-				if index+2 < len(pattern) && pattern[index+2] == '/' {
-					builder.WriteString("(?:.*/)?")
-					index += 2
-					continue
-				}
-				builder.WriteString(".*")
-				index++
-				continue
-			}
-			builder.WriteString("[^/]*")
+			segment, next := asteriskSegment(pattern, index)
+			builder.WriteString(segment)
+			index = next
 			continue
 		}
 		if char == '?' {
@@ -165,6 +182,16 @@ func globToRegexp(pattern string) string {
 	return builder.String()
 }
 
+func asteriskSegment(pattern string, index int) (string, int) {
+	if index+1 < len(pattern) && pattern[index+1] == '*' {
+		if index+2 < len(pattern) && pattern[index+2] == '/' {
+			return "(?:.*/)?", index + 2
+		}
+		return ".*", index + 1
+	}
+	return "[^/]*", index
+}
+
 func formatPatternMatches(patterns []string, matches map[string]int) string {
 	parts := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
@@ -174,7 +201,7 @@ func formatPatternMatches(patterns []string, matches map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-func copyFile(repoPath string, scopedRoot string, relativePath string) error {
+func copyFile(repoPath, scopedRoot, relativePath string) error {
 	if !isSafeRelativePath(relativePath) {
 		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
 	}
@@ -207,7 +234,7 @@ func copyFile(repoPath string, scopedRoot string, relativePath string) error {
 	return nil
 }
 
-func pathWithin(root string, candidate string) bool {
+func pathWithin(root, candidate string) bool {
 	relative, err := filepath.Rel(root, candidate)
 	if err != nil {
 		return false

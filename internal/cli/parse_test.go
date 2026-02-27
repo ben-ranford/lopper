@@ -21,6 +21,7 @@ const (
 	thresholdLowWarnFlag = "--threshold-low-confidence-warning"
 	scoreWeightFlag      = "--score-weight-usage"
 	parseConfigFileName  = ".lopper.yml"
+	repoFlagName         = "--repo"
 )
 
 func TestParseArgsDefault(t *testing.T) {
@@ -333,7 +334,7 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "10",
-		"--repo", repo,
+		repoFlagName, repo,
 		"--threshold-min-usage-percent", "60",
 		"--score-weight-confidence", "0.6",
 	})
@@ -367,7 +368,7 @@ func TestParseArgsAnalyseScopeConfigPrecedence(t *testing.T) {
 
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "5",
-		"--repo", repo,
+		repoFlagName, repo,
 		"--exclude", "vendor/**",
 	})
 	if err != nil {
@@ -398,7 +399,7 @@ thresholds:
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "org.yml"), orgPolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), repoPolicy)
 
-	req, err := ParseArgs([]string{"analyse", "--top", "3", "--repo", repo})
+	req, err := ParseArgs([]string{"analyse", "--top", "3", repoFlagName, repo})
 	if err != nil {
 		t.Fatalf("parse args with policy pack: %v", err)
 	}
