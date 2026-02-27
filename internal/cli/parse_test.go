@@ -362,14 +362,7 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 
 func TestParseArgsAnalyseScopeConfigPrecedence(t *testing.T) {
 	repo := t.TempDir()
-	config := strings.Join([]string{
-		"scope:",
-		" include:",
-		"  - \"src/**/*.go\"",
-		" exclude:",
-		"  - \"**/*_test.go\"",
-		"",
-	}, "\n")
+	config := "scope:\n include:\n  - \"src/**/*.go\"\n exclude:\n  - \"**/*_test.go\"\n"
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
 
 	req, err := ParseArgs([]string{

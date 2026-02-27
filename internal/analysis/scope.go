@@ -24,7 +24,11 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("create analysis scope workspace: %w", err)
 	}
-	cleanup := func() { _ = os.RemoveAll(scopedRoot) }
+	cleanup := func() {
+		if err := os.RemoveAll(scopedRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "cleanup scoped workspace %s: %v\n", scopedRoot, err)
+		}
+	}
 
 	includeMatches := make(map[string]int, len(includePatterns))
 	excludeMatches := make(map[string]int, len(excludePatterns))
@@ -176,11 +180,13 @@ func copyFile(sourcePath string, targetPath string) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return err
 	}
+	// #nosec G304 -- sourcePath originates from WalkDir over the normalized repository root.
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
+	// #nosec G304 -- targetPath is created from scopedRoot + filepath.Rel output.
 	target, err := os.Create(targetPath)
 	if err != nil {
 		return err

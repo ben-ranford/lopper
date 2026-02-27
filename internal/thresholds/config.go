@@ -264,7 +264,10 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	return merged
 }
 
-func (s rawScope) toPathScope() PathScope {
+func (s *rawScope) toPathScope() PathScope {
+	if s == nil {
+		return PathScope{}
+	}
 	return PathScope{
 		Include: normalizePathPatterns(s.Include),
 		Exclude: normalizePathPatterns(s.Exclude),
