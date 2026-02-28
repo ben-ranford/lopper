@@ -311,6 +311,41 @@ public class Program { public static void Main() {} }
 	}
 }
 
+func TestServiceAppliesDeterministicFindingConfidenceFiltering(t *testing.T) {
+	registry := language.NewRegistry()
+	if err := registry.Register(&findingsAdapter{id: "findings"}); err != nil {
+		t.Fatalf("register findings adapter: %v", err)
+	}
+
+	service := &Service{Registry: registry}
+	threshold := 90
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:                    t.TempDir(),
+		Language:                    "findings",
+		LowConfidenceWarningPercent: &threshold,
+	})
+	if err != nil {
+		t.Fatalf("analyse with confidence threshold: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+
+	dep := reportData.Dependencies[0]
+	if len(dep.UnusedExports) != 0 {
+		t.Fatalf("expected unused exports to be filtered, got %#v", dep.UnusedExports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be filtered, got %#v", dep.UnusedImports)
+	}
+	if len(dep.Recommendations) != 0 {
+		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
+	}
+	if len(dep.RiskCues) != 0 {
+		t.Fatalf("expected risk cues to be filtered, got %#v", dep.RiskCues)
+	}
+}
+
 func TestServiceAnalyseCPPAlias(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
@@ -425,6 +460,33 @@ func (m *markerDetectAdapter) Analyse(_ context.Context, req language.Request) (
 				UsedExportsCount:  1,
 				TotalExportsCount: 1,
 				UsedPercent:       100,
+			},
+		},
+	}, nil
+}
+
+type findingsAdapter struct {
+	id string
+}
+
+func (f *findingsAdapter) ID() string { return f.id }
+
+func (f *findingsAdapter) Aliases() []string { return nil }
+
+func (f *findingsAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
+
+func (f *findingsAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+	return report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name:                 "dep",
+				UsedExportsCount:     1,
+				TotalExportsCount:    0,
+				UnusedExports:        []report.SymbolRef{{Name: "x", Module: "dep"}},
+				UnusedImports:        []report.ImportUse{{Name: "x", Module: "dep"}},
+				RiskCues:             []report.RiskCue{{Code: "dynamic", Severity: "high", Message: "dynamic lookup"}},
+				Recommendations:      []report.Recommendation{{Code: "remove", Priority: "high", Message: "remove dep"}},
+				EstimatedUnusedBytes: 1,
 			},
 		},
 	}, nil

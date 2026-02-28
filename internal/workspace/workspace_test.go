@@ -43,7 +43,12 @@ func TestCurrentCommitSHA(t *testing.T) {
 }
 
 func TestCurrentCommitSHAErrorsForNonRepoPath(t *testing.T) {
-	_, err := CurrentCommitSHA(t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("GIT_DIR", "")
+	t.Setenv("GIT_WORK_TREE", "")
+	t.Setenv("GIT_CEILING_DIRECTORIES", tmp)
+
+	_, err := CurrentCommitSHA(tmp)
 	if err == nil {
 		t.Fatalf("expected non-repo path to fail commit lookup")
 	}
