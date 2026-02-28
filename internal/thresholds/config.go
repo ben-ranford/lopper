@@ -302,15 +302,15 @@ func normalizePathPatterns(patterns []string) []string {
 	seen := make(map[string]struct{}, len(patterns))
 	normalized := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
-		trimmed := strings.TrimSpace(pattern)
-		if trimmed == "" {
+		normalizedPattern := filepath.ToSlash(strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/"))
+		if normalizedPattern == "" {
 			continue
 		}
-		if _, exists := seen[trimmed]; exists {
+		if _, exists := seen[normalizedPattern]; exists {
 			continue
 		}
-		seen[trimmed] = struct{}{}
-		normalized = append(normalized, trimmed)
+		seen[normalizedPattern] = struct{}{}
+		normalized = append(normalized, normalizedPattern)
 	}
 	if len(normalized) == 0 {
 		return nil

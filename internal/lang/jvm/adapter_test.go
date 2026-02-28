@@ -209,3 +209,11 @@ func TestNormalizeDependencyID(t *testing.T) {
 		t.Fatalf("unexpected normalized dependency ID: %q", got)
 	}
 }
+
+func TestSourceLayoutModuleRootUsesInnermostSourceLayout(t *testing.T) {
+	path := filepath.Join(string(filepath.Separator), "tmp", "src", "workspace", "repo", "module", "src", "main", "kotlin", "Main.kt")
+	want := filepath.Join(string(filepath.Separator), "tmp", "src", "workspace", "repo", "module")
+	if got := sourceLayoutModuleRoot(path); got != want {
+		t.Fatalf("unexpected source layout root: got %q want %q", got, want)
+	}
+}

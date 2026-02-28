@@ -133,21 +133,30 @@ func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{
 
 func sourceLayoutModuleRoot(path string) string {
 	normalized := filepath.ToSlash(filepath.Clean(path))
-	index := strings.Index(normalized, "/src/")
-	if index < 0 {
+	if normalized == "" {
 		return ""
 	}
 
-	segments := strings.Split(normalized[index+len("/src/"):], "/")
-	if len(segments) < 2 {
+	segments := strings.Split(normalized, "/")
+	lastSrcIndex := -1
+	for index := 0; index+2 < len(segments); index++ {
+		if segments[index] != "src" {
+			continue
+		}
+		switch segments[index+2] {
+		case "java", "kotlin":
+			lastSrcIndex = index
+		}
+	}
+	if lastSrcIndex < 1 {
 		return ""
 	}
-	switch segments[1] {
-	case "java", "kotlin":
-		return filepath.FromSlash(normalized[:index])
-	default:
+
+	root := strings.Join(segments[:lastSrcIndex], "/")
+	if root == "" {
 		return ""
 	}
+	return filepath.FromSlash(root)
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
