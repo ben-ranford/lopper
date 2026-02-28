@@ -24,21 +24,35 @@ const (
 	repoFlagName         = "--repo"
 )
 
-func TestParseArgsDefault(t *testing.T) {
-	req, err := ParseArgs(nil)
+func mustParseArgs(t *testing.T, args []string) app.Request {
+	t.Helper()
+
+	req, err := ParseArgs(args)
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
+	return req
+}
+
+func expectParseArgsError(t *testing.T, args []string, wantMsg string) error {
+	t.Helper()
+
+	_, err := ParseArgs(args)
+	if err == nil {
+		t.Fatal(wantMsg)
+	}
+	return err
+}
+
+func TestParseArgsDefault(t *testing.T) {
+	req := mustParseArgs(t, nil)
 	if req.Mode != app.ModeTUI {
 		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
 	}
 }
 
 func TestParseArgsAnalyseDependency(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "lodash"})
 	if req.Mode != app.ModeAnalyse {
 		t.Fatalf(modeMismatchFmt, app.ModeAnalyse, req.Mode)
 	}
@@ -71,10 +85,7 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", tc.format})
-			if err != nil {
-				t.Fatalf(unexpectedErrFmt, err)
-			}
+			req := mustParseArgs(t, []string{"analyse", "--top", "5", "--format", tc.format})
 			if req.Analyse.TopN != 5 {
 				t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
 			}
@@ -86,10 +97,7 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLanguage(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", languageFlagName, "js-ts"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "lodash", languageFlagName, "js-ts"})
 	if req.Analyse.Language != "js-ts" {
 		t.Fatalf("expected language js-ts, got %q", req.Analyse.Language)
 	}
@@ -99,10 +107,7 @@ func TestParseArgsAnalyseLanguages(t *testing.T) {
 	cases := []string{"all", "jvm", "rust"}
 	for _, language := range cases {
 		t.Run(language, func(t *testing.T) {
-			req, err := ParseArgs([]string{"analyse", "--top", "10", languageFlagName, language})
-			if err != nil {
-				t.Fatalf(unexpectedErrFmt, err)
-			}
+			req := mustParseArgs(t, []string{"analyse", "--top", "10", languageFlagName, language})
 			if req.Analyse.Language != language {
 				t.Fatalf("expected language %q, got %q", language, req.Analyse.Language)
 			}
@@ -111,16 +116,13 @@ func TestParseArgsAnalyseLanguages(t *testing.T) {
 }
 
 func TestParseArgsAnalyseBaselineSnapshotFlags(t *testing.T) {
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse", "--top", "5",
 		"--baseline-store", ".artifacts/baselines",
 		"--baseline-key", "commit:abc123",
 		"--save-baseline",
 		"--baseline-label", "release-candidate",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if req.Analyse.BaselineStorePath != ".artifacts/baselines" {
 		t.Fatalf("expected baseline store path, got %q", req.Analyse.BaselineStorePath)
 	}
@@ -169,10 +171,7 @@ func TestParseArgsAnalyseStringFlags(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := ParseArgs(tc.args)
-			if err != nil {
-				t.Fatalf(unexpectedErrFmt, err)
-			}
+			req := mustParseArgs(t, tc.args)
 			if got := tc.got(req); got != tc.want {
 				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
@@ -181,16 +180,13 @@ func TestParseArgsAnalyseStringFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseCacheFlags(t *testing.T) {
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse",
 		"lodash",
 		"--cache=false",
 		"--cache-path", "/tmp/lopper-cache",
 		"--cache-readonly",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if req.Analyse.CacheEnabled {
 		t.Fatalf("expected cache to be disabled")
 	}
@@ -203,15 +199,12 @@ func TestParseArgsAnalyseCacheFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseScopeFlags(t *testing.T) {
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse",
 		"--top", "3",
 		"--include", "src/**/*.go,internal/**/*.go",
 		"--exclude", "**/*_test.go",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go" {
 		t.Fatalf("unexpected include patterns: %q", got)
 	}
@@ -221,7 +214,7 @@ func TestParseArgsAnalyseScopeFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseScopeFlagsRepeatable(t *testing.T) {
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse",
 		"--top", "3",
 		"--include", "src/**/*.go",
@@ -229,9 +222,6 @@ func TestParseArgsAnalyseScopeFlagsRepeatable(t *testing.T) {
 		"--exclude", "**/*_test.go",
 		"--exclude", "vendor/**",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
 		t.Fatalf("unexpected include patterns for repeatable flags: %q", got)
 	}
@@ -280,30 +270,21 @@ func TestMergePatternsWithEmptyNextKeepsExisting(t *testing.T) {
 }
 
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if req.Analyse.RuntimeTestCommand != "npm test" {
 		t.Fatalf("expected runtime test command, got %q", req.Analyse.RuntimeTestCommand)
 	}
 }
 
 func TestParseArgsAnalyseSuggestOnly(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "lodash", suggestOnlyFlag})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "lodash", suggestOnlyFlag})
 	if !req.Analyse.SuggestOnly {
 		t.Fatalf("expected suggest-only to be enabled")
 	}
 }
 
 func TestParseArgsTUIFlags(t *testing.T) {
-	req, err := ParseArgs([]string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
 	if req.Mode != app.ModeTUI {
 		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
 	}
@@ -325,17 +306,14 @@ func TestParseArgsTUIFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseThresholdDefaults(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "3"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "--top", "3"})
 	if req.Analyse.Thresholds != thresholds.Defaults() {
 		t.Fatalf("expected default thresholds %+v, got %+v", thresholds.Defaults(), req.Analyse.Thresholds)
 	}
 }
 
 func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse",
 		"--top", "4",
 		thresholdFailFlag, "2",
@@ -345,9 +323,6 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 2 {
 		t.Fatalf("expected fail threshold 2, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
 	}
@@ -363,10 +338,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLegacyFailOnIncreaseAlias(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "2", failAliasFlag, "9"})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "--top", "2", failAliasFlag, "9"})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 9 {
 		t.Fatalf("expected alias threshold 9, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
 	}
@@ -391,15 +363,12 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", ""}, "\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
 
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse", "--top", "10",
 		repoFlagName, repo,
 		"--threshold-min-usage-percent", "60",
 		"--score-weight-confidence", "0.6",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 4 {
 		t.Fatalf("expected config fail threshold 4, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
 	}
@@ -425,14 +394,11 @@ func TestParseArgsAnalyseScopeConfigPrecedence(t *testing.T) {
 	config := "scope:\n include:\n  - \"src/**/*.go\"\n exclude:\n  - \"**/*_test.go\"\n"
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
 
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse", "--top", "5",
 		repoFlagName, repo,
 		"--exclude", "vendor/**",
 	})
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
 	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go" {
 		t.Fatalf("expected include patterns from config, got %q", got)
 	}
@@ -458,10 +424,7 @@ thresholds:
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "org.yml"), orgPolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), repoPolicy)
 
-	req, err := ParseArgs([]string{"analyse", "--top", "3", repoFlagName, repo})
-	if err != nil {
-		t.Fatalf("parse args with policy pack: %v", err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "--top", "3", repoFlagName, repo})
 	if len(req.Analyse.PolicySources) != 3 {
 		t.Fatalf("expected repo, pack, defaults policy sources; got %#v", req.Analyse.PolicySources)
 	}
@@ -483,30 +446,21 @@ thresholds:
 }
 
 func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
-	req, err := ParseArgs([]string{"analyse", "--top", "1", thresholdLowWarnFlag, "23"})
-	if err != nil {
-		t.Fatalf("parse args: %v", err)
-	}
+	req := mustParseArgs(t, []string{"analyse", "--top", "1", thresholdLowWarnFlag, "23"})
 	if len(req.Analyse.PolicySources) == 0 || req.Analyse.PolicySources[0] != "cli" {
 		t.Fatalf("expected cli source precedence, got %#v", req.Analyse.PolicySources)
 	}
 }
 
 func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
-	_, err := ParseArgs([]string{"analyse", "--top", "2", thresholdLowWarnFlag, "101"})
-	if err == nil {
-		t.Fatalf("expected range validation error")
-	}
+	err := expectParseArgsError(t, []string{"analyse", "--top", "2", thresholdLowWarnFlag, "101"}, "expected range validation error")
 	if !strings.Contains(err.Error(), "between 0 and 100") {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 
 func TestParseArgsAnalyseRejectsInvalidScoreWeight(t *testing.T) {
-	_, err := ParseArgs([]string{"analyse", "--top", "2", scoreWeightFlag, "-1"})
-	if err == nil {
-		t.Fatalf("expected score weight validation error")
-	}
+	err := expectParseArgsError(t, []string{"analyse", "--top", "2", scoreWeightFlag, "-1"}, "expected score weight validation error")
 	if !strings.Contains(err.Error(), "removal_candidate_weight_usage") {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
@@ -547,63 +501,79 @@ func TestParseArgsErrorsAndHelp(t *testing.T) {
 }
 
 func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
-	if _, err := ParseArgs([]string{"analyse"}); err == nil {
-		t.Fatalf("expected missing target error")
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr error
+	}{
+		{name: "missing_target", args: []string{"analyse"}},
+		{name: "conflicting_targets", args: []string{"analyse", "lodash", "--top", "2"}, wantErr: ErrConflictingTargets},
+		{name: "suggest_only_with_top", args: []string{"analyse", "--top", "2", suggestOnlyFlag}},
+		{name: "suggest_only_without_dependency", args: []string{"analyse", suggestOnlyFlag}},
+		{name: "negative_top", args: []string{"analyse", "--top", "-1"}},
+		{name: "too_many_args", args: []string{"analyse", "a", "b"}},
 	}
-	if _, err := ParseArgs([]string{"analyse", "lodash", "--top", "2"}); err != ErrConflictingTargets {
-		t.Fatalf("expected conflicting-targets error, got %v", err)
-	}
-	if _, err := ParseArgs([]string{"analyse", "--top", "2", suggestOnlyFlag}); err == nil {
-		t.Fatalf("expected suggest-only with top target to fail")
-	}
-	if _, err := ParseArgs([]string{"analyse", suggestOnlyFlag}); err == nil {
-		t.Fatalf("expected suggest-only without dependency to fail")
-	}
-	if _, err := ParseArgs([]string{"analyse", "--top", "-1"}); err == nil {
-		t.Fatalf("expected negative top error")
-	}
-	if _, err := ParseArgs([]string{"analyse", "a", "b"}); err == nil {
-		t.Fatalf("expected too-many-arguments error")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseArgs(tc.args)
+			if tc.wantErr != nil {
+				if err != tc.wantErr {
+					t.Fatalf("expected error %v, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected parse error")
+			}
+		})
 	}
 }
 
 func TestParseArgsTUIInvalidInputs(t *testing.T) {
-	if _, err := ParseArgs([]string{"tui", "--top", "-1"}); err == nil {
-		t.Fatalf("expected negative top error")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "negative_top", args: []string{"tui", "--top", "-1"}},
+		{name: "negative_page_size", args: []string{"tui", "--page-size", "-1"}},
+		{name: "unexpected_arg", args: []string{"tui", "extra"}},
 	}
-	if _, err := ParseArgs([]string{"tui", "--page-size", "-1"}); err == nil {
-		t.Fatalf("expected negative page-size error")
-	}
-	if _, err := ParseArgs([]string{"tui", "extra"}); err == nil {
-		t.Fatalf("expected unexpected-args error")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseArgs(tc.args); err == nil {
+				t.Fatalf("expected parse error")
+			}
+		})
 	}
 }
 
 func TestParseArgsVisitedFlagThresholdAliasMatch(t *testing.T) {
-	req, err := ParseArgs([]string{
+	req := mustParseArgs(t, []string{
 		"analyse", "--top", "2",
 		failAliasFlag, "3",
 		thresholdFailFlag, "3",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 3 {
 		t.Fatalf("expected resolved fail threshold 3, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
 	}
 }
 
 func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
-	if _, err := ParseArgs([]string{"analyse", "--top"}); err == nil {
-		t.Fatalf("expected analyse flag parse error for missing value")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "analyse_top_missing_value", args: []string{"analyse", "--top"}},
+		{name: "analyse_invalid_format", args: []string{"analyse", "dep", "--format", "invalid"}},
+		{name: "analyse_missing_config", args: []string{"analyse", "--top", "1", "--config", "missing-config.yml"}},
+		{name: "tui_top_missing_value", args: []string{"tui", "--top"}},
 	}
-	if _, err := ParseArgs([]string{"analyse", "dep", "--format", "invalid"}); err == nil {
-		t.Fatalf("expected analyse format parse error")
-	}
-	if _, err := ParseArgs([]string{"analyse", "--top", "1", "--config", "missing-config.yml"}); err == nil {
-		t.Fatalf("expected thresholds config load error")
-	}
-	if _, err := ParseArgs([]string{"tui", "--top"}); err == nil {
-		t.Fatalf("expected tui flag parse error for missing value")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseArgs(tc.args); err == nil {
+				t.Fatalf("expected parse/config error")
+			}
+		})
 	}
 }
