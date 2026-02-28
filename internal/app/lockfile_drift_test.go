@@ -377,7 +377,9 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	if len(found) != 1 || found[0].name != lockfileName {
 		t.Fatalf("unexpected lockfiles found: %#v", found)
 	}
+}
 
+func TestGitExecutableAvailable(t *testing.T) {
 	missingPath := filepath.Join(t.TempDir(), "missing-git")
 	if gitExecutableAvailable(missingPath) {
 		t.Fatalf("expected missing path to be unavailable")
