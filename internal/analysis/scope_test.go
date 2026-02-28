@@ -8,6 +8,7 @@ import (
 )
 
 const scopeJSGlob = "src/**/*.js"
+const scopeGoGlob = "src/**/*.go"
 
 func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	repo := t.TempDir()
@@ -75,14 +76,14 @@ func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 }
 
 func TestNormalizePatternsTrimsDedupesAndNormalizes(t *testing.T) {
-	got := normalizePatterns([]string{" src/**/*.go ", "", "src/**/*.go", "src/**/*.go"})
-	if len(got) != 1 || got[0] != "src/**/*.go" {
+	got := normalizePatterns([]string{" " + scopeGoGlob + " ", "", scopeGoGlob, scopeGoGlob})
+	if len(got) != 1 || got[0] != scopeGoGlob {
 		t.Fatalf("expected normalized deduped pattern, got %#v", got)
 	}
 }
 
 func TestRecordScopeSkipReasonAndCap(t *testing.T) {
-	stats := newScopeStats([]string{"src/**/*.go"}, nil)
+	stats := newScopeStats([]string{scopeGoGlob}, nil)
 	recordScopeSkip(stats, "README.md", false, "", false, "")
 	if len(stats.skippedDiagnostics) != 1 || !strings.Contains(stats.skippedDiagnostics[0], "did not match include patterns") {
 		t.Fatalf("expected include-miss reason, got %#v", stats.skippedDiagnostics)
