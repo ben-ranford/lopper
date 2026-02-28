@@ -175,6 +175,40 @@ func TestGitHelperErrors(t *testing.T) {
 	}
 }
 
+func TestGitHelpersWhenGitUnavailable(t *testing.T) {
+	original := gitExecutableAvailableFn
+	gitExecutableAvailableFn = func(string) bool { return false }
+	defer func() { gitExecutableAvailableFn = original }()
+
+	repo := t.TempDir()
+	if isGitWorktree(context.Background(), repo) {
+		t.Fatalf("expected git worktree=false when git is unavailable")
+	}
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "git executable not found") {
+		t.Fatalf("expected tracked changes error for missing git executable, got %v", err)
+	}
+	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "git executable not found") {
+		t.Fatalf("expected untracked files error for missing git executable, got %v", err)
+	}
+}
+
+func TestGitHelpersFallbackExecutableBranch(t *testing.T) {
+	original := gitExecutableAvailableFn
+	gitExecutableAvailableFn = func(path string) bool { return path == gitExecutableFallback }
+	defer func() { gitExecutableAvailableFn = original }()
+
+	repo := t.TempDir()
+	if isGitWorktree(context.Background(), repo) {
+		t.Fatalf("expected non-git temp dir to not be worktree when fallback git is used")
+	}
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil {
+		t.Fatalf("expected tracked changes command to fail outside git repo with fallback git")
+	}
+	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
+		t.Fatalf("expected untracked files command to fail outside git repo with fallback git")
+	}
+}
+
 func TestGitChangedFilesOutsideGitRepo(t *testing.T) {
 	repo := t.TempDir()
 	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
@@ -342,6 +376,24 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	found := findRuleLockfiles(files, []string{lockfileName, "missing.lock"})
 	if len(found) != 1 || found[0].name != lockfileName {
 		t.Fatalf("unexpected lockfiles found: %#v", found)
+	}
+}
+
+func TestGitExecutableAvailable(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing-git")
+	if gitExecutableAvailable(missingPath) {
+		t.Fatalf("expected missing path to be unavailable")
+	}
+	filePath := filepath.Join(t.TempDir(), "git-file")
+	writeFile(t, filePath, "#!/bin/sh\n")
+	if gitExecutableAvailable(filePath) {
+		t.Fatalf("expected non-executable file to be unavailable")
+	}
+	if err := os.Chmod(filePath, 0o700); err != nil {
+		t.Fatalf("chmod file executable: %v", err)
+	}
+	if !gitExecutableAvailable(filePath) {
+		t.Fatalf("expected executable file to be available")
 	}
 }
 

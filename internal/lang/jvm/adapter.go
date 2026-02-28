@@ -125,7 +125,38 @@ func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{
 	case ".java", ".kt", ".kts":
 		detection.Matched = true
 		detection.Confidence += 2
+		if root := sourceLayoutModuleRoot(path); root != "" {
+			roots[root] = struct{}{}
+		}
 	}
+}
+
+func sourceLayoutModuleRoot(path string) string {
+	normalized := filepath.ToSlash(filepath.Clean(path))
+	if normalized == "" {
+		return ""
+	}
+
+	segments := strings.Split(normalized, "/")
+	lastSrcIndex := -1
+	for index := 0; index+2 < len(segments); index++ {
+		if segments[index] != "src" {
+			continue
+		}
+		switch segments[index+2] {
+		case "java", "kotlin":
+			lastSrcIndex = index
+		}
+	}
+	if lastSrcIndex < 1 {
+		return ""
+	}
+
+	root := strings.Join(segments[:lastSrcIndex], "/")
+	if root == "" {
+		return ""
+	}
+	return filepath.FromSlash(root)
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -266,8 +297,10 @@ func isSourceFile(path string) bool {
 
 var (
 	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?\s*;?\s*$`)
+	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
 )
+
+const importPatternMatchGroups = 4
 
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
@@ -281,7 +314,7 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 	return shared.ParseImportLines(content, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != 3 {
+		if len(matches) != importPatternMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
@@ -297,23 +330,37 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 			return nil
 		}
 
-		wildcard := strings.TrimSpace(matches[2]) == ".*"
-		symbol := lastModuleSegment(module)
-		if wildcard {
-			symbol = "*"
-		}
-		if symbol == "" {
+		record, ok := buildImportRecord(matches, module, dependency)
+		if !ok {
 			return nil
 		}
 
-		return []shared.ImportRecord{{
-			Dependency: dependency,
-			Module:     module,
-			Name:       symbol,
-			Local:      symbol,
-			Wildcard:   wildcard,
-		}}
+		return []shared.ImportRecord{record}
 	})
+}
+
+func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
+	wildcard := strings.TrimSpace(matches[2]) == ".*"
+	symbol := lastModuleSegment(module)
+	if wildcard {
+		symbol = "*"
+	}
+	if symbol == "" {
+		return shared.ImportRecord{}, false
+	}
+
+	localName := symbol
+	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
+		localName = alias
+	}
+
+	return shared.ImportRecord{
+		Dependency: dependency,
+		Module:     module,
+		Name:       symbol,
+		Local:      localName,
+		Wildcard:   wildcard,
+	}, true
 }
 
 func stripLineComment(line string) string {

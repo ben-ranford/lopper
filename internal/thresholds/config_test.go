@@ -70,6 +70,13 @@ func TestLoadYAMLConfig(t *testing.T) {
 	}
 }
 
+func TestNormalizePathPatternsNormalizesSeparatorsAndDedupes(t *testing.T) {
+	got := normalizePathPatterns([]string{"src\\**\\*.go", " src/**/*.go ", "vendor\\**"})
+	if strings.Join(got, ",") != "src/**/*.go,vendor/**" {
+		t.Fatalf("unexpected normalized patterns: %#v", got)
+	}
+}
+
 func TestLoadJSONConfig(t *testing.T) {
 	repo := t.TempDir()
 	cfg := `{

@@ -15,7 +15,10 @@ import (
 
 const lockfileDriftWarningPrefix = "lockfile drift detected: "
 const safeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
-const gitExecutablePath = "/usr/bin/git"
+const gitExecutablePrimary = "/usr/bin/git"
+const gitExecutableFallback = "/bin/git"
+
+var gitExecutableAvailableFn = gitExecutableAvailable
 
 type lockfileRule struct {
 	manager   string
@@ -251,7 +254,15 @@ func isGitWorktree(ctx context.Context, repoPath string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, gitExecutablePath, "-C", repoPath, "rev-parse", "--is-inside-work-tree")
+	var command *exec.Cmd
+	switch {
+	case gitExecutableAvailableFn(gitExecutablePrimary):
+		command = exec.CommandContext(ctx, gitExecutablePrimary, "-C", repoPath, "rev-parse", "--is-inside-work-tree")
+	case gitExecutableAvailableFn(gitExecutableFallback):
+		command = exec.CommandContext(ctx, gitExecutableFallback, "-C", repoPath, "rev-parse", "--is-inside-work-tree")
+	default:
+		return false
+	}
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
@@ -264,11 +275,19 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, gitExecutablePath, "-C", repoPath, "diff", "--name-only", "HEAD", "--")
+	var command *exec.Cmd
+	switch {
+	case gitExecutableAvailableFn(gitExecutablePrimary):
+		command = exec.CommandContext(ctx, gitExecutablePrimary, "-C", repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
+	case gitExecutableAvailableFn(gitExecutableFallback):
+		command = exec.CommandContext(ctx, gitExecutableFallback, "-C", repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
+	default:
+		return nil, fmt.Errorf("git executable not found")
+	}
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
-		return nil, fmt.Errorf("run git diff --name-only HEAD --: %w", err)
+		return nil, fmt.Errorf("run git diff --no-ext-diff --no-textconv --name-only HEAD --: %w", err)
 	}
 	return parseGitOutputLines(output), nil
 }
@@ -277,7 +296,15 @@ func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, gitExecutablePath, "-C", repoPath, "ls-files", "--others", "--exclude-standard")
+	var command *exec.Cmd
+	switch {
+	case gitExecutableAvailableFn(gitExecutablePrimary):
+		command = exec.CommandContext(ctx, gitExecutablePrimary, "-C", repoPath, "ls-files", "--others", "--exclude-standard")
+	case gitExecutableAvailableFn(gitExecutableFallback):
+		command = exec.CommandContext(ctx, gitExecutableFallback, "-C", repoPath, "ls-files", "--others", "--exclude-standard")
+	default:
+		return nil, fmt.Errorf("git executable not found")
+	}
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
@@ -308,4 +335,12 @@ func sanitizedGitEnv() []string {
 	}
 	filtered = append(filtered, safeSystemPath)
 	return filtered
+}
+
+func gitExecutableAvailable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }
