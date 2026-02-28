@@ -110,6 +110,9 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
+	report.AnnotateFindingConfidence(reportData.Dependencies)
+	report.FilterFindingsByConfidence(reportData.Dependencies, lowConfidenceThreshold)
 	report.AnnotateRemovalCandidateScoresWithWeights(reportData.Dependencies, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 	reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)

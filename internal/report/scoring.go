@@ -12,6 +12,15 @@ var defaultRemovalCandidateWeights = RemovalCandidateWeights{
 	Confidence: 0.20,
 }
 
+const (
+	confidenceReasonMissingExportInventory = "missing-export-inventory"
+	confidenceReasonRuntimeOnlyUsage       = "runtime-only-usage"
+	confidenceReasonWildcardImport         = "wildcard-import"
+	confidenceReasonRiskLow                = "risk-low"
+	confidenceReasonRiskMedium             = "risk-medium"
+	confidenceReasonRiskHigh               = "risk-high"
+)
+
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
 	AnnotateRemovalCandidateScoresWithWeights(dependencies, DefaultRemovalCandidateWeights())
 }
@@ -147,6 +156,144 @@ func dependencyConfidenceSignal(dep DependencyReport) (float64, []string) {
 		}
 	}
 	return clamp(100-penalty, 0, 100), rationale
+}
+
+func AnnotateFindingConfidence(dependencies []DependencyReport) {
+	for depIndex := range dependencies {
+		score, _ := dependencyConfidenceSignal(dependencies[depIndex])
+		reasonCodes := dependencyConfidenceReasonCodes(dependencies[depIndex])
+		score = roundTo(score, 1)
+
+		for findingIndex := range dependencies[depIndex].UnusedExports {
+			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceReasonCodes = slices.Clip(reasonCodes)
+		}
+		for findingIndex := range dependencies[depIndex].UnusedImports {
+			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceReasonCodes = slices.Clip(reasonCodes)
+		}
+		for findingIndex := range dependencies[depIndex].Recommendations {
+			dependencies[depIndex].Recommendations[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].Recommendations[findingIndex].ConfidenceReasonCodes = slices.Clip(reasonCodes)
+		}
+		for findingIndex := range dependencies[depIndex].RiskCues {
+			item := &dependencies[depIndex].RiskCues[findingIndex]
+			item.ConfidenceScore = score
+			item.ConfidenceReasonCodes = slices.Clip(reasonCodes)
+		}
+	}
+}
+
+func FilterFindingsByConfidence(dependencies []DependencyReport, minConfidence float64) {
+	if minConfidence <= 0 {
+		return
+	}
+	for depIndex := range dependencies {
+		dependencies[depIndex].UnusedExports = filterSymbolRefByConfidence(dependencies[depIndex].UnusedExports, minConfidence)
+		dependencies[depIndex].UnusedImports = filterImportUseByConfidence(dependencies[depIndex].UnusedImports, minConfidence)
+		dependencies[depIndex].Recommendations = filterRecommendationByConfidence(dependencies[depIndex].Recommendations, minConfidence)
+		dependencies[depIndex].RiskCues = filterRiskCueByConfidence(dependencies[depIndex].RiskCues, minConfidence)
+	}
+}
+
+func dependencyConfidenceReasonCodes(dep DependencyReport) []string {
+	ordered := []string{
+		confidenceReasonMissingExportInventory,
+		confidenceReasonRuntimeOnlyUsage,
+		confidenceReasonWildcardImport,
+		confidenceReasonRiskHigh,
+		confidenceReasonRiskMedium,
+		confidenceReasonRiskLow,
+	}
+	seen := make(map[string]struct{}, len(ordered))
+	for _, code := range ordered {
+		seen[code] = struct{}{}
+	}
+	rawCodes := make([]string, 0, len(ordered))
+	if dep.TotalExportsCount <= 0 {
+		rawCodes = append(rawCodes, confidenceReasonMissingExportInventory)
+	}
+	if dep.RuntimeUsage != nil && dep.RuntimeUsage.RuntimeOnly {
+		rawCodes = append(rawCodes, confidenceReasonRuntimeOnlyUsage)
+	}
+	if hasWildcardImport(dep.UsedImports) {
+		rawCodes = append(rawCodes, confidenceReasonWildcardImport)
+	}
+	for _, cue := range dep.RiskCues {
+		switch strings.ToLower(cue.Severity) {
+		case "high":
+			rawCodes = append(rawCodes, confidenceReasonRiskHigh)
+		case "medium":
+			rawCodes = append(rawCodes, confidenceReasonRiskMedium)
+		case "low":
+			rawCodes = append(rawCodes, confidenceReasonRiskLow)
+		}
+	}
+	result := make([]string, 0, len(ordered))
+	for _, candidate := range ordered {
+		if !containsCode(rawCodes, candidate) {
+			continue
+		}
+		if _, ok := seen[candidate]; !ok {
+			continue
+		}
+		result = append(result, candidate)
+		delete(seen, candidate)
+	}
+	return result
+}
+
+func containsCode(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func filterSymbolRefByConfidence(values []SymbolRef, minConfidence float64) []SymbolRef {
+	filtered := values[:0]
+	for _, value := range values {
+		if value.ConfidenceScore < minConfidence {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
+}
+
+func filterImportUseByConfidence(values []ImportUse, minConfidence float64) []ImportUse {
+	filtered := values[:0]
+	for _, value := range values {
+		if value.ConfidenceScore < minConfidence {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
+}
+
+func filterRecommendationByConfidence(values []Recommendation, minConfidence float64) []Recommendation {
+	filtered := values[:0]
+	for _, value := range values {
+		if value.ConfidenceScore < minConfidence {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
+}
+
+func filterRiskCueByConfidence(values []RiskCue, minConfidence float64) []RiskCue {
+	filtered := values[:0]
+	for _, value := range values {
+		if value.ConfidenceScore < minConfidence {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
 }
 
 func hasWildcardImport(imports []ImportUse) bool {

@@ -192,16 +192,20 @@ type RemovalCandidateWeights struct {
 }
 
 type RiskCue struct {
-	Code     string `json:"code"`
-	Severity string `json:"severity"`
-	Message  string `json:"message"`
+	Code                  string   `json:"code"`
+	Severity              string   `json:"severity"`
+	Message               string   `json:"message"`
+	ConfidenceScore       float64  `json:"confidenceScore,omitempty"`
+	ConfidenceReasonCodes []string `json:"confidenceReasonCodes,omitempty"`
 }
 
 type Recommendation struct {
-	Code      string `json:"code"`
-	Priority  string `json:"priority"`
-	Message   string `json:"message"`
-	Rationale string `json:"rationale,omitempty"`
+	Code                  string   `json:"code"`
+	Priority              string   `json:"priority"`
+	Message               string   `json:"message"`
+	Rationale             string   `json:"rationale,omitempty"`
+	ConfidenceScore       float64  `json:"confidenceScore,omitempty"`
+	ConfidenceReasonCodes []string `json:"confidenceReasonCodes,omitempty"`
 }
 
 type RuntimeUsage struct {
@@ -238,15 +242,19 @@ type SymbolUsage struct {
 }
 
 type ImportUse struct {
-	Name       string     `json:"name"`
-	Module     string     `json:"module"`
-	Locations  []Location `json:"locations,omitempty"`
-	Provenance []string   `json:"provenance,omitempty"`
+	Name                  string     `json:"name"`
+	Module                string     `json:"module"`
+	Locations             []Location `json:"locations,omitempty"`
+	Provenance            []string   `json:"provenance,omitempty"`
+	ConfidenceScore       float64    `json:"confidenceScore,omitempty"`
+	ConfidenceReasonCodes []string   `json:"confidenceReasonCodes,omitempty"`
 }
 
 type SymbolRef struct {
-	Name   string `json:"name"`
-	Module string `json:"module"`
+	Name                  string   `json:"name"`
+	Module                string   `json:"module"`
+	ConfidenceScore       float64  `json:"confidenceScore,omitempty"`
+	ConfidenceReasonCodes []string `json:"confidenceReasonCodes,omitempty"`
 }
 
 type Location struct {
