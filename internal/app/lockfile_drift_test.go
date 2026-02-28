@@ -143,37 +143,6 @@ func TestReadDirectoryFilesMissingPath(t *testing.T) {
 	}
 }
 
-func TestDetectDriftForRuleNonGitContextSkipsManifestOnlyChange(t *testing.T) {
-	repo := t.TempDir()
-	manifest := filepath.Join(repo, "package.json")
-	lock := filepath.Join(repo, "package-lock.json")
-	writeFile(t, manifest, "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, lock, "{\n  \"name\": \"demo\"\n}\n")
-	manifestInfo, err := os.Stat(manifest)
-	if err != nil {
-		t.Fatalf("stat manifest: %v", err)
-	}
-	lockInfo, err := os.Stat(lock)
-	if err != nil {
-		t.Fatalf("stat lockfile: %v", err)
-	}
-
-	rule := lockfileRule{
-		manager:   "npm",
-		manifest:  "package.json",
-		lockfiles: []string{"package-lock.json"},
-		remedy:    "run npm install",
-	}
-	files := map[string]fs.FileInfo{
-		"package.json":      manifestInfo,
-		"package-lock.json": lockInfo,
-	}
-	warnings := detectDriftForRule(repo, repo, files, rule, map[string]struct{}{"package.json": {}}, false)
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings without git context, got %#v", warnings)
-	}
-}
-
 func TestGitHelperErrors(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := gitTrackedChanges(context.Background(), repo); err == nil {
@@ -233,7 +202,7 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	}
 }
 
-func TestDetectDriftForRuleManifestAndLockfileChangedNoWarning(t *testing.T) {
+func TestDetectDriftForRuleCases(t *testing.T) {
 	repo := t.TempDir()
 	manifest := filepath.Join(repo, "package.json")
 	lock := filepath.Join(repo, "package-lock.json")
@@ -258,74 +227,33 @@ func TestDetectDriftForRuleManifestAndLockfileChangedNoWarning(t *testing.T) {
 		"package.json":      manifestInfo,
 		"package-lock.json": lockInfo,
 	}
-	changed := map[string]struct{}{
-		"package.json":      {},
-		"package-lock.json": {},
+	missingManifest := map[string]fs.FileInfo{"package-lock.json": lockInfo}
+	missingLockfile := map[string]fs.FileInfo{"package.json": manifestInfo}
+	cases := []struct {
+		name         string
+		files        map[string]fs.FileInfo
+		changed      map[string]struct{}
+		hasGit       bool
+		wantWarnings int
+		wantSubstr   string
+	}{
+		{name: "non-git-context", files: files, changed: map[string]struct{}{"package.json": {}}, hasGit: false, wantWarnings: 0},
+		{name: "manifest-and-lockfile-changed", files: files, changed: map[string]struct{}{"package.json": {}, "package-lock.json": {}}, hasGit: true, wantWarnings: 0},
+		{name: "manifest-only-changed", files: files, changed: map[string]struct{}{"package.json": {}}, hasGit: true, wantWarnings: 1, wantSubstr: "changed while no matching lockfile changed"},
+		{name: "manifest-without-lockfile", files: missingLockfile, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "no matching lockfile"},
+		{name: "lockfile-without-manifest", files: missingManifest, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "exists without package.json"},
 	}
-	warnings := detectDriftForRule(repo, repo, files, rule, changed, true)
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings when both manifest and lockfile changed, got %#v", warnings)
-	}
-}
-
-func TestDetectDriftForRuleManifestWithoutLockfileWarns(t *testing.T) {
-	rule := lockfileRule{
-		manager:   "npm",
-		manifest:  "package.json",
-		lockfiles: []string{"package-lock.json"},
-		remedy:    "run npm install",
-	}
-	files := map[string]fs.FileInfo{
-		"package.json": mustStatFixtureFile(t, "package.json"),
-	}
-	warnings := detectDriftForRule("/repo", "/repo", files, rule, nil, false)
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "no matching lockfile") {
-		t.Fatalf("expected missing-lockfile warning, got %#v", warnings)
-	}
-}
-
-func TestDetectDriftForRuleLockfileWithoutManifestWarns(t *testing.T) {
-	rule := lockfileRule{
-		manager:   "npm",
-		manifest:  "package.json",
-		lockfiles: []string{"package-lock.json"},
-		remedy:    "run npm install",
-	}
-	files := map[string]fs.FileInfo{
-		"package-lock.json": mustStatFixtureFile(t, "package-lock.json"),
-	}
-	warnings := detectDriftForRule("/repo", "/repo", files, rule, nil, false)
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "exists without package.json") {
-		t.Fatalf("expected stale-lockfile warning, got %#v", warnings)
-	}
-}
-
-func TestDetectDriftForRuleManifestChangedWarnsWithGitContext(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, filepath.Join(repo, "package-lock.json"), "{\n  \"name\": \"demo\"\n}\n")
-	manifestInfo, err := os.Stat(filepath.Join(repo, "package.json"))
-	if err != nil {
-		t.Fatalf("stat manifest: %v", err)
-	}
-	lockInfo, err := os.Stat(filepath.Join(repo, "package-lock.json"))
-	if err != nil {
-		t.Fatalf("stat lockfile: %v", err)
-	}
-
-	rule := lockfileRule{
-		manager:   "npm",
-		manifest:  "package.json",
-		lockfiles: []string{"package-lock.json"},
-		remedy:    "run npm install",
-	}
-	files := map[string]fs.FileInfo{
-		"package.json":      manifestInfo,
-		"package-lock.json": lockInfo,
-	}
-	warnings := detectDriftForRule(repo, repo, files, rule, map[string]struct{}{"package.json": {}}, true)
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "changed while no matching lockfile changed") {
-		t.Fatalf("expected manifest-only-change warning, got %#v", warnings)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			warnings := detectDriftForRule(repo, repo, tc.files, rule, tc.changed, tc.hasGit)
+			if len(warnings) != tc.wantWarnings {
+				t.Fatalf("expected %d warnings, got %#v", tc.wantWarnings, warnings)
+			}
+			if tc.wantSubstr != "" && !strings.Contains(warnings[0], tc.wantSubstr) {
+				t.Fatalf("expected warning containing %q, got %#v", tc.wantSubstr, warnings)
+			}
+		})
 	}
 }
 
@@ -375,15 +303,4 @@ func containsEnvPrefix(env []string, prefix string) bool {
 		}
 	}
 	return false
-}
-
-func mustStatFixtureFile(t *testing.T, name string) fs.FileInfo {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	writeFile(t, path, "{}\n")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat %s: %v", name, err)
-	}
-	return info
 }
