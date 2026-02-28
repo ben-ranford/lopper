@@ -321,27 +321,37 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 			return nil
 		}
 
-		wildcard := strings.TrimSpace(matches[2]) == ".*"
-		symbol := lastModuleSegment(module)
-		if wildcard {
-			symbol = "*"
-		}
-		if symbol == "" {
+		record, ok := buildImportRecord(matches, module, dependency)
+		if !ok {
 			return nil
 		}
-		localName := symbol
-		if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
-			localName = alias
-		}
 
-		return []shared.ImportRecord{{
-			Dependency: dependency,
-			Module:     module,
-			Name:       symbol,
-			Local:      localName,
-			Wildcard:   wildcard,
-		}}
+		return []shared.ImportRecord{record}
 	})
+}
+
+func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
+	wildcard := strings.TrimSpace(matches[2]) == ".*"
+	symbol := lastModuleSegment(module)
+	if wildcard {
+		symbol = "*"
+	}
+	if symbol == "" {
+		return shared.ImportRecord{}, false
+	}
+
+	localName := symbol
+	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
+		localName = alias
+	}
+
+	return shared.ImportRecord{
+		Dependency: dependency,
+		Module:     module,
+		Name:       symbol,
+		Local:      localName,
+		Wildcard:   wildcard,
+	}, true
 }
 
 func stripLineComment(line string) string {
