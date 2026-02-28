@@ -125,6 +125,28 @@ func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{
 	case ".java", ".kt", ".kts":
 		detection.Matched = true
 		detection.Confidence += 2
+		if root := sourceLayoutModuleRoot(path); root != "" {
+			roots[root] = struct{}{}
+		}
+	}
+}
+
+func sourceLayoutModuleRoot(path string) string {
+	normalized := filepath.ToSlash(filepath.Clean(path))
+	index := strings.Index(normalized, "/src/")
+	if index <= 0 {
+		return ""
+	}
+
+	segments := strings.Split(normalized[index+len("/src/"):], "/")
+	if len(segments) < 2 {
+		return ""
+	}
+	switch segments[1] {
+	case "java", "kotlin":
+		return filepath.FromSlash(normalized[:index])
+	default:
+		return ""
 	}
 }
 
@@ -266,7 +288,7 @@ func isSourceFile(path string) bool {
 
 var (
 	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?\s*;?\s*$`)
+	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
 )
 
 func parsePackage(content []byte) string {
@@ -281,7 +303,7 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 	return shared.ParseImportLines(content, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != 3 {
+		if len(matches) != 4 {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
@@ -305,12 +327,16 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 		if symbol == "" {
 			return nil
 		}
+		localName := symbol
+		if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
+			localName = alias
+		}
 
 		return []shared.ImportRecord{{
 			Dependency: dependency,
 			Module:     module,
 			Name:       symbol,
-			Local:      symbol,
+			Local:      localName,
 			Wildcard:   wildcard,
 		}}
 	})
