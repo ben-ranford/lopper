@@ -489,11 +489,13 @@ func testTime() time.Time {
 	return time.Date(2026, time.February, 22, 15, 0, 0, 0, time.UTC)
 }
 
+const missingRuntimeMakeTarget = "make __missing_target__"
+
 func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {
 	repo := t.TempDir()
 	req := DefaultRequest()
 	req.RepoPath = repo
-	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
 	if len(warnings) != 1 {
@@ -513,7 +515,7 @@ func TestPrepareRuntimeTraceFailureKeepsExplicitTracePath(t *testing.T) {
 	req := DefaultRequest()
 	req.RepoPath = repo
 	req.Analyse.RuntimeTracePath = explicitPath
-	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
 	if len(warnings) != 1 {
@@ -555,7 +557,7 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 	req.RepoPath = t.TempDir()
 	req.Analyse.TopN = 1
 	req.Analyse.Format = report.FormatJSON
-	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {

@@ -15,11 +15,17 @@ const (
 	unexpectedErrFmt     = "unexpected error: %v"
 	modeMismatchFmt      = "expected mode %q, got %q"
 	languageFlagName     = "--language"
+	includeFlagName      = "--include"
+	excludeFlagName      = "--exclude"
 	suggestOnlyFlag      = "--suggest-only"
 	failAliasFlag        = "--fail-on-increase"
 	thresholdFailFlag    = "--threshold-fail-on-increase"
 	thresholdLowWarnFlag = "--threshold-low-confidence-warning"
 	scoreWeightFlag      = "--score-weight-usage"
+	scopeGoGlob          = "src/**/*.go"
+	scopeExcludeTestGlob = "**/*_test.go"
+	scopeVendorGlob      = "vendor/**"
+	scopeIncludeCombined = "src/**/*.go,internal/**/*.go,cmd/**/*.go"
 	parseConfigFileName  = ".lopper.yml"
 	repoFlagName         = "--repo"
 )
@@ -202,13 +208,13 @@ func TestParseArgsAnalyseScopeFlags(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"analyse",
 		"--top", "3",
-		"--include", "src/**/*.go,internal/**/*.go",
-		"--exclude", "**/*_test.go",
+		includeFlagName, "src/**/*.go,internal/**/*.go",
+		excludeFlagName, scopeExcludeTestGlob,
 	})
 	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go" {
 		t.Fatalf("unexpected include patterns: %q", got)
 	}
-	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != "**/*_test.go" {
+	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != scopeExcludeTestGlob {
 		t.Fatalf("unexpected exclude patterns: %q", got)
 	}
 }
@@ -217,54 +223,54 @@ func TestParseArgsAnalyseScopeFlagsRepeatable(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"analyse",
 		"--top", "3",
-		"--include", "src/**/*.go",
-		"--include", "internal/**/*.go,cmd/**/*.go",
-		"--exclude", "**/*_test.go",
-		"--exclude", "vendor/**",
+		includeFlagName, scopeGoGlob,
+		includeFlagName, "internal/**/*.go,cmd/**/*.go",
+		excludeFlagName, scopeExcludeTestGlob,
+		excludeFlagName, scopeVendorGlob,
 	})
-	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
+	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != scopeIncludeCombined {
 		t.Fatalf("unexpected include patterns for repeatable flags: %q", got)
 	}
-	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != "**/*_test.go,vendor/**" {
+	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != scopeExcludeTestGlob+","+scopeVendorGlob {
 		t.Fatalf("unexpected exclude patterns for repeatable flags: %q", got)
 	}
 }
 
 func TestPatternListFlagSetMergesAndDedupes(t *testing.T) {
-	flagValue := newPatternListFlag([]string{"src/**/*.go"})
-	if err := flagValue.Set("internal/**/*.go,src/**/*.go"); err != nil {
+	flagValue := newPatternListFlag([]string{scopeGoGlob})
+	if err := flagValue.Set("internal/**/*.go," + scopeGoGlob); err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
 	if err := flagValue.Set("cmd/**/*.go"); err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if got := strings.Join(flagValue.Values(), ","); got != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
+	if got := strings.Join(flagValue.Values(), ","); got != scopeIncludeCombined {
 		t.Fatalf("unexpected merged pattern list: %q", got)
 	}
-	if flagValue.String() != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
+	if flagValue.String() != scopeIncludeCombined {
 		t.Fatalf("unexpected pattern list string form: %q", flagValue.String())
 	}
 }
 
 func TestResolveScopePatternsUsesConfigWhenFlagNotVisited(t *testing.T) {
-	configValues := []string{"src/**/*.go"}
+	configValues := []string{scopeGoGlob}
 	got := resolveScopePatterns(map[string]bool{}, "include", []string{"ignored/**/*.go"}, configValues)
-	if strings.Join(got, ",") != "src/**/*.go" {
+	if strings.Join(got, ",") != scopeGoGlob {
 		t.Fatalf("expected config scope values when include flag not visited, got %q", strings.Join(got, ","))
 	}
 }
 
 func TestResolveScopePatternsVisitedWithEmptyCLIValuesReturnsNil(t *testing.T) {
-	got := resolveScopePatterns(map[string]bool{"include": true}, "include", nil, []string{"src/**/*.go"})
+	got := resolveScopePatterns(map[string]bool{"include": true}, "include", nil, []string{scopeGoGlob})
 	if len(got) != 0 {
 		t.Fatalf("expected nil/empty scope patterns when include flag is visited with no values, got %#v", got)
 	}
 }
 
 func TestMergePatternsWithEmptyNextKeepsExisting(t *testing.T) {
-	existing := []string{"src/**/*.go"}
+	existing := []string{scopeGoGlob}
 	merged := mergePatterns(existing, nil)
-	if strings.Join(merged, ",") != "src/**/*.go" {
+	if strings.Join(merged, ",") != scopeGoGlob {
 		t.Fatalf("expected merge with empty next to preserve existing patterns, got %#v", merged)
 	}
 }
@@ -397,12 +403,12 @@ func TestParseArgsAnalyseScopeConfigPrecedence(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"analyse", "--top", "5",
 		repoFlagName, repo,
-		"--exclude", "vendor/**",
+		excludeFlagName, scopeVendorGlob,
 	})
-	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go" {
+	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != scopeGoGlob {
 		t.Fatalf("expected include patterns from config, got %q", got)
 	}
-	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != "vendor/**" {
+	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != scopeVendorGlob {
 		t.Fatalf("expected CLI exclude override, got %q", got)
 	}
 }

@@ -308,7 +308,7 @@ func (f *patternListFlag) Values() []string {
 	return append([]string{}, f.patterns...)
 }
 
-func mergePatterns(existing []string, next []string) []string {
+func mergePatterns(existing, next []string) []string {
 	if len(next) == 0 {
 		return existing
 	}

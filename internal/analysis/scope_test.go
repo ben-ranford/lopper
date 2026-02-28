@@ -9,10 +9,11 @@ import (
 
 const scopeJSGlob = "src/**/*.js"
 const scopeGoGlob = "src/**/*.go"
+const scopeKeepJSPath = "src/keep.js"
 
 func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	repo := t.TempDir()
-	writeScopeFile(t, filepath.Join(repo, "src", "keep.js"), "export const keep = true\n")
+	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
 	writeScopeFile(t, filepath.Join(repo, "src", "skip.test.js"), "export const skip = true\n")
 	writeScopeFile(t, filepath.Join(repo, "README.md"), "doc\n")
 
@@ -22,7 +23,7 @@ func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	}
 	defer cleanup()
 
-	if _, err := os.Stat(filepath.Join(scopedPath, "src", "keep.js")); err != nil {
+	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
 		t.Fatalf("expected kept file copied into scoped workspace: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(scopedPath, "src", "skip.test.js")); !os.IsNotExist(err) {
@@ -77,7 +78,7 @@ func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 
 func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 	repo := t.TempDir()
-	writeScopeFile(t, filepath.Join(repo, "src", "keep.js"), "export const keep = true\n")
+	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
 	target := filepath.Join(repo, "outside.js")
 	writeScopeFile(t, target, "export const outside = true\n")
 	linkPath := filepath.Join(repo, "src", "linked.js")
@@ -91,7 +92,7 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 	}
 	defer cleanup()
 
-	if _, err := os.Stat(filepath.Join(scopedPath, "src", "keep.js")); err != nil {
+	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
 		t.Fatalf("expected regular in-scope file to be copied: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(scopedPath, "src", "linked.js")); !os.IsNotExist(err) {
