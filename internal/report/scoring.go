@@ -19,7 +19,17 @@ const (
 	confidenceReasonRiskLow                = "risk-low"
 	confidenceReasonRiskMedium             = "risk-medium"
 	confidenceReasonRiskHigh               = "risk-high"
+	confidenceReasonCodeCount              = 6
 )
+
+var orderedConfidenceReasonCodeValues = [...]string{
+	confidenceReasonMissingExportInventory,
+	confidenceReasonRuntimeOnlyUsage,
+	confidenceReasonWildcardImport,
+	confidenceReasonRiskHigh,
+	confidenceReasonRiskMedium,
+	confidenceReasonRiskLow,
+}
 
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
 	AnnotateRemovalCandidateScoresWithWeights(dependencies, DefaultRemovalCandidateWeights())
@@ -137,26 +147,26 @@ func dependencyConfidenceSignal(dep DependencyReport) (float64, []string) {
 
 func AnnotateFindingConfidence(dependencies []DependencyReport) {
 	for depIndex := range dependencies {
-		score, _ := dependencyConfidenceSignal(dependencies[depIndex])
-		reasonCodes := dependencyConfidenceReasonCodes(dependencies[depIndex])
+		penalty, rawReasonCodes, _ := confidenceAssessment(dependencies[depIndex])
+		score := clamp(100-penalty, 0, 100)
+		reasonCodes := orderedConfidenceReasonCodes(rawReasonCodes)
 		score = roundTo(score, 1)
 
 		for findingIndex := range dependencies[depIndex].UnusedExports {
 			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceScore = score
-			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceReasonCodes = slices.Clip(reasonCodes)
+			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceReasonCodes = reasonCodes
 		}
 		for findingIndex := range dependencies[depIndex].UnusedImports {
 			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceScore = score
-			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceReasonCodes = slices.Clip(reasonCodes)
+			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceReasonCodes = reasonCodes
 		}
 		for findingIndex := range dependencies[depIndex].Recommendations {
 			dependencies[depIndex].Recommendations[findingIndex].ConfidenceScore = score
-			dependencies[depIndex].Recommendations[findingIndex].ConfidenceReasonCodes = slices.Clip(reasonCodes)
+			dependencies[depIndex].Recommendations[findingIndex].ConfidenceReasonCodes = reasonCodes
 		}
 		for findingIndex := range dependencies[depIndex].RiskCues {
-			item := &dependencies[depIndex].RiskCues[findingIndex]
-			item.ConfidenceScore = score
-			item.ConfidenceReasonCodes = slices.Clip(reasonCodes)
+			dependencies[depIndex].RiskCues[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].RiskCues[findingIndex].ConfidenceReasonCodes = reasonCodes
 		}
 	}
 }
@@ -181,19 +191,10 @@ func FilterFindingsByConfidence(dependencies []DependencyReport, minConfidence f
 	}
 }
 
-func dependencyConfidenceReasonCodes(dep DependencyReport) []string {
-	_, reasonCodes, _ := confidenceAssessment(dep)
-	ordered := [...]string{
-		confidenceReasonMissingExportInventory,
-		confidenceReasonRuntimeOnlyUsage,
-		confidenceReasonWildcardImport,
-		confidenceReasonRiskHigh,
-		confidenceReasonRiskMedium,
-		confidenceReasonRiskLow,
-	}
-	result := make([]string, 0, len(ordered))
-	for _, candidate := range ordered {
-		if !containsCode(reasonCodes, candidate) {
+func orderedConfidenceReasonCodes(reasonCodes []string) []string {
+	result := make([]string, 0, len(orderedConfidenceReasonCodeValues))
+	for _, candidate := range orderedConfidenceReasonCodeValues {
+		if !slices.Contains(reasonCodes, candidate) {
 			continue
 		}
 		result = append(result, candidate)
@@ -203,7 +204,7 @@ func dependencyConfidenceReasonCodes(dep DependencyReport) []string {
 
 func confidenceAssessment(dep DependencyReport) (float64, []string, []string) {
 	penalty := 0.0
-	reasonCodes := make([]string, 0, 6)
+	reasonCodes := make([]string, 0, confidenceReasonCodeCount)
 	rationale := make([]string, 0, 4)
 	appendPenalty := func(amount float64, code string) {
 		penalty += amount
@@ -233,17 +234,8 @@ func confidenceAssessment(dep DependencyReport) (float64, []string, []string) {
 	return penalty, reasonCodes, rationale
 }
 
-func containsCode(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 func filterByConfidenceScore[T any](values []T, minConfidence float64, score func(item T) float64) []T {
-	filtered := values[:0]
+	filtered := make([]T, 0, len(values))
 	for _, value := range values {
 		if score(value) < minConfidence {
 			continue

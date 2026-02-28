@@ -174,7 +174,16 @@ func TestFilterFindingsByConfidence(t *testing.T) {
 	FilterFindingsByConfidence(deps, 95)
 
 	dep := deps[0]
-	if len(dep.UnusedExports) != 0 || len(dep.UnusedImports) != 0 || len(dep.RiskCues) != 0 || len(dep.Recommendations) != 0 {
-		t.Fatalf("expected findings below threshold to be removed, got %#v", dep)
+	if len(dep.UnusedExports) != 0 {
+		t.Fatalf("expected unused exports to be filtered, got %#v", dep.UnusedExports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be filtered, got %#v", dep.UnusedImports)
+	}
+	if len(dep.RiskCues) != 0 {
+		t.Fatalf("expected risk cues to be filtered, got %#v", dep.RiskCues)
+	}
+	if len(dep.Recommendations) != 0 {
+		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
 	}
 }

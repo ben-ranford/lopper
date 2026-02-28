@@ -332,8 +332,17 @@ func TestServiceAppliesDeterministicFindingConfidenceFiltering(t *testing.T) {
 	}
 
 	dep := reportData.Dependencies[0]
-	if len(dep.UnusedExports) != 0 || len(dep.UnusedImports) != 0 || len(dep.Recommendations) != 0 || len(dep.RiskCues) != 0 {
-		t.Fatalf("expected low-confidence findings to be filtered, got %#v", dep)
+	if len(dep.UnusedExports) != 0 {
+		t.Fatalf("expected unused exports to be filtered, got %#v", dep.UnusedExports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be filtered, got %#v", dep.UnusedImports)
+	}
+	if len(dep.Recommendations) != 0 {
+		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
+	}
+	if len(dep.RiskCues) != 0 {
+		t.Fatalf("expected risk cues to be filtered, got %#v", dep.RiskCues)
 	}
 }
 
