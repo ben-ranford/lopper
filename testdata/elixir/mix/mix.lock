@@ -1,0 +1,4 @@
+%{
+  "jason": {:hex, :jason, "1.4.1", "checksum", [:mix], [], "hexpm", "checksum"},
+  "nimble_csv": {:hex, :nimble_csv, "1.2.0", "checksum", [:mix], [], "hexpm", "checksum"}
+}
