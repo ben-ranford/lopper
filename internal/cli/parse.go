@@ -120,6 +120,7 @@ type analyseFlagValues struct {
 	configPath                    *string
 	includePatterns               *patternListFlag
 	excludePatterns               *patternListFlag
+	lockfileDriftPolicy           *string
 }
 
 func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
@@ -155,6 +156,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
 		includePatterns:               includePatterns,
 		excludePatterns:               excludePatterns,
+		lockfileDriftPolicy:           fs.String("lockfile-drift-policy", req.Analyse.Thresholds.LockfileDriftPolicy, "lockfile drift policy (off, warn, fail)"),
 	}
 	fs.Var(includePatterns, "include", "comma-separated include path globs (repeatable)")
 	fs.Var(excludePatterns, "exclude", "comma-separated exclude path globs (repeatable)")
@@ -254,6 +256,9 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["score-weight-confidence"] {
 		overrides.RemovalCandidateWeightConfidence = values.scoreWeightConfidence
 	}
+	if visited["lockfile-drift-policy"] {
+		overrides.LockfileDriftPolicy = values.lockfileDriftPolicy
+	}
 	return overrides, nil
 }
 
@@ -263,7 +268,8 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.MinUsagePercentForRecommendations != nil ||
 		overrides.RemovalCandidateWeightUsage != nil ||
 		overrides.RemovalCandidateWeightImpact != nil ||
-		overrides.RemovalCandidateWeightConfidence != nil
+		overrides.RemovalCandidateWeightConfidence != nil ||
+		overrides.LockfileDriftPolicy != nil
 }
 
 func resolveScopePatterns(visited map[string]bool, flagName string, cliValues []string, configValues []string) []string {
@@ -435,7 +441,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

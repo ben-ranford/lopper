@@ -64,6 +64,16 @@ func TestRunFailOnIncreaseError(t *testing.T) {
 	}
 }
 
+func TestRunLockfileDriftError(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	c := New(&fakeRunner{err: app.ErrLockfileDrift}, &out, &errOut)
+	code := c.Run(context.Background(), []string{"analyse", "lodash"})
+	if code != 4 {
+		t.Fatalf("expected lockfile-drift exit code 4, got %d", code)
+	}
+}
+
 func TestRunGenericRunnerError(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

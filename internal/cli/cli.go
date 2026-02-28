@@ -89,6 +89,9 @@ func exitCodeForRunError(runErr error) int {
 	if errors.Is(runErr, app.ErrFailOnIncrease) {
 		return 3
 	}
+	if errors.Is(runErr, app.ErrLockfileDrift) {
+		return 4
+	}
 	return 1
 }
 

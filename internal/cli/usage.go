@@ -3,9 +3,8 @@ package cli
 const usage = `Usage:
   lopper [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-<<<<<<< HEAD
-  lopper analyse <dependency> [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--suggest-only]
-  lopper analyse --top N [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--fail-on-increase PERCENT]
+  lopper analyse <dependency> [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--suggest-only]
+  lopper analyse --top N [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)
@@ -28,6 +27,8 @@ Options:
   --exclude GLOBS          Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
   --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
+  --lockfile-drift-policy MODE
+                              Lockfile drift policy (off, warn, fail; default: warn)
   --threshold-fail-on-increase N
                               Fail when waste increase is greater than N (CLI > config > defaults)
   --threshold-low-confidence-warning N

@@ -3,6 +3,7 @@ package thresholds
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 const (
@@ -12,7 +13,16 @@ const (
 	DefaultRemovalCandidateWeightUsage       = 0.50
 	DefaultRemovalCandidateWeightImpact      = 0.30
 	DefaultRemovalCandidateWeightConfidence  = 0.20
+	DefaultLockfileDriftPolicy               = "warn"
 )
+
+var validLockfileDriftPolicies = map[string]struct{}{
+	"off":  {},
+	"warn": {},
+	"fail": {},
+}
+
+var lockfileDriftPolicyValues = []string{"off", "warn", "fail"}
 
 type Values struct {
 	FailOnIncreasePercent             int
@@ -21,6 +31,7 @@ type Values struct {
 	RemovalCandidateWeightUsage       float64
 	RemovalCandidateWeightImpact      float64
 	RemovalCandidateWeightConfidence  float64
+	LockfileDriftPolicy               string
 }
 
 type Overrides struct {
@@ -30,6 +41,7 @@ type Overrides struct {
 	RemovalCandidateWeightUsage       *float64
 	RemovalCandidateWeightImpact      *float64
 	RemovalCandidateWeightConfidence  *float64
+	LockfileDriftPolicy               *string
 }
 
 func Defaults() Values {
@@ -40,6 +52,7 @@ func Defaults() Values {
 		RemovalCandidateWeightUsage:       DefaultRemovalCandidateWeightUsage,
 		RemovalCandidateWeightImpact:      DefaultRemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  DefaultRemovalCandidateWeightConfidence,
+		LockfileDriftPolicy:               DefaultLockfileDriftPolicy,
 	}
 }
 
@@ -65,6 +78,9 @@ func (v *Values) Validate() error {
 	if !hasPositiveWeight(v.RemovalCandidateWeightUsage, v.RemovalCandidateWeightImpact, v.RemovalCandidateWeightConfidence) {
 		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
 	}
+	if err := validateLockfileDriftPolicy(v.LockfileDriftPolicy); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -88,6 +104,9 @@ func (o *Overrides) Apply(base Values) Values {
 	if o.RemovalCandidateWeightConfidence != nil {
 		resolved.RemovalCandidateWeightConfidence = *o.RemovalCandidateWeightConfidence
 	}
+	if o.LockfileDriftPolicy != nil {
+		resolved.LockfileDriftPolicy = *o.LockfileDriftPolicy
+	}
 	return resolved
 }
 
@@ -108,6 +127,9 @@ func (o *Overrides) Validate() error {
 	if err := validateOptionalWeights(o); err != nil {
 		return err
 	}
+	if err := validateOptionalString(o.LockfileDriftPolicy, validateLockfileDriftPolicy); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -116,6 +138,13 @@ func validateFailOnIncrease(value int) error {
 		return fmt.Errorf("invalid threshold fail_on_increase_percent: %d (must be >= 0)", value)
 	}
 	return nil
+}
+
+func validateLockfileDriftPolicy(value string) error {
+	if _, ok := validLockfileDriftPolicies[value]; ok {
+		return nil
+	}
+	return fmt.Errorf("invalid threshold lockfile_drift_policy: %q (must be one of: %s)", value, strings.Join(lockfileDriftPolicyValues, ", "))
 }
 
 func validatePercentageRange(name string, value int) error {
@@ -156,6 +185,13 @@ func validateOptionalWeight(name string, value *float64) error {
 		return nil
 	}
 	return validateWeight(name, *value)
+}
+
+func validateOptionalString(value *string, validate func(string) error) error {
+	if value == nil {
+		return nil
+	}
+	return validate(*value)
 }
 
 func validateOptionalWeights(overrides *Overrides) error {

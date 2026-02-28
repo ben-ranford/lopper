@@ -261,8 +261,9 @@ func copyFile(repoPath, scopedRoot, relativePath string) error {
 	if !isSafeRelativePath(relativePath) {
 		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
 	}
-	sourcePath := filepath.Join(repoPath, relativePath)
-	targetPath := filepath.Join(scopedRoot, relativePath)
+	cleanRelativePath := filepath.Clean(relativePath)
+	sourcePath := filepath.Join(repoPath, cleanRelativePath)
+	targetPath := filepath.Join(scopedRoot, cleanRelativePath)
 	if !pathWithin(repoPath, sourcePath) {
 		return fmt.Errorf("source path escapes repository scope: %s", sourcePath)
 	}
@@ -272,14 +273,26 @@ func copyFile(repoPath, scopedRoot, relativePath string) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return err
 	}
-	// #nosec G304 -- sourcePath originates from WalkDir over the repository root and passes pathWithin checks above.
-	source, err := os.Open(sourcePath)
+
+	sourceRoot, err := os.OpenRoot(repoPath)
+	if err != nil {
+		return fmt.Errorf("open source root: %w", err)
+	}
+	defer sourceRoot.Close()
+
+	source, err := sourceRoot.Open(cleanRelativePath)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
-	// #nosec G304 -- targetPath is derived from validated relativePath and constrained by pathWithin checks above.
-	target, err := os.Create(targetPath)
+
+	targetRoot, err := os.OpenRoot(scopedRoot)
+	if err != nil {
+		return fmt.Errorf("open target root: %w", err)
+	}
+	defer targetRoot.Close()
+
+	target, err := targetRoot.OpenFile(cleanRelativePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
