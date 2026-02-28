@@ -63,8 +63,15 @@ func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool)
 
 func walkLockfileDrift(ctx context.Context, normalizedPath string, changedFiles map[string]struct{}, hasGitContext bool, stopOnFirst bool) ([]string, error) {
 	warnings := make([]string, 0, len(lockfileRules))
+	state := lockfileWalkState{
+		normalizedPath: normalizedPath,
+		changedFiles:   changedFiles,
+		hasGitContext:  hasGitContext,
+		stopOnFirst:    stopOnFirst,
+		warnings:       &warnings,
+	}
 	err := filepath.WalkDir(normalizedPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		return processLockfileDir(ctx, normalizedPath, path, entry, walkErr, changedFiles, hasGitContext, stopOnFirst, &warnings)
+		return processLockfileDir(ctx, path, entry, walkErr, state)
 	})
 	if err != nil && err != fs.SkipAll {
 		return nil, err
@@ -72,7 +79,15 @@ func walkLockfileDrift(ctx context.Context, normalizedPath string, changedFiles 
 	return warnings, nil
 }
 
-func processLockfileDir(ctx context.Context, normalizedPath string, path string, entry fs.DirEntry, walkErr error, changedFiles map[string]struct{}, hasGitContext bool, stopOnFirst bool, warnings *[]string) error {
+type lockfileWalkState struct {
+	normalizedPath string
+	changedFiles   map[string]struct{}
+	hasGitContext  bool
+	stopOnFirst    bool
+	warnings       *[]string
+}
+
+func processLockfileDir(ctx context.Context, path string, entry fs.DirEntry, walkErr error, state lockfileWalkState) error {
 	if walkErr != nil {
 		return walkErr
 	}
@@ -82,7 +97,7 @@ func processLockfileDir(ctx context.Context, normalizedPath string, path string,
 	if !entry.IsDir() {
 		return nil
 	}
-	if path != normalizedPath && shouldSkipLockfileDir(entry.Name()) {
+	if path != state.normalizedPath && shouldSkipLockfileDir(entry.Name()) {
 		return filepath.SkipDir
 	}
 	fileInfos, err := readDirectoryFiles(path)
@@ -90,8 +105,8 @@ func processLockfileDir(ctx context.Context, normalizedPath string, path string,
 		return err
 	}
 	for _, rule := range lockfileRules {
-		*warnings = append(*warnings, detectDriftForRule(normalizedPath, path, fileInfos, rule, changedFiles, hasGitContext)...)
-		if stopOnFirst && len(*warnings) > 0 {
+		*state.warnings = append(*state.warnings, detectDriftForRule(state.normalizedPath, path, fileInfos, rule, state.changedFiles, state.hasGitContext)...)
+		if state.stopOnFirst && len(*state.warnings) > 0 {
 			return fs.SkipAll
 		}
 	}

@@ -171,7 +171,7 @@ func findPackedRefSHA(packedRefs string, ref string) string {
 	return ""
 }
 
-func resolveRefLookupError(ref string, refErr error, packedErr error) error {
+func resolveRefLookupError(ref string, refErr, packedErr error) error {
 	if refErr != nil {
 		return refErr
 	}
