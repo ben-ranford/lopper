@@ -14,6 +14,7 @@ import (
 )
 
 const lockfileDriftWarningPrefix = "lockfile drift detected: "
+const safeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
 
 type lockfileRule struct {
 	manager   string
@@ -275,14 +276,16 @@ func parseGitOutputLines(output []byte) []string {
 
 func sanitizedGitEnv() []string {
 	env := os.Environ()
-	filtered := make([]string, 0, len(env))
+	filtered := make([]string, 0, len(env)+1)
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "GIT_DIR=") ||
 			strings.HasPrefix(entry, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(entry, "GIT_INDEX_FILE=") {
+			strings.HasPrefix(entry, "GIT_INDEX_FILE=") ||
+			strings.HasPrefix(entry, "PATH=") {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
+	filtered = append(filtered, safeSystemPath)
 	return filtered
 }
