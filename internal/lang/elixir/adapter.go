@@ -3,7 +3,6 @@ package elixir
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,17 +22,15 @@ type Adapter struct {
 }
 
 const (
-	mixExsName      = "mix.exs"
-	mixLockName     = "mix.lock"
-	maxDetectFiles  = 1536
-	maxScanFiles    = 3072
-	maxScannableMix = 2 * 1024 * 1024
+	mixExsName     = "mix.exs"
+	mixLockName    = "mix.lock"
+	maxDetectFiles = 1200
+	maxScanFiles   = 2400
 )
 
 var (
 	importPattern = regexp.MustCompile(`(?m)^\s*(?:alias|import|use|require)\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)`)
-	lockKeyQuoted = regexp.MustCompile(`"([a-z0-9_-]+)"\s*:`)
-	lockKeyAtom   = regexp.MustCompile(`:([a-z0-9_]+)\s*=>`)
+	quotedDepKey  = regexp.MustCompile(`"([a-z0-9_-]+)"\s*:`)
 	depsPattern   = regexp.MustCompile(`\{\s*:([a-zA-Z0-9_]+)\s*,`)
 )
 
@@ -64,40 +61,50 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 
-	umbrellaOnly, err := applyMixRootSignals(repoPath, &detection, roots)
+	umbrellaOnly, err := detectFromRootFiles(repoPath, &detection, roots)
 	if err != nil {
 		return language.Detection{}, err
 	}
-
-	visited := 0
-	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	err = shared.WalkRepoFiles(ctx, repoPath, maxDetectFiles, shouldSkipDir, func(path string, _ os.DirEntry) error {
+		switch strings.ToLower(filepath.Base(path)) {
+		case mixExsName:
+			detection.Matched = true
+			detection.Confidence += 10
+			dir := filepath.Dir(path)
+			if umbrellaOnly && samePath(dir, repoPath) {
+				return nil
+			}
+			roots[dir] = struct{}{}
+		case mixLockName:
+			detection.Matched = true
+			detection.Confidence += 8
+		default:
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext == ".ex" || ext == ".exs" {
+				detection.Matched = true
+				detection.Confidence += 2
+			}
 		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return walkElixirDetectionEntry(path, entry, repoPath, umbrellaOnly, roots, &detection, &visited)
+		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil {
 		return language.Detection{}, err
 	}
-
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func applyMixRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) (bool, error) {
+func detectFromRootFiles(repoPath string, detection *language.Detection, roots map[string]struct{}) (bool, error) {
 	umbrellaOnly := false
 	mixPath := filepath.Join(repoPath, mixExsName)
 	if _, err := os.Stat(mixPath); err == nil {
 		detection.Matched = true
-		detection.Confidence += 58
-		umbrella, readErr := isUmbrellaMixProject(repoPath, mixPath)
+		detection.Confidence += 55
+		content, readErr := safeio.ReadFileUnder(repoPath, mixPath)
 		if readErr != nil {
 			return false, readErr
 		}
-		umbrellaOnly = umbrella
-		if umbrella {
+		if strings.Contains(string(content), "apps_path:") {
+			umbrellaOnly = true
 			if err := addUmbrellaRoots(repoPath, roots); err != nil {
 				return false, err
 			}
@@ -107,11 +114,9 @@ func applyMixRootSignals(repoPath string, detection *language.Detection, roots m
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
-
-	lockPath := filepath.Join(repoPath, mixLockName)
-	if _, err := os.Stat(lockPath); err == nil {
+	if _, err := os.Stat(filepath.Join(repoPath, mixLockName)); err == nil {
 		detection.Matched = true
-		detection.Confidence += 22
+		detection.Confidence += 20
 		if !umbrellaOnly {
 			roots[repoPath] = struct{}{}
 		}
@@ -122,53 +127,18 @@ func applyMixRootSignals(repoPath string, detection *language.Detection, roots m
 }
 
 func addUmbrellaRoots(repoPath string, roots map[string]struct{}) error {
-	pattern := filepath.Join(repoPath, "apps", "*")
-	candidates, err := filepath.Glob(pattern)
+	apps, err := filepath.Glob(filepath.Join(repoPath, "apps", "*"))
 	if err != nil {
 		return err
 	}
-	for _, candidate := range candidates {
-		candidate = filepath.Clean(candidate)
-		info, statErr := os.Stat(candidate)
+	for _, app := range apps {
+		info, statErr := os.Stat(app)
 		if statErr != nil || !info.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(candidate, mixExsName)); err != nil {
-			continue
+		if _, err := os.Stat(filepath.Join(app, mixExsName)); err == nil {
+			roots[filepath.Clean(app)] = struct{}{}
 		}
-		roots[candidate] = struct{}{}
-	}
-	return nil
-}
-
-func walkElixirDetectionEntry(path string, entry fs.DirEntry, repoPath string, umbrellaOnly bool, roots map[string]struct{}, detection *language.Detection, visited *int) error {
-	if entry.IsDir() {
-		if shouldSkipDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-		return nil
-	}
-	(*visited)++
-	if *visited > maxDetectFiles {
-		return fs.SkipAll
-	}
-	switch strings.ToLower(entry.Name()) {
-	case mixExsName:
-		detection.Matched = true
-		detection.Confidence += 12
-		dir := filepath.Dir(path)
-		if umbrellaOnly && samePath(dir, repoPath) {
-			return nil
-		}
-		roots[dir] = struct{}{}
-	case mixLockName:
-		detection.Matched = true
-		detection.Confidence += 8
-	}
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == ".ex" || ext == ".exs" {
-		detection.Matched = true
-		detection.Confidence += 2
 	}
 	return nil
 }
@@ -178,174 +148,132 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	if err != nil {
 		return report.Report{}, err
 	}
-
-	result := report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    repoPath,
-	}
-
 	declared, err := loadDeclaredDependencies(repoPath)
 	if err != nil {
 		return report.Report{}, err
 	}
-	scan, err := scanRepo(ctx, repoPath, declared)
+	scan, err := scanElixirRepo(ctx, repoPath, declared)
 	if err != nil {
 		return report.Report{}, err
 	}
-	result.Warnings = append(result.Warnings, scan.Warnings...)
-
-	dependencies, warnings := buildRequestedElixirDependencies(req, scan)
-	result.Dependencies = dependencies
-	result.Warnings = append(result.Warnings, warnings...)
-	result.Summary = report.ComputeSummary(result.Dependencies)
-	return result, nil
-}
-
-type fileScan struct {
-	Imports []shared.ImportRecord
-	Usage   map[string]int
+	dependencies, warnings := buildRequestedDependencies(req, scan)
+	return report.Report{
+		GeneratedAt:   a.Clock(),
+		RepoPath:      repoPath,
+		Dependencies:  dependencies,
+		Warnings:      warnings,
+		Summary:       report.ComputeSummary(dependencies),
+		SchemaVersion: report.SchemaVersion,
+	}, nil
 }
 
 type scanResult struct {
-	Files    []fileScan
-	Warnings []string
-	Declared map[string]struct{}
+	files    []shared.FileUsage
+	declared map[string]struct{}
 }
 
-func scanRepo(ctx context.Context, repoPath string, declared map[string]struct{}) (scanResult, error) {
-	result := scanResult{Declared: declared}
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
+func scanElixirRepo(ctx context.Context, repoPath string, declared map[string]struct{}) (scanResult, error) {
+	result := scanResult{declared: declared}
+	err := shared.WalkRepoFiles(ctx, repoPath, maxScanFiles, shouldSkipDir, func(path string, _ os.DirEntry) error {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".ex" && ext != ".exs" {
 			return nil
 		}
-		visited++
-		if visited > maxScanFiles {
-			return fs.SkipAll
+		content, err := safeio.ReadFileUnder(repoPath, path)
+		if err != nil {
+			return err
 		}
-		return scanElixirFile(repoPath, path, &result)
-	})
-	if err != nil && err != fs.SkipAll {
-		return result, err
-	}
-	if len(result.Files) == 0 {
-		result.Warnings = append(result.Warnings, "no Elixir source files found for analysis")
-	}
-	return result, nil
-}
-
-func scanElixirFile(repoPath, path string, result *scanResult) error {
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext != ".ex" && ext != ".exs" {
+		relative, err := filepath.Rel(repoPath, path)
+		if err != nil {
+			relative = path
+		}
+		imports := parseImports(content, relative, declared)
+		result.files = append(result.files, shared.FileUsage{
+			Imports: imports,
+			Usage:   shared.CountUsage(content, imports),
+		})
 		return nil
-	}
-	content, err := safeio.ReadFileUnder(repoPath, path)
-	if err != nil {
-		return err
-	}
-	if len(content) > maxScannableMix {
-		result.Warnings = append(result.Warnings, "skipping large Elixir source file: "+filepath.Base(path))
-		return nil
-	}
-	relativePath, err := filepath.Rel(repoPath, path)
-	if err != nil {
-		relativePath = path
-	}
-	imports := parseImports(content, relativePath, result.Declared)
-	result.Files = append(result.Files, fileScan{
-		Imports: imports,
-		Usage:   shared.CountUsage(content, imports),
 	})
-	return nil
+	return result, err
 }
 
 func parseImports(content []byte, filePath string, declared map[string]struct{}) []shared.ImportRecord {
 	matches := importPattern.FindAllSubmatchIndex(content, -1)
 	records := make([]shared.ImportRecord, 0, len(matches))
 	for _, idx := range matches {
-		module := string(content[idx[2]:idx[3]])
-		module = strings.TrimSpace(module)
+		module := strings.TrimSpace(string(content[idx[2]:idx[3]]))
 		dependency := dependencyFromModule(module, declared)
 		if dependency == "" {
 			continue
 		}
-		local := localAlias(module)
 		line := 1 + strings.Count(string(content[:idx[0]]), "\n")
+		local := module
+		if parts := strings.Split(module, "."); len(parts) > 0 {
+			local = parts[len(parts)-1]
+		}
 		records = append(records, shared.ImportRecord{
 			Dependency: dependency,
 			Module:     module,
 			Name:       module,
 			Local:      local,
-			Location: report.Location{
-				File:   filePath,
-				Line:   line,
-				Column: 1,
-			},
+			Location:   report.Location{File: filePath, Line: line, Column: 1},
 		})
 	}
 	return records
 }
 
 func dependencyFromModule(module string, declared map[string]struct{}) string {
-	parts := strings.Split(module, ".")
-	if len(parts) == 0 || parts[0] == "" {
+	root := strings.Split(module, ".")[0]
+	normalized := normalizeDependencyID(camelToSnake(root))
+	if normalized == "" {
 		return ""
 	}
-	root := parts[0]
-	candidates := []string{
-		normalizeDependencyID(root),
-		normalizeDependencyID(camelToSnake(root)),
-		normalizeDependencyID(strings.ReplaceAll(camelToSnake(root), "_", "-")),
+	if _, ok := declared[normalized]; ok {
+		return normalized
 	}
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		if len(declared) == 0 {
-			return candidate
-		}
-		if _, ok := declared[candidate]; ok {
-			return candidate
-		}
+	alt := strings.ReplaceAll(normalized, "_", "-")
+	if _, ok := declared[alt]; ok {
+		return alt
 	}
 	return ""
 }
 
-func camelToSnake(value string) string {
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	for i, r := range value {
-		if unicode.IsUpper(r) && i > 0 {
-			b.WriteByte('_')
+func loadDeclaredDependencies(repoPath string) (map[string]struct{}, error) {
+	result := make(map[string]struct{})
+	readAndCollect := func(path string, collect func([]byte)) error {
+		content, err := safeio.ReadFileUnder(repoPath, path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		}
-		b.WriteRune(unicode.ToLower(r))
+		collect(content)
+		return nil
 	}
-	return b.String()
+	if err := readAndCollect(filepath.Join(repoPath, mixLockName), func(content []byte) {
+		for _, m := range quotedDepKey.FindAllSubmatch(content, -1) {
+			result[normalizeDependencyID(string(m[1]))] = struct{}{}
+		}
+	}); err != nil {
+		return nil, err
+	}
+	if err := readAndCollect(filepath.Join(repoPath, mixExsName), func(content []byte) {
+		for _, m := range depsPattern.FindAllSubmatch(content, -1) {
+			result[normalizeDependencyID(string(m[1]))] = struct{}{}
+		}
+	}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
-func localAlias(module string) string {
-	parts := strings.Split(module, ".")
-	return parts[len(parts)-1]
-}
-
-func buildRequestedElixirDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
-	build := func(dep string) (report.DependencyReport, []string) {
-		stats := shared.BuildDependencyStats(dep, fileUsages, normalizeDependencyID)
-		warnings := make([]string, 0)
+func buildRequestedDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	buildReport := func(dep string) (report.DependencyReport, []string) {
+		stats := shared.BuildDependencyStats(dep, scan.files, normalizeDependencyID)
+		warnings := []string(nil)
 		if !stats.HasImports {
-			warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dep))
+			warnings = []string{fmt.Sprintf("no imports found for dependency %q", dep)}
 		}
 		return report.DependencyReport{
 			Language:             "elixir",
@@ -353,77 +281,55 @@ func buildRequestedElixirDependencies(req language.Request, scan scanResult) ([]
 			UsedExportsCount:     stats.UsedCount,
 			TotalExportsCount:    stats.TotalCount,
 			UsedPercent:          stats.UsedPercent,
-			EstimatedUnusedBytes: 0,
 			TopUsedSymbols:       stats.TopSymbols,
 			UsedImports:          stats.UsedImports,
 			UnusedImports:        stats.UnusedImports,
+			EstimatedUnusedBytes: 0,
 		}, warnings
 	}
 	topBuilder := func(topN int, _ scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 		set := make(map[string]struct{})
-		for dep := range scan.Declared {
+		for dep := range scan.declared {
 			set[dep] = struct{}{}
 		}
-		for _, dep := range shared.ListDependencies(fileUsages, normalizeDependencyID) {
+		for _, dep := range shared.ListDependencies(scan.files, normalizeDependencyID) {
 			set[dep] = struct{}{}
 		}
-		deps := shared.SortedKeys(set)
-		return shared.BuildTopReports(topN, deps, build, weights)
+		return shared.BuildTopReports(topN, shared.SortedKeys(set), buildReport, weights)
 	}
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, func(dep string, _ scanResult) (report.DependencyReport, []string) {
-		return build(dep)
-	}, resolveRemovalCandidateWeights, topBuilder)
+	buildDependency := func(dep string, _ scanResult) (report.DependencyReport, []string) {
+		return buildReport(dep)
+	}
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, resolveWeights, topBuilder)
 }
 
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+func resolveWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
 	if value == nil {
 		return report.DefaultRemovalCandidateWeights()
 	}
 	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
-func loadDeclaredDependencies(repoPath string) (map[string]struct{}, error) {
-	declared := make(map[string]struct{})
-	lockPath := filepath.Join(repoPath, mixLockName)
-	if content, err := safeio.ReadFileUnder(repoPath, lockPath); err == nil {
-		for _, matches := range lockKeyQuoted.FindAllSubmatch(content, -1) {
-			declared[normalizeDependencyID(string(matches[1]))] = struct{}{}
-		}
-		for _, matches := range lockKeyAtom.FindAllSubmatch(content, -1) {
-			declared[normalizeDependencyID(strings.ReplaceAll(string(matches[1]), "_", "-"))] = struct{}{}
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	mixPath := filepath.Join(repoPath, mixExsName)
-	if content, err := safeio.ReadFileUnder(repoPath, mixPath); err == nil {
-		for _, matches := range depsPattern.FindAllSubmatch(content, -1) {
-			declared[normalizeDependencyID(strings.ReplaceAll(string(matches[1]), "_", "-"))] = struct{}{}
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	return declared, nil
-}
-
-func isUmbrellaMixProject(repoPath, mixPath string) (bool, error) {
-	content, err := safeio.ReadFileUnder(repoPath, mixPath)
-	if err != nil {
-		return false, err
-	}
-	return strings.Contains(string(content), "apps_path:"), nil
-}
-
-func samePath(left, right string) bool {
-	lc := filepath.Clean(left)
-	rc := filepath.Clean(right)
-	return lc == rc
-}
-
 func normalizeDependencyID(value string) string {
 	return strings.ReplaceAll(shared.NormalizeDependencyID(value), "_", "-")
 }
 
+func camelToSnake(value string) string {
+	var b strings.Builder
+	runes := []rune(value)
+	for i, r := range runes {
+		if unicode.IsUpper(r) && i > 0 && (unicode.IsLower(runes[i-1]) || (i+1 < len(runes) && unicode.IsLower(runes[i+1]))) {
+			b.WriteByte('_')
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
+}
+
 func shouldSkipDir(name string) bool {
 	return shared.ShouldSkipDir(strings.ToLower(name), elixirSkippedDirs)
+}
+
+func samePath(left, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
 }

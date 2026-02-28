@@ -4,68 +4,108 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestDetectWithConfidenceUmbrellaRoots(t *testing.T) {
-	repo := filepath.Join("..", "..", "..", "testdata", "elixir", "umbrella")
+func fixturePath(parts ...string) string {
+	base := []string{"..", "..", "..", "testdata", "elixir"}
+	return filepath.Join(append(base, parts...)...)
+}
 
-	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect elixir: %v", err)
+func TestDetectWithConfidenceFixtures(t *testing.T) {
+	tests := []struct {
+		name         string
+		repo         string
+		wantRootPart string
+		noRootPart   string
+	}{
+		{name: "mix", repo: fixturePath("mix"), wantRootPart: filepath.Join("testdata", "elixir", "mix")},
+		{
+			name:         "umbrella",
+			repo:         fixturePath("umbrella"),
+			wantRootPart: filepath.Join("umbrella", "apps", "api"),
+			noRootPart:   filepath.Join("testdata", "elixir", "umbrella"),
+		},
 	}
-	if !detection.Matched {
-		t.Fatalf("expected detection to match")
-	}
-	apiRoot := filepath.Join(repo, "apps", "api")
-	if !slices.Contains(detection.Roots, apiRoot) {
-		t.Fatalf("expected umbrella app root in detection roots, got %#v", detection.Roots)
-	}
-	if slices.Contains(detection.Roots, repo) {
-		t.Fatalf("did not expect umbrella root in detection roots: %#v", detection.Roots)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			detection, err := NewAdapter().DetectWithConfidence(context.Background(), tc.repo)
+			if err != nil {
+				t.Fatalf("detect: %v", err)
+			}
+			if !detection.Matched || detection.Confidence <= 0 {
+				t.Fatalf("expected detection match with confidence, got %#v", detection)
+			}
+			if len(detection.Roots) == 0 || !containsSuffix(detection.Roots, tc.wantRootPart) {
+				t.Fatalf("expected root containing %q, got %#v", tc.wantRootPart, detection.Roots)
+			}
+			if tc.noRootPart != "" && containsSuffix(detection.Roots, tc.noRootPart) {
+				t.Fatalf("did not expect root containing %q, got %#v", tc.noRootPart, detection.Roots)
+			}
+		})
 	}
 }
 
-func TestAnalyseDependencyFixture(t *testing.T) {
-	repo := filepath.Join("..", "..", "..", "testdata", "elixir", "mix")
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+func TestAnalyseFixtureDependencyAndTopN(t *testing.T) {
+	repo := fixturePath("mix")
+	adapter := NewAdapter()
+	byDependency, err := adapter.Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
 		Dependency: "jason",
 	})
 	if err != nil {
-		t.Fatalf("analyse fixture: %v", err)
+		t.Fatalf("analyse dependency: %v", err)
 	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	if len(byDependency.Dependencies) != 1 {
+		t.Fatalf("expected one dependency, got %d", len(byDependency.Dependencies))
 	}
-	dep := reportData.Dependencies[0]
-	if dep.Language != "elixir" {
-		t.Fatalf("expected language elixir, got %q", dep.Language)
+	if byDependency.Dependencies[0].Language != "elixir" || byDependency.Dependencies[0].UsedExportsCount == 0 {
+		t.Fatalf("expected used elixir dependency row, got %#v", byDependency.Dependencies[0])
 	}
-	if dep.UsedExportsCount == 0 {
-		t.Fatalf("expected used imports > 0")
+
+	top, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 5})
+	if err != nil {
+		t.Fatalf("analyse top: %v", err)
+	}
+	names := make([]string, 0, len(top.Dependencies))
+	for _, dep := range top.Dependencies {
+		names = append(names, dep.Name)
+	}
+	if !slices.Contains(names, "jason") || !slices.Contains(names, "nimble-csv") {
+		t.Fatalf("expected jason and nimble-csv in top dependencies, got %#v", names)
 	}
 }
 
-func TestAnalyseTopNFixture(t *testing.T) {
-	repo := filepath.Join("..", "..", "..", "testdata", "elixir", "mix")
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath: repo,
-		TopN:     5,
-	})
+func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "mix.exs"), "defp deps, do: [{:ecto_sql, \"~> 3.0\"}]")
+	declared, err := loadDeclaredDependencies(repo)
 	if err != nil {
-		t.Fatalf("analyse top fixture: %v", err)
+		t.Fatalf("load deps: %v", err)
 	}
-	if len(reportData.Dependencies) == 0 {
-		t.Fatalf("expected dependencies in top report")
+	if _, ok := declared["ecto-sql"]; !ok {
+		t.Fatalf("expected ecto-sql in declared deps, got %#v", declared)
 	}
-	names := make([]string, 0, len(reportData.Dependencies))
-	for _, dep := range reportData.Dependencies {
-		names = append(names, dep.Name)
+	if got := camelToSnake("PhoenixHTML"); got != "phoenix_html" {
+		t.Fatalf("unexpected snake case value: %q", got)
 	}
-	if !slices.Contains(names, "jason") {
-		t.Fatalf("expected jason in dependencies, got %#v", names)
+	if dep := dependencyFromModule("Ecto.Changeset", declared); dep != "ecto-sql" && dep != "" {
+		t.Fatalf("unexpected dependency resolution: %q", dep)
 	}
+	if !shouldSkipDir("_build") || shouldSkipDir("lib") {
+		t.Fatalf("unexpected skip-dir behavior")
+	}
+}
+
+func containsSuffix(values []string, suffix string) bool {
+	for _, value := range values {
+		if strings.HasSuffix(value, suffix) {
+			return true
+		}
+	}
+	return false
 }
