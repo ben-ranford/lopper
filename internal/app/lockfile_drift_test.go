@@ -389,7 +389,7 @@ func TestGitExecutableAvailable(t *testing.T) {
 	if gitExecutableAvailable(filePath) {
 		t.Fatalf("expected non-executable file to be unavailable")
 	}
-	if err := os.Chmod(filePath, 0o755); err != nil {
+	if err := os.Chmod(filePath, 0o700); err != nil {
 		t.Fatalf("chmod file executable: %v", err)
 	}
 	if !gitExecutableAvailable(filePath) {
