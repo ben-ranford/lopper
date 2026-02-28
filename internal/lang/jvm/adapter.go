@@ -134,7 +134,7 @@ func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{
 func sourceLayoutModuleRoot(path string) string {
 	normalized := filepath.ToSlash(filepath.Clean(path))
 	index := strings.Index(normalized, "/src/")
-	if index <= 0 {
+	if index < 0 {
 		return ""
 	}
 
@@ -291,6 +291,8 @@ var (
 	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
 )
 
+const importPatternMatchGroups = 4
+
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
 	if len(matches) != 2 {
@@ -303,7 +305,7 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 	return shared.ParseImportLines(content, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != 4 {
+		if len(matches) != importPatternMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
