@@ -358,7 +358,7 @@ func formatPRComment(report Report) string {
 	buffer.WriteString(fmt.Sprintf("| Dependency count | %s |\n", signedInt(comparison.SummaryDelta.DependencyCountDelta)))
 	buffer.WriteString(fmt.Sprintf("| Used percent | %s |\n", signedPct(comparison.SummaryDelta.UsedPercentDelta)))
 	buffer.WriteString(fmt.Sprintf("| Waste percent | %s |\n", signedPct(comparison.SummaryDelta.WastePercentDelta)))
-	buffer.WriteString(fmt.Sprintf("| Estimated unused bytes | %s |\n", signedInt64(comparison.SummaryDelta.UnusedBytesDelta)))
+	buffer.WriteString(fmt.Sprintf("| Estimated unused bytes | %s |\n", signedBytes(comparison.SummaryDelta.UnusedBytesDelta)))
 	buffer.WriteString("\n")
 	buffer.WriteString("| Changed | Regressions | Progressions | Added | Removed | Unchanged |\n")
 	buffer.WriteString("| --- | --- | --- | --- | --- | --- |\n")
@@ -382,7 +382,7 @@ func formatPRComment(report Report) string {
 			signedPct(delta.UsedPercentDelta),
 			signedInt(delta.UsedExportsCountDelta),
 			signedInt(delta.TotalExportsCountDelta),
-			signedInt64(delta.EstimatedUnusedBytesDelta),
+			signedBytes(delta.EstimatedUnusedBytesDelta),
 		}
 		buffer.WriteString("| " + strings.Join(row, " | ") + " |\n")
 	}
@@ -432,11 +432,11 @@ func signedInt(value int) string {
 	return fmt.Sprintf("%d", value)
 }
 
-func signedInt64(value int64) string {
+func signedBytes(value int64) string {
 	if value >= 0 {
-		return fmt.Sprintf("+%d", value)
+		return "+" + formatBytes(value)
 	}
-	return fmt.Sprintf("%d", value)
+	return formatBytes(value)
 }
 
 func escapeMarkdownTable(value string) string {
