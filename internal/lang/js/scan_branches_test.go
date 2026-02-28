@@ -20,7 +20,7 @@ const ns = require("axios");
 const ignored = require(dynamicVar);
 function demo(arg) { const local = 1; return util.map([arg], m); }
 `
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o600); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 	result, err := ScanRepo(context.Background(), repo)
@@ -46,7 +46,7 @@ const dynamicReq = require(` + "`./${name}.js`" + `);
 const staticReq = require(` + "`lodash`" + `);
 const dynamicImport = import(` + "`./${name}.mjs`" + `);
 `
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(source), 0o600); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func assertIdentifierUsageCoverage(t *testing.T, usage map[string]int) {
 func TestExtractStringLiteralBranches(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte("const a = 'x'; const b = `y`; const c = z;")
-	tree, err := parser.Parse(context.Background(), "index.js", source)
+	tree, err := parser.Parse(context.Background(), testIndexJS, source)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
