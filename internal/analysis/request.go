@@ -17,6 +17,8 @@ type Request struct {
 	ConfigPath                        string
 	RuntimeProfile                    string
 	RuntimeTracePath                  string
+	IncludePatterns                   []string
+	ExcludePatterns                   []string
 	LowConfidenceWarningPercent       *int
 	MinUsagePercentForRecommendations *int
 	RemovalCandidateWeights           *report.RemovalCandidateWeights

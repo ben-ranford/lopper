@@ -22,6 +22,7 @@ const (
 	lopperJSONName   = "lopper.json"
 	customConfigName = "custom.yml"
 	basePackFileName = "base.yml"
+	overlayPackName  = "overlay.yml"
 )
 
 func TestLoadNoConfigFile(t *testing.T) {
@@ -369,7 +370,7 @@ thresholds:
   fail_on_increase_percent: 4
 `
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
-	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
 
 	result, err := LoadWithPolicy(repo, "")
@@ -393,7 +394,7 @@ thresholds:
 	if !strings.HasSuffix(result.PolicySources[0], lopperYMLName) {
 		t.Fatalf("expected highest-precedence source to be repo config, got %#v", result.PolicySources)
 	}
-	if !strings.HasSuffix(result.PolicySources[1], filepath.Join("packs", "overlay.yml")) {
+	if !strings.HasSuffix(result.PolicySources[1], filepath.Join("packs", overlayPackName)) {
 		t.Fatalf("expected overlay pack source, got %#v", result.PolicySources)
 	}
 	if !strings.HasSuffix(result.PolicySources[2], filepath.Join("packs", basePackFileName)) {
@@ -401,6 +402,44 @@ thresholds:
 	}
 	if result.PolicySources[3] != defaultPolicySource {
 		t.Fatalf("expected defaults source, got %#v", result.PolicySources)
+	}
+}
+
+func TestLoadWithPolicyScopePrecedence(t *testing.T) {
+	repo := t.TempDir()
+	basePolicy := `scope:
+  include:
+    - src/**
+  exclude:
+    - "**/*_test.go"
+`
+	overlayPolicy := `policy:
+  packs:
+    - ` + basePackFileName + `
+scope:
+  include:
+    - internal/**
+`
+	rootPolicy := `policy:
+  packs:
+    - packs/` + overlayPackName + `
+scope:
+  exclude:
+    - vendor/**
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with policy scope: %v", err)
+	}
+	if got := strings.Join(result.Scope.Include, ","); got != "internal/**" {
+		t.Fatalf("expected include from overlay scope, got %q", got)
+	}
+	if got := strings.Join(result.Scope.Exclude, ","); got != "vendor/**" {
+		t.Fatalf("expected exclude from root scope, got %q", got)
 	}
 }
 

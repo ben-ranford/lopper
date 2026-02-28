@@ -58,7 +58,8 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		return req, err
 	}
 
-	resolvedThresholds, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
+	visited := visitedFlags(fs)
+	resolvedThresholds, resolvedScope, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
 	if err != nil {
 		return req, err
 	}
@@ -82,6 +83,8 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		SaveBaseline:       *flags.saveBaseline,
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
+		IncludePatterns:    resolveScopePatterns(visited, "include", flags.includePatterns.Values(), resolvedScope.Include),
+		ExcludePatterns:    resolveScopePatterns(visited, "exclude", flags.excludePatterns.Values(), resolvedScope.Exclude),
 		ConfigPath:         resolvedConfigPath,
 		PolicySources:      policySources,
 		Thresholds:         resolvedThresholds,
@@ -115,11 +118,15 @@ type analyseFlagValues struct {
 	runtimeTracePath              *string
 	runtimeTestCommand            *string
 	configPath                    *string
+	includePatterns               *patternListFlag
+	excludePatterns               *patternListFlag
 }
 
 func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 	fs := flag.NewFlagSet("analyse", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	includePatterns := newPatternListFlag(req.Analyse.IncludePatterns)
+	excludePatterns := newPatternListFlag(req.Analyse.ExcludePatterns)
 
 	values := analyseFlagValues{
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
@@ -146,7 +153,11 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
 		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
+		includePatterns:               includePatterns,
+		excludePatterns:               excludePatterns,
 	}
+	fs.Var(includePatterns, "include", "comma-separated include path globs (repeatable)")
+	fs.Var(excludePatterns, "exclude", "comma-separated exclude path globs (repeatable)")
 
 	return fs, values
 }
@@ -195,26 +206,26 @@ func validateSuggestOnlyTarget(suggestOnly bool, dependency string, top int) err
 	return nil
 }
 
-func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, []string, string, error) {
+func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thresholds.Values, thresholds.PathScope, []string, string, error) {
 	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
 	}
 
 	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visitedFlags(fs), values)
 	if err != nil {
-		return thresholds.Values{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
 	}
 	policySources := append([]string{}, loadResult.PolicySources...)
 	if hasThresholdOverrides(cliOverrides) {
 		policySources = append([]string{"cli"}, policySources...)
 	}
-	return resolvedThresholds, policySources, loadResult.ConfigPath, nil
+	return resolvedThresholds, loadResult.Scope, policySources, loadResult.ConfigPath, nil
 }
 
 func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
@@ -253,6 +264,92 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.RemovalCandidateWeightUsage != nil ||
 		overrides.RemovalCandidateWeightImpact != nil ||
 		overrides.RemovalCandidateWeightConfidence != nil
+}
+
+func resolveScopePatterns(visited map[string]bool, flagName string, cliValues []string, configValues []string) []string {
+	if visited[flagName] {
+		if len(cliValues) == 0 {
+			return nil
+		}
+		return append([]string{}, cliValues...)
+	}
+	if len(configValues) == 0 {
+		return nil
+	}
+	return append([]string{}, configValues...)
+}
+
+type patternListFlag struct {
+	patterns []string
+}
+
+func newPatternListFlag(initial []string) *patternListFlag {
+	if len(initial) == 0 {
+		return &patternListFlag{}
+	}
+	return &patternListFlag{
+		patterns: append([]string{}, initial...),
+	}
+}
+
+func (f *patternListFlag) String() string {
+	return strings.Join(f.patterns, ",")
+}
+
+func (f *patternListFlag) Set(value string) error {
+	f.patterns = mergePatterns(f.patterns, splitPatternList(value))
+	return nil
+}
+
+func (f *patternListFlag) Values() []string {
+	if len(f.patterns) == 0 {
+		return nil
+	}
+	return append([]string{}, f.patterns...)
+}
+
+func mergePatterns(existing, next []string) []string {
+	if len(next) == 0 {
+		return existing
+	}
+	seen := make(map[string]struct{}, len(existing)+len(next))
+	merged := make([]string, 0, len(existing)+len(next))
+	for _, pattern := range existing {
+		if _, ok := seen[pattern]; ok {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		merged = append(merged, pattern)
+	}
+	for _, pattern := range next {
+		if _, ok := seen[pattern]; ok {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		merged = append(merged, pattern)
+	}
+	return merged
+}
+
+func splitPatternList(value string) []string {
+	parts := strings.Split(value, ",")
+	seen := make(map[string]struct{}, len(parts))
+	patterns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		patterns = append(patterns, trimmed)
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	return patterns
 }
 
 func parseTUI(args []string, req app.Request) (app.Request, error) {
@@ -338,7 +435,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

@@ -83,6 +83,8 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		ConfigPath:                        req.Analyse.ConfigPath,
 		RuntimeProfile:                    req.Analyse.RuntimeProfile,
 		RuntimeTracePath:                  runtimeTracePath,
+		IncludePatterns:                   req.Analyse.IncludePatterns,
+		ExcludePatterns:                   req.Analyse.ExcludePatterns,
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
 		RemovalCandidateWeights:           &weights,

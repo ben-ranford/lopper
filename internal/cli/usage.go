@@ -3,8 +3,9 @@ package cli
 const usage = `Usage:
   lopper [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  lopper analyse <dependency> [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--suggest-only]
-  lopper analyse --top N [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--fail-on-increase PERCENT]
+<<<<<<< HEAD
+  lopper analyse <dependency> [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--suggest-only]
+  lopper analyse --top N [--repo PATH] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|rust|dotnet] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--fail-on-increase PERCENT]
 
 Options:
   --repo PATH                Repository path (default: .)
@@ -23,6 +24,8 @@ Options:
   --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
   --runtime-test-command CMD Run command with JS/TS runtime hooks to capture trace before analysis
+  --include GLOBS          Comma-separated include path globs (repeatable; CLI overrides config scope.include)
+  --exclude GLOBS          Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
   --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
   --threshold-fail-on-increase N

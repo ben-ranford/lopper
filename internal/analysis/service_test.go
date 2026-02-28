@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -335,6 +336,42 @@ func TestServiceAnalyseCPPAlias(t *testing.T) {
 	}
 }
 
+func TestServiceAppliesScopeBeforeResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "marker.txt"), "present\n")
+
+	registry := language.NewRegistry()
+	adapter := &markerDetectAdapter{id: "marker", markerPath: "marker.txt"}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatalf("register marker adapter: %v", err)
+	}
+	service := &Service{Registry: registry}
+
+	withoutScope, err := service.Analyse(context.Background(), Request{
+		RepoPath: repo,
+		Language: "auto",
+		TopN:     1,
+	})
+	if err != nil {
+		t.Fatalf("analyse without scope: %v", err)
+	}
+	if len(withoutScope.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(withoutScope.Dependencies))
+	}
+
+	_, err = service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		Language:         "auto",
+		TopN:             1,
+		IncludePatterns:  []string{"src/**/*.js"},
+		ExcludePatterns:  nil,
+		RuntimeTracePath: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "no language adapter matched") {
+		t.Fatalf("expected no-language-match error when scope excludes adapter marker, got %v", err)
+	}
+}
+
 func hasRecommendationCode(dep report.DependencyReport, code string) bool {
 	for _, rec := range dep.Recommendations {
 		if rec.Code == code {
@@ -356,4 +393,39 @@ func (s *stubAdapter) Detect(context.Context, string) (bool, error) { return tru
 
 func (s *stubAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
 	return report.Report{}, nil
+}
+
+type markerDetectAdapter struct {
+	id         string
+	markerPath string
+}
+
+func (m *markerDetectAdapter) ID() string { return m.id }
+
+func (m *markerDetectAdapter) Aliases() []string { return nil }
+
+func (m *markerDetectAdapter) Detect(_ context.Context, repoPath string) (bool, error) {
+	_, err := os.Stat(filepath.Join(repoPath, m.markerPath))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (m *markerDetectAdapter) Analyse(_ context.Context, req language.Request) (report.Report, error) {
+	return report.Report{
+		RepoPath: req.RepoPath,
+		Dependencies: []report.DependencyReport{
+			{
+				Name:              "dep",
+				Language:          m.id,
+				UsedExportsCount:  1,
+				TotalExportsCount: 1,
+				UsedPercent:       100,
+			},
+		},
+	}, nil
 }
