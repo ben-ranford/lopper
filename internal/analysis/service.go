@@ -301,10 +301,14 @@ func scopedCandidateRoots(scopeMode string, roots []string, repoPath string) ([]
 }
 
 func changedRoots(roots []string, repoPath string, changedFiles []string) []string {
+	absoluteChangedFiles := make([]string, 0, len(changedFiles))
+	for _, file := range changedFiles {
+		absoluteChangedFiles = append(absoluteChangedFiles, filepath.Join(repoPath, file))
+	}
 	changed := make([]string, 0, len(roots))
 	for _, root := range roots {
-		for _, file := range changedFiles {
-			if rootContainsFile(root, filepath.Join(repoPath, file)) {
+		for _, file := range absoluteChangedFiles {
+			if rootContainsFile(root, file) {
 				changed = append(changed, root)
 				break
 			}
