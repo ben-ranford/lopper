@@ -220,6 +220,50 @@ func TestParseArgsAnalyseScopeFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseScopeFlagsRepeatable(t *testing.T) {
+	req, err := ParseArgs([]string{
+		"analyse",
+		"--top", "3",
+		"--include", "src/**/*.go",
+		"--include", "internal/**/*.go,cmd/**/*.go",
+		"--exclude", "**/*_test.go",
+		"--exclude", "vendor/**",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
+		t.Fatalf("unexpected include patterns for repeatable flags: %q", got)
+	}
+	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != "**/*_test.go,vendor/**" {
+		t.Fatalf("unexpected exclude patterns for repeatable flags: %q", got)
+	}
+}
+
+func TestPatternListFlagSetMergesAndDedupes(t *testing.T) {
+	flagValue := newPatternListFlag([]string{"src/**/*.go"})
+	if err := flagValue.Set("internal/**/*.go,src/**/*.go"); err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if err := flagValue.Set("cmd/**/*.go"); err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if got := strings.Join(flagValue.Values(), ","); got != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
+		t.Fatalf("unexpected merged pattern list: %q", got)
+	}
+	if flagValue.String() != "src/**/*.go,internal/**/*.go,cmd/**/*.go" {
+		t.Fatalf("unexpected pattern list string form: %q", flagValue.String())
+	}
+}
+
+func TestResolveScopePatternsUsesConfigWhenFlagNotVisited(t *testing.T) {
+	configValues := []string{"src/**/*.go"}
+	got := resolveScopePatterns(map[string]bool{}, "include", []string{"ignored/**/*.go"}, configValues)
+	if strings.Join(got, ",") != "src/**/*.go" {
+		t.Fatalf("expected config scope values when include flag not visited, got %q", strings.Join(got, ","))
+	}
+}
+
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if err != nil {

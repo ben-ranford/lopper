@@ -38,7 +38,14 @@ type scopeWalker struct {
 	scopedRoot      string
 	includePatterns []string
 	excludePatterns []string
+	includeCompiled []compiledPattern
+	excludeCompiled []compiledPattern
 	stats           *scopeStats
+}
+
+type compiledPattern struct {
+	pattern string
+	regex   *regexp.Regexp
 }
 
 func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
@@ -46,6 +53,14 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	excludePatterns = normalizePatterns(excludePatterns)
 	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
 		return repoPath, nil, noOpCleanup, nil
+	}
+	includeCompiled, err := compileGlobPatterns(includePatterns)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	excludeCompiled, err := compileGlobPatterns(excludePatterns)
+	if err != nil {
+		return "", nil, nil, err
 	}
 
 	scopedRoot, err := os.MkdirTemp("", "lopper-scope-*")
@@ -64,6 +79,8 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 		scopedRoot:      scopedRoot,
 		includePatterns: includePatterns,
 		excludePatterns: excludePatterns,
+		includeCompiled: includeCompiled,
+		excludeCompiled: excludeCompiled,
 		stats:           stats,
 	}
 
@@ -104,11 +121,18 @@ func (w *scopeWalker) walk(currentPath string, entry fs.DirEntry, walkErr error)
 		return err
 	}
 	slashed := filepath.ToSlash(filepath.Clean(relativePath))
-	includeMatched, includePattern := matchFirstPattern(slashed, w.includePatterns)
-	excludeMatched, excludePattern := matchFirstPattern(slashed, w.excludePatterns)
+	includeMatched, includePattern := matchFirstCompiledPattern(slashed, w.includeCompiled)
+	excludeMatched, excludePattern := matchFirstCompiledPattern(slashed, w.excludeCompiled)
 	shouldSkip := (len(w.includePatterns) > 0 && !includeMatched) || excludeMatched
 	if shouldSkip {
 		recordScopeSkip(w.stats, slashed, includeMatched, includePattern, excludeMatched, excludePattern)
+		return nil
+	}
+	if entry.Type()&fs.ModeSymlink != 0 {
+		if includeMatched {
+			w.stats.includeMatches[includePattern]++
+		}
+		recordScopeSkipReason(w.stats, slashed, "is symlink (not copied)")
 		return nil
 	}
 	if includeMatched {
@@ -128,12 +152,16 @@ func recordScopeSkip(stats *scopeStats, slashed string, includeMatched bool, inc
 	if excludeMatched {
 		stats.excludeMatches[excludePattern]++
 	}
-	if len(stats.skippedDiagnostics) >= maxScopeDiagnostics {
-		return
-	}
 	reason := "did not match include patterns"
 	if excludeMatched {
 		reason = "matched exclude pattern " + excludePattern
+	}
+	recordScopeSkipReason(stats, slashed, reason)
+}
+
+func recordScopeSkipReason(stats *scopeStats, slashed string, reason string) {
+	if len(stats.skippedDiagnostics) >= maxScopeDiagnostics {
+		return
 	}
 	stats.skippedDiagnostics = append(stats.skippedDiagnostics, slashed+" ("+reason+")")
 }
@@ -155,10 +183,25 @@ func normalizePatterns(patterns []string) []string {
 	return result
 }
 
-func matchFirstPattern(path string, patterns []string) (bool, string) {
+func compileGlobPatterns(patterns []string) ([]compiledPattern, error) {
+	compiled := make([]compiledPattern, 0, len(patterns))
 	for _, pattern := range patterns {
-		if globMatch(pattern, path) {
-			return true, pattern
+		regex, err := regexp.Compile(globToRegexp(pattern))
+		if err != nil {
+			return nil, fmt.Errorf("compile scope pattern %q: %w", pattern, err)
+		}
+		compiled = append(compiled, compiledPattern{
+			pattern: pattern,
+			regex:   regex,
+		})
+	}
+	return compiled, nil
+}
+
+func matchFirstCompiledPattern(path string, patterns []compiledPattern) (bool, string) {
+	for _, pattern := range patterns {
+		if pattern.regex.MatchString(path) {
+			return true, pattern.pattern
 		}
 	}
 	return false, ""

@@ -422,7 +422,7 @@ scope:
 `
 	rootPolicy := `policy:
   packs:
-    - packs/overlay.yml
+    - packs/` + overlayPackName + `
 scope:
   exclude:
     - vendor/**

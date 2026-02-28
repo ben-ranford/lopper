@@ -41,12 +41,12 @@ func (a *testServiceAdapter) Analyse(context.Context, language.Request) (report.
 
 func TestPrepareAnalysisErrors(t *testing.T) {
 	svc := &Service{InitErr: errors.New("init failed")}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "all"}); err == nil {
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
 		t.Fatalf("expected init error")
 	}
 
 	svc = &Service{}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "all"}); err == nil {
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
 		t.Fatalf("expected nil-registry error")
 	}
 }
@@ -137,7 +137,7 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	}
 	// Force registry resolve error via unsupported explicit language.
 	svc := &Service{Registry: reg}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "unknown"}); err == nil {
+	if _, err := svc.resolveCandidates(context.Background(), ".", "unknown"); err == nil {
 		t.Fatalf("expected prepareAnalysis resolve error")
 	}
 
@@ -221,7 +221,7 @@ func TestPrepareAnalysisRepoPathAbsErrorFallback(t *testing.T) {
 	}
 
 	svc := &Service{Registry: language.NewRegistry()}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "all"}); err == nil {
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
 		// this branch is platform dependent; treat nil as acceptable.
 	}
 }

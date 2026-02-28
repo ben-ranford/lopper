@@ -75,6 +75,33 @@ func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 	}
 }
 
+func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeScopeFile(t, filepath.Join(repo, "src", "keep.js"), "export const keep = true\n")
+	target := filepath.Join(repo, "outside.js")
+	writeScopeFile(t, target, "export const outside = true\n")
+	linkPath := filepath.Join(repo, "src", "linked.js")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("symlink unsupported in test environment: %v", err)
+	}
+
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
+	if err != nil {
+		t.Fatalf("apply path scope: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(filepath.Join(scopedPath, "src", "keep.js")); err != nil {
+		t.Fatalf("expected regular in-scope file to be copied: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(scopedPath, "src", "linked.js")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlinked file to be skipped, got err=%v", err)
+	}
+	if !containsWarning(warnings, "analysis scope skipped file: src/linked.js (is symlink (not copied))") {
+		t.Fatalf("expected symlink skip diagnostic, got %#v", warnings)
+	}
+}
+
 func TestNormalizePatternsTrimsDedupesAndNormalizes(t *testing.T) {
 	got := normalizePatterns([]string{" " + scopeGoGlob + " ", "", scopeGoGlob, scopeGoGlob})
 	if len(got) != 1 || got[0] != scopeGoGlob {

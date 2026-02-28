@@ -65,7 +65,7 @@ func NewService() *Service {
 }
 
 func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, error) {
-	repoPath, candidates, err := s.prepareAnalysis(ctx, req)
+	repoPath, err := s.prepareAnalysis(req)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -74,6 +74,10 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 		return report.Report{}, err
 	}
 	defer cleanupScope()
+	candidates, err := s.resolveCandidates(ctx, analysisRepoPath, req.Language)
+	if err != nil {
+		return report.Report{}, err
+	}
 	cache := newAnalysisCache(req, analysisRepoPath)
 
 	reports, warnings, err := s.runCandidates(ctx, req, analysisRepoPath, candidates, cache)
@@ -113,22 +117,26 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	return reportData, nil
 }
 
-func (s *Service) prepareAnalysis(ctx context.Context, req Request) (string, []language.Candidate, error) {
+func (s *Service) prepareAnalysis(req Request) (string, error) {
 	if s.InitErr != nil {
-		return "", nil, s.InitErr
+		return "", s.InitErr
 	}
 	if s.Registry == nil {
-		return "", nil, errors.New("language registry is not configured")
+		return "", errors.New("language registry is not configured")
 	}
 	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	candidates, err := s.Registry.Resolve(ctx, repoPath, req.Language)
+	return repoPath, nil
+}
+
+func (s *Service) resolveCandidates(ctx context.Context, repoPath string, languageID string) ([]language.Candidate, error) {
+	candidates, err := s.Registry.Resolve(ctx, repoPath, languageID)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	return repoPath, candidates, nil
+	return candidates, nil
 }
 
 func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {

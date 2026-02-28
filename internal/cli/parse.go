@@ -83,8 +83,8 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		SaveBaseline:       *flags.saveBaseline,
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
-		IncludePatterns:    resolveScopePatterns(visited, "include", *flags.includePatterns, resolvedScope.Include),
-		ExcludePatterns:    resolveScopePatterns(visited, "exclude", *flags.excludePatterns, resolvedScope.Exclude),
+		IncludePatterns:    resolveScopePatterns(visited, "include", flags.includePatterns.Values(), resolvedScope.Include),
+		ExcludePatterns:    resolveScopePatterns(visited, "exclude", flags.excludePatterns.Values(), resolvedScope.Exclude),
 		ConfigPath:         resolvedConfigPath,
 		PolicySources:      policySources,
 		Thresholds:         resolvedThresholds,
@@ -118,13 +118,15 @@ type analyseFlagValues struct {
 	runtimeTracePath              *string
 	runtimeTestCommand            *string
 	configPath                    *string
-	includePatterns               *string
-	excludePatterns               *string
+	includePatterns               *patternListFlag
+	excludePatterns               *patternListFlag
 }
 
 func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 	fs := flag.NewFlagSet("analyse", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	includePatterns := newPatternListFlag(req.Analyse.IncludePatterns)
+	excludePatterns := newPatternListFlag(req.Analyse.ExcludePatterns)
 
 	values := analyseFlagValues{
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
@@ -151,9 +153,11 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
 		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
-		includePatterns:               fs.String("include", strings.Join(req.Analyse.IncludePatterns, ","), "comma-separated include path globs"),
-		excludePatterns:               fs.String("exclude", strings.Join(req.Analyse.ExcludePatterns, ","), "comma-separated exclude path globs"),
+		includePatterns:               includePatterns,
+		excludePatterns:               excludePatterns,
 	}
+	fs.Var(includePatterns, "include", "comma-separated include path globs (repeatable)")
+	fs.Var(excludePatterns, "exclude", "comma-separated exclude path globs (repeatable)")
 
 	return fs, values
 }
@@ -262,14 +266,69 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.RemovalCandidateWeightConfidence != nil
 }
 
-func resolveScopePatterns(visited map[string]bool, flagName string, cliValue string, configValues []string) []string {
+func resolveScopePatterns(visited map[string]bool, flagName string, cliValues []string, configValues []string) []string {
 	if visited[flagName] {
-		return splitPatternList(cliValue)
+		if len(cliValues) == 0 {
+			return nil
+		}
+		return append([]string{}, cliValues...)
 	}
 	if len(configValues) == 0 {
 		return nil
 	}
 	return append([]string{}, configValues...)
+}
+
+type patternListFlag struct {
+	patterns []string
+}
+
+func newPatternListFlag(initial []string) *patternListFlag {
+	if len(initial) == 0 {
+		return &patternListFlag{}
+	}
+	return &patternListFlag{
+		patterns: append([]string{}, initial...),
+	}
+}
+
+func (f *patternListFlag) String() string {
+	return strings.Join(f.patterns, ",")
+}
+
+func (f *patternListFlag) Set(value string) error {
+	f.patterns = mergePatterns(f.patterns, splitPatternList(value))
+	return nil
+}
+
+func (f *patternListFlag) Values() []string {
+	if len(f.patterns) == 0 {
+		return nil
+	}
+	return append([]string{}, f.patterns...)
+}
+
+func mergePatterns(existing []string, next []string) []string {
+	if len(next) == 0 {
+		return existing
+	}
+	seen := make(map[string]struct{}, len(existing)+len(next))
+	merged := make([]string, 0, len(existing)+len(next))
+	for _, pattern := range existing {
+		if _, ok := seen[pattern]; ok {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		merged = append(merged, pattern)
+	}
+	for _, pattern := range next {
+		if _, ok := seen[pattern]; ok {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		merged = append(merged, pattern)
+	}
+	return merged
 }
 
 func splitPatternList(value string) []string {
