@@ -11,13 +11,23 @@ import (
 	"testing"
 )
 
+const (
+	manifestFileName         = "package.json"
+	lockfileName             = "package-lock.json"
+	demoPackageJSON          = "{\n  \"name\": \"demo\"\n}\n"
+	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
+	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
+	nestedManifestPath       = "nested/package.json"
+	gitBinaryPath            = "/usr/bin/git"
+)
+
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, filepath.Join(repo, "package-lock.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), demoPackageJSON)
 	initGitRepo(t, repo)
 
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
@@ -33,7 +43,7 @@ func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T)
 
 func TestDetectLockfileDriftSkipsLopperCache(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, ".lopper-cache", "nested", "package.json"), "{\n  \"name\": \"cache-only\"\n}\n")
+	writeFile(t, filepath.Join(repo, ".lopper-cache", "nested", manifestFileName), "{\n  \"name\": \"cache-only\"\n}\n")
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
@@ -46,7 +56,7 @@ func TestDetectLockfileDriftSkipsLopperCache(t *testing.T) {
 
 func TestEvaluateLockfileDriftPolicyFailFormatsSinglePrefix(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 	writeFile(t, filepath.Join(repo, "composer.lock"), "{}\n")
 
 	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
@@ -63,7 +73,7 @@ func TestEvaluateLockfileDriftPolicyFailFormatsSinglePrefix(t *testing.T) {
 
 func TestEvaluateLockfileDriftPolicyOff(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 
 	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "off")
 	if err != nil {
@@ -106,7 +116,7 @@ func TestSanitizedGitEnvPinsSafePath(t *testing.T) {
 
 func TestDetectLockfileDriftStopOnFirst(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 	writeFile(t, filepath.Join(repo, "composer.lock"), "{}\n")
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, true)
@@ -181,10 +191,10 @@ func TestGitChangedFilesOutsideGitRepo(t *testing.T) {
 
 func TestGitChangedFilesInGitRepo(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 	initGitRepo(t, repo)
 
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdatedV2)
 	writeFile(t, filepath.Join(repo, "new-untracked.txt"), "untracked\n")
 
 	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
@@ -194,7 +204,7 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	if !hasGit {
 		t.Fatalf("expected hasGit=true for git repo")
 	}
-	if _, ok := changed["package.json"]; !ok {
+	if _, ok := changed[manifestFileName]; !ok {
 		t.Fatalf("expected package.json to be detected as changed, got %#v", changed)
 	}
 	if _, ok := changed["new-untracked.txt"]; !ok {
@@ -220,7 +230,7 @@ func TestGitChangedFilesReturnsErrorWhenRepoHasNoHEAD(t *testing.T) {
 
 func TestDetectLockfileDriftReturnsGitChangedFilesError(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 	runGit(t, repo, "init")
 
 	_, err := detectLockfileDrift(context.Background(), repo, false)
@@ -231,10 +241,10 @@ func TestDetectLockfileDriftReturnsGitChangedFilesError(t *testing.T) {
 
 func TestDetectDriftForRuleCases(t *testing.T) {
 	repo := t.TempDir()
-	manifest := filepath.Join(repo, "package.json")
-	lock := filepath.Join(repo, "package-lock.json")
-	writeFile(t, manifest, "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, lock, "{\n  \"name\": \"demo\"\n}\n")
+	manifest := filepath.Join(repo, manifestFileName)
+	lock := filepath.Join(repo, lockfileName)
+	writeFile(t, manifest, demoPackageJSON)
+	writeFile(t, lock, demoPackageJSON)
 	manifestInfo, err := os.Stat(manifest)
 	if err != nil {
 		t.Fatalf("stat manifest: %v", err)
@@ -246,16 +256,16 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 
 	rule := lockfileRule{
 		manager:   "npm",
-		manifest:  "package.json",
-		lockfiles: []string{"package-lock.json"},
+		manifest:  manifestFileName,
+		lockfiles: []string{lockfileName},
 		remedy:    "run npm install",
 	}
 	files := map[string]fs.FileInfo{
-		"package.json":      manifestInfo,
-		"package-lock.json": lockInfo,
+		manifestFileName: manifestInfo,
+		lockfileName:     lockInfo,
 	}
-	missingManifest := map[string]fs.FileInfo{"package-lock.json": lockInfo}
-	missingLockfile := map[string]fs.FileInfo{"package.json": manifestInfo}
+	missingManifest := map[string]fs.FileInfo{lockfileName: lockInfo}
+	missingLockfile := map[string]fs.FileInfo{manifestFileName: manifestInfo}
 	cases := []struct {
 		name         string
 		files        map[string]fs.FileInfo
@@ -264,10 +274,10 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 		wantWarnings int
 		wantSubstr   string
 	}{
-		{name: "non-git-context", files: files, changed: map[string]struct{}{"package.json": {}}, hasGit: false, wantWarnings: 0},
-		{name: "manifest-not-changed", files: files, changed: map[string]struct{}{"package-lock.json": {}}, hasGit: true, wantWarnings: 0},
-		{name: "manifest-and-lockfile-changed", files: files, changed: map[string]struct{}{"package.json": {}, "package-lock.json": {}}, hasGit: true, wantWarnings: 0},
-		{name: "manifest-only-changed", files: files, changed: map[string]struct{}{"package.json": {}}, hasGit: true, wantWarnings: 1, wantSubstr: "changed while no matching lockfile changed"},
+		{name: "non-git-context", files: files, changed: map[string]struct{}{manifestFileName: {}}, hasGit: false, wantWarnings: 0},
+		{name: "manifest-not-changed", files: files, changed: map[string]struct{}{lockfileName: {}}, hasGit: true, wantWarnings: 0},
+		{name: "manifest-and-lockfile-changed", files: files, changed: map[string]struct{}{manifestFileName: {}, lockfileName: {}}, hasGit: true, wantWarnings: 0},
+		{name: "manifest-only-changed", files: files, changed: map[string]struct{}{manifestFileName: {}}, hasGit: true, wantWarnings: 1, wantSubstr: "changed while no matching lockfile changed"},
 		{name: "manifest-without-lockfile", files: missingLockfile, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "no matching lockfile"},
 		{name: "lockfile-without-manifest", files: missingManifest, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "exists without package.json"},
 	}
@@ -295,13 +305,13 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	if got := relativeDir(repo, nestedDir); got != "nested" {
 		t.Fatalf("expected relative dir nested, got %q", got)
 	}
-	if got := relativeFilePath(repo, nestedDir, "package.json"); got != "nested/package.json" {
+	if got := relativeFilePath(repo, nestedDir, manifestFileName); got != nestedManifestPath {
 		t.Fatalf("expected relative file path nested/package.json, got %q", got)
 	}
-	if !isPathChanged(map[string]struct{}{"nested/package.json": {}}, "nested/package.json") {
+	if !isPathChanged(map[string]struct{}{nestedManifestPath: {}}, nestedManifestPath) {
 		t.Fatalf("expected changed path to be detected")
 	}
-	if isPathChanged(map[string]struct{}{"other": {}}, "nested/package.json") {
+	if isPathChanged(map[string]struct{}{"other": {}}, nestedManifestPath) {
 		t.Fatalf("expected unchanged path not to be detected")
 	}
 
@@ -313,10 +323,10 @@ func TestLockfileDriftHelpers(t *testing.T) {
 		t.Fatalf("expected empty git output lines, got %#v", got)
 	}
 
-	manifest := filepath.Join(repo, "package.json")
-	lock := filepath.Join(repo, "package-lock.json")
-	writeFile(t, manifest, "{\n  \"name\": \"demo\"\n}\n")
-	writeFile(t, lock, "{\n  \"name\": \"demo\"\n}\n")
+	manifest := filepath.Join(repo, manifestFileName)
+	lock := filepath.Join(repo, lockfileName)
+	writeFile(t, manifest, demoPackageJSON)
+	writeFile(t, lock, demoPackageJSON)
 	manifestInfo, err := os.Stat(manifest)
 	if err != nil {
 		t.Fatalf("stat manifest: %v", err)
@@ -326,11 +336,11 @@ func TestLockfileDriftHelpers(t *testing.T) {
 		t.Fatalf("stat lockfile: %v", err)
 	}
 	files := map[string]fs.FileInfo{
-		"package.json":      manifestInfo,
-		"package-lock.json": lockInfo,
+		manifestFileName: manifestInfo,
+		lockfileName:     lockInfo,
 	}
-	found := findRuleLockfiles(files, []string{"package-lock.json", "missing.lock"})
-	if len(found) != 1 || found[0].name != "package-lock.json" {
+	found := findRuleLockfiles(files, []string{lockfileName, "missing.lock"})
+	if len(found) != 1 || found[0].name != lockfileName {
 		t.Fatalf("unexpected lockfiles found: %#v", found)
 	}
 }
@@ -357,7 +367,7 @@ func initGitRepo(t *testing.T, repo string) {
 func runGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	commandArgs := append([]string{"-C", repo}, args...)
-	command := exec.Command("/usr/bin/git", commandArgs...)
+	command := exec.Command(gitBinaryPath, commandArgs...)
 	command.Env = sanitizedGitEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {

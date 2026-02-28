@@ -19,6 +19,8 @@ import (
 const (
 	testSnapshotPath        = "snapshot.txt"
 	missingBaselineFileName = "missing.json"
+	saveBaselineStoreErr    = "--save-baseline requires --baseline-store"
+	baselineStorePath       = ".artifacts/baselines"
 )
 
 type fakeAnalyzer struct {
@@ -362,7 +364,7 @@ func TestSaveBaselineIfNeeded(t *testing.T) {
 func TestSaveBaselineIfNeededRequiresStorePath(t *testing.T) {
 	application := &App{Formatter: report.NewFormatter()}
 	_, err := application.saveBaselineIfNeeded(report.Report{}, ".", AnalyseRequest{SaveBaseline: true}, testTime())
-	if err == nil || !strings.Contains(err.Error(), "--save-baseline requires --baseline-store") {
+	if err == nil || !strings.Contains(err.Error(), saveBaselineStoreErr) {
 		t.Fatalf("expected missing baseline-store error, got %v", err)
 	}
 }
@@ -397,7 +399,7 @@ func TestResolveBaselineComparisonPathsBranches(t *testing.T) {
 	}
 
 	path, key, currentKey, shouldApply, err = resolveBaselineComparisonPaths(".", AnalyseRequest{
-		BaselineStorePath: ".artifacts/baselines",
+		BaselineStorePath: baselineStorePath,
 		BaselineKey:       "label:weekly",
 	})
 	if err != nil {
@@ -411,7 +413,7 @@ func TestResolveBaselineComparisonPathsBranches(t *testing.T) {
 	}
 
 	nonRepo := filepath.Join(t.TempDir(), "nonexistent", "repo")
-	if _, _, _, _, err := resolveBaselineComparisonPaths(nonRepo, AnalyseRequest{BaselineStorePath: ".artifacts/baselines"}); err == nil {
+	if _, _, _, _, err := resolveBaselineComparisonPaths(nonRepo, AnalyseRequest{BaselineStorePath: baselineStorePath}); err == nil {
 		t.Fatalf("expected baseline-store without key in non-git dir to fail")
 	}
 }
@@ -690,7 +692,7 @@ func TestExecuteAnalyseReturnsFormattedOutputWhenSaveBaselineValidationFails(t *
 	if err == nil {
 		t.Fatalf("expected save-baseline validation error")
 	}
-	if !strings.Contains(err.Error(), "--save-baseline requires --baseline-store") {
+	if !strings.Contains(err.Error(), saveBaselineStoreErr) {
 		t.Fatalf("unexpected save-baseline error: %v", err)
 	}
 	if !strings.Contains(output, "\"dependencies\"") {
@@ -785,7 +787,7 @@ func TestExecuteAnalyseSaveBaselineErrorPreservesOriginalWhenFormatFails(t *test
 	if err == nil {
 		t.Fatalf("expected save-baseline error")
 	}
-	if !strings.Contains(err.Error(), "--save-baseline requires --baseline-store") {
+	if !strings.Contains(err.Error(), saveBaselineStoreErr) {
 		t.Fatalf("expected save-baseline store error, got %v", err)
 	}
 }

@@ -8,9 +8,14 @@ import (
 )
 
 const (
-	shaMain  = "1111111111111111111111111111111111111111"
-	shaTopic = "2222222222222222222222222222222222222222"
-	shaHex   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	shaMain        = "1111111111111111111111111111111111111111"
+	shaTopic       = "2222222222222222222222222222222222222222"
+	shaHex         = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	expectedGotFmt = "expected %q, got %q"
+	packedRefsFile = "packed-refs"
+	mainRefPath    = "refs/heads/main"
+	topicRefPath   = "refs/heads/topic"
+	otherMainRef   = "refs/heads/other"
 )
 
 func TestNormalizeRepoPath(t *testing.T) {
@@ -23,7 +28,7 @@ func TestNormalizeRepoPath(t *testing.T) {
 		t.Fatalf("abs dot: %v", err)
 	}
 	if got != want {
-		t.Fatalf("expected %q, got %q", want, got)
+		t.Fatalf(expectedGotFmt, want, got)
 	}
 }
 
@@ -48,7 +53,7 @@ func TestCurrentCommitSHAFromNestedPathWithGitFile(t *testing.T) {
 	repo := t.TempDir()
 	gitDir := filepath.Join(repo, ".git-meta")
 	mustWrite(t, filepath.Join(repo, ".git"), "gitdir: .git-meta\n")
-	mustWrite(t, filepath.Join(gitDir, "HEAD"), "ref: refs/heads/main\n")
+	mustWrite(t, filepath.Join(gitDir, "HEAD"), "ref: "+mainRefPath+"\n")
 	mustWrite(t, filepath.Join(gitDir, "refs", "heads", "main"), shaMain+"\n")
 
 	nested := filepath.Join(repo, "internal", "module")
@@ -61,7 +66,7 @@ func TestCurrentCommitSHAFromNestedPathWithGitFile(t *testing.T) {
 		t.Fatalf("resolve nested sha: %v", err)
 	}
 	if sha != shaMain {
-		t.Fatalf("expected %q, got %q", shaMain, sha)
+		t.Fatalf(expectedGotFmt, shaMain, sha)
 	}
 }
 
@@ -75,7 +80,7 @@ func TestCurrentCommitSHADetachedHead(t *testing.T) {
 		t.Fatalf("resolve detached HEAD: %v", err)
 	}
 	if sha != shaTopic {
-		t.Fatalf("expected %q, got %q", shaTopic, sha)
+		t.Fatalf(expectedGotFmt, shaTopic, sha)
 	}
 }
 
@@ -115,14 +120,14 @@ func TestCurrentCommitSHAMissingHead(t *testing.T) {
 
 func TestResolveRefSHAFromPackedRefs(t *testing.T) {
 	gitDir := t.TempDir()
-	mustWrite(t, filepath.Join(gitDir, "packed-refs"), "# pack-refs\n"+shaMain+" refs/heads/main\n")
+	mustWrite(t, filepath.Join(gitDir, packedRefsFile), "# pack-refs\n"+shaMain+" "+mainRefPath+"\n")
 
-	sha, err := resolveRefSHA(gitDir, "refs/heads/main")
+	sha, err := resolveRefSHA(gitDir, mainRefPath)
 	if err != nil {
 		t.Fatalf("resolve packed ref: %v", err)
 	}
 	if sha != shaMain {
-		t.Fatalf("expected %q, got %q", shaMain, sha)
+		t.Fatalf(expectedGotFmt, shaMain, sha)
 	}
 }
 
@@ -134,12 +139,12 @@ func TestResolveRefSHAFallsBackToCommonDir(t *testing.T) {
 	mustWrite(t, filepath.Join(gitDir, "commondir"), "../common-git\n")
 	mustWrite(t, filepath.Join(commonDir, "refs", "heads", "topic"), shaTopic+"\n")
 
-	sha, err := resolveRefSHA(gitDir, "refs/heads/topic")
+	sha, err := resolveRefSHA(gitDir, topicRefPath)
 	if err != nil {
 		t.Fatalf("resolve common-dir ref: %v", err)
 	}
 	if sha != shaTopic {
-		t.Fatalf("expected %q, got %q", shaTopic, sha)
+		t.Fatalf(expectedGotFmt, shaTopic, sha)
 	}
 }
 
@@ -193,17 +198,17 @@ func TestResolveRefSHAErrorPaths(t *testing.T) {
 	t.Run("returns packed refs read error when loose ref invalid", func(t *testing.T) {
 		gitDir := t.TempDir()
 		mustWrite(t, filepath.Join(gitDir, "refs", "heads", "main"), "bad-sha\n")
-		_, err := resolveRefSHA(gitDir, "refs/heads/main")
-		if err == nil || !strings.Contains(err.Error(), "packed-refs") {
+		_, err := resolveRefSHA(gitDir, mainRefPath)
+		if err == nil || !strings.Contains(err.Error(), packedRefsFile) {
 			t.Fatalf("expected packed-refs error, got %v", err)
 		}
 	})
 
 	t.Run("returns loose ref read error when packed refs do not match", func(t *testing.T) {
 		gitDir := t.TempDir()
-		mustWrite(t, filepath.Join(gitDir, "packed-refs"), shaMain+" refs/heads/other\n")
-		_, err := resolveRefSHA(gitDir, "refs/heads/main")
-		if err == nil || !strings.Contains(err.Error(), "refs/heads/main") {
+		mustWrite(t, filepath.Join(gitDir, packedRefsFile), shaMain+" "+otherMainRef+"\n")
+		_, err := resolveRefSHA(gitDir, mainRefPath)
+		if err == nil || !strings.Contains(err.Error(), mainRefPath) {
 			t.Fatalf("expected loose ref error, got %v", err)
 		}
 	})
@@ -211,9 +216,9 @@ func TestResolveRefSHAErrorPaths(t *testing.T) {
 	t.Run("returns ref not found when loose ref invalid and packed refs do not match", func(t *testing.T) {
 		gitDir := t.TempDir()
 		mustWrite(t, filepath.Join(gitDir, "refs", "heads", "main"), "also-bad\n")
-		mustWrite(t, filepath.Join(gitDir, "packed-refs"), shaMain+" refs/heads/other\n")
-		_, err := resolveRefSHA(gitDir, "refs/heads/main")
-		if err == nil || !strings.Contains(err.Error(), "ref refs/heads/main not found") {
+		mustWrite(t, filepath.Join(gitDir, packedRefsFile), shaMain+" "+otherMainRef+"\n")
+		_, err := resolveRefSHA(gitDir, mainRefPath)
+		if err == nil || !strings.Contains(err.Error(), "ref "+mainRefPath+" not found") {
 			t.Fatalf("expected ref-not-found error, got %v", err)
 		}
 	})
@@ -229,7 +234,7 @@ func TestResolveCommonGitDirScenarios(t *testing.T) {
 			t.Fatalf("resolve absolute commondir: %v", err)
 		}
 		if got != absCommon {
-			t.Fatalf("expected %q, got %q", absCommon, got)
+			t.Fatalf(expectedGotFmt, absCommon, got)
 		}
 	})
 
@@ -241,7 +246,7 @@ func TestResolveCommonGitDirScenarios(t *testing.T) {
 			t.Fatalf("resolve blank commondir: %v", err)
 		}
 		if got != gitDir {
-			t.Fatalf("expected fallback to gitDir %q, got %q", gitDir, got)
+			t.Fatalf("expected fallback to gitDir "+expectedGotFmt, gitDir, got)
 		}
 	})
 }

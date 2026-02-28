@@ -110,13 +110,22 @@ func inspectGitDir(searchDir string) (_ string, _ bool, returnErr error) {
 
 func resolveRefSHA(gitDir, ref string) (string, error) {
 	dirs := candidateGitDirs(gitDir)
-	var refErr error
+	if sha, refErr := resolveLooseRefSHA(dirs, ref); sha != "" {
+		return sha, nil
+	} else if sha, packedErr := resolvePackedRefSHA(dirs, ref); sha != "" {
+		return sha, nil
+	} else {
+		return "", resolveRefLookupError(ref, refErr, packedErr)
+	}
+}
 
+func resolveLooseRefSHA(dirs []string, ref string) (string, error) {
+	var firstErr error
 	for _, dir := range dirs {
 		refValue, err := readGitPath(dir, ref)
 		if err != nil {
-			if refErr == nil {
-				refErr = err
+			if firstErr == nil {
+				firstErr = err
 			}
 			continue
 		}
@@ -125,39 +134,51 @@ func resolveRefSHA(gitDir, ref string) (string, error) {
 			return sha, nil
 		}
 	}
+	return "", firstErr
+}
 
-	var packedErr error
+func resolvePackedRefSHA(dirs []string, ref string) (string, error) {
+	var firstErr error
 	for _, dir := range dirs {
 		packedRefs, err := readGitPath(dir, "packed-refs")
 		if err != nil {
-			if packedErr == nil {
-				packedErr = err
+			if firstErr == nil {
+				firstErr = err
 			}
 			continue
 		}
-
-		for _, line := range strings.Split(packedRefs, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) != 2 || fields[1] != ref {
-				continue
-			}
-			if validSHA(fields[0]) {
-				return fields[0], nil
-			}
+		if sha := findPackedRefSHA(packedRefs, ref); sha != "" {
+			return sha, nil
 		}
 	}
+	return "", firstErr
+}
 
+func findPackedRefSHA(packedRefs string, ref string) string {
+	for _, line := range strings.Split(packedRefs, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != ref {
+			continue
+		}
+		if validSHA(fields[0]) {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func resolveRefLookupError(ref string, refErr error, packedErr error) error {
 	if refErr != nil {
-		return "", refErr
+		return refErr
 	}
 	if packedErr != nil {
-		return "", packedErr
+		return packedErr
 	}
-	return "", fmt.Errorf("ref %s not found", ref)
+	return fmt.Errorf("ref %s not found", ref)
 }
 
 func candidateGitDirs(gitDir string) []string {

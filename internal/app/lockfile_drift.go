@@ -15,6 +15,7 @@ import (
 
 const lockfileDriftWarningPrefix = "lockfile drift detected: "
 const safeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+const gitExecutablePath = "/usr/bin/git"
 
 type lockfileRule struct {
 	manager   string
@@ -57,37 +58,44 @@ func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool)
 	if err != nil {
 		return nil, err
 	}
+	return walkLockfileDrift(ctx, normalizedPath, changedFiles, hasGitContext, stopOnFirst)
+}
 
+func walkLockfileDrift(ctx context.Context, normalizedPath string, changedFiles map[string]struct{}, hasGitContext bool, stopOnFirst bool) ([]string, error) {
 	warnings := make([]string, 0, len(lockfileRules))
-	err = filepath.WalkDir(normalizedPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if !entry.IsDir() {
-			return nil
-		}
-		if path != normalizedPath && shouldSkipLockfileDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-		fileInfos, readErr := readDirectoryFiles(path)
-		if readErr != nil {
-			return readErr
-		}
-		for _, rule := range lockfileRules {
-			warnings = append(warnings, detectDriftForRule(normalizedPath, path, fileInfos, rule, changedFiles, hasGitContext)...)
-			if stopOnFirst && len(warnings) > 0 {
-				return fs.SkipAll
-			}
-		}
-		return nil
+	err := filepath.WalkDir(normalizedPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		return processLockfileDir(ctx, normalizedPath, path, entry, walkErr, changedFiles, hasGitContext, stopOnFirst, &warnings)
 	})
 	if err != nil && err != fs.SkipAll {
 		return nil, err
 	}
 	return warnings, nil
+}
+
+func processLockfileDir(ctx context.Context, normalizedPath string, path string, entry fs.DirEntry, walkErr error, changedFiles map[string]struct{}, hasGitContext bool, stopOnFirst bool, warnings *[]string) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !entry.IsDir() {
+		return nil
+	}
+	if path != normalizedPath && shouldSkipLockfileDir(entry.Name()) {
+		return filepath.SkipDir
+	}
+	fileInfos, err := readDirectoryFiles(path)
+	if err != nil {
+		return err
+	}
+	for _, rule := range lockfileRules {
+		*warnings = append(*warnings, detectDriftForRule(normalizedPath, path, fileInfos, rule, changedFiles, hasGitContext)...)
+		if stopOnFirst && len(*warnings) > 0 {
+			return fs.SkipAll
+		}
+	}
+	return nil
 }
 
 func shouldSkipLockfileDir(name string) bool {
@@ -228,7 +236,7 @@ func isGitWorktree(ctx context.Context, repoPath string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repoPath, "rev-parse", "--is-inside-work-tree")
+	command := exec.CommandContext(ctx, gitExecutablePath, "-C", repoPath, "rev-parse", "--is-inside-work-tree")
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
@@ -241,7 +249,7 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repoPath, "diff", "--name-only", "HEAD", "--")
+	command := exec.CommandContext(ctx, gitExecutablePath, "-C", repoPath, "diff", "--name-only", "HEAD", "--")
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
@@ -254,7 +262,7 @@ func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repoPath, "ls-files", "--others", "--exclude-standard")
+	command := exec.CommandContext(ctx, gitExecutablePath, "-C", repoPath, "ls-files", "--others", "--exclude-standard")
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
