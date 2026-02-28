@@ -131,30 +131,7 @@ func dependencyImpactSignal(dep DependencyReport, maxImpactRaw float64) float64 
 }
 
 func dependencyConfidenceSignal(dep DependencyReport) (float64, []string) {
-	penalty := 0.0
-	rationale := make([]string, 0, 4)
-
-	if dep.TotalExportsCount <= 0 {
-		penalty += 35
-	}
-	if dep.RuntimeUsage != nil && dep.RuntimeUsage.RuntimeOnly {
-		penalty += 20
-		rationale = append(rationale, "runtime-only usage indicates lower static confidence")
-	}
-	if hasWildcardImport(dep.UsedImports) {
-		penalty += 15
-		rationale = append(rationale, "wildcard import usage reduces per-symbol confidence")
-	}
-	for _, cue := range dep.RiskCues {
-		switch strings.ToLower(cue.Severity) {
-		case "high":
-			penalty += 20
-		case "medium":
-			penalty += 12
-		case "low":
-			penalty += 6
-		}
-	}
+	penalty, _, rationale := confidenceAssessment(dep)
 	return clamp(100-penalty, 0, 100), rationale
 }
 
@@ -189,15 +166,24 @@ func FilterFindingsByConfidence(dependencies []DependencyReport, minConfidence f
 		return
 	}
 	for depIndex := range dependencies {
-		dependencies[depIndex].UnusedExports = filterSymbolRefByConfidence(dependencies[depIndex].UnusedExports, minConfidence)
-		dependencies[depIndex].UnusedImports = filterImportUseByConfidence(dependencies[depIndex].UnusedImports, minConfidence)
-		dependencies[depIndex].Recommendations = filterRecommendationByConfidence(dependencies[depIndex].Recommendations, minConfidence)
-		dependencies[depIndex].RiskCues = filterRiskCueByConfidence(dependencies[depIndex].RiskCues, minConfidence)
+		dependencies[depIndex].UnusedExports = filterByConfidenceScore(dependencies[depIndex].UnusedExports, minConfidence, func(item SymbolRef) float64 {
+			return item.ConfidenceScore
+		})
+		dependencies[depIndex].UnusedImports = filterByConfidenceScore(dependencies[depIndex].UnusedImports, minConfidence, func(item ImportUse) float64 {
+			return item.ConfidenceScore
+		})
+		dependencies[depIndex].Recommendations = filterByConfidenceScore(dependencies[depIndex].Recommendations, minConfidence, func(item Recommendation) float64 {
+			return item.ConfidenceScore
+		})
+		dependencies[depIndex].RiskCues = filterByConfidenceScore(dependencies[depIndex].RiskCues, minConfidence, func(item RiskCue) float64 {
+			return item.ConfidenceScore
+		})
 	}
 }
 
 func dependencyConfidenceReasonCodes(dep DependencyReport) []string {
-	ordered := []string{
+	_, reasonCodes, _ := confidenceAssessment(dep)
+	ordered := [...]string{
 		confidenceReasonMissingExportInventory,
 		confidenceReasonRuntimeOnlyUsage,
 		confidenceReasonWildcardImport,
@@ -205,42 +191,46 @@ func dependencyConfidenceReasonCodes(dep DependencyReport) []string {
 		confidenceReasonRiskMedium,
 		confidenceReasonRiskLow,
 	}
-	seen := make(map[string]struct{}, len(ordered))
-	for _, code := range ordered {
-		seen[code] = struct{}{}
+	result := make([]string, 0, len(ordered))
+	for _, candidate := range ordered {
+		if !containsCode(reasonCodes, candidate) {
+			continue
+		}
+		result = append(result, candidate)
 	}
-	rawCodes := make([]string, 0, len(ordered))
+	return result
+}
+
+func confidenceAssessment(dep DependencyReport) (float64, []string, []string) {
+	penalty := 0.0
+	reasonCodes := make([]string, 0, 6)
+	rationale := make([]string, 0, 4)
+	appendPenalty := func(amount float64, code string) {
+		penalty += amount
+		reasonCodes = append(reasonCodes, code)
+	}
 	if dep.TotalExportsCount <= 0 {
-		rawCodes = append(rawCodes, confidenceReasonMissingExportInventory)
+		appendPenalty(35, confidenceReasonMissingExportInventory)
 	}
 	if dep.RuntimeUsage != nil && dep.RuntimeUsage.RuntimeOnly {
-		rawCodes = append(rawCodes, confidenceReasonRuntimeOnlyUsage)
+		appendPenalty(20, confidenceReasonRuntimeOnlyUsage)
+		rationale = append(rationale, "runtime-only usage indicates lower static confidence")
 	}
 	if hasWildcardImport(dep.UsedImports) {
-		rawCodes = append(rawCodes, confidenceReasonWildcardImport)
+		appendPenalty(15, confidenceReasonWildcardImport)
+		rationale = append(rationale, "wildcard import usage reduces per-symbol confidence")
 	}
 	for _, cue := range dep.RiskCues {
 		switch strings.ToLower(cue.Severity) {
 		case "high":
-			rawCodes = append(rawCodes, confidenceReasonRiskHigh)
+			appendPenalty(20, confidenceReasonRiskHigh)
 		case "medium":
-			rawCodes = append(rawCodes, confidenceReasonRiskMedium)
+			appendPenalty(12, confidenceReasonRiskMedium)
 		case "low":
-			rawCodes = append(rawCodes, confidenceReasonRiskLow)
+			appendPenalty(6, confidenceReasonRiskLow)
 		}
 	}
-	result := make([]string, 0, len(ordered))
-	for _, candidate := range ordered {
-		if !containsCode(rawCodes, candidate) {
-			continue
-		}
-		if _, ok := seen[candidate]; !ok {
-			continue
-		}
-		result = append(result, candidate)
-		delete(seen, candidate)
-	}
-	return result
+	return penalty, reasonCodes, rationale
 }
 
 func containsCode(values []string, target string) bool {
@@ -252,43 +242,10 @@ func containsCode(values []string, target string) bool {
 	return false
 }
 
-func filterSymbolRefByConfidence(values []SymbolRef, minConfidence float64) []SymbolRef {
+func filterByConfidenceScore[T any](values []T, minConfidence float64, score func(item T) float64) []T {
 	filtered := values[:0]
 	for _, value := range values {
-		if value.ConfidenceScore < minConfidence {
-			continue
-		}
-		filtered = append(filtered, value)
-	}
-	return filtered
-}
-
-func filterImportUseByConfidence(values []ImportUse, minConfidence float64) []ImportUse {
-	filtered := values[:0]
-	for _, value := range values {
-		if value.ConfidenceScore < minConfidence {
-			continue
-		}
-		filtered = append(filtered, value)
-	}
-	return filtered
-}
-
-func filterRecommendationByConfidence(values []Recommendation, minConfidence float64) []Recommendation {
-	filtered := values[:0]
-	for _, value := range values {
-		if value.ConfidenceScore < minConfidence {
-			continue
-		}
-		filtered = append(filtered, value)
-	}
-	return filtered
-}
-
-func filterRiskCueByConfidence(values []RiskCue, minConfidence float64) []RiskCue {
-	filtered := values[:0]
-	for _, value := range values {
-		if value.ConfidenceScore < minConfidence {
+		if score(value) < minConfidence {
 			continue
 		}
 		filtered = append(filtered, value)
