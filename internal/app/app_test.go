@@ -489,11 +489,13 @@ func testTime() time.Time {
 	return time.Date(2026, time.February, 22, 15, 0, 0, 0, time.UTC)
 }
 
+const missingRuntimeMakeTarget = "make __missing_target__"
+
 func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {
 	repo := t.TempDir()
 	req := DefaultRequest()
 	req.RepoPath = repo
-	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
 	if len(warnings) != 1 {
@@ -504,6 +506,38 @@ func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {
 	}
 	if tracePath != "" {
 		t.Fatalf("expected trace path to be cleared on capture failure when path was auto-generated, got %q", tracePath)
+	}
+}
+
+func TestPrepareRuntimeTraceFailureKeepsExplicitTracePath(t *testing.T) {
+	repo := t.TempDir()
+	explicitPath := filepath.Join(repo, ".artifacts", "explicit.ndjson")
+	req := DefaultRequest()
+	req.RepoPath = repo
+	req.Analyse.RuntimeTracePath = explicitPath
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
+
+	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
+	if len(warnings) != 1 {
+		t.Fatalf("expected one runtime warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "runtime trace command failed") {
+		t.Fatalf("unexpected warning: %q", warnings[0])
+	}
+	if tracePath != explicitPath {
+		t.Fatalf("expected explicit trace path to be retained on capture failure, got %q", tracePath)
+	}
+}
+
+func TestPrepareRuntimeTraceWithoutCommandUsesProvidedTracePath(t *testing.T) {
+	req := DefaultRequest()
+	req.Analyse.RuntimeTracePath = "trace.ndjson"
+	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect warnings without runtime command, got %#v", warnings)
+	}
+	if tracePath != "trace.ndjson" {
+		t.Fatalf("expected provided trace path without capture command, got %q", tracePath)
 	}
 }
 
@@ -523,7 +557,7 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 	req.RepoPath = t.TempDir()
 	req.Analyse.TopN = 1
 	req.Analyse.Format = report.FormatJSON
-	req.Analyse.RuntimeTestCommand = "make __missing_target__"
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {

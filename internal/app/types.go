@@ -36,6 +36,8 @@ type AnalyseRequest struct {
 	SaveBaseline       bool
 	RuntimeTracePath   string
 	RuntimeTestCommand string
+	IncludePatterns    []string
+	ExcludePatterns    []string
 	ConfigPath         string
 	PolicySources      []string
 	Thresholds         thresholds.Values
