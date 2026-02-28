@@ -154,7 +154,7 @@ func resolvePackedRefSHA(dirs []string, ref string) (string, error) {
 	return "", firstErr
 }
 
-func findPackedRefSHA(packedRefs string, ref string) string {
+func findPackedRefSHA(packedRefs, ref string) string {
 	for _, line := range strings.Split(packedRefs, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
