@@ -317,7 +317,7 @@ func changedRoots(roots []string, repoPath string, changedFiles []string) []stri
 	return uniqueSorted(changed)
 }
 
-func rootContainsFile(root string, file string) bool {
+func rootContainsFile(root, file string) bool {
 	rel, err := filepath.Rel(root, file)
 	if err != nil {
 		return false
@@ -344,17 +344,18 @@ func scopeMetadata(mode, repoPath string, roots []string) *report.ScopeMetadata 
 }
 
 func uniqueSorted(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	items := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		items = append(items, value)
+	if len(values) == 0 {
+		return nil
 	}
+	items := append([]string(nil), values...)
 	sort.Strings(items)
-	return items
+	unique := items[:1]
+	for i := 1; i < len(items); i++ {
+		if items[i] != items[i-1] {
+			unique = append(unique, items[i])
+		}
+	}
+	return unique
 }
 
 func normalizeCandidateRoot(repoPath, root string) string {

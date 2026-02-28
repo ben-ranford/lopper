@@ -14,6 +14,7 @@ import (
 const (
 	lodashMapRuntimeModule    = "lodash/map"
 	lodashFilterRuntimeModule = "lodash/filter"
+	repoPackageBRoot          = "/repo/packages/b"
 )
 
 func TestHelperFunctions(t *testing.T) {
@@ -40,13 +41,13 @@ func TestHelperFunctions(t *testing.T) {
 }
 
 func TestChangedRootsAndScopeMetadata(t *testing.T) {
-	roots := []string{"/repo/packages/a", "/repo/packages/b", "/repo/packages/c"}
+	roots := []string{"/repo/packages/a", repoPackageBRoot, "/repo/packages/c"}
 	changed := changedRoots(roots, "/repo", []string{"packages/b/src/index.ts", "README.md"})
-	if len(changed) != 1 || changed[0] != "/repo/packages/b" {
+	if len(changed) != 1 || changed[0] != repoPackageBRoot {
 		t.Fatalf("expected changed root selection, got %#v", changed)
 	}
 
-	metadata := scopeMetadata(ScopeModeChangedPackages, "/repo", []string{"/repo/packages/b", "/repo"})
+	metadata := scopeMetadata(ScopeModeChangedPackages, "/repo", []string{repoPackageBRoot, "/repo"})
 	if metadata.Mode != ScopeModeChangedPackages {
 		t.Fatalf("expected changed-packages metadata mode, got %#v", metadata)
 	}
