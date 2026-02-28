@@ -16,6 +16,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
 	"github.com/ben-ranford/lopper/internal/lang/php"
 	"github.com/ben-ranford/lopper/internal/lang/python"
+	"github.com/ben-ranford/lopper/internal/lang/ruby"
 	"github.com/ben-ranford/lopper/internal/lang/rust"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -53,6 +54,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(rust.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(ruby.NewAdapter())
 	}
 	if err == nil {
 		err = registry.Register(dotnet.NewAdapter())
