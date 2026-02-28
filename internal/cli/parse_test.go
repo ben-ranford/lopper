@@ -264,6 +264,21 @@ func TestResolveScopePatternsUsesConfigWhenFlagNotVisited(t *testing.T) {
 	}
 }
 
+func TestResolveScopePatternsVisitedWithEmptyCLIValuesReturnsNil(t *testing.T) {
+	got := resolveScopePatterns(map[string]bool{"include": true}, "include", nil, []string{"src/**/*.go"})
+	if len(got) != 0 {
+		t.Fatalf("expected nil/empty scope patterns when include flag is visited with no values, got %#v", got)
+	}
+}
+
+func TestMergePatternsWithEmptyNextKeepsExisting(t *testing.T) {
+	existing := []string{"src/**/*.go"}
+	merged := mergePatterns(existing, nil)
+	if strings.Join(merged, ",") != "src/**/*.go" {
+		t.Fatalf("expected merge with empty next to preserve existing patterns, got %#v", merged)
+	}
+}
+
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if err != nil {

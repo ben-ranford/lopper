@@ -241,6 +241,26 @@ func TestFormatBytesGB(t *testing.T) {
 	}
 }
 
+func TestTopDependencyDeltasAndSignedBytesBranches(t *testing.T) {
+	deltas := []DependencyDelta{
+		{Name: "a", Language: "js", EstimatedUnusedBytesDelta: -200},
+		{Name: "b", Language: "go", EstimatedUnusedBytesDelta: 100},
+	}
+	if got := topDependencyDeltas(deltas, 0); len(got) != 0 {
+		t.Fatalf("expected nil deltas when limit <= 0, got %#v", got)
+	}
+	got := topDependencyDeltas(deltas, 10)
+	if len(got) != 2 {
+		t.Fatalf("expected full delta set when limit exceeds length, got %#v", got)
+	}
+	if got[0].Name != "a" {
+		t.Fatalf("expected magnitude sort to prioritize biggest absolute delta, got %#v", got)
+	}
+	if signedBytes(-1024) != "-1.0 KB" {
+		t.Fatalf("expected negative byte formatting branch")
+	}
+}
+
 func TestFormatCandidateFields(t *testing.T) {
 	candidate := &RemovalCandidate{
 		Score:      87.34,
