@@ -127,7 +127,7 @@ func TestCollectReExportBindings(t *testing.T) {
 		t.Fatalf(parseSourceErrFmt, err)
 	}
 
-	imports := collectImportBindings(tree, source, unitIndexJS)
+	imports, _ := collectImportBindings(tree, source, unitIndexJS)
 	reExports := collectReExportBindings(tree, source, unitIndexJS, imports)
 	if len(reExports) < 3 {
 		t.Fatalf("expected re-export bindings, got %#v", reExports)

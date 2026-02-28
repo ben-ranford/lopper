@@ -180,8 +180,7 @@ func appendParseErrorFile(parseErrorFiles *[]string, relPath string) {
 }
 
 func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
-	imports := collectImportBindings(tree, content, relPath)
-	uncertainImports := collectUncertainImportUses(tree, content, relPath)
+	imports, uncertainImports := collectImportBindings(tree, content, relPath)
 	reExports := collectReExportBindings(tree, content, relPath, imports)
 	identifierUsage := collectIdentifierUsage(tree, content)
 	namespaceUsage := collectNamespaceUsage(tree, content)
@@ -241,19 +240,24 @@ func (p *sourceParser) languageForPath(path string) (*sitter.Language, error) {
 	}
 }
 
-func collectImportBindings(tree *sitter.Tree, content []byte, relPath string) []ImportBinding {
+func collectImportBindings(tree *sitter.Tree, content []byte, relPath string) ([]ImportBinding, []report.ImportUse) {
 	root := tree.RootNode()
 	bindings := make([]ImportBinding, 0)
+	uncertainImports := make([]report.ImportUse, 0)
 	walkNode(root, func(node *sitter.Node) {
 		switch node.Type() {
 		case "import_statement":
 			bindings = append(bindings, parseImportStatement(node, content, relPath)...)
 		case "call_expression":
 			bindings = append(bindings, parseRequireCall(node, content, relPath)...)
+			item, ok := parseUncertainDynamicImport(node, content, relPath)
+			if ok {
+				uncertainImports = append(uncertainImports, item)
+			}
 		}
 	})
 
-	return bindings
+	return bindings, uncertainImports
 }
 
 func collectReExportBindings(tree *sitter.Tree, content []byte, relPath string, imports []ImportBinding) []ReExportBinding {
@@ -534,21 +538,6 @@ func parseRequireCall(node *sitter.Node, content []byte, relPath string) []Impor
 	return bindings
 }
 
-func collectUncertainImportUses(tree *sitter.Tree, content []byte, relPath string) []report.ImportUse {
-	items := make([]report.ImportUse, 0)
-	walkNode(tree.RootNode(), func(node *sitter.Node) {
-		if node.Type() != "call_expression" {
-			return
-		}
-		item, ok := parseUncertainDynamicImport(node, content, relPath)
-		if !ok {
-			return
-		}
-		items = append(items, item)
-	})
-	return items
-}
-
 func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath string) (report.ImportUse, bool) {
 	functionNode := node.ChildByFieldName("function")
 	if functionNode == nil {
@@ -674,6 +663,14 @@ func extractStaticModuleLiteral(node *sitter.Node, content []byte) (string, bool
 	quote := text[0]
 	if (quote != '"' && quote != '\'' && quote != '`') || text[len(text)-1] != quote {
 		return "", false
+	}
+	if quote == '`' {
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if child != nil && child.Type() == "template_substitution" {
+				return "", false
+			}
+		}
 	}
 	return text[1 : len(text)-1], true
 }

@@ -38,6 +38,45 @@ function demo(arg) { const local = 1; return util.map([arg], m); }
 	assertIdentifierUsageCoverage(t, file.IdentifierUsage)
 }
 
+func TestScanTreatsTemplateSubstitutionsAsUncertain(t *testing.T) {
+	repo := t.TempDir()
+	source := `
+const name = "feature";
+const dynamicReq = require(` + "`./${name}.js`" + `);
+const staticReq = require(` + "`lodash`" + `);
+const dynamicImport = import(` + "`./${name}.mjs`" + `);
+`
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	file := assertSingleScannedFile(t, result)
+
+	if len(file.UncertainImports) != 2 {
+		t.Fatalf("expected two unresolved dynamic import/require entries, got %#v", file.UncertainImports)
+	}
+	hasStaticLodash := false
+	hasDynamicTemplateLiteral := false
+	for _, imp := range file.Imports {
+		if imp.Module == "lodash" {
+			hasStaticLodash = true
+		}
+		if imp.Module == "./${name}.js" {
+			hasDynamicTemplateLiteral = true
+		}
+	}
+	if !hasStaticLodash {
+		t.Fatalf("expected static template literal require to be treated as a resolved import")
+	}
+	if hasDynamicTemplateLiteral {
+		t.Fatalf("expected template substitution require to remain uncertain")
+	}
+}
+
 func assertSingleScannedFile(t *testing.T, result ScanResult) FileScan {
 	t.Helper()
 	if len(result.Files) != 1 {

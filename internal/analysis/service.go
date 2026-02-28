@@ -365,12 +365,12 @@ func mergeUsageUncertainty(left, right *report.UsageUncertainty) *report.UsageUn
 			return nil
 		}
 		copyRight := *right
-		copyRight.Samples = append([]report.Location{}, right.Samples...)
+		copyRight.Samples = cappedSampleCopy(right.Samples)
 		return &copyRight
 	}
 	if right == nil {
 		copyLeft := *left
-		copyLeft.Samples = append([]report.Location{}, left.Samples...)
+		copyLeft.Samples = cappedSampleCopy(left.Samples)
 		return &copyLeft
 	}
 
@@ -387,6 +387,13 @@ func mergeUsageUncertainty(left, right *report.UsageUncertainty) *report.UsageUn
 		merged.Samples = append(merged.Samples, right.Samples[:remaining]...)
 	}
 	return merged
+}
+
+func cappedSampleCopy(samples []report.Location) []report.Location {
+	if len(samples) > 5 {
+		samples = samples[:5]
+	}
+	return append([]report.Location{}, samples...)
 }
 
 func mergeDependency(left report.DependencyReport, right report.DependencyReport) report.DependencyReport {

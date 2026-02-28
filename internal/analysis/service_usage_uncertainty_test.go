@@ -16,11 +16,18 @@ func TestMergeUsageUncertaintyClonesSingleSide(t *testing.T) {
 	right := &report.UsageUncertainty{
 		ConfirmedImportUses: 2,
 		UncertainImportUses: 1,
-		Samples:             []report.Location{{File: "a.js", Line: 1}},
+		Samples: []report.Location{
+			{File: "a.js", Line: 1},
+			{File: "b.js", Line: 2},
+			{File: "c.js", Line: 3},
+			{File: "d.js", Line: 4},
+			{File: "e.js", Line: 5},
+			{File: "f.js", Line: 6},
+		},
 	}
 
 	got := mergeUsageUncertainty(nil, right)
-	if got == nil || got.ConfirmedImportUses != 2 || got.UncertainImportUses != 1 || len(got.Samples) != 1 {
+	if got == nil || got.ConfirmedImportUses != 2 || got.UncertainImportUses != 1 || len(got.Samples) != 5 {
 		t.Fatalf("unexpected merge result: %#v", got)
 	}
 
