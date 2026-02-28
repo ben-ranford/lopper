@@ -158,11 +158,13 @@ func TestAnnotateFindingConfidence(t *testing.T) {
 }
 
 func TestFilterFindingsByConfidence(t *testing.T) {
+	const packageName = "left-pad"
+
 	deps := []DependencyReport{
 		{
-			Name:          "left-pad",
-			UnusedExports: []SymbolRef{{Name: "pad", Module: "left-pad"}},
-			UnusedImports: []ImportUse{{Name: "pad", Module: "left-pad"}},
+			Name:          packageName,
+			UnusedExports: []SymbolRef{{Name: "pad", Module: packageName}},
+			UnusedImports: []ImportUse{{Name: "pad", Module: packageName}},
 			RiskCues:      []RiskCue{{Code: "runtime-only", Severity: "low", Message: "runtime only"}},
 			Recommendations: []Recommendation{
 				{Code: "remove-unused-dependency", Priority: "high", Message: "remove"},
