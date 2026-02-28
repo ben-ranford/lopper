@@ -29,6 +29,12 @@ function demo(arg) { const local = 1; return util.map([arg], m); }
 	}
 	file := assertSingleScannedFile(t, result)
 	assertImportBindingCoverage(t, file.Imports)
+	if len(file.UncertainImports) != 1 {
+		t.Fatalf("expected one unresolved dynamic import/require, got %#v", file.UncertainImports)
+	}
+	if got := file.UncertainImports[0].Module; got != "<dynamic>" {
+		t.Fatalf("expected dynamic placeholder module, got %q", got)
+	}
 	assertIdentifierUsageCoverage(t, file.IdentifierUsage)
 }
 

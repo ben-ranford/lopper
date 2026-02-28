@@ -167,3 +167,25 @@ func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 		t.Fatalf("did not expect warnings from empty scan result, got %#v", warnings)
 	}
 }
+
+func TestSummarizeUsageUncertainty(t *testing.T) {
+	summary := summarizeUsageUncertainty(ScanResult{
+		Files: []FileScan{
+			{
+				Imports: []ImportBinding{{Module: "lodash"}},
+				UncertainImports: []report.ImportUse{
+					{Locations: []report.Location{{File: "index.js", Line: 2}}},
+				},
+			},
+		},
+	})
+	if summary == nil {
+		t.Fatalf("expected usage uncertainty summary")
+	}
+	if summary.ConfirmedImportUses != 1 || summary.UncertainImportUses != 1 {
+		t.Fatalf("unexpected uncertainty summary counts: %#v", summary)
+	}
+	if len(summary.Samples) != 1 || summary.Samples[0].File != "index.js" {
+		t.Fatalf("unexpected uncertainty samples: %#v", summary.Samples)
+	}
+}

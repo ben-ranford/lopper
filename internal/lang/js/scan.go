@@ -42,11 +42,12 @@ type ReExportBinding struct {
 }
 
 type FileScan struct {
-	Path            string
-	Imports         []ImportBinding
-	ReExports       []ReExportBinding
-	IdentifierUsage map[string]int
-	NamespaceUsage  map[string]map[string]int
+	Path             string
+	Imports          []ImportBinding
+	UncertainImports []report.ImportUse
+	ReExports        []ReExportBinding
+	IdentifierUsage  map[string]int
+	NamespaceUsage   map[string]map[string]int
 }
 
 type ScanResult struct {
@@ -180,16 +181,18 @@ func appendParseErrorFile(parseErrorFiles *[]string, relPath string) {
 
 func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
 	imports := collectImportBindings(tree, content, relPath)
+	uncertainImports := collectUncertainImportUses(tree, content, relPath)
 	reExports := collectReExportBindings(tree, content, relPath, imports)
 	identifierUsage := collectIdentifierUsage(tree, content)
 	namespaceUsage := collectNamespaceUsage(tree, content)
 
 	return FileScan{
-		Path:            relPath,
-		Imports:         imports,
-		ReExports:       reExports,
-		IdentifierUsage: identifierUsage,
-		NamespaceUsage:  namespaceUsage,
+		Path:             relPath,
+		Imports:          imports,
+		UncertainImports: uncertainImports,
+		ReExports:        reExports,
+		IdentifierUsage:  identifierUsage,
+		NamespaceUsage:   namespaceUsage,
 	}
 }
 
@@ -519,7 +522,7 @@ func parseRequireCall(node *sitter.Node, content []byte, relPath string) []Impor
 		return nil
 	}
 
-	module, ok := extractStringLiteral(argumentsNode.NamedChild(0), content)
+	module, ok := extractStaticModuleLiteral(argumentsNode.NamedChild(0), content)
 	if !ok {
 		return nil
 	}
@@ -529,6 +532,46 @@ func parseRequireCall(node *sitter.Node, content []byte, relPath string) []Impor
 		return []ImportBinding{makeImportBinding(module, "*", "*", ImportNamespace, relPath, node)}
 	}
 	return bindings
+}
+
+func collectUncertainImportUses(tree *sitter.Tree, content []byte, relPath string) []report.ImportUse {
+	items := make([]report.ImportUse, 0)
+	walkNode(tree.RootNode(), func(node *sitter.Node) {
+		if node.Type() != "call_expression" {
+			return
+		}
+		item, ok := parseUncertainDynamicImport(node, content, relPath)
+		if !ok {
+			return
+		}
+		items = append(items, item)
+	})
+	return items
+}
+
+func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath string) (report.ImportUse, bool) {
+	functionNode := node.ChildByFieldName("function")
+	if functionNode == nil {
+		return report.ImportUse{}, false
+	}
+	functionName := nodeText(functionNode, content)
+	if functionName != "require" && functionName != "import" {
+		return report.ImportUse{}, false
+	}
+	argumentsNode := node.ChildByFieldName("arguments")
+	if argumentsNode == nil || argumentsNode.NamedChildCount() == 0 {
+		return report.ImportUse{}, false
+	}
+	if _, ok := extractStaticModuleLiteral(argumentsNode.NamedChild(0), content); ok {
+		return report.ImportUse{}, false
+	}
+	location := shared.Location(relPath, int(node.StartPoint().Row)+1, int(node.StartPoint().Column)+1)
+	return report.ImportUse{
+		Name:       "*",
+		Module:     "<dynamic>",
+		Locations:  []report.Location{location},
+		Provenance: []string{"unresolved-" + functionName},
+	}, true
 }
 
 func parseRequireBinding(call *sitter.Node, content []byte, module string, relPath string) []ImportBinding {
@@ -618,6 +661,21 @@ func extractStringLiteral(node *sitter.Node, content []byte) (string, bool) {
 		return "", false
 	}
 	return text, true
+}
+
+func extractStaticModuleLiteral(node *sitter.Node, content []byte) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	text := nodeText(node, content)
+	if len(text) < 2 {
+		return "", false
+	}
+	quote := text[0]
+	if (quote != '"' && quote != '\'' && quote != '`') || text[len(text)-1] != quote {
+		return "", false
+	}
+	return text[1 : len(text)-1], true
 }
 
 func nodeText(node *sitter.Node, content []byte) string {

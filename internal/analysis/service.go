@@ -334,6 +334,7 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 
 	for _, current := range reports {
 		result.Warnings = append(result.Warnings, current.Warnings...)
+		result.UsageUncertainty = mergeUsageUncertainty(result.UsageUncertainty, current.UsageUncertainty)
 		if current.GeneratedAt.After(result.GeneratedAt) {
 			result.GeneratedAt = current.GeneratedAt
 		}
@@ -356,6 +357,36 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 	result.Summary = report.ComputeSummary(result.Dependencies)
 	result.LanguageBreakdown = report.ComputeLanguageBreakdown(result.Dependencies)
 	return result
+}
+
+func mergeUsageUncertainty(left, right *report.UsageUncertainty) *report.UsageUncertainty {
+	if left == nil {
+		if right == nil {
+			return nil
+		}
+		copyRight := *right
+		copyRight.Samples = append([]report.Location{}, right.Samples...)
+		return &copyRight
+	}
+	if right == nil {
+		copyLeft := *left
+		copyLeft.Samples = append([]report.Location{}, left.Samples...)
+		return &copyLeft
+	}
+
+	merged := &report.UsageUncertainty{
+		ConfirmedImportUses: left.ConfirmedImportUses + right.ConfirmedImportUses,
+		UncertainImportUses: left.UncertainImportUses + right.UncertainImportUses,
+	}
+	merged.Samples = append(merged.Samples, left.Samples...)
+	if len(merged.Samples) < 5 {
+		remaining := 5 - len(merged.Samples)
+		if remaining > len(right.Samples) {
+			remaining = len(right.Samples)
+		}
+		merged.Samples = append(merged.Samples, right.Samples[:remaining]...)
+	}
+	return merged
 }
 
 func mergeDependency(left report.DependencyReport, right report.DependencyReport) report.DependencyReport {

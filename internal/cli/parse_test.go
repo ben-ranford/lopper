@@ -327,6 +327,7 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		thresholdFailFlag, "2",
 		thresholdLowWarnFlag, "31",
 		"--threshold-min-usage-percent", "45",
+		"--threshold-max-uncertain-imports", "3",
 		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
@@ -340,6 +341,9 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.MinUsagePercentForRecommendations != 45 {
 		t.Fatalf("expected min-usage threshold 45, got %d", req.Analyse.Thresholds.MinUsagePercentForRecommendations)
+	}
+	if req.Analyse.Thresholds.MaxUncertainImportCount != 3 {
+		t.Fatalf("expected max uncertain import threshold 3, got %d", req.Analyse.Thresholds.MaxUncertainImportCount)
 	}
 	if req.Analyse.Thresholds.RemovalCandidateWeightUsage != 0.7 || req.Analyse.Thresholds.RemovalCandidateWeightImpact != 0.2 || req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.1 {
 		t.Fatalf("expected score weights 0.7/0.2/0.1, got %+v", req.Analyse.Thresholds)

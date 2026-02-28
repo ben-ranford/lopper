@@ -36,10 +36,12 @@ func sampleEffectivePolicy(source string, failOnIncrease, lowConfidence, minUsag
 
 func TestFormatTable(t *testing.T) {
 	reportData := Report{
+		UsageUncertainty: &UsageUncertainty{ConfirmedImportUses: 5, UncertainImportUses: 1},
 		EffectiveThresholds: &EffectiveThresholds{
 			FailOnIncreasePercent:             2,
 			LowConfidenceWarningPercent:       35,
 			MinUsagePercentForRecommendations: 45,
+			MaxUncertainImportCount:           1,
 		},
 		EffectivePolicy: sampleEffectivePolicy("repo", 2, 35, 45, 0.6, 0.2, 0.2),
 		LanguageBreakdown: []LanguageSummary{
@@ -73,6 +75,7 @@ func TestFormatTable(t *testing.T) {
 		"Language",
 		"Languages:",
 		"Effective thresholds:",
+		"Usage certainty: confirmed imports=5, uncertain imports=1",
 		"Effective policy:",
 		"sources: repo > defaults",
 		"map",

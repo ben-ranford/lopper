@@ -40,6 +40,7 @@ type Report struct {
 	GeneratedAt          time.Time            `json:"generatedAt"`
 	RepoPath             string               `json:"repoPath"`
 	Dependencies         []DependencyReport   `json:"dependencies"`
+	UsageUncertainty     *UsageUncertainty    `json:"usageUncertainty,omitempty"`
 	Summary              *Summary             `json:"summary,omitempty"`
 	LanguageBreakdown    []LanguageSummary    `json:"languageBreakdown,omitempty"`
 	Cache                *CacheMetadata       `json:"cache,omitempty"`
@@ -109,6 +110,7 @@ type EffectiveThresholds struct {
 	FailOnIncreasePercent             int `json:"failOnIncreasePercent"`
 	LowConfidenceWarningPercent       int `json:"lowConfidenceWarningPercent"`
 	MinUsagePercentForRecommendations int `json:"minUsagePercentForRecommendations"`
+	MaxUncertainImportCount           int `json:"maxUncertainImportCount"`
 }
 
 type EffectivePolicy struct {
@@ -122,6 +124,12 @@ type Summary struct {
 	UsedExportsCount  int     `json:"usedExportsCount"`
 	TotalExportsCount int     `json:"totalExportsCount"`
 	UsedPercent       float64 `json:"usedPercent"`
+}
+
+type UsageUncertainty struct {
+	ConfirmedImportUses int        `json:"confirmedImportUses"`
+	UncertainImportUses int        `json:"uncertainImportUses"`
+	Samples             []Location `json:"samples,omitempty"`
 }
 
 type LanguageSummary struct {

@@ -105,6 +105,7 @@ type analyseFlagValues struct {
 	thresholdFailOnIncrease       *int
 	thresholdLowConfidenceWarning *int
 	thresholdMinUsagePercent      *int
+	thresholdMaxUncertainImports  *int
 	scoreWeightUsage              *float64
 	scoreWeightImpact             *float64
 	scoreWeightConfidence         *float64
@@ -141,6 +142,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		thresholdFailOnIncrease:       fs.Int("threshold-fail-on-increase", req.Analyse.Thresholds.FailOnIncreasePercent, "waste increase threshold for CI failure"),
 		thresholdLowConfidenceWarning: fs.Int("threshold-low-confidence-warning", req.Analyse.Thresholds.LowConfidenceWarningPercent, "low-confidence warning threshold"),
 		thresholdMinUsagePercent:      fs.Int("threshold-min-usage-percent", req.Analyse.Thresholds.MinUsagePercentForRecommendations, "minimum usage percent threshold for recommendation generation"),
+		thresholdMaxUncertainImports:  fs.Int("threshold-max-uncertain-imports", req.Analyse.Thresholds.MaxUncertainImportCount, "fail when uncertain dynamic import/require count exceeds threshold"),
 		scoreWeightUsage:              fs.Float64("score-weight-usage", req.Analyse.Thresholds.RemovalCandidateWeightUsage, "relative weight for removal-candidate usage signal"),
 		scoreWeightImpact:             fs.Float64("score-weight-impact", req.Analyse.Thresholds.RemovalCandidateWeightImpact, "relative weight for removal-candidate impact signal"),
 		scoreWeightConfidence:         fs.Float64("score-weight-confidence", req.Analyse.Thresholds.RemovalCandidateWeightConfidence, "relative weight for removal-candidate confidence signal"),
@@ -247,6 +249,9 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["threshold-min-usage-percent"] {
 		overrides.MinUsagePercentForRecommendations = values.thresholdMinUsagePercent
 	}
+	if visited["threshold-max-uncertain-imports"] {
+		overrides.MaxUncertainImportCount = values.thresholdMaxUncertainImports
+	}
 	if visited["score-weight-usage"] {
 		overrides.RemovalCandidateWeightUsage = values.scoreWeightUsage
 	}
@@ -266,6 +271,7 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 	return overrides.FailOnIncreasePercent != nil ||
 		overrides.LowConfidenceWarningPercent != nil ||
 		overrides.MinUsagePercentForRecommendations != nil ||
+		overrides.MaxUncertainImportCount != nil ||
 		overrides.RemovalCandidateWeightUsage != nil ||
 		overrides.RemovalCandidateWeightImpact != nil ||
 		overrides.RemovalCandidateWeightConfidence != nil ||
@@ -441,7 +447,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

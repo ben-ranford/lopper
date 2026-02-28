@@ -74,6 +74,16 @@ func TestRunLockfileDriftError(t *testing.T) {
 	}
 }
 
+func TestRunUncertaintyThresholdError(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	c := New(&fakeRunner{err: app.ErrUncertaintyThresholdExceeded}, &out, &errOut)
+	code := c.Run(context.Background(), []string{"analyse", "lodash"})
+	if code != 3 {
+		t.Fatalf("expected uncertainty threshold exit code 3, got %d", code)
+	}
+}
+
 func TestRunGenericRunnerError(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

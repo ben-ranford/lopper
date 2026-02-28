@@ -237,6 +237,20 @@ func TestValidateFailOnIncreaseRequiresBaseline(t *testing.T) {
 	}
 }
 
+func TestValidateUncertaintyThreshold(t *testing.T) {
+	reportData := report.Report{
+		UsageUncertainty: &report.UsageUncertainty{
+			UncertainImportUses: 2,
+		},
+	}
+	if err := validateUncertaintyThreshold(reportData, 2); err != nil {
+		t.Fatalf("expected no uncertainty threshold error at boundary, got %v", err)
+	}
+	if err := validateUncertaintyThreshold(reportData, 1); !errors.Is(err, ErrUncertaintyThresholdExceeded) {
+		t.Fatalf("expected uncertainty threshold error, got %v", err)
+	}
+}
+
 func TestExecuteAnalyseAnalyzerError(t *testing.T) {
 	expected := errors.New("analyse failed")
 	application := &App{
