@@ -35,6 +35,8 @@ Options:
                               Warn in --language all mode when adapter confidence is below N
   --threshold-min-usage-percent N
                               Min used export percent before low-usage recommendations are emitted
+  --threshold-max-uncertain-imports N
+                              Fail when unresolved dynamic import/require usage count exceeds N
   --score-weight-usage N      Relative removal-candidate weight for usage signal (default: 0.50)
   --score-weight-impact N     Relative removal-candidate weight for impact signal (default: 0.30)
   --score-weight-confidence N Relative removal-candidate weight for confidence signal (default: 0.20)

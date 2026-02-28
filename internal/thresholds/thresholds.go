@@ -10,6 +10,7 @@ const (
 	DefaultFailOnIncreasePercent             = 0
 	DefaultLowConfidenceWarningPercent       = 40
 	DefaultMinUsagePercentForRecommendations = 40
+	DefaultMaxUncertainImportCount           = 0
 	DefaultRemovalCandidateWeightUsage       = 0.50
 	DefaultRemovalCandidateWeightImpact      = 0.30
 	DefaultRemovalCandidateWeightConfidence  = 0.20
@@ -28,6 +29,7 @@ type Values struct {
 	FailOnIncreasePercent             int
 	LowConfidenceWarningPercent       int
 	MinUsagePercentForRecommendations int
+	MaxUncertainImportCount           int
 	RemovalCandidateWeightUsage       float64
 	RemovalCandidateWeightImpact      float64
 	RemovalCandidateWeightConfidence  float64
@@ -38,6 +40,7 @@ type Overrides struct {
 	FailOnIncreasePercent             *int
 	LowConfidenceWarningPercent       *int
 	MinUsagePercentForRecommendations *int
+	MaxUncertainImportCount           *int
 	RemovalCandidateWeightUsage       *float64
 	RemovalCandidateWeightImpact      *float64
 	RemovalCandidateWeightConfidence  *float64
@@ -49,6 +52,7 @@ func Defaults() Values {
 		FailOnIncreasePercent:             DefaultFailOnIncreasePercent,
 		LowConfidenceWarningPercent:       DefaultLowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: DefaultMinUsagePercentForRecommendations,
+		MaxUncertainImportCount:           DefaultMaxUncertainImportCount,
 		RemovalCandidateWeightUsage:       DefaultRemovalCandidateWeightUsage,
 		RemovalCandidateWeightImpact:      DefaultRemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  DefaultRemovalCandidateWeightConfidence,
@@ -64,6 +68,9 @@ func (v *Values) Validate() error {
 		return err
 	}
 	if err := validatePercentageRange("min_usage_percent_for_recommendations", v.MinUsagePercentForRecommendations); err != nil {
+		return err
+	}
+	if err := validateNonNegative("max_uncertain_import_count", v.MaxUncertainImportCount); err != nil {
 		return err
 	}
 	if err := validateWeight("removal_candidate_weight_usage", v.RemovalCandidateWeightUsage); err != nil {
@@ -95,6 +102,9 @@ func (o *Overrides) Apply(base Values) Values {
 	if o.MinUsagePercentForRecommendations != nil {
 		resolved.MinUsagePercentForRecommendations = *o.MinUsagePercentForRecommendations
 	}
+	if o.MaxUncertainImportCount != nil {
+		resolved.MaxUncertainImportCount = *o.MaxUncertainImportCount
+	}
 	if o.RemovalCandidateWeightUsage != nil {
 		resolved.RemovalCandidateWeightUsage = *o.RemovalCandidateWeightUsage
 	}
@@ -124,11 +134,23 @@ func (o *Overrides) Validate() error {
 	}); err != nil {
 		return err
 	}
+	if err := validateOptionalInt(o.MaxUncertainImportCount, func(value int) error {
+		return validateNonNegative("max_uncertain_import_count", value)
+	}); err != nil {
+		return err
+	}
 	if err := validateOptionalWeights(o); err != nil {
 		return err
 	}
 	if err := validateOptionalString(o.LockfileDriftPolicy, validateLockfileDriftPolicy); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateNonNegative(name string, value int) error {
+	if value < 0 {
+		return fmt.Errorf("invalid threshold %s: %d (must be >= 0)", name, value)
 	}
 	return nil
 }

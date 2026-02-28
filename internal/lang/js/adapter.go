@@ -148,6 +148,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	if err != nil {
 		return report.Report{}, err
 	}
+	result.UsageUncertainty = summarizeUsageUncertainty(scanResult)
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
 
 	switch {
@@ -174,6 +175,27 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	}
 
 	return result, nil
+}
+
+func summarizeUsageUncertainty(scanResult ScanResult) *report.UsageUncertainty {
+	usage := &report.UsageUncertainty{}
+	for _, file := range scanResult.Files {
+		usage.ConfirmedImportUses += len(file.Imports)
+		usage.UncertainImportUses += len(file.UncertainImports)
+		for _, item := range file.UncertainImports {
+			if len(usage.Samples) >= 5 {
+				break
+			}
+			if len(item.Locations) == 0 {
+				continue
+			}
+			usage.Samples = append(usage.Samples, item.Locations[0])
+		}
+	}
+	if usage.ConfirmedImportUses == 0 && usage.UncertainImportUses == 0 {
+		return nil
+	}
+	return usage
 }
 
 func buildDependencyReport(repoPath string, dependency string, dependencyRootPath string, scanResult ScanResult, runtimeProfile string, minUsagePercentForRecommendations int, suggestOnly bool) (report.DependencyReport, []string) {

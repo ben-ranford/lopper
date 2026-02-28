@@ -16,10 +16,11 @@ import (
 )
 
 var (
-	ErrUnknownMode      = errors.New("unknown mode")
-	ErrFailOnIncrease   = errors.New("dependency waste increased beyond threshold")
-	ErrBaselineRequired = errors.New("baseline report is required for fail-on-increase")
-	ErrLockfileDrift    = errors.New("lockfile drift detected")
+	ErrUnknownMode                  = errors.New("unknown mode")
+	ErrFailOnIncrease               = errors.New("dependency waste increased beyond threshold")
+	ErrBaselineRequired             = errors.New("baseline report is required for fail-on-increase")
+	ErrLockfileDrift                = errors.New("lockfile drift detected")
+	ErrUncertaintyThresholdExceeded = errors.New("uncertain dynamic import/require usage exceeded threshold")
 )
 
 type App struct {
@@ -107,6 +108,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,
 		LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
+		MaxUncertainImportCount:           req.Analyse.Thresholds.MaxUncertainImportCount,
 	}
 	reportData.EffectivePolicy = &report.EffectivePolicy{
 		Sources: req.Analyse.PolicySources,
@@ -114,6 +116,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 			FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,
 			LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
 			MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
+			MaxUncertainImportCount:           req.Analyse.Thresholds.MaxUncertainImportCount,
 		},
 		RemovalCandidateWeights: report.RemovalCandidateWeights{
 			Usage:      req.Analyse.Thresholds.RemovalCandidateWeightUsage,
@@ -133,6 +136,13 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		return formatted, err
 	}
 	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
+		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
+		if formatErr != nil {
+			return "", err
+		}
+		return formatted, err
+	}
+	if err := validateUncertaintyThreshold(reportData, req.Analyse.Thresholds.MaxUncertainImportCount); err != nil {
 		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
 		if formatErr != nil {
 			return "", err
@@ -283,6 +293,20 @@ func validateFailOnIncrease(reportData report.Report, threshold int) error {
 	}
 	if *reportData.WasteIncreasePercent > float64(threshold) {
 		return ErrFailOnIncrease
+	}
+	return nil
+}
+
+func validateUncertaintyThreshold(reportData report.Report, threshold int) error {
+	if threshold <= 0 {
+		return nil
+	}
+	uncertainImports := 0
+	if reportData.UsageUncertainty != nil {
+		uncertainImports = reportData.UsageUncertainty.UncertainImportUses
+	}
+	if uncertainImports > threshold {
+		return ErrUncertaintyThresholdExceeded
 	}
 	return nil
 }

@@ -41,6 +41,7 @@ func formatTable(report Report) (string, error) {
 
 	var buffer bytes.Buffer
 	appendSummary(&buffer, report.Summary)
+	appendUsageUncertainty(&buffer, report.UsageUncertainty)
 	appendCacheMetadata(&buffer, report.Cache)
 	appendEffectiveThresholds(&buffer, report)
 	appendEffectivePolicy(&buffer, report)
@@ -162,6 +163,7 @@ func hasRuntimeColumn(dependencies []DependencyReport) bool {
 func formatEmpty(report Report) string {
 	var buffer bytes.Buffer
 	buffer.WriteString("No dependencies to report.\n")
+	appendUsageUncertainty(&buffer, report.UsageUncertainty)
 	appendEffectiveThresholds(&buffer, report)
 	appendEffectivePolicy(&buffer, report)
 	appendWarnings(&buffer, report)
@@ -176,6 +178,7 @@ func appendEffectiveThresholds(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString(fmt.Sprintf("- fail_on_increase_percent: %d\n", report.EffectiveThresholds.FailOnIncreasePercent))
 	buffer.WriteString(fmt.Sprintf("- low_confidence_warning_percent: %d\n", report.EffectiveThresholds.LowConfidenceWarningPercent))
 	buffer.WriteString(fmt.Sprintf("- min_usage_percent_for_recommendations: %d\n", report.EffectiveThresholds.MinUsagePercentForRecommendations))
+	buffer.WriteString(fmt.Sprintf("- max_uncertain_import_count: %d\n", report.EffectiveThresholds.MaxUncertainImportCount))
 	buffer.WriteString("\n")
 }
 
@@ -192,10 +195,18 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString(fmt.Sprintf("- fail_on_increase_percent: %d\n", report.EffectivePolicy.Thresholds.FailOnIncreasePercent))
 	buffer.WriteString(fmt.Sprintf("- low_confidence_warning_percent: %d\n", report.EffectivePolicy.Thresholds.LowConfidenceWarningPercent))
 	buffer.WriteString(fmt.Sprintf("- min_usage_percent_for_recommendations: %d\n", report.EffectivePolicy.Thresholds.MinUsagePercentForRecommendations))
+	buffer.WriteString(fmt.Sprintf("- max_uncertain_import_count: %d\n", report.EffectivePolicy.Thresholds.MaxUncertainImportCount))
 	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_usage: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Usage))
 	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_impact: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Impact))
 	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_confidence: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Confidence))
 	buffer.WriteString("\n")
+}
+
+func appendUsageUncertainty(buffer *bytes.Buffer, usage *UsageUncertainty) {
+	if usage == nil {
+		return
+	}
+	buffer.WriteString(fmt.Sprintf("Usage certainty: confirmed imports=%d, uncertain imports=%d\n\n", usage.ConfirmedImportUses, usage.UncertainImportUses))
 }
 
 func appendWarnings(buffer *bytes.Buffer, report Report) {

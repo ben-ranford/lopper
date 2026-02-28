@@ -167,6 +167,7 @@ type rawConfig struct {
 	FailOnIncreasePercent             *int     `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
 	LowConfidenceWarningPercent       *int     `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
 	MinUsagePercentForRecommendations *int     `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	MaxUncertainImportCount           *int     `yaml:"max_uncertain_import_count" json:"max_uncertain_import_count"`
 	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
 	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
@@ -186,6 +187,7 @@ type rawThresholds struct {
 	FailOnIncreasePercent             *int     `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
 	LowConfidenceWarningPercent       *int     `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
 	MinUsagePercentForRecommendations *int     `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	MaxUncertainImportCount           *int     `yaml:"max_uncertain_import_count" json:"max_uncertain_import_count"`
 	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
 	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
@@ -197,6 +199,7 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		FailOnIncreasePercent:             c.FailOnIncreasePercent,
 		LowConfidenceWarningPercent:       c.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: c.MinUsagePercentForRecommendations,
+		MaxUncertainImportCount:           c.MaxUncertainImportCount,
 		RemovalCandidateWeightUsage:       c.RemovalCandidateWeightUsage,
 		RemovalCandidateWeightImpact:      c.RemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  c.RemovalCandidateWeightConfidence,
@@ -209,6 +212,9 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		return Overrides{}, err
 	}
 	if err := applyNestedOverride("min_usage_percent_for_recommendations", &overrides.MinUsagePercentForRecommendations, c.Thresholds.MinUsagePercentForRecommendations); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedOverride("max_uncertain_import_count", &overrides.MaxUncertainImportCount, c.Thresholds.MaxUncertainImportCount); err != nil {
 		return Overrides{}, err
 	}
 	if err := applyNestedFloatOverride("removal_candidate_weight_usage", &overrides.RemovalCandidateWeightUsage, c.Thresholds.RemovalCandidateWeightUsage); err != nil {
@@ -269,6 +275,9 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	}
 	if higher.MinUsagePercentForRecommendations != nil {
 		merged.MinUsagePercentForRecommendations = higher.MinUsagePercentForRecommendations
+	}
+	if higher.MaxUncertainImportCount != nil {
+		merged.MaxUncertainImportCount = higher.MaxUncertainImportCount
 	}
 	if higher.RemovalCandidateWeightUsage != nil {
 		merged.RemovalCandidateWeightUsage = higher.RemovalCandidateWeightUsage

@@ -86,7 +86,7 @@ func (c *CommandLine) writeOutput(output string) error {
 }
 
 func exitCodeForRunError(runErr error) int {
-	if errors.Is(runErr, app.ErrFailOnIncrease) {
+	if errors.Is(runErr, app.ErrFailOnIncrease) || errors.Is(runErr, app.ErrUncertaintyThresholdExceeded) {
 		return 3
 	}
 	if errors.Is(runErr, app.ErrLockfileDrift) {
