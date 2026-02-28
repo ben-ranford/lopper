@@ -228,7 +228,7 @@ func isGitWorktree(ctx context.Context, repoPath string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--is-inside-work-tree")
+	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repoPath, "rev-parse", "--is-inside-work-tree")
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
@@ -241,7 +241,7 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, "git", "-C", repoPath, "diff", "--name-only", "HEAD", "--")
+	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repoPath, "diff", "--name-only", "HEAD", "--")
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
@@ -254,7 +254,7 @@ func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	command := exec.CommandContext(ctx, "git", "-C", repoPath, "ls-files", "--others", "--exclude-standard")
+	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repoPath, "ls-files", "--others", "--exclude-standard")
 	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {

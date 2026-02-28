@@ -202,6 +202,33 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	}
 }
 
+func TestGitChangedFilesReturnsErrorWhenRepoHasNoHEAD(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+
+	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
+	if err == nil {
+		t.Fatalf("expected gitChangedFiles error when HEAD is missing")
+	}
+	if !hasGit {
+		t.Fatalf("expected hasGit=true when inside git worktree")
+	}
+	if len(changed) != 0 {
+		t.Fatalf("expected no changed files on error, got %#v", changed)
+	}
+}
+
+func TestDetectLockfileDriftReturnsGitChangedFilesError(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	runGit(t, repo, "init")
+
+	_, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil {
+		t.Fatalf("expected detectLockfileDrift to return git changed-files error when HEAD is missing")
+	}
+}
+
 func TestDetectDriftForRuleCases(t *testing.T) {
 	repo := t.TempDir()
 	manifest := filepath.Join(repo, "package.json")
@@ -238,6 +265,7 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 		wantSubstr   string
 	}{
 		{name: "non-git-context", files: files, changed: map[string]struct{}{"package.json": {}}, hasGit: false, wantWarnings: 0},
+		{name: "manifest-not-changed", files: files, changed: map[string]struct{}{"package-lock.json": {}}, hasGit: true, wantWarnings: 0},
 		{name: "manifest-and-lockfile-changed", files: files, changed: map[string]struct{}{"package.json": {}, "package-lock.json": {}}, hasGit: true, wantWarnings: 0},
 		{name: "manifest-only-changed", files: files, changed: map[string]struct{}{"package.json": {}}, hasGit: true, wantWarnings: 1, wantSubstr: "changed while no matching lockfile changed"},
 		{name: "manifest-without-lockfile", files: missingLockfile, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "no matching lockfile"},
@@ -254,6 +282,56 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 				t.Fatalf("expected warning containing %q, got %#v", tc.wantSubstr, warnings)
 			}
 		})
+	}
+}
+
+func TestLockfileDriftHelpers(t *testing.T) {
+	repo := t.TempDir()
+	nestedDir := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+
+	if got := relativeDir(repo, nestedDir); got != "nested" {
+		t.Fatalf("expected relative dir nested, got %q", got)
+	}
+	if got := relativeFilePath(repo, nestedDir, "package.json"); got != "nested/package.json" {
+		t.Fatalf("expected relative file path nested/package.json, got %q", got)
+	}
+	if !isPathChanged(map[string]struct{}{"nested/package.json": {}}, "nested/package.json") {
+		t.Fatalf("expected changed path to be detected")
+	}
+	if isPathChanged(map[string]struct{}{"other": {}}, "nested/package.json") {
+		t.Fatalf("expected unchanged path not to be detected")
+	}
+
+	lines := parseGitOutputLines([]byte("a\nb\n"))
+	if len(lines) != 2 || lines[0] != "a" || lines[1] != "b" {
+		t.Fatalf("unexpected parsed git output lines: %#v", lines)
+	}
+	if got := parseGitOutputLines([]byte("")); len(got) != 0 {
+		t.Fatalf("expected empty git output lines, got %#v", got)
+	}
+
+	manifest := filepath.Join(repo, "package.json")
+	lock := filepath.Join(repo, "package-lock.json")
+	writeFile(t, manifest, "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, lock, "{\n  \"name\": \"demo\"\n}\n")
+	manifestInfo, err := os.Stat(manifest)
+	if err != nil {
+		t.Fatalf("stat manifest: %v", err)
+	}
+	lockInfo, err := os.Stat(lock)
+	if err != nil {
+		t.Fatalf("stat lockfile: %v", err)
+	}
+	files := map[string]fs.FileInfo{
+		"package.json":      manifestInfo,
+		"package-lock.json": lockInfo,
+	}
+	found := findRuleLockfiles(files, []string{"package-lock.json", "missing.lock"})
+	if len(found) != 1 || found[0].name != "package-lock.json" {
+		t.Fatalf("unexpected lockfiles found: %#v", found)
 	}
 }
 
@@ -279,7 +357,7 @@ func initGitRepo(t *testing.T, repo string) {
 func runGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	commandArgs := append([]string{"-C", repo}, args...)
-	command := exec.Command("git", commandArgs...)
+	command := exec.Command("/usr/bin/git", commandArgs...)
 	command.Env = sanitizedGitEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
