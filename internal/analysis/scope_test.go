@@ -62,11 +62,59 @@ func TestApplyPathScopeNoPatternsReturnsOriginalPath(t *testing.T) {
 	}
 }
 
+func TestNoOpCleanupDoesNothing(t *testing.T) {
+	noOpCleanup()
+}
+
 func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 	repo := t.TempDir()
 	scoped := t.TempDir()
 	if copyFile(repo, scoped, "../escape.txt") == nil {
 		t.Fatalf("expected unsafe relative path rejection")
+	}
+}
+
+func TestNormalizePatternsTrimsDedupesAndNormalizes(t *testing.T) {
+	got := normalizePatterns([]string{" src/**/*.go ", "", "src/**/*.go", "src/**/*.go"})
+	if len(got) != 1 || got[0] != "src/**/*.go" {
+		t.Fatalf("expected normalized deduped pattern, got %#v", got)
+	}
+}
+
+func TestRecordScopeSkipReasonAndCap(t *testing.T) {
+	stats := newScopeStats([]string{"src/**/*.go"}, nil)
+	recordScopeSkip(stats, "README.md", false, "", false, "")
+	if len(stats.skippedDiagnostics) != 1 || !strings.Contains(stats.skippedDiagnostics[0], "did not match include patterns") {
+		t.Fatalf("expected include-miss reason, got %#v", stats.skippedDiagnostics)
+	}
+
+	stats.skippedDiagnostics = make([]string, maxScopeDiagnostics)
+	recordScopeSkip(stats, "ignored.go", false, "", false, "")
+	if len(stats.skippedDiagnostics) != maxScopeDiagnostics {
+		t.Fatalf("expected diagnostics to stay capped at %d, got %d", maxScopeDiagnostics, len(stats.skippedDiagnostics))
+	}
+}
+
+func TestAsteriskSegmentVariants(t *testing.T) {
+	segment, next := asteriskSegment("**/x", 0)
+	if segment != "(?:.*/)?" || next != 2 {
+		t.Fatalf("expected double-star slash segment, got %q %d", segment, next)
+	}
+
+	segment, next = asteriskSegment("**x", 0)
+	if segment != ".*" || next != 1 {
+		t.Fatalf("expected double-star segment, got %q %d", segment, next)
+	}
+
+	segment, next = asteriskSegment("*x", 0)
+	if segment != "[^/]*" || next != 0 {
+		t.Fatalf("expected single-star segment, got %q %d", segment, next)
+	}
+}
+
+func TestGlobMatchEscapesRegexMetacharacters(t *testing.T) {
+	if !globMatch("a+b?.(txt)", "a+b1.(txt)") {
+		t.Fatalf("expected escaped metacharacters to match literally")
 	}
 }
 
@@ -82,6 +130,12 @@ func TestPathWithinAndSafeRelativePath(t *testing.T) {
 	}
 	if !isSafeRelativePath("src/x.go") {
 		t.Fatalf("expected nested relative path to be safe")
+	}
+	if isSafeRelativePath(".") {
+		t.Fatalf("expected current-dir path to be unsafe")
+	}
+	if isSafeRelativePath(filepath.Join(string(filepath.Separator), "tmp", "x")) {
+		t.Fatalf("expected absolute path to be unsafe")
 	}
 }
 

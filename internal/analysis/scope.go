@@ -25,12 +25,20 @@ type scopeStats struct {
 	totalFiles         int
 }
 
-func newScopeStats(includePatterns []string, excludePatterns []string) *scopeStats {
+func newScopeStats(includePatterns, excludePatterns []string) *scopeStats {
 	return &scopeStats{
 		includeMatches:     make(map[string]int, len(includePatterns)),
 		excludeMatches:     make(map[string]int, len(excludePatterns)),
 		skippedDiagnostics: make([]string, 0, maxScopeDiagnostics),
 	}
+}
+
+type scopeWalker struct {
+	repoPath        string
+	scopedRoot      string
+	includePatterns []string
+	excludePatterns []string
+	stats           *scopeStats
 }
 
 func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
@@ -51,10 +59,15 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	}
 
 	stats := newScopeStats(includePatterns, excludePatterns)
+	walker := &scopeWalker{
+		repoPath:        repoPath,
+		scopedRoot:      scopedRoot,
+		includePatterns: includePatterns,
+		excludePatterns: excludePatterns,
+		stats:           stats,
+	}
 
-	walkErr := filepath.WalkDir(repoPath, func(currentPath string, entry fs.DirEntry, err error) error {
-		return walkScopedPath(repoPath, scopedRoot, includePatterns, excludePatterns, stats, currentPath, entry, err)
-	})
+	walkErr := filepath.WalkDir(repoPath, walker.walk)
 	if walkErr != nil {
 		cleanup()
 		return "", nil, nil, fmt.Errorf("apply path scope: %w", walkErr)
@@ -75,7 +88,7 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	return scopedRoot, warnings, cleanup, nil
 }
 
-func walkScopedPath(repoPath string, scopedRoot string, includePatterns []string, excludePatterns []string, stats *scopeStats, currentPath string, entry fs.DirEntry, walkErr error) error {
+func (w *scopeWalker) walk(currentPath string, entry fs.DirEntry, walkErr error) error {
 	if walkErr != nil {
 		return walkErr
 	}
@@ -85,26 +98,26 @@ func walkScopedPath(repoPath string, scopedRoot string, includePatterns []string
 		}
 		return nil
 	}
-	stats.totalFiles++
-	relativePath, err := filepath.Rel(repoPath, currentPath)
+	w.stats.totalFiles++
+	relativePath, err := filepath.Rel(w.repoPath, currentPath)
 	if err != nil {
 		return err
 	}
 	slashed := filepath.ToSlash(filepath.Clean(relativePath))
-	includeMatched, includePattern := matchFirstPattern(slashed, includePatterns)
-	excludeMatched, excludePattern := matchFirstPattern(slashed, excludePatterns)
-	shouldSkip := (len(includePatterns) > 0 && !includeMatched) || excludeMatched
+	includeMatched, includePattern := matchFirstPattern(slashed, w.includePatterns)
+	excludeMatched, excludePattern := matchFirstPattern(slashed, w.excludePatterns)
+	shouldSkip := (len(w.includePatterns) > 0 && !includeMatched) || excludeMatched
 	if shouldSkip {
-		recordScopeSkip(stats, slashed, includeMatched, includePattern, excludeMatched, excludePattern)
+		recordScopeSkip(w.stats, slashed, includeMatched, includePattern, excludeMatched, excludePattern)
 		return nil
 	}
 	if includeMatched {
-		stats.includeMatches[includePattern]++
+		w.stats.includeMatches[includePattern]++
 	}
-	if err := copyFile(repoPath, scopedRoot, relativePath); err != nil {
+	if err := copyFile(w.repoPath, w.scopedRoot, relativePath); err != nil {
 		return err
 	}
-	stats.keptFiles++
+	w.stats.keptFiles++
 	return nil
 }
 
