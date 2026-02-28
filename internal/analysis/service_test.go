@@ -62,8 +62,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "cpp") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "ruby") || !slices.Contains(languages, "dotnet") {
-		t.Fatalf("expected js-ts, python, cpp, jvm, go, php, rust, ruby, and dotnet dependencies, got %#v", languages)
+	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "rust", "ruby", "dotnet"} {
+		if !slices.Contains(languages, expectedLanguage) {
+			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
+		}
 	}
 	if len(reportData.LanguageBreakdown) < 9 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
