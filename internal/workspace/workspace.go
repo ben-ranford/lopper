@@ -64,10 +64,16 @@ func ChangedFiles(repoPath string) ([]string, error) {
 
 func parseChangedFileLines(output []byte) []string {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	return collectUniquePaths(lines, func(line string) string {
+		return strings.TrimSpace(line)
+	})
+}
+
+func collectUniquePaths(lines []string, extractor func(string) string) []string {
 	paths := make([]string, 0, len(lines))
-	seen := make(map[string]struct{})
+	seen := make(map[string]struct{}, len(lines))
 	for _, line := range lines {
-		path := strings.TrimSpace(line)
+		path := extractor(line)
 		if path == "" {
 			continue
 		}
@@ -83,28 +89,17 @@ func parseChangedFileLines(output []byte) []string {
 
 func parsePorcelainChangedFiles(output []byte) []string {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	paths := make([]string, 0, len(lines))
-	seen := make(map[string]struct{})
-	for _, line := range lines {
+	return collectUniquePaths(lines, func(line string) string {
 		line = strings.TrimSpace(line)
 		if len(line) < 4 {
-			continue
+			return ""
 		}
 		path := strings.TrimSpace(line[3:])
 		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
 			path = strings.TrimSpace(path[idx+4:])
 		}
-		if path == "" {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
+		return path
+	})
 }
 
 func resolveGitBinaryPath() (string, error) {
