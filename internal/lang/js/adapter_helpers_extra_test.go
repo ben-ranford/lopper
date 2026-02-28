@@ -111,7 +111,7 @@ func TestJSAdapterHelperBranchesExtra(t *testing.T) {
 	outside := t.TempDir()
 	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
 		RepoPath:     repo,
-		ImporterPath: filepath.Join(outside, "index.js"),
+		ImporterPath: filepath.Join(outside, testIndexJS),
 		Dependency:   "dep",
 	}); got != "" {
 		t.Fatalf("expected empty resolution for importer outside repo root, got %q", got)
@@ -140,11 +140,11 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "wild")
-	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"index.js"}`)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"`+testIndexJS+`"}`)
 	sourceLines := []string{`export * from "./other.js"`, `export const keep = 1`, ""}
 	source := strings.Join(sourceLines, "\n")
 
-	testutil.MustWriteFile(t, filepath.Join(depRoot, "index.js"), source)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, testIndexJS), source)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
 	surface, warnings = resolveSurfaceWarnings(repo, "wild", "", "")
@@ -174,7 +174,7 @@ func TestSummarizeUsageUncertainty(t *testing.T) {
 			{
 				Imports: []ImportBinding{{Module: "lodash"}},
 				UncertainImports: []report.ImportUse{
-					{Locations: []report.Location{{File: "index.js", Line: 2}}},
+					{Locations: []report.Location{{File: testIndexJS, Line: 2}}},
 				},
 			},
 		},
@@ -185,7 +185,7 @@ func TestSummarizeUsageUncertainty(t *testing.T) {
 	if summary.ConfirmedImportUses != 1 || summary.UncertainImportUses != 1 {
 		t.Fatalf("unexpected uncertainty summary counts: %#v", summary)
 	}
-	if len(summary.Samples) != 1 || summary.Samples[0].File != "index.js" {
+	if len(summary.Samples) != 1 || summary.Samples[0].File != testIndexJS {
 		t.Fatalf("unexpected uncertainty samples: %#v", summary.Samples)
 	}
 }
