@@ -66,7 +66,7 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 }
 
 func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
-	lockfileWarnings, err := evaluateLockfileDriftPolicy(req.RepoPath, req.Analyse.Thresholds.LockfileDriftPolicy)
+	lockfileWarnings, err := evaluateLockfileDriftPolicy(ctx, req.RepoPath, req.Analyse.Thresholds.LockfileDriftPolicy)
 	if err != nil {
 		return "", err
 	}
