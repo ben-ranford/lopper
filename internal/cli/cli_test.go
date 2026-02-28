@@ -15,8 +15,26 @@ type fakeRunner struct {
 	err    error
 }
 
+type failWriter struct{}
+type failOnNthWrite struct {
+	n     int
+	count int
+}
+
 func (f *fakeRunner) Execute(context.Context, app.Request) (string, error) {
 	return f.output, f.err
+}
+
+func (*failWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func (w *failOnNthWrite) Write(b []byte) (int, error) {
+	w.count++
+	if w.count == w.n {
+		return 0, errors.New("write failed")
+	}
+	return len(b), nil
 }
 
 func TestNew(t *testing.T) {
@@ -41,6 +59,14 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestRunHelpWriterFailure(t *testing.T) {
+	c := New(&fakeRunner{}, &failWriter{}, &bytes.Buffer{})
+	code := c.Run(context.Background(), []string{"--help"})
+	if code != 1 {
+		t.Fatalf("expected help writer failure to return code 1, got %d", code)
+	}
+}
+
 func TestRunParseError(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -54,34 +80,44 @@ func TestRunParseError(t *testing.T) {
 	}
 }
 
-func TestRunFailOnIncreaseError(t *testing.T) {
+func TestRunParseErrorWriterFailure(t *testing.T) {
+	c := New(&fakeRunner{}, &bytes.Buffer{}, &failWriter{})
+	code := c.Run(context.Background(), []string{"nope"})
+	if code != 1 {
+		t.Fatalf("expected parse-error writer failure to return code 1, got %d", code)
+	}
+}
+
+func TestRunParseErrorUsageWriterFailure(t *testing.T) {
+	errOut := &failOnNthWrite{n: 2}
+	c := New(&fakeRunner{}, &bytes.Buffer{}, errOut)
+	code := c.Run(context.Background(), []string{"nope"})
+	if code != 1 {
+		t.Fatalf("expected usage writer failure to return code 1, got %d", code)
+	}
+}
+
+func assertRunExitCodeForRunnerError(t *testing.T, runnerErr error, wantCode int, label string) {
+	t.Helper()
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	c := New(&fakeRunner{err: app.ErrFailOnIncrease}, &out, &errOut)
+	c := New(&fakeRunner{err: runnerErr}, &out, &errOut)
 	code := c.Run(context.Background(), []string{"analyse", "lodash"})
-	if code != 3 {
-		t.Fatalf("expected fail-on-increase exit code 3, got %d", code)
+	if code != wantCode {
+		t.Fatalf("expected %s exit code %d, got %d", label, wantCode, code)
 	}
+}
+
+func TestRunFailOnIncreaseError(t *testing.T) {
+	assertRunExitCodeForRunnerError(t, app.ErrFailOnIncrease, 3, "fail-on-increase")
 }
 
 func TestRunLockfileDriftError(t *testing.T) {
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	c := New(&fakeRunner{err: app.ErrLockfileDrift}, &out, &errOut)
-	code := c.Run(context.Background(), []string{"analyse", "lodash"})
-	if code != 4 {
-		t.Fatalf("expected lockfile-drift exit code 4, got %d", code)
-	}
+	assertRunExitCodeForRunnerError(t, app.ErrLockfileDrift, 4, "lockfile-drift")
 }
 
 func TestRunUncertaintyThresholdError(t *testing.T) {
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	c := New(&fakeRunner{err: app.ErrUncertaintyThresholdExceeded}, &out, &errOut)
-	code := c.Run(context.Background(), []string{"analyse", "lodash"})
-	if code != 3 {
-		t.Fatalf("expected uncertainty threshold exit code 3, got %d", code)
-	}
+	assertRunExitCodeForRunnerError(t, app.ErrUncertaintyThresholdExceeded, 3, "uncertainty threshold")
 }
 
 func TestRunGenericRunnerError(t *testing.T) {
@@ -107,6 +143,14 @@ func TestRunOutputNewlineHandling(t *testing.T) {
 	}
 	if out.String() != "ok\n" {
 		t.Fatalf("expected newline-appended output, got %q", out.String())
+	}
+}
+
+func TestRunOutputWriterFailure(t *testing.T) {
+	c := New(&fakeRunner{output: "ok"}, &failWriter{}, &bytes.Buffer{})
+	code := c.Run(context.Background(), []string{"analyse", "lodash"})
+	if code != 1 {
+		t.Fatalf("expected output writer failure to return code 1, got %d", code)
 	}
 }
 
