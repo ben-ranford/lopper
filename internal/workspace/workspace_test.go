@@ -297,3 +297,22 @@ func mustWrite(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestChangedFilesErrorsForNonRepoPath(t *testing.T) {
+	_, err := ChangedFiles(t.TempDir())
+	if err == nil {
+		t.Fatalf("expected changed-files lookup to fail for non-repo path")
+	}
+}
+
+func TestParseChangedFileHelpers(t *testing.T) {
+	changed := parseChangedFileLines([]byte("packages/a/file.ts\npackages/a/file.ts\n"))
+	if len(changed) != 1 || changed[0] != "packages/a/file.ts" {
+		t.Fatalf("expected deduped changed lines, got %#v", changed)
+	}
+
+	porcelain := parsePorcelainChangedFiles([]byte("M  packages/a/file.ts\nR  old.ts -> packages/b/new.ts\n"))
+	if len(porcelain) != 2 || porcelain[0] != "packages/a/file.ts" || porcelain[1] != "packages/b/new.ts" {
+		t.Fatalf("expected parsed porcelain paths, got %#v", porcelain)
+	}
+}

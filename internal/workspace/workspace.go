@@ -1,10 +1,13 @@
 package workspace
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +40,92 @@ func CurrentCommitSHA(repoPath string) (string, error) {
 		return head, nil
 	}
 	return "", fmt.Errorf("invalid HEAD value")
+}
+
+func ChangedFiles(repoPath string) ([]string, error) {
+	normalized, err := NormalizeRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	gitPath, err := resolveGitBinaryPath()
+	if err != nil {
+		return nil, err
+	}
+	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--name-only", "--diff-filter=ACMR", "HEAD~1..HEAD")
+	if diffErr == nil {
+		return parseChangedFileLines(diffOutput), nil
+	}
+	statusOutput, statusErr := runGit(gitPath, normalized, "status", "--porcelain")
+	if statusErr != nil {
+		return nil, diffErr
+	}
+	return parsePorcelainChangedFiles(statusOutput), nil
+}
+
+func parseChangedFileLines(output []byte) []string {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	paths := make([]string, 0, len(lines))
+	seen := make(map[string]struct{})
+	for _, line := range lines {
+		path := strings.TrimSpace(line)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func parsePorcelainChangedFiles(output []byte) []string {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	paths := make([]string, 0, len(lines))
+	seen := make(map[string]struct{})
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			path = strings.TrimSpace(path[idx+4:])
+		}
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func resolveGitBinaryPath() (string, error) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("git executable not found: %w", err)
+	}
+	return gitPath, nil
+}
+
+func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
+	fullArgs := append([]string{"-C", repoPath}, args...)
+	// #nosec G204 -- arguments are fixed and repoPath is normalized to an absolute directory.
+	cmd := exec.Command(gitPath, fullArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return output, nil
 }
 
 func resolveGitDir(repoPath string) (string, error) {

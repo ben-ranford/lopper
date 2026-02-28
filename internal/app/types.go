@@ -10,6 +10,10 @@ type Mode string
 const (
 	ModeTUI     Mode = "tui"
 	ModeAnalyse Mode = "analyse"
+
+	ScopeModeRepo            = "repo"
+	ScopeModePackage         = "package"
+	ScopeModeChangedPackages = "changed-packages"
 )
 
 type Request struct {
@@ -22,6 +26,7 @@ type Request struct {
 type AnalyseRequest struct {
 	Dependency         string
 	TopN               int
+	ScopeMode          string
 	SuggestOnly        bool
 	Format             report.Format
 	Language           string
@@ -59,6 +64,7 @@ func DefaultRequest() Request {
 		Analyse: AnalyseRequest{
 			Format:         report.FormatTable,
 			Language:       "auto",
+			ScopeMode:      ScopeModePackage,
 			CacheEnabled:   true,
 			RuntimeProfile: "node-import",
 			Thresholds:     thresholds.Defaults(),

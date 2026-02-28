@@ -31,6 +31,28 @@ func TestHelperFunctions(t *testing.T) {
 	if got := normalizeCandidateRoot("/repo", "sub"); got != filepath.Join("/repo", "sub") {
 		t.Fatalf("unexpected normalized root: %q", got)
 	}
+	if normalizeScopeMode("") != ScopeModePackage {
+		t.Fatalf("expected default scope mode to normalize to package")
+	}
+	if normalizeScopeMode("REPO") != ScopeModeRepo {
+		t.Fatalf("expected repo scope mode normalization")
+	}
+}
+
+func TestChangedRootsAndScopeMetadata(t *testing.T) {
+	roots := []string{"/repo/packages/a", "/repo/packages/b", "/repo/packages/c"}
+	changed := changedRoots(roots, "/repo", []string{"packages/b/src/index.ts", "README.md"})
+	if len(changed) != 1 || changed[0] != "/repo/packages/b" {
+		t.Fatalf("expected changed root selection, got %#v", changed)
+	}
+
+	metadata := scopeMetadata(ScopeModeChangedPackages, "/repo", []string{"/repo/packages/b", "/repo"})
+	if metadata.Mode != ScopeModeChangedPackages {
+		t.Fatalf("expected changed-packages metadata mode, got %#v", metadata)
+	}
+	if len(metadata.Packages) != 2 || metadata.Packages[0] != "." || metadata.Packages[1] != "packages/b" {
+		t.Fatalf("expected relative package list, got %#v", metadata.Packages)
+	}
 }
 
 func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
@@ -225,7 +247,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 		},
 	}
 	svc := &Service{}
-	reports, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all", TopN: 1}, ".", candidate, nil)
+	reports, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all", TopN: 1}, ".", candidate, nil)
 	if err != nil {
 		t.Fatalf("runCandidateOnRoots: %v", err)
 	}
@@ -239,7 +261,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 			Matched: true,
 		},
 	}
-	if _, _, err := svc.runCandidates(context.Background(), Request{RepoPath: ".", Language: "js-ts", TopN: 1}, ".", []language.Candidate{broken}, nil); err == nil {
+	if _, _, _, err := svc.runCandidates(context.Background(), Request{RepoPath: ".", Language: "js-ts", TopN: 1}, ".", []language.Candidate{broken}, nil); err == nil {
 		t.Fatalf("expected runCandidates error for single-language adapter failure")
 	}
 }
