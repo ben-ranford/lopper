@@ -76,6 +76,27 @@ func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 	}
 }
 
+func TestCopyFileFailsWhenSourceRootCannotOpen(t *testing.T) {
+	temp := t.TempDir()
+	repo := filepath.Join(temp, "missing-repo")
+	scoped := t.TempDir()
+
+	err := copyFile(repo, scoped, "src/keep.js")
+	if err == nil {
+		t.Fatalf("expected source-root open failure for missing repository root")
+	}
+}
+
+func TestCopyFileFailsWhenSourceFileMissing(t *testing.T) {
+	repo := t.TempDir()
+	scoped := t.TempDir()
+
+	err := copyFile(repo, scoped, "src/missing.js")
+	if err == nil {
+		t.Fatalf("expected missing source file error")
+	}
+}
+
 func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 	repo := t.TempDir()
 	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")

@@ -82,9 +82,14 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, er
 		return "", err
 	}
 
-	path := BaselineSnapshotPath(trimmedDir, trimmedKey)
-	// #nosec G304 -- path is constrained to the caller-selected baseline store + sanitized key filename.
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	sanitizedFileName := sanitizeBaselineKey(trimmedKey) + ".json"
+	path := filepath.Join(trimmedDir, sanitizedFileName)
+	root, err := os.OpenRoot(trimmedDir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	file, err := root.OpenFile(sanitizedFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return "", fmt.Errorf("%w: key %q (%s)", ErrBaselineAlreadyExists, trimmedKey, path)

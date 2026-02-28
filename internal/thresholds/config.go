@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	readConfigFileErrFmt = "read config file %s: %w"
-	parseConfigErrFmt    = "parse config file %s: %w"
-	defaultPolicySource  = "defaults"
-	remotePolicyPinKey   = "sha256"
-	maxRemotePolicyBytes = 1 << 20
+	readConfigFileErrFmt     = "read config file %s: %w"
+	parseConfigErrFmt        = "parse config file %s: %w"
+	duplicateThresholdErrFmt = "threshold %s is defined more than once"
+	defaultPolicySource      = "defaults"
+	remotePolicyPinKey       = "sha256"
+	maxRemotePolicyBytes     = 1 << 20
 )
 
 var remotePolicyHTTPClient = &http.Client{Timeout: 10 * time.Second}
@@ -169,6 +170,7 @@ type rawConfig struct {
 	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
 	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
+	LockfileDriftPolicy               *string  `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
 }
 
 type rawPolicy struct {
@@ -187,6 +189,7 @@ type rawThresholds struct {
 	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
 	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
+	LockfileDriftPolicy               *string  `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
 }
 
 func (c *rawConfig) toOverrides() (Overrides, error) {
@@ -197,6 +200,7 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		RemovalCandidateWeightUsage:       c.RemovalCandidateWeightUsage,
 		RemovalCandidateWeightImpact:      c.RemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  c.RemovalCandidateWeightConfidence,
+		LockfileDriftPolicy:               c.LockfileDriftPolicy,
 	}
 	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, c.Thresholds.FailOnIncreasePercent); err != nil {
 		return Overrides{}, err
@@ -216,6 +220,9 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 	if err := applyNestedFloatOverride("removal_candidate_weight_confidence", &overrides.RemovalCandidateWeightConfidence, c.Thresholds.RemovalCandidateWeightConfidence); err != nil {
 		return Overrides{}, err
 	}
+	if err := applyNestedStringOverride("lockfile_drift_policy", &overrides.LockfileDriftPolicy, c.Thresholds.LockfileDriftPolicy); err != nil {
+		return Overrides{}, err
+	}
 	return overrides, nil
 }
 
@@ -224,7 +231,7 @@ func applyNestedOverride(name string, target **int, nested *int) error {
 		return nil
 	}
 	if *target != nil {
-		return fmt.Errorf("threshold %s is defined more than once", name)
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
 	*target = nested
 	return nil
@@ -235,7 +242,18 @@ func applyNestedFloatOverride(name string, target **float64, nested *float64) er
 		return nil
 	}
 	if *target != nil {
-		return fmt.Errorf("threshold %s is defined more than once", name)
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
+	}
+	*target = nested
+	return nil
+}
+
+func applyNestedStringOverride(name string, target **string, nested *string) error {
+	if nested == nil {
+		return nil
+	}
+	if *target != nil {
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
 	*target = nested
 	return nil
@@ -260,6 +278,9 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	}
 	if higher.RemovalCandidateWeightConfidence != nil {
 		merged.RemovalCandidateWeightConfidence = higher.RemovalCandidateWeightConfidence
+	}
+	if higher.LockfileDriftPolicy != nil {
+		merged.LockfileDriftPolicy = higher.LockfileDriftPolicy
 	}
 	return merged
 }
