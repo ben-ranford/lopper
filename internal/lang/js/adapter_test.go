@@ -480,7 +480,7 @@ func TestAdapterAnalyseDependencyWarnsWhenMultipleRootsAreResolved(t *testing.T)
 	}
 }
 
-func writeDependency(repo string, name string, entrypoint string) error {
+func writeDependency(repo, name, entrypoint string) error {
 	depDir := filepath.Join(repo, "node_modules", name)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
 		return err
