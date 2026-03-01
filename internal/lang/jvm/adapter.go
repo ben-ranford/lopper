@@ -367,7 +367,7 @@ func stripLineComment(line string) string {
 	return shared.StripLineComment(line, "//")
 }
 
-func shouldIgnoreImport(module string, filePackage string) bool {
+func shouldIgnoreImport(module, filePackage string) bool {
 	module = strings.TrimSpace(module)
 	if module == "" {
 		return true
