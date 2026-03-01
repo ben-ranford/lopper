@@ -23,6 +23,7 @@ type Adapter struct {
 }
 
 const (
+	rubyAdapterID   = "ruby"
 	gemfileName     = "Gemfile"
 	gemfileLockName = "Gemfile.lock"
 	maxDetectFiles  = 1024
@@ -57,7 +58,7 @@ func NewAdapter() *Adapter {
 }
 
 func (a *Adapter) ID() string {
-	return "ruby"
+	return rubyAdapterID
 }
 
 func (a *Adapter) Aliases() []string {
@@ -65,7 +66,11 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+	detection, err := a.DetectWithConfidence(ctx, repoPath)
+	if err != nil {
+		return false, err
+	}
+	return detection.Matched, nil
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
