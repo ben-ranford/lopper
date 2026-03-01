@@ -124,12 +124,7 @@ func (r *reExportResolver) hasResolutionCycle(req resolveExportRequest) bool {
 	}
 	path := append([]string{}, req.localTrail...)
 	path = append(path, req.currentFilePath)
-	warning := fmt.Sprintf(
-		"re-export attribution cycle while resolving %q from %s: %s",
-		req.requestedExport,
-		req.importerPath,
-		strings.Join(path, " -> "),
-	)
+	warning := fmt.Sprintf("re-export attribution cycle while resolving %q from %s: %s", req.requestedExport, req.importerPath, strings.Join(path, " -> "))
 	r.warningSet[warning] = struct{}{}
 	return true
 }
@@ -162,11 +157,7 @@ func selectReExportCandidates(bindings []ReExportBinding, requestedExport string
 	return candidates
 }
 
-func (r *reExportResolver) resolveExportCandidate(
-	req resolveExportRequest,
-	binding ReExportBinding,
-	visited map[string]struct{},
-) (exportOrigin, bool) {
+func (r *reExportResolver) resolveExportCandidate(req resolveExportRequest, binding ReExportBinding, visited map[string]struct{}) (exportOrigin, bool) {
 	nextExport := normalizeRequestedExport(binding.SourceExportName, req.requestedExport)
 	if matchesDependency(binding.SourceModule, req.dependency) {
 		return r.dependencyExportOrigin(req, binding.SourceModule, nextExport), true

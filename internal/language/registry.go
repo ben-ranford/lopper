@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	ErrUnknownLanguage   = errors.New("unknown language")
-	ErrNoLanguageMatch   = errors.New("no language adapter matched")
+	ErrUnknown           = errors.New("unknown language")
+	ErrNoMatch           = errors.New("no language adapter matched")
 	ErrMultipleLanguages = errors.New("multiple language adapters matched")
 )
 
@@ -52,7 +52,7 @@ func (r *Registry) Select(ctx context.Context, repoPath string, languageID strin
 		return nil, err
 	}
 	if len(candidates) == 0 {
-		return nil, ErrNoLanguageMatch
+		return nil, ErrNoMatch
 	}
 	return candidates[0].Adapter, nil
 }
@@ -72,14 +72,14 @@ func (r *Registry) Resolve(ctx context.Context, repoPath string, languageID stri
 			return nil, err
 		}
 		if len(matches) == 0 {
-			return nil, ErrNoLanguageMatch
+			return nil, ErrNoMatch
 		}
 		return matches, nil
 	}
 
 	adapter, ok := r.adapters[languageID]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownLanguage, languageID)
+		return nil, fmt.Errorf("%w: %s", ErrUnknown, languageID)
 	}
 	detection, err := detectAdapter(ctx, adapter, repoPath)
 	if err != nil {
@@ -121,7 +121,7 @@ func (r *Registry) resolveAuto(ctx context.Context, repoPath string) ([]Candidat
 	}
 	switch len(matches) {
 	case 0:
-		return nil, ErrNoLanguageMatch
+		return nil, ErrNoMatch
 	case 1:
 		return matches[:1], nil
 	default:
@@ -168,7 +168,7 @@ func (r *Registry) detectMatches(ctx context.Context, repoPath string) ([]Candid
 }
 
 func detectAdapter(ctx context.Context, adapter Adapter, repoPath string) (Detection, error) {
-	if detector, ok := adapter.(ConfidenceDetector); ok {
+	if detector, ok := adapter.(ConfidenceProvider); ok {
 		detection, err := detector.DetectWithConfidence(ctx, repoPath)
 		if err != nil {
 			return Detection{}, err

@@ -15,6 +15,7 @@ import (
 
 const (
 	junitJupiterAPIName = "junit-jupiter-api"
+	junitJupiterGroup   = "org.junit.jupiter"
 	acmeLibName         = "acme-lib"
 	jvmGradleDirName    = ".gradle"
 )
@@ -26,7 +27,7 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 		t.Fatalf("unexpected parsed package: %q", pkg)
 	}
 
-	prefixes := map[string]string{"org.junit.jupiter": junitJupiterAPIName}
+	prefixes := map[string]string{junitJupiterGroup: junitJupiterAPIName}
 	aliases := map[string]string{"com.acme": acmeLibName}
 	imports := parseImports(content, "App.java", pkg, prefixes, aliases)
 	if len(imports) != 2 {
@@ -39,7 +40,7 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 
 func TestJVMIgnoreAndResolveDependencyHelpers(t *testing.T) {
 	pkg := "com.example.app"
-	prefixes := map[string]string{"org.junit.jupiter": junitJupiterAPIName}
+	prefixes := map[string]string{junitJupiterGroup: junitJupiterAPIName}
 	aliases := map[string]string{"com.acme": acmeLibName}
 	ignoreCases := []struct {
 		module string
@@ -157,16 +158,16 @@ func TestJVMLookupStrategyBuilders(t *testing.T) {
 	prefixes := map[string]string{}
 	aliases := map[string]string{}
 
-	addGroupLookups(prefixes, aliases, "dep", "org.junit.jupiter")
-	addArtifactLookups(prefixes, aliases, "dep", "org.junit.jupiter", "junit-jupiter-api")
+	addGroupLookups(prefixes, aliases, "dep", junitJupiterGroup)
+	addArtifactLookups(prefixes, aliases, "dep", junitJupiterGroup, junitJupiterAPIName)
 
-	if got := prefixes["org.junit.jupiter"]; got != "dep" {
+	if got := prefixes[junitJupiterGroup]; got != "dep" {
 		t.Fatalf("expected group prefix lookup, got %q", got)
 	}
-	if got := prefixes["org.junit.jupiter.junit.jupiter.api"]; got != "dep" {
+	if got := prefixes[junitJupiterGroup+".junit.jupiter.api"]; got != "dep" {
 		t.Fatalf("expected artifact prefix lookup, got %q", got)
 	}
-	for _, key := range []string{"org.junit.jupiter", "org.junit", "jupiter", "junit.jupiter.api"} {
+	for _, key := range []string{junitJupiterGroup, "org.junit", "jupiter", "junit.jupiter.api"} {
 		if got := aliases[key]; got != "dep" {
 			t.Fatalf("expected alias %q to map to dep, got %q", key, got)
 		}
@@ -174,7 +175,7 @@ func TestJVMLookupStrategyBuilders(t *testing.T) {
 
 	customPrefixes := map[string]string{}
 	customAliases := map[string]string{}
-	addLookupByStrategy(customPrefixes, customAliases, "custom", "group", "artifact", func(group string, artifact string) ([]string, []string) {
+	addLookupByStrategy(customPrefixes, customAliases, "custom", "group", "artifact", func(group, artifact string) ([]string, []string) {
 		return []string{group + "." + artifact}, []string{artifact}
 	})
 	if got := customPrefixes["group.artifact"]; got != "custom" {
@@ -200,7 +201,7 @@ func TestJVMScanAndRequestedDependencyBranches(t *testing.T) {
 	}
 
 	deps, warnings := buildRequestedJVMDependencies(language.Request{}, scanResult{})
-	if deps != nil {
+	if len(deps) != 0 {
 		t.Fatalf("expected nil dependency list when no target is provided")
 	}
 	if len(warnings) == 0 {

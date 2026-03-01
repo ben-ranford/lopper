@@ -148,20 +148,14 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	if err != nil {
 		return report.Report{}, err
 	}
+	result.UsageUncertainty = summarizeUsageUncertainty(scanResult)
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
 
 	switch {
 	case req.Dependency != "":
 		resolvedRoots := resolveDependencyRootsFromScan(repoPath, req.Dependency, scanResult)
 		dependencyRootPath := firstResolvedDependencyRoot(resolvedRoots)
-		depReport, warnings := buildDependencyReport(
-			repoPath,
-			req.Dependency,
-			dependencyRootPath,
-			scanResult,
-			req.RuntimeProfile,
-			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
-		)
+		depReport, warnings := buildDependencyReport(repoPath, req.Dependency, dependencyRootPath, scanResult, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), req.SuggestOnly)
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(resolvedRoots) > 1 {
@@ -169,14 +163,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
-		deps, warnings := buildTopDependencies(
-			repoPath,
-			scanResult,
-			req.TopN,
-			req.RuntimeProfile,
-			resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
-			resolveRemovalCandidateWeights(req.RemovalCandidateWeights),
-		)
+		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 		result.Dependencies = deps
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(deps) == 0 {
@@ -190,14 +177,28 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	return result, nil
 }
 
-func buildDependencyReport(
-	repoPath string,
-	dependency string,
-	dependencyRootPath string,
-	scanResult ScanResult,
-	runtimeProfile string,
-	minUsagePercentForRecommendations int,
-) (report.DependencyReport, []string) {
+func summarizeUsageUncertainty(scanResult ScanResult) *report.UsageUncertainty {
+	usage := &report.UsageUncertainty{}
+	for _, file := range scanResult.Files {
+		usage.ConfirmedImportUses += len(file.Imports)
+		usage.UncertainImportUses += len(file.UncertainImports)
+		for _, item := range file.UncertainImports {
+			if len(usage.Samples) >= 5 {
+				break
+			}
+			if len(item.Locations) == 0 {
+				continue
+			}
+			usage.Samples = append(usage.Samples, item.Locations[0])
+		}
+	}
+	if usage.ConfirmedImportUses == 0 && usage.UncertainImportUses == 0 {
+		return nil
+	}
+	return usage
+}
+
+func buildDependencyReport(repoPath string, dependency string, dependencyRootPath string, scanResult ScanResult, runtimeProfile string, minUsagePercentForRecommendations int, suggestOnly bool) (report.DependencyReport, []string) {
 	warnings := make([]string, 0)
 
 	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile)
@@ -231,6 +232,11 @@ func buildDependencyReport(
 		RiskCues:             riskCues,
 	}
 	depReport.Recommendations = buildRecommendations(dependency, depReport, minUsagePercentForRecommendations)
+	if suggestOnly {
+		codemod, codemodWarnings := BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath, scanResult)
+		depReport.Codemod = codemod
+		warnings = append(warnings, codemodWarnings...)
+	}
 	return depReport, warnings
 }
 
@@ -268,16 +274,13 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 }
 
 // finalizeImportUsageLists flattens import maps and removes used/unused overlaps from the unused list.
-func finalizeImportUsageLists(
-	usedImports map[string]*report.ImportUse,
-	unusedImports map[string]*report.ImportUse,
-) ([]report.ImportUse, []report.ImportUse) {
+func finalizeImportUsageLists(usedImports, unusedImports map[string]*report.ImportUse) ([]report.ImportUse, []report.ImportUse) {
 	usedImportList := flattenImportUses(usedImports)
 	unusedImportList := flattenImportUses(unusedImports)
 	return usedImportList, removeOverlappingUnusedImports(unusedImportList, usedImportList)
 }
 
-func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath string, runtimeProfile string) (ExportSurface, []string) {
+func resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
 	resolved, err := resolveDependencyExports(dependencyExportRequest{
@@ -297,10 +300,7 @@ func resolveSurfaceWarnings(repoPath, dependency string, dependencyRootPath stri
 	return resolved, warnings
 }
 
-func collectDependencyImportUsage(
-	scanResult ScanResult,
-	dependency string,
-) dependencyImportUsage {
+func collectDependencyImportUsage(scanResult ScanResult, dependency string) dependencyImportUsage {
 	result := dependencyImportUsage{
 		UsedExports:   make(map[string]struct{}),
 		Counts:        make(map[string]int),
@@ -339,11 +339,7 @@ type dependencyImportAttributionContext struct {
 	unusedImports map[string]*report.ImportUse
 }
 
-func applyDependencyImportAttribution(
-	file FileScan,
-	imp ImportBinding,
-	ctx *dependencyImportAttributionContext,
-) (matched bool, ambiguous bool) {
+func applyDependencyImportAttribution(file FileScan, imp ImportBinding, ctx *dependencyImportAttributionContext) (matched bool, ambiguous bool) {
 	attributed, provenance := attributedImportBinding(file.Path, imp, ctx.dependency, ctx.resolver)
 	if !matchesDependency(attributed.Module, ctx.dependency) {
 		return false, false
@@ -360,12 +356,7 @@ func applyDependencyImportAttribution(
 	return true, isAmbiguousImportUsage(attributed, file)
 }
 
-func attributedImportBinding(
-	filePath string,
-	imp ImportBinding,
-	dependency string,
-	resolver *reExportResolver,
-) (ImportBinding, string) {
+func attributedImportBinding(filePath string, imp ImportBinding, dependency string, resolver *reExportResolver) (ImportBinding, string) {
 	if resolved, ok := resolver.resolveImportAttribution(filePath, imp, dependency); ok {
 		attributed := imp
 		attributed.Module = resolved.Module
@@ -590,14 +581,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(
-			repoPath,
-			dep,
-			dependencyRoots[dep],
-			scanResult,
-			runtimeProfile,
-			minUsagePercentForRecommendations,
-		)
+		depReport, depWarnings := buildDependencyReport(repoPath, dep, dependencyRoots[dep], scanResult, runtimeProfile, minUsagePercentForRecommendations, false)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}

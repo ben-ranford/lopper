@@ -125,7 +125,38 @@ func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{
 	case ".java", ".kt", ".kts":
 		detection.Matched = true
 		detection.Confidence += 2
+		if root := sourceLayoutModuleRoot(path); root != "" {
+			roots[root] = struct{}{}
+		}
 	}
+}
+
+func sourceLayoutModuleRoot(path string) string {
+	normalized := filepath.ToSlash(filepath.Clean(path))
+	if normalized == "" {
+		return ""
+	}
+
+	segments := strings.Split(normalized, "/")
+	lastSrcIndex := -1
+	for index := 0; index+2 < len(segments); index++ {
+		if segments[index] != "src" {
+			continue
+		}
+		switch segments[index+2] {
+		case "java", "kotlin":
+			lastSrcIndex = index
+		}
+	}
+	if lastSrcIndex < 1 {
+		return ""
+	}
+
+	root := strings.Join(segments[:lastSrcIndex], "/")
+	if root == "" {
+		return ""
+	}
+	return filepath.FromSlash(root)
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -159,26 +190,16 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedJVMDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(
-		req,
-		scan,
-		normalizeDependencyID,
-		buildDependencyReport,
-		resolveRemovalCandidateWeights,
-		buildTopJVMDependencies,
-	)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopJVMDependencies)
 }
 
 func buildTopJVMDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
-	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	}, weights)
+	}
+	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
@@ -276,8 +297,10 @@ func isSourceFile(path string) bool {
 
 var (
 	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?\s*;?\s*$`)
+	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
 )
+
+const importPatternMatchGroups = 4
 
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
@@ -291,7 +314,7 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 	return shared.ParseImportLines(content, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != 3 {
+		if len(matches) != importPatternMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
@@ -307,23 +330,37 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 			return nil
 		}
 
-		wildcard := strings.TrimSpace(matches[2]) == ".*"
-		symbol := lastModuleSegment(module)
-		if wildcard {
-			symbol = "*"
-		}
-		if symbol == "" {
+		record, ok := buildImportRecord(matches, module, dependency)
+		if !ok {
 			return nil
 		}
 
-		return []shared.ImportRecord{{
-			Dependency: dependency,
-			Module:     module,
-			Name:       symbol,
-			Local:      symbol,
-			Wildcard:   wildcard,
-		}}
+		return []shared.ImportRecord{record}
 	})
+}
+
+func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
+	wildcard := strings.TrimSpace(matches[2]) == ".*"
+	symbol := lastModuleSegment(module)
+	if wildcard {
+		symbol = "*"
+	}
+	if symbol == "" {
+		return shared.ImportRecord{}, false
+	}
+
+	localName := symbol
+	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
+		localName = alias
+	}
+
+	return shared.ImportRecord{
+		Dependency: dependency,
+		Module:     module,
+		Name:       symbol,
+		Local:      localName,
+		Wildcard:   wildcard,
+	}, true
 }
 
 func stripLineComment(line string) string {
@@ -408,11 +445,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 	warnings := make([]string, 0)
 	if !stats.HasImports {
@@ -531,14 +564,7 @@ func addArtifactLookups(prefixes map[string]string, aliases map[string]string, n
 	addLookupByStrategy(prefixes, aliases, name, group, artifact, artifactLookupStrategy)
 }
 
-func addLookupByStrategy(
-	prefixes map[string]string,
-	aliases map[string]string,
-	name string,
-	group string,
-	artifact string,
-	strategy lookupKeyStrategy,
-) {
+func addLookupByStrategy(prefixes map[string]string, aliases map[string]string, name string, group string, artifact string, strategy lookupKeyStrategy) {
 	prefixKeys, aliasKeys := strategy(group, artifact)
 	for _, key := range prefixKeys {
 		prefixes[key] = name
@@ -548,7 +574,7 @@ func addLookupByStrategy(
 	}
 }
 
-func groupLookupStrategy(group string, _ string) ([]string, []string) {
+func groupLookupStrategy(group, _ string) ([]string, []string) {
 	if group == "" {
 		return nil, nil
 	}
@@ -562,7 +588,7 @@ func groupLookupStrategy(group string, _ string) ([]string, []string) {
 	return prefixes, aliases
 }
 
-func artifactLookupStrategy(group string, artifact string) ([]string, []string) {
+func artifactLookupStrategy(group, artifact string) ([]string, []string) {
 	if artifact == "" {
 		return nil, nil
 	}
@@ -587,9 +613,10 @@ func parsePomDependencies(repoPath string) []dependencyDescriptor {
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 	pattern := regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
-	return parseBuildFiles(repoPath, buildGradleName, func(content string) []dependencyDescriptor {
+	gradleParser := func(content string) []dependencyDescriptor {
 		return parseGradleMatches(content, pattern)
-	}, buildGradleKTSName)
+	}
+	return parseBuildFiles(repoPath, buildGradleName, gradleParser, buildGradleKTSName)
 }
 
 func parseGradleMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
@@ -633,15 +660,7 @@ func parseBuildFiles(repoPath string, primaryName string, parser func(content st
 	return descriptors
 }
 
-func parseBuildFileEntry(
-	repoPath string,
-	path string,
-	entry fs.DirEntry,
-	names []string,
-	parser func(content string) []dependencyDescriptor,
-	seen map[string]struct{},
-	descriptors *[]dependencyDescriptor,
-) error {
+func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir

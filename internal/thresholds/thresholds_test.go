@@ -16,10 +16,7 @@ func TestDefaultsValidate(t *testing.T) {
 func TestOverridesApply(t *testing.T) {
 	lowConfidence := 25
 	usageWeight := 0.7
-	resolved := Overrides{
-		LowConfidenceWarningPercent: &lowConfidence,
-		RemovalCandidateWeightUsage: &usageWeight,
-	}.Apply(Defaults())
+	resolved := (&Overrides{LowConfidenceWarningPercent: &lowConfidence, RemovalCandidateWeightUsage: &usageWeight}).Apply(Defaults())
 	if resolved.LowConfidenceWarningPercent != 25 {
 		t.Fatalf("expected low confidence threshold 25, got %d", resolved.LowConfidenceWarningPercent)
 	}
@@ -33,11 +30,12 @@ func TestOverridesApply(t *testing.T) {
 
 func TestValuesValidateErrors(t *testing.T) {
 	tests := []Values{
-		{FailOnIncreasePercent: -1, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
-		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 101, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
-		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: -2, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
-		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: -0.1, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
-		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, RemovalCandidateWeightUsage: 0, RemovalCandidateWeightImpact: 0, RemovalCandidateWeightConfidence: 0},
+		{FailOnIncreasePercent: -1, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, MaxUncertainImportCount: 0, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 101, MinUsagePercentForRecommendations: 40, MaxUncertainImportCount: 0, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: -2, MaxUncertainImportCount: 0, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, MaxUncertainImportCount: -1, RemovalCandidateWeightUsage: 0.5, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, MaxUncertainImportCount: 0, RemovalCandidateWeightUsage: -0.1, RemovalCandidateWeightImpact: 0.3, RemovalCandidateWeightConfidence: 0.2},
+		{FailOnIncreasePercent: 0, LowConfidenceWarningPercent: 40, MinUsagePercentForRecommendations: 40, MaxUncertainImportCount: 0, RemovalCandidateWeightUsage: 0, RemovalCandidateWeightImpact: 0, RemovalCandidateWeightConfidence: 0},
 	}
 	for _, tc := range tests {
 		if tc.Validate() == nil {
@@ -50,6 +48,7 @@ func TestOverridesValidateErrors(t *testing.T) {
 	fail := -1
 	low := 200
 	min := -5
+	maxUncertain := -1
 	weight := -1.0
 	nan := math.NaN()
 	inf := math.Inf(1)
@@ -59,6 +58,14 @@ func TestOverridesValidateErrors(t *testing.T) {
 		overrides Overrides
 		want      string
 	}{
+		{
+			name: "invalid lockfile drift policy",
+			overrides: func() Overrides {
+				policy := "invalid"
+				return Overrides{LockfileDriftPolicy: &policy}
+			}(),
+			want: "lockfile_drift_policy",
+		},
 		{
 			name:      "invalid fail_on_increase",
 			overrides: Overrides{FailOnIncreasePercent: &fail},
@@ -73,6 +80,11 @@ func TestOverridesValidateErrors(t *testing.T) {
 			name:      "invalid min usage",
 			overrides: Overrides{MinUsagePercentForRecommendations: &min},
 			want:      "min_usage_percent_for_recommendations",
+		},
+		{
+			name:      "invalid max uncertain imports",
+			overrides: Overrides{MaxUncertainImportCount: &maxUncertain},
+			want:      "max_uncertain_import_count",
 		},
 		{
 			name:      "invalid score weight",
@@ -116,22 +128,20 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	fail := 4
 	low := 22
 	min := 60
+	maxUncertain := 5
 	usageWeight := 0.6
 	impactWeight := 0.3
 	confidenceWeight := 0.1
+	lockfileDriftPolicy := "fail"
 	base := Defaults()
-	got := Overrides{
-		FailOnIncreasePercent:             &fail,
-		LowConfidenceWarningPercent:       &low,
-		MinUsagePercentForRecommendations: &min,
-		RemovalCandidateWeightUsage:       &usageWeight,
-		RemovalCandidateWeightImpact:      &impactWeight,
-		RemovalCandidateWeightConfidence:  &confidenceWeight,
-	}.Apply(base)
-	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 {
+	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &min, MaxUncertainImportCount: &maxUncertain, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight, LockfileDriftPolicy: &lockfileDriftPolicy}).Apply(base)
+	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 || got.MaxUncertainImportCount != 5 {
 		t.Fatalf("unexpected resolved thresholds: %+v", got)
 	}
 	if got.RemovalCandidateWeightUsage != 0.6 || got.RemovalCandidateWeightImpact != 0.3 || got.RemovalCandidateWeightConfidence != 0.1 {
 		t.Fatalf("unexpected resolved score weights: %+v", got)
+	}
+	if got.LockfileDriftPolicy != "fail" {
+		t.Fatalf("unexpected lockfile drift policy: %+v", got)
 	}
 }

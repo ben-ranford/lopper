@@ -141,22 +141,16 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(
-		req,
-		scan,
-		normalizeDependencyID,
-		buildDependencyReport,
-		resolveRemovalCandidateWeights,
-		buildTopPythonDependencies,
-	)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopPythonDependencies)
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	fileUsages := pythonFileUsages(scan)
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
-	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
-	}, weights)
+	}
+	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
@@ -459,11 +453,7 @@ func shouldSkipDir(name string) bool {
 }
 
 func pythonFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }
 
 var pythonStdlib = map[string]bool{

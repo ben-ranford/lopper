@@ -263,14 +263,7 @@ func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) (
 	return transitiveDepth(repoPath, depRoot, pkg, memo, visiting, 512)
 }
 
-func transitiveDepth(
-	repoPath string,
-	pkgRoot string,
-	pkg packageJSON,
-	memo map[string]int,
-	visiting map[string]struct{},
-	budget int,
-) (int, error) {
+func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]int, visiting map[string]struct{}, budget int) (int, error) {
 	if cached, ok := memo[pkgRoot]; ok {
 		return cached, nil
 	}

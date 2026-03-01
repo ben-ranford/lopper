@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint dup-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check gostyle lint dup-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -11,6 +11,7 @@ GO ?= go
 GO_TOOLCHAIN ?= go1.26.0
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 GOLANGCI_LINT_VERSION ?= v2.9.0
+GOSTYLE_VERSION ?= v0.25.3
 GOSEC_VERSION ?= v2.22.11
 DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
 DUPLICATION_MAX ?= 3
@@ -34,8 +35,12 @@ format-check:
 		exit 1; \
 	fi
 
+gostyle:
+	$(GO_CMD) run github.com/k1LoW/gostyle@$(GOSTYLE_VERSION) run -c .gostyle.yml ./...
+
 lint:
 	$(GO_CMD) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+	$(MAKE) gostyle
 
 dup-check:
 	@requested_base_ref="$(DUPLICATION_BASE)"; \
@@ -99,7 +104,7 @@ build:
 	mkdir -p $(BIN_DIR)
 	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-ci: format-check lint dup-check security test build
+ci: format-check lint dup-check security test build cov
 
 demos:
 	./scripts/demos/render.sh
@@ -157,6 +162,7 @@ toolchain-install-linux:
 
 tools-install:
 	$(GO_CMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	$(GO_CMD) install github.com/k1LoW/gostyle@$(GOSTYLE_VERSION)
 	$(GO_CMD) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 
 setup: toolchain-install

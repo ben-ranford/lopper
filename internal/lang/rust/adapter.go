@@ -414,16 +414,14 @@ func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string
 func parseCargoManifestContent(content string) manifestMeta {
 	meta := manifestMeta{}
 	inWorkspaceMembers := false
-	consumeTomlContent(
-		content,
-		func(section string) {
-			inWorkspaceMembers = false
-			markManifestPackageSection(section, &meta)
-		},
-		func(section, clean string) {
-			inWorkspaceMembers = parseWorkspaceMembersLine(clean, section, inWorkspaceMembers, &meta)
-		},
-	)
+	onSection := func(section string) {
+		inWorkspaceMembers = false
+		markManifestPackageSection(section, &meta)
+	}
+	onLine := func(section, clean string) {
+		inWorkspaceMembers = parseWorkspaceMembersLine(clean, section, inWorkspaceMembers, &meta)
+	}
+	consumeTomlContent(content, onSection, onLine)
 	meta.WorkspaceMembers = dedupeStrings(meta.WorkspaceMembers)
 	return meta
 }
@@ -1103,15 +1101,12 @@ func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]re
 }
 
 func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
-	return shared.BuildTopReports(topN, dependencies, func(dependency string) (report.DependencyReport, []string) {
+	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan, minUsageThreshold), nil
-	}, weights)
+	}
+	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
@@ -1122,15 +1117,8 @@ func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) repor
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int) report.DependencyReport {
-	stats := shared.BuildDependencyStats(
-		dependency,
-		shared.MapFileUsages(
-			scan.Files,
-			func(file fileScan) []shared.ImportRecord { return file.Imports },
-			func(file fileScan) map[string]int { return file.Usage },
-		),
-		normalizeDependencyID,
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
+	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 	dep := report.DependencyReport{
 		Language:             "rust",
 		Name:                 dependency,

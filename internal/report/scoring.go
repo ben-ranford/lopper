@@ -12,6 +12,25 @@ var defaultRemovalCandidateWeights = RemovalCandidateWeights{
 	Confidence: 0.20,
 }
 
+const (
+	confidenceReasonMissingExportInventory = "missing-export-inventory"
+	confidenceReasonRuntimeOnlyUsage       = "runtime-only-usage"
+	confidenceReasonWildcardImport         = "wildcard-import"
+	confidenceReasonRiskLow                = "risk-low"
+	confidenceReasonRiskMedium             = "risk-medium"
+	confidenceReasonRiskHigh               = "risk-high"
+	confidenceReasonCodeCount              = 6
+)
+
+var orderedConfidenceReasonCodeValues = [...]string{
+	confidenceReasonMissingExportInventory,
+	confidenceReasonRuntimeOnlyUsage,
+	confidenceReasonWildcardImport,
+	confidenceReasonRiskHigh,
+	confidenceReasonRiskMedium,
+	confidenceReasonRiskLow,
+}
+
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
 	AnnotateRemovalCandidateScoresWithWeights(dependencies, DefaultRemovalCandidateWeights())
 }
@@ -122,31 +141,108 @@ func dependencyImpactSignal(dep DependencyReport, maxImpactRaw float64) float64 
 }
 
 func dependencyConfidenceSignal(dep DependencyReport) (float64, []string) {
-	penalty := 0.0
-	rationale := make([]string, 0, 4)
+	penalty, _, rationale := confidenceAssessment(dep)
+	return clamp(100-penalty, 0, 100), rationale
+}
 
+func AnnotateFindingConfidence(dependencies []DependencyReport) {
+	for depIndex := range dependencies {
+		penalty, rawReasonCodes, _ := confidenceAssessment(dependencies[depIndex])
+		score := clamp(100-penalty, 0, 100)
+		reasonCodes := orderedConfidenceReasonCodes(rawReasonCodes)
+		score = roundTo(score, 1)
+
+		for findingIndex := range dependencies[depIndex].UnusedExports {
+			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].UnusedExports[findingIndex].ConfidenceReasonCodes = reasonCodes
+		}
+		for findingIndex := range dependencies[depIndex].UnusedImports {
+			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].UnusedImports[findingIndex].ConfidenceReasonCodes = reasonCodes
+		}
+		for findingIndex := range dependencies[depIndex].Recommendations {
+			dependencies[depIndex].Recommendations[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].Recommendations[findingIndex].ConfidenceReasonCodes = reasonCodes
+		}
+		for findingIndex := range dependencies[depIndex].RiskCues {
+			dependencies[depIndex].RiskCues[findingIndex].ConfidenceScore = score
+			dependencies[depIndex].RiskCues[findingIndex].ConfidenceReasonCodes = reasonCodes
+		}
+	}
+}
+
+func FilterFindingsByConfidence(dependencies []DependencyReport, minConfidence float64) {
+	if minConfidence <= 0 {
+		return
+	}
+	for depIndex := range dependencies {
+		dependencies[depIndex].UnusedExports = filterByConfidenceScore(dependencies[depIndex].UnusedExports, minConfidence, func(item SymbolRef) float64 {
+			return item.ConfidenceScore
+		})
+		dependencies[depIndex].UnusedImports = filterByConfidenceScore(dependencies[depIndex].UnusedImports, minConfidence, func(item ImportUse) float64 {
+			return item.ConfidenceScore
+		})
+		dependencies[depIndex].Recommendations = filterByConfidenceScore(dependencies[depIndex].Recommendations, minConfidence, func(item Recommendation) float64 {
+			return item.ConfidenceScore
+		})
+		dependencies[depIndex].RiskCues = filterByConfidenceScore(dependencies[depIndex].RiskCues, minConfidence, func(item RiskCue) float64 {
+			return item.ConfidenceScore
+		})
+	}
+}
+
+func orderedConfidenceReasonCodes(reasonCodes []string) []string {
+	result := make([]string, 0, len(orderedConfidenceReasonCodeValues))
+	for _, candidate := range orderedConfidenceReasonCodeValues {
+		if !slices.Contains(reasonCodes, candidate) {
+			continue
+		}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func confidenceAssessment(dep DependencyReport) (float64, []string, []string) {
+	penalty := 0.0
+	reasonCodes := make([]string, 0, confidenceReasonCodeCount)
+	rationale := make([]string, 0, 4)
+	appendPenalty := func(amount float64, code string) {
+		penalty += amount
+		reasonCodes = append(reasonCodes, code)
+	}
 	if dep.TotalExportsCount <= 0 {
-		penalty += 35
+		appendPenalty(35, confidenceReasonMissingExportInventory)
 	}
 	if dep.RuntimeUsage != nil && dep.RuntimeUsage.RuntimeOnly {
-		penalty += 20
+		appendPenalty(20, confidenceReasonRuntimeOnlyUsage)
 		rationale = append(rationale, "runtime-only usage indicates lower static confidence")
 	}
 	if hasWildcardImport(dep.UsedImports) {
-		penalty += 15
+		appendPenalty(15, confidenceReasonWildcardImport)
 		rationale = append(rationale, "wildcard import usage reduces per-symbol confidence")
 	}
 	for _, cue := range dep.RiskCues {
 		switch strings.ToLower(cue.Severity) {
 		case "high":
-			penalty += 20
+			appendPenalty(20, confidenceReasonRiskHigh)
 		case "medium":
-			penalty += 12
+			appendPenalty(12, confidenceReasonRiskMedium)
 		case "low":
-			penalty += 6
+			appendPenalty(6, confidenceReasonRiskLow)
 		}
 	}
-	return clamp(100-penalty, 0, 100), rationale
+	return penalty, reasonCodes, rationale
+}
+
+func filterByConfidenceScore[T any](values []T, minConfidence float64, score func(item T) float64) []T {
+	filtered := make([]T, 0, len(values))
+	for _, value := range values {
+		if score(value) < minConfidence {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
 }
 
 func hasWildcardImport(imports []ImportUse) bool {

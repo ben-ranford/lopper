@@ -1,0 +1,312 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/workspace"
+)
+
+const lockfileDriftWarningPrefix = "lockfile drift detected: "
+
+var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
+
+type lockfileRule struct {
+	manager   string
+	manifest  string
+	lockfiles []string
+	remedy    string
+}
+
+var lockfileRules = []lockfileRule{
+	{manager: "npm", manifest: "package.json", lockfiles: []string{"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"}, remedy: "run npm install for package-lock.json/npm-shrinkwrap.json, yarn install for yarn.lock, pnpm install for pnpm-lock.yaml, or bun install for bun.lockb; then commit the updated manifest and lockfile"},
+	{manager: "Composer", manifest: "composer.json", lockfiles: []string{"composer.lock"}, remedy: "run composer update --lock (or composer install) and commit the updated files"},
+	{manager: "Cargo", manifest: "Cargo.toml", lockfiles: []string{"Cargo.lock"}, remedy: "run cargo generate-lockfile (or cargo build) and commit the updated files"},
+	{manager: "Go modules", manifest: "go.mod", lockfiles: []string{"go.sum"}, remedy: "run go mod tidy and commit the updated files"},
+	{manager: "Pipenv", manifest: "Pipfile", lockfiles: []string{"Pipfile.lock"}, remedy: "run pipenv lock and commit the updated files"},
+	{manager: "Poetry", manifest: "pyproject.toml", lockfiles: []string{"poetry.lock"}, remedy: "run poetry lock and commit the updated files"},
+}
+
+func evaluateLockfileDriftPolicy(ctx context.Context, repoPath, policy string) ([]string, error) {
+	normalizedPolicy := strings.TrimSpace(policy)
+	if normalizedPolicy == "off" {
+		return nil, nil
+	}
+	failMode := normalizedPolicy == "fail"
+	driftWarnings, err := detectLockfileDrift(ctx, repoPath, failMode)
+	if err != nil || len(driftWarnings) == 0 {
+		return driftWarnings, err
+	}
+	if failMode {
+		return driftWarnings, formatLockfileDriftError(driftWarnings)
+	}
+	return driftWarnings, nil
+}
+
+func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool) ([]string, error) {
+	normalizedPath, err := workspace.NormalizeRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	changedFiles, hasGitContext, err := gitChangedFiles(ctx, normalizedPath)
+	if err != nil {
+		return nil, err
+	}
+	return walkLockfileDrift(ctx, normalizedPath, changedFiles, hasGitContext, stopOnFirst)
+}
+
+func walkLockfileDrift(ctx context.Context, normalizedPath string, changedFiles map[string]struct{}, hasGitContext bool, stopOnFirst bool) ([]string, error) {
+	warnings := make([]string, 0, len(lockfileRules))
+	state := lockfileWalkState{
+		normalizedPath: normalizedPath,
+		changedFiles:   changedFiles,
+		hasGitContext:  hasGitContext,
+		stopOnFirst:    stopOnFirst,
+		warnings:       &warnings,
+	}
+	err := filepath.WalkDir(normalizedPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		return processLockfileDir(ctx, path, entry, walkErr, state)
+	})
+	if err != nil && err != fs.SkipAll {
+		return nil, err
+	}
+	return warnings, nil
+}
+
+type lockfileWalkState struct {
+	normalizedPath string
+	changedFiles   map[string]struct{}
+	hasGitContext  bool
+	stopOnFirst    bool
+	warnings       *[]string
+}
+
+func processLockfileDir(ctx context.Context, path string, entry fs.DirEntry, walkErr error, state lockfileWalkState) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !entry.IsDir() {
+		return nil
+	}
+	if path != state.normalizedPath && shouldSkipLockfileDir(entry.Name()) {
+		return filepath.SkipDir
+	}
+	fileInfos, err := readDirectoryFiles(path)
+	if err != nil {
+		return err
+	}
+	for _, rule := range lockfileRules {
+		*state.warnings = append(*state.warnings, detectDriftForRule(state.normalizedPath, path, fileInfos, rule, state.changedFiles, state.hasGitContext)...)
+		if state.stopOnFirst && len(*state.warnings) > 0 {
+			return fs.SkipAll
+		}
+	}
+	return nil
+}
+
+func shouldSkipLockfileDir(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == ".lopper-cache" {
+		return true
+	}
+	return shared.ShouldSkipCommonDir(normalized)
+}
+
+func readDirectoryFiles(path string) (map[string]fs.FileInfo, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]fs.FileInfo, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil, fmt.Errorf("read file info for %q in %q: %w", entry.Name(), path, infoErr)
+		}
+		files[entry.Name()] = info
+	}
+	return files, nil
+}
+
+func detectDriftForRule(repoPath, dir string, files map[string]fs.FileInfo, rule lockfileRule, changedFiles map[string]struct{}, hasGitContext bool) []string {
+	_, hasManifest := files[rule.manifest]
+	lockfiles := findRuleLockfiles(files, rule.lockfiles)
+	relDir := relativeDir(repoPath, dir)
+
+	if hasManifest && len(lockfiles) == 0 {
+		return []string{
+			fmt.Sprintf("%s%s in %s: %s exists but no matching lockfile (%s) was found; %s", lockfileDriftWarningPrefix, rule.manager, relDir, rule.manifest, strings.Join(rule.lockfiles, ", "), rule.remedy),
+		}
+	}
+	if !hasManifest && len(lockfiles) > 0 {
+		return []string{
+			fmt.Sprintf("%s%s in %s: %s exists without %s; remove stale lockfile or restore the manifest", lockfileDriftWarningPrefix, rule.manager, relDir, lockfiles[0].name, rule.manifest),
+		}
+	}
+	if !hasManifest || len(lockfiles) == 0 || !hasGitContext || len(changedFiles) == 0 {
+		return nil
+	}
+
+	manifestPath := relativeFilePath(repoPath, dir, rule.manifest)
+	if !isPathChanged(changedFiles, manifestPath) {
+		return nil
+	}
+	for _, lockfile := range lockfiles {
+		lockfilePath := relativeFilePath(repoPath, dir, lockfile.name)
+		if isPathChanged(changedFiles, lockfilePath) {
+			return nil
+		}
+	}
+	return []string{
+		fmt.Sprintf("%s%s in %s: %s changed while no matching lockfile changed; %s", lockfileDriftWarningPrefix, rule.manager, relDir, rule.manifest, rule.remedy),
+	}
+}
+
+type presentLockfile struct {
+	name string
+	info fs.FileInfo
+}
+
+func findRuleLockfiles(files map[string]fs.FileInfo, names []string) []presentLockfile {
+	lockfiles := make([]presentLockfile, 0, len(names))
+	for _, name := range names {
+		info, ok := files[name]
+		if !ok {
+			continue
+		}
+		lockfiles = append(lockfiles, presentLockfile{name: name, info: info})
+	}
+	return lockfiles
+}
+
+func relativeDir(repoPath, dir string) string {
+	relative, err := filepath.Rel(repoPath, dir)
+	if err != nil {
+		return dir
+	}
+	if relative == "." {
+		return "."
+	}
+	return relative
+}
+
+func relativeFilePath(repoPath, dir, name string) string {
+	return filepath.ToSlash(filepath.Join(relativeDir(repoPath, dir), name))
+}
+
+func isPathChanged(changedFiles map[string]struct{}, path string) bool {
+	_, ok := changedFiles[path]
+	return ok
+}
+
+func formatLockfileDriftError(driftWarnings []string) error {
+	if len(driftWarnings) == 0 {
+		return ErrLockfileDrift
+	}
+	cleaned := make([]string, 0, len(driftWarnings))
+	for _, warning := range driftWarnings {
+		cleaned = append(cleaned, strings.TrimPrefix(warning, lockfileDriftWarningPrefix))
+	}
+	return fmt.Errorf("%w: %s", ErrLockfileDrift, strings.Join(cleaned, "; "))
+}
+
+func gitChangedFiles(ctx context.Context, repoPath string) (map[string]struct{}, bool, error) {
+	if !isGitWorktree(ctx, repoPath) {
+		return nil, false, nil
+	}
+
+	changed := map[string]struct{}{}
+	tracked, err := gitTrackedChanges(ctx, repoPath)
+	if err != nil {
+		return nil, true, err
+	}
+	for _, path := range tracked {
+		changed[path] = struct{}{}
+	}
+
+	untracked, err := gitUntrackedFiles(ctx, repoPath)
+	if err != nil {
+		return nil, true, err
+	}
+	for _, path := range untracked {
+		changed[path] = struct{}{}
+	}
+
+	return changed, true, nil
+}
+
+func isGitWorktree(ctx context.Context, repoPath string) bool {
+	command, err := gitCommandContext(ctx, repoPath, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return false
+	}
+	output, err := command.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) == "true"
+}
+
+func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
+	command, err := gitCommandContext(ctx, repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
+	if err != nil {
+		return nil, err
+	}
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("run git diff --no-ext-diff --no-textconv --name-only HEAD --: %w", err)
+	}
+	return parseGitOutputLines(output), nil
+}
+
+func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
+	command, err := gitCommandContext(ctx, repoPath, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("run git ls-files --others --exclude-standard: %w", err)
+	}
+	return parseGitOutputLines(output), nil
+}
+
+func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gitPath, err := resolveGitBinaryPathFn()
+	if err != nil {
+		return nil, err
+	}
+	commandArgs := append([]string{"-C", repoPath}, args...)
+	// #nosec G204 -- executable path and arguments are fixed by callers.
+	command := exec.CommandContext(ctx, gitPath, commandArgs...)
+	command.Env = sanitizedGitEnv()
+	return command, nil
+}
+
+func parseGitOutputLines(output []byte) []string {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
+}
+
+func sanitizedGitEnv() []string {
+	return gitexec.SanitizedEnv()
+}

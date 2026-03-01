@@ -45,17 +45,13 @@ func FirstContentColumn(line string) int {
 
 func MapSlice[T any, R any](items []T, mapper func(T) R) []R {
 	mapped := make([]R, 0, len(items))
-	for _, item := range items {
-		mapped = append(mapped, mapper(item))
+	for _, elem := range items {
+		mapped = append(mapped, mapper(elem))
 	}
 	return mapped
 }
 
-func MapFileUsages[T any](
-	files []T,
-	importsOf func(T) []ImportRecord,
-	usageOf func(T) map[string]int,
-) []FileUsage {
+func MapFileUsages[T any](files []T, importsOf func(T) []ImportRecord, usageOf func(T) map[string]int) []FileUsage {
 	return MapSlice(files, func(file T) FileUsage {
 		return FileUsage{
 			Imports: importsOf(file),
@@ -114,6 +110,19 @@ func BuildDependencyStats(dependency string, files []FileUsage, normalize func(s
 	return acc.build()
 }
 
+func BuildDependencyReportFromStats(name, languageID string, stats DependencyStats) report.DependencyReport {
+	return report.DependencyReport{
+		Name:              name,
+		Language:          languageID,
+		UsedExportsCount:  stats.UsedCount,
+		TotalExportsCount: stats.TotalCount,
+		UsedPercent:       stats.UsedPercent,
+		TopUsedSymbols:    stats.TopSymbols,
+		UsedImports:       stats.UsedImports,
+		UnusedImports:     stats.UnusedImports,
+	}
+}
+
 type statsAccumulator struct {
 	usedImports     map[string]*report.ImportUse
 	unusedImports   map[string]*report.ImportUse
@@ -133,29 +142,29 @@ func newStatsAccumulator() *statsAccumulator {
 	}
 }
 
-func (acc *statsAccumulator) collectForFile(dependency string, file FileUsage, normalize func(string) string) {
+func (s *statsAccumulator) collectForFile(dependency string, file FileUsage, normalize func(string) string) {
 	for _, imported := range file.Imports {
 		if normalize(imported.Dependency) != dependency {
 			continue
 		}
-		acc.collectImport(file, imported)
+		s.collectImport(file, imported)
 	}
 }
 
-func (acc *statsAccumulator) collectImport(file FileUsage, imported ImportRecord) {
-	acc.allSymbols[imported.Name] = struct{}{}
+func (s *statsAccumulator) collectImport(file FileUsage, imported ImportRecord) {
+	s.allSymbols[imported.Name] = struct{}{}
 	entry := report.ImportUse{
 		Name:      imported.Name,
 		Module:    imported.Module,
 		Locations: []report.Location{imported.Location},
 	}
 	if isImportUsed(file, imported) {
-		acc.addUsedImport(file, imported, entry)
+		s.addUsedImport(file, imported, entry)
 	} else {
-		addImport(acc.unusedImports, entry)
+		addImport(s.unusedImports, entry)
 	}
 	if imported.Wildcard {
-		acc.wildcardImports++
+		s.wildcardImports++
 	}
 }
 
@@ -163,13 +172,13 @@ func isImportUsed(file FileUsage, imported ImportRecord) bool {
 	return imported.Wildcard || file.Usage[imported.Local] > 0
 }
 
-func (acc *statsAccumulator) addUsedImport(file FileUsage, imported ImportRecord, entry report.ImportUse) {
-	acc.usedSymbols[imported.Name] = struct{}{}
+func (s *statsAccumulator) addUsedImport(file FileUsage, imported ImportRecord, entry report.ImportUse) {
+	s.usedSymbols[imported.Name] = struct{}{}
 	count := effectiveUsageCount(file, imported)
 	if count > 0 {
-		acc.symbolCounts[imported.Name] += count
+		s.symbolCounts[imported.Name] += count
 	}
-	addImport(acc.usedImports, entry)
+	addImport(s.usedImports, entry)
 }
 
 func effectiveUsageCount(file FileUsage, imported ImportRecord) int {
@@ -180,13 +189,13 @@ func effectiveUsageCount(file FileUsage, imported ImportRecord) int {
 	return count
 }
 
-func (acc *statsAccumulator) build() DependencyStats {
-	usedCount := len(acc.usedSymbols)
-	totalCount := len(acc.allSymbols)
+func (s *statsAccumulator) build() DependencyStats {
+	usedCount := len(s.usedSymbols)
+	totalCount := len(s.allSymbols)
 	usedPercent := calculateUsedPercent(usedCount, totalCount)
-	topSymbols := buildTopSymbols(acc.symbolCounts)
-	used := flattenImports(acc.usedImports)
-	unused := dedupeUnused(flattenImports(acc.unusedImports), used)
+	topSymbols := buildTopSymbols(s.symbolCounts)
+	used := flattenImports(s.usedImports)
+	unused := dedupeUnused(flattenImports(s.unusedImports), used)
 	return DependencyStats{
 		HasImports:      totalCount > 0,
 		UsedCount:       usedCount,
@@ -195,7 +204,7 @@ func (acc *statsAccumulator) build() DependencyStats {
 		TopSymbols:      topSymbols,
 		UsedImports:     used,
 		UnusedImports:   unused,
-		WildcardImports: acc.wildcardImports,
+		WildcardImports: s.wildcardImports,
 	}
 }
 
@@ -241,12 +250,7 @@ func ListDependencies(files []FileUsage, normalize func(string) string) []string
 	return items
 }
 
-func BuildTopReports(
-	topN int,
-	dependencies []string,
-	buildReport func(string) (report.DependencyReport, []string),
-	weights ...report.RemovalCandidateWeights,
-) ([]report.DependencyReport, []string) {
+func BuildTopReports(topN int, dependencies []string, buildReport func(string) (report.DependencyReport, []string), weights ...report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	warnings := make([]string, 0)
 	for _, dependency := range dependencies {
@@ -264,13 +268,7 @@ func BuildTopReports(
 	return reports, warnings
 }
 
-func BuildRequestedDependencies[S any](
-	req language.Request,
-	scan S,
-	normalizeDependencyID func(string) string,
-	buildDependency func(string, S) (report.DependencyReport, []string),
-	buildTop func(int, S) ([]report.DependencyReport, []string),
-) ([]report.DependencyReport, []string) {
+func BuildRequestedDependencies[S any](req language.Request, scan S, normalizeDependencyID func(string) string, buildDependency func(string, S) (report.DependencyReport, []string), buildTop func(int, S) ([]report.DependencyReport, []string)) ([]report.DependencyReport, []string) {
 	if req.TopN > 0 {
 		return buildTop(req.TopN, scan)
 	}
@@ -282,23 +280,11 @@ func BuildRequestedDependencies[S any](
 	return []report.DependencyReport{depReport}, warnings
 }
 
-func BuildRequestedDependenciesWithWeights[S any](
-	req language.Request,
-	scan S,
-	normalizeDependencyID func(string) string,
-	buildDependency func(string, S) (report.DependencyReport, []string),
-	resolveWeights func(*report.RemovalCandidateWeights) report.RemovalCandidateWeights,
-	buildTop func(int, S, report.RemovalCandidateWeights) ([]report.DependencyReport, []string),
-) ([]report.DependencyReport, []string) {
-	return BuildRequestedDependencies(
-		req,
-		scan,
-		normalizeDependencyID,
-		buildDependency,
-		func(topN int, current S) ([]report.DependencyReport, []string) {
-			return buildTop(topN, current, resolveWeights(req.RemovalCandidateWeights))
-		},
-	)
+func BuildRequestedDependenciesWithWeights[S any](req language.Request, scan S, normalizeDependencyID func(string) string, buildDependency func(string, S) (report.DependencyReport, []string), resolveWeights func(*report.RemovalCandidateWeights) report.RemovalCandidateWeights, buildTop func(int, S, report.RemovalCandidateWeights) ([]report.DependencyReport, []string)) ([]report.DependencyReport, []string) {
+	buildTopWithWeights := func(topN int, current S) ([]report.DependencyReport, []string) {
+		return buildTop(topN, current, resolveWeights(req.RemovalCandidateWeights))
+	}
+	return BuildRequestedDependencies(req, scan, normalizeDependencyID, buildDependency, buildTopWithWeights)
 }
 
 // SortReportsByWaste annotates each report with a removal-candidate score before sorting.
@@ -368,11 +354,7 @@ func FinalizeDetection(repoPath string, detection language.Detection, roots map[
 	return detection
 }
 
-func DetectMatched(
-	ctx context.Context,
-	repoPath string,
-	detectWithConfidence func(context.Context, string) (language.Detection, error),
-) (bool, error) {
+func DetectMatched(ctx context.Context, repoPath string, detectWithConfidence func(context.Context, string) (language.Detection, error)) (bool, error) {
 	detection, err := detectWithConfidence(ctx, repoPath)
 	if err != nil {
 		return false, err

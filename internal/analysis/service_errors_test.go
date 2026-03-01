@@ -24,15 +24,15 @@ type testServiceAdapter struct {
 	err     error
 }
 
-func (a testServiceAdapter) ID() string        { return a.id }
-func (a testServiceAdapter) Aliases() []string { return nil }
-func (a testServiceAdapter) Detect(context.Context, string) (bool, error) {
+func (a *testServiceAdapter) ID() string        { return a.id }
+func (a *testServiceAdapter) Aliases() []string { return nil }
+func (a *testServiceAdapter) Detect(context.Context, string) (bool, error) {
 	return a.detect.Matched, nil
 }
-func (a testServiceAdapter) DetectWithConfidence(context.Context, string) (language.Detection, error) {
+func (a *testServiceAdapter) DetectWithConfidence(context.Context, string) (language.Detection, error) {
 	return a.detect, nil
 }
-func (a testServiceAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+func (a *testServiceAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
 	if a.err != nil {
 		return report.Report{}, a.err
 	}
@@ -41,21 +41,21 @@ func (a testServiceAdapter) Analyse(context.Context, language.Request) (report.R
 
 func TestPrepareAnalysisErrors(t *testing.T) {
 	svc := &Service{InitErr: errors.New("init failed")}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "all"}); err == nil {
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
 		t.Fatalf("expected init error")
 	}
 
 	svc = &Service{}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "all"}); err == nil {
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
 		t.Fatalf("expected nil-registry error")
 	}
 }
 
 func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
-	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
+	adapter := &testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
 	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 10, Roots: []string{"."}}}
 	svc := &Service{}
-	reports, warnings, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all"}, ".", candidate)
+	reports, warnings, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all"}, ".", candidate, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,10 +68,10 @@ func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
 }
 
 func TestRunCandidateOnRootsSingleLanguageError(t *testing.T) {
-	adapter := testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
+	adapter := &testServiceAdapter{id: "broken", detect: language.Detection{Matched: true, Confidence: 10}, err: errors.New(analyseFailedErrMsg)}
 	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 10, Roots: []string{"."}}}
 	svc := &Service{}
-	_, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "js-ts"}, ".", candidate)
+	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "js-ts"}, ".", candidate, nil)
 	if err == nil {
 		t.Fatalf("expected error in single-language mode")
 	}
@@ -79,7 +79,7 @@ func TestRunCandidateOnRootsSingleLanguageError(t *testing.T) {
 
 func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 	reg := language.NewRegistry()
-	if err := reg.Register(testServiceAdapter{
+	if err := reg.Register(&testServiceAdapter{
 		id:     "broken",
 		detect: language.Detection{Matched: true, Confidence: 20},
 		err:    errors.New(analyseFailedErrMsg),
@@ -101,7 +101,7 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 	}
 
 	reg = language.NewRegistry()
-	if err := reg.Register(testServiceAdapter{
+	if err := reg.Register(&testServiceAdapter{
 		id:     "ok",
 		detect: language.Detection{Matched: true, Confidence: 90},
 		analyse: report.Report{
@@ -127,7 +127,7 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 
 func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	reg := language.NewRegistry()
-	if err := reg.Register(testServiceAdapter{
+	if err := reg.Register(&testServiceAdapter{
 		id:      "broken",
 		detect:  language.Detection{Matched: true},
 		err:     nil,
@@ -137,11 +137,11 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	}
 	// Force registry resolve error via unsupported explicit language.
 	svc := &Service{Registry: reg}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "unknown"}); err == nil {
+	if _, err := svc.resolveCandidates(context.Background(), ".", "unknown"); err == nil {
 		t.Fatalf("expected prepareAnalysis resolve error")
 	}
 
-	adapter := testServiceAdapter{id: "x", detect: language.Detection{Matched: true, Confidence: 0}}
+	adapter := &testServiceAdapter{id: "x", detect: language.Detection{Matched: true, Confidence: 0}}
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(nil)
 	warnings := lowConfidenceWarning("all", language.Candidate{Adapter: adapter, Detection: language.Detection{Confidence: 0}}, lowConfidenceThreshold)
 	if len(warnings) != 0 {
@@ -180,18 +180,12 @@ func TestMergeReportsAndTopSymbolsBranches(t *testing.T) {
 		t.Fatalf("expected merged duplicate dependency report, got %#v", merged.Dependencies)
 	}
 
-	items := mergeTopSymbols(
-		[]report.SymbolUsage{{Name: "a", Count: 1}, {Name: "b", Count: 1}, {Name: "c", Count: 1}},
-		[]report.SymbolUsage{{Name: "d", Count: 1}, {Name: "e", Count: 1}, {Name: "f", Count: 1}},
-	)
+	items := mergeTopSymbols([]report.SymbolUsage{{Name: "a", Count: 1}, {Name: "b", Count: 1}, {Name: "c", Count: 1}}, []report.SymbolUsage{{Name: "d", Count: 1}, {Name: "e", Count: 1}, {Name: "f", Count: 1}})
 	if len(items) != 5 {
 		t.Fatalf("expected top symbols truncation to 5, got %#v", items)
 	}
 
-	filtered := filterUsedOverlaps(
-		[]report.ImportUse{{Module: "m", Name: "a"}, {Module: "m", Name: "b"}},
-		[]report.ImportUse{{Module: "m", Name: "a"}},
-	)
+	filtered := filterUsedOverlaps([]report.ImportUse{{Module: "m", Name: "a"}, {Module: "m", Name: "b"}}, []report.ImportUse{{Module: "m", Name: "a"}})
 	if len(filtered) != 1 || filtered[0].Name != "b" {
 		t.Fatalf("expected overlap filter to drop used import, got %#v", filtered)
 	}
@@ -212,7 +206,11 @@ func TestPrepareAnalysisRepoPathAbsErrorFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
+		}
+	})
 
 	deadDir := t.TempDir()
 	if err := os.Chdir(deadDir); err != nil {
@@ -223,7 +221,7 @@ func TestPrepareAnalysisRepoPathAbsErrorFallback(t *testing.T) {
 	}
 
 	svc := &Service{Registry: language.NewRegistry()}
-	if _, _, err := svc.prepareAnalysis(context.Background(), Request{RepoPath: ".", Language: "all"}); err == nil {
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
 		// this branch is platform dependent; treat nil as acceptable.
 	}
 }

@@ -11,8 +11,8 @@ import (
 )
 
 type Detail struct {
-	Analyzer  analysis.Analyzer
-	Formatter report.Formatter
+	Analyzer  analysis.Analyser
+	Formatter *report.Formatter
 	Out       io.Writer
 	RepoPath  string
 	Language  string
@@ -20,7 +20,7 @@ type Detail struct {
 
 const noneLabel = "  (none)"
 
-func NewDetail(out io.Writer, analyzer analysis.Analyzer, formatter report.Formatter, repoPath string, language string) *Detail {
+func NewDetail(out io.Writer, analyzer analysis.Analyser, formatter *report.Formatter, repoPath string, language string) *Detail {
 	if language == "" {
 		language = "auto"
 	}
@@ -38,11 +38,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return fmt.Errorf("dependency name is required")
 	}
 
-	languageID := d.Language
-	if parts := strings.SplitN(dependency, ":", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-		languageID = parts[0]
-		dependency = parts[1]
-	}
+	languageID, dependency := parseDependencyLanguage(d.Language, dependency)
 
 	reportData, err := d.Analyzer.Analyse(ctx, analysis.Request{
 		RepoPath:   d.RepoPath,
@@ -53,132 +49,257 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return err
 	}
 	if len(reportData.Dependencies) == 0 {
-		_, _ = fmt.Fprintf(d.Out, "No data for dependency %q\n", dependency)
+		if err := writef(d.Out, "No data for dependency %q\n", dependency); err != nil {
+			return err
+		}
 		return nil
 	}
 
 	dep := reportData.Dependencies[0]
-	_, _ = fmt.Fprintf(d.Out, "Dependency detail: %s\n", dep.Name)
-	if dep.Language != "" {
-		_, _ = fmt.Fprintf(d.Out, "Language: %s\n", dep.Language)
+	if err := printDependencyHeader(d.Out, dep); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintf(d.Out, "Used exports: %d\n", dep.UsedExportsCount)
-	_, _ = fmt.Fprintf(d.Out, "Total exports: %d\n", dep.TotalExportsCount)
-	_, _ = fmt.Fprintf(d.Out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
-	printRemovalCandidate(d.Out, dep.RemovalCandidate)
-	printRuntimeUsage(d.Out, dep.RuntimeUsage)
-	printRiskCues(d.Out, dep.RiskCues)
-	printRecommendations(d.Out, dep.Recommendations)
+	if err := printDependencySections(d.Out, dep); err != nil {
+		return err
+	}
+	return printWarnings(d.Out, reportData.Warnings)
+}
 
-	printImportList(d.Out, "Used imports", dep.UsedImports)
-	printImportList(d.Out, "Unused imports", dep.UnusedImports)
-	printExportsList(d.Out, "Unused exports", dep.UnusedExports)
+func parseDependencyLanguage(defaultLanguage, dependency string) (string, string) {
+	if parts := strings.SplitN(dependency, ":", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0], parts[1]
+	}
+	return defaultLanguage, dependency
+}
 
-	if len(reportData.Warnings) > 0 {
-		_, _ = fmt.Fprintln(d.Out, "Warnings:")
-		for _, warning := range reportData.Warnings {
-			_, _ = fmt.Fprintf(d.Out, "- %s\n", warning)
+func printDependencyHeader(out io.Writer, dep report.DependencyReport) error {
+	if err := writef(out, "Dependency detail: %s\n", dep.Name); err != nil {
+		return err
+	}
+	if dep.Language != "" {
+		if err := writef(out, "Language: %s\n", dep.Language); err != nil {
+			return err
 		}
 	}
+	if err := writef(out, "Used exports: %d\n", dep.UsedExportsCount); err != nil {
+		return err
+	}
+	if err := writef(out, "Total exports: %d\n", dep.TotalExportsCount); err != nil {
+		return err
+	}
+	return writef(out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
+}
 
+func printDependencySections(out io.Writer, dep report.DependencyReport) error {
+	printers := []func(io.Writer) error{
+		func(w io.Writer) error { return printRemovalCandidate(w, dep.RemovalCandidate) },
+		func(w io.Writer) error { return printRuntimeUsage(w, dep.RuntimeUsage) },
+		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
+		func(w io.Writer) error { return printRecommendations(w, dep.Recommendations) },
+		func(w io.Writer) error { return printCodemod(w, dep.Codemod) },
+		func(w io.Writer) error { return printImportList(w, "Used imports", dep.UsedImports) },
+		func(w io.Writer) error { return printImportList(w, "Unused imports", dep.UnusedImports) },
+		func(w io.Writer) error { return printExportsList(w, "Unused exports", dep.UnusedExports) },
+	}
+	for _, printer := range printers {
+		if err := printer(out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func printWarnings(out io.Writer, warnings []string) error {
+	if len(warnings) == 0 {
+		return nil
+	}
+	if err := writeln(out, "Warnings:"); err != nil {
+		return err
+	}
+	for _, warning := range warnings {
+		if err := writef(out, "- %s\n", warning); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // renderList prints a titled, counted section with items formatted by the provided function.
 // If items is empty, a "(none)" placeholder is printed followed by a trailing blank line
 // (normalised from the prior per-function behaviour for consistent section separation).
-func renderList[T any](out io.Writer, title string, items []T, format func(io.Writer, T)) {
-	_, _ = fmt.Fprintf(out, "%s (%d)\n", title, len(items))
+func renderList[T any](out io.Writer, title string, items []T, format func(io.Writer, T) error) error {
+	if err := writef(out, "%s (%d)\n", title, len(items)); err != nil {
+		return err
+	}
 	if len(items) == 0 {
-		_, _ = fmt.Fprintln(out, noneLabel)
-		_, _ = fmt.Fprintln(out, "")
-		return
+		if err := writeln(out, noneLabel); err != nil {
+			return err
+		}
+		return writeln(out, "")
 	}
-	for _, item := range items {
-		format(out, item)
+	for _, elem := range items {
+		if err := format(out, elem); err != nil {
+			return err
+		}
 	}
-	_, _ = fmt.Fprintln(out, "")
+	return writeln(out, "")
 }
 
-func printImportList(out io.Writer, title string, imports []report.ImportUse) {
-	renderList(out, title, imports, func(w io.Writer, imp report.ImportUse) {
+func printImportList(out io.Writer, title string, imports []report.ImportUse) error {
+	return renderList(out, title, imports, func(w io.Writer, imp report.ImportUse) error {
 		locationHint := ""
 		if len(imp.Locations) > 0 {
 			locationHint = fmt.Sprintf(" (%s:%d)", imp.Locations[0].File, imp.Locations[0].Line)
 		}
-		_, _ = fmt.Fprintf(w, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint)
-		for _, provenance := range imp.Provenance {
-			_, _ = fmt.Fprintf(w, "    provenance: %s\n", provenance)
+		if err := writef(w, "  - %s from %s%s\n", imp.Name, imp.Module, locationHint); err != nil {
+			return err
 		}
+		for _, provenance := range imp.Provenance {
+			if err := writef(w, "    provenance: %s\n", provenance); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-func printExportsList(out io.Writer, title string, exports []report.SymbolRef) {
-	renderList(out, title, exports, func(w io.Writer, ref report.SymbolRef) {
+func printExportsList(out io.Writer, title string, exports []report.SymbolRef) error {
+	return renderList(out, title, exports, func(w io.Writer, ref report.SymbolRef) error {
 		module := ref.Module
 		if module == "" {
 			module = "(unknown)"
 		}
-		_, _ = fmt.Fprintf(w, "  - %s (%s)\n", ref.Name, module)
+		return writef(w, "  - %s (%s)\n", ref.Name, module)
 	})
 }
 
-func printRiskCues(out io.Writer, cues []report.RiskCue) {
-	renderList(out, "Risk cues", cues, func(w io.Writer, cue report.RiskCue) {
-		_, _ = fmt.Fprintf(w, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
+func printRiskCues(out io.Writer, cues []report.RiskCue) error {
+	return renderList(out, "Risk cues", cues, func(w io.Writer, cue report.RiskCue) error {
+		return writef(w, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
 	})
 }
 
-func printRecommendations(out io.Writer, recommendations []report.Recommendation) {
-	renderList(out, "Recommendations", recommendations, func(w io.Writer, rec report.Recommendation) {
-		_, _ = fmt.Fprintf(w, "  - [%s] %s: %s\n", strings.ToUpper(rec.Priority), rec.Code, rec.Message)
-		if rec.Rationale != "" {
-			_, _ = fmt.Fprintf(w, "    rationale: %s\n", rec.Rationale)
+func printRecommendations(out io.Writer, recommendations []report.Recommendation) error {
+	return renderList(out, "Recommendations", recommendations, func(w io.Writer, rec report.Recommendation) error {
+		if err := writef(w, "  - [%s] %s: %s\n", strings.ToUpper(rec.Priority), rec.Code, rec.Message); err != nil {
+			return err
 		}
+		if rec.Rationale != "" {
+			return writef(w, "    rationale: %s\n", rec.Rationale)
+		}
+		return nil
 	})
 }
 
-func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) {
-	_, _ = fmt.Fprintln(out, "Runtime usage")
-	if usage == nil {
-		_, _ = fmt.Fprintln(out, noneLabel)
-		_, _ = fmt.Fprintln(out, "")
-		return
+func printCodemod(out io.Writer, codemod *report.CodemodReport) error {
+	if err := writeln(out, "Codemod preview"); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintf(out, "  - load count: %d\n", usage.LoadCount)
+	if codemod == nil {
+		if err := writeln(out, noneLabel); err != nil {
+			return err
+		}
+		return writeln(out, "")
+	}
+	if codemod.Mode != "" {
+		if err := writef(out, "  - mode: %s\n", codemod.Mode); err != nil {
+			return err
+		}
+	}
+	if err := writef(out, "  - suggestions: %d\n", len(codemod.Suggestions)); err != nil {
+		return err
+	}
+	for _, suggestion := range codemod.Suggestions {
+		if err := writef(out, "    - %s:%d %s -> %s\n", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule); err != nil {
+			return err
+		}
+	}
+	if err := writef(out, "  - skips: %d\n", len(codemod.Skips)); err != nil {
+		return err
+	}
+	for _, skip := range codemod.Skips {
+		if err := writef(out, "    - %s:%d [%s] %s\n", skip.File, skip.Line, skip.ReasonCode, skip.Message); err != nil {
+			return err
+		}
+	}
+	return writeln(out, "")
+}
+
+func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) error {
+	if err := writeln(out, "Runtime usage"); err != nil {
+		return err
+	}
+	if usage == nil {
+		return writeNoneAndBlankLine(out)
+	}
+	lines := []string{fmt.Sprintf("  - load count: %d", usage.LoadCount)}
 	if usage.Correlation != "" {
-		_, _ = fmt.Fprintf(out, "  - correlation: %s\n", usage.Correlation)
+		lines = append(lines, fmt.Sprintf("  - correlation: %s", usage.Correlation))
 	}
 	if usage.RuntimeOnly {
-		_, _ = fmt.Fprintln(out, "  - runtime-only: true (no static imports detected)")
+		lines = append(lines, "  - runtime-only: true (no static imports detected)")
 	}
 	if len(usage.Modules) > 0 {
-		_, _ = fmt.Fprintf(out, "  - modules: %s\n", formatRuntimeModules(usage.Modules))
+		lines = append(lines, fmt.Sprintf("  - modules: %s", formatRuntimeModules(usage.Modules)))
 	}
 	if len(usage.TopSymbols) > 0 {
-		_, _ = fmt.Fprintf(out, "  - top symbols: %s\n", formatRuntimeSymbols(usage.TopSymbols))
+		lines = append(lines, fmt.Sprintf("  - top symbols: %s", formatRuntimeSymbols(usage.TopSymbols)))
 	}
-	_, _ = fmt.Fprintln(out, "")
-}
-
-func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) {
-	_, _ = fmt.Fprintln(out, "Removal candidate scoring")
-	if candidate == nil {
-		_, _ = fmt.Fprintln(out, noneLabel)
-		_, _ = fmt.Fprintln(out, "")
-		return
-	}
-	_, _ = fmt.Fprintf(out, "  - score: %.1f\n", candidate.Score)
-	_, _ = fmt.Fprintf(out, "  - usage: %.1f\n", candidate.Usage)
-	_, _ = fmt.Fprintf(out, "  - impact: %.1f\n", candidate.Impact)
-	_, _ = fmt.Fprintf(out, "  - confidence: %.1f\n", candidate.Confidence)
-	if len(candidate.Rationale) > 0 {
-		_, _ = fmt.Fprintln(out, "  - rationale:")
-		for _, line := range candidate.Rationale {
-			_, _ = fmt.Fprintf(out, "    - %s\n", line)
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
+			return err
 		}
 	}
-	_, _ = fmt.Fprintln(out, "")
+	return writeln(out, "")
+}
+
+func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) error {
+	if err := writeln(out, "Removal candidate scoring"); err != nil {
+		return err
+	}
+	if candidate == nil {
+		return writeNoneAndBlankLine(out)
+	}
+	lines := []string{
+		fmt.Sprintf("  - score: %.1f", candidate.Score),
+		fmt.Sprintf("  - usage: %.1f", candidate.Usage),
+		fmt.Sprintf("  - impact: %.1f", candidate.Impact),
+		fmt.Sprintf("  - confidence: %.1f", candidate.Confidence),
+	}
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	if len(candidate.Rationale) == 0 {
+		return writeln(out, "")
+	}
+	if err := writeln(out, "  - rationale:"); err != nil {
+		return err
+	}
+	for _, line := range candidate.Rationale {
+		if err := writef(out, "    - %s\n", line); err != nil {
+			return err
+		}
+	}
+	return writeln(out, "")
+}
+
+func writeNoneAndBlankLine(out io.Writer) error {
+	if err := writeln(out, noneLabel); err != nil {
+		return err
+	}
+	return writeln(out, "")
+}
+
+func writef(out io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
+}
+
+func writeln(out io.Writer, args ...any) error {
+	_, err := fmt.Fprintln(out, args...)
+	return err
 }
 
 func formatRuntimeModules(modules []report.RuntimeModuleUsage) string {

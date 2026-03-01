@@ -127,12 +127,7 @@ func updateDetection(repoPath, path, name string, detection *language.Detection,
 	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
 }
 
-func applyDetectionSignal(
-	repoPath, path, name, root string,
-	detection *language.Detection,
-	roots map[string]struct{},
-	weights detectionWeights,
-) error {
+func applyDetectionSignal(repoPath, path, name, root string, detection *language.Detection, roots map[string]struct{}, weights detectionWeights) error {
 	signal := signalForName(name)
 	switch {
 	case signal == fileSignalCentral:
@@ -277,11 +272,7 @@ func buildTopDotNetDependencies(topN int, scan scanResult, minUsagePercentForRec
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsagePercentForRecommendations int) (report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 
 	dep := report.DependencyReport{
@@ -568,14 +559,14 @@ type dependencyCollector struct {
 	set      map[string]struct{}
 }
 
-func newDependencyCollector(repoPath string, set map[string]struct{}) dependencyCollector {
-	return dependencyCollector{
+func newDependencyCollector(repoPath string, set map[string]struct{}) *dependencyCollector {
+	return &dependencyCollector{
 		repoPath: repoPath,
 		set:      set,
 	}
 }
 
-func (c dependencyCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
+func (c *dependencyCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
 	if walkErr != nil {
 		return walkErr
 	}
@@ -640,12 +631,7 @@ func sortedDependencies(set map[string]struct{}) []string {
 	return dependencies
 }
 
-func parseCSharpImportLine(
-	line, raw, relativePath string,
-	lineNumber int,
-	mapper dependencyMapper,
-	meta *mappingMetadata,
-) (*importBinding, bool) {
+func parseCSharpImportLine(line, raw, relativePath string, lineNumber int, mapper dependencyMapper, meta *mappingMetadata) (*importBinding, bool) {
 	module, alias, ok := parseCSharpUsing(line)
 	if !ok {
 		return nil, false
@@ -678,12 +664,7 @@ func parseCSharpImportLine(
 	return &binding, true
 }
 
-func parseFSharpImportLine(
-	line, raw, relativePath string,
-	lineNumber int,
-	mapper dependencyMapper,
-	meta *mappingMetadata,
-) *importBinding {
+func parseFSharpImportLine(line, raw, relativePath string, lineNumber int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
 	module, ok := parseFSharpOpen(line)
 	if !ok {
 		return nil
@@ -843,7 +824,7 @@ type dependencyCandidate struct {
 	score int
 }
 
-func (m dependencyMapper) resolve(module string) (dependency string, ambiguous bool, undeclared bool) {
+func (m *dependencyMapper) resolve(module string) (dependency string, ambiguous bool, undeclared bool) {
 	module = normalizeNamespace(module)
 	if module == "" {
 		return "", false, false

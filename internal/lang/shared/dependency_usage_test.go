@@ -3,6 +3,7 @@ package shared
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
+
+const topWarning = "top-warning"
 
 const (
 	testLocalFoo       = "foo"
@@ -234,22 +237,18 @@ func TestListDependenciesAndTopReports(t *testing.T) {
 func TestBuildRequestedDependenciesDependencyTarget(t *testing.T) {
 	dependencyCalled := false
 	topCalled := false
-	reports, warnings := BuildRequestedDependencies(
-		language.Request{Dependency: "Alpha"},
-		1,
-		strings.ToLower,
-		func(dependency string, scan int) (report.DependencyReport, []string) {
-			dependencyCalled = true
-			if scan != 1 {
-				t.Fatalf("unexpected scan value: %d", scan)
-			}
-			return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
-		},
-		func(_, _ int) ([]report.DependencyReport, []string) {
-			topCalled = true
-			return nil, nil
-		},
-	)
+	dependencyBuilder := func(dependency string, scan int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		if scan != 1 {
+			t.Fatalf("unexpected scan value: %d", scan)
+		}
+		return report.DependencyReport{Name: dependency}, []string{"dep-warning"}
+	}
+	topBuilder := func(_, _ int) ([]report.DependencyReport, []string) {
+		topCalled = true
+		return nil, nil
+	}
+	reports, warnings := BuildRequestedDependencies(language.Request{Dependency: "Alpha"}, 1, strings.ToLower, dependencyBuilder, topBuilder)
 	if !dependencyCalled || topCalled {
 		t.Fatalf("expected only dependency builder to run (dependency=%v top=%v)", dependencyCalled, topCalled)
 	}
@@ -264,53 +263,92 @@ func TestBuildRequestedDependenciesDependencyTarget(t *testing.T) {
 func TestBuildRequestedDependenciesTopNTarget(t *testing.T) {
 	dependencyCalled := false
 	topCalled := false
-	reports, warnings := BuildRequestedDependencies(
-		language.Request{TopN: 3},
-		2,
-		strings.ToLower,
-		func(string, int) (report.DependencyReport, []string) {
-			dependencyCalled = true
-			return report.DependencyReport{}, nil
-		},
-		func(topN, scan int) ([]report.DependencyReport, []string) {
-			topCalled = true
-			if topN != 3 || scan != 2 {
-				t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
-			}
-			return []report.DependencyReport{{Name: "top"}}, []string{"top-warning"}
-		},
-	)
+	dependencyBuilder := func(string, int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		return report.DependencyReport{}, nil
+	}
+	topBuilder := func(topN, scan int) ([]report.DependencyReport, []string) {
+		topCalled = true
+		if topN != 3 || scan != 2 {
+			t.Fatalf("unexpected topN/scan values: %d/%d", topN, scan)
+		}
+		return []report.DependencyReport{{Name: "top"}}, []string{topWarning}
+	}
+	reports, warnings := BuildRequestedDependencies(language.Request{TopN: 3}, 2, strings.ToLower, dependencyBuilder, topBuilder)
 	if dependencyCalled || !topCalled {
 		t.Fatalf("expected only top builder to run (dependency=%v top=%v)", dependencyCalled, topCalled)
 	}
 	if len(reports) != 1 || reports[0].Name != "top" {
 		t.Fatalf("unexpected top-N reports: %#v", reports)
 	}
-	if !slices.Equal(warnings, []string{"top-warning"}) {
+	if !slices.Equal(warnings, []string{topWarning}) {
 		t.Fatalf("unexpected top-N warnings: %#v", warnings)
+	}
+}
+
+func TestBuildRequestedDependenciesWithWeights(t *testing.T) {
+	normalizeCalled := false
+	dependencyCalled := false
+	topCalled := false
+
+	resolvedWeights := report.RemovalCandidateWeights{Usage: 0.7, Impact: 0.2, Confidence: 0.1}
+	req := language.Request{
+		TopN:                    3,
+		RemovalCandidateWeights: &report.RemovalCandidateWeights{Usage: 0.1, Impact: 0.8, Confidence: 0.1},
+	}
+	normalizeFn := func(value string) string {
+		normalizeCalled = true
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	dependencyFn := func(dependency string, scan int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		return report.DependencyReport{Name: dependency}, []string{fmt.Sprintf("dep-%d", scan)}
+	}
+	resolveWeightsFn := func(input *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
+		if input == nil || input.Usage != 0.1 || input.Impact != 0.8 {
+			t.Fatalf("unexpected input weights: %#v", input)
+		}
+		return resolvedWeights
+	}
+	topFn := func(topN int, scan int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
+		topCalled = true
+		if topN != 3 || scan != 5 {
+			t.Fatalf("unexpected top arguments: topN=%d scan=%d", topN, scan)
+		}
+		if weights != resolvedWeights {
+			t.Fatalf("unexpected resolved weights: %#v", weights)
+		}
+		return []report.DependencyReport{{Name: "top"}}, []string{topWarning}
+	}
+	reports, warnings := BuildRequestedDependenciesWithWeights(req, 5, normalizeFn, dependencyFn, resolveWeightsFn, topFn)
+
+	if !topCalled || dependencyCalled || normalizeCalled {
+		t.Fatalf("expected top path only (top=%v dependency=%v normalize=%v)", topCalled, dependencyCalled, normalizeCalled)
+	}
+	if len(reports) != 1 || reports[0].Name != "top" {
+		t.Fatalf("unexpected reports: %#v", reports)
+	}
+	if len(warnings) != 1 || warnings[0] != topWarning {
+		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 }
 
 func TestBuildRequestedDependenciesMissingTarget(t *testing.T) {
 	dependencyCalled := false
 	topCalled := false
-	reports, warnings := BuildRequestedDependencies(
-		language.Request{},
-		0,
-		strings.ToLower,
-		func(string, int) (report.DependencyReport, []string) {
-			dependencyCalled = true
-			return report.DependencyReport{}, nil
-		},
-		func(_, _ int) ([]report.DependencyReport, []string) {
-			topCalled = true
-			return nil, nil
-		},
-	)
+	dependencyBuilder := func(string, int) (report.DependencyReport, []string) {
+		dependencyCalled = true
+		return report.DependencyReport{}, nil
+	}
+	topBuilder := func(_, _ int) ([]report.DependencyReport, []string) {
+		topCalled = true
+		return nil, nil
+	}
+	reports, warnings := BuildRequestedDependencies(language.Request{}, 0, strings.ToLower, dependencyBuilder, topBuilder)
 	if dependencyCalled || topCalled {
 		t.Fatalf("expected no builders to run (dependency=%v top=%v)", dependencyCalled, topCalled)
 	}
-	if reports != nil {
+	if len(reports) != 0 {
 		t.Fatalf("expected nil reports when no target provided, got %#v", reports)
 	}
 	if !slices.Equal(warnings, []string{"no dependency or top-N target provided"}) {
@@ -340,7 +378,7 @@ func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	if !slices.Equal(keys, []string{"a", "z"}) {
 		t.Fatalf("unexpected sorted keys: %#v", keys)
 	}
-	if got := SortedKeys(nil); got != nil {
+	if got := SortedKeys(nil); len(got) != 0 {
 		t.Fatalf("expected nil sorted keys for nil map, got %#v", got)
 	}
 
@@ -402,7 +440,7 @@ func TestDetectionHelpers(t *testing.T) {
 	if detection.Confidence != 20 {
 		t.Fatalf("expected unmatched confidence to keep floorless value, got %d", detection.Confidence)
 	}
-	if detection.Roots != nil {
+	if len(detection.Roots) != 0 {
 		t.Fatalf("expected no fallback roots when unmatched, got %#v", detection.Roots)
 	}
 
@@ -452,10 +490,7 @@ func TestApplyRootSignals(t *testing.T) {
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
-	err := ApplyRootSignals(repo, []RootSignal{
-		{Name: "CMakeLists.txt", Confidence: 40},
-		{Name: "missing.file", Confidence: 99},
-	}, &detection, roots)
+	err := ApplyRootSignals(repo, []RootSignal{{Name: "CMakeLists.txt", Confidence: 40}, {Name: "missing.file", Confidence: 99}}, &detection, roots)
 	if err != nil {
 		t.Fatalf("apply root signals: %v", err)
 	}

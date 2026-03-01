@@ -29,47 +29,47 @@ type simpleAdapter struct {
 	err     error
 }
 
-func (a simpleAdapter) ID() string        { return a.id }
-func (a simpleAdapter) Aliases() []string { return nil }
-func (a simpleAdapter) Detect(context.Context, string) (bool, error) {
+func (a *simpleAdapter) ID() string        { return a.id }
+func (a *simpleAdapter) Aliases() []string { return nil }
+func (a *simpleAdapter) Detect(context.Context, string) (bool, error) {
 	return a.matched, a.err
 }
-func (a simpleAdapter) Analyse(context.Context, Request) (report.Report, error) {
+func (a *simpleAdapter) Analyse(context.Context, Request) (report.Report, error) {
 	return report.Report{}, nil
 }
 
-func (a testAdapter) ID() string {
+func (a *testAdapter) ID() string {
 	return a.id
 }
 
-func (a testAdapter) Aliases() []string {
+func (a *testAdapter) Aliases() []string {
 	return a.aliases
 }
 
-func (a testAdapter) Detect(ctx context.Context, repoPath string) (bool, error) {
+func (a *testAdapter) Detect(ctx context.Context, repoPath string) (bool, error) {
 	if a.detectErr != nil {
 		return false, a.detectErr
 	}
 	return a.detection.Matched, nil
 }
 
-func (a testAdapter) DetectWithConfidence(ctx context.Context, repoPath string) (Detection, error) {
+func (a *testAdapter) DetectWithConfidence(ctx context.Context, repoPath string) (Detection, error) {
 	if a.detectErr != nil {
 		return Detection{}, a.detectErr
 	}
 	return a.detection, nil
 }
 
-func (a testAdapter) Analyse(ctx context.Context, req Request) (report.Report, error) {
+func (a *testAdapter) Analyse(ctx context.Context, req Request) (report.Report, error) {
 	return report.Report{}, nil
 }
 
 func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
 		t.Fatalf(registerJSErrFmt, err)
 	}
-	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 85}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 85}}); err != nil {
 		t.Fatalf(registerPythonErrFmt, err)
 	}
 
@@ -87,10 +87,10 @@ func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
 
 func TestResolveAllReturnsMatches(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
 		t.Fatalf(registerJSErrFmt, err)
 	}
-	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: false, Confidence: 0}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "python", detection: Detection{Matched: false, Confidence: 0}}); err != nil {
 		t.Fatalf(registerPythonErrFmt, err)
 	}
 
@@ -108,10 +108,10 @@ func TestResolveAllReturnsMatches(t *testing.T) {
 
 func TestResolveAutoTieReturnsError(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 80}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 80}}); err != nil {
 		t.Fatalf(registerJSErrFmt, err)
 	}
-	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 80}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 80}}); err != nil {
 		t.Fatalf(registerPythonErrFmt, err)
 	}
 
@@ -129,13 +129,13 @@ func TestRegisterValidationAndIDs(t *testing.T) {
 	if registry.Register(nil) == nil {
 		t.Fatalf("expected nil adapter error")
 	}
-	if registry.Register(testAdapter{id: " ", detection: Detection{Matched: true}}) == nil {
+	if registry.Register(&testAdapter{id: " ", detection: Detection{Matched: true}}) == nil {
 		t.Fatalf("expected empty adapter id error")
 	}
-	if err := registry.Register(testAdapter{id: "js-ts", aliases: []string{"js"}, detection: Detection{Matched: true}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "js-ts", aliases: []string{"js"}, detection: Detection{Matched: true}}); err != nil {
 		t.Fatalf(registerJSErrFmt, err)
 	}
-	if registry.Register(testAdapter{id: "other", aliases: []string{"js"}, detection: Detection{Matched: true}}) == nil {
+	if registry.Register(&testAdapter{id: "other", aliases: []string{"js"}, detection: Detection{Matched: true}}) == nil {
 		t.Fatalf("expected duplicate alias registration error")
 	}
 
@@ -150,18 +150,18 @@ func TestSelectAndResolveErrors(t *testing.T) {
 	if _, err := (*Registry)(nil).Resolve(context.Background(), ".", Auto); err == nil {
 		t.Fatalf("expected nil registry resolve error")
 	}
-	if _, err := registry.Resolve(context.Background(), ".", Auto); !errors.Is(err, ErrNoLanguageMatch) {
-		t.Fatalf("expected ErrNoLanguageMatch, got %v", err)
+	if _, err := registry.Resolve(context.Background(), ".", Auto); !errors.Is(err, ErrNoMatch) {
+		t.Fatalf("expected ErrNoMatch, got %v", err)
 	}
-	if _, err := registry.Select(context.Background(), ".", Auto); !errors.Is(err, ErrNoLanguageMatch) {
-		t.Fatalf("expected select ErrNoLanguageMatch, got %v", err)
+	if _, err := registry.Select(context.Background(), ".", Auto); !errors.Is(err, ErrNoMatch) {
+		t.Fatalf("expected select ErrNoMatch, got %v", err)
 	}
 
-	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 10}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 10}}); err != nil {
 		t.Fatalf(registerJSErrFmt, err)
 	}
-	if _, err := registry.Resolve(context.Background(), ".", "unknown"); !errors.Is(err, ErrUnknownLanguage) {
-		t.Fatalf("expected ErrUnknownLanguage, got %v", err)
+	if _, err := registry.Resolve(context.Background(), ".", "unknown"); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("expected ErrUnknown, got %v", err)
 	}
 	adapter, err := registry.Select(context.Background(), ".", "js-ts")
 	if err != nil {
@@ -175,7 +175,7 @@ func TestSelectAndResolveErrors(t *testing.T) {
 func TestResolveAdapterErrorBubbles(t *testing.T) {
 	registry := NewRegistry()
 	expected := errors.New("detect failed")
-	if err := registry.Register(testAdapter{id: "broken", detection: Detection{Matched: true}, detectErr: expected}); err != nil {
+	if err := registry.Register(&testAdapter{id: "broken", detection: Detection{Matched: true}, detectErr: expected}); err != nil {
 		t.Fatalf("register broken: %v", err)
 	}
 	if _, err := registry.Resolve(context.Background(), ".", "broken"); !errors.Is(err, expected) {
@@ -197,35 +197,35 @@ func TestNormalizeDetectionAndClamp(t *testing.T) {
 }
 
 func TestDetectAdapterFallbackPath(t *testing.T) {
-	detection, err := detectAdapter(context.Background(), simpleAdapter{id: "simple", matched: true}, ".")
+	detection, err := detectAdapter(context.Background(), &simpleAdapter{id: "simple", matched: true}, ".")
 	if err != nil {
 		t.Fatalf("detect adapter fallback: %v", err)
 	}
 	if !detection.Matched || detection.Confidence != 60 {
 		t.Fatalf("unexpected fallback detection: %#v", detection)
 	}
-	if _, err := detectAdapter(context.Background(), simpleAdapter{id: "simple", err: errors.New("boom")}, "."); err == nil {
+	if _, err := detectAdapter(context.Background(), &simpleAdapter{id: "simple", err: errors.New("boom")}, "."); err == nil {
 		t.Fatalf("expected detect error from fallback adapter")
 	}
 }
 
 func TestResolveAllNoMatchAndIDsNilRegistry(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{id: "python", detection: Detection{Matched: false}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "python", detection: Detection{Matched: false}}); err != nil {
 		t.Fatalf(registerAdapterErrFmt, err)
 	}
-	if _, err := registry.Resolve(context.Background(), ".", All); !errors.Is(err, ErrNoLanguageMatch) {
-		t.Fatalf("expected ErrNoLanguageMatch for all-mode no match, got %v", err)
+	if _, err := registry.Resolve(context.Background(), ".", All); !errors.Is(err, ErrNoMatch) {
+		t.Fatalf("expected ErrNoMatch for all-mode no match, got %v", err)
 	}
 
-	if ids := (*Registry)(nil).IDs(); ids != nil {
+	if ids := (*Registry)(nil).IDs(); len(ids) != 0 {
 		t.Fatalf("expected nil IDs for nil registry, got %#v", ids)
 	}
 }
 
 func TestResolveExplicitUnmatchedDetectionFallsBackToForcedMatch(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{
+	if err := registry.Register(&testAdapter{
 		id:        "python",
 		detection: Detection{Matched: false, Confidence: 0, Roots: nil},
 	}); err != nil {
@@ -254,7 +254,7 @@ func TestResolveAllAndAutoDetectErrorBranches(t *testing.T) {
 	expected := errors.New("detect failed")
 
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{id: "broken", detection: Detection{Matched: true}, detectErr: expected}); err != nil {
+	if err := registry.Register(&testAdapter{id: "broken", detection: Detection{Matched: true}, detectErr: expected}); err != nil {
 		t.Fatalf("register broken adapter: %v", err)
 	}
 	if _, err := registry.Resolve(context.Background(), ".", All); !errors.Is(err, expected) {
@@ -262,10 +262,10 @@ func TestResolveAllAndAutoDetectErrorBranches(t *testing.T) {
 	}
 
 	registry = NewRegistry()
-	if err := registry.Register(testAdapter{id: "ok", detection: Detection{Matched: true, Confidence: 90}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "ok", detection: Detection{Matched: true, Confidence: 90}}); err != nil {
 		t.Fatalf("register ok adapter: %v", err)
 	}
-	if err := registry.Register(testAdapter{id: "broken-auto", detection: Detection{Matched: true, Confidence: 80}, detectErr: expected}); err != nil {
+	if err := registry.Register(&testAdapter{id: "broken-auto", detection: Detection{Matched: true, Confidence: 80}, detectErr: expected}); err != nil {
 		t.Fatalf("register broken adapter: %v", err)
 	}
 	if _, err := registry.Resolve(context.Background(), ".", Auto); !errors.Is(err, expected) {
@@ -275,7 +275,7 @@ func TestResolveAllAndAutoDetectErrorBranches(t *testing.T) {
 
 func TestDetectMatchesAndFallbackDetectorBranches(t *testing.T) {
 	registry := NewRegistry()
-	adapter := testAdapter{
+	adapter := &testAdapter{
 		id:      "js-ts",
 		aliases: []string{"js"},
 		detection: Detection{
@@ -296,7 +296,7 @@ func TestDetectMatchesAndFallbackDetectorBranches(t *testing.T) {
 		t.Fatalf("expected de-duped matches, got %#v", matches)
 	}
 
-	detection, err := detectAdapter(context.Background(), simpleAdapter{id: "simple", matched: false}, ".")
+	detection, err := detectAdapter(context.Background(), &simpleAdapter{id: "simple", matched: false}, ".")
 	if err != nil {
 		t.Fatalf("detect adapter fallback unmatched: %v", err)
 	}
@@ -310,7 +310,11 @@ func TestNormalizeDetectionFallbackToRepoPathOnAbsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
+		}
+	})
 
 	deadDir := t.TempDir()
 	if err := os.Chdir(deadDir); err != nil {
@@ -328,7 +332,7 @@ func TestNormalizeDetectionFallbackToRepoPathOnAbsError(t *testing.T) {
 
 func TestResolveAutoSingleMatchBranch(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 60}}); err != nil {
+	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 60}}); err != nil {
 		t.Fatalf(registerAdapterErrFmt, err)
 	}
 	candidates, err := registry.resolveAuto(context.Background(), ".")

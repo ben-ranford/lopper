@@ -13,6 +13,7 @@ type Request struct {
 	RepoPath                          string
 	Dependency                        string
 	TopN                              int
+	SuggestOnly                       bool
 	RuntimeProfile                    string
 	MinUsagePercentForRecommendations *int
 	RemovalCandidateWeights           *report.RemovalCandidateWeights
@@ -31,7 +32,8 @@ type Adapter interface {
 	Analyse(ctx context.Context, req Request) (report.Report, error)
 }
 
-type ConfidenceDetector interface {
+type ConfidenceProvider interface {
+	Detect(ctx context.Context, repoPath string) (bool, error)
 	DetectWithConfidence(ctx context.Context, repoPath string) (Detection, error)
 }
 

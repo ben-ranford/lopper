@@ -32,7 +32,7 @@ func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^3.0"}}`, helpersMonologDependency))
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, helpersMonologDependency))
 	matched, err := adapter.Detect(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect: %v", err)
@@ -62,7 +62,7 @@ func TestReadComposerManifestBranches(t *testing.T) {
 		t.Fatalf("expected missing manifest branch, got ok=%v err=%v", ok, err)
 	}
 
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"name":"acme/app","require":{"%s":"^3.0"}}`, helpersMonologDependency))
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"name":"acme/app","require":{%q:"^3.0"}}`, helpersMonologDependency))
 	manifest, ok, err = readComposerManifest(repo)
 	if err != nil || !ok {
 		t.Fatalf("expected manifest parse success, ok=%v err=%v", ok, err)
@@ -90,14 +90,16 @@ func TestLoadComposerLockMappingsBranches(t *testing.T) {
 		t.Fatalf("expected lock parse error, got %v", err)
 	}
 
-	writeFile(t, filepath.Join(repo, helpersComposerLock), fmt.Sprintf(`{
+	lockTemplate := `{
   "packages": [
-    {"name":"%s","autoload":{"psr-4":{"Monolog\\":"src/Monolog"}}}
+    {"name":%q,"autoload":{"psr-4":{"Monolog\\":"src/Monolog"}}}
   ],
   "packages-dev": [
     {"name":"phpunit/phpunit","autoload":{"psr-4":{"PHPUnit\\Framework\\":"src"}}}
   ]
-}`, helpersMonologDependency))
+}`
+	lockContent := fmt.Sprintf(lockTemplate, helpersMonologDependency)
+	writeFile(t, filepath.Join(repo, helpersComposerLock), lockContent)
 	data = composerData{NamespaceToDep: map[string]string{}}
 	if err := loadComposerLockMappings(repo, &data); err != nil {
 		t.Fatalf("load mappings: %v", err)
@@ -112,12 +114,14 @@ func TestLoadComposerLockMappingsBranches(t *testing.T) {
 
 func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{
-  "require":{"php":"^8.2","ext-json":"*","%s":"^1.0"},
+	composerTemplate := `{
+  "require":{"php":"^8.2","ext-json":"*",%q:"^1.0"},
   "require-dev":{"vendor/dev-tool":"^1.0"},
   "autoload":{"psr-4":{"App\\":"src/"}},
   "autoload-dev":{"psr-4":{"Tests\\":"tests/"}}
-}`, helpersVendorLibDependency))
+}`
+	composerContent := fmt.Sprintf(composerTemplate, helpersVendorLibDependency)
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), composerContent)
 	data, warnings, err := loadComposerData(repo)
 	if err != nil {
 		t.Fatalf("load data: %v", err)
@@ -174,7 +178,7 @@ func TestNamespaceAndUseHelpers(t *testing.T) {
 
 func TestReadPHPFileAndScanNoPHP(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	_, rel, err := readPHPFile(repo, filepath.Join(repo, helpersComposerJSON))
 	if err != nil {
 		t.Fatalf("readPHPFile: %v", err)
@@ -222,7 +226,7 @@ func TestDetectWithConfidenceEmptyRepoPathAndFileError(t *testing.T) {
 
 	repo := t.TempDir()
 	repoFile := filepath.Join(repo, helpersComposerJSON)
-	writeFile(t, repoFile, fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, repoFile, fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	if _, err := adapter.DetectWithConfidence(context.Background(), repoFile); err == nil {
 		t.Fatalf("expected walk error when repoPath is a file")
 	}
@@ -258,7 +262,7 @@ func TestHasComposerManifest(t *testing.T) {
 
 func TestScanRepoContextCanceled(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	writeFile(t, filepath.Join(repo, "src", "x.php"), helpersPHPHeader)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -400,14 +404,14 @@ func TestAnalyseErrorBranches(t *testing.T) {
 	}
 
 	repoBadLock := t.TempDir()
-	writeFile(t, filepath.Join(repoBadLock, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repoBadLock, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	writeFile(t, filepath.Join(repoBadLock, helpersComposerLock), `{bad-json`)
 	if _, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repoBadLock, TopN: 1}); err == nil {
 		t.Fatalf("expected parse error from composer.lock")
 	}
 
 	repoCanceled := t.TempDir()
-	writeFile(t, filepath.Join(repoCanceled, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repoCanceled, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	writeFile(t, filepath.Join(repoCanceled, "src", "x.php"), helpersPHPHeader)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -418,7 +422,7 @@ func TestAnalyseErrorBranches(t *testing.T) {
 
 func TestDetectWithConfidenceCanceledContext(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	writeFile(t, filepath.Join(repo, "src", "x.php"), helpersPHPHeader)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -431,7 +435,7 @@ func TestParseUseStatementAndPartEdgeBranches(t *testing.T) {
 	resolver := dependencyResolver{declared: map[string]struct{}{}, namespaceToDep: map[string]string{}}
 
 	imports, grouped, unresolved := parseUseStatement("", "x.php", 1, resolver)
-	if imports != nil || grouped != nil || unresolved != 0 {
+	if len(imports) != 0 || len(grouped) != 0 || unresolved != 0 {
 		t.Fatalf("expected empty statement branch, got imports=%#v grouped=%#v unresolved=%d", imports, grouped, unresolved)
 	}
 
@@ -477,8 +481,7 @@ func TestReadComposerManifestAndLockMappingsErrorFromFileRoot(t *testing.T) {
 	if _, _, err := readComposerManifest(root); err == nil {
 		t.Fatalf("expected readComposerManifest non-not-exist error for file root")
 	}
-	data := composerData{NamespaceToDep: map[string]string{}}
-	if err := loadComposerLockMappings(root, &data); err == nil {
+	if loadComposerLockMappings(root, &composerData{NamespaceToDep: map[string]string{}}) == nil {
 		t.Fatalf("expected loadComposerLockMappings non-not-exist error for file root")
 	}
 }
@@ -583,7 +586,7 @@ func TestAdditionalBranchCoverageRecommendationsAndErrors(t *testing.T) {
 
 func TestScanRepoMaxFilesAndSkipDirBranches(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{"%s":"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	writeFile(t, filepath.Join(repo, "vendor", "x.php"), helpersPHPHeader)
 	for i := 0; i < maxScanFiles+1; i++ {
 		writeFile(t, filepath.Join(repo, "src", fmt.Sprintf("f-%04d.txt", i)), "x")
@@ -603,12 +606,14 @@ func TestScanRepoMaxFilesAndSkipDirBranches(t *testing.T) {
 
 func TestLoadComposerLockMappingsSkipsInvalidEntries(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, helpersComposerLock), fmt.Sprintf(`{
+	lockTemplate := `{
   "packages": [
     {"name":"", "autoload":{"psr-4":{"\\\\":"src"}}},
-	    {"name":"%s", "autoload":{"psr-4":{"\\\\":"src","Vendor\\\\Pkg\\\\":"src"}}}
+	    {"name":%q, "autoload":{"psr-4":{"\\\\":"src","Vendor\\\\Pkg\\\\":"src"}}}
   ]
-}`, helpersVendorPkgDependency))
+}`
+	lockContent := fmt.Sprintf(lockTemplate, helpersVendorPkgDependency)
+	writeFile(t, filepath.Join(repo, helpersComposerLock), lockContent)
 	data := composerData{NamespaceToDep: map[string]string{}}
 	if err := loadComposerLockMappings(repo, &data); err != nil {
 		t.Fatalf("loadComposerLockMappings: %v", err)

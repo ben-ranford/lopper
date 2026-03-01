@@ -126,3 +126,66 @@ func TestClampBounds(t *testing.T) {
 		t.Fatalf("expected clamp upper bound, got %f", got)
 	}
 }
+
+func TestAnnotateFindingConfidence(t *testing.T) {
+	deps := []DependencyReport{
+		{
+			Name:          "lodash",
+			UnusedExports: []SymbolRef{{Name: "chunk", Module: "lodash"}},
+			UnusedImports: []ImportUse{{Name: "chunk", Module: "lodash"}},
+			RiskCues:      []RiskCue{{Code: "dynamic-require", Severity: "high", Message: "dynamic usage"}},
+			Recommendations: []Recommendation{
+				{Code: "remove-unused-dependency", Priority: "high", Message: "remove"},
+			},
+		},
+	}
+
+	AnnotateFindingConfidence(deps)
+
+	dep := deps[0]
+	if dep.UnusedExports[0].ConfidenceScore == 0 || len(dep.UnusedExports[0].ConfidenceReasonCodes) == 0 {
+		t.Fatalf("expected confidence metadata on unused exports, got %#v", dep.UnusedExports[0])
+	}
+	if dep.UnusedImports[0].ConfidenceScore == 0 || len(dep.UnusedImports[0].ConfidenceReasonCodes) == 0 {
+		t.Fatalf("expected confidence metadata on unused imports, got %#v", dep.UnusedImports[0])
+	}
+	if dep.RiskCues[0].ConfidenceScore == 0 || len(dep.RiskCues[0].ConfidenceReasonCodes) == 0 {
+		t.Fatalf("expected confidence metadata on risk cues, got %#v", dep.RiskCues[0])
+	}
+	if dep.Recommendations[0].ConfidenceScore == 0 || len(dep.Recommendations[0].ConfidenceReasonCodes) == 0 {
+		t.Fatalf("expected confidence metadata on recommendations, got %#v", dep.Recommendations[0])
+	}
+}
+
+func TestFilterFindingsByConfidence(t *testing.T) {
+	const packageName = "left-pad"
+
+	deps := []DependencyReport{
+		{
+			Name:          packageName,
+			UnusedExports: []SymbolRef{{Name: "pad", Module: packageName}},
+			UnusedImports: []ImportUse{{Name: "pad", Module: packageName}},
+			RiskCues:      []RiskCue{{Code: "runtime-only", Severity: "low", Message: "runtime only"}},
+			Recommendations: []Recommendation{
+				{Code: "remove-unused-dependency", Priority: "high", Message: "remove"},
+			},
+		},
+	}
+
+	AnnotateFindingConfidence(deps)
+	FilterFindingsByConfidence(deps, 95)
+
+	dep := deps[0]
+	if len(dep.UnusedExports) != 0 {
+		t.Fatalf("expected unused exports to be filtered, got %#v", dep.UnusedExports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be filtered, got %#v", dep.UnusedImports)
+	}
+	if len(dep.RiskCues) != 0 {
+		t.Fatalf("expected risk cues to be filtered, got %#v", dep.RiskCues)
+	}
+	if len(dep.Recommendations) != 0 {
+		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
+	}
+}

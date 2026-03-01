@@ -100,22 +100,12 @@ func assertBuildFileEntryBranches(t *testing.T, repo string) {
 		t.Fatalf("expected file entries")
 	}
 	seen := map[string]struct{}{}
-	collected := []dependencyDescriptor{}
+	var collected []dependencyDescriptor
+	descriptorParser := func(string) []dependencyDescriptor {
+		return []dependencyDescriptor{{Name: "junit", Group: "org.junit", Artifact: "junit"}, {Name: "junit", Group: "org.junit", Artifact: "junit"}}
+	}
 	for _, entry := range entries {
-		err := parseBuildFileEntry(
-			repo,
-			filepath.Join(repo, entry.Name()),
-			entry,
-			[]string{pomXMLName},
-			func(string) []dependencyDescriptor {
-				return []dependencyDescriptor{
-					{Name: "junit", Group: "org.junit", Artifact: "junit"},
-					{Name: "junit", Group: "org.junit", Artifact: "junit"},
-				}
-			},
-			seen,
-			&collected,
-		)
+		err := parseBuildFileEntry(repo, filepath.Join(repo, entry.Name()), entry, []string{pomXMLName}, descriptorParser, seen, &collected)
 		if err != nil {
 			t.Fatalf("parseBuildFileEntry: %v", err)
 		}
@@ -123,15 +113,7 @@ func assertBuildFileEntryBranches(t *testing.T, repo string) {
 	if len(collected) != 1 {
 		t.Fatalf("expected descriptor dedupe in parseBuildFileEntry, got %#v", collected)
 	}
-	err = parseBuildFileEntry(
-		repo,
-		filepath.Join(repo, "missing-pom.xml"),
-		entries[0],
-		[]string{pomXMLName},
-		func(string) []dependencyDescriptor { return nil },
-		map[string]struct{}{},
-		&collected,
-	)
+	err = parseBuildFileEntry(repo, filepath.Join(repo, "missing-pom.xml"), entries[0], []string{pomXMLName}, func(string) []dependencyDescriptor { return nil }, map[string]struct{}{}, &collected)
 	if err != nil {
 		t.Fatalf("expected nil error when parseBuildFileEntry read fails, got %v", err)
 	}
@@ -151,16 +133,8 @@ func assertGradleDirSkipBranch(t *testing.T, repo string) {
 		if !entry.IsDir() || entry.Name() != gradleDirName {
 			continue
 		}
-		collected := []dependencyDescriptor{}
-		err := parseBuildFileEntry(
-			repo,
-			filepath.Join(repo, gradleDirName),
-			entry,
-			[]string{pomXMLName},
-			func(string) []dependencyDescriptor { return nil },
-			map[string]struct{}{},
-			&collected,
-		)
+		var collected []dependencyDescriptor
+		err := parseBuildFileEntry(repo, filepath.Join(repo, gradleDirName), entry, []string{pomXMLName}, func(string) []dependencyDescriptor { return nil }, map[string]struct{}{}, &collected)
 		if !errors.Is(err, filepath.SkipDir) {
 			t.Fatalf("expected filepath.SkipDir for %s dir, got %v", gradleDirName, err)
 		}

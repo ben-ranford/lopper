@@ -7,10 +7,25 @@ It compares imported dependencies to actual usage and reports waste, risk cues, 
 
 ## Install
 
-Install from GitHub Releases:
+macOS/Linux (Homebrew tap, stable):
 
 ```bash
-# Open latest release page and download the asset for your platform.
+brew tap ben-ranford/tap
+brew install lopper
+```
+
+macOS/Linux (Homebrew tap, rolling):
+
+```bash
+brew install ben-ranford/tap/lopper-rolling
+```
+
+`lopper-rolling` tracks `main` and is not a stable semver release.
+
+Windows (GitHub Releases):
+
+```bash
+# Open latest release page and download the Windows asset for your platform.
 gh release view --repo ben-ranford/lopper --web
 ```
 
@@ -40,6 +55,12 @@ Emit JSON:
 lopper analyse --top 20 --repo . --language all --format json
 ```
 
+Emit SARIF for code scanning:
+
+```bash
+lopper analyse --top 20 --repo . --language all --format sarif > lopper.sarif
+```
+
 Launch the interactive TUI:
 
 ```bash
@@ -60,6 +81,49 @@ lopper analyse --top 20 \
   --score-weight-confidence 0.20
 ```
 
+Save an immutable baseline snapshot keyed by commit:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --format json \
+  --baseline-store .artifacts/lopper-baselines \
+  --save-baseline
+```
+
+Save using a human label key:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --format json \
+  --baseline-store .artifacts/lopper-baselines \
+  --save-baseline \
+  --baseline-label release-candidate
+```
+
+Compare against a stored baseline key and gate CI:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --format json \
+  --baseline-store .artifacts/lopper-baselines \
+  --baseline-key commit:abc123 \
+  --threshold-fail-on-increase 2
+```
+
+## Terminal demos
+
+| Demo | What it demonstrates | GIF preview |
+| --- | --- | --- |
+| Quick start ranking | End-to-end `--top` workflow and waste-ranked dependency table for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
+| Single dependency deep dive | Focused analysis of one dependency with detailed usage signal and recommendation context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
+| Baseline gate in CI flow | Baseline comparison and increase gating to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
+
 ## Languages
 
 - Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`
@@ -72,6 +136,10 @@ lopper analyse --top 20 \
 Repo-level config example (`.lopper.yml`):
 
 ```yaml
+policy:
+  packs:
+    - ./policies/org-defaults.yml
+    - https://example.com/lopper/policy.yml#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
@@ -97,7 +165,7 @@ Threshold ranges:
 - `min_usage_percent_for_recommendations` must be between `0` and `100`
 - removal candidate weights must be `>= 0` and at least one must be greater than `0`
 
-Precedence is `CLI > config > defaults`.
+Precedence is `CLI > repo config > imported policy packs > defaults`.
 
 Tuning guide with strict/balanced/noise-reduction profiles:
 
@@ -141,18 +209,12 @@ If `--runtime-trace` points to a missing file, analysis continues with static re
 
 ## Development
 
-```bash
-make setup
-make fmt
-make test
-make lint
-make cov
-make build
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and commands.
 
 ## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Runtime trace annotations: `scripts/runtime/`
 - Adapter and architecture extensibility: `docs/extensibility.md`

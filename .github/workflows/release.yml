@@ -111,7 +111,7 @@ jobs:
             PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
       - name: Upload Linux/Windows artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-windows
           path: |
@@ -150,7 +150,7 @@ jobs:
             PLATFORMS="darwin/${host_goarch}"
 
       - name: Upload Darwin artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-darwin
           path: |
@@ -211,13 +211,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout (for changelog generation)
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - name: Download release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           merge-multiple: true
@@ -227,7 +222,6 @@ jobs:
         run: |
           set -euo pipefail
           current_tag="${{ needs.prepare.outputs.tag }}"
-          previous_tag="${{ needs.prepare.outputs.previous_tag }}"
           ghcr_owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           ghcr_ref="ghcr.io/${ghcr_owner}/lopper:${current_tag}"
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
@@ -242,18 +236,6 @@ jobs:
             echo
             echo "- Tagged image: \`${ghcr_ref}\`"
             echo "- Package: [GHCR lopper package](${ghcr_package_url})"
-            echo "- Pull command: \`docker pull ${ghcr_ref}\`"
-            echo
-            if [ -n "${previous_tag}" ]; then
-              echo "Changes since \`${previous_tag}\`:"
-              echo
-              git log --reverse --pretty=format:'- %h %s (%an)' "${previous_tag}..${GITHUB_SHA}"
-            else
-              echo "All commits up to \`${current_tag}\`:"
-              echo
-              git log --reverse --pretty=format:'- %h %s (%an)' "${GITHUB_SHA}"
-            fi
-            echo
             echo
             echo "---"
             echo
@@ -293,7 +275,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@04a6d8cfe9d251e2afb78c5bdc6274ec9642aea2
+        uses: Homebrew/actions/setup-homebrew@ac2ec1ccabf33716b2fe5f4d467e250296951780
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}

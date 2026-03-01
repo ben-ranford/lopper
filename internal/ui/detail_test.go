@@ -11,10 +11,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-const showDetailErrFmt = "show detail: %v"
+const (
+	showDetailErrFmt = "show detail: %v"
+	indexJSFile      = "index.js"
+	depMapModule     = "dep/map"
+)
 
 func TestDetailShowsRiskCues(t *testing.T) {
-	analyzer := stubAnalyzer{
+	analyzer := &stubAnalyzer{
 		report: report.Report{
 			Dependencies: []report.DependencyReport{
 				{
@@ -37,6 +41,15 @@ func TestDetailShowsRiskCues(t *testing.T) {
 					},
 					Recommendations: []report.Recommendation{
 						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
+					},
+					Codemod: &report.CodemodReport{
+						Mode: "suggest-only",
+						Suggestions: []report.CodemodSuggestion{
+							{File: indexJSFile, Line: 1, FromModule: "risky", ToModule: "risky/map"},
+						},
+						Skips: []report.CodemodSkip{
+							{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "namespace imports are not safe to rewrite automatically"},
+						},
 					},
 				},
 			},
@@ -70,6 +83,12 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 	if !strings.Contains(output, "[MEDIUM] prefer-subpath-imports") {
 		t.Fatalf("expected recommendation entry, got: %s", output)
+	}
+	if !strings.Contains(output, "Codemod preview") || !strings.Contains(output, "mode: suggest-only") {
+		t.Fatalf("expected codemod section, got: %s", output)
+	}
+	if !strings.Contains(output, "[namespace-import]") {
+		t.Fatalf("expected codemod skip reason code in output, got: %s", output)
 	}
 }
 
@@ -107,11 +126,11 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 
 func TestDetailHelpersAndErrors(t *testing.T) {
 	var out bytes.Buffer
-	detail := NewDetail(&out, stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "")
+	detail := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "")
 	if detail.Show(context.Background(), "") == nil {
 		t.Fatalf("expected error when dependency is empty")
 	}
-	if !strings.Contains(NewDetail(&out, stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "").Language, "auto") {
+	if !strings.Contains(NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "").Language, "auto") {
 		t.Fatalf("expected default language to be auto")
 	}
 
@@ -120,8 +139,8 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	printImportList(&out, "Used imports", []report.ImportUse{{
 		Name:       "map",
 		Module:     "lodash",
-		Locations:  []report.Location{{File: "index.js", Line: 2}},
-		Provenance: []string{"index.js -> barrel.js -> lodash#map"},
+		Locations:  []report.Location{{File: indexJSFile, Line: 2}},
+		Provenance: []string{indexJSFile + " -> barrel.js -> lodash#map"},
 	}})
 	printExportsList(&out, "Unused exports", nil)
 	printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}})
@@ -134,7 +153,7 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(out.String(), "(unknown)") {
 		t.Fatalf("expected unknown module label for empty module exports")
 	}
-	if !strings.Contains(out.String(), "provenance: index.js -> barrel.js -> lodash#map") {
+	if !strings.Contains(out.String(), "provenance: "+indexJSFile+" -> barrel.js -> lodash#map") {
 		t.Fatalf("expected provenance detail in import list output")
 	}
 
@@ -153,13 +172,27 @@ type failingDetailAnalyzer struct {
 	err error
 }
 
-func (f failingDetailAnalyzer) Analyse(context.Context, analysis.Request) (report.Report, error) {
+func (f *failingDetailAnalyzer) Analyse(context.Context, analysis.Request) (report.Report, error) {
 	return report.Report{}, f.err
+}
+
+type failAfterWriter struct {
+	failAt int
+	writes int
+	err    error
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.writes == w.failAt {
+		return 0, w.err
+	}
+	w.writes++
+	return len(p), nil
 }
 
 func TestDetailShowNoDataAndAnalyzerError(t *testing.T) {
 	var out bytes.Buffer
-	noData := NewDetail(&out, stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "js-ts")
+	noData := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "js-ts")
 	if err := noData.Show(context.Background(), "missing"); err != nil {
 		t.Fatalf("show detail no data: %v", err)
 	}
@@ -168,7 +201,7 @@ func TestDetailShowNoDataAndAnalyzerError(t *testing.T) {
 	}
 
 	expected := errors.New("analyse failed")
-	errDetail := NewDetail(&out, failingDetailAnalyzer{err: expected}, report.NewFormatter(), ".", "js-ts")
+	errDetail := NewDetail(&out, &failingDetailAnalyzer{err: expected}, report.NewFormatter(), ".", "js-ts")
 	if err := errDetail.Show(context.Background(), "dep"); !errors.Is(err, expected) {
 		t.Fatalf("expected analyzer error to propagate, got %v", err)
 	}
@@ -208,7 +241,7 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 }
 
 func TestDetailShowWarningsAndCommandBranches(t *testing.T) {
-	analyzer := stubAnalyzer{
+	analyzer := &stubAnalyzer{
 		report: report.Report{
 			Warnings: []string{"warn-1"},
 			Dependencies: []report.DependencyReport{
@@ -255,5 +288,83 @@ func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in removal candidate output, got %q", want, text)
 		}
+	}
+}
+
+func TestDetailWriteErrorPropagation(t *testing.T) {
+	writeErr := errors.New("write failed")
+
+	noDataWriter := &failAfterWriter{failAt: 0, err: writeErr}
+	noDataDetail := NewDetail(noDataWriter, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "js-ts")
+	if err := noDataDetail.Show(context.Background(), "missing"); !errors.Is(err, writeErr) {
+		t.Fatalf("expected no-data write failure, got %v", err)
+	}
+
+	reportData := report.Report{
+		Warnings: []string{"warn-1"},
+		Dependencies: []report.DependencyReport{
+			{
+				Name:              "dep",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 3,
+				UsedPercent:       33.3,
+				RemovalCandidate: &report.RemovalCandidate{
+					Score:      80,
+					Usage:      70,
+					Impact:     40,
+					Confidence: 90,
+					Rationale:  []string{"because"},
+				},
+				RuntimeUsage: &report.RuntimeUsage{
+					LoadCount:   2,
+					Correlation: report.RuntimeCorrelationRuntimeOnly,
+					RuntimeOnly: true,
+					Modules:     []report.RuntimeModuleUsage{{Module: depMapModule, Count: 2}},
+					TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "map", Module: depMapModule, Count: 2}},
+				},
+				RiskCues: []report.RiskCue{
+					{Code: "dynamic-loader", Severity: "high", Message: "dynamic require"},
+				},
+				Recommendations: []report.Recommendation{
+					{Code: "prefer-subpath-imports", Priority: "medium", Message: "prefer map", Rationale: "smaller bundle"},
+				},
+				Codemod: &report.CodemodReport{
+					Mode: "suggest-only",
+					Suggestions: []report.CodemodSuggestion{
+						{File: indexJSFile, Line: 1, FromModule: "dep", ToModule: depMapModule},
+					},
+					Skips: []report.CodemodSkip{
+						{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "unsafe"},
+					},
+				},
+				UsedImports: []report.ImportUse{
+					{Name: "map", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 1}}, Provenance: []string{indexJSFile + " -> dep#map"}},
+				},
+				UnusedImports: []report.ImportUse{
+					{Name: "filter", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 2}}},
+				},
+				UnusedExports: []report.SymbolRef{
+					{Name: "unused", Module: "dep"},
+				},
+			},
+		},
+	}
+
+	sawSuccess := false
+	for failAt := 0; failAt < 128; failAt++ {
+		writer := &failAfterWriter{failAt: failAt, err: writeErr}
+		detail := NewDetail(writer, &stubAnalyzer{report: reportData}, report.NewFormatter(), ".", "js-ts")
+		err := detail.Show(context.Background(), "dep")
+		if err == nil {
+			sawSuccess = true
+			break
+		}
+		if !errors.Is(err, writeErr) {
+			t.Fatalf("expected write error at failAt=%d, got %v", failAt, err)
+		}
+	}
+	if !sawSuccess {
+		t.Fatalf("expected one successful render when failAt exceeds write count")
 	}
 }

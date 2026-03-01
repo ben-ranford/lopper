@@ -130,20 +130,10 @@ func TestReExportResolverResolveImportAttributionSkips(t *testing.T) {
 		warningSet:   map[string]struct{}{},
 	}
 
-	if _, ok := resolver.resolveImportAttribution(testMainPath, ImportBinding{
-		Module:     "lodash",
-		ExportName: "map",
-		LocalName:  "map",
-		Kind:       ImportNamed,
-	}, "lodash"); ok {
+	if _, ok := resolver.resolveImportAttribution(testMainPath, ImportBinding{Module: "lodash", ExportName: "map", LocalName: "map", Kind: ImportNamed}, "lodash"); ok {
 		t.Fatalf("expected non-local import to skip resolver")
 	}
-	if _, ok := resolver.resolveImportAttribution(testMainPath, ImportBinding{
-		Module:     "./barrel",
-		ExportName: "*",
-		LocalName:  "ns",
-		Kind:       ImportNamespace,
-	}, "lodash"); ok {
+	if _, ok := resolver.resolveImportAttribution(testMainPath, ImportBinding{Module: "./barrel", ExportName: "*", LocalName: "ns", Kind: ImportNamespace}, "lodash"); ok {
 		t.Fatalf("expected namespace local import to skip resolver")
 	}
 }
@@ -178,37 +168,21 @@ func TestReExportResolverResolveExportCandidateBranches(t *testing.T) {
 		localTrail:      []string{},
 	}
 
-	origin, ok := resolver.resolveExportCandidate(req, ReExportBinding{
-		SourceModule:     "lodash",
-		SourceExportName: "map",
-		ExportName:       "mapAlias",
-	}, map[string]struct{}{})
+	origin, ok := resolver.resolveExportCandidate(req, ReExportBinding{SourceModule: "lodash", SourceExportName: "map", ExportName: "mapAlias"}, map[string]struct{}{})
 	if !ok || origin.dependencyModule != "lodash" || origin.dependencyExport != "map" {
 		t.Fatalf("expected direct dependency origin, got origin=%#v ok=%v", origin, ok)
 	}
 
-	origin, ok = resolver.resolveExportCandidate(req, ReExportBinding{
-		SourceModule:     "./b",
-		SourceExportName: "filter",
-		ExportName:       "filterAlias",
-	}, map[string]struct{}{})
+	origin, ok = resolver.resolveExportCandidate(req, ReExportBinding{SourceModule: "./b", SourceExportName: "filter", ExportName: "filterAlias"}, map[string]struct{}{})
 	if !ok || origin.dependencyModule != "lodash" || origin.dependencyExport != "filter" {
 		t.Fatalf("expected local chain resolution to dependency origin, got origin=%#v ok=%v", origin, ok)
 	}
 
-	if _, ok = resolver.resolveExportCandidate(req, ReExportBinding{
-		SourceModule:     "react",
-		SourceExportName: "default",
-		ExportName:       "reactAlias",
-	}, map[string]struct{}{}); ok {
+	if _, ok = resolver.resolveExportCandidate(req, ReExportBinding{SourceModule: "react", SourceExportName: "default", ExportName: "reactAlias"}, map[string]struct{}{}); ok {
 		t.Fatalf("expected non-local non-target dependency source to be skipped")
 	}
 
-	if _, ok = resolver.resolveExportCandidate(req, ReExportBinding{
-		SourceModule:     testMissingPath,
-		SourceExportName: "x",
-		ExportName:       "x",
-	}, map[string]struct{}{}); ok {
+	if _, ok = resolver.resolveExportCandidate(req, ReExportBinding{SourceModule: testMissingPath, SourceExportName: "x", ExportName: "x"}, map[string]struct{}{}); ok {
 		t.Fatalf("expected unresolved local source to be skipped")
 	}
 }

@@ -18,12 +18,15 @@
       "type": "array",
       "items": { "$ref": "#/$defs/languageSummary" }
     },
+    "cache": { "$ref": "#/$defs/cacheMetadata" },
     "effectiveThresholds": { "$ref": "#/$defs/effectiveThresholds" },
+    "effectivePolicy": { "$ref": "#/$defs/effectivePolicy" },
     "warnings": {
       "type": "array",
       "items": { "type": "string" }
     },
-    "wasteIncreasePercent": { "type": "number" }
+    "wasteIncreasePercent": { "type": "number" },
+    "baselineComparison": { "$ref": "#/$defs/baselineComparison" }
   },
   "$defs": {
     "summary": {
@@ -57,6 +60,45 @@
         "failOnIncreasePercent": { "type": "integer", "minimum": 0 },
         "lowConfidenceWarningPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
         "minUsagePercentForRecommendations": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "cacheMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "hits", "misses", "writes"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "path": { "type": "string" },
+        "readOnly": { "type": "boolean" },
+        "hits": { "type": "integer", "minimum": 0 },
+        "misses": { "type": "integer", "minimum": 0 },
+        "writes": { "type": "integer", "minimum": 0 },
+        "invalidations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/cacheInvalidation" }
+        }
+      }
+    },
+    "cacheInvalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "reason"],
+      "properties": {
+        "key": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "effectivePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thresholds", "removalCandidateWeights"],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "thresholds": { "$ref": "#/$defs/effectiveThresholds" },
+        "removalCandidateWeights": { "$ref": "#/$defs/removalCandidateWeights" }
       }
     },
     "dependencyReport": {
@@ -93,6 +135,9 @@
         "recommendations": {
           "type": "array",
           "items": { "$ref": "#/$defs/recommendation" }
+        },
+        "codemod": {
+          "$ref": "#/$defs/codemodReport"
         },
         "runtimeUsage": {
           "$ref": "#/$defs/runtimeUsage"
@@ -169,6 +214,50 @@
         "rationale": { "type": "string" }
       }
     },
+    "codemodReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["suggest-only"] },
+        "suggestions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/codemodSuggestion" }
+        },
+        "skips": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/codemodSkip" }
+        }
+      }
+    },
+    "codemodSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "importName", "fromModule", "toModule", "original", "replacement", "patch"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "importName": { "type": "string" },
+        "fromModule": { "type": "string" },
+        "toModule": { "type": "string" },
+        "original": { "type": "string" },
+        "replacement": { "type": "string" },
+        "patch": { "type": "string" }
+      }
+    },
+    "codemodSkip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "importName", "module", "reasonCode", "message"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "importName": { "type": "string" },
+        "module": { "type": "string" },
+        "reasonCode": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
     "runtimeUsage": {
       "type": "object",
       "additionalProperties": false,
@@ -235,6 +324,80 @@
         "usage": { "type": "number", "minimum": 0 },
         "impact": { "type": "number", "minimum": 0 },
         "confidence": { "type": "number", "minimum": 0 }
+      }
+    },
+    "baselineComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summaryDelta"],
+      "properties": {
+        "baselineKey": { "type": "string" },
+        "currentKey": { "type": "string" },
+        "summaryDelta": { "$ref": "#/$defs/summaryDelta" },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "regressions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "progressions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "added": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "removed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "unchangedRows": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "summaryDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dependencyCountDelta",
+        "usedExportsCountDelta",
+        "totalExportsCountDelta",
+        "usedPercentDelta",
+        "wastePercentDelta",
+        "unusedBytesDelta"
+      ],
+      "properties": {
+        "dependencyCountDelta": { "type": "integer" },
+        "usedExportsCountDelta": { "type": "integer" },
+        "totalExportsCountDelta": { "type": "integer" },
+        "usedPercentDelta": { "type": "number" },
+        "wastePercentDelta": { "type": "number" },
+        "unusedBytesDelta": { "type": "integer" }
+      }
+    },
+    "dependencyDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "usedExportsCountDelta",
+        "totalExportsCountDelta",
+        "usedPercentDelta",
+        "estimatedUnusedBytesDelta",
+        "wastePercentDelta"
+      ],
+      "properties": {
+        "kind": { "type": "string", "enum": ["added", "removed", "changed"] },
+        "language": { "type": "string" },
+        "name": { "type": "string" },
+        "usedExportsCountDelta": { "type": "integer" },
+        "totalExportsCountDelta": { "type": "integer" },
+        "usedPercentDelta": { "type": "number" },
+        "estimatedUnusedBytesDelta": { "type": "integer" },
+        "wastePercentDelta": { "type": "number" }
       }
     }
   }

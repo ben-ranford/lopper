@@ -68,8 +68,12 @@ func TestMainInvokesExitFuncWithRunCode(t *testing.T) {
 	os.Stdout = outW
 	os.Stderr = errW
 	defer func() {
-		_ = outR.Close()
-		_ = errR.Close()
+		if err := outR.Close(); err != nil {
+			t.Fatalf("close stdout reader: %v", err)
+		}
+		if err := errR.Close(); err != nil {
+			t.Fatalf("close stderr reader: %v", err)
+		}
 	}()
 
 	code := -1
@@ -77,10 +81,18 @@ func TestMainInvokesExitFuncWithRunCode(t *testing.T) {
 	os.Args = []string{"lopper", "--help"}
 
 	main()
-	_ = outW.Close()
-	_ = errW.Close()
-	_, _ = io.ReadAll(outR)
-	_, _ = io.ReadAll(errR)
+	if err := outW.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	if err := errW.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	if _, err := io.ReadAll(outR); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if _, err := io.ReadAll(errR); err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
 
 	if code != 0 {
 		t.Fatalf("expected main to exit with code 0 for --help, got %d", code)

@@ -86,17 +86,7 @@ func TestResolveCompilePathAndDirectory(t *testing.T) {
 }
 
 func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
-	dirs := extractIncludeDirs([]string{
-		"-I", "include",
-		"-Ivendor/include",
-		"-isystem", "/usr/include",
-		"-iquote", "headers",
-		"-isystem/opt/include",
-		"-iquotequoted",
-		"-Ivendor/include",
-		"-I",
-		"",
-	}, "/repo")
+	dirs := extractIncludeDirs([]string{"-I", "include", "-Ivendor/include", "-isystem", "/usr/include", "-iquote", "headers", "-isystem/opt/include", "-iquotequoted", "-Ivendor/include", "-I", ""}, "/repo")
 	want := []string{
 		"/opt/include",
 		"/repo/headers",
@@ -193,10 +183,7 @@ func TestBuildDependencyReportEmptyAndHelpers(t *testing.T) {
 		t.Fatalf("expected top symbols to be capped at 5, got %d", len(symbols))
 	}
 
-	flattened := flattenImportUses(map[string]*report.ImportUse{
-		"a": {Name: "a"},
-		"b": {Name: "b"},
-	}, []string{"b", "a", "c"})
+	flattened := flattenImportUses(map[string]*report.ImportUse{"a": {Name: "a"}, "b": {Name: "b"}}, []string{"b", "a", "c"})
 	if len(flattened) != 2 || flattened[0].Name != "b" || flattened[1].Name != "a" {
 		t.Fatalf("unexpected flattened import ordering: %#v", flattened)
 	}

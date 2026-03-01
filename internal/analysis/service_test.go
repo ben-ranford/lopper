@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -39,6 +40,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "index.php"), "<?php\nuse Monolog\\Logger;\n$logger = new Logger(\"app\");\n")
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nanyhow = \"1.0\"\n")
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
+	writeFile(t, filepath.Join(repo, "Gemfile"), "source 'https://rubygems.org'\ngem 'httparty'\n")
+	writeFile(t, filepath.Join(repo, "app.rb"), "require 'httparty'\n")
 	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
 	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
 	writeFile(t, filepath.Join(repo, "src", "native", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
@@ -59,11 +62,16 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "cpp") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
-		t.Fatalf("expected js-ts, python, cpp, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
+	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "rust", "ruby", "dotnet"} {
+		if !slices.Contains(languages, expectedLanguage) {
+			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
+		}
 	}
-	if len(reportData.LanguageBreakdown) < 8 {
+	if len(reportData.LanguageBreakdown) < 9 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
+	}
+	if reportData.Scope == nil || reportData.Scope.Mode != ScopeModePackage || len(reportData.Scope.Packages) == 0 {
+		t.Fatalf("expected scope metadata with analyzed packages, got %#v", reportData.Scope)
 	}
 }
 
@@ -161,6 +169,41 @@ func TestMergeRecommendationsPriorityOrder(t *testing.T) {
 	}
 }
 
+func TestMergeCodemodReport(t *testing.T) {
+	left := &report.CodemodReport{
+		Mode: "suggest-only",
+		Suggestions: []report.CodemodSuggestion{
+			{File: "a.js", Line: 3, ImportName: "map", ToModule: "lodash/map"},
+		},
+		Skips: []report.CodemodSkip{
+			{File: "b.js", Line: 2, ImportName: "*", ReasonCode: "namespace-import"},
+		},
+	}
+	right := &report.CodemodReport{
+		Suggestions: []report.CodemodSuggestion{
+			{File: "a.js", Line: 3, ImportName: "map", ToModule: "lodash/map"},
+			{File: "c.js", Line: 8, ImportName: "filter", ToModule: "lodash/filter"},
+		},
+		Skips: []report.CodemodSkip{
+			{File: "d.js", Line: 5, ImportName: "map", ReasonCode: "alias-conflict"},
+		},
+	}
+
+	merged := mergeCodemodReport(left, right)
+	if merged == nil {
+		t.Fatalf("expected merged codemod report")
+	}
+	if merged.Mode != "suggest-only" {
+		t.Fatalf("expected mode suggest-only, got %q", merged.Mode)
+	}
+	if len(merged.Suggestions) != 2 {
+		t.Fatalf("expected deduped suggestions, got %#v", merged.Suggestions)
+	}
+	if len(merged.Skips) != 2 {
+		t.Fatalf("expected merged skips, got %#v", merged.Skips)
+	}
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -176,7 +219,7 @@ func TestLowConfidenceWarningThreshold(t *testing.T) {
 		Adapter:   nil,
 		Detection: language.Detection{Confidence: 30},
 	}
-	candidate.Adapter = stubAdapter{id: "js-ts"}
+	candidate.Adapter = &stubAdapter{id: "js-ts"}
 
 	warnings := lowConfidenceWarning("all", candidate, 40)
 	if len(warnings) == 0 {
@@ -275,6 +318,41 @@ public class Program { public static void Main() {} }
 	}
 }
 
+func TestServiceAppliesDeterministicFindingConfidenceFiltering(t *testing.T) {
+	registry := language.NewRegistry()
+	if err := registry.Register(&findingsAdapter{id: "findings"}); err != nil {
+		t.Fatalf("register findings adapter: %v", err)
+	}
+
+	service := &Service{Registry: registry}
+	threshold := 90
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:                    t.TempDir(),
+		Language:                    "findings",
+		LowConfidenceWarningPercent: &threshold,
+	})
+	if err != nil {
+		t.Fatalf("analyse with confidence threshold: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+
+	dep := reportData.Dependencies[0]
+	if len(dep.UnusedExports) != 0 {
+		t.Fatalf("expected unused exports to be filtered, got %#v", dep.UnusedExports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be filtered, got %#v", dep.UnusedImports)
+	}
+	if len(dep.Recommendations) != 0 {
+		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
+	}
+	if len(dep.RiskCues) != 0 {
+		t.Fatalf("expected risk cues to be filtered, got %#v", dep.RiskCues)
+	}
+}
+
 func TestServiceAnalyseCPPAlias(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
@@ -300,6 +378,42 @@ func TestServiceAnalyseCPPAlias(t *testing.T) {
 	}
 }
 
+func TestServiceAppliesScopeBeforeResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "marker.txt"), "present\n")
+
+	registry := language.NewRegistry()
+	adapter := &markerDetectAdapter{id: "marker", markerPath: "marker.txt"}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatalf("register marker adapter: %v", err)
+	}
+	service := &Service{Registry: registry}
+
+	withoutScope, err := service.Analyse(context.Background(), Request{
+		RepoPath: repo,
+		Language: "auto",
+		TopN:     1,
+	})
+	if err != nil {
+		t.Fatalf("analyse without scope: %v", err)
+	}
+	if len(withoutScope.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(withoutScope.Dependencies))
+	}
+
+	_, err = service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		Language:         "auto",
+		TopN:             1,
+		IncludePatterns:  []string{"src/**/*.js"},
+		ExcludePatterns:  nil,
+		RuntimeTracePath: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "no language adapter matched") {
+		t.Fatalf("expected no-language-match error when scope excludes adapter marker, got %v", err)
+	}
+}
+
 func hasRecommendationCode(dep report.DependencyReport, code string) bool {
 	for _, rec := range dep.Recommendations {
 		if rec.Code == code {
@@ -313,12 +427,74 @@ type stubAdapter struct {
 	id string
 }
 
-func (s stubAdapter) ID() string { return s.id }
+func (s *stubAdapter) ID() string { return s.id }
 
-func (s stubAdapter) Aliases() []string { return nil }
+func (s *stubAdapter) Aliases() []string { return nil }
 
-func (s stubAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
+func (s *stubAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
 
-func (s stubAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+func (s *stubAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
 	return report.Report{}, nil
+}
+
+type markerDetectAdapter struct {
+	id         string
+	markerPath string
+}
+
+func (m *markerDetectAdapter) ID() string { return m.id }
+
+func (m *markerDetectAdapter) Aliases() []string { return nil }
+
+func (m *markerDetectAdapter) Detect(_ context.Context, repoPath string) (bool, error) {
+	_, err := os.Stat(filepath.Join(repoPath, m.markerPath))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (m *markerDetectAdapter) Analyse(_ context.Context, req language.Request) (report.Report, error) {
+	return report.Report{
+		RepoPath: req.RepoPath,
+		Dependencies: []report.DependencyReport{
+			{
+				Name:              "dep",
+				Language:          m.id,
+				UsedExportsCount:  1,
+				TotalExportsCount: 1,
+				UsedPercent:       100,
+			},
+		},
+	}, nil
+}
+
+type findingsAdapter struct {
+	id string
+}
+
+func (f *findingsAdapter) ID() string { return f.id }
+
+func (f *findingsAdapter) Aliases() []string { return nil }
+
+func (f *findingsAdapter) Detect(context.Context, string) (bool, error) { return true, nil }
+
+func (f *findingsAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+	return report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name:                 "dep",
+				UsedExportsCount:     1,
+				TotalExportsCount:    0,
+				UnusedExports:        []report.SymbolRef{{Name: "x", Module: "dep"}},
+				UnusedImports:        []report.ImportUse{{Name: "x", Module: "dep"}},
+				RiskCues:             []report.RiskCue{{Code: "dynamic", Severity: "high", Message: "dynamic lookup"}},
+				Recommendations:      []report.Recommendation{{Code: "remove", Priority: "high", Message: "remove dep"}},
+				EstimatedUnusedBytes: 1,
+			},
+		},
+	}, nil
 }
