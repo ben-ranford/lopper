@@ -159,7 +159,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
-	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights())
+	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights(), false)
 	if len(reports) != 0 {
 		t.Fatalf("expected nil reports when no dependencies are discovered, got %#v", reports)
 	}

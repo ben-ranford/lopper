@@ -115,6 +115,9 @@ type analyseFlagValues struct {
 	scoreWeightUsage              *float64
 	scoreWeightImpact             *float64
 	scoreWeightConfidence         *float64
+	licenseDeny                   *string
+	licenseFailOnDeny             *bool
+	licenseIncludeRegistryProv    *bool
 	languageFlag                  *string
 	runtimeProfile                *string
 	baselinePath                  *string
@@ -153,6 +156,9 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		scoreWeightUsage:              fs.Float64("score-weight-usage", req.Analyse.Thresholds.RemovalCandidateWeightUsage, "relative weight for removal-candidate usage signal"),
 		scoreWeightImpact:             fs.Float64("score-weight-impact", req.Analyse.Thresholds.RemovalCandidateWeightImpact, "relative weight for removal-candidate impact signal"),
 		scoreWeightConfidence:         fs.Float64("score-weight-confidence", req.Analyse.Thresholds.RemovalCandidateWeightConfidence, "relative weight for removal-candidate confidence signal"),
+		licenseDeny:                   fs.String("license-deny", strings.Join(req.Analyse.Thresholds.LicenseDenyList, ","), "comma-separated SPDX identifiers to deny"),
+		licenseFailOnDeny:             fs.Bool("license-fail-on-deny", req.Analyse.Thresholds.LicenseFailOnDeny, "fail when denied licenses are detected"),
+		licenseIncludeRegistryProv:    fs.Bool("license-provenance-registry", req.Analyse.Thresholds.LicenseIncludeRegistryProvenance, "opt-in registry provenance heuristics for JS/TS dependencies"),
 		languageFlag:                  fs.String("language", req.Analyse.Language, "language adapter"),
 		runtimeProfile:                fs.String("runtime-profile", req.Analyse.RuntimeProfile, "conditional exports runtime profile"),
 		baselinePath:                  fs.String("baseline", req.Analyse.BaselinePath, "baseline report path"),
@@ -268,6 +274,15 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["score-weight-confidence"] {
 		overrides.RemovalCandidateWeightConfidence = values.scoreWeightConfidence
 	}
+	if visited["license-deny"] {
+		overrides.LicenseDenyList = splitPatternList(*values.licenseDeny)
+	}
+	if visited["license-fail-on-deny"] {
+		overrides.LicenseFailOnDeny = values.licenseFailOnDeny
+	}
+	if visited["license-provenance-registry"] {
+		overrides.LicenseIncludeRegistryProvenance = values.licenseIncludeRegistryProv
+	}
 	if visited["lockfile-drift-policy"] {
 		overrides.LockfileDriftPolicy = values.lockfileDriftPolicy
 	}
@@ -282,6 +297,9 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.RemovalCandidateWeightUsage != nil ||
 		overrides.RemovalCandidateWeightImpact != nil ||
 		overrides.RemovalCandidateWeightConfidence != nil ||
+		len(overrides.LicenseDenyList) > 0 ||
+		overrides.LicenseFailOnDeny != nil ||
+		overrides.LicenseIncludeRegistryProvenance != nil ||
 		overrides.LockfileDriftPolicy != nil
 }
 
@@ -454,7 +472,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false

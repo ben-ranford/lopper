@@ -139,6 +139,40 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	}
 }
 
+func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	req := Request{
+		RepoPath: repo,
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    filepath.Join(repo, "analysis-cache"),
+		},
+	}
+	cache := newAnalysisCache(req, repo)
+
+	baseReq := Request{
+		RepoPath:                  repo,
+		TopN:                      1,
+		LicenseDenyList:           []string{"GPL-3.0-ONLY"},
+		LicenseFailOnDeny:         true,
+		IncludeRegistryProvenance: true,
+	}
+	entryA, err := cache.prepareEntry(baseReq, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare entry A: %v", err)
+	}
+	changedReq := baseReq
+	changedReq.LicenseDenyList = []string{"MIT"}
+	entryB, err := cache.prepareEntry(changedReq, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare entry B: %v", err)
+	}
+	if entryA.KeyDigest == entryB.KeyDigest {
+		t.Fatalf("expected different cache keys when license deny list changes")
+	}
+}
+
 func TestAnalysisCacheWarnTakeWarningsAndSnapshot(t *testing.T) {
 	cache := &analysisCache{
 		metadata: report.CacheMetadata{

@@ -172,6 +172,9 @@ type rawConfig struct {
 	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
 	LockfileDriftPolicy               *string  `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
+	LicenseDeny                       []string `yaml:"license_deny" json:"license_deny"`
+	LicenseFailOnDeny                 *bool    `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
+	LicenseIncludeRegistryProvenance  *bool    `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
 }
 
 type rawPolicy struct {
@@ -192,6 +195,9 @@ type rawThresholds struct {
 	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
 	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
 	LockfileDriftPolicy               *string  `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
+	LicenseDeny                       []string `yaml:"license_deny" json:"license_deny"`
+	LicenseFailOnDeny                 *bool    `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
+	LicenseIncludeRegistryProvenance  *bool    `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
 }
 
 func (c *rawConfig) toOverrides() (Overrides, error) {
@@ -204,6 +210,9 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		RemovalCandidateWeightImpact:      c.RemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  c.RemovalCandidateWeightConfidence,
 		LockfileDriftPolicy:               c.LockfileDriftPolicy,
+		LicenseDenyList:                   append([]string{}, c.LicenseDeny...),
+		LicenseFailOnDeny:                 c.LicenseFailOnDeny,
+		LicenseIncludeRegistryProvenance:  c.LicenseIncludeRegistryProvenance,
 	}
 	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, c.Thresholds.FailOnIncreasePercent); err != nil {
 		return Overrides{}, err
@@ -227,6 +236,15 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		return Overrides{}, err
 	}
 	if err := applyNestedStringOverride("lockfile_drift_policy", &overrides.LockfileDriftPolicy, c.Thresholds.LockfileDriftPolicy); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedListOverride("license_deny", &overrides.LicenseDenyList, c.Thresholds.LicenseDeny); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedBoolOverride("license_fail_on_deny", &overrides.LicenseFailOnDeny, c.Thresholds.LicenseFailOnDeny); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedBoolOverride("license_include_registry_provenance", &overrides.LicenseIncludeRegistryProvenance, c.Thresholds.LicenseIncludeRegistryProvenance); err != nil {
 		return Overrides{}, err
 	}
 	return overrides, nil
@@ -265,6 +283,28 @@ func applyNestedStringOverride(name string, target **string, nested *string) err
 	return nil
 }
 
+func applyNestedListOverride(name string, target *[]string, nested []string) error {
+	if len(nested) == 0 {
+		return nil
+	}
+	if len(*target) > 0 {
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
+	}
+	*target = append([]string{}, nested...)
+	return nil
+}
+
+func applyNestedBoolOverride(name string, target **bool, nested *bool) error {
+	if nested == nil {
+		return nil
+	}
+	if *target != nil {
+		return fmt.Errorf(duplicateThresholdErrFmt, name)
+	}
+	*target = nested
+	return nil
+}
+
 func mergeOverrides(base, higher Overrides) Overrides {
 	merged := base
 	if higher.FailOnIncreasePercent != nil {
@@ -290,6 +330,15 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	}
 	if higher.LockfileDriftPolicy != nil {
 		merged.LockfileDriftPolicy = higher.LockfileDriftPolicy
+	}
+	if len(higher.LicenseDenyList) > 0 {
+		merged.LicenseDenyList = append([]string{}, higher.LicenseDenyList...)
+	}
+	if higher.LicenseFailOnDeny != nil {
+		merged.LicenseFailOnDeny = higher.LicenseFailOnDeny
+	}
+	if higher.LicenseIncludeRegistryProvenance != nil {
+		merged.LicenseIncludeRegistryProvenance = higher.LicenseIncludeRegistryProvenance
 	}
 	return merged
 }

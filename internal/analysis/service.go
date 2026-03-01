@@ -107,6 +107,8 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 			return report.Report{}, err
 		}
 		reportData.Scope = scopeMetadata(req.ScopeMode, repoPath, analyzedRoots)
+		report.NormalizeDependencyLicenses(reportData.Dependencies)
+		report.ApplyLicensePolicy(reportData.Dependencies, req.LicenseDenyList)
 		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 		reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)
 		reportData.SchemaVersion = report.SchemaVersion
@@ -124,6 +126,8 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
 	report.AnnotateFindingConfidence(reportData.Dependencies)
 	report.FilterFindingsByConfidence(reportData.Dependencies, lowConfidenceThreshold)
+	report.NormalizeDependencyLicenses(reportData.Dependencies)
+	report.ApplyLicensePolicy(reportData.Dependencies, req.LicenseDenyList)
 	reportData.Scope = scopeMetadata(req.ScopeMode, repoPath, analyzedRoots)
 	report.AnnotateRemovalCandidateScoresWithWeights(reportData.Dependencies, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
@@ -212,6 +216,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			RuntimeProfile:                    req.RuntimeProfile,
 			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
 			RemovalCandidateWeights:           req.RemovalCandidateWeights,
+			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
 		})
 		if err != nil {
 			if isMultiLanguage(req.Language) {

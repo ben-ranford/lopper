@@ -29,5 +29,8 @@ type Request struct {
 	LowConfidenceWarningPercent       *int
 	MinUsagePercentForRecommendations *int
 	RemovalCandidateWeights           *report.RemovalCandidateWeights
+	LicenseDenyList                   []string
+	LicenseFailOnDeny                 bool
+	IncludeRegistryProvenance         bool
 	Cache                             *CacheOptions
 }

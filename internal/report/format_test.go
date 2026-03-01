@@ -171,6 +171,22 @@ func TestFormatPRCommentNoDependencyDeltas(t *testing.T) {
 	assertOutputContains(t, output, "_No dependency-surface deltas detected._")
 }
 
+func TestFormatPRCommentIncludesNewDeniedLicenses(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{},
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{Name: "left-pad", Language: "js-ts", SPDX: "GPL-3.0-ONLY"},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment denied licenses: %v", err)
+	}
+	assertOutputContains(t, output, "### Newly denied licenses", "left-pad", "GPL-3.0-ONLY")
+}
+
 func TestFormatEmptyAndWarnings(t *testing.T) {
 	reportData := Report{
 		Warnings: []string{"warning-1"},
@@ -213,6 +229,36 @@ func TestFormattingHelpers(t *testing.T) {
 	}
 	if !hasRuntimeColumn([]DependencyReport{{Name: "x", RuntimeUsage: &RuntimeUsage{LoadCount: 1}}}) {
 		t.Fatalf("expected runtime column with runtime data")
+	}
+	if got := formatDependencyLicense(nil); got != "unknown" {
+		t.Fatalf("expected unknown license fallback, got %q", got)
+	}
+	if got := formatDependencyLicense(&DependencyLicense{SPDX: "MIT", Denied: true}); !strings.Contains(got, "denied") {
+		t.Fatalf("expected denied license marker, got %q", got)
+	}
+	if got := formatDependencyProvenance(nil); got != "-" {
+		t.Fatalf("expected dash for nil provenance, got %q", got)
+	}
+	if got := formatDependencyProvenance(&DependencyProvenance{Source: "local", Signals: []string{"manifest"}}); !strings.Contains(got, "manifest") {
+		t.Fatalf("expected provenance signal rendering, got %q", got)
+	}
+	if got := formatDependencyProvenance(&DependencyProvenance{Source: "local"}); got != "local" {
+		t.Fatalf("expected source-only provenance, got %q", got)
+	}
+	if got := formatDependencyProvenance(&DependencyProvenance{}); got != "-" {
+		t.Fatalf("expected empty provenance to render dash, got %q", got)
+	}
+	if got := formatDependencyLicense(&DependencyLicense{Unknown: true, Denied: true}); !strings.Contains(got, "denied") {
+		t.Fatalf("expected denied marker for unknown denied license, got %q", got)
+	}
+}
+
+func TestFormatRuntimeUsageBranches(t *testing.T) {
+	if got := formatRuntimeUsage(&RuntimeUsage{RuntimeOnly: true}); !strings.Contains(got, "runtime-only") {
+		t.Fatalf("expected runtime-only fallback correlation, got %q", got)
+	}
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
+		t.Fatalf("expected static-only fallback correlation, got %q", got)
 	}
 }
 
@@ -269,6 +315,21 @@ func TestTopDependencyDeltasAndSignedBytesBranches(t *testing.T) {
 	}
 	if signedBytes(-1024) != "-1.0 KB" {
 		t.Fatalf("expected negative byte formatting branch")
+	}
+}
+
+func TestTopDependencyDeltasTieBreakers(t *testing.T) {
+	deltas := []DependencyDelta{
+		{Name: "b", Language: "z", EstimatedUnusedBytesDelta: 100},
+		{Name: "a", Language: "a", EstimatedUnusedBytesDelta: -100},
+		{Name: "c", Language: "a", EstimatedUnusedBytesDelta: 100},
+	}
+	got := topDependencyDeltas(deltas, 2)
+	if len(got) != 2 {
+		t.Fatalf("expected limited tie-breaker slice, got %#v", got)
+	}
+	if got[0].Language != "a" || got[0].Name != "a" {
+		t.Fatalf("expected language/name tie-break ordering, got %#v", got)
 	}
 }
 
@@ -372,6 +433,29 @@ func TestFormatTableIncludesBaselineComparison(t *testing.T) {
 	if !strings.Contains(output, "regression js-ts/lodash") {
 		t.Fatalf("expected regression line in output, got %q", output)
 	}
+}
+
+func TestFormatTableIncludesDeniedLicenseBaselineLines(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{
+				KnownLicenseCountDelta:   1,
+				UnknownLicenseCountDelta: -1,
+				DeniedLicenseCountDelta:  1,
+			},
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{Name: "pkg-a", Language: "js-ts", SPDX: "GPL-3.0-ONLY"},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "pkg-a", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table denied baseline lines: %v", err)
+	}
+	assertOutputContains(t, output, "license_delta:", "new denied license js-ts/pkg-a")
 }
 
 func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {

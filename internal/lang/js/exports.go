@@ -22,15 +22,25 @@ type ExportSurface struct {
 }
 
 type packageJSON struct {
+	Name                 string            `json:"name"`
+	Version              string            `json:"version"`
 	Main                 string            `json:"main"`
 	Module               string            `json:"module"`
 	Types                string            `json:"types"`
 	Typings              string            `json:"typings"`
 	Exports              any               `json:"exports"`
+	License              any               `json:"license"`
+	Licenses             []any             `json:"licenses"`
 	Gypfile              bool              `json:"gypfile"`
 	Scripts              map[string]string `json:"scripts"`
 	Dependencies         map[string]string `json:"dependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	Resolved             string            `json:"_resolved"`
+	Integrity            string            `json:"_integrity"`
+	PublishConfig        struct {
+		Registry string `json:"registry"`
+	} `json:"publishConfig"`
+	Repository any `json:"repository"`
 }
 
 const (

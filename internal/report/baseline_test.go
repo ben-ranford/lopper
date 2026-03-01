@@ -216,6 +216,50 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	}
 }
 
+func TestComputeBaselineComparisonTracksNewDeniedLicenses(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "a",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				License: &DependencyLicense{
+					SPDX:   "GPL-3.0-ONLY",
+					Denied: true,
+				},
+			},
+		},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "a",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				License: &DependencyLicense{
+					SPDX:   "MIT",
+					Denied: false,
+				},
+			},
+		},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if len(comparison.NewDeniedLicenses) != 1 {
+		t.Fatalf("expected one new denied license, got %#v", comparison.NewDeniedLicenses)
+	}
+	if !comparison.Dependencies[0].DeniedIntroduced {
+		t.Fatalf("expected dependency delta to flag deniedIntroduced")
+	}
+	if comparison.SummaryDelta.DeniedLicenseCountDelta != 1 {
+		t.Fatalf("expected denied license count delta to be 1, got %d", comparison.SummaryDelta.DeniedLicenseCountDelta)
+	}
+}
+
 func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "snapshot.json")
