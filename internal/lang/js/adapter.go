@@ -563,7 +563,7 @@ func countUsedExports(surface map[string]struct{}, used map[string]struct{}) int
 	return count
 }
 
-func matchesDependency(module string, dependency string) bool {
+func matchesDependency(module, dependency string) bool {
 	if module == dependency {
 		return true
 	}
