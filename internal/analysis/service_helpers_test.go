@@ -349,7 +349,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	right := &report.CodemodReport{
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "b.ts", Line: 2, ImportName: "map", ToModule: "lodash/map"},
+			{File: "b.ts", Line: 2, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 	}
 	got := mergeCodemodReport(nil, right)
@@ -360,7 +360,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	left := &report.CodemodReport{
 		Mode: "",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 		Skips: []report.CodemodSkip{
 			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
@@ -369,7 +369,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	right = &report.CodemodReport{
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
 			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: "lodash/filter"},
 		},
 		Skips: []report.CodemodSkip{
