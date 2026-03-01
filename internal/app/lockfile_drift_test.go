@@ -21,6 +21,7 @@ const (
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
 	nestedManifestPath       = "nested/package.json"
 	gitBinaryPath            = "/usr/bin/git"
+	gitExecutableNotFoundErr = "git executable not found"
 )
 
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
@@ -179,17 +180,17 @@ func TestGitHelperErrors(t *testing.T) {
 
 func TestGitHelpersWhenGitUnavailable(t *testing.T) {
 	original := resolveGitBinaryPathFn
-	resolveGitBinaryPathFn = func() (string, error) { return "", errors.New("git executable not found") }
+	resolveGitBinaryPathFn = func() (string, error) { return "", errors.New(gitExecutableNotFoundErr) }
 	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected git worktree=false when git is unavailable")
 	}
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "git executable not found") {
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected tracked changes error for missing git executable, got %v", err)
 	}
-	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "git executable not found") {
+	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected untracked files error for missing git executable, got %v", err)
 	}
 }

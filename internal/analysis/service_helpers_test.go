@@ -105,7 +105,7 @@ func TestRemapAnalyzedRoots(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected remapped roots preserved, got %#v", got)
 	}
-	if got[0] != "/outside/path" || got[1] != "/repo/packages/a" || got[2] != "/repo/packages/b" {
+	if got[0] != "/outside/path" || got[1] != repoPackageARoot || got[2] != repoPackageBRoot {
 		t.Fatalf("unexpected remapped roots: %#v", got)
 	}
 
@@ -124,7 +124,7 @@ func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 	if deps[0].Language != "js-ts" {
 		t.Fatalf("expected language to be applied")
 	}
-	adjustRelativeLocations("/repo", "/repo/packages/a", deps)
+	adjustRelativeLocations("/repo", repoPackageARoot, deps)
 	if deps[0].UsedImports[0].Locations[0].File != filepath.Clean("packages/a/src/main.js") {
 		t.Fatalf("expected relative file adjustment, got %q", deps[0].UsedImports[0].Locations[0].File)
 	}
