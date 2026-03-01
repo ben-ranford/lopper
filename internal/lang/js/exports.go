@@ -421,7 +421,7 @@ func isLikelyCodeAsset(path string) bool {
 	}
 }
 
-func resolveEntrypoint(root string, entry string) (string, bool) {
+func resolveEntrypoint(root, entry string) (string, bool) {
 	path := entry
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(root, entry)
