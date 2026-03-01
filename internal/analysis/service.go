@@ -510,7 +510,7 @@ func cappedSampleCopy(samples []report.Location) []report.Location {
 	return append([]report.Location{}, samples...)
 }
 
-func mergeDependency(left report.DependencyReport, right report.DependencyReport) report.DependencyReport {
+func mergeDependency(left, right report.DependencyReport) report.DependencyReport {
 	merged := left
 	merged.UsedExportsCount += right.UsedExportsCount
 	merged.TotalExportsCount += right.TotalExportsCount
