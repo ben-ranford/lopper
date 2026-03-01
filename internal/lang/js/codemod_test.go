@@ -158,6 +158,55 @@ func TestHasResolvableSubpathFile(t *testing.T) {
 	}
 }
 
+func TestRewriteImportLine(t *testing.T) {
+	importLine, ok := rewriteImportLine(`import { map } from "lodash";`, "lodash", "map", "lodash/map")
+	if !ok || importLine != `import map from "lodash/map";` {
+		t.Fatalf("expected import rewrite, got ok=%v line=%q", ok, importLine)
+	}
+
+	requireLine, ok := rewriteImportLine(`const { map } = require("lodash");`, "lodash", "map", "lodash/map")
+	if !ok || requireLine != `const map = require("lodash/map");` {
+		t.Fatalf("expected require rewrite, got ok=%v line=%q", ok, requireLine)
+	}
+
+	if _, ok := rewriteImportLine(`import { map as mapAlias } from "lodash";`, "lodash", "map", "lodash/map"); ok {
+		t.Fatalf("expected aliased import to be rejected")
+	}
+}
+
+func TestSubpathResolverResolve(t *testing.T) {
+	resolver := subpathResolver{
+		knownSubpaths: map[string]struct{}{"map": {}},
+	}
+	if module, ok := resolver.Resolve("lodash", "map"); !ok || module != "lodash/map" {
+		t.Fatalf("expected known subpath resolution, got ok=%v module=%q", ok, module)
+	}
+
+	if _, ok := resolver.Resolve("lodash", "default"); ok {
+		t.Fatalf("expected default export to be rejected")
+	}
+	if _, ok := resolver.Resolve("lodash", "*"); ok {
+		t.Fatalf("expected namespace export to be rejected")
+	}
+	if _, ok := resolver.Resolve("lodash", "with space"); ok {
+		t.Fatalf("expected invalid export token to be rejected")
+	}
+
+	resolver = subpathResolver{}
+	if _, ok := resolver.Resolve("lodash", "filter"); ok {
+		t.Fatalf("expected empty dependency root to prevent file-system fallback resolution")
+	}
+
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "filter.js"), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write filter.js: %v", err)
+	}
+	resolver = subpathResolver{dependencyRoot: depRoot}
+	if module, ok := resolver.Resolve("lodash", "filter"); !ok || module != "lodash/filter" {
+		t.Fatalf("expected file-system fallback subpath resolution, got ok=%v module=%q", ok, module)
+	}
+}
+
 func setupLodashFixture(t *testing.T, source string) (repo string, sourcePath string, original string) {
 	t.Helper()
 	repo = t.TempDir()

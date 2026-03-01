@@ -77,6 +77,45 @@ func TestNormalizePathPatternsNormalizesSeparatorsAndDedupes(t *testing.T) {
 	}
 }
 
+func TestRawScopeToPathScope(t *testing.T) {
+	var nilScope *rawScope
+	if got := nilScope.toPathScope(); len(got.Include) != 0 || len(got.Exclude) != 0 {
+		t.Fatalf("expected empty scope from nil raw scope, got %#v", got)
+	}
+
+	scope := &rawScope{
+		Include: []string{" src\\**\\*.ts ", "src/**/*.ts"},
+		Exclude: []string{" vendor/** ", "vendor\\**"},
+	}
+	got := scope.toPathScope()
+	if strings.Join(got.Include, ",") != "src/**/*.ts" {
+		t.Fatalf("unexpected normalized include patterns: %#v", got.Include)
+	}
+	if strings.Join(got.Exclude, ",") != "vendor/**" {
+		t.Fatalf("unexpected normalized exclude patterns: %#v", got.Exclude)
+	}
+}
+
+func TestMergeScope(t *testing.T) {
+	base := PathScope{
+		Include: []string{"src/**"},
+		Exclude: []string{"vendor/**"},
+	}
+
+	if got := mergeScope(base, PathScope{}); strings.Join(got.Include, ",") != "src/**" || strings.Join(got.Exclude, ",") != "vendor/**" {
+		t.Fatalf("expected empty higher scope to preserve base, got %#v", got)
+	}
+
+	higher := PathScope{
+		Include: []string{"packages/**"},
+		Exclude: []string{"dist/**"},
+	}
+	got := mergeScope(base, higher)
+	if strings.Join(got.Include, ",") != "packages/**" || strings.Join(got.Exclude, ",") != "dist/**" {
+		t.Fatalf("expected higher scope patterns to override, got %#v", got)
+	}
+}
+
 func TestLoadJSONConfig(t *testing.T) {
 	repo := t.TempDir()
 	cfg := `{

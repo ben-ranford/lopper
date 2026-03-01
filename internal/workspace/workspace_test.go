@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -299,7 +300,8 @@ func mustWrite(t *testing.T, path, content string) {
 }
 
 func TestChangedFilesErrorsForNonRepoPath(t *testing.T) {
-	_, err := ChangedFiles(t.TempDir())
+	tmp := t.TempDir()
+	_, err := ChangedFiles(filepath.Join(tmp, "missing"))
 	if err == nil {
 		t.Fatalf("expected changed-files lookup to fail for non-repo path")
 	}
@@ -314,5 +316,33 @@ func TestParseChangedFileHelpers(t *testing.T) {
 	porcelain := parsePorcelainChangedFiles([]byte("M  packages/a/file.ts\nR  old.ts -> packages/b/new.ts\n"))
 	if len(porcelain) != 2 || porcelain[0] != "packages/a/file.ts" || porcelain[1] != "packages/b/new.ts" {
 		t.Fatalf("expected parsed porcelain paths, got %#v", porcelain)
+	}
+
+	withShort := parsePorcelainChangedFiles([]byte("\n??\nA  file.txt\n"))
+	if len(withShort) != 1 || withShort[0] != "file.txt" {
+		t.Fatalf("expected short lines to be ignored, got %#v", withShort)
+	}
+}
+
+func TestResolveGitBinaryPathMissing(t *testing.T) {
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", "")
+	_, err := resolveGitBinaryPath()
+	if err == nil {
+		t.Fatalf("expected git lookup to fail with empty PATH (original=%q)", originalPath)
+	}
+}
+
+func TestRunGitReturnsStderrInError(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git binary not available")
+	}
+	_, err = runGit(gitPath, t.TempDir(), "hash-object", "--definitely-invalid-option")
+	if err == nil {
+		t.Fatalf("expected runGit to fail for invalid git option")
+	}
+	if !strings.Contains(err.Error(), "option") {
+		t.Fatalf("expected stderr context in runGit error, got %v", err)
 	}
 }

@@ -56,6 +56,48 @@ func TestChangedRootsAndScopeMetadata(t *testing.T) {
 	}
 }
 
+func TestScopedCandidateRootsNonGitModes(t *testing.T) {
+	repo := t.TempDir()
+	pkg := filepath.Join(repo, "packages", "a")
+
+	roots, warnings := scopedCandidateRoots(ScopeModeRepo, []string{pkg}, repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for repo mode, got %#v", warnings)
+	}
+	if len(roots) != 1 || roots[0] != repo {
+		t.Fatalf("expected repo root for repo mode, got %#v", roots)
+	}
+
+	roots, warnings = scopedCandidateRoots("", []string{pkg}, repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for package mode, got %#v", warnings)
+	}
+	if len(roots) != 1 || roots[0] != pkg {
+		t.Fatalf("expected package roots for default package mode, got %#v", roots)
+	}
+}
+
+func TestRootContainsFileAndUniqueSortedEdges(t *testing.T) {
+	root := "/repo/packages/a"
+	if !rootContainsFile(root, root) {
+		t.Fatalf("expected root to contain itself")
+	}
+	if !rootContainsFile(root, "/repo/packages/a/src/index.ts") {
+		t.Fatalf("expected nested file to be contained")
+	}
+	if rootContainsFile(root, "/repo/packages/b/src/index.ts") {
+		t.Fatalf("expected outside file to be excluded")
+	}
+
+	if got := uniqueSorted(nil); len(got) != 0 {
+		t.Fatalf("expected empty uniqueSorted output for nil input, got %#v", got)
+	}
+	got := uniqueSorted([]string{"b", "a", "b", "a"})
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("unexpected uniqueSorted output: %#v", got)
+	}
+}
+
 func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 	deps := []report.DependencyReport{{
 		UsedImports:   []report.ImportUse{{Locations: []report.Location{{File: "src/main.js", Line: 1}}}},
