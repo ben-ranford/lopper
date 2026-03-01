@@ -98,7 +98,6 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		MinUsagePercentForRecommendations: &minUsage,
 		RemovalCandidateWeights:           &weights,
 		LicenseDenyList:                   append([]string{}, req.Analyse.Thresholds.LicenseDenyList...),
-		LicenseFailOnDeny:                 req.Analyse.Thresholds.LicenseFailOnDeny,
 		IncludeRegistryProvenance:         req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
 		Cache: &analysis.CacheOptions{
 			Enabled:  req.Analyse.CacheEnabled,
@@ -320,8 +319,11 @@ func validateDeniedLicenses(reportData report.Report, failOnDeny bool) error {
 	if !failOnDeny {
 		return nil
 	}
-	if reportData.BaselineComparison != nil && len(reportData.BaselineComparison.NewDeniedLicenses) > 0 {
-		return ErrDeniedLicenses
+	if reportData.BaselineComparison != nil {
+		if len(reportData.BaselineComparison.NewDeniedLicenses) > 0 {
+			return ErrDeniedLicenses
+		}
+		return nil
 	}
 	if report.CountDeniedLicenses(reportData.Dependencies) > 0 {
 		return ErrDeniedLicenses

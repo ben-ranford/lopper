@@ -156,7 +156,6 @@ func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
 		RepoPath:                  repo,
 		TopN:                      1,
 		LicenseDenyList:           []string{"GPL-3.0-ONLY"},
-		LicenseFailOnDeny:         true,
 		IncludeRegistryProvenance: true,
 	}
 	entryA, err := cache.prepareEntry(baseReq, "cachelang", repo)
