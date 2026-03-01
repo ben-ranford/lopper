@@ -257,7 +257,7 @@ func ApplyBaselineWithKeys(current Report, baseline Report, baselineKey string, 
 	return current, nil
 }
 
-func ComputeBaselineComparison(current Report, baseline Report) BaselineComparison {
+func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 	currentSummary := current.Summary
 	if currentSummary == nil {
 		currentSummary = ComputeSummary(current.Dependencies)
