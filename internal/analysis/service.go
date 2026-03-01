@@ -656,7 +656,7 @@ func mergeSymbolRefs(left []report.SymbolRef, right []report.SymbolRef) []report
 	return mergeUniqueSorted(left, right, symbolRefKey, sortSymbolRefs)
 }
 
-func mergeRiskCues(left []report.RiskCue, right []report.RiskCue) []report.RiskCue {
+func mergeRiskCues(left, right []report.RiskCue) []report.RiskCue {
 	return mergeUniqueSorted(left, right, riskCueKey, sortRiskCues)
 }
 
