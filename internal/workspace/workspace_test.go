@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -325,16 +324,43 @@ func TestParseChangedFileHelpers(t *testing.T) {
 }
 
 func TestResolveGitBinaryPathMissing(t *testing.T) {
-	originalPath := os.Getenv("PATH")
-	t.Setenv("PATH", "")
+	original := gitExecutableAvailableFn
+	gitExecutableAvailableFn = func(string) bool { return false }
+	t.Cleanup(func() {
+		gitExecutableAvailableFn = original
+	})
+
 	_, err := resolveGitBinaryPath()
 	if err == nil {
-		t.Fatalf("expected git lookup to fail with empty PATH (original=%q)", originalPath)
+		t.Fatalf("expected git lookup to fail when configured binaries are unavailable")
+	}
+}
+
+func TestResolveGitBinaryPathPrefersPrimaryThenFallback(t *testing.T) {
+	original := gitExecutableAvailableFn
+	t.Cleanup(func() {
+		gitExecutableAvailableFn = original
+	})
+
+	gitExecutableAvailableFn = func(path string) bool {
+		return path == gitExecutablePrimary
+	}
+	path, err := resolveGitBinaryPath()
+	if err != nil || path != gitExecutablePrimary {
+		t.Fatalf("expected primary git path, got path=%q err=%v", path, err)
+	}
+
+	gitExecutableAvailableFn = func(path string) bool {
+		return path == gitExecutableFallback
+	}
+	path, err = resolveGitBinaryPath()
+	if err != nil || path != gitExecutableFallback {
+		t.Fatalf("expected fallback git path, got path=%q err=%v", path, err)
 	}
 }
 
 func TestRunGitReturnsStderrInError(t *testing.T) {
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := resolveGitBinaryPath()
 	if err != nil {
 		t.Skip("git binary not available")
 	}
@@ -344,5 +370,49 @@ func TestRunGitReturnsStderrInError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "option") {
 		t.Fatalf("expected stderr context in runGit error, got %v", err)
+	}
+}
+
+func TestSanitizedGitEnvStripsGitOverrides(t *testing.T) {
+	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")
+	t.Setenv("GIT_WORK_TREE", "/tmp/fake-worktree")
+	t.Setenv("GIT_INDEX_FILE", "/tmp/fake-index")
+	t.Setenv("PATH", "/tmp/fake-path")
+
+	env := sanitizedGitEnv()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GIT_DIR=") || strings.HasPrefix(entry, "GIT_WORK_TREE=") || strings.HasPrefix(entry, "GIT_INDEX_FILE=") {
+			t.Fatalf("expected git override env vars to be removed, found %q", entry)
+		}
+	}
+	if !containsEnvEntry(env, safeSystemPath) {
+		t.Fatalf("expected safe PATH entry in sanitized env, got %#v", env)
+	}
+}
+
+func containsEnvEntry(env []string, target string) bool {
+	for _, entry := range env {
+		if entry == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGitExecutableAvailable(t *testing.T) {
+	if gitExecutableAvailable(t.TempDir()) {
+		t.Fatalf("expected directory path to be non-executable")
+	}
+
+	file := filepath.Join(t.TempDir(), "git")
+	mustWrite(t, file, "#!/bin/sh\n")
+	if gitExecutableAvailable(file) {
+		t.Fatalf("expected non-executable file to be unavailable")
+	}
+	if err := os.Chmod(file, 0o755); err != nil {
+		t.Fatalf("chmod executable: %v", err)
+	}
+	if !gitExecutableAvailable(file) {
+		t.Fatalf("expected executable file to be available")
 	}
 }

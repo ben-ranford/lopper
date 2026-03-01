@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -11,9 +12,9 @@ const (
 	ModeTUI     Mode = "tui"
 	ModeAnalyse Mode = "analyse"
 
-	ScopeModeRepo            = "repo"
-	ScopeModePackage         = "package"
-	ScopeModeChangedPackages = "changed-packages"
+	ScopeModeRepo            = analysis.ScopeModeRepo
+	ScopeModePackage         = analysis.ScopeModePackage
+	ScopeModeChangedPackages = analysis.ScopeModeChangedPackages
 )
 
 type Request struct {

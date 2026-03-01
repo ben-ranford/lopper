@@ -81,10 +81,11 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	}
 	cache := newAnalysisCache(req, analysisRepoPath)
 
-	reports, warnings, analyzedRoots, err := s.runCandidates(ctx, req, repoPath, candidates, cache)
+	reports, warnings, analyzedRoots, err := s.runCandidates(ctx, req, analysisRepoPath, candidates, cache)
 	if err != nil {
 		return report.Report{}, err
 	}
+	analyzedRoots = remapAnalyzedRoots(analyzedRoots, analysisRepoPath, repoPath)
 	warnings = append(scopeWarnings, warnings...)
 	warnings = append(warnings, cache.takeWarnings()...)
 	if len(reports) == 0 {
@@ -363,6 +364,22 @@ func normalizeCandidateRoot(repoPath, root string) string {
 		return root
 	}
 	return filepath.Join(repoPath, root)
+}
+
+func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []string {
+	if fromRepoPath == toRepoPath || len(roots) == 0 {
+		return roots
+	}
+	remapped := make([]string, 0, len(roots))
+	for _, root := range roots {
+		rel, err := filepath.Rel(fromRepoPath, root)
+		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			remapped = append(remapped, root)
+			continue
+		}
+		remapped = append(remapped, filepath.Join(toRepoPath, rel))
+	}
+	return uniqueSorted(remapped)
 }
 
 func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report) (report.Report, error) {

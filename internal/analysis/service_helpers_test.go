@@ -14,6 +14,7 @@ import (
 const (
 	lodashMapRuntimeModule    = "lodash/map"
 	lodashFilterRuntimeModule = "lodash/filter"
+	repoPackageARoot          = "/repo/packages/a"
 	repoPackageBRoot          = "/repo/packages/b"
 )
 
@@ -41,7 +42,7 @@ func TestHelperFunctions(t *testing.T) {
 }
 
 func TestChangedRootsAndScopeMetadata(t *testing.T) {
-	roots := []string{"/repo/packages/a", repoPackageBRoot, "/repo/packages/c"}
+	roots := []string{repoPackageARoot, repoPackageBRoot, "/repo/packages/c"}
 	changed := changedRoots(roots, "/repo", []string{"packages/b/src/index.ts", "README.md"})
 	if len(changed) != 1 || changed[0] != repoPackageBRoot {
 		t.Fatalf("expected changed root selection, got %#v", changed)
@@ -78,11 +79,11 @@ func TestScopedCandidateRootsNonGitModes(t *testing.T) {
 }
 
 func TestRootContainsFileAndUniqueSortedEdges(t *testing.T) {
-	root := "/repo/packages/a"
+	root := repoPackageARoot
 	if !rootContainsFile(root, root) {
 		t.Fatalf("expected root to contain itself")
 	}
-	if !rootContainsFile(root, "/repo/packages/a/src/index.ts") {
+	if !rootContainsFile(root, repoPackageARoot+"/src/index.ts") {
 		t.Fatalf("expected nested file to be contained")
 	}
 	if rootContainsFile(root, "/repo/packages/b/src/index.ts") {
@@ -95,6 +96,22 @@ func TestRootContainsFileAndUniqueSortedEdges(t *testing.T) {
 	got := uniqueSorted([]string{"b", "a", "b", "a"})
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("unexpected uniqueSorted output: %#v", got)
+	}
+}
+
+func TestRemapAnalyzedRoots(t *testing.T) {
+	roots := []string{"/scoped/packages/a", "/scoped/packages/b", "/outside/path"}
+	got := remapAnalyzedRoots(roots, "/scoped", "/repo")
+	if len(got) != 3 {
+		t.Fatalf("expected remapped roots preserved, got %#v", got)
+	}
+	if got[0] != "/outside/path" || got[1] != "/repo/packages/a" || got[2] != "/repo/packages/b" {
+		t.Fatalf("unexpected remapped roots: %#v", got)
+	}
+
+	same := remapAnalyzedRoots([]string{"/repo/pkg"}, "/repo", "/repo")
+	if len(same) != 1 || same[0] != "/repo/pkg" {
+		t.Fatalf("expected unchanged roots when repo paths match, got %#v", same)
 	}
 }
 
@@ -414,7 +431,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	right := &report.CodemodReport{
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "b.ts", Line: 2, ImportName: "map", ToModule: "lodash/map"},
+			{File: "b.ts", Line: 2, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 	}
 	got := mergeCodemodReport(nil, right)
@@ -425,7 +442,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	left := &report.CodemodReport{
 		Mode: "",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 		Skips: []report.CodemodSkip{
 			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
@@ -434,7 +451,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	right = &report.CodemodReport{
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
 			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: "lodash/filter"},
 		},
 		Skips: []report.CodemodSkip{

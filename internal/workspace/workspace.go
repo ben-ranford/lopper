@@ -11,6 +11,12 @@ import (
 	"strings"
 )
 
+const safeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+const gitExecutablePrimary = "/usr/bin/git"
+const gitExecutableFallback = "/bin/git"
+
+var gitExecutableAvailableFn = gitExecutableAvailable
+
 func NormalizeRepoPath(path string) (string, error) {
 	if path == "" {
 		path = "."
@@ -57,7 +63,7 @@ func ChangedFiles(repoPath string) ([]string, error) {
 	}
 	statusOutput, statusErr := runGit(gitPath, normalized, "status", "--porcelain")
 	if statusErr != nil {
-		return nil, diffErr
+		return nil, errors.Join(diffErr, statusErr)
 	}
 	return parsePorcelainChangedFiles(statusOutput), nil
 }
@@ -103,17 +109,21 @@ func parsePorcelainChangedFiles(output []byte) []string {
 }
 
 func resolveGitBinaryPath() (string, error) {
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		return "", fmt.Errorf("git executable not found: %w", err)
+	switch {
+	case gitExecutableAvailableFn(gitExecutablePrimary):
+		return gitExecutablePrimary, nil
+	case gitExecutableAvailableFn(gitExecutableFallback):
+		return gitExecutableFallback, nil
+	default:
+		return "", fmt.Errorf("git executable not found")
 	}
-	return gitPath, nil
 }
 
 func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
 	fullArgs := append([]string{"-C", repoPath}, args...)
 	// #nosec G204 -- arguments are fixed and repoPath is normalized to an absolute directory.
 	cmd := exec.Command(gitPath, fullArgs...)
+	cmd.Env = sanitizedGitEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -121,6 +131,30 @@ func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return output, nil
+}
+
+func sanitizedGitEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GIT_DIR=") ||
+			strings.HasPrefix(entry, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(entry, "GIT_INDEX_FILE=") ||
+			strings.HasPrefix(entry, "PATH=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	filtered = append(filtered, safeSystemPath)
+	return filtered
+}
+
+func gitExecutableAvailable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }
 
 func resolveGitDir(repoPath string) (string, error) {

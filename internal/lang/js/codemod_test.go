@@ -17,6 +17,7 @@ import (
 const (
 	lodashFixturePackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
 	mapImportFixtureSource   = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
+	lodashMapSubpath         = "lodash/map"
 )
 
 func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
@@ -37,13 +38,13 @@ func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
 		t.Fatalf("expected one codemod suggestion, got %#v", codemod.Suggestions)
 	}
 	suggestion := codemod.Suggestions[0]
-	if suggestion.ToModule != "lodash/map" {
+	if suggestion.ToModule != lodashMapSubpath {
 		t.Fatalf("expected lodash/map replacement, got %#v", suggestion)
 	}
 	if !strings.Contains(suggestion.Patch, "@@ -1 +1 @@") {
 		t.Fatalf("expected deterministic one-line patch hunk, got %q", suggestion.Patch)
 	}
-	if !strings.Contains(suggestion.Patch, "-import { map } from \"lodash\";") || !strings.Contains(suggestion.Patch, "+import map from \"lodash/map\";") {
+	if !strings.Contains(suggestion.Patch, "-import { map } from \"lodash\";") || !strings.Contains(suggestion.Patch, "+import map from \""+lodashMapSubpath+"\";") {
 		t.Fatalf("unexpected patch preview: %q", suggestion.Patch)
 	}
 
@@ -95,7 +96,7 @@ func TestSuggestOnlyPatchPreviewAppliesCleanlyOnFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected patch to apply cleanly: %v\npatch:\n%s", err, patch)
 	}
-	if !strings.Contains(updated, "import map from \"lodash/map\";") {
+	if !strings.Contains(updated, "import map from \""+lodashMapSubpath+"\";") {
 		t.Fatalf("expected patched import line, got %q", updated)
 	}
 }
@@ -120,7 +121,7 @@ func TestCodemodSuggestionOrder(t *testing.T) {
 		File:       "a.js",
 		Line:       2,
 		ImportName: "map",
-		ToModule:   "lodash/map",
+		ToModule:   lodashMapSubpath,
 	}
 	late := report.CodemodSuggestion{
 		File:       "b.js",
@@ -159,17 +160,17 @@ func TestHasResolvableSubpathFile(t *testing.T) {
 }
 
 func TestRewriteImportLine(t *testing.T) {
-	importLine, ok := rewriteImportLine(`import { map } from "lodash";`, "lodash", "map", "lodash/map")
-	if !ok || importLine != `import map from "lodash/map";` {
+	importLine, ok := rewriteImportLine(`import { map } from "lodash";`, "lodash", "map", lodashMapSubpath)
+	if !ok || importLine != `import map from "`+lodashMapSubpath+`";` {
 		t.Fatalf("expected import rewrite, got ok=%v line=%q", ok, importLine)
 	}
 
-	requireLine, ok := rewriteImportLine(`const { map } = require("lodash");`, "lodash", "map", "lodash/map")
-	if !ok || requireLine != `const map = require("lodash/map");` {
+	requireLine, ok := rewriteImportLine(`const { map } = require("lodash");`, "lodash", "map", lodashMapSubpath)
+	if !ok || requireLine != `const map = require("`+lodashMapSubpath+`");` {
 		t.Fatalf("expected require rewrite, got ok=%v line=%q", ok, requireLine)
 	}
 
-	if _, ok := rewriteImportLine(`import { map as mapAlias } from "lodash";`, "lodash", "map", "lodash/map"); ok {
+	if _, ok := rewriteImportLine(`import { map as mapAlias } from "lodash";`, "lodash", "map", lodashMapSubpath); ok {
 		t.Fatalf("expected aliased import to be rejected")
 	}
 }
@@ -178,7 +179,7 @@ func TestSubpathResolverResolve(t *testing.T) {
 	resolver := subpathResolver{
 		knownSubpaths: map[string]struct{}{"map": {}},
 	}
-	if module, ok := resolver.Resolve("lodash", "map"); !ok || module != "lodash/map" {
+	if module, ok := resolver.Resolve("lodash", "map"); !ok || module != lodashMapSubpath {
 		t.Fatalf("expected known subpath resolution, got ok=%v module=%q", ok, module)
 	}
 
