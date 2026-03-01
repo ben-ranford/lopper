@@ -588,7 +588,7 @@ func groupLookupStrategy(group string, _ string) ([]string, []string) {
 	return prefixes, aliases
 }
 
-func artifactLookupStrategy(group string, artifact string) ([]string, []string) {
+func artifactLookupStrategy(group, artifact string) ([]string, []string) {
 	if artifact == "" {
 		return nil, nil
 	}
