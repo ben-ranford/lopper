@@ -336,7 +336,7 @@ func testAnalysisCacheNewCacheDisabled(t *testing.T) {
 func TestCollectFileRecordWalkError(t *testing.T) {
 	records := make([]string, 0)
 	root := t.TempDir()
-	if err := collectFileRecord(root, filepath.Join(root, "missing"), nil, errors.New("walk failure"), &records); err == nil {
+	if collectFileRecord(root, filepath.Join(root, "missing"), nil, errors.New("walk failure"), &records) == nil {
 		t.Fatalf("expected collectFileRecord to return walk error")
 	}
 }
