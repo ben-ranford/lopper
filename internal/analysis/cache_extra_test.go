@@ -390,7 +390,7 @@ func TestRemoveIfPresentErrorBranch(t *testing.T) {
 		t.Fatalf("mkdir non-empty: %v", err)
 	}
 	mustWriteFile(t, filepath.Join(nonEmpty, "child.txt"), []byte("x"))
-	if err := removeIfPresent(nonEmpty); err == nil {
+	if removeIfPresent(nonEmpty) == nil {
 		t.Fatalf("expected removeIfPresent to fail for non-empty directory")
 	}
 	if err := removeIfPresent(filepath.Join(dir, "missing.txt")); err != nil {
