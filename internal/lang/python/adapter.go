@@ -416,7 +416,7 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 	return recs
 }
 
-func dependencyFromModule(repoPath string, moduleName string) string {
+func dependencyFromModule(repoPath, moduleName string) string {
 	moduleName = strings.TrimSpace(moduleName)
 	if moduleName == "" {
 		return ""
