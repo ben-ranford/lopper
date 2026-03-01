@@ -175,7 +175,7 @@ func TestJVMLookupStrategyBuilders(t *testing.T) {
 
 	customPrefixes := map[string]string{}
 	customAliases := map[string]string{}
-	addLookupByStrategy(customPrefixes, customAliases, "custom", "group", "artifact", func(group string, artifact string) ([]string, []string) {
+	addLookupByStrategy(customPrefixes, customAliases, "custom", "group", "artifact", func(group, artifact string) ([]string, []string) {
 		return []string{group + "." + artifact}, []string{artifact}
 	})
 	if got := customPrefixes["group.artifact"]; got != "custom" {

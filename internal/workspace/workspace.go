@@ -1,12 +1,19 @@
 package workspace
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
+
+var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 
 func NormalizeRepoPath(path string) (string, error) {
 	if path == "" {
@@ -37,6 +44,88 @@ func CurrentCommitSHA(repoPath string) (string, error) {
 		return head, nil
 	}
 	return "", fmt.Errorf("invalid HEAD value")
+}
+
+func ChangedFiles(repoPath string) ([]string, error) {
+	normalized, err := NormalizeRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	gitPath, err := resolveGitBinaryPath()
+	if err != nil {
+		return nil, err
+	}
+	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--name-only", "--diff-filter=ACMR", "HEAD~1..HEAD")
+	if diffErr == nil {
+		return parseChangedFileLines(diffOutput), nil
+	}
+	statusOutput, statusErr := runGit(gitPath, normalized, "status", "--porcelain")
+	if statusErr != nil {
+		return nil, errors.Join(diffErr, statusErr)
+	}
+	return parsePorcelainChangedFiles(statusOutput), nil
+}
+
+func parseChangedFileLines(output []byte) []string {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	return collectUniquePaths(lines, func(line string) string {
+		return strings.TrimSpace(line)
+	})
+}
+
+func collectUniquePaths(lines []string, extractor func(string) string) []string {
+	paths := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		path := extractor(line)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func parsePorcelainChangedFiles(output []byte) []string {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	return collectUniquePaths(lines, func(line string) string {
+		line = strings.TrimSpace(line)
+		if len(line) < 4 {
+			return ""
+		}
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			path = strings.TrimSpace(path[idx+4:])
+		}
+		return path
+	})
+}
+
+func resolveGitBinaryPath() (string, error) {
+	return resolveGitBinaryPathFn()
+}
+
+func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
+	fullArgs := append([]string{"-C", repoPath}, args...)
+	// #nosec G204 -- arguments are fixed and repoPath is normalized to an absolute directory.
+	cmd := exec.Command(gitPath, fullArgs...)
+	cmd.Env = sanitizedGitEnv()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return output, nil
+}
+
+func sanitizedGitEnv() []string {
+	return gitexec.SanitizedEnv()
 }
 
 func resolveGitDir(repoPath string) (string, error) {

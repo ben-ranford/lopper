@@ -57,6 +57,10 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	if err != nil {
 		return req, err
 	}
+	scopeMode, err := parseScopeMode(*flags.scopeMode)
+	if err != nil {
+		return req, err
+	}
 
 	visited := visitedFlags(fs)
 	resolvedThresholds, resolvedScope, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(fs, flags)
@@ -69,6 +73,7 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	req.Analyse = app.AnalyseRequest{
 		Dependency:         dependency,
 		TopN:               *flags.top,
+		ScopeMode:          scopeMode,
 		SuggestOnly:        *flags.suggestOnly,
 		Format:             format,
 		Language:           strings.TrimSpace(*flags.languageFlag),
@@ -97,6 +102,7 @@ type analyseFlagValues struct {
 	repoPath                      *string
 	top                           *int
 	suggestOnly                   *bool
+	scopeMode                     *string
 	formatFlag                    *string
 	cacheEnabled                  *bool
 	cachePath                     *string
@@ -134,6 +140,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
 		top:                           fs.Int("top", 0, "top N dependencies"),
 		suggestOnly:                   fs.Bool("suggest-only", false, "generate codemod patch previews without mutating source files"),
+		scopeMode:                     fs.String("scope-mode", req.Analyse.ScopeMode, "analysis scope mode"),
 		formatFlag:                    fs.String("format", string(req.Analyse.Format), "output format"),
 		cacheEnabled:                  fs.Bool("cache", req.Analyse.CacheEnabled, "enable incremental analysis cache"),
 		cachePath:                     fs.String("cache-path", req.Analyse.CachePath, "analysis cache directory path"),
@@ -447,10 +454,22 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
 		return true
 	default:
 		return false
+	}
+}
+
+func parseScopeMode(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	switch mode {
+	case "", app.ScopeModePackage:
+		return app.ScopeModePackage, nil
+	case app.ScopeModeRepo, app.ScopeModeChangedPackages:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid --scope-mode: %s", value)
 	}
 }
 

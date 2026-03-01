@@ -37,6 +37,10 @@ func sampleEffectivePolicy(source string, failOnIncrease, lowConfidence, minUsag
 func TestFormatTable(t *testing.T) {
 	reportData := Report{
 		UsageUncertainty: &UsageUncertainty{ConfirmedImportUses: 5, UncertainImportUses: 1},
+		Scope: &ScopeMetadata{
+			Mode:     "package",
+			Packages: []string{".", "packages/a"},
+		},
 		EffectiveThresholds: &EffectiveThresholds{
 			FailOnIncreasePercent:             2,
 			LowConfidenceWarningPercent:       35,
@@ -77,6 +81,9 @@ func TestFormatTable(t *testing.T) {
 		"Effective thresholds:",
 		"Usage certainty: confirmed imports=5, uncertain imports=1",
 		"Effective policy:",
+		"Scope:",
+		"mode: package",
+		"packages: ., packages/a",
 		"sources: repo > defaults",
 		"map",
 		"Runtime",
@@ -167,6 +174,7 @@ func TestFormatPRCommentNoDependencyDeltas(t *testing.T) {
 func TestFormatEmptyAndWarnings(t *testing.T) {
 	reportData := Report{
 		Warnings: []string{"warning-1"},
+		Scope:    &ScopeMetadata{Mode: "repo", Packages: []string{"."}},
 		EffectiveThresholds: &EffectiveThresholds{
 			FailOnIncreasePercent:             1,
 			LowConfidenceWarningPercent:       40,
@@ -178,7 +186,7 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	assertOutputContains(t, output, "No dependencies to report.", "Warnings:", "fail_on_increase_percent", "Effective policy:")
+	assertOutputContains(t, output, "No dependencies to report.", "Scope:", "mode: repo", "Warnings:", "fail_on_increase_percent", "Effective policy:")
 }
 
 func TestFormattingHelpers(t *testing.T) {
