@@ -528,7 +528,7 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 	return merged
 }
 
-func filterUsedOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
+func filterUsedOverlaps(unused, used []report.ImportUse) []report.ImportUse {
 	if len(unused) == 0 || len(used) == 0 {
 		return unused
 	}
