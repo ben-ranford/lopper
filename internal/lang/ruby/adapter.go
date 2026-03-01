@@ -82,19 +82,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 
 	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	err := walkRubyRepoFiles(ctx, repoPath, func(path string, entry fs.DirEntry) error {
 		visited++
 		if visited > maxDetectFiles {
 			return fs.SkipAll
@@ -154,19 +142,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	}
 
 	foundRuby := false
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	err := walkRubyRepoFiles(ctx, repoPath, func(path string, entry fs.DirEntry) error {
 		if !strings.EqualFold(filepath.Ext(entry.Name()), ".rb") {
 			return nil
 		}
@@ -196,6 +172,24 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		scan.Warnings = append(scan.Warnings, "no Ruby files found for analysis")
 	}
 	return scan, nil
+}
+
+func walkRubyRepoFiles(ctx context.Context, repoPath string, visitFile func(path string, entry fs.DirEntry) error) error {
+	return filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if entry.IsDir() {
+			if shouldSkipDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return visitFile(path, entry)
+	})
 }
 
 func parseRequires(content []byte, filePath string, declared map[string]struct{}) []importBinding {
