@@ -111,7 +111,7 @@ jobs:
             PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
       - name: Upload Linux/Windows artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-windows
           path: |
@@ -150,7 +150,7 @@ jobs:
             PLATFORMS="darwin/${host_goarch}"
 
       - name: Upload Darwin artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-darwin
           path: |
@@ -212,7 +212,7 @@ jobs:
       contents: write
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           merge-multiple: true
