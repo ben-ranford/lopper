@@ -229,31 +229,39 @@ func detectBindingGyp(depRoot string) ([]string, error) {
 
 func detectNodeBinary(depRoot string) (string, error) {
 	const maxVisited = 600
-	visited := 0
-	found := ""
-	if err := filepath.WalkDir(depRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if entry.Name() == "node_modules" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		visited++
-		if visited > maxVisited {
-			return fs.SkipAll
-		}
-		if strings.EqualFold(filepath.Ext(entry.Name()), ".node") {
-			found = filepath.Base(path)
-			return fs.SkipAll
-		}
-		return nil
-	}); err != nil && err != fs.SkipAll {
+	scanner := nodeBinaryScanner{maxVisited: maxVisited}
+	if err := filepath.WalkDir(depRoot, scanner.walk); err != nil && err != fs.SkipAll {
 		return "", err
 	}
-	return found, nil
+	return scanner.found, nil
+}
+
+type nodeBinaryScanner struct {
+	visited    int
+	maxVisited int
+	found      string
+}
+
+func (s *nodeBinaryScanner) walk(path string, entry fs.DirEntry, err error) error {
+	if err != nil {
+		return err
+	}
+	if entry.IsDir() {
+		if entry.Name() == "node_modules" {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+
+	s.visited++
+	if s.visited > s.maxVisited {
+		return fs.SkipAll
+	}
+	if strings.EqualFold(filepath.Ext(entry.Name()), ".node") {
+		s.found = filepath.Base(path)
+		return fs.SkipAll
+	}
+	return nil
 }
 
 func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) (int, error) {
