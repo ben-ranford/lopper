@@ -34,20 +34,25 @@ func TestDetectWithConfidenceFixtures(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			detection, err := NewAdapter().DetectWithConfidence(context.Background(), tc.repo)
-			if err != nil {
-				t.Fatalf("detect: %v", err)
-			}
-			if !detection.Matched || detection.Confidence <= 0 {
-				t.Fatalf("expected detection match with confidence, got %#v", detection)
-			}
-			if len(detection.Roots) == 0 || !containsSuffix(detection.Roots, tc.wantRootPart) {
-				t.Fatalf("expected root containing %q, got %#v", tc.wantRootPart, detection.Roots)
-			}
-			if tc.noRootPart != "" && containsSuffix(detection.Roots, tc.noRootPart) {
-				t.Fatalf("did not expect root containing %q, got %#v", tc.noRootPart, detection.Roots)
-			}
+			assertDetectionFixture(t, tc.repo, tc.wantRootPart, tc.noRootPart)
 		})
+	}
+}
+
+func assertDetectionFixture(t *testing.T, repoPath string, wantRootPart string, noRootPart string) {
+	t.Helper()
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !detection.Matched || detection.Confidence <= 0 {
+		t.Fatalf("expected detection match with confidence, got %#v", detection)
+	}
+	if len(detection.Roots) == 0 || !containsSuffix(detection.Roots, wantRootPart) {
+		t.Fatalf("expected root containing %q, got %#v", wantRootPart, detection.Roots)
+	}
+	if noRootPart != "" && containsSuffix(detection.Roots, noRootPart) {
+		t.Fatalf("did not expect root containing %q, got %#v", noRootPart, detection.Roots)
 	}
 }
 
@@ -116,6 +121,25 @@ func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 	}
 	if !shouldSkipDir("_build") || shouldSkipDir("lib") {
 		t.Fatalf("unexpected skip-dir behavior")
+	}
+}
+
+func TestDetectWithConfidenceUmbrellaCustomAppsPath(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "mix.exs"), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [apps_path: \"services\"]\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", "mix.exs"), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+	assertDetectionFixture(t, repo, filepath.Join("services", "api"), filepath.Base(repo))
+}
+
+func TestParseImportsAliasAsSetsLocalName(t *testing.T) {
+	content := []byte("defmodule Demo do\n  alias Foo.Bar, as: Baz\n  Baz.run()\nend\n")
+	declared := map[string]struct{}{"foo": {}}
+	imports := parseImports(content, "lib/demo.ex", declared)
+	if len(imports) != 1 {
+		t.Fatalf("expected one import, got %#v", imports)
+	}
+	if imports[0].Local != "Baz" {
+		t.Fatalf("expected alias local name Baz, got %q", imports[0].Local)
 	}
 }
 

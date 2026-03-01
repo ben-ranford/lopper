@@ -1,6 +1,7 @@
 package elixir
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -29,9 +30,11 @@ const (
 )
 
 var (
-	importPattern = regexp.MustCompile(`(?m)^\s*(?:alias|import|use|require)\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)`)
-	quotedDepKey  = regexp.MustCompile(`"([a-z0-9_-]+)"\s*:`)
-	depsPattern   = regexp.MustCompile(`\{\s*:([a-zA-Z0-9_]+)\s*,`)
+	importPattern  = regexp.MustCompile(`(?m)^\s*(alias|import|use|require)\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)`)
+	aliasAsPattern = regexp.MustCompile(`\bas:\s*([A-Z][A-Za-z0-9_]*)\b`)
+	appsPathRegex  = regexp.MustCompile(`apps_path:\s*["']([^"']+)["']`)
+	quotedDepKey   = regexp.MustCompile(`"([a-z0-9_-]+)"\s*:`)
+	depsPattern    = regexp.MustCompile(`\{\s*:([a-zA-Z0-9_]+)\s*,`)
 )
 
 func NewAdapter() *Adapter {
@@ -104,9 +107,9 @@ func detectFromRootFiles(repoPath string, detection *language.Detection, roots m
 		if readErr != nil {
 			return false, readErr
 		}
-		if strings.Contains(string(content), "apps_path:") {
+		if umbrella, appsPath := detectUmbrellaAppsPath(content); umbrella {
 			umbrellaOnly = true
-			if err := addUmbrellaRoots(repoPath, roots); err != nil {
+			if err := addUmbrellaRoots(repoPath, appsPath, roots); err != nil {
 				return false, err
 			}
 		} else {
@@ -127,8 +130,23 @@ func detectFromRootFiles(repoPath string, detection *language.Detection, roots m
 	return umbrellaOnly, nil
 }
 
-func addUmbrellaRoots(repoPath string, roots map[string]struct{}) error {
-	apps, err := filepath.Glob(filepath.Join(repoPath, "apps", "*"))
+func detectUmbrellaAppsPath(content []byte) (bool, string) {
+	raw := string(content)
+	if !strings.Contains(raw, "apps_path:") {
+		return false, ""
+	}
+	matches := appsPathRegex.FindStringSubmatch(raw)
+	if len(matches) >= 2 {
+		path := strings.TrimSpace(matches[1])
+		if path != "" {
+			return true, path
+		}
+	}
+	return true, "apps"
+}
+
+func addUmbrellaRoots(repoPath string, appsPath string, roots map[string]struct{}) error {
+	apps, err := filepath.Glob(filepath.Join(repoPath, appsPath, "*"))
 	if err != nil {
 		return err
 	}
@@ -202,7 +220,8 @@ func parseImports(content []byte, filePath string, declared map[string]struct{})
 	matches := importPattern.FindAllSubmatchIndex(content, -1)
 	records := make([]shared.ImportRecord, 0, len(matches))
 	for _, idx := range matches {
-		module := strings.TrimSpace(string(content[idx[2]:idx[3]]))
+		keyword := strings.TrimSpace(string(content[idx[2]:idx[3]]))
+		module := strings.TrimSpace(string(content[idx[4]:idx[5]]))
 		dependency := dependencyFromModule(module, declared)
 		if dependency == "" {
 			continue
@@ -211,6 +230,11 @@ func parseImports(content []byte, filePath string, declared map[string]struct{})
 		local := module
 		if parts := strings.Split(module, "."); len(parts) > 0 {
 			local = parts[len(parts)-1]
+		}
+		if keyword == "alias" {
+			if aliasLocal := parseAliasLocal(lineBytes(content, idx[0])); aliasLocal != "" {
+				local = aliasLocal
+			}
 		}
 		records = append(records, shared.ImportRecord{
 			Dependency: dependency,
@@ -221,6 +245,25 @@ func parseImports(content []byte, filePath string, declared map[string]struct{})
 		})
 	}
 	return records
+}
+
+func lineBytes(content []byte, start int) []byte {
+	if start < 0 || start >= len(content) {
+		return nil
+	}
+	line := content[start:]
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		return line[:i]
+	}
+	return line
+}
+
+func parseAliasLocal(line []byte) string {
+	matches := aliasAsPattern.FindSubmatch(line)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(string(matches[1]))
 }
 
 func dependencyFromModule(module string, declared map[string]struct{}) string {
