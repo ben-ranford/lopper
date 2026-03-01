@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -86,7 +85,7 @@ func parsePackageJSONLicense(value any) string {
 		}
 	case json.RawMessage:
 		var decodedLicense string
-		if err := json.Unmarshal(typed, &decodedLicense); err == nil {
+		if json.Unmarshal(typed, &decodedLicense) == nil {
 			return decodedLicense
 		}
 	}
@@ -167,28 +166,38 @@ func detectLicenseFromFiles(depRoot string) *report.DependencyLicense {
 
 func findLicenseFiles(depRoot string) []string {
 	files := make([]string, 0, 4)
-	if err := filepath.WalkDir(depRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if path != depRoot && strings.EqualFold(d.Name(), "node_modules") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		base := strings.ToUpper(filepath.Base(path))
-		if strings.HasPrefix(base, "LICENSE") || strings.HasPrefix(base, "COPYING") {
-			files = append(files, path)
-			if len(files) >= 5 {
-				return fs.SkipAll
-			}
-		}
-		return nil
-	}); err != nil {
+	if err := filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files)); err != nil {
 		return files
 	}
 	return files
+}
+
+func licenseWalkFunc(depRoot string, files *[]string) fs.WalkDirFunc {
+	return func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if shouldSkipLicenseDir(depRoot, path, d) {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !isLicenseCandidate(path) {
+			return nil
+		}
+		*files = append(*files, path)
+		if len(*files) >= 5 {
+			return fs.SkipAll
+		}
+		return nil
+	}
+}
+
+func shouldSkipLicenseDir(depRoot, path string, d fs.DirEntry) bool {
+	return d.IsDir() && path != depRoot && strings.EqualFold(d.Name(), "node_modules")
+}
+
+func isLicenseCandidate(path string) bool {
+	base := strings.ToUpper(filepath.Base(path))
+	return strings.HasPrefix(base, "LICENSE") || strings.HasPrefix(base, "COPYING")
 }
 
 func detectSPDXFromLicenseContent(content string) (string, string) {
@@ -270,9 +279,6 @@ func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	pkgPath := filepath.Join(depRoot, "package.json")
 	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
-		}
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}
 

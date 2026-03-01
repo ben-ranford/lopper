@@ -16,6 +16,7 @@ import (
 const (
 	cacheTestJSIndexFileName     = "index.js"
 	cacheTestPackageJSONFileName = "package.json"
+	cacheTestDirectoryName       = "analysis-cache"
 )
 
 type countingAdapter struct {
@@ -71,7 +72,7 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
 
 	svc, adapter := newCacheTestService(t)
-	cacheDir := filepath.Join(repo, "analysis-cache")
+	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
 	req := newCacheRequest(repo, cacheDir, false)
 
 	first, err := svc.Analyse(context.Background(), req)
@@ -117,7 +118,7 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 
 	svc, adapter := newCacheTestService(t)
-	req := newCacheRequest(repo, filepath.Join(repo, "analysis-cache"), true)
+	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), true)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -146,7 +147,7 @@ func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
 		RepoPath: repo,
 		Cache: &CacheOptions{
 			Enabled: true,
-			Path:    filepath.Join(repo, "analysis-cache"),
+			Path:    filepath.Join(repo, cacheTestDirectoryName),
 		},
 	}
 	cache := newAnalysisCache(req, repo)

@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const reportTestGPL30OnlyLower = "GPL-3.0-only"
+
 func TestNormalizeDependencyLicenses(t *testing.T) {
 	deps := []DependencyReport{
 		{Name: "a"},
@@ -22,11 +24,11 @@ func TestNormalizeDependencyLicenses(t *testing.T) {
 func TestApplyLicensePolicyAndCountDenied(t *testing.T) {
 	deps := []DependencyReport{
 		{Name: "a", License: &DependencyLicense{SPDX: "MIT OR Apache-2.0"}},
-		{Name: "b", License: &DependencyLicense{SPDX: "GPL-3.0-only"}},
+		{Name: "b", License: &DependencyLicense{SPDX: reportTestGPL30OnlyLower}},
 		{Name: "c", License: &DependencyLicense{SPDX: "AGPL-3.0-only WITH GCC-exception-3.1"}},
 	}
 
-	ApplyLicensePolicy(deps, []string{"gpl-3.0-only", "agpl-3.0-only"})
+	ApplyLicensePolicy(deps, []string{reportTestGPL30OnlyLower, "agpl-3.0-only"})
 	if deps[0].License.Denied {
 		t.Fatalf("did not expect MIT/Apache to be denied")
 	}
@@ -40,7 +42,7 @@ func TestApplyLicensePolicyAndCountDenied(t *testing.T) {
 
 func TestApplyLicensePolicyClearsDeniedWhenNoDenyList(t *testing.T) {
 	deps := []DependencyReport{
-		{Name: "x", License: &DependencyLicense{SPDX: "GPL-3.0-only", Denied: true}},
+		{Name: "x", License: &DependencyLicense{SPDX: reportTestGPL30OnlyLower, Denied: true}},
 		{Name: "y", License: nil},
 	}
 	ApplyLicensePolicy(deps, nil)

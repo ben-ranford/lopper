@@ -155,7 +155,16 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	case req.Dependency != "":
 		resolvedRoots := resolveDependencyRootsFromScan(repoPath, req.Dependency, scanResult)
 		dependencyRootPath := firstResolvedDependencyRoot(resolvedRoots)
-		depReport, warnings := buildDependencyReport(repoPath, req.Dependency, dependencyRootPath, scanResult, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), req.SuggestOnly, req.IncludeRegistryProvenance)
+		depReport, warnings := buildDependencyReport(dependencyReportOptions{
+			RepoPath:                          repoPath,
+			Dependency:                        req.Dependency,
+			DependencyRootPath:                dependencyRootPath,
+			ScanResult:                        scanResult,
+			RuntimeProfile:                    req.RuntimeProfile,
+			MinUsagePercentForRecommendations: resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+			SuggestOnly:                       req.SuggestOnly,
+			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
+		})
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(resolvedRoots) > 1 {
@@ -198,16 +207,27 @@ func summarizeUsageUncertainty(scanResult ScanResult) *report.UsageUncertainty {
 	return usage
 }
 
-func buildDependencyReport(repoPath string, dependency string, dependencyRootPath string, scanResult ScanResult, runtimeProfile string, minUsagePercentForRecommendations int, suggestOnly bool, includeRegistryProvenance bool) (report.DependencyReport, []string) {
+type dependencyReportOptions struct {
+	RepoPath                          string
+	Dependency                        string
+	DependencyRootPath                string
+	ScanResult                        ScanResult
+	RuntimeProfile                    string
+	MinUsagePercentForRecommendations int
+	SuggestOnly                       bool
+	IncludeRegistryProvenance         bool
+}
+
+func buildDependencyReport(opts dependencyReportOptions) (report.DependencyReport, []string) {
 	warnings := make([]string, 0)
 
-	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile)
+	surface, surfaceWarnings := resolveSurfaceWarnings(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.RuntimeProfile)
 	warnings = append(warnings, surfaceWarnings...)
-	usage := collectDependencyUsageSummary(scanResult, dependency)
+	usage := collectDependencyUsageSummary(opts.ScanResult, opts.Dependency)
 	warnings = append(warnings, usage.warnings...)
 
 	totalExports := totalExportCount(surface)
-	unusedExports := buildUnusedExports(dependency, surface.Names, usage.usedExports)
+	unusedExports := buildUnusedExports(opts.Dependency, surface.Names, usage.usedExports)
 	usedPercent := exportUsedPercent(surface, usage.usedExports, totalExports)
 
 	usedExportCount := countUsedExports(surface.Names, usage.usedExports)
@@ -215,14 +235,14 @@ func buildDependencyReport(repoPath string, dependency string, dependencyRootPat
 		usedExportCount = len(usage.usedExports)
 	}
 
-	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, dependencyRootPath, surface)
+	riskCues, riskWarnings := assessRiskCues(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, surface)
 	warnings = append(warnings, riskWarnings...)
-	license, provenance, licenseWarnings := detectLicenseAndProvenance(dependencyRootPath, includeRegistryProvenance)
+	license, provenance, licenseWarnings := detectLicenseAndProvenance(opts.DependencyRootPath, opts.IncludeRegistryProvenance)
 	warnings = append(warnings, licenseWarnings...)
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
-		Name:                 dependency,
+		Name:                 opts.Dependency,
 		UsedExportsCount:     usedExportCount,
 		TotalExportsCount:    totalExports,
 		UsedPercent:          usedPercent,
@@ -235,9 +255,9 @@ func buildDependencyReport(repoPath string, dependency string, dependencyRootPat
 		License:              license,
 		Provenance:           provenance,
 	}
-	depReport.Recommendations = buildRecommendations(dependency, depReport, minUsagePercentForRecommendations)
-	if suggestOnly {
-		codemod, codemodWarnings := BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath, scanResult)
+	depReport.Recommendations = buildRecommendations(opts.Dependency, depReport, opts.MinUsagePercentForRecommendations)
+	if opts.SuggestOnly {
+		codemod, codemodWarnings := BuildSubpathCodemodReport(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.ScanResult)
 		depReport.Codemod = codemod
 		warnings = append(warnings, codemodWarnings...)
 	}
@@ -585,7 +605,16 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(repoPath, dep, dependencyRoots[dep], scanResult, runtimeProfile, minUsagePercentForRecommendations, false, includeRegistryProvenance)
+		depReport, depWarnings := buildDependencyReport(dependencyReportOptions{
+			RepoPath:                          repoPath,
+			Dependency:                        dep,
+			DependencyRootPath:                dependencyRoots[dep],
+			ScanResult:                        scanResult,
+			RuntimeProfile:                    runtimeProfile,
+			MinUsagePercentForRecommendations: minUsagePercentForRecommendations,
+			SuggestOnly:                       false,
+			IncludeRegistryProvenance:         includeRegistryProvenance,
+		})
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}

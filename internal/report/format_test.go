@@ -7,7 +7,10 @@ import (
 	"testing"
 )
 
-const unexpectedErrFmt = "unexpected error: %v"
+const (
+	unexpectedErrFmt         = "unexpected error: %v"
+	formatTestGPL30OnlyUpper = "GPL-3.0-ONLY"
+)
 
 func assertOutputContains(t *testing.T, output string, values ...string) {
 	t.Helper()
@@ -176,7 +179,7 @@ func TestFormatPRCommentIncludesNewDeniedLicenses(t *testing.T) {
 		BaselineComparison: &BaselineComparison{
 			SummaryDelta: SummaryDelta{},
 			NewDeniedLicenses: []DeniedLicenseDelta{
-				{Name: "left-pad", Language: "js-ts", SPDX: "GPL-3.0-ONLY"},
+				{Name: "left-pad", Language: "js-ts", SPDX: formatTestGPL30OnlyUpper},
 			},
 		},
 	}
@@ -184,7 +187,7 @@ func TestFormatPRCommentIncludesNewDeniedLicenses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("format pr-comment denied licenses: %v", err)
 	}
-	assertOutputContains(t, output, "### Newly denied licenses", "left-pad", "GPL-3.0-ONLY")
+	assertOutputContains(t, output, "### Newly denied licenses", "left-pad", formatTestGPL30OnlyUpper)
 }
 
 func TestFormatEmptyAndWarnings(t *testing.T) {
@@ -205,7 +208,7 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 	assertOutputContains(t, output, "No dependencies to report.", "Scope:", "mode: repo", "Warnings:", "fail_on_increase_percent", "Effective policy:")
 }
 
-func TestFormattingHelpers(t *testing.T) {
+func TestFormattingHelpersBytesAndSymbols(t *testing.T) {
 	if got := formatBytes(0); got != "0 B" {
 		t.Fatalf("unexpected 0-byte format: %q", got)
 	}
@@ -221,6 +224,9 @@ func TestFormattingHelpers(t *testing.T) {
 	if got := formatTopSymbols([]SymbolUsage{{Name: "map", Count: 2}}); !strings.Contains(got, "map (2)") {
 		t.Fatalf("expected symbol count annotation, got %q", got)
 	}
+}
+
+func TestFormattingHelpersColumnSelection(t *testing.T) {
 	if hasLanguageColumn([]DependencyReport{{Name: "x"}}) {
 		t.Fatalf("did not expect language column without language values")
 	}
@@ -230,12 +236,21 @@ func TestFormattingHelpers(t *testing.T) {
 	if !hasRuntimeColumn([]DependencyReport{{Name: "x", RuntimeUsage: &RuntimeUsage{LoadCount: 1}}}) {
 		t.Fatalf("expected runtime column with runtime data")
 	}
+}
+
+func TestFormattingHelpersLicenseFields(t *testing.T) {
 	if got := formatDependencyLicense(nil); got != "unknown" {
 		t.Fatalf("expected unknown license fallback, got %q", got)
 	}
 	if got := formatDependencyLicense(&DependencyLicense{SPDX: "MIT", Denied: true}); !strings.Contains(got, "denied") {
 		t.Fatalf("expected denied license marker, got %q", got)
 	}
+	if got := formatDependencyLicense(&DependencyLicense{Unknown: true, Denied: true}); !strings.Contains(got, "denied") {
+		t.Fatalf("expected denied marker for unknown denied license, got %q", got)
+	}
+}
+
+func TestFormattingHelpersProvenanceFields(t *testing.T) {
 	if got := formatDependencyProvenance(nil); got != "-" {
 		t.Fatalf("expected dash for nil provenance, got %q", got)
 	}
@@ -247,9 +262,6 @@ func TestFormattingHelpers(t *testing.T) {
 	}
 	if got := formatDependencyProvenance(&DependencyProvenance{}); got != "-" {
 		t.Fatalf("expected empty provenance to render dash, got %q", got)
-	}
-	if got := formatDependencyLicense(&DependencyLicense{Unknown: true, Denied: true}); !strings.Contains(got, "denied") {
-		t.Fatalf("expected denied marker for unknown denied license, got %q", got)
 	}
 }
 
@@ -444,7 +456,7 @@ func TestFormatTableIncludesDeniedLicenseBaselineLines(t *testing.T) {
 				DeniedLicenseCountDelta:  1,
 			},
 			NewDeniedLicenses: []DeniedLicenseDelta{
-				{Name: "pkg-a", Language: "js-ts", SPDX: "GPL-3.0-ONLY"},
+				{Name: "pkg-a", Language: "js-ts", SPDX: formatTestGPL30OnlyUpper},
 			},
 		},
 		Dependencies: []DependencyReport{
