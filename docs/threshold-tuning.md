@@ -10,6 +10,9 @@ This guide explains how to tune `lopper` threshold behavior for CI quality gates
 - `removal_candidate_weight_usage`: relative weight for removal-candidate usage signal.
 - `removal_candidate_weight_impact`: relative weight for removal-candidate impact signal.
 - `removal_candidate_weight_confidence`: relative weight for removal-candidate confidence signal.
+- `license_deny`: SPDX deny list used for license policy checks.
+- `license_fail_on_deny`: fail CI when denied licenses are detected.
+- `license_include_registry_provenance`: opt-in JS/TS registry provenance heuristics (default local-only).
 
 Default values:
 
@@ -19,6 +22,9 @@ Default values:
 - `removal_candidate_weight_usage: 0.50`
 - `removal_candidate_weight_impact: 0.30`
 - `removal_candidate_weight_confidence: 0.20`
+- `license_deny: []`
+- `license_fail_on_deny: false`
+- `license_include_registry_provenance: false`
 
 Validation ranges:
 
@@ -39,6 +45,9 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2 \
   --threshold-low-confidence-warning 35 \
   --threshold-min-usage-percent 45 \
+  --license-deny GPL-3.0-only,AGPL-3.0-only \
+  --license-fail-on-deny \
+  --license-provenance-registry \
   --score-weight-usage 0.50 \
   --score-weight-impact 0.30 \
   --score-weight-confidence 0.20
@@ -51,6 +60,11 @@ thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
   min_usage_percent_for_recommendations: 45
+  license_deny:
+    - GPL-3.0-only
+    - AGPL-3.0-only
+  license_fail_on_deny: true
+  license_include_registry_provenance: false
   removal_candidate_weight_usage: 0.50
   removal_candidate_weight_impact: 0.30
   removal_candidate_weight_confidence: 0.20
@@ -148,6 +162,7 @@ lopper analyse --top 20 --repo . --language all --format json | jq '.effectivePo
 ## CI usage notes
 
 - If `fail_on_increase_percent` is above `0`, you need `--baseline PATH` for compare mode.
+- If `license_fail_on_deny` is enabled, CI exits non-zero when denied licenses appear, and baseline comparison highlights `newDeniedLicenses`.
 - You can use immutable keyed snapshots instead of a raw file path:
   - Save baseline: `--baseline-store DIR --save-baseline` (defaults key to `commit:<sha>`)
   - Save labeled baseline: add `--baseline-label LABEL`

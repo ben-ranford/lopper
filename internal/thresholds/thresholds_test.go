@@ -145,3 +145,32 @@ func TestOverridesApplyAllFields(t *testing.T) {
 		t.Fatalf("unexpected lockfile drift policy: %+v", got)
 	}
 }
+
+func TestNormalizeDenyListAndApply(t *testing.T) {
+	fail := true
+	withRegistry := true
+	overrides := Overrides{
+		LicenseDenyList:                  []string{"gpl-3.0-only", "GPL-3.0-only", "agpl-3.0-only"},
+		LicenseFailOnDeny:                &fail,
+		LicenseIncludeRegistryProvenance: &withRegistry,
+	}
+	got := overrides.Apply(Defaults())
+	if strings.Join(got.LicenseDenyList, ",") != "AGPL-3.0-ONLY,GPL-3.0-ONLY" {
+		t.Fatalf("unexpected deny list normalization: %#v", got.LicenseDenyList)
+	}
+	if !got.LicenseFailOnDeny || !got.LicenseIncludeRegistryProvenance {
+		t.Fatalf("expected license policy booleans to apply, got %+v", got)
+	}
+}
+
+func TestNormalizeDenyListEmptyAndInvalid(t *testing.T) {
+	gotEmpty := (&Overrides{}).Apply(Defaults())
+	if len(gotEmpty.LicenseDenyList) != 0 {
+		t.Fatalf("expected empty deny list when unset, got %#v", gotEmpty.LicenseDenyList)
+	}
+
+	gotInvalid := (&Overrides{LicenseDenyList: []string{"", "   ", "!!!", "@@@", "()"}}).Apply(Defaults())
+	if len(gotInvalid.LicenseDenyList) != 0 {
+		t.Fatalf("expected empty deny list when all entries normalize away, got %#v", gotInvalid.LicenseDenyList)
+	}
+}

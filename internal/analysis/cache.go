@@ -145,6 +145,10 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	if req.LowConfidenceWarningPercent != nil {
 		baseKey["lowConfidenceWarningPercent"] = *req.LowConfidenceWarningPercent
 	}
+	if len(req.LicenseDenyList) > 0 {
+		baseKey["licenseDeny"] = req.LicenseDenyList
+	}
+	baseKey["includeRegistryProvenance"] = req.IncludeRegistryProvenance
 	baseDigest, err := hashJSON(baseKey)
 	if err != nil {
 		return cacheEntryDescriptor{}, err

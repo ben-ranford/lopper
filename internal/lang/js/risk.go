@@ -1,7 +1,6 @@
 package js
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -102,20 +101,6 @@ func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency str
 		Message:  fmt.Sprintf("transitive dependency depth is %d levels", depth),
 	})
 	return cues, warnings
-}
-
-func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
-	pkgPath := filepath.Join(depRoot, "package.json")
-	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
-	if err != nil {
-		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
-	}
-
-	var pkg packageJSON
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return packageJSON{}, []string{fmt.Sprintf("failed to parse dependency metadata: %s", pkgPath)}
-	}
-	return pkg, nil
 }
 
 func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []string, error) {

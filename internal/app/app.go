@@ -21,6 +21,7 @@ var (
 	ErrBaselineRequired             = errors.New("baseline report is required for fail-on-increase")
 	ErrLockfileDrift                = errors.New("lockfile drift detected")
 	ErrUncertaintyThresholdExceeded = errors.New("uncertain dynamic import/require usage exceeded threshold")
+	ErrDeniedLicenses               = errors.New("denied licenses detected")
 )
 
 type App struct {
@@ -96,6 +97,8 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
 		RemovalCandidateWeights:           &weights,
+		LicenseDenyList:                   append([]string{}, req.Analyse.Thresholds.LicenseDenyList...),
+		IncludeRegistryProvenance:         req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
 		Cache: &analysis.CacheOptions{
 			Enabled:  req.Analyse.CacheEnabled,
 			Path:     req.Analyse.CachePath,
@@ -124,45 +127,45 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 			Impact:     req.Analyse.Thresholds.RemovalCandidateWeightImpact,
 			Confidence: req.Analyse.Thresholds.RemovalCandidateWeightConfidence,
 		},
+		License: report.LicensePolicy{
+			Deny:                      report.SortedDenyList(req.Analyse.Thresholds.LicenseDenyList),
+			FailOnDenied:              req.Analyse.Thresholds.LicenseFailOnDeny,
+			IncludeRegistryProvenance: req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
+		},
 	}
 	reportData.Warnings = append(reportData.Warnings, runtimeWarnings...)
 	reportData.Warnings = append(reportData.Warnings, lockfileWarnings...)
 
 	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)
 	if err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateUncertaintyThreshold(reportData, req.Analyse.Thresholds.MaxUncertainImportCount); err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
+	}
+	if err := validateDeniedLicenses(reportData, req.Analyse.Thresholds.LicenseFailOnDeny); err != nil {
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	reportData, err = a.saveBaselineIfNeeded(reportData, req.RepoPath, req.Analyse, time.Now())
 	if err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	formatted, err := a.Formatter.Format(reportData, req.Analyse.Format)
 	if err != nil {
 		return "", err
 	}
 	return formatted, nil
+}
+
+func (a *App) formatReportWithOriginalError(reportData report.Report, format report.Format, originalErr error) (string, error) {
+	formatted, formatErr := a.Formatter.Format(reportData, format)
+	if formatErr != nil {
+		return "", originalErr
+	}
+	return formatted, originalErr
 }
 
 func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
@@ -308,6 +311,22 @@ func validateUncertaintyThreshold(reportData report.Report, threshold int) error
 	}
 	if uncertainImports > threshold {
 		return ErrUncertaintyThresholdExceeded
+	}
+	return nil
+}
+
+func validateDeniedLicenses(reportData report.Report, failOnDeny bool) error {
+	if !failOnDeny {
+		return nil
+	}
+	if reportData.BaselineComparison != nil {
+		if len(reportData.BaselineComparison.NewDeniedLicenses) > 0 {
+			return ErrDeniedLicenses
+		}
+		return nil
+	}
+	if report.CountDeniedLicenses(reportData.Dependencies) > 0 {
+		return ErrDeniedLicenses
 	}
 	return nil
 }
