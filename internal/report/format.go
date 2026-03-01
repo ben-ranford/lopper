@@ -42,6 +42,7 @@ func formatTable(report Report) (string, error) {
 	var buffer bytes.Buffer
 	appendSummary(&buffer, report.Summary)
 	appendUsageUncertainty(&buffer, report.UsageUncertainty)
+	appendScopeMetadata(&buffer, report.Scope)
 	appendCacheMetadata(&buffer, report.Cache)
 	appendEffectiveThresholds(&buffer, report)
 	appendEffectivePolicy(&buffer, report)
@@ -164,10 +165,25 @@ func formatEmpty(report Report) string {
 	var buffer bytes.Buffer
 	buffer.WriteString("No dependencies to report.\n")
 	appendUsageUncertainty(&buffer, report.UsageUncertainty)
+	appendScopeMetadata(&buffer, report.Scope)
 	appendEffectiveThresholds(&buffer, report)
 	appendEffectivePolicy(&buffer, report)
 	appendWarnings(&buffer, report)
 	return buffer.String()
+}
+
+func appendScopeMetadata(buffer *bytes.Buffer, scope *ScopeMetadata) {
+	if scope == nil {
+		return
+	}
+	buffer.WriteString("Scope:\n")
+	buffer.WriteString(fmt.Sprintf("- mode: %s\n", scope.Mode))
+	if len(scope.Packages) > 0 {
+		buffer.WriteString("- packages: ")
+		buffer.WriteString(strings.Join(scope.Packages, ", "))
+		buffer.WriteString("\n")
+	}
+	buffer.WriteString("\n")
 }
 
 func appendEffectiveThresholds(buffer *bytes.Buffer, report Report) {
