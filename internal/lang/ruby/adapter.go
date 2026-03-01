@@ -339,28 +339,19 @@ func loadBundlerDependencies(repoPath string, out map[string]struct{}) error {
 }
 
 func loadGemfileDependencies(repoPath string, out map[string]struct{}) error {
-	content, err := readBundlerFile(repoPath, gemfileName)
-	if err != nil {
-		return err
-	}
-	if len(content) == 0 {
-		return nil
-	}
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		matches := gemDeclarationPattern.FindStringSubmatch(shared.StripLineComment(line, "#"))
-		if len(matches) != 2 {
-			continue
-		}
-		if dependency := normalizeDependencyID(matches[1]); dependency != "" {
-			out[dependency] = struct{}{}
-		}
-	}
-	return nil
+	return loadBundlerDependenciesByPattern(repoPath, gemfileName, out, func(line string) []string {
+		return gemDeclarationPattern.FindStringSubmatch(shared.StripLineComment(line, "#"))
+	})
 }
 
 func loadGemfileLockDependencies(repoPath string, out map[string]struct{}) error {
-	content, err := readBundlerFile(repoPath, gemfileLockName)
+	return loadBundlerDependenciesByPattern(repoPath, gemfileLockName, out, func(line string) []string {
+		return gemSpecPattern.FindStringSubmatch(line)
+	})
+}
+
+func loadBundlerDependenciesByPattern(repoPath, filename string, out map[string]struct{}, matchLine func(string) []string) error {
+	content, err := readBundlerFile(repoPath, filename)
 	if err != nil {
 		return err
 	}
@@ -369,7 +360,7 @@ func loadGemfileLockDependencies(repoPath string, out map[string]struct{}) error
 	}
 	lines := strings.Split(string(content), "\n")
 	for _, line := range lines {
-		matches := gemSpecPattern.FindStringSubmatch(line)
+		matches := matchLine(line)
 		if len(matches) != 2 {
 			continue
 		}
