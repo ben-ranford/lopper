@@ -521,7 +521,7 @@ func flattenImportUses(source map[string]*report.ImportUse) []report.ImportUse {
 	return items
 }
 
-func removeOverlappingUnusedImports(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
+func removeOverlappingUnusedImports(unused, used []report.ImportUse) []report.ImportUse {
 	usedKeys := make(map[string]struct{}, len(used))
 	for _, entry := range used {
 		usedKeys[fmt.Sprintf("%s:%s", entry.Module, entry.Name)] = struct{}{}
