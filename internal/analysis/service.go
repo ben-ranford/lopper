@@ -11,11 +11,13 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/cpp"
 	"github.com/ben-ranford/lopper/internal/lang/dotnet"
+	"github.com/ben-ranford/lopper/internal/lang/elixir"
 	"github.com/ben-ranford/lopper/internal/lang/golang"
 	"github.com/ben-ranford/lopper/internal/lang/js"
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
 	"github.com/ben-ranford/lopper/internal/lang/php"
 	"github.com/ben-ranford/lopper/internal/lang/python"
+	"github.com/ben-ranford/lopper/internal/lang/ruby"
 	"github.com/ben-ranford/lopper/internal/lang/rust"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -55,7 +57,13 @@ func NewService() *Service {
 		err = registry.Register(rust.NewAdapter())
 	}
 	if err == nil {
+		err = registry.Register(ruby.NewAdapter())
+	}
+	if err == nil {
 		err = registry.Register(dotnet.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(elixir.NewAdapter())
 	}
 
 	return &Service{
@@ -69,6 +77,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err != nil {
 		return report.Report{}, err
 	}
+	req.ScopeMode = normalizeScopeMode(req.ScopeMode)
 	analysisRepoPath, scopeWarnings, cleanupScope, err := applyPathScope(repoPath, req.IncludePatterns, req.ExcludePatterns)
 	if err != nil {
 		return report.Report{}, err
@@ -80,10 +89,11 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	}
 	cache := newAnalysisCache(req, analysisRepoPath)
 
-	reports, warnings, err := s.runCandidates(ctx, req, analysisRepoPath, candidates, cache)
+	reports, warnings, analyzedRoots, err := s.runCandidates(ctx, req, analysisRepoPath, candidates, cache)
 	if err != nil {
 		return report.Report{}, err
 	}
+	analyzedRoots = remapAnalyzedRoots(analyzedRoots, analysisRepoPath, repoPath)
 	warnings = append(scopeWarnings, warnings...)
 	warnings = append(warnings, cache.takeWarnings()...)
 	if len(reports) == 0 {
@@ -96,6 +106,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 		if err != nil {
 			return report.Report{}, err
 		}
+		reportData.Scope = scopeMetadata(req.ScopeMode, repoPath, analyzedRoots)
 		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 		reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)
 		reportData.SchemaVersion = report.SchemaVersion
@@ -113,6 +124,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
 	report.AnnotateFindingConfidence(reportData.Dependencies)
 	report.FilterFindingsByConfidence(reportData.Dependencies, lowConfidenceThreshold)
+	reportData.Scope = scopeMetadata(req.ScopeMode, repoPath, analyzedRoots)
 	report.AnnotateRemovalCandidateScoresWithWeights(reportData.Dependencies, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 	reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)
@@ -142,20 +154,22 @@ func (s *Service) resolveCandidates(ctx context.Context, repoPath string, langua
 	return candidates, nil
 }
 
-func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
+	analyzedRoots := make([]string, 0)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
+		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		reports = append(reports, candidateReports...)
 		warnings = append(warnings, candidateWarnings...)
+		analyzedRoots = append(analyzedRoots, candidateRoots...)
 	}
-	return reports, warnings, nil
+	return reports, warnings, uniqueSorted(analyzedRoots), nil
 }
 
 func lowConfidenceWarning(languageID string, candidate language.Candidate, lowConfidenceThreshold int) []string {
@@ -168,15 +182,19 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
 }
 
-func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, error) {
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
+	analyzedRoots := make([]string, 0)
 	rootSeen := make(map[string]struct{})
-	for _, root := range candidateRoots(candidate.Detection.Roots, repoPath) {
+	roots, rootWarnings := scopedCandidateRoots(req.ScopeMode, candidate.Detection.Roots, repoPath)
+	warnings = append(warnings, rootWarnings...)
+	for _, root := range roots {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)
 		if alreadySeenRoot(rootSeen, normalizedRoot) {
 			continue
 		}
+		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
 		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot)
 		if hit {
@@ -200,14 +218,14 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 				warnings = append(warnings, err.Error())
 				continue
 			}
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
 		reports = append(reports, current)
 	}
-	return reports, warnings, nil
+	return reports, warnings, analyzedRoots, nil
 }
 
 func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
@@ -265,11 +283,111 @@ func candidateRoots(roots []string, repoPath string) []string {
 	return roots
 }
 
+func normalizeScopeMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case ScopeModeRepo, ScopeModeChangedPackages:
+		return mode
+	default:
+		return ScopeModePackage
+	}
+}
+
+func scopedCandidateRoots(scopeMode string, roots []string, repoPath string) ([]string, []string) {
+	switch normalizeScopeMode(scopeMode) {
+	case ScopeModeRepo:
+		return []string{repoPath}, nil
+	case ScopeModeChangedPackages:
+		baseRoots := candidateRoots(roots, repoPath)
+		changedFiles, err := workspace.ChangedFiles(repoPath)
+		if err != nil {
+			return baseRoots, []string{"unable to resolve changed packages; falling back to package scope: " + err.Error()}
+		}
+		return changedRoots(baseRoots, repoPath, changedFiles), nil
+	default:
+		return candidateRoots(roots, repoPath), nil
+	}
+}
+
+func changedRoots(roots []string, repoPath string, changedFiles []string) []string {
+	absoluteChangedFiles := make([]string, 0, len(changedFiles))
+	for _, file := range changedFiles {
+		absoluteChangedFiles = append(absoluteChangedFiles, filepath.Join(repoPath, file))
+	}
+	changed := make([]string, 0, len(roots))
+	for _, root := range roots {
+		for _, file := range absoluteChangedFiles {
+			if rootContainsFile(root, file) {
+				changed = append(changed, root)
+				break
+			}
+		}
+	}
+	return uniqueSorted(changed)
+}
+
+func rootContainsFile(root, file string) bool {
+	rel, err := filepath.Rel(root, file)
+	if err != nil {
+		return false
+	}
+	return rel == "." || !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
+func scopeMetadata(mode, repoPath string, roots []string) *report.ScopeMetadata {
+	packages := make([]string, 0, len(roots))
+	for _, root := range uniqueSorted(roots) {
+		rel, err := filepath.Rel(repoPath, root)
+		if err != nil {
+			continue
+		}
+		if rel == "" {
+			rel = "."
+		}
+		packages = append(packages, filepath.ToSlash(rel))
+	}
+	return &report.ScopeMetadata{
+		Mode:     normalizeScopeMode(mode),
+		Packages: packages,
+	}
+}
+
+func uniqueSorted(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	items := append([]string(nil), values...)
+	sort.Strings(items)
+	unique := items[:1]
+	for i := 1; i < len(items); i++ {
+		if items[i] != items[i-1] {
+			unique = append(unique, items[i])
+		}
+	}
+	return unique
+}
+
 func normalizeCandidateRoot(repoPath, root string) string {
 	if filepath.IsAbs(root) {
 		return root
 	}
 	return filepath.Join(repoPath, root)
+}
+
+func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []string {
+	if fromRepoPath == toRepoPath || len(roots) == 0 {
+		return roots
+	}
+	remapped := make([]string, 0, len(roots))
+	for _, root := range roots {
+		rel, err := filepath.Rel(fromRepoPath, root)
+		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			remapped = append(remapped, root)
+			continue
+		}
+		remapped = append(remapped, filepath.Join(toRepoPath, rel))
+	}
+	return uniqueSorted(remapped)
 }
 
 func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report) (report.Report, error) {
@@ -396,7 +514,7 @@ func cappedSampleCopy(samples []report.Location) []report.Location {
 	return append([]report.Location{}, samples...)
 }
 
-func mergeDependency(left report.DependencyReport, right report.DependencyReport) report.DependencyReport {
+func mergeDependency(left, right report.DependencyReport) report.DependencyReport {
 	merged := left
 	merged.UsedExportsCount += right.UsedExportsCount
 	merged.TotalExportsCount += right.TotalExportsCount
@@ -418,7 +536,7 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 	return merged
 }
 
-func filterUsedOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
+func filterUsedOverlaps(unused, used []report.ImportUse) []report.ImportUse {
 	if len(unused) == 0 || len(used) == 0 {
 		return unused
 	}

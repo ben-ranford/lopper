@@ -9,16 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 const lockfileDriftWarningPrefix = "lockfile drift detected: "
-const safeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
-const gitExecutablePrimary = "/usr/bin/git"
-const gitExecutableFallback = "/bin/git"
 
-var gitExecutableAvailableFn = gitExecutableAvailable
+var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 
 type lockfileRule struct {
 	manager   string
@@ -251,19 +249,10 @@ func gitChangedFiles(ctx context.Context, repoPath string) (map[string]struct{},
 }
 
 func isGitWorktree(ctx context.Context, repoPath string) bool {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var command *exec.Cmd
-	switch {
-	case gitExecutableAvailableFn(gitExecutablePrimary):
-		command = exec.CommandContext(ctx, gitExecutablePrimary, "-C", repoPath, "rev-parse", "--is-inside-work-tree")
-	case gitExecutableAvailableFn(gitExecutableFallback):
-		command = exec.CommandContext(ctx, gitExecutableFallback, "-C", repoPath, "rev-parse", "--is-inside-work-tree")
-	default:
+	command, err := gitCommandContext(ctx, repoPath, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
 		return false
 	}
-	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
 		return false
@@ -272,19 +261,10 @@ func isGitWorktree(ctx context.Context, repoPath string) bool {
 }
 
 func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
-	if ctx == nil {
-		ctx = context.Background()
+	command, err := gitCommandContext(ctx, repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
+	if err != nil {
+		return nil, err
 	}
-	var command *exec.Cmd
-	switch {
-	case gitExecutableAvailableFn(gitExecutablePrimary):
-		command = exec.CommandContext(ctx, gitExecutablePrimary, "-C", repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
-	case gitExecutableAvailableFn(gitExecutableFallback):
-		command = exec.CommandContext(ctx, gitExecutableFallback, "-C", repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
-	default:
-		return nil, fmt.Errorf("git executable not found")
-	}
-	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run git diff --no-ext-diff --no-textconv --name-only HEAD --: %w", err)
@@ -293,24 +273,30 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 }
 
 func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
-	if ctx == nil {
-		ctx = context.Background()
+	command, err := gitCommandContext(ctx, repoPath, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
 	}
-	var command *exec.Cmd
-	switch {
-	case gitExecutableAvailableFn(gitExecutablePrimary):
-		command = exec.CommandContext(ctx, gitExecutablePrimary, "-C", repoPath, "ls-files", "--others", "--exclude-standard")
-	case gitExecutableAvailableFn(gitExecutableFallback):
-		command = exec.CommandContext(ctx, gitExecutableFallback, "-C", repoPath, "ls-files", "--others", "--exclude-standard")
-	default:
-		return nil, fmt.Errorf("git executable not found")
-	}
-	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run git ls-files --others --exclude-standard: %w", err)
 	}
 	return parseGitOutputLines(output), nil
+}
+
+func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gitPath, err := resolveGitBinaryPathFn()
+	if err != nil {
+		return nil, err
+	}
+	commandArgs := append([]string{"-C", repoPath}, args...)
+	// #nosec G204 -- executable path and arguments are fixed by callers.
+	command := exec.CommandContext(ctx, gitPath, commandArgs...)
+	command.Env = sanitizedGitEnv()
+	return command, nil
 }
 
 func parseGitOutputLines(output []byte) []string {
@@ -322,25 +308,5 @@ func parseGitOutputLines(output []byte) []string {
 }
 
 func sanitizedGitEnv() []string {
-	env := os.Environ()
-	filtered := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "GIT_DIR=") ||
-			strings.HasPrefix(entry, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(entry, "GIT_INDEX_FILE=") ||
-			strings.HasPrefix(entry, "PATH=") {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	filtered = append(filtered, safeSystemPath)
-	return filtered
-}
-
-func gitExecutableAvailable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return info.Mode()&0o111 != 0
+	return gitexec.SanitizedEnv()
 }
