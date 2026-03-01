@@ -350,7 +350,7 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	nestedGoModLines := []string{
 		"module example.com/api",
 		"",
-		"require " + depLo + " v1.47.0",
+		requirePrefix + depLo + " v1.47.0",
 		"",
 	}
 	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), strings.Join(nestedGoModLines, "\n"))
@@ -501,7 +501,7 @@ func TestLoadNestedModulesContract(t *testing.T) {
 	nestedXGoModLines := []string{
 		modulePrefix + exampleModuleX,
 		"",
-		"require " + pkgErrorsDependency + " v0.9.1",
+		requirePrefix + pkgErrorsDependency + " v0.9.1",
 		replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
 		"go 1.25",
