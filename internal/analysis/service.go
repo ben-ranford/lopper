@@ -851,7 +851,7 @@ func recommendationLess(left, right report.Recommendation) bool {
 	return recommendationPriorityRank(left.Priority) < recommendationPriorityRank(right.Priority)
 }
 
-func mergeImportUses(left []report.ImportUse, right []report.ImportUse) []report.ImportUse {
+func mergeImportUses(left, right []report.ImportUse) []report.ImportUse {
 	merged := make(map[string]report.ImportUse)
 	for _, item := range append(append([]report.ImportUse{}, left...), right...) {
 		key := item.Module + "\x00" + item.Name
