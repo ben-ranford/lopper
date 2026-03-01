@@ -37,6 +37,15 @@ func TestRubyAdapterHelperBranches(t *testing.T) {
 	if got := dependencyFromRequire("httparty/client", declared); got != "httparty" {
 		t.Fatalf("expected root dependency mapping, got %q", got)
 	}
+	if got := dependencyFromRequire("json", declared); got != "" {
+		t.Fatalf("expected undeclared dependency to be ignored, got %q", got)
+	}
+	if got := dependencyFromRequire("./local", declared); got != "" {
+		t.Fatalf("expected relative dependency to be ignored, got %q", got)
+	}
+	if got := dependencyFromRequire("/usr/lib/ruby", declared); got != "" {
+		t.Fatalf("expected absolute dependency to be ignored, got %q", got)
+	}
 	if got := dependencyFromRequire("", declared); got != "" {
 		t.Fatalf("expected empty dependency for empty module, got %q", got)
 	}
@@ -72,7 +81,7 @@ func TestRubyAdapterHelperBranches(t *testing.T) {
 func TestRubyScanAndBundlerFileBranches(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "gem 'httparty'\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app.rb"), "require_relative './local'\nrequire 'httparty/client'\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "app.rb"), "require_relative './local'\nrequire 'httparty/client'\nrequire 'json'\n")
 
 	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
@@ -80,6 +89,15 @@ func TestRubyScanAndBundlerFileBranches(t *testing.T) {
 	}
 	if _, ok := scan.ImportedDependencies["httparty"]; !ok {
 		t.Fatalf("expected imported dependency root mapping, got %#v", scan.ImportedDependencies)
+	}
+	if _, ok := scan.ImportedDependencies["json"]; ok {
+		t.Fatalf("expected stdlib/undeclared dependency to be ignored, got %#v", scan.ImportedDependencies)
+	}
+	if len(scan.Files) != 1 || len(scan.Files[0].Imports) != 1 {
+		t.Fatalf("expected only one tracked import, got %#v", scan.Files)
+	}
+	if scan.Files[0].Imports[0].Wildcard {
+		t.Fatalf("expected literal require import to not be wildcard")
 	}
 
 	ctx := testutil.CanceledContext()

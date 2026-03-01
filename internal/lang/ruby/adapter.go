@@ -225,7 +225,7 @@ func parseRequires(content []byte, filePath string, declared map[string]struct{}
 			Module:     module,
 			Name:       name,
 			Local:      name,
-			Wildcard:   true,
+			Wildcard:   false,
 			Location:   shared.LocationFromLine(filePath, index, line),
 		}}
 	})
@@ -233,6 +233,9 @@ func parseRequires(content []byte, filePath string, declared map[string]struct{}
 
 func dependencyFromRequire(module string, declared map[string]struct{}) string {
 	if module == "" {
+		return ""
+	}
+	if strings.HasPrefix(module, ".") || strings.HasPrefix(module, "/") {
 		return ""
 	}
 	normalizedModule := normalizeDependencyID(module)
@@ -246,7 +249,7 @@ func dependencyFromRequire(module string, declared map[string]struct{}) string {
 	if _, ok := declared[root]; ok {
 		return root
 	}
-	return root
+	return ""
 }
 
 func buildRequestedRubyDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
