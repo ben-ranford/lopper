@@ -9,13 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
-const safeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
-const gitExecutablePrimary = "/usr/bin/git"
-const gitExecutableFallback = "/bin/git"
-
-var gitExecutableAvailableFn = gitExecutableAvailable
+var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 
 func NormalizeRepoPath(path string) (string, error) {
 	if path == "" {
@@ -109,14 +107,7 @@ func parsePorcelainChangedFiles(output []byte) []string {
 }
 
 func resolveGitBinaryPath() (string, error) {
-	switch {
-	case gitExecutableAvailableFn(gitExecutablePrimary):
-		return gitExecutablePrimary, nil
-	case gitExecutableAvailableFn(gitExecutableFallback):
-		return gitExecutableFallback, nil
-	default:
-		return "", fmt.Errorf("git executable not found")
-	}
+	return resolveGitBinaryPathFn()
 }
 
 func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
@@ -134,27 +125,7 @@ func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
 }
 
 func sanitizedGitEnv() []string {
-	env := os.Environ()
-	filtered := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "GIT_DIR=") ||
-			strings.HasPrefix(entry, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(entry, "GIT_INDEX_FILE=") ||
-			strings.HasPrefix(entry, "PATH=") {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	filtered = append(filtered, safeSystemPath)
-	return filtered
-}
-
-func gitExecutableAvailable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return info.Mode()&0o111 != 0
+	return gitexec.SanitizedEnv()
 }
 
 func resolveGitDir(repoPath string) (string, error) {
