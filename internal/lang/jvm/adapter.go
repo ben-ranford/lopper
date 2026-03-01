@@ -574,7 +574,7 @@ func addLookupByStrategy(prefixes map[string]string, aliases map[string]string, 
 	}
 }
 
-func groupLookupStrategy(group string, _ string) ([]string, []string) {
+func groupLookupStrategy(group, _ string) ([]string, []string) {
 	if group == "" {
 		return nil, nil
 	}
