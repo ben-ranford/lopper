@@ -14,6 +14,8 @@ import (
 const (
 	lodashMapRuntimeModule    = "lodash/map"
 	lodashFilterRuntimeModule = "lodash/filter"
+	repoPackageARoot          = "/repo/packages/a"
+	repoPackageBRoot          = "/repo/packages/b"
 )
 
 func TestHelperFunctions(t *testing.T) {
@@ -31,6 +33,86 @@ func TestHelperFunctions(t *testing.T) {
 	if got := normalizeCandidateRoot("/repo", "sub"); got != filepath.Join("/repo", "sub") {
 		t.Fatalf("unexpected normalized root: %q", got)
 	}
+	if normalizeScopeMode("") != ScopeModePackage {
+		t.Fatalf("expected default scope mode to normalize to package")
+	}
+	if normalizeScopeMode("REPO") != ScopeModeRepo {
+		t.Fatalf("expected repo scope mode normalization")
+	}
+}
+
+func TestChangedRootsAndScopeMetadata(t *testing.T) {
+	roots := []string{repoPackageARoot, repoPackageBRoot, "/repo/packages/c"}
+	changed := changedRoots(roots, "/repo", []string{"packages/b/src/index.ts", "README.md"})
+	if len(changed) != 1 || changed[0] != repoPackageBRoot {
+		t.Fatalf("expected changed root selection, got %#v", changed)
+	}
+
+	metadata := scopeMetadata(ScopeModeChangedPackages, "/repo", []string{repoPackageBRoot, "/repo"})
+	if metadata.Mode != ScopeModeChangedPackages {
+		t.Fatalf("expected changed-packages metadata mode, got %#v", metadata)
+	}
+	if len(metadata.Packages) != 2 || metadata.Packages[0] != "." || metadata.Packages[1] != "packages/b" {
+		t.Fatalf("expected relative package list, got %#v", metadata.Packages)
+	}
+}
+
+func TestScopedCandidateRootsNonGitModes(t *testing.T) {
+	repo := t.TempDir()
+	pkg := filepath.Join(repo, "packages", "a")
+
+	roots, warnings := scopedCandidateRoots(ScopeModeRepo, []string{pkg}, repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for repo mode, got %#v", warnings)
+	}
+	if len(roots) != 1 || roots[0] != repo {
+		t.Fatalf("expected repo root for repo mode, got %#v", roots)
+	}
+
+	roots, warnings = scopedCandidateRoots("", []string{pkg}, repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for package mode, got %#v", warnings)
+	}
+	if len(roots) != 1 || roots[0] != pkg {
+		t.Fatalf("expected package roots for default package mode, got %#v", roots)
+	}
+}
+
+func TestRootContainsFileAndUniqueSortedEdges(t *testing.T) {
+	root := repoPackageARoot
+	if !rootContainsFile(root, root) {
+		t.Fatalf("expected root to contain itself")
+	}
+	if !rootContainsFile(root, repoPackageARoot+"/src/index.ts") {
+		t.Fatalf("expected nested file to be contained")
+	}
+	if rootContainsFile(root, "/repo/packages/b/src/index.ts") {
+		t.Fatalf("expected outside file to be excluded")
+	}
+
+	if got := uniqueSorted(nil); len(got) != 0 {
+		t.Fatalf("expected empty uniqueSorted output for nil input, got %#v", got)
+	}
+	got := uniqueSorted([]string{"b", "a", "b", "a"})
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("unexpected uniqueSorted output: %#v", got)
+	}
+}
+
+func TestRemapAnalyzedRoots(t *testing.T) {
+	roots := []string{"/scoped/packages/a", "/scoped/packages/b", "/outside/path"}
+	got := remapAnalyzedRoots(roots, "/scoped", "/repo")
+	if len(got) != 3 {
+		t.Fatalf("expected remapped roots preserved, got %#v", got)
+	}
+	if got[0] != "/outside/path" || got[1] != repoPackageARoot || got[2] != repoPackageBRoot {
+		t.Fatalf("unexpected remapped roots: %#v", got)
+	}
+
+	same := remapAnalyzedRoots([]string{"/repo/pkg"}, "/repo", "/repo")
+	if len(same) != 1 || same[0] != "/repo/pkg" {
+		t.Fatalf("expected unchanged roots when repo paths match, got %#v", same)
+	}
 }
 
 func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
@@ -42,7 +124,7 @@ func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 	if deps[0].Language != "js-ts" {
 		t.Fatalf("expected language to be applied")
 	}
-	adjustRelativeLocations("/repo", "/repo/packages/a", deps)
+	adjustRelativeLocations("/repo", repoPackageARoot, deps)
 	if deps[0].UsedImports[0].Locations[0].File != filepath.Clean("packages/a/src/main.js") {
 		t.Fatalf("expected relative file adjustment, got %q", deps[0].UsedImports[0].Locations[0].File)
 	}
@@ -225,7 +307,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 		},
 	}
 	svc := &Service{}
-	reports, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all", TopN: 1}, ".", candidate, nil)
+	reports, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{RepoPath: ".", Language: "all", TopN: 1}, ".", candidate, nil)
 	if err != nil {
 		t.Fatalf("runCandidateOnRoots: %v", err)
 	}
@@ -239,7 +321,7 @@ func TestRunCandidatesAndDuplicateRootsBranches(t *testing.T) {
 			Matched: true,
 		},
 	}
-	if _, _, err := svc.runCandidates(context.Background(), Request{RepoPath: ".", Language: "js-ts", TopN: 1}, ".", []language.Candidate{broken}, nil); err == nil {
+	if _, _, _, err := svc.runCandidates(context.Background(), Request{RepoPath: ".", Language: "js-ts", TopN: 1}, ".", []language.Candidate{broken}, nil); err == nil {
 		t.Fatalf("expected runCandidates error for single-language adapter failure")
 	}
 }
@@ -349,7 +431,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	right := &report.CodemodReport{
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "b.ts", Line: 2, ImportName: "map", ToModule: "lodash/map"},
+			{File: "b.ts", Line: 2, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 	}
 	got := mergeCodemodReport(nil, right)
@@ -360,7 +442,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	left := &report.CodemodReport{
 		Mode: "",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 		Skips: []report.CodemodSkip{
 			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
@@ -369,7 +451,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	right = &report.CodemodReport{
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
-			{File: "a.ts", Line: 1, ImportName: "map", ToModule: "lodash/map"},
+			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
 			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: "lodash/filter"},
 		},
 		Skips: []report.CodemodSkip{

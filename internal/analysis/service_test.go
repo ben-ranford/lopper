@@ -40,6 +40,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "index.php"), "<?php\nuse Monolog\\Logger;\n$logger = new Logger(\"app\");\n")
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nanyhow = \"1.0\"\n")
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
+	writeFile(t, filepath.Join(repo, "Gemfile"), "source 'https://rubygems.org'\ngem 'httparty'\n")
+	writeFile(t, filepath.Join(repo, "app.rb"), "require 'httparty'\n")
 	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
 	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
 	writeFile(t, filepath.Join(repo, "src", "native", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
@@ -60,11 +62,16 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "cpp") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
-		t.Fatalf("expected js-ts, python, cpp, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
+	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "rust", "ruby", "dotnet"} {
+		if !slices.Contains(languages, expectedLanguage) {
+			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
+		}
 	}
-	if len(reportData.LanguageBreakdown) < 8 {
+	if len(reportData.LanguageBreakdown) < 9 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
+	}
+	if reportData.Scope == nil || reportData.Scope.Mode != ScopeModePackage || len(reportData.Scope.Packages) == 0 {
+		t.Fatalf("expected scope metadata with analyzed packages, got %#v", reportData.Scope)
 	}
 }
 

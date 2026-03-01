@@ -10,7 +10,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/lopper ./cmd/lopper
 
-FROM alpine:3.21
+FROM alpine:3.23
 RUN apk add --no-cache libstdc++ ca-certificates \
 	&& addgroup -S lopper \
 	&& adduser -S -G lopper lopper

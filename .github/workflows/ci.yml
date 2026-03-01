@@ -370,7 +370,7 @@ jobs:
 
       - name: Upload binary artifact
         if: ${{ always() && !env.ACT }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: lopper-bin
           path: bin/lopper
@@ -400,7 +400,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap.outputs.exists == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@04a6d8cfe9d251e2afb78c5bdc6274ec9642aea2
+        uses: Homebrew/actions/setup-homebrew@ac2ec1ccabf33716b2fe5f4d467e250296951780
 
       - name: Checkout tap formula
         if: ${{ steps.tap.outputs.exists == 'true' }}

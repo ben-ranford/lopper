@@ -76,8 +76,21 @@ func TestParseArgsAnalyseDependency(t *testing.T) {
 	if req.Analyse.RuntimeProfile != "node-import" {
 		t.Fatalf("expected runtime profile node-import, got %q", req.Analyse.RuntimeProfile)
 	}
+	if req.Analyse.ScopeMode != app.ScopeModePackage {
+		t.Fatalf("expected scope mode package, got %q", req.Analyse.ScopeMode)
+	}
 	if req.Analyse.SuggestOnly {
 		t.Fatalf("expected suggest-only to be false by default")
+	}
+}
+
+func TestParseArgsAnalyseScopeMode(t *testing.T) {
+	req, err := ParseArgs([]string{"analyse", "--top", "5", "--scope-mode", "changed-packages"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if req.Analyse.ScopeMode != app.ScopeModeChangedPackages {
+		t.Fatalf("expected changed-packages scope mode, got %q", req.Analyse.ScopeMode)
 	}
 }
 
@@ -112,7 +125,7 @@ func TestParseArgsAnalyseLanguage(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLanguages(t *testing.T) {
-	cases := []string{"all", "jvm", "rust"}
+	cases := []string{"all", "jvm", "rust", "ruby"}
 	for _, language := range cases {
 		t.Run(language, func(t *testing.T) {
 			req := mustParseArgs(t, []string{"analyse", "--top", "10", languageFlagName, language})
@@ -557,6 +570,9 @@ func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
 				t.Fatalf("expected parse error")
 			}
 		})
+	}
+	if _, err := ParseArgs([]string{"analyse", "--top", "2", "--scope-mode", "invalid"}); err == nil {
+		t.Fatalf("expected invalid scope-mode error")
 	}
 }
 
