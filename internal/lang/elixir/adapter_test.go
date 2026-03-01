@@ -105,7 +105,7 @@ func TestAdapterIdentityAndDetect(t *testing.T) {
 
 func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "mix.exs"), "defp deps, do: [{:ecto_sql, \"~> 3.0\"}]")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defp deps, do: [{:ecto_sql, \"~> 3.0\"}]")
 	declared, err := loadDeclaredDependencies(repo)
 	if err != nil {
 		t.Fatalf("load deps: %v", err)
@@ -126,8 +126,8 @@ func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 
 func TestDetectWithConfidenceUmbrellaCustomAppsPath(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "mix.exs"), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [apps_path: \"services\"]\nend\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", "mix.exs"), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [apps_path: \"services\"]\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
 	assertDetectionFixture(t, repo, filepath.Join("services", "api"), filepath.Base(repo))
 }
 
