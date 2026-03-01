@@ -306,7 +306,7 @@ func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[
 	return total, nil
 }
 
-func resolveInstalledDependencyRoot(repoPath string, currentPackageRoot string, dependency string) (string, bool) {
+func resolveInstalledDependencyRoot(repoPath, currentPackageRoot, dependency string) (string, bool) {
 	candidates := []string{
 		filepath.Join(currentPackageRoot, "node_modules", dependencyPath(dependency)),
 		filepath.Join(repoPath, "node_modules", dependencyPath(dependency)),
