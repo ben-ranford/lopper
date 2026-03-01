@@ -327,7 +327,7 @@ func dependencyWaste(dep report.DependencyReport) (float64, bool) {
 	return 100 - usedPercent, true
 }
 
-func pageCount(total int, pageSize int) int {
+func pageCount(total, pageSize int) int {
 	if pageSize <= 0 {
 		return 1
 	}
