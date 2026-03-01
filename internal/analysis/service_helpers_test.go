@@ -16,6 +16,7 @@ const (
 	lodashFilterRuntimeModule = "lodash/filter"
 	repoPackageARoot          = "/repo/packages/a"
 	repoPackageBRoot          = "/repo/packages/b"
+	codemodModeSuggestOnly    = "suggest-only"
 )
 
 func TestHelperFunctions(t *testing.T) {
@@ -429,13 +430,13 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 	}
 
 	right := &report.CodemodReport{
-		Mode: "suggest-only",
+		Mode: codemodModeSuggestOnly,
 		Suggestions: []report.CodemodSuggestion{
 			{File: "b.ts", Line: 2, ImportName: "map", ToModule: lodashMapRuntimeModule},
 		},
 	}
 	got := mergeCodemodReport(nil, right)
-	if got == nil || got.Mode != "suggest-only" || len(got.Suggestions) != 1 {
+	if got == nil || got.Mode != codemodModeSuggestOnly || len(got.Suggestions) != 1 {
 		t.Fatalf("expected right-only codemod copy, got %#v", got)
 	}
 
@@ -449,10 +450,10 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 		},
 	}
 	right = &report.CodemodReport{
-		Mode: "suggest-only",
+		Mode: codemodModeSuggestOnly,
 		Suggestions: []report.CodemodSuggestion{
 			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
-			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: "lodash/filter"},
+			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: lodashFilterRuntimeModule},
 		},
 		Skips: []report.CodemodSkip{
 			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
@@ -460,7 +461,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 		},
 	}
 	got = mergeCodemodReport(left, right)
-	if got == nil || got.Mode != "suggest-only" {
+	if got == nil || got.Mode != codemodModeSuggestOnly {
 		t.Fatalf("expected merged codemod mode fallback from right, got %#v", got)
 	}
 	if len(got.Suggestions) != 2 || len(got.Skips) != 2 {
