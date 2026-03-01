@@ -261,14 +261,14 @@ func TestDependencyAnchorLocationBranches(t *testing.T) {
 			{Locations: []Location{{File: "b/file.go", Line: 2, Column: 2}}},
 		},
 		UnusedImports: []ImportUse{
-			{Locations: []Location{{File: "a/file.go", Line: 3, Column: 1}}},
+			{Locations: []Location{{File: testAFileGo, Line: 3, Column: 1}}},
 		},
 	}
 	anchor := dependencyAnchorLocation(dep)
 	if anchor == nil {
 		t.Fatalf("expected non-nil anchor")
 	}
-	if anchor.PhysicalLocation.ArtifactLocation.URI != "a/file.go" {
+	if anchor.PhysicalLocation.ArtifactLocation.URI != testAFileGo {
 		t.Fatalf("expected sorted anchor path, got %#v", anchor)
 	}
 }
