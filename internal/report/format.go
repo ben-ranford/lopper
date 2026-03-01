@@ -412,9 +412,6 @@ func formatDependencyProvenance(provenance *DependencyProvenance) string {
 	if strings.TrimSpace(provenance.Source) != "" && len(provenance.Signals) == 0 {
 		return provenance.Source
 	}
-	if len(provenance.Signals) == 0 {
-		return "-"
-	}
 	return provenance.Source + " (" + strings.Join(provenance.Signals, ", ") + ")"
 }
 

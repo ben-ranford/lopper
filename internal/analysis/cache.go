@@ -148,7 +148,6 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	if len(req.LicenseDenyList) > 0 {
 		baseKey["licenseDeny"] = req.LicenseDenyList
 	}
-	baseKey["licenseFailOnDeny"] = req.LicenseFailOnDeny
 	baseKey["includeRegistryProvenance"] = req.IncludeRegistryProvenance
 	baseDigest, err := hashJSON(baseKey)
 	if err != nil {

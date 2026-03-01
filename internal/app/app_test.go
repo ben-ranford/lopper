@@ -271,8 +271,11 @@ func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
 	}
 
 	reportData.BaselineComparison.NewDeniedLicenses = nil
+	reportData.Dependencies = []report.DependencyReport{
+		{Name: "existing-denied", License: &report.DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true}},
+	}
 	if err := validateDeniedLicenses(reportData, true); err != nil {
-		t.Fatalf("expected no denied-license error once new denied list is cleared, got %v", err)
+		t.Fatalf("expected no denied-license error for baseline mode without newly introduced denied licenses, got %v", err)
 	}
 }
 
