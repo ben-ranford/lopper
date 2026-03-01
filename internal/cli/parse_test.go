@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -328,7 +329,7 @@ func TestParseArgsTUIFlags(t *testing.T) {
 
 func TestParseArgsAnalyseThresholdDefaults(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "--top", "3"})
-	if req.Analyse.Thresholds != thresholds.Defaults() {
+	if !reflect.DeepEqual(req.Analyse.Thresholds, thresholds.Defaults()) {
 		t.Fatalf("expected default thresholds %+v, got %+v", thresholds.Defaults(), req.Analyse.Thresholds)
 	}
 }
@@ -344,6 +345,9 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
+		"--license-deny", "gpl-3.0-only,agpl-3.0-only",
+		"--license-fail-on-deny",
+		"--license-provenance-registry",
 		lockfileDriftPolicyFlagName, "fail",
 	})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 2 {
@@ -363,6 +367,15 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.LockfileDriftPolicy != "fail" {
 		t.Fatalf("expected lockfile drift policy fail, got %q", req.Analyse.Thresholds.LockfileDriftPolicy)
+	}
+	if strings.Join(req.Analyse.Thresholds.LicenseDenyList, ",") != "AGPL-3.0-ONLY,GPL-3.0-ONLY" {
+		t.Fatalf("unexpected license deny list: %#v", req.Analyse.Thresholds.LicenseDenyList)
+	}
+	if !req.Analyse.Thresholds.LicenseFailOnDeny {
+		t.Fatalf("expected license fail on deny true")
+	}
+	if !req.Analyse.Thresholds.LicenseIncludeRegistryProvenance {
+		t.Fatalf("expected license provenance registry true")
 	}
 }
 

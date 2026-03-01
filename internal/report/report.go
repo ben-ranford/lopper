@@ -58,24 +58,28 @@ type ScopeMetadata struct {
 }
 
 type BaselineComparison struct {
-	BaselineKey   string            `json:"baselineKey"`
-	CurrentKey    string            `json:"currentKey,omitempty"`
-	SummaryDelta  SummaryDelta      `json:"summaryDelta"`
-	Dependencies  []DependencyDelta `json:"dependencies,omitempty"`
-	Regressions   []DependencyDelta `json:"regressions,omitempty"`
-	Progressions  []DependencyDelta `json:"progressions,omitempty"`
-	Added         []DependencyDelta `json:"added,omitempty"`
-	Removed       []DependencyDelta `json:"removed,omitempty"`
-	UnchangedRows int               `json:"unchangedRows,omitempty"`
+	BaselineKey       string               `json:"baselineKey"`
+	CurrentKey        string               `json:"currentKey,omitempty"`
+	SummaryDelta      SummaryDelta         `json:"summaryDelta"`
+	Dependencies      []DependencyDelta    `json:"dependencies,omitempty"`
+	Regressions       []DependencyDelta    `json:"regressions,omitempty"`
+	Progressions      []DependencyDelta    `json:"progressions,omitempty"`
+	Added             []DependencyDelta    `json:"added,omitempty"`
+	Removed           []DependencyDelta    `json:"removed,omitempty"`
+	NewDeniedLicenses []DeniedLicenseDelta `json:"newDeniedLicenses,omitempty"`
+	UnchangedRows     int                  `json:"unchangedRows,omitempty"`
 }
 
 type SummaryDelta struct {
-	DependencyCountDelta   int     `json:"dependencyCountDelta"`
-	UsedExportsCountDelta  int     `json:"usedExportsCountDelta"`
-	TotalExportsCountDelta int     `json:"totalExportsCountDelta"`
-	UsedPercentDelta       float64 `json:"usedPercentDelta"`
-	WastePercentDelta      float64 `json:"wastePercentDelta"`
-	UnusedBytesDelta       int64   `json:"unusedBytesDelta"`
+	DependencyCountDelta     int     `json:"dependencyCountDelta"`
+	UsedExportsCountDelta    int     `json:"usedExportsCountDelta"`
+	TotalExportsCountDelta   int     `json:"totalExportsCountDelta"`
+	UsedPercentDelta         float64 `json:"usedPercentDelta"`
+	WastePercentDelta        float64 `json:"wastePercentDelta"`
+	UnusedBytesDelta         int64   `json:"unusedBytesDelta"`
+	KnownLicenseCountDelta   int     `json:"knownLicenseCountDelta"`
+	UnknownLicenseCountDelta int     `json:"unknownLicenseCountDelta"`
+	DeniedLicenseCountDelta  int     `json:"deniedLicenseCountDelta"`
 }
 
 type DependencyDeltaKind string
@@ -95,6 +99,13 @@ type DependencyDelta struct {
 	UsedPercentDelta          float64             `json:"usedPercentDelta"`
 	EstimatedUnusedBytesDelta int64               `json:"estimatedUnusedBytesDelta"`
 	WastePercentDelta         float64             `json:"wastePercentDelta"`
+	DeniedIntroduced          bool                `json:"deniedIntroduced,omitempty"`
+}
+
+type DeniedLicenseDelta struct {
+	Language string `json:"language,omitempty"`
+	Name     string `json:"name"`
+	SPDX     string `json:"spdx,omitempty"`
 }
 
 type CacheMetadata struct {
@@ -123,13 +134,23 @@ type EffectivePolicy struct {
 	Sources                 []string                `json:"sources,omitempty"`
 	Thresholds              EffectiveThresholds     `json:"thresholds"`
 	RemovalCandidateWeights RemovalCandidateWeights `json:"removalCandidateWeights"`
+	License                 LicensePolicy           `json:"license"`
 }
 
 type Summary struct {
-	DependencyCount   int     `json:"dependencyCount"`
-	UsedExportsCount  int     `json:"usedExportsCount"`
-	TotalExportsCount int     `json:"totalExportsCount"`
-	UsedPercent       float64 `json:"usedPercent"`
+	DependencyCount     int     `json:"dependencyCount"`
+	UsedExportsCount    int     `json:"usedExportsCount"`
+	TotalExportsCount   int     `json:"totalExportsCount"`
+	UsedPercent         float64 `json:"usedPercent"`
+	KnownLicenseCount   int     `json:"knownLicenseCount"`
+	UnknownLicenseCount int     `json:"unknownLicenseCount"`
+	DeniedLicenseCount  int     `json:"deniedLicenseCount"`
+}
+
+type LicensePolicy struct {
+	Deny                      []string `json:"deny,omitempty"`
+	FailOnDenied              bool     `json:"failOnDenied"`
+	IncludeRegistryProvenance bool     `json:"includeRegistryProvenance"`
 }
 
 type UsageUncertainty struct {
@@ -147,21 +168,39 @@ type LanguageSummary struct {
 }
 
 type DependencyReport struct {
-	Language             string            `json:"language,omitempty"`
-	Name                 string            `json:"name"`
-	UsedExportsCount     int               `json:"usedExportsCount"`
-	TotalExportsCount    int               `json:"totalExportsCount"`
-	UsedPercent          float64           `json:"usedPercent"`
-	EstimatedUnusedBytes int64             `json:"estimatedUnusedBytes"`
-	TopUsedSymbols       []SymbolUsage     `json:"topUsedSymbols,omitempty"`
-	UsedImports          []ImportUse       `json:"usedImports,omitempty"`
-	UnusedImports        []ImportUse       `json:"unusedImports,omitempty"`
-	UnusedExports        []SymbolRef       `json:"unusedExports,omitempty"`
-	RiskCues             []RiskCue         `json:"riskCues,omitempty"`
-	Recommendations      []Recommendation  `json:"recommendations,omitempty"`
-	Codemod              *CodemodReport    `json:"codemod,omitempty"`
-	RuntimeUsage         *RuntimeUsage     `json:"runtimeUsage,omitempty"`
-	RemovalCandidate     *RemovalCandidate `json:"removalCandidate,omitempty"`
+	Language             string                `json:"language,omitempty"`
+	Name                 string                `json:"name"`
+	UsedExportsCount     int                   `json:"usedExportsCount"`
+	TotalExportsCount    int                   `json:"totalExportsCount"`
+	UsedPercent          float64               `json:"usedPercent"`
+	EstimatedUnusedBytes int64                 `json:"estimatedUnusedBytes"`
+	TopUsedSymbols       []SymbolUsage         `json:"topUsedSymbols,omitempty"`
+	UsedImports          []ImportUse           `json:"usedImports,omitempty"`
+	UnusedImports        []ImportUse           `json:"unusedImports,omitempty"`
+	UnusedExports        []SymbolRef           `json:"unusedExports,omitempty"`
+	RiskCues             []RiskCue             `json:"riskCues,omitempty"`
+	Recommendations      []Recommendation      `json:"recommendations,omitempty"`
+	Codemod              *CodemodReport        `json:"codemod,omitempty"`
+	RuntimeUsage         *RuntimeUsage         `json:"runtimeUsage,omitempty"`
+	RemovalCandidate     *RemovalCandidate     `json:"removalCandidate,omitempty"`
+	License              *DependencyLicense    `json:"license,omitempty"`
+	Provenance           *DependencyProvenance `json:"provenance,omitempty"`
+}
+
+type DependencyLicense struct {
+	SPDX       string   `json:"spdx,omitempty"`
+	Raw        string   `json:"raw,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	Confidence string   `json:"confidence,omitempty"`
+	Unknown    bool     `json:"unknown,omitempty"`
+	Denied     bool     `json:"denied,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
+}
+
+type DependencyProvenance struct {
+	Source     string   `json:"source,omitempty"`
+	Confidence string   `json:"confidence,omitempty"`
+	Signals    []string `json:"signals,omitempty"`
 }
 
 type CodemodReport struct {

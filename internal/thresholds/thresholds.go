@@ -3,6 +3,7 @@ package thresholds
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -15,6 +16,8 @@ const (
 	DefaultRemovalCandidateWeightImpact      = 0.30
 	DefaultRemovalCandidateWeightConfidence  = 0.20
 	DefaultLockfileDriftPolicy               = "warn"
+	DefaultLicenseFailOnDeny                 = false
+	DefaultLicenseIncludeRegistryProvenance  = false
 )
 
 var validLockfileDriftPolicies = map[string]struct{}{
@@ -34,6 +37,9 @@ type Values struct {
 	RemovalCandidateWeightImpact      float64
 	RemovalCandidateWeightConfidence  float64
 	LockfileDriftPolicy               string
+	LicenseDenyList                   []string
+	LicenseFailOnDeny                 bool
+	LicenseIncludeRegistryProvenance  bool
 }
 
 type Overrides struct {
@@ -45,6 +51,9 @@ type Overrides struct {
 	RemovalCandidateWeightImpact      *float64
 	RemovalCandidateWeightConfidence  *float64
 	LockfileDriftPolicy               *string
+	LicenseDenyList                   []string
+	LicenseFailOnDeny                 *bool
+	LicenseIncludeRegistryProvenance  *bool
 }
 
 func Defaults() Values {
@@ -57,6 +66,8 @@ func Defaults() Values {
 		RemovalCandidateWeightImpact:      DefaultRemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  DefaultRemovalCandidateWeightConfidence,
 		LockfileDriftPolicy:               DefaultLockfileDriftPolicy,
+		LicenseFailOnDeny:                 DefaultLicenseFailOnDeny,
+		LicenseIncludeRegistryProvenance:  DefaultLicenseIncludeRegistryProvenance,
 	}
 }
 
@@ -88,6 +99,7 @@ func (v *Values) Validate() error {
 	if err := validateLockfileDriftPolicy(v.LockfileDriftPolicy); err != nil {
 		return err
 	}
+	v.LicenseDenyList = normalizeDenyList(v.LicenseDenyList)
 	return nil
 }
 
@@ -117,6 +129,16 @@ func (o *Overrides) Apply(base Values) Values {
 	if o.LockfileDriftPolicy != nil {
 		resolved.LockfileDriftPolicy = *o.LockfileDriftPolicy
 	}
+	if len(o.LicenseDenyList) > 0 {
+		resolved.LicenseDenyList = append([]string{}, o.LicenseDenyList...)
+	}
+	if o.LicenseFailOnDeny != nil {
+		resolved.LicenseFailOnDeny = *o.LicenseFailOnDeny
+	}
+	if o.LicenseIncludeRegistryProvenance != nil {
+		resolved.LicenseIncludeRegistryProvenance = *o.LicenseIncludeRegistryProvenance
+	}
+	resolved.LicenseDenyList = normalizeDenyList(resolved.LicenseDenyList)
 	return resolved
 }
 
@@ -145,6 +167,7 @@ func (o *Overrides) Validate() error {
 	if err := validateOptionalString(o.LockfileDriftPolicy, validateLockfileDriftPolicy); err != nil {
 		return err
 	}
+	o.LicenseDenyList = normalizeDenyList(o.LicenseDenyList)
 	return nil
 }
 
@@ -242,4 +265,45 @@ func validateOptionalWeights(overrides *Overrides) error {
 		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
 	}
 	return nil
+}
+
+func normalizeDenyList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		item := normalizeSPDXID(value)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeSPDXID(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 'a' + 'A')
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '.', r == '+':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

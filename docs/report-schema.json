@@ -32,12 +32,23 @@
     "summary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dependencyCount", "usedExportsCount", "totalExportsCount", "usedPercent"],
+      "required": [
+        "dependencyCount",
+        "usedExportsCount",
+        "totalExportsCount",
+        "usedPercent",
+        "knownLicenseCount",
+        "unknownLicenseCount",
+        "deniedLicenseCount"
+      ],
       "properties": {
         "dependencyCount": { "type": "integer", "minimum": 0 },
         "usedExportsCount": { "type": "integer", "minimum": 0 },
         "totalExportsCount": { "type": "integer", "minimum": 0 },
-        "usedPercent": { "type": "number", "minimum": 0 }
+        "usedPercent": { "type": "number", "minimum": 0 },
+        "knownLicenseCount": { "type": "integer", "minimum": 0 },
+        "unknownLicenseCount": { "type": "integer", "minimum": 0 },
+        "deniedLicenseCount": { "type": "integer", "minimum": 0 }
       }
     },
     "languageSummary": {
@@ -55,11 +66,17 @@
     "effectiveThresholds": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["failOnIncreasePercent", "lowConfidenceWarningPercent", "minUsagePercentForRecommendations"],
+      "required": [
+        "failOnIncreasePercent",
+        "lowConfidenceWarningPercent",
+        "minUsagePercentForRecommendations",
+        "maxUncertainImportCount"
+      ],
       "properties": {
         "failOnIncreasePercent": { "type": "integer", "minimum": 0 },
         "lowConfidenceWarningPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
-        "minUsagePercentForRecommendations": { "type": "integer", "minimum": 0, "maximum": 100 }
+        "minUsagePercentForRecommendations": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "maxUncertainImportCount": { "type": "integer", "minimum": 0 }
       }
     },
     "cacheMetadata": {
@@ -91,14 +108,28 @@
     "effectivePolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["thresholds", "removalCandidateWeights"],
+      "required": ["thresholds", "removalCandidateWeights", "license"],
       "properties": {
         "sources": {
           "type": "array",
           "items": { "type": "string" }
         },
         "thresholds": { "$ref": "#/$defs/effectiveThresholds" },
-        "removalCandidateWeights": { "$ref": "#/$defs/removalCandidateWeights" }
+        "removalCandidateWeights": { "$ref": "#/$defs/removalCandidateWeights" },
+        "license": { "$ref": "#/$defs/licensePolicy" }
+      }
+    },
+    "licensePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failOnDenied", "includeRegistryProvenance"],
+      "properties": {
+        "deny": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "failOnDenied": { "type": "boolean" },
+        "includeRegistryProvenance": { "type": "boolean" }
       }
     },
     "dependencyReport": {
@@ -136,14 +167,38 @@
           "type": "array",
           "items": { "$ref": "#/$defs/recommendation" }
         },
-        "codemod": {
-          "$ref": "#/$defs/codemodReport"
-        },
-        "runtimeUsage": {
-          "$ref": "#/$defs/runtimeUsage"
-        },
-        "removalCandidate": {
-          "$ref": "#/$defs/removalCandidate"
+        "codemod": { "$ref": "#/$defs/codemodReport" },
+        "runtimeUsage": { "$ref": "#/$defs/runtimeUsage" },
+        "removalCandidate": { "$ref": "#/$defs/removalCandidate" },
+        "license": { "$ref": "#/$defs/dependencyLicense" },
+        "provenance": { "$ref": "#/$defs/dependencyProvenance" }
+      }
+    },
+    "dependencyLicense": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spdx": { "type": "string" },
+        "raw": { "type": "string" },
+        "source": { "type": "string" },
+        "confidence": { "type": "string" },
+        "unknown": { "type": "boolean" },
+        "denied": { "type": "boolean" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "dependencyProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string" },
+        "confidence": { "type": "string" },
+        "signals": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       }
     },
@@ -307,9 +362,7 @@
         "usage": { "type": "number", "minimum": 0, "maximum": 100 },
         "impact": { "type": "number", "minimum": 0, "maximum": 100 },
         "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
-        "weights": {
-          "$ref": "#/$defs/removalCandidateWeights"
-        },
+        "weights": { "$ref": "#/$defs/removalCandidateWeights" },
         "rationale": {
           "type": "array",
           "items": { "type": "string" }
@@ -354,6 +407,10 @@
           "type": "array",
           "items": { "$ref": "#/$defs/dependencyDelta" }
         },
+        "newDeniedLicenses": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/deniedLicenseDelta" }
+        },
         "unchangedRows": { "type": "integer", "minimum": 0 }
       }
     },
@@ -366,7 +423,10 @@
         "totalExportsCountDelta",
         "usedPercentDelta",
         "wastePercentDelta",
-        "unusedBytesDelta"
+        "unusedBytesDelta",
+        "knownLicenseCountDelta",
+        "unknownLicenseCountDelta",
+        "deniedLicenseCountDelta"
       ],
       "properties": {
         "dependencyCountDelta": { "type": "integer" },
@@ -374,7 +434,10 @@
         "totalExportsCountDelta": { "type": "integer" },
         "usedPercentDelta": { "type": "number" },
         "wastePercentDelta": { "type": "number" },
-        "unusedBytesDelta": { "type": "integer" }
+        "unusedBytesDelta": { "type": "integer" },
+        "knownLicenseCountDelta": { "type": "integer" },
+        "unknownLicenseCountDelta": { "type": "integer" },
+        "deniedLicenseCountDelta": { "type": "integer" }
       }
     },
     "dependencyDelta": {
@@ -397,7 +460,18 @@
         "totalExportsCountDelta": { "type": "integer" },
         "usedPercentDelta": { "type": "number" },
         "estimatedUnusedBytesDelta": { "type": "integer" },
-        "wastePercentDelta": { "type": "number" }
+        "wastePercentDelta": { "type": "number" },
+        "deniedIntroduced": { "type": "boolean" }
+      }
+    },
+    "deniedLicenseDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "language": { "type": "string" },
+        "name": { "type": "string" },
+        "spdx": { "type": "string" }
       }
     }
   }

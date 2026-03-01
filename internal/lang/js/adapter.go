@@ -155,7 +155,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	case req.Dependency != "":
 		resolvedRoots := resolveDependencyRootsFromScan(repoPath, req.Dependency, scanResult)
 		dependencyRootPath := firstResolvedDependencyRoot(resolvedRoots)
-		depReport, warnings := buildDependencyReport(repoPath, req.Dependency, dependencyRootPath, scanResult, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), req.SuggestOnly)
+		depReport, warnings := buildDependencyReport(repoPath, req.Dependency, dependencyRootPath, scanResult, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), req.SuggestOnly, req.IncludeRegistryProvenance)
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(resolvedRoots) > 1 {
@@ -163,7 +163,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
-		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), resolveRemovalCandidateWeights(req.RemovalCandidateWeights), req.IncludeRegistryProvenance)
 		result.Dependencies = deps
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(deps) == 0 {
@@ -198,7 +198,7 @@ func summarizeUsageUncertainty(scanResult ScanResult) *report.UsageUncertainty {
 	return usage
 }
 
-func buildDependencyReport(repoPath string, dependency string, dependencyRootPath string, scanResult ScanResult, runtimeProfile string, minUsagePercentForRecommendations int, suggestOnly bool) (report.DependencyReport, []string) {
+func buildDependencyReport(repoPath string, dependency string, dependencyRootPath string, scanResult ScanResult, runtimeProfile string, minUsagePercentForRecommendations int, suggestOnly bool, includeRegistryProvenance bool) (report.DependencyReport, []string) {
 	warnings := make([]string, 0)
 
 	surface, surfaceWarnings := resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile)
@@ -217,6 +217,8 @@ func buildDependencyReport(repoPath string, dependency string, dependencyRootPat
 
 	riskCues, riskWarnings := assessRiskCues(repoPath, dependency, dependencyRootPath, surface)
 	warnings = append(warnings, riskWarnings...)
+	license, provenance, licenseWarnings := detectLicenseAndProvenance(dependencyRootPath, includeRegistryProvenance)
+	warnings = append(warnings, licenseWarnings...)
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
@@ -230,6 +232,8 @@ func buildDependencyReport(repoPath string, dependency string, dependencyRootPat
 		UnusedImports:        usage.unusedImports,
 		UnusedExports:        unusedExports,
 		RiskCues:             riskCues,
+		License:              license,
+		Provenance:           provenance,
 	}
 	depReport.Recommendations = buildRecommendations(dependency, depReport, minUsagePercentForRecommendations)
 	if suggestOnly {
@@ -573,7 +577,7 @@ func matchesDependency(module, dependency string) bool {
 	return false
 }
 
-func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
+func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights, includeRegistryProvenance bool) ([]report.DependencyReport, []string) {
 	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
 	if len(dependencies) == 0 {
 		return nil, warnings
@@ -581,7 +585,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(repoPath, dep, dependencyRoots[dep], scanResult, runtimeProfile, minUsagePercentForRecommendations, false)
+		depReport, depWarnings := buildDependencyReport(repoPath, dep, dependencyRoots[dep], scanResult, runtimeProfile, minUsagePercentForRecommendations, false, includeRegistryProvenance)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
