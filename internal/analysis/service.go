@@ -804,7 +804,7 @@ func mergeRuntimeUsage(left, right *report.RuntimeUsage) *report.RuntimeUsage {
 	}
 }
 
-func mergeTopSymbols(left []report.SymbolUsage, right []report.SymbolUsage) []report.SymbolUsage {
+func mergeTopSymbols(left, right []report.SymbolUsage) []report.SymbolUsage {
 	merged := make(map[string]report.SymbolUsage)
 	for _, item := range append(append([]report.SymbolUsage{}, left...), right...) {
 		key := item.Module + "\x00" + item.Name
