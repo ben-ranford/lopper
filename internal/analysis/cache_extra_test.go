@@ -21,6 +21,14 @@ const (
 	cacheTestGoModContent = "module demo\n"
 )
 
+type analysisCacheLookupCase struct {
+	name         string
+	setup        func(*testing.T)
+	wantReason   string
+	wantHit      bool
+	wantRepoPath string
+}
+
 func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
 	cache := &analysisCache{
 		metadata: report.CacheMetadata{Invalidations: []report.CacheInvalidation{{Key: "k", Reason: "reason"}}},
@@ -128,13 +136,7 @@ func TestAnalysisCacheLookupBranches(t *testing.T) {
 	entry := cacheEntryDescriptor{KeyLabel: "js-ts:/repo", KeyDigest: "key", InputDigest: "input-current"}
 	pointerPath := filepath.Join(cacheDir, cacheKeysDirName, entry.KeyDigest+".json")
 
-	cases := []struct {
-		name         string
-		setup        func(*testing.T)
-		wantReason   string
-		wantHit      bool
-		wantRepoPath string
-	}{
+	cases := []analysisCacheLookupCase{
 		{
 			name: "pointer-corrupt",
 			setup: func(t *testing.T) {
@@ -180,21 +182,27 @@ func TestAnalysisCacheLookupBranches(t *testing.T) {
 			cache.metadata.Invalidations = nil
 			tc.setup(t)
 			got, hit, err := cache.lookup(entry)
-			if err != nil {
-				t.Fatalf("lookup error: %v", err)
-			}
-			if hit != tc.wantHit {
-				t.Fatalf("unexpected hit state: got %v want %v", hit, tc.wantHit)
-			}
-			if tc.wantRepoPath != "" && got.RepoPath != tc.wantRepoPath {
-				t.Fatalf("unexpected cached report: %#v", got)
-			}
-			if tc.wantReason != "" {
-				if len(cache.metadata.Invalidations) == 0 || cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != tc.wantReason {
-					t.Fatalf("expected invalidation reason %q, got %#v", tc.wantReason, cache.metadata.Invalidations)
-				}
-			}
+			assertLookupCaseOutcome(t, cache.metadata.Invalidations, tc, got, hit, err)
 		})
+	}
+}
+
+func assertLookupCaseOutcome(t *testing.T, invalidations []report.CacheInvalidation, tc analysisCacheLookupCase, got report.Report, hit bool, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("lookup error: %v", err)
+	}
+	if hit != tc.wantHit {
+		t.Fatalf("unexpected hit state: got %v want %v", hit, tc.wantHit)
+	}
+	if tc.wantRepoPath != "" && got.RepoPath != tc.wantRepoPath {
+		t.Fatalf("unexpected cached report: %#v", got)
+	}
+	if tc.wantReason == "" {
+		return
+	}
+	if len(invalidations) == 0 || invalidations[len(invalidations)-1].Reason != tc.wantReason {
+		t.Fatalf("expected invalidation reason %q, got %#v", tc.wantReason, invalidations)
 	}
 }
 
