@@ -167,7 +167,7 @@ func TestMergeDependencyCoreFields(t *testing.T) {
 		RuntimeUsage: &report.RuntimeUsage{
 			LoadCount:   2,
 			Correlation: report.RuntimeCorrelationOverlap,
-			Modules:     []report.RuntimeModuleUsage{{Module: "lodash/filter", Count: 1}},
+			Modules:     []report.RuntimeModuleUsage{{Module: lodashFilterRuntimeModule, Count: 1}},
 			TopSymbols:  []report.RuntimeSymbolUsage{{Symbol: "filter", Count: 1}},
 		},
 	}
@@ -452,7 +452,7 @@ func TestMergeCodemodReportBranches(t *testing.T) {
 		Mode: "suggest-only",
 		Suggestions: []report.CodemodSuggestion{
 			{File: "a.ts", Line: 1, ImportName: "map", ToModule: lodashMapRuntimeModule},
-			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: "lodash/filter"},
+			{File: "z.ts", Line: 9, ImportName: "filter", ToModule: lodashFilterRuntimeModule},
 		},
 		Skips: []report.CodemodSkip{
 			{File: "a.ts", Line: 1, ReasonCode: "unsupported", ImportName: "map"},
