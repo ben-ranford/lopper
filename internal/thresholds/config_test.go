@@ -23,6 +23,7 @@ const (
 	customConfigName = "custom.yml"
 	basePackFileName = "base.yml"
 	overlayPackName  = "overlay.yml"
+	vendorGlob       = "vendor/**"
 )
 
 func TestLoadNoConfigFile(t *testing.T) {
@@ -72,8 +73,47 @@ func TestLoadYAMLConfig(t *testing.T) {
 
 func TestNormalizePathPatternsNormalizesSeparatorsAndDedupes(t *testing.T) {
 	got := normalizePathPatterns([]string{"src\\**\\*.go", " src/**/*.go ", "vendor\\**"})
-	if strings.Join(got, ",") != "src/**/*.go,vendor/**" {
+	if strings.Join(got, ",") != "src/**/*.go,"+vendorGlob {
 		t.Fatalf("unexpected normalized patterns: %#v", got)
+	}
+}
+
+func TestRawScopeToPathScope(t *testing.T) {
+	var nilScope *rawScope
+	if got := nilScope.toPathScope(); len(got.Include) != 0 || len(got.Exclude) != 0 {
+		t.Fatalf("expected empty scope from nil raw scope, got %#v", got)
+	}
+
+	scope := &rawScope{
+		Include: []string{" src\\**\\*.ts ", "src/**/*.ts"},
+		Exclude: []string{" " + vendorGlob + " ", "vendor\\**"},
+	}
+	got := scope.toPathScope()
+	if strings.Join(got.Include, ",") != "src/**/*.ts" {
+		t.Fatalf("unexpected normalized include patterns: %#v", got.Include)
+	}
+	if strings.Join(got.Exclude, ",") != vendorGlob {
+		t.Fatalf("unexpected normalized exclude patterns: %#v", got.Exclude)
+	}
+}
+
+func TestMergeScope(t *testing.T) {
+	base := PathScope{
+		Include: []string{"src/**"},
+		Exclude: []string{vendorGlob},
+	}
+
+	if got := mergeScope(base, PathScope{}); strings.Join(got.Include, ",") != "src/**" || strings.Join(got.Exclude, ",") != vendorGlob {
+		t.Fatalf("expected empty higher scope to preserve base, got %#v", got)
+	}
+
+	higher := PathScope{
+		Include: []string{"packages/**"},
+		Exclude: []string{"dist/**"},
+	}
+	got := mergeScope(base, higher)
+	if strings.Join(got.Include, ",") != "packages/**" || strings.Join(got.Exclude, ",") != "dist/**" {
+		t.Fatalf("expected higher scope patterns to override, got %#v", got)
 	}
 }
 
@@ -443,7 +483,7 @@ scope:
     - packs/` + overlayPackName + `
 scope:
   exclude:
-    - vendor/**
+    - ` + vendorGlob + `
 `
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
@@ -456,7 +496,7 @@ scope:
 	if got := strings.Join(result.Scope.Include, ","); got != "internal/**" {
 		t.Fatalf("expected include from overlay scope, got %q", got)
 	}
-	if got := strings.Join(result.Scope.Exclude, ","); got != "vendor/**" {
+	if got := strings.Join(result.Scope.Exclude, ","); got != vendorGlob {
 		t.Fatalf("expected exclude from root scope, got %q", got)
 	}
 }
