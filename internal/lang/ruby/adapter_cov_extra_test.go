@@ -137,7 +137,7 @@ func TestRubyAnalyseWarningsAndErrorBranches(t *testing.T) {
 	if err := os.MkdirAll(invalidGemfilePath, 0o750); err != nil {
 		t.Fatalf("mkdir gemfile dir: %v", err)
 	}
-	if err := loadBundlerDependencies(repo, map[string]struct{}{}); err == nil {
+	if loadBundlerDependencies(repo, map[string]struct{}{}) == nil {
 		t.Fatalf("expected loadBundlerDependencies to fail for directory Gemfile")
 	}
 	if err := os.RemoveAll(invalidGemfilePath); err != nil {
@@ -148,7 +148,7 @@ func TestRubyAnalyseWarningsAndErrorBranches(t *testing.T) {
 	if err := os.MkdirAll(lockDir, 0o750); err != nil {
 		t.Fatalf("mkdir lock dir: %v", err)
 	}
-	if err := loadBundlerDependencies(repo, map[string]struct{}{}); err == nil {
+	if loadBundlerDependencies(repo, map[string]struct{}{}) == nil {
 		t.Fatalf("expected loadBundlerDependencies to fail for directory Gemfile.lock")
 	}
 
