@@ -159,7 +159,7 @@ func TestJVMLookupStrategyBuilders(t *testing.T) {
 	aliases := map[string]string{}
 
 	addGroupLookups(prefixes, aliases, "dep", junitJupiterGroup)
-	addArtifactLookups(prefixes, aliases, "dep", junitJupiterGroup, "junit-jupiter-api")
+	addArtifactLookups(prefixes, aliases, "dep", junitJupiterGroup, junitJupiterAPIName)
 
 	if got := prefixes[junitJupiterGroup]; got != "dep" {
 		t.Fatalf("expected group prefix lookup, got %q", got)
