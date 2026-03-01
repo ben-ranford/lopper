@@ -355,7 +355,7 @@ func addCollectedExports(surface *ExportSurface, names []string) {
 	}
 }
 
-func dependencyRoot(repoPath string, dependency string) (string, error) {
+func dependencyRoot(repoPath, dependency string) (string, error) {
 	if repoPath == "" {
 		return "", errors.New("repo path is empty")
 	}
