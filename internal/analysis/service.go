@@ -11,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/cpp"
 	"github.com/ben-ranford/lopper/internal/lang/dotnet"
+	"github.com/ben-ranford/lopper/internal/lang/elixir"
 	"github.com/ben-ranford/lopper/internal/lang/golang"
 	"github.com/ben-ranford/lopper/internal/lang/js"
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
@@ -60,6 +61,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(dotnet.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(elixir.NewAdapter())
 	}
 
 	return &Service{

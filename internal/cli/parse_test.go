@@ -125,7 +125,7 @@ func TestParseArgsAnalyseLanguage(t *testing.T) {
 }
 
 func TestParseArgsAnalyseLanguages(t *testing.T) {
-	cases := []string{"all", "jvm", "rust", "ruby"}
+	cases := []string{"all", "jvm", "rust", "ruby", "elixir"}
 	for _, language := range cases {
 		t.Run(language, func(t *testing.T) {
 			req := mustParseArgs(t, []string{"analyse", "--top", "10", languageFlagName, language})

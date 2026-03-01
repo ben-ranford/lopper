@@ -309,6 +309,34 @@ func TestChangedFilesErrorsForNonRepoPath(t *testing.T) {
 	}
 }
 
+func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{
+			name:   "diff_success",
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"pkg/a.go\"\n  echo \"pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
+		},
+		{
+			name:   "status_fallback",
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff fail\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  pkg/a.go\"\n  echo \"R  old.go -> pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setupFakeGitResolver(t, tc.script)
+			changed, err := ChangedFiles(t.TempDir())
+			if err != nil {
+				t.Fatalf("changed files lookup failed: %v", err)
+			}
+			if len(changed) != 2 || changed[0] != "pkg/a.go" || changed[1] != "pkg/b.go" {
+				t.Fatalf("expected parsed changed names, got %#v", changed)
+			}
+		})
+	}
+}
+
 func TestParseChangedFileHelpers(t *testing.T) {
 	changed := parseChangedFileLines([]byte("packages/a/file.ts\npackages/a/file.ts\n"))
 	if len(changed) != 1 || changed[0] != "packages/a/file.ts" {
@@ -412,5 +440,21 @@ func TestGitExecutableAvailable(t *testing.T) {
 	}
 	if !gitexec.ExecutableAvailable(file) {
 		t.Fatalf("expected executable file to be available")
+	}
+}
+
+func setupFakeGitResolver(t *testing.T, script string) {
+	t.Helper()
+	original := resolveGitBinaryPathFn
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = original
+	})
+	fakeGit := filepath.Join(t.TempDir(), "fake-git.sh")
+	mustWrite(t, fakeGit, script)
+	if err := os.Chmod(fakeGit, 0o700); err != nil {
+		t.Fatalf("chmod fake git: %v", err)
+	}
+	resolveGitBinaryPathFn = func() (string, error) {
+		return fakeGit, nil
 	}
 }

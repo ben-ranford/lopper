@@ -45,6 +45,9 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
 	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
 	writeFile(t, filepath.Join(repo, "src", "native", "main.cpp"), "#include <openssl/ssl.h>\nint main() { return 0; }\n")
+	writeFile(t, filepath.Join(repo, "mix.exs"), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [app: :demo, version: \"0.1.0\", deps: deps()]\n  defp deps, do: [{:jason, \"~> 1.4\"}]\nend\n")
+	writeFile(t, filepath.Join(repo, "mix.lock"), "%{\n  \"jason\": {:hex, :jason, \"1.4.1\", \"checksum\", [:mix], [], \"hexpm\", \"checksum\"}\n}\n")
+	writeFile(t, filepath.Join(repo, "lib", "demo.ex"), "defmodule Demo do\n  alias Jason\n  def run(v), do: Jason.decode!(v)\nend\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -62,16 +65,54 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "rust", "ruby", "dotnet"} {
+	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "ruby", "rust", "dotnet", "elixir"} {
 		if !slices.Contains(languages, expectedLanguage) {
 			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
 		}
 	}
-	if len(reportData.LanguageBreakdown) < 9 {
+	if len(reportData.LanguageBreakdown) < 10 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 	if reportData.Scope == nil || reportData.Scope.Mode != ScopeModePackage || len(reportData.Scope.Packages) == 0 {
 		t.Fatalf("expected scope metadata with analyzed packages, got %#v", reportData.Scope)
+	}
+}
+
+func TestServiceAnalyseElixirFixtureLanguage(t *testing.T) {
+	repo := filepath.Join("..", "..", "testdata", "elixir", "mix")
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "jason",
+		Language:   "elixir",
+	})
+	if err != nil {
+		t.Fatalf("analyse elixir fixture: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+	if reportData.Dependencies[0].Language != "elixir" {
+		t.Fatalf("expected language elixir, got %q", reportData.Dependencies[0].Language)
+	}
+}
+
+func TestServiceAnalyseAllLanguagesElixirFixture(t *testing.T) {
+	repo := filepath.Join("..", "..", "testdata", "elixir", "mix")
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath: repo,
+		TopN:     10,
+		Language: "all",
+	})
+	if err != nil {
+		t.Fatalf("analyse all fixture: %v", err)
+	}
+	if len(reportData.Dependencies) == 0 {
+		t.Fatalf("expected dependencies in all-mode report")
+	}
+	if reportData.Dependencies[0].Language != "elixir" {
+		t.Fatalf("expected elixir language row, got %#v", reportData.Dependencies)
 	}
 }
 
@@ -201,6 +242,34 @@ func TestMergeCodemodReport(t *testing.T) {
 	}
 	if len(merged.Skips) != 2 {
 		t.Fatalf("expected merged skips, got %#v", merged.Skips)
+	}
+}
+
+func TestScopedCandidateRootsModes(t *testing.T) {
+	repo := t.TempDir()
+	rootA := filepath.Join(repo, "packages", "a")
+	rootB := filepath.Join(repo, "packages", "b")
+	writeFile(t, filepath.Join(rootA, "a.txt"), "a1\n")
+	writeFile(t, filepath.Join(rootB, "b.txt"), "b1\n")
+
+	repoRoots, warnings := scopedCandidateRoots(ScopeModeRepo, []string{rootA, rootB}, repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings in repo mode, got %#v", warnings)
+	}
+	if len(repoRoots) != 1 || repoRoots[0] != repo {
+		t.Fatalf("expected repo root only in repo mode, got %#v", repoRoots)
+	}
+}
+
+func TestScopedCandidateRootsChangedPackagesFallbackWarning(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "missing-repo")
+	roots := []string{filepath.Join(repo, "packages", "a")}
+	gotRoots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, roots, repo)
+	if len(gotRoots) != 1 || gotRoots[0] != roots[0] {
+		t.Fatalf("expected fallback roots on changed-packages failure, got %#v", gotRoots)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to resolve changed packages") {
+		t.Fatalf("expected fallback warning, got %#v", warnings)
 	}
 }
 

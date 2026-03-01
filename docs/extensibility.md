@@ -13,6 +13,7 @@ The core contracts are in `internal/language`.
 - `php` (PHP)
 - `rust` (Rust/Cargo)
 - `dotnet` (C#/.NET)
+- `elixir` (Elixir/Mix)
 
 ## Adapter contract
 
