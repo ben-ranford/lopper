@@ -114,7 +114,7 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, er
 	return path, nil
 }
 
-func BaselineSnapshotPath(dir string, key string) string {
+func BaselineSnapshotPath(dir, key string) string {
 	return filepath.Join(strings.TrimSpace(dir), sanitizeBaselineKey(strings.TrimSpace(key))+".json")
 }
 
