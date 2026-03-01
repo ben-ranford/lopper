@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -80,6 +81,23 @@ func TestAnalyseFixtureDependencyAndTopN(t *testing.T) {
 	}
 }
 
+func TestAdapterIdentityAndDetect(t *testing.T) {
+	adapter := NewAdapter()
+	if adapter.ID() != "elixir" {
+		t.Fatalf("unexpected adapter id: %q", adapter.ID())
+	}
+	if got := adapter.Aliases(); !slices.Equal(got, []string{"ex", "mix"}) {
+		t.Fatalf("unexpected aliases: %#v", got)
+	}
+	matched, err := adapter.Detect(context.Background(), fixturePath("mix"))
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !matched {
+		t.Fatalf("expected fixture to match elixir adapter")
+	}
+}
+
 func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "mix.exs"), "defp deps, do: [{:ecto_sql, \"~> 3.0\"}]")
@@ -98,6 +116,40 @@ func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 	}
 	if !shouldSkipDir("_build") || shouldSkipDir("lib") {
 		t.Fatalf("unexpected skip-dir behavior")
+	}
+}
+
+func TestResolveWeights(t *testing.T) {
+	defaults := resolveWeights(nil)
+	if defaults != report.DefaultRemovalCandidateWeights() {
+		t.Fatalf("expected default weights, got %#v", defaults)
+	}
+	custom := report.RemovalCandidateWeights{Usage: 0.6, Impact: 0.2, Confidence: 0.2}
+	got := resolveWeights(&custom)
+	if got != report.NormalizeRemovalCandidateWeights(custom) {
+		t.Fatalf("expected normalized custom weights, got %#v", got)
+	}
+}
+
+func TestDetectReturnsErrorOnMissingRepo(t *testing.T) {
+	adapter := NewAdapter()
+	matched, err := adapter.Detect(context.Background(), filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatalf("expected detect error for missing repo path")
+	}
+	if matched {
+		t.Fatalf("expected missing repo not to match")
+	}
+}
+
+func TestAnalyseReturnsErrorOnMissingRepo(t *testing.T) {
+	adapter := NewAdapter()
+	_, err := adapter.Analyse(context.Background(), language.Request{
+		RepoPath: filepath.Join(t.TempDir(), "missing"),
+		TopN:     1,
+	})
+	if err == nil {
+		t.Fatalf("expected analyse error for missing repo path")
 	}
 }
 

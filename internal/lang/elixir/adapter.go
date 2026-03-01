@@ -34,12 +34,6 @@ var (
 	depsPattern   = regexp.MustCompile(`\{\s*:([a-zA-Z0-9_]+)\s*,`)
 )
 
-var elixirSkippedDirs = map[string]bool{
-	"_build":     true,
-	"deps":       true,
-	".elixir_ls": true,
-}
-
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -53,13 +47,16 @@ func (a *Adapter) Aliases() []string {
 }
 
 func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+	detection, err := a.DetectWithConfidence(ctx, repoPath)
+	if err != nil {
+		return false, err
+	}
+	return detection.Matched, nil
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	repoPath = shared.DefaultRepoPath(repoPath)
-	detection := language.Detection{}
-	roots := make(map[string]struct{})
+	detection, roots := newDetectionState()
 
 	umbrellaOnly, err := detectFromRootFiles(repoPath, &detection, roots)
 	if err != nil {
@@ -91,6 +88,10 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
+}
+
+func newDetectionState() (language.Detection, map[string]struct{}) {
+	return language.Detection{}, make(map[string]struct{})
 }
 
 func detectFromRootFiles(repoPath string, detection *language.Detection, roots map[string]struct{}) (bool, error) {
@@ -327,7 +328,13 @@ func camelToSnake(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
-	return shared.ShouldSkipDir(strings.ToLower(name), elixirSkippedDirs)
+	lower := strings.ToLower(name)
+	switch lower {
+	case "_build", "deps", ".elixir_ls":
+		return true
+	default:
+		return shared.ShouldSkipCommonDir(lower)
+	}
 }
 
 func samePath(left, right string) bool {

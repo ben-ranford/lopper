@@ -245,6 +245,34 @@ func TestMergeCodemodReport(t *testing.T) {
 	}
 }
 
+func TestScopedCandidateRootsModes(t *testing.T) {
+	repo := t.TempDir()
+	rootA := filepath.Join(repo, "packages", "a")
+	rootB := filepath.Join(repo, "packages", "b")
+	writeFile(t, filepath.Join(rootA, "a.txt"), "a1\n")
+	writeFile(t, filepath.Join(rootB, "b.txt"), "b1\n")
+
+	repoRoots, warnings := scopedCandidateRoots(ScopeModeRepo, []string{rootA, rootB}, repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings in repo mode, got %#v", warnings)
+	}
+	if len(repoRoots) != 1 || repoRoots[0] != repo {
+		t.Fatalf("expected repo root only in repo mode, got %#v", repoRoots)
+	}
+}
+
+func TestScopedCandidateRootsChangedPackagesFallbackWarning(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "missing-repo")
+	roots := []string{filepath.Join(repo, "packages", "a")}
+	gotRoots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, roots, repo)
+	if len(gotRoots) != 1 || gotRoots[0] != roots[0] {
+		t.Fatalf("expected fallback roots on changed-packages failure, got %#v", gotRoots)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to resolve changed packages") {
+		t.Fatalf("expected fallback warning, got %#v", warnings)
+	}
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

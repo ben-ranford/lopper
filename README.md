@@ -126,7 +126,7 @@ lopper analyse --top 20 \
 
 ## Languages
 
-- Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `rust`, `dotnet`
+- Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`
 - Source of truth for adapter IDs: `lopper --help`
 - Language modes:
   - `auto`: choose highest-confidence adapter
