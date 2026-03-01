@@ -65,7 +65,8 @@ func TestApplyPathScopeNoPatternsReturnsOriginalPath(t *testing.T) {
 }
 
 func TestNoOpCleanupDoesNothing(t *testing.T) {
-	noOpCleanup()
+	cleanup := noOpCleanup
+	cleanup()
 }
 
 func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
