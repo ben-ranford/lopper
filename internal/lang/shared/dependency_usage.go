@@ -110,6 +110,19 @@ func BuildDependencyStats(dependency string, files []FileUsage, normalize func(s
 	return acc.build()
 }
 
+func BuildDependencyReportFromStats(name, languageID string, stats DependencyStats) report.DependencyReport {
+	return report.DependencyReport{
+		Name:              name,
+		Language:          languageID,
+		UsedExportsCount:  stats.UsedCount,
+		TotalExportsCount: stats.TotalCount,
+		UsedPercent:       stats.UsedPercent,
+		TopUsedSymbols:    stats.TopSymbols,
+		UsedImports:       stats.UsedImports,
+		UnusedImports:     stats.UnusedImports,
+	}
+}
+
 type statsAccumulator struct {
 	usedImports     map[string]*report.ImportUse
 	unusedImports   map[string]*report.ImportUse
