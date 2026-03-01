@@ -237,94 +237,100 @@ func TestAnalysisCacheStoreAndFileCollectionBranches(t *testing.T) {
 }
 
 func TestAnalysisCacheHelperErrorBranches(t *testing.T) {
-	t.Run("prepare entry and hash json error", func(t *testing.T) {
-		repo := t.TempDir()
-		root := mustCreateRootWithGoMod(t, repo, "pkg")
-		configPath := filepath.Join(repo, ".lopper.yml")
-		mustWriteFile(t, configPath, []byte("thresholds: {}\n"))
+	t.Run("prepare entry and hash json error", testAnalysisCachePrepareEntryAndHashJSONError)
+	t.Run("write atomic and hash file errors", testAnalysisCacheWriteAtomicAndHashFileErrors)
+	t.Run("prepare and load cache warnings", testAnalysisCachePrepareAndLoadWarnings)
+	t.Run("store cached report warning branch", testAnalysisCacheStoreCachedReportWarningBranch)
+	t.Run("new cache disabled", testAnalysisCacheNewCacheDisabled)
+}
 
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: filepath.Join(repo, cacheDirName)}, cacheable: true}
-		entry, err := cache.prepareEntry(Request{Dependency: "lodash", TopN: 1, RuntimeProfile: "node-import", ConfigPath: configPath, LowConfidenceWarningPercent: intPtr(30), MinUsagePercentForRecommendations: intPtr(40), RemovalCandidateWeights: &report.RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2}}, "js-ts", root)
-		if err != nil {
-			t.Fatalf("prepare entry: %v", err)
-		}
-		if entry.KeyDigest == "" || entry.InputDigest == "" {
-			t.Fatalf("expected non-empty cache entry digests: %#v", entry)
-		}
-		if _, err := hashJSON(map[string]any{"bad": make(chan int)}); err == nil {
-			t.Fatalf("expected hashJSON to fail for unsupported value")
-		}
-	})
+func testAnalysisCachePrepareEntryAndHashJSONError(t *testing.T) {
+	repo := t.TempDir()
+	root := mustCreateRootWithGoMod(t, repo, "pkg")
+	configPath := filepath.Join(repo, ".lopper.yml")
+	mustWriteFile(t, configPath, []byte("thresholds: {}\n"))
 
-	t.Run("write atomic and hash file errors", func(t *testing.T) {
-		dir := t.TempDir()
-		targetDir := filepath.Join(dir, "target")
-		if err := os.MkdirAll(targetDir, 0o750); err != nil {
-			t.Fatalf("mkdir target: %v", err)
-		}
-		if err := writeFileAtomic(targetDir, []byte("x")); err == nil {
-			t.Fatalf("expected writeFileAtomic to fail when target is directory")
-		}
-		if _, err := hashFile(targetDir); err == nil {
-			t.Fatalf("expected hashFile to fail for directory")
-		}
-	})
+	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: filepath.Join(repo, cacheDirName)}, cacheable: true}
+	entry, err := cache.prepareEntry(Request{Dependency: "lodash", TopN: 1, RuntimeProfile: "node-import", ConfigPath: configPath, LowConfidenceWarningPercent: intPtr(30), MinUsagePercentForRecommendations: intPtr(40), RemovalCandidateWeights: &report.RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2}}, "js-ts", root)
+	if err != nil {
+		t.Fatalf("prepare entry: %v", err)
+	}
+	if entry.KeyDigest == "" || entry.InputDigest == "" {
+		t.Fatalf("expected non-empty cache entry digests: %#v", entry)
+	}
+	if _, err := hashJSON(map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatalf("expected hashJSON to fail for unsupported value")
+	}
+}
 
-	t.Run("prepare and load cache warnings", func(t *testing.T) {
-		repo := t.TempDir()
-		cacheDir := filepath.Join(repo, cacheDirName)
-		mustMkdirCacheLayout(t, cacheDir)
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cacheDir}, cacheable: true}
+func testAnalysisCacheWriteAtomicAndHashFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	if err := os.MkdirAll(targetDir, 0o750); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := writeFileAtomic(targetDir, []byte("x")); err == nil {
+		t.Fatalf("expected writeFileAtomic to fail when target is directory")
+	}
+	if _, err := hashFile(targetDir); err == nil {
+		t.Fatalf("expected hashFile to fail for directory")
+	}
+}
 
-		_, _, hit := prepareAndLoadCachedReport(Request{RepoPath: repo, Dependency: "dep"}, cache, "js-ts", filepath.Join(repo, "missing-root"))
-		if hit {
-			t.Fatalf("did not expect cache hit when prepare entry fails")
-		}
-		if len(cache.takeWarnings()) == 0 {
-			t.Fatalf("expected warning when prepare entry fails")
-		}
+func testAnalysisCachePrepareAndLoadWarnings(t *testing.T) {
+	repo := t.TempDir()
+	cacheDir := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cacheDir)
+	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cacheDir}, cacheable: true}
 
-		root := mustCreateRootWithGoMod(t, repo, "root")
-		entry, err := cache.prepareEntry(Request{RepoPath: repo, Dependency: "dep"}, "js-ts", root)
-		if err != nil {
-			t.Fatalf("prepare entry: %v", err)
-		}
-		if err := os.MkdirAll(filepath.Join(cacheDir, cacheKeysDirName, entry.KeyDigest+".json"), 0o750); err != nil {
-			t.Fatalf("mkdir pointer as dir: %v", err)
-		}
-		_, _, hit = prepareAndLoadCachedReport(Request{RepoPath: repo, Dependency: "dep"}, cache, "js-ts", root)
-		if hit {
-			t.Fatalf("did not expect cache hit on lookup error")
-		}
-		if warnings := strings.Join(cache.takeWarnings(), "\n"); !strings.Contains(warnings, "lookup failed") {
-			t.Fatalf("expected lookup warning, got %q", warnings)
-		}
-	})
+	_, _, hit := prepareAndLoadCachedReport(Request{RepoPath: repo, Dependency: "dep"}, cache, "js-ts", filepath.Join(repo, "missing-root"))
+	if hit {
+		t.Fatalf("did not expect cache hit when prepare entry fails")
+	}
+	if len(cache.takeWarnings()) == 0 {
+		t.Fatalf("expected warning when prepare entry fails")
+	}
 
-	t.Run("store cached report warning branch", func(t *testing.T) {
-		repo := t.TempDir()
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: filepath.Join(repo, "cache-as-file")}, cacheable: true}
-		mustWriteFile(t, cache.options.Path, []byte("x"))
-		storeCachedReport(cache, "js-ts", repo, cacheEntryDescriptor{KeyDigest: "k", InputDigest: "i"}, report.Report{})
-		if len(cache.takeWarnings()) == 0 {
-			t.Fatalf("expected cache store warning on invalid path")
-		}
-		storeCachedReport(cache, "js-ts", repo, cacheEntryDescriptor{}, report.Report{})
-		if len(cache.takeWarnings()) != 0 {
-			t.Fatalf("expected no warning for empty key digest")
-		}
-	})
+	root := mustCreateRootWithGoMod(t, repo, "root")
+	entry, err := cache.prepareEntry(Request{RepoPath: repo, Dependency: "dep"}, "js-ts", root)
+	if err != nil {
+		t.Fatalf("prepare entry: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cacheDir, cacheKeysDirName, entry.KeyDigest+".json"), 0o750); err != nil {
+		t.Fatalf("mkdir pointer as dir: %v", err)
+	}
+	_, _, hit = prepareAndLoadCachedReport(Request{RepoPath: repo, Dependency: "dep"}, cache, "js-ts", root)
+	if hit {
+		t.Fatalf("did not expect cache hit on lookup error")
+	}
+	if warnings := strings.Join(cache.takeWarnings(), "\n"); !strings.Contains(warnings, "lookup failed") {
+		t.Fatalf("expected lookup warning, got %q", warnings)
+	}
+}
 
-	t.Run("new cache disabled", func(t *testing.T) {
-		repo := t.TempDir()
-		cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: false}}, repo)
-		if cache.cacheable {
-			t.Fatalf("expected disabled cache to be non-cacheable")
-		}
-		if cache.metadata.Enabled {
-			t.Fatalf("expected metadata to mark cache disabled")
-		}
-	})
+func testAnalysisCacheStoreCachedReportWarningBranch(t *testing.T) {
+	repo := t.TempDir()
+	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: filepath.Join(repo, "cache-as-file")}, cacheable: true}
+	mustWriteFile(t, cache.options.Path, []byte("x"))
+	storeCachedReport(cache, "js-ts", repo, cacheEntryDescriptor{KeyDigest: "k", InputDigest: "i"}, report.Report{})
+	if len(cache.takeWarnings()) == 0 {
+		t.Fatalf("expected cache store warning on invalid path")
+	}
+	storeCachedReport(cache, "js-ts", repo, cacheEntryDescriptor{}, report.Report{})
+	if len(cache.takeWarnings()) != 0 {
+		t.Fatalf("expected no warning for empty key digest")
+	}
+}
+
+func testAnalysisCacheNewCacheDisabled(t *testing.T) {
+	repo := t.TempDir()
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: false}}, repo)
+	if cache.cacheable {
+		t.Fatalf("expected disabled cache to be non-cacheable")
+	}
+	if cache.metadata.Enabled {
+		t.Fatalf("expected metadata to mark cache disabled")
+	}
 }
 
 func TestCollectFileRecordWalkError(t *testing.T) {
