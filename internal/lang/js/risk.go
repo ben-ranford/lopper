@@ -144,7 +144,7 @@ func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []stri
 	return count, samples, nil
 }
 
-func hasDynamicCall(line string, token string) bool {
+func hasDynamicCall(line, token string) bool {
 	search := line
 	for {
 		pos := strings.Index(search, token)
