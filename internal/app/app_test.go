@@ -76,6 +76,7 @@ func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
 		{"low confidence threshold", got.LowConfidenceWarningPercent != nil && *got.LowConfidenceWarningPercent == 33},
 		{"min usage threshold", got.MinUsagePercentForRecommendations != nil && *got.MinUsagePercentForRecommendations == 44},
 		{"runtime profile", got.RuntimeProfile == "browser-import"},
+		{"scope mode", got.ScopeMode == ScopeModeChangedPackages},
 		{"cache options", got.Cache != nil && !got.Cache.Enabled && got.Cache.Path == "/tmp/lopper-cache" && got.Cache.ReadOnly},
 		{"suggest only", got.SuggestOnly},
 		{"removal candidate weights", got.RemovalCandidateWeights != nil && got.RemovalCandidateWeights.Usage == 0.6 && got.RemovalCandidateWeights.Impact == 0.2 && got.RemovalCandidateWeights.Confidence == 0.2},
@@ -101,6 +102,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req := DefaultRequest()
 	req.Mode = ModeAnalyse
 	req.Analyse.TopN = 1
+	req.Analyse.ScopeMode = ScopeModeChangedPackages
 	req.Analyse.Format = report.FormatJSON
 	req.Analyse.SuggestOnly = true
 	req.Analyse.RuntimeProfile = "browser-import"
