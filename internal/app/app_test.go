@@ -18,6 +18,7 @@ import (
 
 const (
 	testSnapshotPath        = "snapshot.txt"
+	testBaselinePath        = "baseline.json"
 	missingBaselineFileName = "missing.json"
 	saveBaselineStoreErr    = "--save-baseline requires --baseline-store"
 	baselineStorePath       = ".artifacts/baselines"
@@ -205,7 +206,7 @@ func TestExecuteUnknownMode(t *testing.T) {
 
 func TestApplyBaselineIfNeededWithBaselineFile(t *testing.T) {
 	tmp := t.TempDir()
-	path := filepath.Join(tmp, "baseline.json")
+	path := filepath.Join(tmp, testBaselinePath)
 	data := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"name":"dep","usedExportsCount":5,"totalExportsCount":10,"usedPercent":50,"estimatedUnusedBytes":0}]}` + "\n"
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write baseline: %v", err)
@@ -337,7 +338,7 @@ func TestExecuteAnalyseBaselineAndApplyBaselineErrors(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
-	baselinePath := filepath.Join(tmp, "baseline.json")
+	baselinePath := filepath.Join(tmp, testBaselinePath)
 	content := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"name":"dep","usedExportsCount":0,"totalExportsCount":0,"usedPercent":0}]}` + "\n"
 	if err := os.WriteFile(baselinePath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write baseline file: %v", err)
@@ -403,11 +404,11 @@ func TestResolveSaveBaselineKeyBranches(t *testing.T) {
 }
 
 func TestResolveBaselineComparisonPathsBranches(t *testing.T) {
-	path, key, currentKey, shouldApply, err := resolveBaselineComparisonPaths(".", AnalyseRequest{BaselinePath: "baseline.json"})
+	path, key, currentKey, shouldApply, err := resolveBaselineComparisonPaths(".", AnalyseRequest{BaselinePath: testBaselinePath})
 	if err != nil {
 		t.Fatalf("baseline path branch: %v", err)
 	}
-	if !shouldApply || path != "baseline.json" || key != "" {
+	if !shouldApply || path != testBaselinePath || key != "" {
 		t.Fatalf("unexpected baseline path resolution: path=%q key=%q shouldApply=%v", path, key, shouldApply)
 	}
 	if currentKey == "" {
