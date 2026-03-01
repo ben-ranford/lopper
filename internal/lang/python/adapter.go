@@ -434,7 +434,7 @@ func dependencyFromModule(repoPath string, moduleName string) string {
 	return normalizeDependencyID(root)
 }
 
-func isLocalModule(repoPath string, root string) bool {
+func isLocalModule(repoPath, root string) bool {
 	if _, err := os.Stat(filepath.Join(repoPath, root+".py")); err == nil {
 		return true
 	}
