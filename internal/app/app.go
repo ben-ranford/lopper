@@ -139,46 +139,34 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 
 	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)
 	if err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateUncertaintyThreshold(reportData, req.Analyse.Thresholds.MaxUncertainImportCount); err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateDeniedLicenses(reportData, req.Analyse.Thresholds.LicenseFailOnDeny); err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	reportData, err = a.saveBaselineIfNeeded(reportData, req.RepoPath, req.Analyse, time.Now())
 	if err != nil {
-		formatted, formatErr := a.Formatter.Format(reportData, req.Analyse.Format)
-		if formatErr != nil {
-			return "", err
-		}
-		return formatted, err
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	formatted, err := a.Formatter.Format(reportData, req.Analyse.Format)
 	if err != nil {
 		return "", err
 	}
 	return formatted, nil
+}
+
+func (a *App) formatReportWithOriginalError(reportData report.Report, format report.Format, originalErr error) (string, error) {
+	formatted, formatErr := a.Formatter.Format(reportData, format)
+	if formatErr != nil {
+		return "", originalErr
+	}
+	return formatted, originalErr
 }
 
 func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {

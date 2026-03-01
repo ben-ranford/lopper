@@ -9,9 +9,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	licenseTestPackageJSONFileName = "package.json"
+	licenseTestMPL20               = "MPL-2.0"
+)
+
 func TestDetectLicenseAndProvenanceFromPackageJSON(t *testing.T) {
 	depRoot := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{
   "name": "demo",
   "version": "1.2.3",
   "license": "MIT OR Apache-2.0"
@@ -31,7 +36,7 @@ func TestDetectLicenseAndProvenanceFromPackageJSON(t *testing.T) {
 
 func TestDetectLicenseFromFallbackLicenseFile(t *testing.T) {
 	depRoot := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"name":"demo","version":"0.1.0"}`)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License\nPermission is hereby granted...")
 
 	license, _, _ := detectLicenseAndProvenance(depRoot, false)
@@ -42,7 +47,7 @@ func TestDetectLicenseFromFallbackLicenseFile(t *testing.T) {
 
 func TestDetectProvenanceWithRegistryHeuristics(t *testing.T) {
 	depRoot := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{
   "name": "pkg",
   "version": "1.0.0",
   "license": "ISC",
@@ -61,11 +66,11 @@ func TestParsePackageJSONLicenseVariants(t *testing.T) {
 	if got := parsePackageJSONLicense(map[string]any{"type": "BSD-3-Clause"}); got != "BSD-3-Clause" {
 		t.Fatalf("expected map type license, got %q", got)
 	}
-	raw, err := json.Marshal("MPL-2.0")
+	raw, err := json.Marshal(licenseTestMPL20)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if got := parsePackageJSONLicense(json.RawMessage(raw)); got != "MPL-2.0" {
+	if got := parsePackageJSONLicense(json.RawMessage(raw)); got != licenseTestMPL20 {
 		t.Fatalf("expected raw message license, got %q", got)
 	}
 	if got := parsePackageJSONLicense(json.RawMessage(`{"bad":`)); got != "" {
@@ -80,7 +85,7 @@ func TestDetectSPDXFromLicenseContentCases(t *testing.T) {
 	}{
 		{"Apache License Version 2.0", "APACHE-2.0"},
 		{"GNU GENERAL PUBLIC LICENSE", "GPL-3.0-OR-LATER"},
-		{"Mozilla Public License", "MPL-2.0"},
+		{"Mozilla Public License", licenseTestMPL20},
 		{"ISC License", "ISC"},
 		{"Redistribution and use in source and binary forms", "BSD-3-CLAUSE"},
 	}
@@ -163,16 +168,16 @@ func TestLoadDependencyPackageJSONErrorBranches(t *testing.T) {
 	if _, warnings := loadDependencyPackageJSON(root); len(warnings) == 0 {
 		t.Fatalf("expected warning for missing package.json")
 	}
-	if err := os.Mkdir(filepath.Join(root, "package.json"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, licenseTestPackageJSONFileName), 0o755); err != nil {
 		t.Fatalf("mkdir package.json dir: %v", err)
 	}
 	if _, warnings := loadDependencyPackageJSON(root); len(warnings) == 0 {
 		t.Fatalf("expected warning for unreadable package.json path")
 	}
-	if err := os.Remove(filepath.Join(root, "package.json")); err != nil {
+	if err := os.Remove(filepath.Join(root, licenseTestPackageJSONFileName)); err != nil {
 		t.Fatalf("remove package.json dir: %v", err)
 	}
-	testutil.MustWriteFile(t, filepath.Join(root, "package.json"), "{")
+	testutil.MustWriteFile(t, filepath.Join(root, licenseTestPackageJSONFileName), "{")
 	if _, warnings := loadDependencyPackageJSON(root); len(warnings) == 0 {
 		t.Fatalf("expected warning for malformed package.json")
 	}
