@@ -16,6 +16,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
 	"github.com/ben-ranford/lopper/internal/lang/php"
 	"github.com/ben-ranford/lopper/internal/lang/python"
+	"github.com/ben-ranford/lopper/internal/lang/ruby"
 	"github.com/ben-ranford/lopper/internal/lang/rust"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -53,6 +54,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(rust.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(ruby.NewAdapter())
 	}
 	if err == nil {
 		err = registry.Register(dotnet.NewAdapter())
@@ -506,7 +510,7 @@ func cappedSampleCopy(samples []report.Location) []report.Location {
 	return append([]report.Location{}, samples...)
 }
 
-func mergeDependency(left report.DependencyReport, right report.DependencyReport) report.DependencyReport {
+func mergeDependency(left, right report.DependencyReport) report.DependencyReport {
 	merged := left
 	merged.UsedExportsCount += right.UsedExportsCount
 	merged.TotalExportsCount += right.TotalExportsCount
@@ -528,7 +532,7 @@ func mergeDependency(left report.DependencyReport, right report.DependencyReport
 	return merged
 }
 
-func filterUsedOverlaps(unused []report.ImportUse, used []report.ImportUse) []report.ImportUse {
+func filterUsedOverlaps(unused, used []report.ImportUse) []report.ImportUse {
 	if len(unused) == 0 || len(used) == 0 {
 		return unused
 	}
