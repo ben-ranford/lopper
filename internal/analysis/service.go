@@ -660,7 +660,7 @@ func mergeRiskCues(left []report.RiskCue, right []report.RiskCue) []report.RiskC
 	return mergeUniqueSorted(left, right, riskCueKey, sortRiskCues)
 }
 
-func mergeRecommendations(left []report.Recommendation, right []report.Recommendation) []report.Recommendation {
+func mergeRecommendations(left, right []report.Recommendation) []report.Recommendation {
 	return mergeUniqueSorted(left, right, recommendationKey, sortRecommendations)
 }
 
