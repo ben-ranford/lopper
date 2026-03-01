@@ -313,21 +313,25 @@ func ComputeBaselineComparison(current Report, baseline Report) BaselineComparis
 			comparison.UnchangedRows++
 			continue
 		}
-		comparison.Dependencies = append(comparison.Dependencies, delta)
-		switch delta.Kind {
-		case DependencyDeltaAdded:
-			comparison.Added = append(comparison.Added, delta)
-		case DependencyDeltaRemoved:
-			comparison.Removed = append(comparison.Removed, delta)
-		}
-		if delta.WastePercentDelta > 0 {
-			comparison.Regressions = append(comparison.Regressions, delta)
-		} else if delta.WastePercentDelta < 0 {
-			comparison.Progressions = append(comparison.Progressions, delta)
-		}
+		appendDependencyDelta(&comparison, delta)
 	}
 
 	return comparison
+}
+
+func appendDependencyDelta(comparison *BaselineComparison, delta DependencyDelta) {
+	comparison.Dependencies = append(comparison.Dependencies, delta)
+	switch delta.Kind {
+	case DependencyDeltaAdded:
+		comparison.Added = append(comparison.Added, delta)
+	case DependencyDeltaRemoved:
+		comparison.Removed = append(comparison.Removed, delta)
+	}
+	if delta.WastePercentDelta > 0 {
+		comparison.Regressions = append(comparison.Regressions, delta)
+	} else if delta.WastePercentDelta < 0 {
+		comparison.Progressions = append(comparison.Progressions, delta)
+	}
 }
 
 func sumEstimatedUnusedBytes(dependencies []DependencyReport) int64 {

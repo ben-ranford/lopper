@@ -207,6 +207,12 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	if len(comparison.Removed) != 1 || comparison.Removed[0].Name != "c" {
 		t.Fatalf("expected one removed dependency, got %#v", comparison.Removed)
 	}
+	if len(comparison.Regressions) != 1 || comparison.Regressions[0].Name != "b" {
+		t.Fatalf("expected one regression dependency, got %#v", comparison.Regressions)
+	}
+	if len(comparison.Progressions) != 1 || comparison.Progressions[0].Name != "c" {
+		t.Fatalf("expected one progression dependency, got %#v", comparison.Progressions)
+	}
 }
 
 func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
