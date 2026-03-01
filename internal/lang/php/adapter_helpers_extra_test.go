@@ -481,8 +481,7 @@ func TestReadComposerManifestAndLockMappingsErrorFromFileRoot(t *testing.T) {
 	if _, _, err := readComposerManifest(root); err == nil {
 		t.Fatalf("expected readComposerManifest non-not-exist error for file root")
 	}
-	data := composerData{NamespaceToDep: map[string]string{}}
-	if err := loadComposerLockMappings(root, &data); err == nil {
+	if loadComposerLockMappings(root, &composerData{NamespaceToDep: map[string]string{}}) == nil {
 		t.Fatalf("expected loadComposerLockMappings non-not-exist error for file root")
 	}
 }
