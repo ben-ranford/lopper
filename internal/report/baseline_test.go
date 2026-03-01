@@ -127,6 +127,7 @@ func TestLoadInvalidJSON(t *testing.T) {
 func TestSaveSnapshotAndLoadWithKey(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
+	const snapshotKey = "label:weekly"
 	reportData := Report{
 		SchemaVersion: "0.1.0",
 		RepoPath:      ".",
@@ -134,7 +135,7 @@ func TestSaveSnapshotAndLoadWithKey(t *testing.T) {
 			{Name: "dep-a", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25},
 		},
 	}
-	path, err := SaveSnapshot(dir, "label:weekly", reportData, now)
+	path, err := SaveSnapshot(dir, snapshotKey, reportData, now)
 	if err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
@@ -146,14 +147,14 @@ func TestSaveSnapshotAndLoadWithKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load with key: %v", err)
 	}
-	if key != "label:weekly" {
+	if key != snapshotKey {
 		t.Fatalf("expected saved key, got %q", key)
 	}
 	if rep.Summary == nil || rep.Summary.DependencyCount != 1 {
 		t.Fatalf("expected computed summary in loaded report, got %#v", rep.Summary)
 	}
 
-	_, err = SaveSnapshot(dir, "label:weekly", Report{RepoPath: "."}, now)
+	_, err = SaveSnapshot(dir, snapshotKey, Report{RepoPath: "."}, now)
 	if err == nil || !strings.Contains(err.Error(), ErrBaselineAlreadyExists.Error()) {
 		t.Fatalf("expected immutable snapshot exists error, got %v", err)
 	}
