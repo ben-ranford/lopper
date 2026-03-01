@@ -574,7 +574,7 @@ func addLookupByStrategy(prefixes map[string]string, aliases map[string]string, 
 	}
 }
 
-func groupLookupStrategy(group string, _ string) ([]string, []string) {
+func groupLookupStrategy(group, _ string) ([]string, []string) {
 	if group == "" {
 		return nil, nil
 	}
@@ -588,7 +588,7 @@ func groupLookupStrategy(group string, _ string) ([]string, []string) {
 	return prefixes, aliases
 }
 
-func artifactLookupStrategy(group string, artifact string) ([]string, []string) {
+func artifactLookupStrategy(group, artifact string) ([]string, []string) {
 	if artifact == "" {
 		return nil, nil
 	}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -10,6 +11,10 @@ type Mode string
 const (
 	ModeTUI     Mode = "tui"
 	ModeAnalyse Mode = "analyse"
+
+	ScopeModeRepo            = analysis.ScopeModeRepo
+	ScopeModePackage         = analysis.ScopeModePackage
+	ScopeModeChangedPackages = analysis.ScopeModeChangedPackages
 )
 
 type Request struct {
@@ -22,6 +27,7 @@ type Request struct {
 type AnalyseRequest struct {
 	Dependency         string
 	TopN               int
+	ScopeMode          string
 	SuggestOnly        bool
 	Format             report.Format
 	Language           string
@@ -59,6 +65,7 @@ func DefaultRequest() Request {
 		Analyse: AnalyseRequest{
 			Format:         report.FormatTable,
 			Language:       "auto",
+			ScopeMode:      ScopeModePackage,
 			CacheEnabled:   true,
 			RuntimeProfile: "node-import",
 			Thresholds:     thresholds.Defaults(),

@@ -66,6 +66,9 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	if len(reportData.LanguageBreakdown) < 8 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
+	if reportData.Scope == nil || reportData.Scope.Mode != ScopeModePackage || len(reportData.Scope.Packages) == 0 {
+		t.Fatalf("expected scope metadata with analyzed packages, got %#v", reportData.Scope)
+	}
 }
 
 func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {

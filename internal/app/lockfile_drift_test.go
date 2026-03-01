@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
 const (
@@ -19,6 +21,7 @@ const (
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
 	nestedManifestPath       = "nested/package.json"
 	gitBinaryPath            = "/usr/bin/git"
+	gitExecutableNotFoundErr = "git executable not found"
 )
 
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
@@ -100,10 +103,10 @@ func TestSanitizedGitEnvPinsSafePath(t *testing.T) {
 
 	env := sanitizedGitEnv()
 
-	if !containsEnv(env, safeSystemPath) {
-		t.Fatalf("expected safe path %q in env, got %#v", safeSystemPath, env)
+	if !containsEnv(env, gitexec.SafeSystemPath) {
+		t.Fatalf("expected safe path %q in env, got %#v", gitexec.SafeSystemPath, env)
 	}
-	if containsEnvPrefix(env, "PATH=") && !containsEnv(env, safeSystemPath) {
+	if containsEnvPrefix(env, "PATH=") && !containsEnv(env, gitexec.SafeSystemPath) {
 		t.Fatalf("expected only pinned PATH in env, got %#v", env)
 	}
 	if containsEnvPrefix(env, "GIT_DIR=") || containsEnvPrefix(env, "GIT_WORK_TREE=") || containsEnvPrefix(env, "GIT_INDEX_FILE=") {
@@ -176,26 +179,26 @@ func TestGitHelperErrors(t *testing.T) {
 }
 
 func TestGitHelpersWhenGitUnavailable(t *testing.T) {
-	original := gitExecutableAvailableFn
-	gitExecutableAvailableFn = func(string) bool { return false }
-	defer func() { gitExecutableAvailableFn = original }()
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) { return "", errors.New(gitExecutableNotFoundErr) }
+	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected git worktree=false when git is unavailable")
 	}
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "git executable not found") {
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected tracked changes error for missing git executable, got %v", err)
 	}
-	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "git executable not found") {
+	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected untracked files error for missing git executable, got %v", err)
 	}
 }
 
 func TestGitHelpersFallbackExecutableBranch(t *testing.T) {
-	original := gitExecutableAvailableFn
-	gitExecutableAvailableFn = func(path string) bool { return path == gitExecutableFallback }
-	defer func() { gitExecutableAvailableFn = original }()
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
 	if isGitWorktree(context.Background(), repo) {
@@ -381,18 +384,18 @@ func TestLockfileDriftHelpers(t *testing.T) {
 
 func TestGitExecutableAvailable(t *testing.T) {
 	missingPath := filepath.Join(t.TempDir(), "missing-git")
-	if gitExecutableAvailable(missingPath) {
+	if gitexec.ExecutableAvailable(missingPath) {
 		t.Fatalf("expected missing path to be unavailable")
 	}
 	filePath := filepath.Join(t.TempDir(), "git-file")
 	writeFile(t, filePath, "#!/bin/sh\n")
-	if gitExecutableAvailable(filePath) {
+	if gitexec.ExecutableAvailable(filePath) {
 		t.Fatalf("expected non-executable file to be unavailable")
 	}
 	if err := os.Chmod(filePath, 0o700); err != nil {
 		t.Fatalf("chmod file executable: %v", err)
 	}
-	if !gitExecutableAvailable(filePath) {
+	if !gitexec.ExecutableAvailable(filePath) {
 		t.Fatalf("expected executable file to be available")
 	}
 }
