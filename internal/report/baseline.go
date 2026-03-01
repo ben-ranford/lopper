@@ -219,11 +219,11 @@ func ComputeLanguageBreakdown(dependencies []DependencyReport) []LanguageSummary
 	return breakdown
 }
 
-func ApplyBaseline(current Report, baseline Report) (Report, error) {
+func ApplyBaseline(current, baseline Report) (Report, error) {
 	return ApplyBaselineWithKeys(current, baseline, "", "")
 }
 
-func ApplyBaselineWithKeys(current Report, baseline Report, baselineKey string, currentKey string) (Report, error) {
+func ApplyBaselineWithKeys(current, baseline Report, baselineKey, currentKey string) (Report, error) {
 	currentSummary := current.Summary
 	if currentSummary == nil {
 		currentSummary = ComputeSummary(current.Dependencies)
