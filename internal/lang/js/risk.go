@@ -231,7 +231,7 @@ func detectNodeBinary(depRoot string) (string, error) {
 	const maxVisited = 600
 	visited := 0
 	found := ""
-	walkErr := filepath.WalkDir(depRoot, func(path string, entry fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(depRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -250,9 +250,8 @@ func detectNodeBinary(depRoot string) (string, error) {
 			return fs.SkipAll
 		}
 		return nil
-	})
-	if walkErr != nil && walkErr != fs.SkipAll {
-		return "", walkErr
+	}); err != nil && err != fs.SkipAll {
+		return "", err
 	}
 	return found, nil
 }
