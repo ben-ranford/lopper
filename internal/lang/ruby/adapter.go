@@ -251,14 +251,7 @@ func buildRequestedRubyDependencies(req language.Request, scan scanResult) ([]re
 }
 
 func buildTopRubyDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	dependencySet := make(map[string]struct{})
-	for dependency := range scan.DeclaredDependencies {
-		dependencySet[dependency] = struct{}{}
-	}
-	for dependency := range scan.ImportedDependencies {
-		dependencySet[dependency] = struct{}{}
-	}
-	dependencies := shared.SortedKeys(dependencySet)
+	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
 	buildReport := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
@@ -275,13 +268,7 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 	fileUsages := shared.MapFileUsages(scan.Files, importsOf, usageOf)
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 
-	dependencyReport := report.DependencyReport{Name: dependency, Language: "ruby"}
-	dependencyReport.UsedExportsCount = stats.UsedCount
-	dependencyReport.TotalExportsCount = stats.TotalCount
-	dependencyReport.UsedPercent = stats.UsedPercent
-	dependencyReport.TopUsedSymbols = stats.TopSymbols
-	dependencyReport.UsedImports = stats.UsedImports
-	dependencyReport.UnusedImports = stats.UnusedImports
+	dependencyReport := shared.BuildDependencyReportFromStats(dependency, "ruby", stats)
 	if stats.WildcardImports > 0 {
 		dependencyReport.RiskCues = append(dependencyReport.RiskCues, report.RiskCue{
 			Code:     "dynamic-require",
@@ -323,6 +310,16 @@ func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) repor
 		return report.DefaultRemovalCandidateWeights()
 	}
 	return report.NormalizeRemovalCandidateWeights(*value)
+}
+
+func sortedDependencyUnion(values ...map[string]struct{}) []string {
+	set := make(map[string]struct{})
+	for _, value := range values {
+		for dependency := range value {
+			set[dependency] = struct{}{}
+		}
+	}
+	return shared.SortedKeys(set)
 }
 
 func loadBundlerDependencies(repoPath string, out map[string]struct{}) error {
