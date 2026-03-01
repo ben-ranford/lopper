@@ -652,7 +652,7 @@ func mergeRuntimeSymbolUsage(left, right []report.RuntimeSymbolUsage) []report.R
 	return items
 }
 
-func mergeSymbolRefs(left []report.SymbolRef, right []report.SymbolRef) []report.SymbolRef {
+func mergeSymbolRefs(left, right []report.SymbolRef) []report.SymbolRef {
 	return mergeUniqueSorted(left, right, symbolRefKey, sortSymbolRefs)
 }
 
