@@ -39,6 +39,7 @@ type Report struct {
 	SchemaVersion        string               `json:"schemaVersion"`
 	GeneratedAt          time.Time            `json:"generatedAt"`
 	RepoPath             string               `json:"repoPath"`
+	Scope                *ScopeMetadata       `json:"scope,omitempty"`
 	Dependencies         []DependencyReport   `json:"dependencies"`
 	UsageUncertainty     *UsageUncertainty    `json:"usageUncertainty,omitempty"`
 	Summary              *Summary             `json:"summary,omitempty"`
@@ -49,6 +50,11 @@ type Report struct {
 	Warnings             []string             `json:"warnings,omitempty"`
 	WasteIncreasePercent *float64             `json:"wasteIncreasePercent,omitempty"`
 	BaselineComparison   *BaselineComparison  `json:"baselineComparison,omitempty"`
+}
+
+type ScopeMetadata struct {
+	Mode     string   `json:"mode"`
+	Packages []string `json:"packages,omitempty"`
 }
 
 type BaselineComparison struct {
