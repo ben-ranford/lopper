@@ -166,7 +166,7 @@ func detectLicenseFromFiles(depRoot string) *report.DependencyLicense {
 
 func findLicenseFiles(depRoot string) []string {
 	files := make([]string, 0, 4)
-	if err := filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files)); err != nil {
+	if filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files)) != nil {
 		return files
 	}
 	return files
@@ -283,7 +283,7 @@ func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	}
 
 	var pkg packageJSON
-	if err := json.Unmarshal(data, &pkg); err != nil {
+	if json.Unmarshal(data, &pkg) != nil {
 		return packageJSON{}, []string{fmt.Sprintf("failed to parse dependency metadata: %s", pkgPath)}
 	}
 	return pkg, nil

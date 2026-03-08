@@ -241,10 +241,12 @@ func TestValidateFailOnIncreaseRequiresBaseline(t *testing.T) {
 }
 
 func TestValidateDeniedLicenses(t *testing.T) {
+	const deniedSPDX = "GPL-3.0-ONLY"
+
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{
 			{Name: "a", License: &report.DependencyLicense{SPDX: "MIT", Denied: false}},
-			{Name: "b", License: &report.DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true}},
+			{Name: "b", License: &report.DependencyLicense{SPDX: deniedSPDX, Denied: true}},
 		},
 	}
 	if err := validateDeniedLicenses(reportData, true); !errors.Is(err, ErrDeniedLicenses) {
@@ -256,13 +258,15 @@ func TestValidateDeniedLicenses(t *testing.T) {
 }
 
 func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
+	const deniedSPDX = "GPL-3.0-ONLY"
+
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{
 			{Name: "safe", License: &report.DependencyLicense{SPDX: "MIT", Denied: false}},
 		},
 		BaselineComparison: &report.BaselineComparison{
 			NewDeniedLicenses: []report.DeniedLicenseDelta{
-				{Name: "unsafe", Language: "js-ts", SPDX: "GPL-3.0-ONLY"},
+				{Name: "unsafe", Language: "js-ts", SPDX: deniedSPDX},
 			},
 		},
 	}
@@ -272,7 +276,7 @@ func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
 
 	reportData.BaselineComparison.NewDeniedLicenses = nil
 	reportData.Dependencies = []report.DependencyReport{
-		{Name: "existing-denied", License: &report.DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true}},
+		{Name: "existing-denied", License: &report.DependencyLicense{SPDX: deniedSPDX, Denied: true}},
 	}
 	if err := validateDeniedLicenses(reportData, true); err != nil {
 		t.Fatalf("expected no denied-license error for baseline mode without newly introduced denied licenses, got %v", err)
