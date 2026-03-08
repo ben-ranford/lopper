@@ -174,6 +174,14 @@ func ComputeSummary(dependencies []DependencyReport) *Summary {
 	for _, dep := range dependencies {
 		summary.UsedExportsCount += dep.UsedExportsCount
 		summary.TotalExportsCount += dep.TotalExportsCount
+		if dep.License == nil || dep.License.Unknown || strings.TrimSpace(dep.License.SPDX) == "" {
+			summary.UnknownLicenseCount++
+		} else {
+			summary.KnownLicenseCount++
+		}
+		if dep.License != nil && dep.License.Denied {
+			summary.DeniedLicenseCount++
+		}
 	}
 	if summary.TotalExportsCount > 0 {
 		summary.UsedPercent = (float64(summary.UsedExportsCount) / float64(summary.TotalExportsCount)) * 100
@@ -272,12 +280,15 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 
 	comparison := BaselineComparison{
 		SummaryDelta: SummaryDelta{
-			DependencyCountDelta:   safeSummaryField(currentSummary, func(s *Summary) int { return s.DependencyCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DependencyCount }),
-			UsedExportsCountDelta:  safeSummaryField(currentSummary, func(s *Summary) int { return s.UsedExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UsedExportsCount }),
-			TotalExportsCountDelta: safeSummaryField(currentSummary, func(s *Summary) int { return s.TotalExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.TotalExportsCount }),
-			UsedPercentDelta:       safeSummaryFloat(currentSummary, func(s *Summary) float64 { return s.UsedPercent }) - safeSummaryFloat(baselineSummary, func(s *Summary) float64 { return s.UsedPercent }),
-			WastePercentDelta:      wasteFromSummary(currentSummary) - wasteFromSummary(baselineSummary),
-			UnusedBytesDelta:       currentUnused - baselineUnused,
+			DependencyCountDelta:     safeSummaryField(currentSummary, func(s *Summary) int { return s.DependencyCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DependencyCount }),
+			UsedExportsCountDelta:    safeSummaryField(currentSummary, func(s *Summary) int { return s.UsedExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UsedExportsCount }),
+			TotalExportsCountDelta:   safeSummaryField(currentSummary, func(s *Summary) int { return s.TotalExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.TotalExportsCount }),
+			UsedPercentDelta:         safeSummaryFloat(currentSummary, func(s *Summary) float64 { return s.UsedPercent }) - safeSummaryFloat(baselineSummary, func(s *Summary) float64 { return s.UsedPercent }),
+			WastePercentDelta:        wasteFromSummary(currentSummary) - wasteFromSummary(baselineSummary),
+			UnusedBytesDelta:         currentUnused - baselineUnused,
+			KnownLicenseCountDelta:   safeSummaryField(currentSummary, func(s *Summary) int { return s.KnownLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.KnownLicenseCount }),
+			UnknownLicenseCountDelta: safeSummaryField(currentSummary, func(s *Summary) int { return s.UnknownLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UnknownLicenseCount }),
+			DeniedLicenseCountDelta:  safeSummaryField(currentSummary, func(s *Summary) int { return s.DeniedLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DeniedLicenseCount }),
 		},
 	}
 
@@ -315,6 +326,7 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 		}
 		appendDependencyDelta(&comparison, delta)
 	}
+	comparison.NewDeniedLicenses = newlyDeniedLicenses(currentByKey, baselineByKey)
 
 	return comparison
 }
@@ -388,6 +400,7 @@ func dependencyDelta(curr DependencyReport, hasCurrent bool, base DependencyRepo
 		delta.UsedPercentDelta = curr.UsedPercent
 		delta.EstimatedUnusedBytesDelta = curr.EstimatedUnusedBytes
 		delta.WastePercentDelta = wasteFromDependency(curr)
+		delta.DeniedIntroduced = isDenied(curr) && !isDenied(base)
 		return delta, true
 	case !hasCurrent && hasBaseline:
 		delta.Kind = DependencyDeltaRemoved
@@ -404,10 +417,12 @@ func dependencyDelta(curr DependencyReport, hasCurrent bool, base DependencyRepo
 		delta.UsedPercentDelta = curr.UsedPercent - base.UsedPercent
 		delta.EstimatedUnusedBytesDelta = curr.EstimatedUnusedBytes - base.EstimatedUnusedBytes
 		delta.WastePercentDelta = wasteFromDependency(curr) - wasteFromDependency(base)
+		delta.DeniedIntroduced = isDenied(curr) && !isDenied(base)
 		if delta.UsedExportsCountDelta == 0 &&
 			delta.TotalExportsCountDelta == 0 &&
 			delta.UsedPercentDelta == 0 &&
-			delta.EstimatedUnusedBytesDelta == 0 {
+			delta.EstimatedUnusedBytesDelta == 0 &&
+			!delta.DeniedIntroduced {
 			return DependencyDelta{}, false
 		}
 		return delta, true
@@ -433,4 +448,37 @@ func WastePercent(summary *Summary) (float64, bool) {
 		return 0, false
 	}
 	return 100 - summary.UsedPercent, true
+}
+
+func newlyDeniedLicenses(currentByKey, baselineByKey map[string]DependencyReport) []DeniedLicenseDelta {
+	items := make([]DeniedLicenseDelta, 0)
+	for key, current := range currentByKey {
+		if !isDenied(current) {
+			continue
+		}
+		baseline, ok := baselineByKey[key]
+		if ok && isDenied(baseline) {
+			continue
+		}
+		spdx := ""
+		if current.License != nil {
+			spdx = current.License.SPDX
+		}
+		items = append(items, DeniedLicenseDelta{
+			Language: current.Language,
+			Name:     current.Name,
+			SPDX:     spdx,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Language != items[j].Language {
+			return items[i].Language < items[j].Language
+		}
+		return items[i].Name < items[j].Name
+	})
+	return items
+}
+
+func isDenied(dep DependencyReport) bool {
+	return dep.License != nil && dep.License.Denied
 }

@@ -74,6 +74,7 @@ func appendSummary(buffer *bytes.Buffer, summary *Summary) {
 		return
 	}
 	buffer.WriteString(fmt.Sprintf("Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n", summary.DependencyCount, summary.UsedExportsCount, summary.TotalExportsCount, summary.UsedPercent))
+	buffer.WriteString(fmt.Sprintf("Licenses: known=%d, unknown=%d, denied=%d\n\n", summary.KnownLicenseCount, summary.UnknownLicenseCount, summary.DeniedLicenseCount))
 }
 
 func appendCacheMetadata(buffer *bytes.Buffer, cache *CacheMetadata) {
@@ -112,7 +113,7 @@ func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) 
 }
 
 func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) error {
-	columns := make([]string, 0, 9)
+	columns := make([]string, 0, 11)
 	if showLanguage {
 		columns = append(columns, "Language")
 	}
@@ -120,7 +121,7 @@ func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) 
 	if showRuntime {
 		columns = append(columns, "Runtime")
 	}
-	columns = append(columns, "Est. Unused Size", "Candidate Score", "Score Components", "Top Symbols")
+	columns = append(columns, "License", "Provenance", "Est. Unused Size", "Candidate Score", "Score Components", "Top Symbols")
 	_, err := fmt.Fprintln(writer, strings.Join(columns, "\t"))
 	return err
 }
@@ -131,7 +132,7 @@ func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string
 		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
 	}
 
-	columns := make([]string, 0, 9)
+	columns := make([]string, 0, 11)
 	if showLanguage {
 		columns = append(columns, dep.Language)
 	}
@@ -139,7 +140,7 @@ func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string
 	if showRuntime {
 		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
 	}
-	columns = append(columns, formatBytes(dep.EstimatedUnusedBytes), formatCandidateScore(dep.RemovalCandidate), formatScoreComponents(dep.RemovalCandidate), formatTopSymbols(dep.TopUsedSymbols))
+	columns = append(columns, formatDependencyLicense(dep.License), formatDependencyProvenance(dep.Provenance), formatBytes(dep.EstimatedUnusedBytes), formatCandidateScore(dep.RemovalCandidate), formatScoreComponents(dep.RemovalCandidate), formatTopSymbols(dep.TopUsedSymbols))
 	return strings.Join(columns, "\t")
 }
 
@@ -215,6 +216,13 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_usage: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Usage))
 	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_impact: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Impact))
 	buffer.WriteString(fmt.Sprintf("- removal_candidate_weight_confidence: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Confidence))
+	if len(report.EffectivePolicy.License.Deny) > 0 {
+		buffer.WriteString("- license_deny: ")
+		buffer.WriteString(strings.Join(report.EffectivePolicy.License.Deny, ", "))
+		buffer.WriteString("\n")
+	}
+	buffer.WriteString(fmt.Sprintf("- license_fail_on_deny: %t\n", report.EffectivePolicy.License.FailOnDenied))
+	buffer.WriteString(fmt.Sprintf("- license_include_registry_provenance: %t\n", report.EffectivePolicy.License.IncludeRegistryProvenance))
 	buffer.WriteString("\n")
 }
 
@@ -253,7 +261,13 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 		buffer.WriteString("\n")
 	}
 	buffer.WriteString(fmt.Sprintf("- summary_delta: deps %+d, used %% %+0.1f, waste %% %+0.1f, unused bytes %+d\n", comparison.SummaryDelta.DependencyCountDelta, comparison.SummaryDelta.UsedPercentDelta, comparison.SummaryDelta.WastePercentDelta, comparison.SummaryDelta.UnusedBytesDelta))
+	buffer.WriteString(fmt.Sprintf("- license_delta: known %+d, unknown %+d, denied %+d\n", comparison.SummaryDelta.KnownLicenseCountDelta, comparison.SummaryDelta.UnknownLicenseCountDelta, comparison.SummaryDelta.DeniedLicenseCountDelta))
 	buffer.WriteString(fmt.Sprintf("- changed: %d, regressions: %d, progressions: %d, added: %d, removed: %d, unchanged: %d\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows))
+	if len(comparison.NewDeniedLicenses) > 0 {
+		for _, denied := range comparison.NewDeniedLicenses {
+			buffer.WriteString(fmt.Sprintf("  new denied license %s/%s (%s)\n", denied.Language, denied.Name, denied.SPDX))
+		}
+	}
 
 	for _, delta := range topWasteDeltas(comparison.Regressions, 3) {
 		buffer.WriteString(fmt.Sprintf("  regression %s/%s waste %+0.1f%% used %+0.1f%%\n", delta.Language, delta.Name, delta.WastePercentDelta, delta.UsedPercentDelta))
@@ -372,6 +386,35 @@ func formatRuntimeUsage(usage *RuntimeUsage) string {
 	return fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)
 }
 
+func formatDependencyLicense(license *DependencyLicense) string {
+	if license == nil {
+		return "unknown"
+	}
+	if license.Unknown || strings.TrimSpace(license.SPDX) == "" {
+		if license.Denied {
+			return "unknown (denied)"
+		}
+		return "unknown"
+	}
+	if license.Denied {
+		return license.SPDX + " (denied)"
+	}
+	return license.SPDX
+}
+
+func formatDependencyProvenance(provenance *DependencyProvenance) string {
+	if provenance == nil {
+		return "-"
+	}
+	if strings.TrimSpace(provenance.Source) == "" && len(provenance.Signals) == 0 {
+		return "-"
+	}
+	if strings.TrimSpace(provenance.Source) != "" && len(provenance.Signals) == 0 {
+		return provenance.Source
+	}
+	return provenance.Source + " (" + strings.Join(provenance.Signals, ", ") + ")"
+}
+
 func formatPRComment(report Report) string {
 	comparison := report.BaselineComparison
 	if comparison == nil {
@@ -386,10 +429,22 @@ func formatPRComment(report Report) string {
 	buffer.WriteString(fmt.Sprintf("| Used percent | %s |\n", signedPct(comparison.SummaryDelta.UsedPercentDelta)))
 	buffer.WriteString(fmt.Sprintf("| Waste percent | %s |\n", signedPct(comparison.SummaryDelta.WastePercentDelta)))
 	buffer.WriteString(fmt.Sprintf("| Estimated unused bytes | %s |\n", signedBytes(comparison.SummaryDelta.UnusedBytesDelta)))
+	buffer.WriteString(fmt.Sprintf("| Known licenses | %s |\n", signedInt(comparison.SummaryDelta.KnownLicenseCountDelta)))
+	buffer.WriteString(fmt.Sprintf("| Unknown licenses | %s |\n", signedInt(comparison.SummaryDelta.UnknownLicenseCountDelta)))
+	buffer.WriteString(fmt.Sprintf("| Denied licenses | %s |\n", signedInt(comparison.SummaryDelta.DeniedLicenseCountDelta)))
 	buffer.WriteString("\n")
 	buffer.WriteString("| Changed | Regressions | Progressions | Added | Removed | Unchanged |\n")
 	buffer.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 	buffer.WriteString(fmt.Sprintf("| %d | %d | %d | %d | %d | %d |\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows))
+
+	if len(comparison.NewDeniedLicenses) > 0 {
+		buffer.WriteString("\n### Newly denied licenses\n\n")
+		buffer.WriteString("| # | Dependency | Language | SPDX |\n")
+		buffer.WriteString("| --- | --- | --- | --- |\n")
+		for i, denied := range comparison.NewDeniedLicenses {
+			buffer.WriteString(fmt.Sprintf("| %d | `%s` | %s | %s |\n", i+1, escapeMarkdownTable(denied.Name), escapeMarkdownTable(denied.Language), escapeMarkdownTable(denied.SPDX)))
+		}
+	}
 
 	top := topDependencyDeltas(comparison.Dependencies, 10)
 	if len(top) == 0 {

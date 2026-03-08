@@ -16,6 +16,7 @@ import (
 const (
 	cacheTestJSIndexFileName     = "index.js"
 	cacheTestPackageJSONFileName = "package.json"
+	cacheTestDirectoryName       = "analysis-cache"
 )
 
 type countingAdapter struct {
@@ -71,7 +72,7 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
 
 	svc, adapter := newCacheTestService(t)
-	cacheDir := filepath.Join(repo, "analysis-cache")
+	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
 	req := newCacheRequest(repo, cacheDir, false)
 
 	first, err := svc.Analyse(context.Background(), req)
@@ -117,7 +118,7 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 
 	svc, adapter := newCacheTestService(t)
-	req := newCacheRequest(repo, filepath.Join(repo, "analysis-cache"), true)
+	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), true)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -136,6 +137,39 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	}
 	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses == 0 {
 		t.Fatalf("expected readonly run miss metadata, got %#v", second.Cache)
+	}
+}
+
+func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	req := Request{
+		RepoPath: repo,
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    filepath.Join(repo, cacheTestDirectoryName),
+		},
+	}
+	cache := newAnalysisCache(req, repo)
+
+	baseReq := Request{
+		RepoPath:                  repo,
+		TopN:                      1,
+		LicenseDenyList:           []string{"GPL-3.0-ONLY"},
+		IncludeRegistryProvenance: true,
+	}
+	entryA, err := cache.prepareEntry(baseReq, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare entry A: %v", err)
+	}
+	changedReq := baseReq
+	changedReq.LicenseDenyList = []string{"MIT"}
+	entryB, err := cache.prepareEntry(changedReq, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare entry B: %v", err)
+	}
+	if entryA.KeyDigest == entryB.KeyDigest {
+		t.Fatalf("expected different cache keys when license deny list changes")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ func TestLoadNoConfigFile(t *testing.T) {
 		t.Fatalf("expected no config path, got %q", path)
 	}
 	resolved := overrides.Apply(Defaults())
-	if resolved != Defaults() {
+	if !reflect.DeepEqual(resolved, Defaults()) {
 		t.Fatalf("expected defaults when no config file, got %+v", resolved)
 	}
 }
@@ -170,6 +171,56 @@ func TestLoadConfigRejectsDuplicateFields(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "defined more than once") {
 		t.Fatalf("expected duplicate-key error, got %v", err)
+	}
+}
+
+func TestLoadConfigLicensePolicyFields(t *testing.T) {
+	repo := t.TempDir()
+	cfg := `thresholds:
+ license_deny:
+  - gpl-3.0-only
+  - agpl-3.0-only
+ license_fail_on_deny: true
+ license_include_registry_provenance: true
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), cfg)
+
+	overrides, _, err := Load(repo, "")
+	if err != nil {
+		t.Fatalf(loadConfigErrFmt, err)
+	}
+	resolved := overrides.Apply(Defaults())
+	if strings.Join(resolved.LicenseDenyList, ",") != "AGPL-3.0-ONLY,GPL-3.0-ONLY" {
+		t.Fatalf("unexpected resolved license deny list: %#v", resolved.LicenseDenyList)
+	}
+	if !resolved.LicenseFailOnDeny || !resolved.LicenseIncludeRegistryProvenance {
+		t.Fatalf("expected resolved license policy booleans true, got %+v", resolved)
+	}
+}
+
+func TestRawConfigToOverridesDuplicateNestedLicensePolicyFields(t *testing.T) {
+	rootDeny := []string{"gpl-3.0-only"}
+	nestedDeny := []string{"agpl-3.0-only"}
+	cfg := rawConfig{
+		LicenseDeny: rootDeny,
+		Thresholds: rawThresholds{
+			LicenseDeny: nestedDeny,
+		},
+	}
+	if _, err := cfg.toOverrides(); err == nil {
+		t.Fatalf("expected duplicate nested license_deny error")
+	}
+
+	rootFail := true
+	nestedFail := true
+	cfg = rawConfig{
+		LicenseFailOnDeny: &rootFail,
+		Thresholds: rawThresholds{
+			LicenseFailOnDeny: &nestedFail,
+		},
+	}
+	if _, err := cfg.toOverrides(); err == nil {
+		t.Fatalf("expected duplicate nested license_fail_on_deny error")
 	}
 }
 
