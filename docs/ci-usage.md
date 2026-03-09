@@ -28,15 +28,20 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make ci
+      - run: make demos-check
       - run: make cov
 ```
+
+On pull requests, `ci.yml` also runs lopper delta analysis against the PR base and posts/updates a bot comment.
+If `SONAR_TOKEN` is set, it additionally posts/updates a SonarQube summary comment.
 
 ## Make targets used by CI
 
