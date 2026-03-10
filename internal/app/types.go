@@ -9,8 +9,9 @@ import (
 type Mode string
 
 const (
-	ModeTUI     Mode = "tui"
-	ModeAnalyse Mode = "analyse"
+	ModeTUI       Mode = "tui"
+	ModeAnalyse   Mode = "analyse"
+	ModeDashboard Mode = "dashboard"
 
 	ScopeModeRepo            = analysis.ScopeModeRepo
 	ScopeModePackage         = analysis.ScopeModePackage
@@ -18,10 +19,11 @@ const (
 )
 
 type Request struct {
-	Mode     Mode
-	RepoPath string
-	Analyse  AnalyseRequest
-	TUI      TUIRequest
+	Mode      Mode
+	RepoPath  string
+	Analyse   AnalyseRequest
+	TUI       TUIRequest
+	Dashboard DashboardRequest
 }
 
 type AnalyseRequest struct {
@@ -58,6 +60,22 @@ type TUIRequest struct {
 	PageSize     int
 }
 
+type DashboardRepo struct {
+	Name     string
+	Path     string
+	Language string
+}
+
+type DashboardRequest struct {
+	Repos             []DashboardRepo
+	ConfigPath        string
+	Format            string
+	OutputPath        string
+	TopN              int
+	DefaultLanguage   string
+	BaselineStorePath string
+}
+
 func DefaultRequest() Request {
 	return Request{
 		Mode:     ModeTUI,
@@ -75,6 +93,10 @@ func DefaultRequest() Request {
 			Sort:     "waste",
 			TopN:     50,
 			PageSize: 10,
+		},
+		Dashboard: DashboardRequest{
+			TopN:            20,
+			DefaultLanguage: "auto",
 		},
 	}
 }

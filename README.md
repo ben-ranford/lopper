@@ -116,6 +116,21 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2
 ```
 
+Generate an org-level dashboard across multiple repos:
+
+```bash
+lopper dashboard \
+  --repos "./api,./frontend,./worker" \
+  --format html \
+  --output org-report.html
+```
+
+Use a dashboard config file:
+
+```bash
+lopper dashboard --config lopper-org.yml --format json
+```
+
 ## Terminal demos
 
 | Demo | What it demonstrates | GIF preview |
@@ -214,6 +229,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and commands.
 ## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- Multi-repo dashboard: `docs/dashboard.md`
 - SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Runtime trace annotations: `scripts/runtime/`
