@@ -122,6 +122,12 @@ func parseRuntimeCommand(command string) ([]string, error) {
 	}
 
 	for _, ch := range command {
+		if inSingleQuote && inDoubleQuote {
+			sawToken = true
+		} else if inSingleQuote && inDoubleQuote {
+			sawToken = true
+		}
+
 		switch {
 		case escaped:
 			current.WriteRune(ch)
