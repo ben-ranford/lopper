@@ -249,30 +249,43 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	}
 }
 
-func TestGitChangedFilesReturnsErrorWhenRepoHasNoHEAD(t *testing.T) {
+func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	runGit(t, repo, "add", manifestFileName)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+	writeFile(t, filepath.Join(repo, "new-untracked.txt"), "untracked\n")
 
 	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err == nil {
-		t.Fatalf("expected gitChangedFiles error when HEAD is missing")
+	if err != nil {
+		t.Fatalf("expected gitChangedFiles to succeed when HEAD is missing, got %v", err)
 	}
 	if !hasGit {
 		t.Fatalf("expected hasGit=true when inside git worktree")
 	}
-	if len(changed) != 0 {
-		t.Fatalf("expected no changed files on error, got %#v", changed)
+	if _, ok := changed[manifestFileName]; !ok {
+		t.Fatalf("expected staged/unstaged manifest to be detected, got %#v", changed)
+	}
+	if _, ok := changed["new-untracked.txt"]; !ok {
+		t.Fatalf("expected untracked file to be detected, got %#v", changed)
 	}
 }
 
-func TestDetectLockfileDriftReturnsGitChangedFilesError(t *testing.T) {
+func TestDetectLockfileDriftNoHeadDoesNotReturnGitError(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 	runGit(t, repo, "init")
 
-	_, err := detectLockfileDrift(context.Background(), repo, false)
-	if err == nil {
-		t.Fatalf("expected detectLockfileDrift to return git changed-files error when HEAD is missing")
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf("expected detectLockfileDrift to continue when HEAD is missing, got %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one warning for missing lockfile, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "no matching lockfile") {
+		t.Fatalf("unexpected warning: %#v", warnings)
 	}
 }
 
@@ -358,6 +371,10 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	}
 	if got := parseGitOutputLines([]byte("")); len(got) != 0 {
 		t.Fatalf("expected empty git output lines, got %#v", got)
+	}
+	merged := mergeGitPaths([]string{"a", "b"}, []string{"b", "c"})
+	if len(merged) != 3 || merged[0] != "a" || merged[1] != "b" || merged[2] != "c" {
+		t.Fatalf("unexpected merged git paths: %#v", merged)
 	}
 
 	manifest := filepath.Join(repo, manifestFileName)
