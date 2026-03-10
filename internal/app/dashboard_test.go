@@ -15,6 +15,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	sharedDependencyName = "shared-lib"
+	singleRepoPath       = "./repo"
+)
+
 type mapAnalyzer struct {
 	mu      sync.Mutex
 	reports map[string]report.Report
@@ -42,7 +47,7 @@ func TestExecuteDashboardJSON(t *testing.T) {
 			"./api": {
 				Dependencies: []report.DependencyReport{
 					{
-						Name: "shared-lib",
+						Name: sharedDependencyName,
 						Recommendations: []report.Recommendation{
 							{Code: "remove-unused-dependency"},
 						},
@@ -56,13 +61,13 @@ func TestExecuteDashboardJSON(t *testing.T) {
 			},
 			"./web": {
 				Dependencies: []report.DependencyReport{
-					{Name: "shared-lib"},
+					{Name: sharedDependencyName},
 					{Name: "web-only"},
 				},
 			},
 			"./worker": {
 				Dependencies: []report.DependencyReport{
-					{Name: "shared-lib"},
+					{Name: sharedDependencyName},
 					{Name: "worker-only"},
 				},
 			},
@@ -109,7 +114,7 @@ func TestExecuteDashboardJSON(t *testing.T) {
 	if reportData.Summary.CriticalCVEs != 1 {
 		t.Fatalf("expected one critical CVE signal, got %+v", reportData.Summary)
 	}
-	if len(reportData.CrossRepoDeps) != 1 || reportData.CrossRepoDeps[0].Name != "shared-lib" {
+	if len(reportData.CrossRepoDeps) != 1 || reportData.CrossRepoDeps[0].Name != sharedDependencyName {
 		t.Fatalf("unexpected cross-repo duplicate payload: %#v", reportData.CrossRepoDeps)
 	}
 }
@@ -117,7 +122,7 @@ func TestExecuteDashboardJSON(t *testing.T) {
 func TestExecuteDashboardOutputFile(t *testing.T) {
 	analyzer := &mapAnalyzer{
 		reports: map[string]report.Report{
-			"./repo": {
+			singleRepoPath: {
 				Dependencies: []report.DependencyReport{{Name: "dep"}},
 			},
 		},
@@ -130,7 +135,7 @@ func TestExecuteDashboardOutputFile(t *testing.T) {
 	req := DefaultRequest()
 	req.Mode = ModeDashboard
 	req.Dashboard.Format = "csv"
-	req.Dashboard.Repos = []DashboardRepo{{Path: "./repo"}}
+	req.Dashboard.Repos = []DashboardRepo{{Path: singleRepoPath}}
 	req.Dashboard.OutputPath = outputPath
 
 	output, err := application.Execute(context.Background(), req)
@@ -197,14 +202,14 @@ func TestExecuteDashboardPropagatesAnalysisErrors(t *testing.T) {
 	analyzer := &mapAnalyzer{
 		reports: map[string]report.Report{},
 		errs: map[string]error{
-			"./repo": errors.New("analysis failed"),
+			singleRepoPath: errors.New("analysis failed"),
 		},
 	}
 	application := &App{Analyzer: analyzer}
 	req := DefaultRequest()
 	req.Mode = ModeDashboard
 	req.Dashboard.Format = "json"
-	req.Dashboard.Repos = []DashboardRepo{{Path: "./repo"}}
+	req.Dashboard.Repos = []DashboardRepo{{Path: singleRepoPath}}
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {

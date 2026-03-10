@@ -33,6 +33,10 @@ const (
 	repoFlagName                = "--repo"
 	dashboardReposFlagName      = "--repos"
 	dashboardOutputFlagName     = "--output"
+	dashboardFormatFlagName     = "--format"
+	dashboardConfigFlagName     = "--config"
+	dashboardConfigFileName     = "lopper-org.yml"
+	dashboardReportCSVFileName  = "report.csv"
 )
 
 func mustParseArgs(t *testing.T, args []string) app.Request {
@@ -311,7 +315,7 @@ func TestParseArgsDashboardRepos(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"dashboard",
 		dashboardReposFlagName, "./api, ./frontend,./api",
-		"--format", "html",
+		dashboardFormatFlagName, "html",
 		"--top", "25",
 		languageFlagName, "all",
 		dashboardOutputFlagName, "org-report.html",
@@ -341,11 +345,11 @@ func TestParseArgsDashboardRepos(t *testing.T) {
 }
 
 func TestParseArgsDashboardConfig(t *testing.T) {
-	req := mustParseArgs(t, []string{"dashboard", "--config", "lopper-org.yml"})
+	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName})
 	if req.Mode != app.ModeDashboard {
 		t.Fatalf(modeMismatchFmt, app.ModeDashboard, req.Mode)
 	}
-	if req.Dashboard.ConfigPath != "lopper-org.yml" {
+	if req.Dashboard.ConfigPath != dashboardConfigFileName {
 		t.Fatalf("expected dashboard config path, got %q", req.Dashboard.ConfigPath)
 	}
 	if req.Dashboard.TopN != app.DefaultRequest().Dashboard.TopN {
@@ -354,12 +358,12 @@ func TestParseArgsDashboardConfig(t *testing.T) {
 }
 
 func TestParseArgsDashboardOutputFlags(t *testing.T) {
-	req := mustParseArgs(t, []string{"dashboard", "--config", "lopper-org.yml", dashboardOutputFlagName, "report.csv", "-o", "report.csv"})
-	if req.Dashboard.OutputPath != "report.csv" {
+	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, dashboardReportCSVFileName, "-o", dashboardReportCSVFileName})
+	if req.Dashboard.OutputPath != dashboardReportCSVFileName {
 		t.Fatalf("expected output path report.csv, got %q", req.Dashboard.OutputPath)
 	}
 
-	_, err := ParseArgs([]string{"dashboard", "--config", "lopper-org.yml", dashboardOutputFlagName, "one.csv", "-o", "two.csv"})
+	_, err := ParseArgs([]string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, "one.csv", "-o", "two.csv"})
 	if err == nil || !strings.Contains(err.Error(), "must match") {
 		t.Fatalf("expected output mismatch validation error, got %v", err)
 	}
@@ -371,7 +375,7 @@ func TestParseArgsDashboardValidation(t *testing.T) {
 		t.Fatalf("unexpected dashboard source validation error: %v", err)
 	}
 
-	err = expectParseArgsError(t, []string{"dashboard", "--config", "lopper-org.yml", "--top", "0"}, "expected dashboard top validation error")
+	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
 	if !strings.Contains(err.Error(), "--top must be > 0") {
 		t.Fatalf("unexpected dashboard top validation error: %v", err)
 	}

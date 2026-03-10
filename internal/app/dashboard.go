@@ -53,59 +53,27 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 }
 
 func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, error) {
-	repos := make([]dashboard.RepoInput, 0)
-	for _, repo := range req.Repos {
-		path := strings.TrimSpace(repo.Path)
-		if path == "" {
-			continue
-		}
-		name := strings.TrimSpace(repo.Name)
-		if name == "" {
-			name = inferDashboardRepoName(path)
-		}
-		repos = append(repos, dashboard.RepoInput{
-			Name:     name,
-			Path:     path,
-			Language: strings.TrimSpace(repo.Language),
-		})
-	}
-
+	repos := normalizedDashboardRepos(req.Repos)
 	configFormat := ""
-	configPath := strings.TrimSpace(req.ConfigPath)
-	if configPath != "" {
-		loadedConfig, err := dashboard.LoadConfig(configPath)
-		if err != nil {
-			return resolvedDashboardRequest{}, err
-		}
+	loadedConfig, hasConfig, err := loadDashboardConfig(req.ConfigPath)
+	if err != nil {
+		return resolvedDashboardRequest{}, err
+	}
+	if hasConfig {
 		configFormat = loadedConfig.Dashboard.Output
 		if len(repos) == 0 {
-			configRepos, err := reposFromDashboardConfig(loadedConfig)
+			repos, err = reposFromDashboardConfig(loadedConfig)
 			if err != nil {
 				return resolvedDashboardRequest{}, err
 			}
-			repos = append(repos, configRepos...)
 		}
 	}
-
 	if len(repos) == 0 {
 		return resolvedDashboardRequest{}, fmt.Errorf("dashboard requires at least one repo via --repos or --config")
 	}
 
-	defaultLanguage := strings.TrimSpace(req.DefaultLanguage)
-	if defaultLanguage == "" {
-		defaultLanguage = "auto"
-	}
-	for index := range repos {
-		if strings.TrimSpace(repos[index].Language) == "" {
-			repos[index].Language = defaultLanguage
-		}
-	}
-
-	formatValue := strings.TrimSpace(req.Format)
-	if formatValue == "" {
-		formatValue = strings.TrimSpace(configFormat)
-	}
-	format, err := dashboard.ParseFormat(formatValue)
+	applyDefaultDashboardLanguage(repos, req.DefaultLanguage)
+	format, err := resolveDashboardFormat(req.Format, configFormat)
 	if err != nil {
 		return resolvedDashboardRequest{}, err
 	}
@@ -115,6 +83,58 @@ func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, er
 		format:     format,
 		outputPath: strings.TrimSpace(req.OutputPath),
 	}, nil
+}
+
+func normalizedDashboardRepos(repos []DashboardRepo) []dashboard.RepoInput {
+	normalized := make([]dashboard.RepoInput, 0, len(repos))
+	for _, repo := range repos {
+		path := strings.TrimSpace(repo.Path)
+		if path == "" {
+			continue
+		}
+		name := strings.TrimSpace(repo.Name)
+		if name == "" {
+			name = inferDashboardRepoName(path)
+		}
+		normalized = append(normalized, dashboard.RepoInput{
+			Name:     name,
+			Path:     path,
+			Language: strings.TrimSpace(repo.Language),
+		})
+	}
+	return normalized
+}
+
+func loadDashboardConfig(configPath string) (dashboard.LoadedConfig, bool, error) {
+	trimmedConfigPath := strings.TrimSpace(configPath)
+	if trimmedConfigPath == "" {
+		return dashboard.LoadedConfig{}, false, nil
+	}
+	loadedConfig, err := dashboard.LoadConfig(trimmedConfigPath)
+	if err != nil {
+		return dashboard.LoadedConfig{}, false, err
+	}
+	return loadedConfig, true, nil
+}
+
+func applyDefaultDashboardLanguage(repos []dashboard.RepoInput, defaultLanguage string) {
+	resolvedLanguage := strings.TrimSpace(defaultLanguage)
+	if resolvedLanguage == "" {
+		resolvedLanguage = "auto"
+	}
+	for index := range repos {
+		if strings.TrimSpace(repos[index].Language) == "" {
+			repos[index].Language = resolvedLanguage
+		}
+	}
+}
+
+func resolveDashboardFormat(flagFormat string, configFormat string) (dashboard.Format, error) {
+	formatValue := strings.TrimSpace(flagFormat)
+	if formatValue == "" {
+		formatValue = strings.TrimSpace(configFormat)
+	}
+	return dashboard.ParseFormat(formatValue)
 }
 
 func reposFromDashboardConfig(config dashboard.LoadedConfig) ([]dashboard.RepoInput, error) {

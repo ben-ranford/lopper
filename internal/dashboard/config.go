@@ -2,10 +2,10 @@ package dashboard
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,7 +38,7 @@ func LoadConfig(path string) (LoadedConfig, error) {
 		return LoadedConfig{}, fmt.Errorf("dashboard config path is required")
 	}
 
-	data, err := os.ReadFile(trimmedPath)
+	data, err := safeio.ReadFile(trimmedPath)
 	if err != nil {
 		return LoadedConfig{}, err
 	}

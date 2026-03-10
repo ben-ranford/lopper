@@ -30,28 +30,41 @@ func formatCSV(reportData Report) (string, error) {
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
-	if err := writer.Write([]string{"generated_at", reportData.GeneratedAt.Format("2006-01-02T15:04:05Z07:00")}); err != nil {
+	if err := writeDashboardSummaryCSV(writer, reportData); err != nil {
 		return "", err
 	}
-	if err := writer.Write([]string{"total_repos", fmt.Sprintf("%d", reportData.Summary.TotalRepos)}); err != nil {
+	if err := writeDashboardRepoRowsCSV(writer, reportData.Repos); err != nil {
 		return "", err
 	}
-	if err := writer.Write([]string{"total_deps", fmt.Sprintf("%d", reportData.Summary.TotalDeps)}); err != nil {
-		return "", err
-	}
-	if err := writer.Write([]string{"total_waste_candidates", fmt.Sprintf("%d", reportData.Summary.TotalWasteCandidates)}); err != nil {
-		return "", err
-	}
-	if err := writer.Write([]string{"cross_repo_duplicates", fmt.Sprintf("%d", reportData.Summary.CrossRepoDuplicates)}); err != nil {
-		return "", err
-	}
-	if err := writer.Write([]string{"critical_cves", fmt.Sprintf("%d", reportData.Summary.CriticalCVEs)}); err != nil {
-		return "", err
-	}
-	if err := writer.Write(nil); err != nil {
+	if err := writeDashboardCrossRepoRowsCSV(writer, reportData.CrossRepoDeps); err != nil {
 		return "", err
 	}
 
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return "", err
+	}
+	return buffer.String(), nil
+}
+
+func writeDashboardSummaryCSV(writer *csv.Writer, reportData Report) error {
+	summaryRows := [][]string{
+		{"generated_at", reportData.GeneratedAt.Format("2006-01-02T15:04:05Z07:00")},
+		{"total_repos", fmt.Sprintf("%d", reportData.Summary.TotalRepos)},
+		{"total_deps", fmt.Sprintf("%d", reportData.Summary.TotalDeps)},
+		{"total_waste_candidates", fmt.Sprintf("%d", reportData.Summary.TotalWasteCandidates)},
+		{"cross_repo_duplicates", fmt.Sprintf("%d", reportData.Summary.CrossRepoDuplicates)},
+		{"critical_cves", fmt.Sprintf("%d", reportData.Summary.CriticalCVEs)},
+	}
+	for _, row := range summaryRows {
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+	return writer.Write(nil)
+}
+
+func writeDashboardRepoRowsCSV(writer *csv.Writer, repos []RepoResult) error {
 	if err := writer.Write([]string{
 		"repo_name",
 		"repo_path",
@@ -64,10 +77,10 @@ func formatCSV(reportData Report) (string, error) {
 		"denied_license_count",
 		"error",
 	}); err != nil {
-		return "", err
+		return err
 	}
 
-	for _, repoResult := range reportData.Repos {
+	for _, repoResult := range repos {
 		if err := writer.Write([]string{
 			repoResult.Name,
 			repoResult.Path,
@@ -80,33 +93,32 @@ func formatCSV(reportData Report) (string, error) {
 			fmt.Sprintf("%d", repoResult.DeniedLicenseCount),
 			repoResult.Error,
 		}); err != nil {
-			return "", err
+			return err
 		}
 	}
+	return nil
+}
 
-	if len(reportData.CrossRepoDeps) > 0 {
-		if err := writer.Write(nil); err != nil {
-			return "", err
-		}
-		if err := writer.Write([]string{"dependency_name", "repo_count", "repositories"}); err != nil {
-			return "", err
-		}
-		for _, dependency := range reportData.CrossRepoDeps {
-			if err := writer.Write([]string{
-				dependency.Name,
-				fmt.Sprintf("%d", dependency.Count),
-				strings.Join(dependency.Repositories, "|"),
-			}); err != nil {
-				return "", err
-			}
+func writeDashboardCrossRepoRowsCSV(writer *csv.Writer, dependencies []CrossRepoDependency) error {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	if err := writer.Write(nil); err != nil {
+		return err
+	}
+	if err := writer.Write([]string{"dependency_name", "repo_count", "repositories"}); err != nil {
+		return err
+	}
+	for _, dependency := range dependencies {
+		if err := writer.Write([]string{
+			dependency.Name,
+			fmt.Sprintf("%d", dependency.Count),
+			strings.Join(dependency.Repositories, "|"),
+		}); err != nil {
+			return err
 		}
 	}
-
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		return "", err
-	}
-	return buffer.String(), nil
+	return nil
 }
 
 func formatHTML(reportData Report) string {
