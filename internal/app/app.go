@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -28,6 +29,7 @@ type App struct {
 	Analyzer  analysis.Analyser
 	Formatter *report.Formatter
 	TUI       ui.TUI
+	Notify    *notify.Dispatcher
 }
 
 func New(out io.Writer, in io.Reader) *App {
@@ -38,6 +40,7 @@ func New(out io.Writer, in io.Reader) *App {
 		Analyzer:  analyzer,
 		Formatter: formatter,
 		TUI:       ui.NewSummary(out, in, analyzer, formatter),
+		Notify:    notify.NewDefaultDispatcher(),
 	}
 }
 

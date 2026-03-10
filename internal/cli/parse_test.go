@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
@@ -579,6 +580,61 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "--top", "1", thresholdLowWarnFlag, "23"})
 	if len(req.Analyse.PolicySources) == 0 || req.Analyse.PolicySources[0] != "cli" {
 		t.Fatalf("expected cli source precedence, got %#v", req.Analyse.PolicySources)
+	}
+}
+
+func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
+	repo := t.TempDir()
+	config := strings.Join([]string{
+		"notifications:",
+		"  on: breach",
+		"  slack:",
+		"    webhook: https://hooks.slack.com/services/A/B/CONFIG",
+		"  teams:",
+		"    webhook: https://outlook.office.com/webhook/CONFIG",
+		"    on: improvement",
+		"",
+	}, "\n")
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
+
+	t.Setenv(notify.EnvNotifyOn, "regression")
+	t.Setenv(notify.EnvNotifySlackWebhook, "https://hooks.slack.com/services/A/B/ENV")
+
+	req, err := ParseArgs([]string{
+		"analyse", "--top", "10",
+		"--repo", repo,
+		"--notify-on", "improvement",
+		"--notify-teams", "https://outlook.office.com/webhook/CLI",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+
+	if req.Analyse.Notifications.Slack.Trigger != notify.TriggerImprovement {
+		t.Fatalf("expected CLI notify-on to set slack trigger, got %q", req.Analyse.Notifications.Slack.Trigger)
+	}
+	if req.Analyse.Notifications.Teams.Trigger != notify.TriggerImprovement {
+		t.Fatalf("expected CLI notify-on to set teams trigger, got %q", req.Analyse.Notifications.Teams.Trigger)
+	}
+	if !strings.Contains(req.Analyse.Notifications.Slack.WebhookURL, "/ENV") {
+		t.Fatalf("expected env slack webhook override, got %q", req.Analyse.Notifications.Slack.WebhookURL)
+	}
+	if !strings.Contains(req.Analyse.Notifications.Teams.WebhookURL, "/CLI") {
+		t.Fatalf("expected CLI teams webhook override, got %q", req.Analyse.Notifications.Teams.WebhookURL)
+	}
+}
+
+func TestParseArgsAnalyseInvalidNotificationInputs(t *testing.T) {
+	if _, err := ParseArgs([]string{"analyse", "--top", "1", "--notify-on", "bad"}); err == nil {
+		t.Fatalf("expected invalid notify-on error")
+	}
+
+	_, err := ParseArgs([]string{"analyse", "--top", "1", "--notify-slack", "hooks.slack.com/services/A/B/SECRET"})
+	if err == nil {
+		t.Fatalf("expected invalid notify-slack URL error")
+	}
+	if strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("expected parse error to redact webhook secrets, got %q", err.Error())
 	}
 }
 

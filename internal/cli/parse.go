@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"os"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -302,6 +304,30 @@ func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thres
 		policySources = append([]string{"cli"}, policySources...)
 	}
 	return resolvedThresholds, loadResult.Scope, policySources, loadResult.ConfigPath, nil
+}
+
+func resolveAnalyseNotifications(visited map[string]bool, values analyseFlagValues, resolvedConfigPath string) (notify.Config, error) {
+	resolved := notify.DefaultConfig()
+
+	configOverrides, err := notify.LoadConfigOverrides(resolvedConfigPath)
+	if err != nil {
+		return notify.Config{}, err
+	}
+	resolved = configOverrides.Apply(resolved)
+
+	envOverrides, err := notify.LoadEnvOverrides(os.LookupEnv)
+	if err != nil {
+		return notify.Config{}, err
+	}
+	resolved = envOverrides.Apply(resolved)
+
+	cliOverrides, err := cliNotificationOverrides(visited, values)
+	if err != nil {
+		return notify.Config{}, err
+	}
+	resolved = cliOverrides.Apply(resolved)
+
+	return resolved, nil
 }
 
 func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
