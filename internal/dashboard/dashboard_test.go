@@ -11,6 +11,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const (
+	testDashboardConfigFile = "lopper-org.yml"
+	testRepoA               = "repo-a"
+	testRepoB               = "repo-b"
+	testRepoC               = "repo-c"
+	testRepoD               = "repo-d"
+)
+
 func TestParseFormat(t *testing.T) {
 	tests := []struct {
 		input string
@@ -39,7 +47,7 @@ func TestParseFormat(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "lopper-org.yml")
+	path := filepath.Join(tmpDir, testDashboardConfigFile)
 	content := "dashboard:\n  repos:\n    - path: ./api\n      name: API\n      language: go\n  baseline_store: /ci/baselines\n  output: json\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -62,7 +70,7 @@ func TestLoadConfig(t *testing.T) {
 
 func TestLoadConfigRequiresRepos(t *testing.T) {
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "lopper-org.yml")
+	path := filepath.Join(tmpDir, testDashboardConfigFile)
 	content := "dashboard:\n  output: html\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -104,10 +112,10 @@ func TestAggregate(t *testing.T) {
 	}
 
 	data := Aggregate(time.Date(2026, time.March, 10, 1, 2, 3, 0, time.UTC), []RepoAnalysis{
-		{Input: RepoInput{Name: "repo-a", Path: "./a"}, Report: reportA},
-		{Input: RepoInput{Name: "repo-b", Path: "./b"}, Report: reportB},
-		{Input: RepoInput{Name: "repo-c", Path: "./c"}, Report: reportC},
-		{Input: RepoInput{Name: "repo-d", Path: "./d"}, Err: errors.New("failed")},
+		{Input: RepoInput{Name: testRepoA, Path: "./a"}, Report: reportA},
+		{Input: RepoInput{Name: testRepoB, Path: "./b"}, Report: reportB},
+		{Input: RepoInput{Name: testRepoC, Path: "./c"}, Report: reportC},
+		{Input: RepoInput{Name: testRepoD, Path: "./d"}, Err: errors.New("failed")},
 	})
 
 	if data.Summary.TotalRepos != 4 {
@@ -137,7 +145,7 @@ func TestFormatReport(t *testing.T) {
 	reportData := Report{
 		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
 		Repos: []RepoResult{
-			{Name: "repo-a", Path: "./a", DependencyCount: 1},
+			{Name: testRepoA, Path: "./a", DependencyCount: 1},
 		},
 		Summary: Summary{TotalRepos: 1, TotalDeps: 1},
 	}
@@ -162,7 +170,7 @@ func TestFormatReportCSVIncludesCrossRepoRows(t *testing.T) {
 	reportData := Report{
 		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
 		Repos: []RepoResult{
-			{Name: "repo-a", Path: "./a", DependencyCount: 1},
+			{Name: testRepoA, Path: "./a", DependencyCount: 1},
 		},
 		Summary: Summary{
 			TotalRepos:           1,
@@ -241,10 +249,10 @@ func TestCountDeniedLicensesFallbackFromDependencies(t *testing.T) {
 
 func TestBuildCrossRepoDependenciesSortOrder(t *testing.T) {
 	dependencies := buildCrossRepoDependencies(map[string]map[string]struct{}{
-		"zeta":  {"repo-a": {}, "repo-b": {}, "repo-c": {}},
-		"alpha": {"repo-d": {}, "repo-e": {}, "repo-f": {}},
-		"omega": {"repo-a": {}, "repo-b": {}, "repo-c": {}, "repo-d": {}},
-		"skip":  {"repo-a": {}, "repo-b": {}},
+		"zeta":  {testRepoA: {}, testRepoB: {}, testRepoC: {}},
+		"alpha": {testRepoD: {}, "repo-e": {}, "repo-f": {}},
+		"omega": {testRepoA: {}, testRepoB: {}, testRepoC: {}, testRepoD: {}},
+		"skip":  {testRepoA: {}, testRepoB: {}},
 	})
 	if len(dependencies) != 3 {
 		t.Fatalf("expected three cross-repo dependencies, got %#v", dependencies)
@@ -288,7 +296,7 @@ func TestFormatHTMLIncludesCrossRepoSectionAndEscapes(t *testing.T) {
 
 func TestLoadConfigInvalidYAML(t *testing.T) {
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "lopper-org.yml")
+	path := filepath.Join(tmpDir, testDashboardConfigFile)
 	if err := os.WriteFile(path, []byte("dashboard: ["), 0o600); err != nil {
 		t.Fatalf("write invalid config: %v", err)
 	}
