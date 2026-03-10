@@ -33,7 +33,8 @@ const (
 	repoFlagName                = "--repo"
 	dashboardReposFlagName      = "--repos"
 	dashboardOutputFlagName     = "--output"
-	dashboardFormatFlagName     = "--format"
+	formatFlagName              = "--format"
+	dashboardFormatFlagName     = formatFlagName
 	dashboardConfigFlagName     = "--config"
 	dashboardConfigFileName     = "lopper-org.yml"
 	dashboardReportCSVFileName  = "report.csv"
@@ -113,7 +114,7 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := mustParseArgs(t, []string{"analyse", "--top", "5", "--format", tc.format})
+			req := mustParseArgs(t, []string{"analyse", "--top", "5", formatFlagName, tc.format})
 			if req.Analyse.TopN != 5 {
 				t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
 			}
@@ -700,7 +701,7 @@ func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
 		args []string
 	}{
 		{name: "analyse_top_missing_value", args: []string{"analyse", "--top"}},
-		{name: "analyse_invalid_format", args: []string{"analyse", "dep", "--format", "invalid"}},
+		{name: "analyse_invalid_format", args: []string{"analyse", "dep", formatFlagName, "invalid"}},
 		{name: "analyse_missing_config", args: []string{"analyse", "--top", "1", "--config", "missing-config.yml"}},
 		{name: "tui_top_missing_value", args: []string{"tui", "--top"}},
 	}

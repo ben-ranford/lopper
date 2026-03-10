@@ -129,7 +129,7 @@ func applyDefaultDashboardLanguage(repos []dashboard.RepoInput, defaultLanguage 
 	}
 }
 
-func resolveDashboardFormat(flagFormat string, configFormat string) (dashboard.Format, error) {
+func resolveDashboardFormat(flagFormat, configFormat string) (dashboard.Format, error) {
 	formatValue := strings.TrimSpace(flagFormat)
 	if formatValue == "" {
 		formatValue = strings.TrimSpace(configFormat)

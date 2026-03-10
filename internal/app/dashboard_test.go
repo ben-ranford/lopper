@@ -219,3 +219,210 @@ func TestExecuteDashboardPropagatesAnalysisErrors(t *testing.T) {
 		t.Fatalf("expected dashboard output to include per-repo error, got %q", output)
 	}
 }
+
+func TestExecuteDashboardRequiresAnalyzer(t *testing.T) {
+	application := &App{}
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Repos = []DashboardRepo{{Path: singleRepoPath}}
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "dashboard analyzer is not configured") {
+		t.Fatalf("expected analyzer configuration error, got %v", err)
+	}
+}
+
+func TestResolveDashboardRequestRequiresRepos(t *testing.T) {
+	_, err := resolveDashboardRequest(DashboardRequest{})
+	if err == nil || !strings.Contains(err.Error(), "requires at least one repo") {
+		t.Fatalf("expected missing repos error, got %v", err)
+	}
+}
+
+func TestResolveDashboardRequestAppliesDefaultLanguageAndOutputTrim(t *testing.T) {
+	resolved, err := resolveDashboardRequest(DashboardRequest{
+		Repos:           []DashboardRepo{{Path: "./api"}},
+		DefaultLanguage: "go",
+		Format:          "json",
+		OutputPath:      " ./out/report.json ",
+	})
+	if err != nil {
+		t.Fatalf("resolve dashboard request: %v", err)
+	}
+	if len(resolved.repos) != 1 {
+		t.Fatalf("expected one resolved repo, got %#v", resolved.repos)
+	}
+	if resolved.repos[0].Language != "go" {
+		t.Fatalf("expected default language to be applied, got %#v", resolved.repos[0])
+	}
+	if resolved.outputPath != "./out/report.json" {
+		t.Fatalf("expected output path to be trimmed, got %q", resolved.outputPath)
+	}
+}
+
+func TestReposFromDashboardConfigMissingPath(t *testing.T) {
+	_, err := reposFromDashboardConfig(dashboard.LoadedConfig{
+		ConfigDir: t.TempDir(),
+		Dashboard: dashboard.ConfigDashboard{
+			Repos: []dashboard.ConfigRepo{
+				{Name: "broken-repo"},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing path") {
+		t.Fatalf("expected missing path error, got %v", err)
+	}
+}
+
+func TestInferDashboardRepoNameRootPath(t *testing.T) {
+	if got := inferDashboardRepoName(string(filepath.Separator)); got != string(filepath.Separator) {
+		t.Fatalf("expected root path repo name fallback, got %q", got)
+	}
+}
+
+func TestExecuteDashboardOutputMkdirError(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			singleRepoPath: {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	tmpDir := t.TempDir()
+	occupiedPath := filepath.Join(tmpDir, "occupied")
+	if err := os.WriteFile(occupiedPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("seed occupied file: %v", err)
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{{Path: singleRepoPath}}
+	req.Dashboard.OutputPath = filepath.Join(occupiedPath, "report.json")
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected mkdir error for output path under regular file")
+	}
+}
+
+func TestExecuteDashboardOutputWriteError(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			singleRepoPath: {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	outputDir := filepath.Join(t.TempDir(), "reports")
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{{Path: singleRepoPath}}
+	req.Dashboard.OutputPath = outputDir
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected write error when output path points to a directory")
+	}
+}
+
+func TestLoadDashboardConfigError(t *testing.T) {
+	_, hasConfig, err := loadDashboardConfig(filepath.Join(t.TempDir(), "missing.yml"))
+	if err == nil {
+		t.Fatalf("expected config load error for missing file")
+	}
+	if hasConfig {
+		t.Fatalf("expected hasConfig=false when load fails")
+	}
+}
+
+func TestLoadDashboardConfigEmptyPath(t *testing.T) {
+	loaded, hasConfig, err := loadDashboardConfig("   ")
+	if err != nil {
+		t.Fatalf("expected empty config path to be a no-op, got %v", err)
+	}
+	if hasConfig {
+		t.Fatalf("expected hasConfig=false for empty config path")
+	}
+	if loaded.Path != "" || loaded.ConfigDir != "" || len(loaded.Dashboard.Repos) != 0 {
+		t.Fatalf("expected empty loaded config, got %#v", loaded)
+	}
+}
+
+func TestRunDashboardAnalysesEmptyRepos(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{},
+		errs:    map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	results := application.runDashboardAnalyses(context.Background(), DashboardRequest{}, nil)
+	if len(results) != 0 {
+		t.Fatalf("expected no results for empty repos, got %#v", results)
+	}
+	if len(analyzer.calls) != 0 {
+		t.Fatalf("expected no analyzer calls for empty repos, got %#v", analyzer.calls)
+	}
+}
+
+func TestRunDashboardAnalysesDefaultsTopNAndScope(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			"./api": {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	repos := []dashboard.RepoInput{
+		{Name: "api", Path: "./api", Language: "go"},
+	}
+
+	results := application.runDashboardAnalyses(context.Background(), DashboardRequest{}, repos)
+	if len(results) != 1 {
+		t.Fatalf("expected one analysis result, got %#v", results)
+	}
+	if len(analyzer.calls) != 1 {
+		t.Fatalf("expected one analyzer call, got %#v", analyzer.calls)
+	}
+	call := analyzer.calls[0]
+	if call.TopN != 20 {
+		t.Fatalf("expected default TopN=20, got %d", call.TopN)
+	}
+	if call.ScopeMode != analysis.ScopeModeRepo {
+		t.Fatalf("expected ScopeModeRepo, got %q", call.ScopeMode)
+	}
+	if call.RuntimeProfile != "node-import" {
+		t.Fatalf("expected node-import runtime profile, got %q", call.RuntimeProfile)
+	}
+	if results[0].Input.Path != "./api" {
+		t.Fatalf("unexpected result ordering: %#v", results)
+	}
+}
+
+func TestExecuteDashboardInvalidFormatReturnsError(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			singleRepoPath: {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "invalid-format"
+	req.Dashboard.Repos = []DashboardRepo{{Path: singleRepoPath}}
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected invalid format error")
+	}
+}
