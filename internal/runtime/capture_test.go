@@ -136,6 +136,36 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeCommandPreservesQuotedArgs(t *testing.T) {
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
+
+	cmd, err := buildRuntimeCommand(context.Background(), `node -e "console.log('hello world')"`)
+	if err != nil {
+		t.Fatalf("build runtime command with quoted arg: %v", err)
+	}
+	if len(cmd.Args) != 3 {
+		t.Fatalf("expected executable and two args, got %d: %#v", len(cmd.Args), cmd.Args)
+	}
+	if got := cmd.Args[2]; got != "console.log('hello world')" {
+		t.Fatalf("expected quoted script arg to be preserved, got %q", got)
+	}
+}
+
+func TestBuildRuntimeCommandPreservesEscapedWhitespace(t *testing.T) {
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
+
+	cmd, err := buildRuntimeCommand(context.Background(), `make test\ target`)
+	if err != nil {
+		t.Fatalf("build runtime command with escaped whitespace: %v", err)
+	}
+	if len(cmd.Args) != 2 {
+		t.Fatalf("expected executable and one arg, got %d: %#v", len(cmd.Args), cmd.Args)
+	}
+	if got := cmd.Args[1]; got != "test target" {
+		t.Fatalf("expected escaped whitespace to stay in one arg, got %q", got)
+	}
+}
+
 func TestTrustedSearchDirs(t *testing.T) {
 	secureA := t.TempDir()
 	secureB := t.TempDir()
@@ -181,6 +211,18 @@ func TestRuntimeSearchDirsDefault(t *testing.T) {
 func TestBuildRuntimeCommandRequiresInput(t *testing.T) {
 	if _, err := buildRuntimeCommand(context.Background(), " "); err == nil {
 		t.Fatalf("expected empty command error")
+	}
+}
+
+func TestBuildRuntimeCommandRejectsUnfinishedEscape(t *testing.T) {
+	if _, err := buildRuntimeCommand(context.Background(), `npm test\`); err == nil {
+		t.Fatalf("expected unfinished escape error")
+	}
+}
+
+func TestBuildRuntimeCommandRejectsUnterminatedQuote(t *testing.T) {
+	if _, err := buildRuntimeCommand(context.Background(), `node -e "console.log('hello world')`); err == nil {
+		t.Fatalf("expected unterminated quote error")
 	}
 }
 

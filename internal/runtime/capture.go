@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
@@ -78,7 +79,10 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 }
 
 func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error) {
-	fields := strings.Fields(command)
+	fields, err := parseRuntimeCommand(command)
+	if err != nil {
+		return nil, err
+	}
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("runtime test command is required")
 	}
@@ -97,6 +101,77 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	cmd.Path = executablePath
 	cmd.Args = append([]string{executablePath}, args...)
 	return cmd, nil
+}
+
+func parseRuntimeCommand(command string) ([]string, error) {
+	var fields []string
+	var current strings.Builder
+	var inSingleQuote bool
+	var inDoubleQuote bool
+	var escaped bool
+	var sawToken bool
+
+	flush := func() {
+		if current.Len() == 0 && !sawToken {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+		sawToken = false
+	}
+
+	for _, ch := range command {
+		switch {
+		case escaped:
+			current.WriteRune(ch)
+			sawToken = true
+			escaped = false
+		case ch == '\\':
+			if inSingleQuote {
+				current.WriteRune(ch)
+				sawToken = true
+				continue
+			}
+			escaped = true
+			sawToken = true
+		case ch == '\'':
+			if inDoubleQuote {
+				current.WriteRune(ch)
+				sawToken = true
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			sawToken = true
+		case ch == '"':
+			if inSingleQuote {
+				current.WriteRune(ch)
+				sawToken = true
+				continue
+			}
+			inDoubleQuote = !inDoubleQuote
+			sawToken = true
+		case unicode.IsSpace(ch):
+			if inSingleQuote || inDoubleQuote {
+				current.WriteRune(ch)
+				sawToken = true
+				continue
+			}
+			flush()
+		default:
+			current.WriteRune(ch)
+			sawToken = true
+		}
+	}
+
+	if escaped {
+		return nil, fmt.Errorf("runtime test command ends with an unfinished escape sequence")
+	}
+	if inSingleQuote || inDoubleQuote {
+		return nil, fmt.Errorf("runtime test command contains an unterminated quote")
+	}
+	flush()
+
+	return fields, nil
 }
 
 func resolveRuntimeExecutablePath(executable string, searchDirs []string) (string, error) {
