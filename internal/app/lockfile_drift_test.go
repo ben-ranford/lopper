@@ -16,6 +16,7 @@ import (
 const (
 	manifestFileName         = "package.json"
 	lockfileName             = "package-lock.json"
+	newUntrackedFileName     = "new-untracked.txt"
 	demoPackageJSON          = "{\n  \"name\": \"demo\"\n}\n"
 	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
@@ -232,7 +233,7 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	initGitRepo(t, repo)
 
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdatedV2)
-	writeFile(t, filepath.Join(repo, "new-untracked.txt"), "untracked\n")
+	writeFile(t, filepath.Join(repo, newUntrackedFileName), "untracked\n")
 
 	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
 	if err != nil {
@@ -244,7 +245,7 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	if _, ok := changed[manifestFileName]; !ok {
 		t.Fatalf("expected package.json to be detected as changed, got %#v", changed)
 	}
-	if _, ok := changed["new-untracked.txt"]; !ok {
+	if _, ok := changed[newUntrackedFileName]; !ok {
 		t.Fatalf("expected untracked file to be detected, got %#v", changed)
 	}
 }
@@ -255,7 +256,7 @@ func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 	runGit(t, repo, "add", manifestFileName)
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
-	writeFile(t, filepath.Join(repo, "new-untracked.txt"), "untracked\n")
+	writeFile(t, filepath.Join(repo, newUntrackedFileName), "untracked\n")
 
 	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
 	if err != nil {
@@ -267,7 +268,7 @@ func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
 	if _, ok := changed[manifestFileName]; !ok {
 		t.Fatalf("expected staged/unstaged manifest to be detected, got %#v", changed)
 	}
-	if _, ok := changed["new-untracked.txt"]; !ok {
+	if _, ok := changed[newUntrackedFileName]; !ok {
 		t.Fatalf("expected untracked file to be detected, got %#v", changed)
 	}
 }
