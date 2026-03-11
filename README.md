@@ -141,7 +141,7 @@ lopper dashboard --config lopper-org.yml --format json
 
 ## Languages
 
-- Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`
+- Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`
 - Source of truth for adapter IDs: `lopper --help`
 - Language modes:
   - `auto`: choose highest-confidence adapter
