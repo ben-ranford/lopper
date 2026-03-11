@@ -77,32 +77,25 @@ func TestBuildSlackPayloadIncludesThresholdStatus(t *testing.T) {
 		t.Fatalf("build payload: %v", err)
 	}
 
-	var decoded map[string]any
+	type field struct {
+		Text string `json:"text"`
+	}
+	type block struct {
+		Fields []field `json:"fields"`
+	}
+	type payload struct {
+		Blocks []block `json:"blocks"`
+	}
+
+	var decoded payload
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	blocks, ok := decoded["blocks"].([]any)
-	if !ok {
-		t.Fatalf("expected blocks array in payload")
-	}
 
 	foundStatus := false
-	for _, block := range blocks {
-		blockMap, ok := block.(map[string]any)
-		if !ok {
-			continue
-		}
-		fields, ok := blockMap["fields"].([]any)
-		if !ok {
-			continue
-		}
-		for _, field := range fields {
-			fieldMap, ok := field.(map[string]any)
-			if !ok {
-				continue
-			}
-			text, _ := fieldMap["text"].(string)
-			if text == "*Threshold status*\nBREACHED" {
+	for _, block := range decoded.Blocks {
+		for _, field := range block.Fields {
+			if field.Text == "*Threshold status*\nBREACHED" {
 				foundStatus = true
 				break
 			}
@@ -114,21 +107,5 @@ func TestBuildSlackPayloadIncludesThresholdStatus(t *testing.T) {
 }
 
 func TestSlackNotifierNotifyFailures(t *testing.T) {
-	notifier := NewSlackNotifier(nil)
-	if err := notifier.Notify(context.Background(), Delivery{WebhookURL: "://bad"}); err == nil {
-		t.Fatalf("expected request build error")
-	}
-
-	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer statusServer.Close()
-	if err := notifier.Notify(context.Background(), Delivery{WebhookURL: statusServer.URL}); err == nil {
-		t.Fatalf("expected non-2xx status error")
-	}
-
-	badURL := "http://127.0.0.1:1"
-	if err := notifier.Notify(context.Background(), Delivery{WebhookURL: badURL}); err == nil {
-		t.Fatalf("expected send failure for unreachable endpoint")
-	}
+	assertNotifyFailures(t, NewSlackNotifier(nil))
 }

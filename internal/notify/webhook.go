@@ -17,6 +17,12 @@ import (
 
 var ErrInvalidWebhookURL = errors.New("invalid webhook URL")
 
+const (
+	teamsAdaptiveCardSchema = "http://adaptivecards.io/schemas/adaptive-card.json"
+	defaultRepoPath         = "."
+	redactedWebhookValue    = "<redacted-webhook>"
+)
+
 type WebhookNotifier struct {
 	Client *http.Client
 }
@@ -124,12 +130,12 @@ func buildTeamsEnvelope(delivery Delivery) teamsEnvelope {
 				ContentType: "application/vnd.microsoft.card.adaptive",
 				ContentURL:  nil,
 				Content: teamsAdaptiveCard{
-					Schema:  "http://adaptivecards.io/schemas/adaptive-card.json",
+					Schema:  teamsAdaptiveCardSchema,
 					Type:    "AdaptiveCard",
 					Version: "1.4",
 					Body: []teamsTextItem{
 						{Type: "TextBlock", Size: "Medium", Weight: "Bolder", Text: "Lopper Dependency Analysis"},
-						{Type: "TextBlock", Wrap: true, Text: fmt.Sprintf("Repository: %s", nonEmpty(delivery.Report.RepoPath, "."))},
+						{Type: "TextBlock", Wrap: true, Text: fmt.Sprintf("Repository: %s", repoPathOrDefault(delivery.Report.RepoPath))},
 						{Type: "TextBlock", Text: fmt.Sprintf("Dependencies analyzed: %d", summaryDependencyCount(delivery.Report))},
 						{Type: "TextBlock", Text: fmt.Sprintf("Overall used exports: %s", summaryUsedPercent(delivery.Report))},
 						{Type: "TextBlock", Text: fmt.Sprintf("Threshold status: %s", thresholdStatusLabel(delivery.Outcome.Breach))},
@@ -187,10 +193,10 @@ func wasteDeltaLabel(wasteIncreasePercent *float64) string {
 	return "Waste change vs baseline: " + sign + strconv.FormatFloat(delta, 'f', 1, 64) + "%"
 }
 
-func nonEmpty(value string, fallback string) string {
+func repoPathOrDefault(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return fallback
+		return defaultRepoPath
 	}
 	return trimmed
 }
@@ -222,15 +228,15 @@ func ParseWebhookURL(raw, source string) (string, error) {
 func RedactWebhookURL(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return "<redacted-webhook>"
+		return redactedWebhookValue
 	}
 	parsed, err := url.Parse(value)
 	if err != nil {
-		return "<redacted-webhook>"
+		return redactedWebhookValue
 	}
 	host := parsed.Host
 	if host == "" {
-		return "<redacted-webhook>"
+		return redactedWebhookValue
 	}
 	scheme := parsed.Scheme
 	if scheme == "" {

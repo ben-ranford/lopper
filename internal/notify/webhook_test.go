@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
+
+const decodePayloadErrFmt = "decode payload: %v"
 
 func TestNewWebhookNotifierUsesDefaultClient(t *testing.T) {
 	notifier := NewWebhookNotifier(nil)
@@ -31,7 +34,7 @@ func TestWebhookNotifierNotifySuccess(t *testing.T) {
 		}
 		defer func() { _ = r.Body.Close() }()
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode payload: %v", err)
+			t.Fatalf(decodePayloadErrFmt, err)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -68,7 +71,7 @@ func TestWebhookNotifierNotifyTeamsAdaptiveCard(t *testing.T) {
 		}
 		defer func() { _ = r.Body.Close() }()
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode payload: %v", err)
+			t.Fatalf(decodePayloadErrFmt, err)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -124,30 +127,20 @@ func TestWebhookNotifierNotifyTeamsAdaptiveCard(t *testing.T) {
 }
 
 func TestWebhookNotifierNotifyFailures(t *testing.T) {
-	notifier := NewWebhookNotifier(nil)
-	if err := notifier.Notify(context.Background(), Delivery{WebhookURL: "://bad"}); err == nil {
-		t.Fatalf("expected request build error")
-	}
-
-	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer statusServer.Close()
-	if err := notifier.Notify(context.Background(), Delivery{WebhookURL: statusServer.URL}); err == nil {
-		t.Fatalf("expected non-2xx status error")
-	}
-
-	badURL := "http://127.0.0.1:1"
-	if err := notifier.Notify(context.Background(), Delivery{WebhookURL: badURL}); err == nil {
-		t.Fatalf("expected send failure for unreachable endpoint")
-	}
+	assertNotifyFailures(t, NewWebhookNotifier(nil))
 }
 
 func TestParseWebhookURLValidations(t *testing.T) {
 	if _, err := ParseWebhookURL("ftp://example.com/hook", "source"); err == nil {
 		t.Fatalf("expected scheme validation error")
 	}
-	if _, err := ParseWebhookURL("https://user:pass@example.com/hook", "source"); err == nil {
+	withCredentials := (&url.URL{
+		Scheme: "https",
+		User:   url.UserPassword("user", "pass"),
+		Host:   "example.com",
+		Path:   "/hook",
+	}).String()
+	if _, err := ParseWebhookURL(withCredentials, "source"); err == nil {
 		t.Fatalf("expected user info validation error")
 	}
 	if _, err := ParseWebhookURL("https://example.com/hook#frag", "source"); err == nil {
@@ -246,7 +239,7 @@ func TestSummaryUsedPercentAndWasteDeltaHelpers(t *testing.T) {
 	}
 }
 
-func TestSummaryDependencyCountThresholdStatusAndNonEmpty(t *testing.T) {
+func TestSummaryDependencyCountThresholdStatusAndRepoPathOrDefault(t *testing.T) {
 	if got := summaryDependencyCount(report.Report{Summary: &report.Summary{DependencyCount: 7}}); got != 7 {
 		t.Fatalf("expected summary dependency count, got %d", got)
 	}
@@ -261,10 +254,10 @@ func TestSummaryDependencyCountThresholdStatusAndNonEmpty(t *testing.T) {
 		t.Fatalf("expected ok status label")
 	}
 
-	if got := nonEmpty("  ", "fallback"); got != "fallback" {
+	if got := repoPathOrDefault("  "); got != "." {
 		t.Fatalf("expected fallback value, got %q", got)
 	}
-	if got := nonEmpty("repo", "fallback"); got != "repo" {
+	if got := repoPathOrDefault("repo"); got != "repo" {
 		t.Fatalf("expected original value, got %q", got)
 	}
 
