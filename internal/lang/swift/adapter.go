@@ -158,6 +158,13 @@ type repoScanner struct {
 	visited           int
 }
 
+type swiftStringScanState struct {
+	inString     bool
+	multiline    bool
+	rawHashCount int
+	escaped      bool
+}
+
 type resolvedPin struct {
 	Identity      string `json:"identity"`
 	Package       string `json:"package"`
@@ -1024,62 +1031,66 @@ func blankSwiftStringsAndComments(content []byte) string {
 	builder := strings.Builder{}
 	builder.Grow(len(content))
 
-	inString := false
-	multiline := false
-	rawHashCount := 0
-	escaped := false
-
+	state := swiftStringScanState{}
 	for index := 0; index < len(content); {
-		if inString {
-			if matchesSwiftStringDelimiter(content, index, rawHashCount, multiline) {
-				delimiterLen := swiftStringDelimiterLength(rawHashCount, multiline)
-				builder.WriteString(strings.Repeat(" ", delimiterLen))
-				index += delimiterLen
-				inString = false
-				multiline = false
-				rawHashCount = 0
-				escaped = false
-				continue
-			}
-
-			ch := content[index]
-			if ch == '\n' {
-				builder.WriteByte('\n')
-				index++
-				escaped = false
-				continue
-			}
-			if !multiline && rawHashCount == 0 && ch == '\\' && !escaped {
-				escaped = true
-				builder.WriteByte(' ')
-				index++
-				continue
-			}
-			escaped = false
-			builder.WriteByte(' ')
-			index++
+		if state.inString {
+			index = consumeSwiftStringContent(content, index, &builder, &state)
 			continue
 		}
-
-		if startsSwiftLineComment(content, index) {
-			index = blankSwiftLineComment(content, index, &builder)
-			continue
-		}
-		hashCount, nextIndex, isMultiline, ok := detectSwiftStringStart(content, index)
-		if ok {
-			builder.WriteString(strings.Repeat(" ", nextIndex-index))
-			index = nextIndex
-			inString = true
-			multiline = isMultiline
-			rawHashCount = hashCount
-			escaped = false
-			continue
-		}
-
-		builder.WriteByte(content[index])
-		index++
+		index = consumeSwiftCodeContent(content, index, &builder, &state)
 	}
 	return builder.String()
+}
+
+func consumeSwiftStringContent(content []byte, index int, builder *strings.Builder, state *swiftStringScanState) int {
+	if matchesSwiftStringDelimiter(content, index, state.rawHashCount, state.multiline) {
+		delimiterLen := swiftStringDelimiterLength(state.rawHashCount, state.multiline)
+		builder.WriteString(strings.Repeat(" ", delimiterLen))
+		resetSwiftStringScanState(state)
+		return index + delimiterLen
+	}
+
+	ch := content[index]
+	if ch == '\n' {
+		builder.WriteByte('\n')
+		state.escaped = false
+		return index + 1
+	}
+	if ch == '\\' && !state.multiline && state.rawHashCount == 0 && !state.escaped {
+		state.escaped = true
+		builder.WriteByte(' ')
+		return index + 1
+	}
+
+	state.escaped = false
+	builder.WriteByte(' ')
+	return index + 1
+}
+
+func consumeSwiftCodeContent(content []byte, index int, builder *strings.Builder, state *swiftStringScanState) int {
+	if startsSwiftLineComment(content, index) {
+		return blankSwiftLineComment(content, index, builder)
+	}
+
+	hashCount, nextIndex, isMultiline, ok := detectSwiftStringStart(content, index)
+	if ok {
+		builder.WriteString(strings.Repeat(" ", nextIndex-index))
+		state.inString = true
+		state.multiline = isMultiline
+		state.rawHashCount = hashCount
+		state.escaped = false
+		return nextIndex
+	}
+
+	builder.WriteByte(content[index])
+	return index + 1
+}
+
+func resetSwiftStringScanState(state *swiftStringScanState) {
+	state.inString = false
+	state.multiline = false
+	state.rawHashCount = 0
+	state.escaped = false
 }
 
 func detectSwiftStringStart(content []byte, index int) (int, int, bool, bool) {

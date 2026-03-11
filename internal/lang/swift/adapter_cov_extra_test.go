@@ -557,17 +557,13 @@ func TestSwiftFinalHelperBranches(t *testing.T) {
 	}
 }
 
-func TestSwiftStringSanitizerHelpers(t *testing.T) {
-	if hashCount, nextIndex, multiline, ok := detectSwiftStringStart([]byte("value"), 0); ok || hashCount != 0 || nextIndex != 0 || multiline {
-		t.Fatalf("expected non-string prefix to be rejected, got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
-	}
-	if hashCount, nextIndex, multiline, ok := detectSwiftStringStart([]byte(`#"value"#`), 0); !ok || hashCount != 1 || nextIndex != 2 || multiline {
-		t.Fatalf("expected raw string prefix to be detected, got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
-	}
-	if hashCount, nextIndex, multiline, ok := detectSwiftStringStart([]byte(`##"""value"""##`), 0); !ok || hashCount != 2 || nextIndex != 5 || !multiline {
-		t.Fatalf("expected raw multiline string prefix to be detected, got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
-	}
+func TestSwiftDetectStringStartHelpers(t *testing.T) {
+	assertSwiftStringStart(t, []byte("value"), 0, 0, 0, false, false)
+	assertSwiftStringStart(t, []byte(`#"value"#`), 0, 1, 2, false, true)
+	assertSwiftStringStart(t, []byte(`##"""value"""##`), 0, 2, 5, true, true)
+}
 
+func TestSwiftMatchesStringDelimiterHelpers(t *testing.T) {
 	if matchesSwiftStringDelimiter([]byte(`"`), 1, 0, false) {
 		t.Fatalf("expected out-of-range delimiter check to fail")
 	}
@@ -580,7 +576,9 @@ func TestSwiftStringSanitizerHelpers(t *testing.T) {
 	if !matchesSwiftStringDelimiter([]byte(`"""##`), 0, 2, true) {
 		t.Fatalf("expected raw multiline delimiter to match")
 	}
+}
 
+func TestSwiftSanitizesStringsAndComments(t *testing.T) {
 	sanitized := blankSwiftStringsAndComments([]byte("let quoted = \"Session.default\"\nlet raw = ##\"NetworkSession()\"##\nlet block = \"\"\"\nRunner.build()\n\"\"\"\n// struct Hidden {}\nstruct Visible {}\n"))
 	if strings.Contains(sanitized, "Session") || strings.Contains(sanitized, "Runner") || strings.Contains(sanitized, "Hidden") {
 		t.Fatalf("expected sanitized content to blank strings and comments, got %q", sanitized)
@@ -598,6 +596,15 @@ func TestSwiftStringSanitizerHelpers(t *testing.T) {
 	}
 	if _, ok := symbols[lookupKey("Visible")]; !ok {
 		t.Fatalf("expected real declaration to remain, got %#v", symbols)
+	}
+}
+
+func assertSwiftStringStart(t *testing.T, content []byte, index int, wantHashCount int, wantNextIndex int, wantMultiline bool, wantOK bool) {
+	t.Helper()
+
+	hashCount, nextIndex, multiline, ok := detectSwiftStringStart(content, index)
+	if hashCount != wantHashCount || nextIndex != wantNextIndex || multiline != wantMultiline || ok != wantOK {
+		t.Fatalf("unexpected string start detection: got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
 	}
 }
 
