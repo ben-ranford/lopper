@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestSwiftAdapterDetectWithNestedPackageRoots(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// root package\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Foundation\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "Packages", "Feature", packageManifestName), "// nested package\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -40,8 +41,8 @@ func TestSwiftAdapterDetectWithNestedPackageRoots(t *testing.T) {
 func TestSwiftAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	repo := t.TempDir()
 	dependencies := []swiftFixtureDependency{
-		{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
-		{identity: "swift-nio", manifestName: "swift-nio", url: "https://github.com/apple/swift-nio.git", version: "2.60.0", productName: "NIO"},
+		alamofireFixtureDependency(),
+		swiftNIOFixtureDependency(),
 	}
 	mainContent := `import Alamofire
 import struct NIO.ByteBuffer
@@ -52,18 +53,12 @@ func run() {
 	writeSwiftDemoPackage(t, repo, dependencies, mainContent)
 
 	adapter := NewAdapter()
-	depReport, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
-	if err != nil {
-		t.Fatalf("analyse dependency: %v", err)
+	depReport := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
+	if depReport.Language != swiftAdapterID {
+		t.Fatalf("expected swift language, got %q", depReport.Language)
 	}
-	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
-	}
-	if depReport.Dependencies[0].Language != swiftAdapterID {
-		t.Fatalf("expected swift language, got %q", depReport.Dependencies[0].Language)
-	}
-	if depReport.Dependencies[0].TotalExportsCount == 0 {
-		t.Fatalf("expected mapped import signals for alamofire, got %#v", depReport.Dependencies[0])
+	if depReport.TotalExportsCount == 0 {
+		t.Fatalf("expected mapped import signals for alamofire, got %#v", depReport)
 	}
 
 	topReport, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
@@ -77,89 +72,52 @@ func run() {
 	if !slices.Contains(names, "alamofire") {
 		t.Fatalf("expected alamofire in topN output, got %#v", names)
 	}
-	if !slices.Contains(names, "swift-nio") {
-		t.Fatalf("expected swift-nio in topN output, got %#v", names)
+	if !slices.Contains(names, swiftNIOID) {
+		t.Fatalf("expected %s in topN output, got %#v", swiftNIOID, names)
 	}
 }
 
-func TestSwiftAdapterUsageAttribution(t *testing.T) {
-	testCases := []struct {
-		name               string
-		dependencies       []swiftFixtureDependency
-		mainContent        string
-		wantUsedExports    int
-		wantUsedExportsMin bool
-		failureDescription string
-	}{
-		{
-			name: "counts unqualified single dependency usage",
-			dependencies: []swiftFixtureDependency{
-				{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
-			},
-			mainContent: `import Alamofire
+func TestSwiftAdapterCountsUnqualifiedSingleDependencyUsage(t *testing.T) {
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
+	mainContent := `import Alamofire
 func run() {
   _ = Session.default
-}`,
-			wantUsedExports:    1,
-			wantUsedExportsMin: true,
-			failureDescription: "expected unqualified usage to count as used",
-		},
-		{
-			name: "does not attribute ambiguous unqualified usage",
-			dependencies: []swiftFixtureDependency{
-				{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
-				{identity: "kingfisher", url: "https://github.com/onevcat/Kingfisher.git", version: "7.9.0", productName: "Kingfisher"},
-			},
-			mainContent: `import Alamofire
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
+	if reportData.UsedExportsCount < 1 {
+		t.Fatalf("expected unqualified usage to count as used, got %#v", reportData)
+	}
+}
+
+func TestSwiftAdapterDoesNotAttributeAmbiguousUnqualifiedUsage(t *testing.T) {
+	dependencies := []swiftFixtureDependency{
+		alamofireFixtureDependency(),
+		{identity: "kingfisher", url: "https://github.com/onevcat/Kingfisher.git", version: "7.9.0", productName: "Kingfisher"},
+	}
+	mainContent := `import Alamofire
 import Kingfisher
 func run() {
   _ = Session.default
-}`,
-			wantUsedExports:    0,
-			failureDescription: "expected ambiguous unqualified usage to remain unattributed",
-		},
-		{
-			name: "does not count local type usage as dependency usage",
-			dependencies: []swiftFixtureDependency{
-				{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
-			},
-			mainContent: `import Alamofire
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
+	if reportData.UsedExportsCount != 0 {
+		t.Fatalf("expected ambiguous unqualified usage to remain unattributed, got %#v", reportData)
+	}
+}
+
+func TestSwiftAdapterDoesNotCountLocalTypeUsageAsDependencyUsage(t *testing.T) {
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
+	mainContent := `import Alamofire
 struct LocalThing {
   let id: String
 }
 func run() {
   let thing = LocalThing(id: "1")
   _ = thing.id
-}`,
-			wantUsedExports:    0,
-			failureDescription: "expected local-only symbols to not count as dependency usage",
-		},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			repo := t.TempDir()
-			writeSwiftDemoPackage(t, repo, testCase.dependencies, testCase.mainContent)
-
-			depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
-			if err != nil {
-				t.Fatalf("analyse dependency: %v", err)
-			}
-			if len(depReport.Dependencies) != 1 {
-				t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
-			}
-
-			gotUsedExports := depReport.Dependencies[0].UsedExportsCount
-			if testCase.wantUsedExportsMin {
-				if gotUsedExports < testCase.wantUsedExports {
-					t.Fatalf("%s, got %#v", testCase.failureDescription, depReport.Dependencies[0])
-				}
-				return
-			}
-			if gotUsedExports != testCase.wantUsedExports {
-				t.Fatalf("%s, got %#v", testCase.failureDescription, depReport.Dependencies[0])
-			}
-		})
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
+	if reportData.UsedExportsCount != 0 {
+		t.Fatalf("expected local-only symbols to not count as dependency usage, got %#v", reportData)
 	}
 }
 
@@ -179,17 +137,11 @@ func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
   "version": 1
 }`
 		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), resolvedContent)
-		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Kingfisher\n_ = KingfisherManager.shared\n")
+		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Kingfisher\n_ = KingfisherManager.shared\n")
 
-		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "kingfisher"})
-		if err != nil {
-			t.Fatalf("analyse: %v", err)
-		}
-		if len(reportData.Dependencies) != 1 {
-			t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-		}
-		if reportData.Dependencies[0].TotalExportsCount == 0 {
-			t.Fatalf("expected import mapped from v1 pins, got %#v", reportData.Dependencies[0])
+		reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "kingfisher"})
+		if reportData.TotalExportsCount == 0 {
+			t.Fatalf("expected import mapped from v1 pins, got %#v", reportData)
 		}
 	})
 
@@ -206,29 +158,20 @@ func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
   "version": 2
 }`
 		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), resolvedContent)
-		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import SwiftCollections\n")
+		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import SwiftCollections\n")
 
-		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "swift-collections"})
-		if err != nil {
-			t.Fatalf("analyse: %v", err)
-		}
-		if len(reportData.Dependencies) != 1 {
-			t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-		}
-		if len(reportData.Dependencies[0].UnusedImports) == 0 && len(reportData.Dependencies[0].UsedImports) == 0 {
-			t.Fatalf("expected import mapped from v2 pins, got %#v", reportData.Dependencies[0])
+		reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "swift-collections"})
+		if len(reportData.UnusedImports) == 0 && len(reportData.UsedImports) == 0 {
+			t.Fatalf("expected import mapped from v2 pins, got %#v", reportData)
 		}
 	})
 }
 
 func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Foundation\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 5})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
+	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 5})
 	assertWarningContains(t, reportData.Warnings, packageManifestName+" not found")
 	assertWarningContains(t, reportData.Warnings, packageResolvedName+" not found")
 	assertWarningContains(t, reportData.Warnings, "no Swift package dependencies were discovered")
@@ -239,7 +182,7 @@ func TestParseSwiftImportsPatterns(t *testing.T) {
 @testable import NIO
 import struct Foundation.Date
 import class MyLib.Client`)
-	imports := parseSwiftImports(importsContent, "main.swift")
+	imports := parseSwiftImports(importsContent, swiftMainFileName)
 	modules := make([]string, 0, len(imports))
 	for _, imported := range imports {
 		modules = append(modules, imported.Module)
@@ -261,7 +204,15 @@ func writeSwiftDemoPackage(t *testing.T, repo string, dependencies []swiftFixtur
 	t.Helper()
 	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent(dependencies))
 	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), buildSwiftResolvedContent(dependencies))
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", "main.swift"), mainContent)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
+}
+
+func analyseSwiftDependencyUsage(t *testing.T, dependencies []swiftFixtureDependency, mainContent string) report.DependencyReport {
+	t.Helper()
+
+	repo := t.TempDir()
+	writeSwiftDemoPackage(t, repo, dependencies, mainContent)
+	return mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
 }
 
 func buildSwiftManifestContent(dependencies []swiftFixtureDependency) string {

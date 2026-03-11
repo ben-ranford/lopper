@@ -145,6 +145,16 @@ type scanResult struct {
 	ImportedDependencies map[string]struct{}
 }
 
+type repoScanner struct {
+	repoPath          string
+	catalog           dependencyCatalog
+	scan              scanResult
+	unresolvedImports map[string]int
+	foundSwift        bool
+	skippedLargeFiles int
+	visited           int
+}
+
 type resolvedPin struct {
 	Identity      string `json:"identity"`
 	Package       string `json:"package"`
@@ -192,42 +202,65 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		visited++
-		if visited > maxDetectFiles {
-			return fs.SkipAll
-		}
-
-		switch strings.ToLower(entry.Name()) {
-		case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName):
-			detection.Matched = true
-			detection.Confidence += 10
-			roots[filepath.Dir(path)] = struct{}{}
-		}
-		if strings.EqualFold(filepath.Ext(entry.Name()), ".swift") {
-			detection.Matched = true
-			detection.Confidence += 2
-		}
-		return nil
-	})
+	err := walkSwiftDetection(ctx, repoPath, &detection, roots)
 	if err != nil && err != fs.SkipAll {
 		return language.Detection{}, err
 	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
+}
+
+func walkSwiftDetection(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+	visited := 0
+	return filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return detectSwiftEntry(ctx, path, entry, detection, roots, &visited)
+	})
+}
+
+func detectSwiftEntry(ctx context.Context, path string, entry fs.DirEntry, detection *language.Detection, roots map[string]struct{}, visited *int) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if entry.IsDir() {
+		return maybeSkipSwiftDir(entry.Name())
+	}
+
+	*visited += 1
+	if *visited > maxDetectFiles {
+		return fs.SkipAll
+	}
+	recordSwiftDetection(path, entry.Name(), detection, roots)
+	return nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func maybeSkipSwiftDir(name string) error {
+	if shouldSkipDir(name) {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func recordSwiftDetection(path string, name string, detection *language.Detection, roots map[string]struct{}) {
+	switch strings.ToLower(name) {
+	case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName):
+		detection.Matched = true
+		detection.Confidence += 10
+		roots[filepath.Dir(path)] = struct{}{}
+	}
+	if strings.EqualFold(filepath.Ext(name), ".swift") {
+		detection.Matched = true
+		detection.Confidence += 2
+	}
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -364,41 +397,54 @@ func loadResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 		warnings = append(warnings, "no pins found in Package.resolved")
 	}
 	for _, pin := range pins {
-		depID := normalizeDependencyID(pin.Identity)
-		if depID == "" {
-			depID = normalizeDependencyID(pin.Package)
-		}
-		if depID == "" {
-			depID = normalizeDependencyID(derivePackageIdentity(pin.Location))
-		}
-		if depID == "" {
-			depID = normalizeDependencyID(derivePackageIdentity(pin.RepositoryURL))
-		}
+		depID := resolvedPinDependencyID(pin)
 		if depID == "" {
 			continue
 		}
 
-		source := strings.TrimSpace(pin.Location)
-		if source == "" {
-			source = strings.TrimSpace(pin.RepositoryURL)
-		}
+		source := resolvedPinSource(pin)
 		ensureDependency(catalog, depID, false, true, pin.State.Version, pin.State.Revision, source)
-		mapAlias(catalog, depID, depID)
-		mapModule(catalog, depID, depID)
-		if pin.Identity != "" {
-			mapAlias(catalog, pin.Identity, depID)
-		}
-		if pin.Package != "" {
-			mapAlias(catalog, pin.Package, depID)
-			mapModule(catalog, pin.Package, depID)
-		}
-		if source != "" {
-			identityFromSource := derivePackageIdentity(source)
-			mapAlias(catalog, identityFromSource, depID)
-			mapModule(catalog, identityFromSource, depID)
-		}
+		addResolvedPinMappings(catalog, depID, pin, source)
 	}
 	return true, warnings, nil
+}
+
+func resolvedPinDependencyID(pin resolvedPin) string {
+	candidates := []string{
+		pin.Identity,
+		pin.Package,
+		derivePackageIdentity(pin.Location),
+		derivePackageIdentity(pin.RepositoryURL),
+	}
+	for _, candidate := range candidates {
+		if depID := normalizeDependencyID(candidate); depID != "" {
+			return depID
+		}
+	}
+	return ""
+}
+
+func resolvedPinSource(pin resolvedPin) string {
+	for _, source := range []string{pin.Location, pin.RepositoryURL} {
+		if trimmed := strings.TrimSpace(source); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func addResolvedPinMappings(catalog *dependencyCatalog, depID string, pin resolvedPin, source string) {
+	mapAlias(catalog, depID, depID)
+	mapModule(catalog, depID, depID)
+	mapAlias(catalog, pin.Identity, depID)
+	if pin.Package != "" {
+		mapAlias(catalog, pin.Package, depID)
+		mapModule(catalog, pin.Package, depID)
+	}
+	if identityFromSource := derivePackageIdentity(source); identityFromSource != "" {
+		mapAlias(catalog, identityFromSource, depID)
+		mapModule(catalog, identityFromSource, depID)
+	}
 }
 
 func parseResolvedPins(content []byte) ([]resolvedPin, error) {
@@ -513,36 +559,55 @@ func captureParenthesized(content string, openParenIndex int) (string, int, bool
 	escaped := false
 	for idx := openParenIndex; idx < len(content); idx++ {
 		ch := content[idx]
-		if inString != 0 {
-			if escaped {
-				escaped = false
-				continue
-			}
-			switch ch {
-			case '\\':
-				escaped = true
-			case inString:
-				inString = 0
-			}
+		if consumeQuotedByte(ch, &inString, &escaped) {
 			continue
 		}
-
-		switch ch {
-		case '\'', '"':
-			inString = ch
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return content[start:idx], idx + 1, true
-			}
-			if depth < 0 {
-				return "", idx + 1, false
-			}
+		closed, valid := advanceParenthesisDepth(ch, &depth)
+		if closed {
+			return content[start:idx], idx + 1, true
+		}
+		if !valid {
+			return "", idx + 1, false
 		}
 	}
 	return "", len(content), false
+}
+
+func consumeQuotedByte(ch byte, inString *byte, escaped *bool) bool {
+	if *inString == 0 {
+		if ch == '\'' || ch == '"' {
+			*inString = ch
+			return true
+		}
+		return false
+	}
+	if *escaped {
+		*escaped = false
+		return true
+	}
+	switch ch {
+	case '\\':
+		*escaped = true
+	case *inString:
+		*inString = 0
+	}
+	return true
+}
+
+func advanceParenthesisDepth(ch byte, depth *int) (bool, bool) {
+	switch ch {
+	case '(':
+		*depth += 1
+	case ')':
+		*depth -= 1
+		if *depth == 0 {
+			return true, true
+		}
+		if *depth < 0 {
+			return false, false
+		}
+	}
+	return false, true
 }
 
 func derivePackageIdentity(source string) string {
@@ -653,6 +718,18 @@ func lookupKey(value string) string {
 }
 
 func scanRepo(ctx context.Context, repoPath string, catalog dependencyCatalog) (scanResult, error) {
+	scanner := newRepoScanner(repoPath, catalog)
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		return scanner.walk(ctx, path, entry, walkErr)
+	})
+	if err != nil && err != fs.SkipAll {
+		return scanner.scan, err
+	}
+	scanner.finalize()
+	return scanner.scan, nil
+}
+
+func newRepoScanner(repoPath string, catalog dependencyCatalog) *repoScanner {
 	scan := scanResult{
 		KnownDependencies:    make(map[string]struct{}),
 		ImportedDependencies: make(map[string]struct{}),
@@ -660,92 +737,108 @@ func scanRepo(ctx context.Context, repoPath string, catalog dependencyCatalog) (
 	for dependency := range catalog.Dependencies {
 		scan.KnownDependencies[dependency] = struct{}{}
 	}
-	unresolvedImports := make(map[string]int)
-	foundSwift := false
-	skippedLargeFiles := 0
-	visited := 0
+	return &repoScanner{
+		repoPath:          repoPath,
+		catalog:           catalog,
+		scan:              scan,
+		unresolvedImports: make(map[string]int),
+	}
+}
 
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.EqualFold(filepath.Ext(entry.Name()), ".swift") {
-			return nil
-		}
-		foundSwift = true
-		visited++
-		if visited > maxScanFiles {
-			return fs.SkipAll
-		}
-
-		info, infoErr := entry.Info()
-		if infoErr == nil && info.Size() > maxScannableSwiftFile {
-			skippedLargeFiles++
-			return nil
-		}
-
-		content, err := safeio.ReadFileUnder(repoPath, path)
-		if err != nil {
-			return err
-		}
-		relPath, relErr := filepath.Rel(repoPath, path)
-		if relErr != nil {
-			relPath = entry.Name()
-		}
-		imports := parseSwiftImports(content, relPath)
-		mappedImports := make([]importBinding, 0, len(imports))
-		for _, imported := range imports {
-			dependency := resolveImportDependency(catalog, imported.Module)
-			if dependency == "" {
-				if shouldTrackUnresolvedImport(imported.Module, catalog) {
-					unresolvedImports[imported.Module]++
-				}
-				continue
-			}
-			imported.Dependency = dependency
-			if imported.Name == "" {
-				imported.Name = imported.Module
-			}
-			if imported.Local == "" {
-				imported.Local = imported.Name
-			}
-			scan.ImportedDependencies[dependency] = struct{}{}
-			mappedImports = append(mappedImports, imported)
-		}
-
-		scan.Files = append(scan.Files, fileScan{
-			Path:    relPath,
-			Imports: mappedImports,
-			Usage:   applyUnqualifiedUsageHeuristic(content, mappedImports, shared.CountUsage(content, mappedImports)),
-		})
+func (s *repoScanner) walk(ctx context.Context, path string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if entry.IsDir() {
+		return maybeSkipSwiftDir(entry.Name())
+	}
+	if !strings.EqualFold(filepath.Ext(entry.Name()), ".swift") {
 		return nil
-	})
-	if err != nil && err != fs.SkipAll {
-		return scan, err
+	}
+	return s.scanSwiftFile(path, entry)
+}
+
+func (s *repoScanner) scanSwiftFile(path string, entry fs.DirEntry) error {
+	s.foundSwift = true
+	s.visited++
+	if s.visited > maxScanFiles {
+		return fs.SkipAll
+	}
+	if isLargeSwiftFile(entry) {
+		s.skippedLargeFiles++
+		return nil
 	}
 
-	if !foundSwift {
-		scan.Warnings = append(scan.Warnings, "no Swift files found for analysis")
+	content, err := safeio.ReadFileUnder(s.repoPath, path)
+	if err != nil {
+		return err
 	}
-	if visited >= maxScanFiles {
-		scan.Warnings = append(scan.Warnings, fmt.Sprintf("Swift scan capped at %d files", maxScanFiles))
+	relPath := s.relativePath(path, entry.Name())
+	mappedImports := s.resolveImports(parseSwiftImports(content, relPath))
+	s.scan.Files = append(s.scan.Files, fileScan{
+		Path:    relPath,
+		Imports: mappedImports,
+		Usage:   applyUnqualifiedUsageHeuristic(content, mappedImports, shared.CountUsage(content, mappedImports)),
+	})
+	return nil
+}
+
+func isLargeSwiftFile(entry fs.DirEntry) bool {
+	info, err := entry.Info()
+	return err == nil && info.Size() > maxScannableSwiftFile
+}
+
+func (s *repoScanner) relativePath(path string, fallback string) string {
+	relPath, err := filepath.Rel(s.repoPath, path)
+	if err != nil {
+		return fallback
 	}
-	if skippedLargeFiles > 0 {
-		scan.Warnings = append(scan.Warnings, fmt.Sprintf("skipped %d Swift file(s) larger than %d bytes", skippedLargeFiles, maxScannableSwiftFile))
+	return relPath
+}
+
+func (s *repoScanner) resolveImports(imports []importBinding) []importBinding {
+	mappedImports := make([]importBinding, 0, len(imports))
+	for _, imported := range imports {
+		dependency := resolveImportDependency(s.catalog, imported.Module)
+		if dependency == "" {
+			s.recordUnresolvedImport(imported.Module)
+			continue
+		}
+		imported.Dependency = dependency
+		if imported.Name == "" {
+			imported.Name = imported.Module
+		}
+		if imported.Local == "" {
+			imported.Local = imported.Name
+		}
+		s.scan.ImportedDependencies[dependency] = struct{}{}
+		mappedImports = append(mappedImports, imported)
 	}
-	if len(unresolvedImports) > 0 {
-		scan.Warnings = append(scan.Warnings, unresolvedImportWarning(unresolvedImports))
+	return mappedImports
+}
+
+func (s *repoScanner) recordUnresolvedImport(module string) {
+	if shouldTrackUnresolvedImport(module, s.catalog) {
+		s.unresolvedImports[module]++
 	}
-	return scan, nil
+}
+
+func (s *repoScanner) finalize() {
+	if !s.foundSwift {
+		s.scan.Warnings = append(s.scan.Warnings, "no Swift files found for analysis")
+	}
+	if s.visited >= maxScanFiles {
+		s.scan.Warnings = append(s.scan.Warnings, fmt.Sprintf("Swift scan capped at %d files", maxScanFiles))
+	}
+	if s.skippedLargeFiles > 0 {
+		s.scan.Warnings = append(s.scan.Warnings, fmt.Sprintf("skipped %d Swift file(s) larger than %d bytes", s.skippedLargeFiles, maxScannableSwiftFile))
+	}
+	if len(s.unresolvedImports) > 0 {
+		s.scan.Warnings = append(s.scan.Warnings, unresolvedImportWarning(s.unresolvedImports))
+	}
 }
 
 func unresolvedImportWarning(unresolved map[string]int) string {
@@ -818,6 +911,41 @@ func applyUnqualifiedUsageHeuristic(content []byte, imports []importBinding, usa
 	if len(imports) == 0 {
 		return usage
 	}
+	byDependency := importsByDependency(imports)
+	// Unqualified symbol usage cannot be reliably attributed when a file imports
+	// multiple third-party dependencies.
+	if len(byDependency) != 1 {
+		return usage
+	}
+	for _, importsForDependency := range byDependency {
+		if hasQualifiedImportUsage(importsForDependency, usage) {
+			return usage
+		}
+		if !hasPotentialUnqualifiedSymbolUsage(content, importsForDependency) {
+			return usage
+		}
+		seedUnqualifiedUsage(importsForDependency, usage)
+	}
+	return usage
+}
+
+func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding) bool {
+	importModules := importedModuleSet(imports)
+	localDeclaredSymbols := collectLocalDeclaredSymbols(content)
+	lines := strings.Split(string(content), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
+		if line == "" || swiftImportPattern.MatchString(line) {
+			continue
+		}
+		if lineHasPotentialUnqualifiedSymbolUsage(line, importModules, localDeclaredSymbols) {
+			return true
+		}
+	}
+	return false
+}
+
+func importsByDependency(imports []importBinding) map[string][]importBinding {
 	byDependency := make(map[string][]importBinding)
 	for _, imported := range imports {
 		dependency := normalizeDependencyID(imported.Dependency)
@@ -826,35 +954,27 @@ func applyUnqualifiedUsageHeuristic(content []byte, imports []importBinding, usa
 		}
 		byDependency[dependency] = append(byDependency[dependency], imported)
 	}
-	// Unqualified symbol usage cannot be reliably attributed when a file imports
-	// multiple third-party dependencies.
-	if len(byDependency) != 1 {
-		return usage
-	}
-	for _, importsForDependency := range byDependency {
-		hasQualifiedUsage := false
-		for _, imported := range importsForDependency {
-			if imported.Local != "" && usage[imported.Local] > 0 {
-				hasQualifiedUsage = true
-				break
-			}
-		}
-		if hasQualifiedUsage {
-			return usage
-		}
-		if !hasPotentialUnqualifiedSymbolUsage(content, importsForDependency) {
-			return usage
-		}
-		for _, imported := range importsForDependency {
-			if imported.Local != "" && usage[imported.Local] == 0 {
-				usage[imported.Local] = 1
-			}
-		}
-	}
-	return usage
+	return byDependency
 }
 
-func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding) bool {
+func hasQualifiedImportUsage(imports []importBinding, usage map[string]int) bool {
+	for _, imported := range imports {
+		if imported.Local != "" && usage[imported.Local] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func seedUnqualifiedUsage(imports []importBinding, usage map[string]int) {
+	for _, imported := range imports {
+		if imported.Local != "" && usage[imported.Local] == 0 {
+			usage[imported.Local] = 1
+		}
+	}
+}
+
+func importedModuleSet(imports []importBinding) map[string]struct{} {
 	importModules := make(map[string]struct{}, len(imports))
 	for _, imported := range imports {
 		key := lookupKey(imported.Module)
@@ -862,30 +982,33 @@ func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding)
 			importModules[key] = struct{}{}
 		}
 	}
-	localDeclaredSymbols := collectLocalDeclaredSymbols(content)
-	lines := strings.Split(string(content), "\n")
-	for _, rawLine := range lines {
-		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
-		if line == "" || swiftImportPattern.MatchString(line) {
+	return importModules
+}
+
+func lineHasPotentialUnqualifiedSymbolUsage(line string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
+	symbols := swiftUpperIdentifierPattern.FindAllString(line, -1)
+	for _, symbol := range symbols {
+		key := lookupKey(symbol)
+		if isIgnoredUnqualifiedSymbol(key, importModules, localDeclaredSymbols) {
 			continue
 		}
-		symbols := swiftUpperIdentifierPattern.FindAllString(line, -1)
-		for _, symbol := range symbols {
-			key := lookupKey(symbol)
-			if key == "" {
-				continue
-			}
-			if _, ok := importModules[key]; ok {
-				continue
-			}
-			if _, ok := localDeclaredSymbols[key]; ok {
-				continue
-			}
-			if _, ok := standardSwiftSymbols[key]; ok {
-				continue
-			}
-			return true
-		}
+		return true
+	}
+	return false
+}
+
+func isIgnoredUnqualifiedSymbol(key string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
+	if key == "" {
+		return true
+	}
+	if _, ok := importModules[key]; ok {
+		return true
+	}
+	if _, ok := localDeclaredSymbols[key]; ok {
+		return true
+	}
+	if _, ok := standardSwiftSymbols[key]; ok {
+		return true
 	}
 	return false
 }

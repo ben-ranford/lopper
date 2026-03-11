@@ -46,7 +46,7 @@ func TestSwiftAdapterMetadataAndDetect(t *testing.T) {
 	}
 }
 
-func TestSwiftHelperBranches(t *testing.T) {
+func TestSwiftParseResolvedPinsBranches(t *testing.T) {
 	pins, err := parseResolvedPins([]byte(`{"pins":[{"identity":"alamofire","location":"https://github.com/Alamofire/Alamofire.git","state":{"version":"5.8.0"}}],"object":{"pins":[{"package":"Kingfisher","repositoryURL":"https://github.com/onevcat/Kingfisher.git","state":{"revision":"abc"}}]}}`))
 	if err != nil {
 		t.Fatalf("parse resolved pins: %v", err)
@@ -57,7 +57,9 @@ func TestSwiftHelperBranches(t *testing.T) {
 	if _, err := parseResolvedPins([]byte("{")); err == nil {
 		t.Fatalf("expected invalid resolved json to fail")
 	}
+}
 
+func TestSwiftManifestDeclarationHelpers(t *testing.T) {
 	catalog := dependencyCatalog{LocalModules: make(map[string]struct{})}
 	collectLocalModules(`.target(name: "Demo").library(name: "SupportKit")`, &catalog)
 	if _, ok := catalog.LocalModules[lookupKey("Demo")]; !ok {
@@ -67,8 +69,8 @@ func TestSwiftHelperBranches(t *testing.T) {
 		t.Fatalf("expected SupportKit local module, got %#v", catalog.LocalModules)
 	}
 
-	depID, aliases := parsePackageDeclaration(`name: "swift-nio", url: "https://github.com/apple/swift-nio.git"`)
-	if depID != "swift-nio" || !slices.Contains(aliases, "swift-nio") {
+	depID, aliases := parsePackageDeclaration(`name: "` + swiftNIOID + `", url: "` + swiftNIORepositoryURL + `"`)
+	if depID != swiftNIOID || !slices.Contains(aliases, swiftNIOID) {
 		t.Fatalf("expected url-based declaration parsing, got %q %#v", depID, aliases)
 	}
 	depID, aliases = parsePackageDeclaration(`path: "../LocalPackage"`)
@@ -95,8 +97,10 @@ func TestSwiftHelperBranches(t *testing.T) {
 	if _, _, ok := captureParenthesized(`("unterminated"`, 0); ok {
 		t.Fatalf("expected unterminated parens to fail capture")
 	}
+}
 
-	if got := derivePackageIdentity("git@github.com:apple/swift-nio.git"); got != "swift-nio" {
+func TestSwiftLookupHelpers(t *testing.T) {
+	if got := derivePackageIdentity("git@github.com:apple/" + swiftNIOID + ".git"); got != swiftNIOID {
 		t.Fatalf("unexpected git identity: %q", got)
 	}
 	if got := derivePackageIdentity(" ../LocalPackage "); got != "LocalPackage" {
@@ -104,22 +108,22 @@ func TestSwiftHelperBranches(t *testing.T) {
 	}
 
 	lookup := map[string]string{}
-	setLookup(lookup, lookupKey("NIO"), "swift-nio")
+	setLookup(lookup, lookupKey("NIO"), swiftNIOID)
 	setLookup(lookup, lookupKey("NIO"), "other")
 	if _, ok := resolveLookup(lookup, lookupKey("NIO")); ok {
 		t.Fatalf("expected ambiguous lookup to fail resolution")
 	}
 
-	catalog = dependencyCatalog{
-		Dependencies:       map[string]dependencyMeta{"swift-nio": {}},
-		AliasToDependency:  map[string]string{lookupKey("swift-nio"): "swift-nio"},
-		ModuleToDependency: map[string]string{lookupKey("NIO"): "swift-nio"},
+	catalog := dependencyCatalog{
+		Dependencies:       map[string]dependencyMeta{swiftNIOID: {}},
+		AliasToDependency:  map[string]string{lookupKey(swiftNIOID): swiftNIOID},
+		ModuleToDependency: map[string]string{lookupKey("NIO"): swiftNIOID},
 		LocalModules:       map[string]struct{}{lookupKey("Demo"): {}},
 	}
-	if got := resolveDependencyReference(catalog, "NIO"); got != "swift-nio" {
+	if got := resolveDependencyReference(catalog, "NIO"); got != swiftNIOID {
 		t.Fatalf("expected module lookup to resolve dependency, got %q", got)
 	}
-	if got := resolveDependencyReference(catalog, "swift-nio"); got != "swift-nio" {
+	if got := resolveDependencyReference(catalog, swiftNIOID); got != swiftNIOID {
 		t.Fatalf("expected normalized fallback lookup, got %q", got)
 	}
 	if !shouldTrackUnresolvedImport("MysteryKit", catalog) {
@@ -139,7 +143,9 @@ func TestSwiftHelperBranches(t *testing.T) {
 	if !strings.Contains(warning, "Alpha (3), Beta (3)") || !strings.Contains(warning, "+1 more") {
 		t.Fatalf("unexpected unresolved import warning: %q", warning)
 	}
+}
 
+func TestSwiftThresholdAndNormalizationHelpers(t *testing.T) {
 	minUsage := 42
 	if got := resolveMinUsageRecommendationThreshold(&minUsage); got != minUsage {
 		t.Fatalf("expected explicit min usage threshold, got %d", got)
@@ -157,10 +163,10 @@ func TestSwiftHelperBranches(t *testing.T) {
 		t.Fatalf("expected provided weights to remain unchanged, got %#v", got)
 	}
 
-	if got := normalizeDependencyID("__Swift_NIO__"); got != "swift-nio" {
+	if got := normalizeDependencyID("__Swift_NIO__"); got != swiftNIOID {
 		t.Fatalf("unexpected normalized dependency id: %q", got)
 	}
-	if !shouldSkipDir(".build") || shouldSkipDir("Sources") {
+	if !shouldSkipDir(swiftBuildDirName) || shouldSkipDir("Sources") {
 		t.Fatalf("unexpected skip-dir behavior")
 	}
 
@@ -179,16 +185,16 @@ func TestSwiftHelperBranches(t *testing.T) {
 func TestSwiftScanAndRecommendationBranches(t *testing.T) {
 	repo := t.TempDir()
 	dependencies := []swiftFixtureDependency{
-		{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
+		alamofireFixtureDependency(),
 	}
 	mainContent := `import Alamofire
 import MysteryKit
 func run() {
   _ = Session.default
-}`
+	}`
 	writeSwiftDemoPackage(t, repo, dependencies, mainContent)
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", "Big.swift"), strings.Repeat("x", maxScannableSwiftFile+1))
-	testutil.MustWriteFile(t, filepath.Join(repo, ".build", "ignored.swift"), "import Alamofire\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, swiftBuildDirName, "ignored.swift"), "import Alamofire\n")
 
 	catalog, warnings, err := buildDependencyCatalog(repo)
 	if err != nil {
@@ -218,7 +224,7 @@ func run() {
 	meta := dependencyMeta{Declared: true, Source: packageResolvedName}
 	catalog.Dependencies["alamofire"] = meta
 	file := fileScan{
-		Path: "Sources/Demo/main.swift",
+		Path: filepath.Join("Sources", "Demo", swiftMainFileName),
 		Imports: []importBinding{{
 			Module:     "Alamofire",
 			Name:       "Alamofire",
@@ -252,64 +258,62 @@ func run() {
 	}
 }
 
-func TestSwiftCatalogWarningAndFallbackBranches(t *testing.T) {
-	t.Run("manifest without packages and empty resolved pins", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), `import PackageDescription
+func TestSwiftCatalogWarningsForManifestWithoutPackages(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), `import PackageDescription
 let package = Package(
   name: "Demo",
   targets: [
     .target(name: "Demo")
   ]
 )`)
-		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), `{"pins":[],"version":2}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), `{"pins":[],"version":2}`)
 
-		catalog, warnings, err := buildDependencyCatalog(repo)
-		if err != nil {
-			t.Fatalf("build dependency catalog: %v", err)
-		}
-		if len(catalog.Dependencies) != 0 {
-			t.Fatalf("expected no discovered dependencies, got %#v", catalog.Dependencies)
-		}
-		if _, ok := catalog.LocalModules[lookupKey("Demo")]; !ok {
-			t.Fatalf("expected local module to be captured, got %#v", catalog.LocalModules)
-		}
-		assertWarningContains(t, warnings, "no .package(...) declarations found in Package.swift")
-		assertWarningContains(t, warnings, "no pins found in Package.resolved")
-		assertWarningContains(t, warnings, "no Swift package dependencies were discovered")
+	catalog, warnings, err := buildDependencyCatalog(repo)
+	if err != nil {
+		t.Fatalf("build dependency catalog: %v", err)
+	}
+	if len(catalog.Dependencies) != 0 {
+		t.Fatalf("expected no discovered dependencies, got %#v", catalog.Dependencies)
+	}
+	if _, ok := catalog.LocalModules[lookupKey("Demo")]; !ok {
+		t.Fatalf("expected local module to be captured, got %#v", catalog.LocalModules)
+	}
+	assertWarningContains(t, warnings, "no .package(...) declarations found in Package.swift")
+	assertWarningContains(t, warnings, "no pins found in Package.resolved")
+	assertWarningContains(t, warnings, "no Swift package dependencies were discovered")
 
-		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 3})
-		if err != nil {
-			t.Fatalf("analyse topN local-only repo: %v", err)
-		}
-		assertWarningContains(t, reportData.Warnings, "no dependency data available for top-N ranking")
-	})
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 3})
+	if err != nil {
+		t.Fatalf("analyse topN local-only repo: %v", err)
+	}
+	assertWarningContains(t, reportData.Warnings, "no dependency data available for top-N ranking")
+}
 
-	t.Run("resolved package and repository url fallbacks", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), `{"object":{"pins":[{"package":"Kingfisher","repositoryURL":"https://github.com/onevcat/Kingfisher.git","state":{"revision":"abc","version":"7.9.0"}}]}}`)
+func TestSwiftResolvedPackageFallbacks(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), `{"object":{"pins":[{"package":"Kingfisher","repositoryURL":"https://github.com/onevcat/Kingfisher.git","state":{"revision":"abc","version":"7.9.0"}}]}}`)
 
-		catalog := dependencyCatalog{
-			Dependencies:       make(map[string]dependencyMeta),
-			AliasToDependency:  make(map[string]string),
-			ModuleToDependency: make(map[string]string),
-			LocalModules:       make(map[string]struct{}),
-		}
-		found, warnings, err := loadResolvedData(repo, &catalog)
-		if err != nil {
-			t.Fatalf("load resolved data: %v", err)
-		}
-		if !found || len(warnings) != 0 {
-			t.Fatalf("expected resolved data to load without warnings, got found=%v warnings=%#v", found, warnings)
-		}
-		meta, ok := catalog.Dependencies["kingfisher"]
-		if !ok || !meta.Resolved || meta.Source != "https://github.com/onevcat/Kingfisher.git" || meta.Version != "7.9.0" {
-			t.Fatalf("expected repositoryURL fallback dependency metadata, got %#v", catalog.Dependencies)
-		}
-		if depID, ok := resolveLookup(catalog.ModuleToDependency, lookupKey("Kingfisher")); !ok || depID != "kingfisher" {
-			t.Fatalf("expected package fallback module mapping, got %#v", catalog.ModuleToDependency)
-		}
-	})
+	catalog := dependencyCatalog{
+		Dependencies:       make(map[string]dependencyMeta),
+		AliasToDependency:  make(map[string]string),
+		ModuleToDependency: make(map[string]string),
+		LocalModules:       make(map[string]struct{}),
+	}
+	found, warnings, err := loadResolvedData(repo, &catalog)
+	if err != nil {
+		t.Fatalf("load resolved data: %v", err)
+	}
+	if !found || len(warnings) != 0 {
+		t.Fatalf("expected resolved data to load without warnings, got found=%v warnings=%#v", found, warnings)
+	}
+	meta, ok := catalog.Dependencies["kingfisher"]
+	if !ok || !meta.Resolved || meta.Source != "https://github.com/onevcat/Kingfisher.git" || meta.Version != "7.9.0" {
+		t.Fatalf("expected repositoryURL fallback dependency metadata, got %#v", catalog.Dependencies)
+	}
+	if depID, ok := resolveLookup(catalog.ModuleToDependency, lookupKey("Kingfisher")); !ok || depID != "kingfisher" {
+		t.Fatalf("expected package fallback module mapping, got %#v", catalog.ModuleToDependency)
+	}
 }
 
 func TestSwiftUsageHeuristicBranches(t *testing.T) {
@@ -469,7 +473,7 @@ func TestSwiftRemainingBranchCoverage(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Foundation\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect swift-only repo: %v", err)
@@ -520,7 +524,7 @@ func TestSwiftFinalHelperBranches(t *testing.T) {
 		t.Fatalf("expected empty unresolved import to be ignored")
 	}
 
-	imports := parseSwiftImports([]byte("// comment only\nimport \n@testable import Alamofire // trailing comment\n"), "main.swift")
+	imports := parseSwiftImports([]byte("// comment only\nimport \n@testable import Alamofire // trailing comment\n"), swiftMainFileName)
 	if len(imports) != 1 || imports[0].Module != "Alamofire" {
 		t.Fatalf("expected only valid Swift imports to parse, got %#v", imports)
 	}
@@ -531,7 +535,7 @@ func TestSwiftFinalHelperBranches(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, ".build", "generated.swift"), "import Alamofire\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, swiftBuildDirName, "generated.swift"), "import Alamofire\n")
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("detect skipped-dir repo: %v", err)
@@ -559,7 +563,7 @@ func TestSwiftMissingFileAndNoMatchBranches(t *testing.T) {
 	if fields := parseStringFields("dependencies: []"); len(fields) != 0 {
 		t.Fatalf("expected no string fields to be parsed, got %#v", fields)
 	}
-	if imports := parseSwiftImports([]byte("let value = 1\nimport \n"), "main.swift"); len(imports) != 0 {
+	if imports := parseSwiftImports([]byte("let value = 1\nimport \n"), swiftMainFileName); len(imports) != 0 {
 		t.Fatalf("expected invalid import lines to be ignored, got %#v", imports)
 	}
 
