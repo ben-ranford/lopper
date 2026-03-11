@@ -10,7 +10,7 @@ import (
 func assertNotifyFailures(t *testing.T, n Notifier) {
 	t.Helper()
 
-	if err := n.Notify(context.Background(), Delivery{WebhookURL: "://bad"}); err == nil {
+	if n.Notify(context.Background(), Delivery{WebhookURL: "://bad"}) == nil {
 		t.Fatalf("expected request build error")
 	}
 
@@ -19,11 +19,11 @@ func assertNotifyFailures(t *testing.T, n Notifier) {
 	}))
 	defer statusServer.Close()
 
-	if err := n.Notify(context.Background(), Delivery{WebhookURL: statusServer.URL}); err == nil {
+	if n.Notify(context.Background(), Delivery{WebhookURL: statusServer.URL}) == nil {
 		t.Fatalf("expected non-2xx status error")
 	}
 
-	if err := n.Notify(context.Background(), Delivery{WebhookURL: "http://127.0.0.1:1"}); err == nil {
+	if n.Notify(context.Background(), Delivery{WebhookURL: "http://127.0.0.1:1"}) == nil {
 		t.Fatalf("expected send failure for unreachable endpoint")
 	}
 }

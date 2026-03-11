@@ -16,6 +16,8 @@ type fakeNotifier struct {
 	delivery Delivery
 }
 
+const testWebhookURL = "https://hooks.slack.com/services/T000/B000/SECRET"
+
 func (f *fakeNotifier) Notify(_ context.Context, delivery Delivery) error {
 	f.calls++
 	f.delivery = delivery
@@ -33,7 +35,7 @@ func TestDispatcherDispatchesByTrigger(t *testing.T) {
 		ChannelTeams: teams,
 	})
 	cfg := DefaultConfig()
-	cfg.Slack.WebhookURL = "https://hooks.slack.com/services/T000/B000/SECRET"
+	cfg.Slack.WebhookURL = testWebhookURL
 	cfg.Slack.Trigger = TriggerBreach
 	cfg.Teams.WebhookURL = "https://outlook.office.com/webhook/token"
 	cfg.Teams.Trigger = TriggerRegression
@@ -48,7 +50,7 @@ func TestDispatcherDispatchesByTrigger(t *testing.T) {
 }
 
 func TestDispatcherRedactsWebhookURLInWarnings(t *testing.T) {
-	webhook := "https://hooks.slack.com/services/T000/B000/SECRET"
+	webhook := testWebhookURL
 	leaky := &fakeNotifier{err: fmt.Errorf("post failed for %s", webhook)}
 	dispatcher := NewDispatcher(map[Channel]Notifier{
 		ChannelSlack: leaky,

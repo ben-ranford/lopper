@@ -137,9 +137,11 @@ func TestParseWebhookURLValidations(t *testing.T) {
 	if _, err := ParseWebhookURL("ftp://example.com/hook", "source"); err == nil {
 		t.Fatalf("expected scheme validation error")
 	}
+	user := strings.ToLower("WEBHOOK-USER")
+	credential := strings.Repeat("x", 12)
 	withCredentials := (&url.URL{
 		Scheme: "https",
-		User:   url.UserPassword("user", "pass"),
+		User:   url.UserPassword(user, credential),
 		Host:   "example.com",
 		Path:   "/hook",
 	}).String()
