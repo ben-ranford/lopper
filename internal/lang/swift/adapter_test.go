@@ -114,6 +114,109 @@ func TestSwiftAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	}
 }
 
+func TestSwiftAdapterCountsUnqualifiedSingleDependencyUsage(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), strings.Join([]string{
+		"import PackageDescription",
+		"let package = Package(",
+		"  name: \"Demo\",",
+		"  dependencies: [",
+		"    .package(url: \"https://github.com/Alamofire/Alamofire.git\", from: \"5.8.0\")",
+		"  ],",
+		"  targets: [",
+		"    .target(name: \"Demo\", dependencies: [.product(name: \"Alamofire\", package: \"alamofire\")])",
+		"  ]",
+		")",
+	}, "\n"))
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), strings.Join([]string{
+		"{",
+		"  \"pins\": [",
+		"    {",
+		"      \"identity\": \"alamofire\",",
+		"      \"location\": \"https://github.com/Alamofire/Alamofire.git\",",
+		"      \"state\": {\"revision\": \"abc\", \"version\": \"5.8.0\"}",
+		"    }",
+		"  ],",
+		"  \"version\": 2",
+		"}",
+	}, "\n"))
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", "main.swift"), strings.Join([]string{
+		"import Alamofire",
+		"func run() {",
+		"  _ = Session.default",
+		"}",
+	}, "\n"))
+
+	depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
+	if err != nil {
+		t.Fatalf("analyse dependency: %v", err)
+	}
+	if len(depReport.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+	}
+	if depReport.Dependencies[0].UsedExportsCount == 0 {
+		t.Fatalf("expected unqualified usage to count as used, got %#v", depReport.Dependencies[0])
+	}
+}
+
+func TestSwiftAdapterDoesNotAttributeAmbiguousUnqualifiedUsage(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), strings.Join([]string{
+		"import PackageDescription",
+		"let package = Package(",
+		"  name: \"Demo\",",
+		"  dependencies: [",
+		"    .package(url: \"https://github.com/Alamofire/Alamofire.git\", from: \"5.8.0\"),",
+		"    .package(url: \"https://github.com/onevcat/Kingfisher.git\", from: \"7.9.0\")",
+		"  ],",
+		"  targets: [",
+		"    .target(",
+		"      name: \"Demo\",",
+		"      dependencies: [",
+		"        .product(name: \"Alamofire\", package: \"alamofire\"),",
+		"        .product(name: \"Kingfisher\", package: \"kingfisher\")",
+		"      ]",
+		"    )",
+		"  ]",
+		")",
+	}, "\n"))
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), strings.Join([]string{
+		"{",
+		"  \"pins\": [",
+		"    {",
+		"      \"identity\": \"alamofire\",",
+		"      \"location\": \"https://github.com/Alamofire/Alamofire.git\",",
+		"      \"state\": {\"revision\": \"abc\", \"version\": \"5.8.0\"}",
+		"    },",
+		"    {",
+		"      \"identity\": \"kingfisher\",",
+		"      \"location\": \"https://github.com/onevcat/Kingfisher.git\",",
+		"      \"state\": {\"revision\": \"def\", \"version\": \"7.9.0\"}",
+		"    }",
+		"  ],",
+		"  \"version\": 2",
+		"}",
+	}, "\n"))
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", "main.swift"), strings.Join([]string{
+		"import Alamofire",
+		"import Kingfisher",
+		"func run() {",
+		"  _ = Session.default",
+		"}",
+	}, "\n"))
+
+	depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
+	if err != nil {
+		t.Fatalf("analyse dependency: %v", err)
+	}
+	if len(depReport.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+	}
+	if depReport.Dependencies[0].UsedExportsCount != 0 {
+		t.Fatalf("expected ambiguous unqualified usage to remain unattributed, got %#v", depReport.Dependencies[0])
+	}
+}
+
 func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
 	t.Run("v1_object_pins", func(t *testing.T) {
 		repo := t.TempDir()

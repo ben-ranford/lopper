@@ -43,6 +43,7 @@ const (
 
 var (
 	swiftImportPattern = regexp.MustCompile(`^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func|operator)\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*`)
+	swiftUpperIdentifierPattern = regexp.MustCompile(`\b[A-Z][A-Za-z0-9_]*\b`)
 	stringFieldPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"((?:\\.|[^"])*)"`)
 
 	swiftSkippedDirs = map[string]bool{
@@ -693,7 +694,7 @@ func scanRepo(ctx context.Context, repoPath string, catalog dependencyCatalog) (
 		scan.Files = append(scan.Files, fileScan{
 			Path:    relPath,
 			Imports: mappedImports,
-			Usage:   shared.CountUsage(content, mappedImports),
+			Usage:   applyUnqualifiedUsageHeuristic(content, mappedImports, shared.CountUsage(content, mappedImports)),
 		})
 		return nil
 	})
@@ -780,6 +781,78 @@ func parseSwiftImports(content []byte, filePath string) []importBinding {
 			Location: shared.LocationFromLine(filePath, index, line),
 		}}
 	})
+}
+
+func applyUnqualifiedUsageHeuristic(content []byte, imports []importBinding, usage map[string]int) map[string]int {
+	if len(imports) == 0 {
+		return usage
+	}
+	byDependency := make(map[string][]importBinding)
+	for _, imported := range imports {
+		dependency := normalizeDependencyID(imported.Dependency)
+		if dependency == "" {
+			continue
+		}
+		byDependency[dependency] = append(byDependency[dependency], imported)
+	}
+	// Unqualified symbol usage cannot be reliably attributed when a file imports
+	// multiple third-party dependencies.
+	if len(byDependency) != 1 {
+		return usage
+	}
+	for _, importsForDependency := range byDependency {
+		hasQualifiedUsage := false
+		for _, imported := range importsForDependency {
+			if imported.Local != "" && usage[imported.Local] > 0 {
+				hasQualifiedUsage = true
+				break
+			}
+		}
+		if hasQualifiedUsage {
+			return usage
+		}
+		if !hasPotentialUnqualifiedSymbolUsage(content, importsForDependency) {
+			return usage
+		}
+		for _, imported := range importsForDependency {
+			if imported.Local != "" && usage[imported.Local] == 0 {
+				usage[imported.Local] = 1
+			}
+		}
+	}
+	return usage
+}
+
+func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding) bool {
+	importModules := make(map[string]struct{}, len(imports))
+	for _, imported := range imports {
+		key := lookupKey(imported.Module)
+		if key != "" {
+			importModules[key] = struct{}{}
+		}
+	}
+	lines := strings.Split(string(content), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
+		if line == "" || swiftImportPattern.MatchString(line) {
+			continue
+		}
+		symbols := swiftUpperIdentifierPattern.FindAllString(line, -1)
+		for _, symbol := range symbols {
+			key := lookupKey(symbol)
+			if key == "" {
+				continue
+			}
+			if _, ok := importModules[key]; ok {
+				continue
+			}
+			if _, ok := standardSwiftModules[key]; ok {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func buildRequestedSwiftDependencies(req language.Request, scan scanResult, catalog dependencyCatalog) ([]report.DependencyReport, []string) {
