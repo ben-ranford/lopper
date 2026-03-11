@@ -355,14 +355,17 @@ func buildRequestedKotlinAndroidDependencies(req language.Request, scan scanResu
 }
 
 func buildTopKotlinAndroidDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	importRecords := func(file fileScan) []shared.ImportRecord { return file.Imports }
-	usageCounts := func(file fileScan) map[string]int { return file.Usage }
-	usageByFile := shared.MapFileUsages(scan.Files, importRecords, usageCounts)
-	dependencies := shared.ListDependencies(usageByFile, normalizeDependencyID)
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
+	dependencies := shared.ListDependencies(kotlinAndroidFileUsages(scan), normalizeDependencyID)
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
+}
+
+func kotlinAndroidFileUsages(scan scanResult) []shared.FileUsage {
+	importsOf := func(file fileScan) []shared.ImportRecord { return file.Imports }
+	usageOf := func(file fileScan) map[string]int { return file.Usage }
+	return shared.MapFileUsages(scan.Files, importsOf, usageOf)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
@@ -687,22 +690,11 @@ func resolveDependency(module string, lookups dependencyLookups) (string, []stri
 }
 
 func fallbackDependency(module string) string {
-	parts := strings.Split(module, ".")
-	if len(parts) >= 2 {
-		return normalizeDependencyID(parts[0] + "." + parts[1])
-	}
-	if len(parts) == 1 {
-		return normalizeDependencyID(parts[0])
-	}
-	return ""
+	return shared.FallbackDependency(module, normalizeDependencyID)
 }
 
 func lastModuleSegment(module string) string {
-	parts := strings.Split(module, ".")
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(parts[len(parts)-1])
+	return shared.LastModuleSegment(module)
 }
 
 func countUsage(content []byte, imports []importBinding) map[string]int {
@@ -710,47 +702,45 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
-	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
-	warnings := make([]string, 0)
-	if !stats.HasImports {
-		warnings = append(warnings, "no imports found for dependency "+dependency)
-	}
+	stats := shared.BuildDependencyStats(dependency, kotlinAndroidFileUsages(scan), normalizeDependencyID)
+	dep := shared.BuildDependencyReportFromStats(dependency, "kotlin-android", stats)
+	dep.RiskCues = kotlinAndroidRiskCues(dependency, scan, stats)
+	warnings := kotlinAndroidDependencyWarnings(dependency, stats)
+	dep.Recommendations = buildRecommendations(dep)
+	return dep, warnings
+}
 
-	dep := report.DependencyReport{
-		Language:             "kotlin-android",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
+func kotlinAndroidDependencyWarnings(dependency string, stats shared.DependencyStats) []string {
+	if stats.HasImports {
+		return nil
 	}
+	return []string{"no imports found for dependency " + dependency}
+}
+
+func kotlinAndroidRiskCues(dependency string, scan scanResult, stats shared.DependencyStats) []report.RiskCue {
+	cues := make([]report.RiskCue, 0, 3)
 	if stats.WildcardImports > 0 {
-		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		cues = append(cues, report.RiskCue{
 			Code:     "wildcard-import",
 			Severity: "medium",
 			Message:  "found wildcard imports for this dependency",
 		})
 	}
 	if _, ok := scan.AmbiguousDependencies[dependency]; ok {
-		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		cues = append(cues, report.RiskCue{
 			Code:     "ambiguous-import-mapping",
 			Severity: "medium",
 			Message:  "some imports matched multiple Gradle dependency candidates",
 		})
 	}
 	if _, ok := scan.UndeclaredDependencies[dependency]; ok {
-		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		cues = append(cues, report.RiskCue{
 			Code:     "undeclared-import-attribution",
 			Severity: "low",
 			Message:  "dependency inferred from imports but not declared in Gradle manifests",
 		})
 	}
-	dep.Recommendations = buildRecommendations(dep)
-	return dep, warnings
+	return cues
 }
 
 func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
@@ -1171,47 +1161,58 @@ func dedupeDescriptors(descriptors []dependencyDescriptor) []dependencyDescripto
 }
 
 func parseBuildFiles(repoPath string, parser func(content string) []dependencyDescriptor, names ...string) []dependencyDescriptor {
-	descriptors := make([]dependencyDescriptor, 0)
-	seen := make(map[string]struct{})
-
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		return parseBuildFileEntry(repoPath, path, entry, names, parser, seen, &descriptors)
-	})
-	if err != nil {
-		return descriptors
+	collector := buildFileCollector{
+		repoPath: repoPath,
+		parser:   parser,
+		names:    names,
+		seen:     make(map[string]struct{}),
 	}
-	return descriptors
+	err := filepath.WalkDir(repoPath, collector.visit)
+	if err != nil {
+		return collector.descriptors
+	}
+	return collector.descriptors
 }
 
-func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
+type buildFileCollector struct {
+	repoPath    string
+	parser      func(content string) []dependencyDescriptor
+	names       []string
+	seen        map[string]struct{}
+	descriptors []dependencyDescriptor
+}
+
+func (c *buildFileCollector) visit(path string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
 		}
 		return nil
 	}
-	fileName := strings.ToLower(entry.Name())
-	if !matchesBuildFile(fileName, names) {
+	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
 		return nil
 	}
-
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnder(c.repoPath, path)
 	if err != nil {
 		return nil
 	}
-	for _, descriptor := range parser(string(content)) {
-		key := descriptorKey(descriptor)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		descriptor.FromManifest = true
-		*descriptors = append(*descriptors, descriptor)
+	for _, descriptor := range c.parser(string(content)) {
+		c.recordDescriptor(descriptor)
 	}
 	return nil
+}
+
+func (c *buildFileCollector) recordDescriptor(descriptor dependencyDescriptor) {
+	key := descriptorKey(descriptor)
+	if _, ok := c.seen[key]; ok {
+		return
+	}
+	c.seen[key] = struct{}{}
+	descriptor.FromManifest = true
+	c.descriptors = append(c.descriptors, descriptor)
 }
 
 func matchesBuildFile(fileName string, names []string) bool {
