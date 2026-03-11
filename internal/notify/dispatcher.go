@@ -76,12 +76,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, cfg Config, reportData report
 			continue
 		}
 		if err := notifier.Notify(ctx, delivery); err != nil {
-			warnings = append(warnings, fmt.Sprintf(
-				"notification delivery failed for %s (%s): %s",
-				delivery.Channel,
-				RedactWebhookURL(delivery.WebhookURL),
-				sanitizeErrorMessage(err, delivery.WebhookURL),
-			))
+			warnings = append(warnings, fmt.Sprintf("notification delivery failed for %s (%s): %s", delivery.Channel, RedactWebhookURL(delivery.WebhookURL), sanitizeErrorMessage(err, delivery.WebhookURL)))
 		}
 	}
 

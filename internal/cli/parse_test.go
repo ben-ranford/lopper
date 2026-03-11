@@ -61,6 +61,11 @@ func expectParseArgsError(t *testing.T, args []string, wantMsg string) error {
 	return err
 }
 
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	testutil.MustWriteFile(t, path, contents)
+}
+
 func TestParseArgsDefault(t *testing.T) {
 	req := mustParseArgs(t, nil)
 	if req.Mode != app.ModeTUI {
@@ -585,20 +590,18 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 
 func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
 	repo := t.TempDir()
-	config := strings.Join([]string{
-		"notifications:",
-		"  on: breach",
-		"  slack:",
-		"    webhook: https://hooks.slack.com/services/A/B/CONFIG",
-		"  teams:",
-		"    webhook: https://outlook.office.com/webhook/CONFIG",
-		"    on: improvement",
-		"",
-	}, "\n")
+	config := `notifications:
+  on: breach
+  slack:
+    webhook: https://hooks.slack.com/services/A/B/CONFIG
+  teams:
+    webhook: https://outlook.office.com/webhook/CONFIG
+    on: improvement
+`
 	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
 
-	t.Setenv(notify.EnvNotifyOn, "regression")
-	t.Setenv(notify.EnvNotifySlackWebhook, "https://hooks.slack.com/services/A/B/ENV")
+	t.Setenv(notify.EnvOn, "regression")
+	t.Setenv(notify.EnvSlackWebhook, "https://hooks.slack.com/services/A/B/ENV")
 
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "10",

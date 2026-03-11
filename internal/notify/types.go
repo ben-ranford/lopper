@@ -35,7 +35,7 @@ func DefaultConfig() Config {
 	}
 }
 
-func (c Config) HasTargets() bool {
+func (c *Config) HasTargets() bool {
 	return strings.TrimSpace(c.Slack.WebhookURL) != "" || strings.TrimSpace(c.Teams.WebhookURL) != ""
 }
 
@@ -49,7 +49,7 @@ type Overrides struct {
 	TeamsTrigger    *Trigger
 }
 
-func (o Overrides) Apply(base Config) Config {
+func (o *Overrides) Apply(base Config) Config {
 	resolved := base
 
 	if o.GlobalTrigger != nil {

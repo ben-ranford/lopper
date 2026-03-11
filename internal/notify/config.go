@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	EnvNotifyOn           = "LOPPER_NOTIFY_ON"
-	EnvNotifySlackWebhook = "LOPPER_NOTIFY_SLACK_WEBHOOK"
-	EnvNotifyTeamsWebhook = "LOPPER_NOTIFY_TEAMS_WEBHOOK"
+	EnvOn           = "LOPPER_NOTIFY_ON"
+	EnvSlackWebhook = "LOPPER_NOTIFY_SLACK_WEBHOOK"
+	EnvTeamsWebhook = "LOPPER_NOTIFY_TEAMS_WEBHOOK"
 )
 
 func LoadConfigOverrides(path string) (Overrides, error) {
@@ -37,24 +37,24 @@ func LoadConfigOverrides(path string) (Overrides, error) {
 func LoadEnvOverrides(lookup func(string) (string, bool)) (Overrides, error) {
 	overrides := Overrides{}
 
-	if value, ok := lookup(EnvNotifyOn); ok {
+	if value, ok := lookup(EnvOn); ok {
 		trigger, err := ParseTrigger(value)
 		if err != nil {
-			return Overrides{}, fmt.Errorf("invalid %s value %q: %w", EnvNotifyOn, strings.TrimSpace(value), err)
+			return Overrides{}, fmt.Errorf("invalid %s value %q: %w", EnvOn, strings.TrimSpace(value), err)
 		}
 		overrides.GlobalTrigger = &trigger
 	}
 
-	if value, ok := lookup(EnvNotifySlackWebhook); ok {
-		webhookURL, err := ParseWebhookURL(value, EnvNotifySlackWebhook)
+	if value, ok := lookup(EnvSlackWebhook); ok {
+		webhookURL, err := ParseWebhookURL(value, EnvSlackWebhook)
 		if err != nil {
 			return Overrides{}, err
 		}
 		overrides.SlackWebhookURL = &webhookURL
 	}
 
-	if value, ok := lookup(EnvNotifyTeamsWebhook); ok {
-		webhookURL, err := ParseWebhookURL(value, EnvNotifyTeamsWebhook)
+	if value, ok := lookup(EnvTeamsWebhook); ok {
+		webhookURL, err := ParseWebhookURL(value, EnvTeamsWebhook)
 		if err != nil {
 			return Overrides{}, err
 		}
@@ -94,7 +94,7 @@ func parseRawConfig(path string, data []byte) (rawConfig, error) {
 	return cfg, nil
 }
 
-func (r rawNotifications) toOverrides() (Overrides, error) {
+func (r *rawNotifications) toOverrides() (Overrides, error) {
 	overrides := Overrides{}
 
 	if r.On != nil {

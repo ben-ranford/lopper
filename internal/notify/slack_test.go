@@ -27,7 +27,11 @@ func TestSlackNotifierNotifySuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
-		defer func() { _ = r.Body.Close() }()
+		defer func() {
+			if err := r.Body.Close(); err != nil {
+				t.Fatalf("close request body: %v", err)
+			}
+		}()
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode payload: %v", err)
 		}

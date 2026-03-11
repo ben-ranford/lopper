@@ -16,6 +16,24 @@ import (
 
 const decodePayloadErrFmt = "decode payload: %v"
 
+func newPayloadCaptureServer(t *testing.T, payload *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		defer func() {
+			if err := r.Body.Close(); err != nil {
+				t.Fatalf("close request body: %v", err)
+			}
+		}()
+		if err := json.NewDecoder(r.Body).Decode(payload); err != nil {
+			t.Fatalf(decodePayloadErrFmt, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+}
+
 func TestNewWebhookNotifierUsesDefaultClient(t *testing.T) {
 	notifier := NewWebhookNotifier(nil)
 	if notifier.Client == nil {
@@ -28,16 +46,7 @@ func TestNewWebhookNotifierUsesDefaultClient(t *testing.T) {
 
 func TestWebhookNotifierNotifySuccess(t *testing.T) {
 	var payload map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", r.Method)
-		}
-		defer func() { _ = r.Body.Close() }()
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf(decodePayloadErrFmt, err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
+	server := newPayloadCaptureServer(t, &payload)
 	defer server.Close()
 
 	notifier := NewWebhookNotifier(server.Client())
@@ -65,16 +74,7 @@ func TestWebhookNotifierNotifySuccess(t *testing.T) {
 
 func TestWebhookNotifierNotifyTeamsAdaptiveCard(t *testing.T) {
 	var payload map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", r.Method)
-		}
-		defer func() { _ = r.Body.Close() }()
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf(decodePayloadErrFmt, err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
+	server := newPayloadCaptureServer(t, &payload)
 	defer server.Close()
 
 	notifier := NewWebhookNotifier(server.Client())
@@ -131,6 +131,9 @@ func TestWebhookNotifierNotifyFailures(t *testing.T) {
 }
 
 func TestParseWebhookURLValidations(t *testing.T) {
+	if value, err := ParseWebhookURL("   ", "source"); err != nil || value != "" {
+		t.Fatalf("expected empty webhook value to be accepted as unset, got value=%q err=%v", value, err)
+	}
 	if _, err := ParseWebhookURL("ftp://example.com/hook", "source"); err == nil {
 		t.Fatalf("expected scheme validation error")
 	}
@@ -145,6 +148,9 @@ func TestParseWebhookURLValidations(t *testing.T) {
 	}
 	if _, err := ParseWebhookURL("https://example.com/hook#frag", "source"); err == nil {
 		t.Fatalf("expected fragment validation error")
+	}
+	if _, err := ParseWebhookURL("https:///hook", "source"); err == nil {
+		t.Fatalf("expected missing host validation error")
 	}
 }
 

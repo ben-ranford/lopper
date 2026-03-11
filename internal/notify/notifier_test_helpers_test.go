@@ -7,11 +7,7 @@ import (
 	"testing"
 )
 
-type notifier interface {
-	Notify(ctx context.Context, delivery Delivery) error
-}
-
-func assertNotifyFailures(t *testing.T, n notifier) {
+func assertNotifyFailures(t *testing.T, n Notifier) {
 	t.Helper()
 
 	if err := n.Notify(context.Background(), Delivery{WebhookURL: "://bad"}); err == nil {

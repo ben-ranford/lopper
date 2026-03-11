@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -88,5 +89,23 @@ func TestNewDefaultDispatcherAndMissingNotifierWarning(t *testing.T) {
 	}
 	if !strings.Contains(warnings[0], "notifier is not configured") {
 		t.Fatalf("expected missing-notifier warning, got %q", warnings[0])
+	}
+}
+
+func TestSanitizeErrorMessageVariants(t *testing.T) {
+	webhook := "https://hooks.slack.com/services/T000/B000/SECRET"
+	if got := sanitizeErrorMessage(nil, webhook); got != "request failed" {
+		t.Fatalf("expected nil error fallback, got %q", got)
+	}
+
+	rawErr := fmt.Errorf("delivery failed for %s", webhook)
+	if got := sanitizeErrorMessage(rawErr, ""); !strings.Contains(got, webhook) {
+		t.Fatalf("expected webhook to remain when source URL is empty, got %q", got)
+	}
+
+	encodedWebhook := url.QueryEscape(webhook)
+	encodedErr := fmt.Errorf("delivery failed for %s", encodedWebhook)
+	if got := sanitizeErrorMessage(encodedErr, webhook); strings.Contains(got, "SECRET") {
+		t.Fatalf("expected encoded webhook to be redacted, got %q", got)
 	}
 }

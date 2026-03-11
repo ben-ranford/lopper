@@ -1,10 +1,8 @@
 package notify
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -48,26 +46,7 @@ func (n *SlackNotifier) Notify(ctx context.Context, delivery Delivery) error {
 	if err != nil {
 		return err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, delivery.WebhookURL, bytes.NewReader(body))
-	if err != nil {
-		return errors.New("build slack webhook request")
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := n.Client.Do(req)
-	if err != nil {
-		return errors.New("send slack webhook request")
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("unexpected slack webhook response status: %d", resp.StatusCode)
-	}
-
-	return nil
+	return sendWebhookJSON(ctx, n.Client, delivery.WebhookURL, body, "build slack webhook request", "send slack webhook request", "unexpected slack webhook response status: %d")
 }
 
 func buildSlackPayload(delivery Delivery) ([]byte, error) {
