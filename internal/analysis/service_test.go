@@ -48,6 +48,9 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "mix.exs"), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [app: :demo, version: \"0.1.0\", deps: deps()]\n  defp deps, do: [{:jason, \"~> 1.4\"}]\nend\n")
 	writeFile(t, filepath.Join(repo, "mix.lock"), "%{\n  \"jason\": {:hex, :jason, \"1.4.1\", \"checksum\", [:mix], [], \"hexpm\", \"checksum\"}\n}\n")
 	writeFile(t, filepath.Join(repo, "lib", "demo.ex"), "defmodule Demo do\n  alias Jason\n  def run(v), do: Jason.decode!(v)\nend\n")
+	writeFile(t, filepath.Join(repo, "pubspec.yaml"), "name: demo\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(repo, "pubspec.lock"), "packages:\n  http:\n    dependency: \"direct main\"\n    description: {name: http}\n    source: hosted\n    version: \"1.0.0\"\n")
+	writeFile(t, filepath.Join(repo, "lib", "main.dart"), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -65,12 +68,12 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "ruby", "rust", "dotnet", "elixir"} {
+	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "ruby", "rust", "dotnet", "elixir", "dart"} {
 		if !slices.Contains(languages, expectedLanguage) {
 			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
 		}
 	}
-	if len(reportData.LanguageBreakdown) < 10 {
+	if len(reportData.LanguageBreakdown) < 11 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 	if reportData.Scope == nil || reportData.Scope.Mode != ScopeModePackage || len(reportData.Scope.Packages) == 0 {

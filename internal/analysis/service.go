@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/cpp"
+	"github.com/ben-ranford/lopper/internal/lang/dart"
 	"github.com/ben-ranford/lopper/internal/lang/dotnet"
 	"github.com/ben-ranford/lopper/internal/lang/elixir"
 	"github.com/ben-ranford/lopper/internal/lang/golang"
@@ -68,6 +69,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(swift.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(dart.NewAdapter())
 	}
 
 	return &Service{
