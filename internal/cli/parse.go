@@ -5,8 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
