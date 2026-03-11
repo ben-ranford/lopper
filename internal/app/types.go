@@ -2,6 +2,7 @@ package app
 
 import (
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -49,6 +50,7 @@ type AnalyseRequest struct {
 	ConfigPath         string
 	PolicySources      []string
 	Thresholds         thresholds.Values
+	Notifications      notify.Config
 }
 
 type TUIRequest struct {
@@ -86,6 +88,7 @@ func DefaultRequest() Request {
 			CacheEnabled:   true,
 			RuntimeProfile: "node-import",
 			Thresholds:     thresholds.Defaults(),
+			Notifications:  notify.DefaultConfig(),
 		},
 		TUI: TUIRequest{
 			Language: "auto",

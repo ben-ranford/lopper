@@ -161,6 +161,8 @@ func configExtension(location string) string {
 type rawConfig struct {
 	Policy rawPolicy `yaml:"policy" json:"policy"`
 	Scope  rawScope  `yaml:"scope" json:"scope"`
+	// Notifications are parsed by the notify package; keep this field so threshold parsing accepts shared config files.
+	Notifications map[string]any `yaml:"notifications" json:"notifications"`
 
 	Thresholds rawThresholds `yaml:"thresholds" json:"thresholds"`
 

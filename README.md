@@ -185,6 +185,7 @@ Precedence is `CLI > repo config > imported policy packs > defaults`.
 Tuning guide with strict/balanced/noise-reduction profiles:
 
 - `docs/threshold-tuning.md`
+- `docs/notifications.md`
 
 Launch TUI:
 

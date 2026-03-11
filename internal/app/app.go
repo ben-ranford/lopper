@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -28,6 +29,7 @@ type App struct {
 	Analyzer  analysis.Analyser
 	Formatter *report.Formatter
 	TUI       ui.TUI
+	Notify    *notify.Dispatcher
 }
 
 func New(out io.Writer, in io.Reader) *App {
@@ -38,6 +40,7 @@ func New(out io.Writer, in io.Reader) *App {
 		Analyzer:  analyzer,
 		Formatter: formatter,
 		TUI:       ui.NewSummary(out, in, analyzer, formatter),
+		Notify:    notify.NewDefaultDispatcher(),
 	}
 }
 
@@ -140,21 +143,27 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 
 	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)
 	if err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateUncertaintyThreshold(reportData, req.Analyse.Thresholds.MaxUncertainImportCount); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateDeniedLicenses(reportData, req.Analyse.Thresholds.LicenseFailOnDeny); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	reportData, err = a.saveBaselineIfNeeded(reportData, req.RepoPath, req.Analyse, time.Now())
 	if err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
+	a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, nil))
 	formatted, err := a.Formatter.Format(reportData, req.Analyse.Format)
 	if err != nil {
 		return "", err
@@ -331,4 +340,30 @@ func validateDeniedLicenses(reportData report.Report, failOnDeny bool) error {
 		return ErrDeniedLicenses
 	}
 	return nil
+}
+
+func (a *App) appendNotificationWarnings(ctx context.Context, cfg notify.Config, reportData *report.Report, outcome notify.Outcome) {
+	if reportData == nil {
+		return
+	}
+	if !cfg.HasTargets() {
+		return
+	}
+	notifyWarnings := a.Notify.Dispatch(ctx, cfg, *reportData, outcome)
+	reportData.Warnings = append(reportData.Warnings, notifyWarnings...)
+}
+
+func buildNotificationOutcome(reportData report.Report, runErr error) notify.Outcome {
+	outcome := notify.Outcome{
+		WasteIncreasePercent: reportData.WasteIncreasePercent,
+	}
+	if runErr == nil {
+		return outcome
+	}
+
+	if errors.Is(runErr, ErrFailOnIncrease) || errors.Is(runErr, ErrDeniedLicenses) || errors.Is(runErr, ErrUncertaintyThresholdExceeded) {
+		outcome.Breach = true
+	}
+
+	return outcome
 }

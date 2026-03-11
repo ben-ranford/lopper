@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -22,6 +23,7 @@ const (
 	missingBaselineFileName = "missing.json"
 	saveBaselineStoreErr    = "--save-baseline requires --baseline-store"
 	baselineStorePath       = ".artifacts/baselines"
+	executeAnalyseErrFmt    = "execute analyse: %v"
 )
 
 type fakeAnalyzer struct {
@@ -44,6 +46,18 @@ type fakeTUI struct {
 	snapshotCalled bool
 	lastOptions    ui.Options
 	lastSnapshot   string
+}
+
+type fakeNotifier struct {
+	lastDelivery notify.Delivery
+	called       bool
+	err          error
+}
+
+func (f *fakeNotifier) Notify(_ context.Context, delivery notify.Delivery) error {
+	f.called = true
+	f.lastDelivery = delivery
+	return f.err
 }
 
 func (f *fakeTUI) Start(_ context.Context, opts ui.Options) error {
@@ -122,7 +136,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {
-		t.Fatalf("execute analyse: %v", err)
+		t.Fatalf(executeAnalyseErrFmt, err)
 	}
 	assertContainsAll(t, output, []string{`"effectiveThresholds"`, `"effectivePolicy"`, `"sources": [`, `"cli"`, `"lowConfidenceWarningPercent": 33`})
 	assertForwardedAnalyseRequest(t, analyzer.lastReq)
@@ -161,6 +175,56 @@ func TestExecuteAnalyseFailOnIncreaseThreshold(t *testing.T) {
 	}
 	if err != ErrFailOnIncrease {
 		t.Fatalf("expected ErrFailOnIncrease, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseDispatchesNotifications(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:      ".",
+			Dependencies:  []report.DependencyReport{{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+			Warnings:      []string{"existing warning"},
+			GeneratedAt:   time.Now().UTC(),
+			SchemaVersion: report.SchemaVersion,
+		},
+	}
+	slackNotifier := &fakeNotifier{err: errors.New("slack unreachable")}
+	application := &App{
+		Analyzer:  analyzer,
+		Formatter: report.NewFormatter(),
+		Notify: notify.NewDispatcher(map[notify.Channel]notify.Notifier{
+			notify.ChannelSlack: slackNotifier,
+		}),
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Notifications = notify.Config{
+		Slack: notify.ChannelConfig{
+			WebhookURL: "https://hooks.slack.com/services/A/B/SECRET",
+			Trigger:    notify.TriggerAlways,
+		},
+	}
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf(executeAnalyseErrFmt, err)
+	}
+	if !slackNotifier.called {
+		t.Fatalf("expected notification dispatch call")
+	}
+	if slackNotifier.lastDelivery.Channel != notify.ChannelSlack {
+		t.Fatalf("expected slack delivery channel, got %q", slackNotifier.lastDelivery.Channel)
+	}
+	assertContainsAll(t, output, []string{
+		"existing warning",
+		"notification delivery failed for slack",
+		"https://hooks.slack.com",
+	})
+	if strings.Contains(output, "SECRET") {
+		t.Fatalf("expected redacted webhook warning, got %q", output)
 	}
 }
 
@@ -257,6 +321,17 @@ func TestValidateDeniedLicenses(t *testing.T) {
 	}
 }
 
+func TestValidateDeniedLicensesNoDeniedReturnsNil(t *testing.T) {
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "a", License: &report.DependencyLicense{SPDX: "MIT", Denied: false}},
+		},
+	}
+	if err := validateDeniedLicenses(reportData, true); err != nil {
+		t.Fatalf("expected no denied license error, got %v", err)
+	}
+}
+
 func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
 	const deniedSPDX = "GPL-3.0-ONLY"
 
@@ -294,6 +369,62 @@ func TestValidateUncertaintyThreshold(t *testing.T) {
 	}
 	if err := validateUncertaintyThreshold(reportData, 1); !errors.Is(err, ErrUncertaintyThresholdExceeded) {
 		t.Fatalf("expected uncertainty threshold error, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseUncertaintyThresholdError(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:     ".",
+			Dependencies: []report.DependencyReport{{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+			UsageUncertainty: &report.UsageUncertainty{
+				UncertainImportUses: 2,
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Thresholds.MaxUncertainImportCount = 1
+
+	output, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrUncertaintyThresholdExceeded) {
+		t.Fatalf("expected uncertainty threshold error, got %v", err)
+	}
+	if !strings.Contains(output, `"effectiveThresholds"`) {
+		t.Fatalf("expected formatted output on threshold failure, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseDeniedLicensesError(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{
+					Name:    "copyleft",
+					License: &report.DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true},
+				},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Thresholds.LicenseFailOnDeny = true
+
+	output, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrDeniedLicenses) {
+		t.Fatalf("expected denied licenses error, got %v", err)
+	}
+	if !strings.Contains(output, `"effectivePolicy"`) {
+		t.Fatalf("expected formatted output on denied-license failure, got %q", output)
 	}
 }
 
@@ -429,6 +560,19 @@ func TestSaveBaselineIfNeededRequiresStorePath(t *testing.T) {
 	}
 }
 
+func TestSaveBaselineIfNeededResolveSaveBaselineKeyError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	nonRepo := filepath.Join(t.TempDir(), "nonexistent", "repo")
+	saveReq := AnalyseRequest{
+		SaveBaseline:      true,
+		BaselineStorePath: t.TempDir(),
+	}
+	_, err := application.saveBaselineIfNeeded(report.Report{}, nonRepo, saveReq, testTime())
+	if err == nil || !strings.Contains(err.Error(), "unable to resolve git commit") {
+		t.Fatalf("expected save-baseline key resolution error, got %v", err)
+	}
+}
+
 func TestResolveSaveBaselineKeyBranches(t *testing.T) {
 	if key, err := resolveSaveBaselineKey(".", AnalyseRequest{BaselineLabel: "nightly"}); err != nil || key != "label:nightly" {
 		t.Fatalf("expected label-based key, got key=%q err=%v", key, err)
@@ -527,7 +671,7 @@ func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
 	}
 
 	if _, err := application.Execute(context.Background(), req); err != nil {
-		t.Fatalf("execute analyse: %v", err)
+		t.Fatalf(executeAnalyseErrFmt, err)
 	}
 	if analyzer.lastReq.MinUsagePercentForRecommendations == nil || *analyzer.lastReq.MinUsagePercentForRecommendations != 70 {
 		t.Fatalf("expected min-usage threshold to be forwarded for rust analysis, got %#v", analyzer.lastReq.MinUsagePercentForRecommendations)
@@ -594,6 +738,45 @@ func TestPrepareRuntimeTraceFailureKeepsExplicitTracePath(t *testing.T) {
 	if tracePath != explicitPath {
 		t.Fatalf("expected explicit trace path to be retained on capture failure, got %q", tracePath)
 	}
+}
+
+func TestPrepareRuntimeTraceMissingWorkingDirectoryWarning(t *testing.T) {
+	orphanedCWD := t.TempDir()
+	t.Chdir(orphanedCWD)
+	if err := os.RemoveAll(orphanedCWD); err != nil {
+		t.Fatalf("remove orphaned cwd: %v", err)
+	}
+
+	explicitPath := filepath.Join(t.TempDir(), "trace.ndjson")
+	req := DefaultRequest()
+	req.RepoPath = "."
+	req.Analyse.RuntimeTracePath = explicitPath
+	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
+
+	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
+	if len(warnings) == 0 || len(warnings) > 2 {
+		t.Fatalf("expected one or two warnings, got %#v", warnings)
+	}
+	if len(warnings) == 2 && !strings.Contains(warnings[0], "runtime trace setup: using raw repo path due to normalization error:") {
+		t.Fatalf("expected normalization warning first when two warnings are returned, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[len(warnings)-1], "runtime trace command failed") {
+		t.Fatalf("expected runtime warning last, got %#v", warnings)
+	}
+	if tracePath != explicitPath {
+		t.Fatalf("expected explicit trace path to be retained, got %q", tracePath)
+	}
+}
+
+func TestAppendNotificationWarningsNilReportData(t *testing.T) {
+	application := &App{Notify: notify.NewDefaultDispatcher()}
+	cfg := notify.Config{
+		Slack: notify.ChannelConfig{
+			WebhookURL: "https://hooks.slack.com/services/A/B/SECRET",
+			Trigger:    notify.TriggerAlways,
+		},
+	}
+	application.appendNotificationWarnings(context.Background(), cfg, nil, notify.Outcome{})
 }
 
 func TestPrepareRuntimeTraceWithoutCommandUsesProvidedTracePath(t *testing.T) {
