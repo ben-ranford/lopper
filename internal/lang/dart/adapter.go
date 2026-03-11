@@ -535,19 +535,38 @@ func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManif
 		root = repoPath
 	}
 
+	scanner := packageRootScanner{
+		repoPath:     repoPath,
+		root:         root,
+		depLookup:    manifest.Dependencies,
+		allRoots:     allRoots,
+		scannedFiles: scannedFiles,
+		fileCount:    fileCount,
+		result:       result,
+	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		return walkPackageEntry(ctx, root, repoPath, path, entry, walkErr, manifest.Dependencies, allRoots, scannedFiles, fileCount, result)
+		return walkPackageEntry(ctx, scanner, path, entry, walkErr)
 	})
 }
 
-func walkPackageEntry(ctx context.Context, root, repoPath, path string, entry fs.DirEntry, walkErr error, depLookup map[string]dependencyInfo, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+type packageRootScanner struct {
+	repoPath     string
+	root         string
+	depLookup    map[string]dependencyInfo
+	allRoots     map[string]struct{}
+	scannedFiles map[string]struct{}
+	fileCount    *int
+	result       *scanResult
+}
+
+func walkPackageEntry(ctx context.Context, scanner packageRootScanner, path string, entry fs.DirEntry, walkErr error) error {
 	if err := walkContextErr(ctx, walkErr); err != nil {
 		return err
 	}
 	if entry.IsDir() {
-		return scanPackageDir(root, path, entry.Name(), allRoots)
+		return scanPackageDir(scanner.root, path, entry.Name(), scanner.allRoots)
 	}
-	return scanPackageFileEntry(repoPath, path, depLookup, scannedFiles, fileCount, result)
+	return scanPackageFileEntry(scanner.repoPath, path, scanner.depLookup, scanner.scannedFiles, scanner.fileCount, scanner.result)
 }
 
 func walkContextErr(ctx context.Context, walkErr error) error {
