@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -136,6 +137,47 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeCommandPreservesParsedArgs(t *testing.T) {
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
+
+	testCases := []struct {
+		name    string
+		command string
+		want    []string
+	}{
+		{
+			name:    "quoted args",
+			command: `node -e "console.log('hello world')"`,
+			want:    []string{"node", "-e", "console.log('hello world')"},
+		},
+		{
+			name:    "single quoted args",
+			command: `node -e 'console.log("hello")'`,
+			want:    []string{"node", "-e", `console.log("hello")`},
+		},
+		{
+			name:    "escaped whitespace",
+			command: `make test\ target`,
+			want:    []string{"make", "test target"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := buildRuntimeCommand(context.Background(), tc.command)
+			if err != nil {
+				t.Fatalf("build runtime command: %v", err)
+			}
+			if !slices.Equal(cmd.Args[1:], tc.want[1:]) {
+				t.Fatalf("expected args %q, got %q", tc.want[1:], cmd.Args[1:])
+			}
+			if got := filepath.Base(cmd.Path); got != tc.want[0] {
+				t.Fatalf("expected executable %q, got %q", tc.want[0], got)
+			}
+		})
+	}
+}
+
 func TestTrustedSearchDirs(t *testing.T) {
 	secureA := t.TempDir()
 	secureB := t.TempDir()
@@ -181,6 +223,37 @@ func TestRuntimeSearchDirsDefault(t *testing.T) {
 func TestBuildRuntimeCommandRequiresInput(t *testing.T) {
 	if _, err := buildRuntimeCommand(context.Background(), " "); err == nil {
 		t.Fatalf("expected empty command error")
+	}
+}
+
+func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
+	testCases := []struct {
+		name    string
+		command string
+		wantErr string
+	}{
+		{
+			name:    "unfinished escape",
+			command: `npm test\`,
+			wantErr: "unfinished escape sequence",
+		},
+		{
+			name:    "unterminated quote",
+			command: `node -e "console.log('hello world')`,
+			wantErr: "unterminated quote",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildRuntimeCommand(context.Background(), tc.command)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 

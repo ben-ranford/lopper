@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
@@ -78,7 +79,10 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 }
 
 func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error) {
-	fields := strings.Fields(command)
+	fields, err := parseRuntimeCommand(command)
+	if err != nil {
+		return nil, err
+	}
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("runtime test command is required")
 	}
@@ -97,6 +101,82 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	cmd.Path = executablePath
 	cmd.Args = append([]string{executablePath}, args...)
 	return cmd, nil
+}
+
+type runtimeCommandParser struct {
+	fields        []string
+	current       strings.Builder
+	inSingleQuote bool
+	inDoubleQuote bool
+	escaped       bool
+	sawToken      bool
+}
+
+func parseRuntimeCommand(command string) ([]string, error) {
+	var parser runtimeCommandParser
+	for _, ch := range command {
+		parser.consume(ch)
+	}
+
+	if parser.escaped {
+		return nil, fmt.Errorf("runtime test command ends with an unfinished escape sequence")
+	}
+	if parser.inSingleQuote || parser.inDoubleQuote {
+		return nil, fmt.Errorf("runtime test command contains an unterminated quote")
+	}
+	parser.flush()
+
+	return parser.fields, nil
+}
+
+func (p *runtimeCommandParser) consume(ch rune) {
+	switch {
+	case p.escaped:
+		p.write(ch)
+		p.escaped = false
+	case ch == '\\':
+		if p.inSingleQuote {
+			p.write(ch)
+			return
+		}
+		p.escaped = true
+		p.sawToken = true
+	case ch == '\'':
+		p.toggleQuote(&p.inSingleQuote, p.inDoubleQuote, ch)
+	case ch == '"':
+		p.toggleQuote(&p.inDoubleQuote, p.inSingleQuote, ch)
+	case unicode.IsSpace(ch):
+		if p.inSingleQuote || p.inDoubleQuote {
+			p.write(ch)
+			return
+		}
+		p.flush()
+	default:
+		p.write(ch)
+	}
+}
+
+func (p *runtimeCommandParser) toggleQuote(active *bool, otherActive bool, ch rune) {
+	if otherActive {
+		p.write(ch)
+		return
+	}
+	*active = !*active
+	p.sawToken = true
+}
+
+func (p *runtimeCommandParser) write(ch rune) {
+	p.current.WriteRune(ch)
+	p.sawToken = true
+}
+
+func (p *runtimeCommandParser) flush() {
+	if p.current.Len() == 0 && !p.sawToken {
+		return
+	}
+	p.fields = append(p.fields, p.current.String())
+	p.current.Reset()
+	p.sawToken = false
 }
 
 func resolveRuntimeExecutablePath(executable string, searchDirs []string) (string, error) {
