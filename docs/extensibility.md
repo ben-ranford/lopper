@@ -14,6 +14,7 @@ The core contracts are in `internal/language`.
 - `rust` (Rust/Cargo)
 - `dotnet` (C#/.NET)
 - `elixir` (Elixir/Mix)
+- `dart` (Dart/Flutter)
 
 ## Adapter contract
 
