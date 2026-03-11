@@ -61,15 +61,9 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 	if len(dep.RiskCues) < 3 {
 		t.Fatalf("expected wildcard/ambiguous/undeclared risk cues, got %#v", dep.RiskCues)
 	}
-	recs := buildRecommendations(dep)
-	codes := make([]string, 0, len(recs))
-	for _, rec := range recs {
-		codes = append(codes, rec.Code)
-	}
+	codes := recommendationCodes(buildRecommendations(dep))
 	for _, want := range []string{"avoid-wildcard-imports", "review-ambiguous-gradle-mappings", "declare-missing-gradle-dependency"} {
-		if !strings.Contains(strings.Join(codes, ","), want) {
-			t.Fatalf("expected recommendation %q in %#v", want, codes)
-		}
+		requireContains(t, strings.Join(codes, ","), want, "recommendation codes")
 	}
 }
 
@@ -141,10 +135,10 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 	var mainEntry fs.DirEntry
 	var gradleDirEntry fs.DirEntry
 	for _, entry := range entries {
-		if entry.Name() == "Main.kt" {
+		switch entry.Name() {
+		case "Main.kt":
 			mainEntry = entry
-		}
-		if entry.Name() == ".gradle" {
+		case ".gradle":
 			gradleDirEntry = entry
 		}
 	}
@@ -166,35 +160,69 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 }
 
 func TestModuleRootAndPathHelpers(t *testing.T) {
-	if got := androidManifestModuleRoot(filepath.FromSlash("src/main/AndroidManifest.xml")); got != "" {
-		t.Fatalf("expected empty root for src/main manifest at repo root, got %q", got)
-	}
-	if got := androidManifestModuleRoot(filepath.FromSlash("app/src/main/AndroidManifest.xml")); got != filepath.FromSlash("app") {
-		t.Fatalf("expected app module root, got %q", got)
-	}
-	if got := androidManifestModuleRoot(filepath.FromSlash("app/src/debug/AndroidManifest.xml")); got != "" {
-		t.Fatalf("expected empty root for non-main manifest, got %q", got)
+	cases := []struct {
+		name string
+		path string
+		want string
+		fn   func(string) string
+	}{
+		{
+			name: "repo-level-manifest",
+			path: filepath.FromSlash("src/main/AndroidManifest.xml"),
+			fn:   androidManifestModuleRoot,
+		},
+		{
+			name: "module-manifest",
+			path: filepath.FromSlash("app/src/main/AndroidManifest.xml"),
+			want: filepath.FromSlash("app"),
+			fn:   androidManifestModuleRoot,
+		},
+		{
+			name: "non-main-manifest",
+			path: filepath.FromSlash("app/src/debug/AndroidManifest.xml"),
+			fn:   androidManifestModuleRoot,
+		},
+		{
+			name: "repo-level-source",
+			path: filepath.FromSlash("src/main/kotlin/Main.kt"),
+			fn:   sourceLayoutModuleRoot,
+		},
+		{
+			name: "module-java-source",
+			path: filepath.FromSlash("app/src/main/java/Main.java"),
+			want: filepath.FromSlash("app"),
+			fn:   sourceLayoutModuleRoot,
+		},
+		{
+			name: "non-source-layout",
+			path: filepath.FromSlash("app/other/Main.kt"),
+			fn:   sourceLayoutModuleRoot,
+		},
 	}
 
-	if got := sourceLayoutModuleRoot(filepath.FromSlash("src/main/kotlin/Main.kt")); got != "" {
-		t.Fatalf("expected empty root for src/main at repo root, got %q", got)
-	}
-	if got := sourceLayoutModuleRoot(filepath.FromSlash("app/src/main/java/Main.java")); got != filepath.FromSlash("app") {
-		t.Fatalf("expected app module root for java source, got %q", got)
-	}
-	if got := sourceLayoutModuleRoot(filepath.FromSlash("app/other/Main.kt")); got != "" {
-		t.Fatalf("expected empty root when no src layout exists, got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.fn(tc.path); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
 	}
 
 	parent := filepath.Join(t.TempDir(), "repo")
-	if !isSubPath(parent, filepath.Join(parent, "app")) {
-		t.Fatalf("expected nested path to be a subpath")
-	}
-	if isSubPath(parent, parent) {
-		t.Fatalf("did not expect equal paths to be treated as subpath")
-	}
-	if isSubPath(parent, filepath.Dir(parent)) {
-		t.Fatalf("did not expect parent dir to be a subpath")
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "nested", path: filepath.Join(parent, "app"), want: true},
+		{name: "equal", path: parent},
+		{name: "parent-dir", path: filepath.Dir(parent)},
+	} {
+		t.Run("subpath-"+tc.name, func(t *testing.T) {
+			if got := isSubPath(parent, tc.path); got != tc.want {
+				t.Fatalf("expected isSubPath(%q, %q)=%v, got %v", parent, tc.path, tc.want, got)
+			}
+		})
 	}
 }
 
@@ -251,13 +279,8 @@ func TestAnalyseWarningsAndScanBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
 	}
-	warnings := strings.Join(result.Warnings, "\n")
-	if !strings.Contains(warnings, "no Kotlin/Android dependencies discovered from Gradle manifests") {
-		t.Fatalf("expected no-dependency warning, got %#v", result.Warnings)
-	}
-	if !strings.Contains(warnings, "gradle.lockfile not found; dependency versions may be incomplete") {
-		t.Fatalf("expected missing-lockfile warning, got %#v", result.Warnings)
-	}
+	requireWarningContains(t, result.Warnings, "no Kotlin/Android dependencies discovered from Gradle manifests")
+	requireWarningContains(t, result.Warnings, "gradle.lockfile not found; dependency versions may be incomplete")
 
 	invalidPath := string([]byte{0})
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: invalidPath, TopN: 1}); err == nil {
@@ -312,14 +335,9 @@ func TestLookupParserAndBuildFileEdgeBranches(t *testing.T) {
 	}
 
 	dep := report.DependencyReport{UnusedImports: []report.ImportUse{{Name: "*", Module: "dep"}}}
-	recommendations := buildRecommendations(dep)
-	codes := make([]string, 0, len(recommendations))
-	for _, recommendation := range recommendations {
-		codes = append(codes, recommendation.Code)
-	}
-	joined := strings.Join(codes, ",")
+	joined := strings.Join(recommendationCodes(buildRecommendations(dep)), ",")
 	if !strings.Contains(joined, "remove-unused-dependency") || !strings.Contains(joined, "avoid-wildcard-imports") {
-		t.Fatalf("expected unused/wildcard recommendations, got %#v", codes)
+		t.Fatalf("expected unused/wildcard recommendations, got %q", joined)
 	}
 
 	weights := report.RemovalCandidateWeights{Usage: 2, Impact: 3, Confidence: 5}
@@ -465,19 +483,14 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 		"d.mod": {"d", "e"},
 	}
 	scanState.appendInferenceWarnings()
-	warnings := strings.Join(scanState.Warnings, "\n")
-	if !strings.Contains(warnings, "examples:") {
-		t.Fatalf("expected formatted inference warning examples, got %#v", scanState.Warnings)
-	}
+	requireWarningContains(t, scanState.Warnings, "examples:")
 
 	testutil.MustWriteFile(t, filepath.Join(repo, ".git", "src", "Ignored.kt"), "package ignored\n")
 	scanResult, err := scanRepo(context.Background(), repo, dependencyLookups{})
 	if err != nil {
 		t.Fatalf("scan repo with skipped dirs: %v", err)
 	}
-	if !strings.Contains(strings.Join(scanResult.Warnings, "\n"), "no Kotlin/Java source files found for analysis") {
-		t.Fatalf("expected no-source warning when only skipped directories contain sources, got %#v", scanResult.Warnings)
-	}
+	requireWarningContains(t, scanResult.Warnings, "no Kotlin/Java source files found for analysis")
 
 	if err := scanKotlinAndroidSourceFile("", filepath.Join(repo, "missing.kt"), dependencyLookups{}, &scanState); err == nil {
 		t.Fatalf("expected read error for missing file")

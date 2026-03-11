@@ -5,11 +5,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
-	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestAdapterMetadataAndDetect(t *testing.T) {
@@ -25,95 +23,47 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "build.gradle"), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "AndroidManifest.xml"), "<manifest package=\"com.example\"/>\n")
-
-	ok, err := adapter.Detect(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect: %v", err)
-	}
-	if !ok {
-		t.Fatalf("expected detect=true")
-	}
-
-	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
-	}
-	if !detection.Matched {
-		t.Fatalf("expected matched detection")
-	}
-	if detection.Confidence <= 0 {
-		t.Fatalf("expected confidence > 0, got %d", detection.Confidence)
-	}
-	if !slices.Contains(detection.Roots, filepath.Join(repo, "app")) {
-		t.Fatalf("expected app module root in detection roots, got %#v", detection.Roots)
-	}
+	appRoot := writeAppBuildAndManifest(t, repo, testCoreKtxBuild)
+	detection := requirePositiveDetection(t, adapter, repo)
+	requireRootsContain(t, detection.Roots, appRoot)
 }
 
-func TestDetectWithConfidencePrunesRepoRootForSettingsOnlyWorkspace(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, settingsGradleName), "rootProject.name='demo'\ninclude ':app'\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", buildGradleName), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "kotlin", "Main.kt"), "package com.example\n")
+func TestDetectWithConfidenceRootSelection(t *testing.T) {
+	t.Parallel()
 
-	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
+	cases := []struct {
+		name         string
+		rootBuild    string
+		wantRepoRoot bool
+	}{
+		{name: "settings-only-workspace"},
+		{name: "aggregator-root-build", rootBuild: testAggregatorRoot},
+		{name: "dependency-declaring-root-build", rootBuild: testCoreKtxBuild, wantRepoRoot: true},
 	}
-	if !slices.Contains(detection.Roots, filepath.Join(repo, "app")) {
-		t.Fatalf("expected app module root in detection roots, got %#v", detection.Roots)
-	}
-	if slices.Contains(detection.Roots, repo) {
-		t.Fatalf("did not expect repo root when only settings.gradle exists at root, got %#v", detection.Roots)
-	}
-}
 
-func TestDetectWithConfidencePrunesRepoRootForAggregatorBuildGradle(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, settingsGradleName), "rootProject.name='demo'\ninclude ':app'\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), `
-plugins {
-  id 'com.android.application' version '8.5.0' apply false
-}
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", buildGradleName), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "kotlin", "Main.kt"), "package com.example\n")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			appRoot := writeWorkspaceApp(t, repo, tc.rootBuild, testCoreKtxBuild)
 
-	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
-	}
-	if !slices.Contains(detection.Roots, filepath.Join(repo, "app")) {
-		t.Fatalf("expected app module root in detection roots, got %#v", detection.Roots)
-	}
-	if slices.Contains(detection.Roots, repo) {
-		t.Fatalf("did not expect repo root for aggregator root build.gradle, got %#v", detection.Roots)
-	}
-}
-
-func TestDetectWithConfidenceRetainsRepoRootWhenRootBuildGradleExists(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, settingsGradleName), "rootProject.name='demo'\ninclude ':app'\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", buildGradleName), "dependencies { implementation 'com.squareup.okhttp3:okhttp:4.12.0' }\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "kotlin", "Main.kt"), "package com.example\n")
-
-	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
-	}
-	if !slices.Contains(detection.Roots, repo) {
-		t.Fatalf("expected repo root when root build.gradle exists, got %#v", detection.Roots)
-	}
-	if !slices.Contains(detection.Roots, filepath.Join(repo, "app")) {
-		t.Fatalf("expected app root in detection roots, got %#v", detection.Roots)
+			detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+			if err != nil {
+				t.Fatalf("detect with confidence: %v", err)
+			}
+			requireRootsContain(t, detection.Roots, appRoot)
+			if tc.wantRepoRoot {
+				requireRootsContain(t, detection.Roots, repo)
+				return
+			}
+			requireRootExcluded(t, detection.Roots, repo)
+		})
 	}
 }
 
 func TestAdapterAnalyseDependencyWithKotlinAndJavaImports(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "build.gradle.kts"), `
+	writeRepoFiles(t, repo, map[string]string{
+		filepath.Join("app", "build.gradle.kts"): `
 plugins {
   id("com.android.application")
 }
@@ -122,9 +72,9 @@ dependencies {
   implementation("androidx.core:core-ktx:1.13.1")
   implementation(group = "com.squareup.okhttp3", name = "okhttp", version = "4.12.0")
 }
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "AndroidManifest.xml"), "<manifest package=\"com.example\"/>\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "kotlin", "Main.kt"), `
+`,
+		filepath.Join("app", "src", "main", "AndroidManifest.xml"): testAppManifest,
+		filepath.Join("app", "src", "main", "kotlin", "Main.kt"): `
 package com.example
 
 import androidx.core.content.ContextCompat
@@ -134,8 +84,8 @@ fun run() {
   OkHttpClient()
   ContextCompat.checkSelfPermission(todo(), "x")
 }
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", "src", "main", "java", "Main.java"), `
+`,
+		filepath.Join("app", "src", "main", "java", "Main.java"): `
 package com.example;
 
 import okhttp3.OkHttpClient;
@@ -145,15 +95,13 @@ class Main {
     new OkHttpClient();
   }
 }
-`)
+`,
+	})
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+	reportData := mustAnalyse(t, language.Request{
 		RepoPath:   repo,
 		Dependency: "okhttp",
 	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
@@ -164,36 +112,33 @@ class Main {
 	if dep.UsedExportsCount == 0 {
 		t.Fatalf("expected used exports > 0")
 	}
-	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "gradle.lockfile not found") == false {
-		t.Fatalf("expected lockfile warning when lockfile is absent, got %#v", reportData.Warnings)
-	}
+	requireWarningContains(t, reportData.Warnings, "gradle.lockfile not found")
 }
 
 func TestAdapterAnalyseTopNIncludesDeclaredDependencies(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), `
+	writeRepoFiles(t, repo, map[string]string{
+		"build.gradle": `
 dependencies {
   implementation "androidx.core:core-ktx:1.13.1"
   implementation "com.squareup.okhttp3:okhttp:4.12.0"
 }
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, gradleLockfileName), `
+`,
+		gradleLockfileName: `
 androidx.core:core-ktx:1.13.1=compileClasspath,runtimeClasspath
 com.squareup.okhttp3:okhttp:4.12.0=compileClasspath,runtimeClasspath
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", "Main.kt"), `
+`,
+		filepath.Join("src", "main", "kotlin", "Main.kt"): `
 import okhttp3.OkHttpClient
 
 fun run() { OkHttpClient() }
-`)
+`,
+	})
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+	reportData := mustAnalyse(t, language.Request{
 		RepoPath: repo,
 		TopN:     10,
 	})
-	if err != nil {
-		t.Fatalf("analyse topN: %v", err)
-	}
 	if len(reportData.Dependencies) == 0 {
 		t.Fatalf("expected dependencies in topN report")
 	}
@@ -211,13 +156,14 @@ fun run() { OkHttpClient() }
 
 func TestAdapterAnalyseStableDependencyOrdering(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), `
+	writeRepoFiles(t, repo, map[string]string{
+		"build.gradle": `
 dependencies {
   implementation "com.squareup.okhttp3:okhttp:4.12.0"
   implementation "androidx.core:core-ktx:1.13.1"
 }
-`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", "Main.kt"), `
+`,
+		filepath.Join("src", "main", "kotlin", "Main.kt"): `
 import androidx.core.content.ContextCompat
 import okhttp3.OkHttpClient as Client
 
@@ -225,17 +171,12 @@ fun run() {
   Client()
   ContextCompat.checkSelfPermission(todo(), "x")
 }
-`)
+`,
+	})
 
-	adapter := NewAdapter()
-	first, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse first pass: %v", err)
-	}
-	second, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse second pass: %v", err)
-	}
+	req := language.Request{RepoPath: repo, TopN: 10}
+	first := mustAnalyse(t, req)
+	second := mustAnalyse(t, req)
 	if !reflect.DeepEqual(first.Dependencies, second.Dependencies) {
 		t.Fatalf("expected stable dependency ordering across runs")
 	}
@@ -288,8 +229,9 @@ dependencies {
   implementation("org.sample.alpha:alpha-runtime:1.0.0")
 }
 `
-	testutil.MustWriteFile(t, filepath.Join(repo, "build.gradle"), manifest)
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", "Main.kt"), `
+	writeRepoFiles(t, repo, map[string]string{
+		"build.gradle": manifest,
+		filepath.Join("src", "main", "kotlin", "Main.kt"): `
 import alpha.client.Widget
 import foo.bar.Baz
 
@@ -297,7 +239,8 @@ fun run() {
   Widget()
   Baz()
 }
-`)
+`,
+	})
 	parsedInline := parseGradleDependencyContent(manifest)
 	if len(parsedInline) != 2 {
 		t.Fatalf("expected two inline parsed gradle descriptors, got %#v", parsedInline)
@@ -311,18 +254,12 @@ fun run() {
 		t.Fatalf("expected alpha ambiguity in lookup map, got %#v", lookups.Ambiguous)
 	}
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "conservatively attributed") {
-		t.Fatalf("expected conservative fallback warning, got %#v", reportData.Warnings)
-	}
-	if !strings.Contains(warnings, "undeclared dependencies") {
-		t.Fatalf("expected undeclared dependency warning, got %#v", reportData.Warnings)
-	}
-	if !strings.Contains(warnings, "matched multiple Gradle dependencies") {
-		t.Fatalf("expected ambiguous mapping warning, got %#v", reportData.Warnings)
+	reportData := mustAnalyse(t, language.Request{RepoPath: repo, TopN: 10})
+	for _, want := range []string{
+		"conservatively attributed",
+		"undeclared dependencies",
+		"matched multiple Gradle dependencies",
+	} {
+		requireWarningContains(t, reportData.Warnings, want)
 	}
 }
