@@ -151,6 +151,11 @@ func TestBuildRuntimeCommandPreservesParsedArgs(t *testing.T) {
 			want:    []string{"node", "-e", "console.log('hello world')"},
 		},
 		{
+			name:    "single quoted args",
+			command: `node -e 'console.log("hello")'`,
+			want:    []string{"node", "-e", `console.log("hello")`},
+		},
+		{
 			name:    "escaped whitespace",
 			command: `make test\ target`,
 			want:    []string{"make", "test target"},

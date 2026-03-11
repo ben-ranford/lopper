@@ -103,75 +103,80 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	return cmd, nil
 }
 
+type runtimeCommandParser struct {
+	fields        []string
+	current       strings.Builder
+	inSingleQuote bool
+	inDoubleQuote bool
+	escaped       bool
+	sawToken      bool
+}
+
 func parseRuntimeCommand(command string) ([]string, error) {
-	var fields []string
-	var current strings.Builder
-	var inSingleQuote bool
-	var inDoubleQuote bool
-	var escaped bool
-	var sawToken bool
-
-	flush := func() {
-		if current.Len() == 0 && !sawToken {
-			return
-		}
-		fields = append(fields, current.String())
-		current.Reset()
-		sawToken = false
-	}
-
+	var parser runtimeCommandParser
 	for _, ch := range command {
-		switch {
-		case escaped:
-			current.WriteRune(ch)
-			sawToken = true
-			escaped = false
-		case ch == '\\':
-			if inSingleQuote {
-				current.WriteRune(ch)
-				sawToken = true
-				continue
-			}
-			escaped = true
-			sawToken = true
-		case ch == '\'':
-			if inDoubleQuote {
-				current.WriteRune(ch)
-				sawToken = true
-				continue
-			}
-			inSingleQuote = !inSingleQuote
-			sawToken = true
-		case ch == '"':
-			if inSingleQuote {
-				current.WriteRune(ch)
-				sawToken = true
-				continue
-			}
-			inDoubleQuote = !inDoubleQuote
-			sawToken = true
-		case unicode.IsSpace(ch):
-			if inSingleQuote || inDoubleQuote {
-				current.WriteRune(ch)
-				sawToken = true
-				continue
-			}
-			flush()
-		default:
-			current.WriteRune(ch)
-			sawToken = true
-		}
+		parser.consume(ch)
 	}
 
-	if escaped {
+	if parser.escaped {
 		return nil, fmt.Errorf("runtime test command ends with an unfinished escape sequence")
 	}
-	if inSingleQuote || inDoubleQuote {
+	if parser.inSingleQuote || parser.inDoubleQuote {
 		return nil, fmt.Errorf("runtime test command contains an unterminated quote")
 	}
-	flush()
+	parser.flush()
 
-	return fields, nil
+	return parser.fields, nil
+}
+
+func (p *runtimeCommandParser) consume(ch rune) {
+	switch {
+	case p.escaped:
+		p.write(ch)
+		p.escaped = false
+	case ch == '\\':
+		if p.inSingleQuote {
+			p.write(ch)
+			return
+		}
+		p.escaped = true
+		p.sawToken = true
+	case ch == '\'':
+		p.toggleQuote(&p.inSingleQuote, p.inDoubleQuote, ch)
+	case ch == '"':
+		p.toggleQuote(&p.inDoubleQuote, p.inSingleQuote, ch)
+	case unicode.IsSpace(ch):
+		if p.inSingleQuote || p.inDoubleQuote {
+			p.write(ch)
+			return
+		}
+		p.flush()
+	default:
+		p.write(ch)
+	}
+}
+
+func (p *runtimeCommandParser) toggleQuote(active *bool, otherActive bool, ch rune) {
+	if otherActive {
+		p.write(ch)
+		return
+	}
+	*active = !*active
+	p.sawToken = true
+}
+
+func (p *runtimeCommandParser) write(ch rune) {
+	p.current.WriteRune(ch)
+	p.sawToken = true
+}
+
+func (p *runtimeCommandParser) flush() {
+	if p.current.Len() == 0 && !p.sawToken {
+		return
+	}
+	p.fields = append(p.fields, p.current.String())
+	p.current.Reset()
+	p.sawToken = false
 }
 
 func resolveRuntimeExecutablePath(executable string, searchDirs []string) (string, error) {
