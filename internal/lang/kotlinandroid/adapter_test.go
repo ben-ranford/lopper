@@ -246,18 +246,25 @@ func TestDependencyParsingHelpers(t *testing.T) {
 dependencies {
   implementation("androidx.core:core-ktx:1.13.1")
   implementation(group = "com.squareup.okhttp3", name = "okhttp", version = "4.12.0")
+  implementation name: 'core-ktx', group: 'androidx.core', version: '1.13.1'
   api group: 'com.google.guava', name: 'guava', version: '33.2.0-jre'
+  api name: 'activity-ktx', group: 'androidx.activity'
 }
 `
 	descriptors := parseGradleDependencyContent(content)
-	if len(descriptors) != 3 {
-		t.Fatalf("expected three parsed descriptors, got %#v", descriptors)
+	if len(descriptors) != 4 {
+		t.Fatalf("expected four parsed descriptors after dedupe, got %#v", descriptors)
 	}
 	seen := make(map[string]struct{})
 	for _, descriptor := range descriptors {
 		seen[descriptor.Group+":"+descriptor.Artifact] = struct{}{}
 	}
-	for _, want := range []string{"androidx.core:core-ktx", "com.squareup.okhttp3:okhttp", "com.google.guava:guava"} {
+	for _, want := range []string{
+		"androidx.core:core-ktx",
+		"com.squareup.okhttp3:okhttp",
+		"com.google.guava:guava",
+		"androidx.activity:activity-ktx",
+	} {
 		if _, ok := seen[want]; !ok {
 			t.Fatalf("expected descriptor %q in %#v", want, descriptors)
 		}

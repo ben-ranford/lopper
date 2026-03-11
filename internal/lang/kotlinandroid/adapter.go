@@ -178,27 +178,34 @@ func sourceLayoutModuleRoot(path string) string {
 	if normalized == "" {
 		return ""
 	}
-
-	segments := strings.Split(normalized, "/")
-	lastSrcIndex := -1
-	for index := 0; index+2 < len(segments); index++ {
-		if segments[index] != "src" {
-			continue
+	marker := "/src/"
+	candidate := normalized
+	offset := 0
+	for {
+		index := strings.Index(candidate, marker)
+		if index < 0 {
+			return ""
 		}
-		switch segments[index+2] {
-		case "java", "kotlin":
-			lastSrcIndex = index
+		absoluteIndex := offset + index
+		after := normalized[absoluteIndex+len(marker):]
+		parts := strings.SplitN(after, "/", 3)
+		if len(parts) >= 2 && parts[0] == "main" && (parts[1] == "java" || parts[1] == "kotlin") {
+			if absoluteIndex == 0 {
+				return ""
+			}
+			root := strings.TrimSuffix(normalized[:absoluteIndex], "/")
+			if root == "" {
+				return ""
+			}
+			return filepath.FromSlash(root)
 		}
+		nextOffset := absoluteIndex + len(marker)
+		if nextOffset >= len(normalized) {
+			return ""
+		}
+		candidate = normalized[nextOffset:]
+		offset = nextOffset
 	}
-	if lastSrcIndex < 1 {
-		return ""
-	}
-
-	root := strings.Join(segments[:lastSrcIndex], "/")
-	if root == "" {
-		return ""
-	}
-	return filepath.FromSlash(root)
 }
 
 func pruneKotlinAndroidRoots(repoPath string, roots map[string]struct{}) {
@@ -348,8 +355,10 @@ func buildRequestedKotlinAndroidDependencies(req language.Request, scan scanResu
 }
 
 func buildTopKotlinAndroidDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
-	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
+	importRecords := func(file fileScan) []shared.ImportRecord { return file.Imports }
+	usageCounts := func(file fileScan) map[string]int { return file.Usage }
+	usageByFile := shared.MapFileUsages(scan.Files, importRecords, usageCounts)
+	dependencies := shared.ListDependencies(usageByFile, normalizeDependencyID)
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
@@ -488,23 +497,10 @@ func scanKotlinAndroidSourceFile(repoPath string, path string, lookups dependenc
 	if !isSourceFile(path) {
 		return nil
 	}
-	var (
-		content []byte
-		err     error
-	)
-	if strings.TrimSpace(repoPath) == "" {
-		content, err = safeio.ReadFile(path)
-	} else {
-		content, err = safeio.ReadFileUnder(repoPath, path)
-	}
+	content, relativePath, err := readKotlinAndroidSource(repoPath, path)
 	if err != nil {
 		return err
 	}
-	relativePath, err := filepath.Rel(repoPath, path)
-	if err != nil {
-		relativePath = path
-	}
-
 	filePackage := parsePackage(content)
 	imports := parseImports(content, relativePath, filePackage, lookups, result)
 	result.Files = append(result.Files, fileScan{
@@ -514,6 +510,25 @@ func scanKotlinAndroidSourceFile(repoPath string, path string, lookups dependenc
 		Usage:   countUsage(content, imports),
 	})
 	return nil
+}
+
+func readKotlinAndroidSource(repoPath string, path string) ([]byte, string, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		content, err := safeio.ReadFile(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return content, path, nil
+	}
+	content, err := safeio.ReadFileUnder(repoPath, path)
+	if err != nil {
+		return nil, "", err
+	}
+	relativePath := path
+	if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
+		relativePath = rel
+	}
+	return content, relativePath, nil
 }
 
 func isSourceFile(path string) bool {
@@ -576,20 +591,18 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 }
 
 func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
-	wildcard := strings.TrimSpace(matches[2]) == ".*"
-	symbol := lastModuleSegment(module)
-	if wildcard {
-		symbol = "*"
-	}
+	symbol, wildcard := resolvedImportSymbol(matches, module)
 	if symbol == "" {
 		return shared.ImportRecord{}, false
 	}
-
 	localName := symbol
-	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
+	alias := ""
+	if len(matches) > 3 {
+		alias = strings.TrimSpace(matches[3])
+	}
+	if alias != "" && !wildcard {
 		localName = alias
 	}
-
 	return shared.ImportRecord{
 		Dependency: dependency,
 		Module:     module,
@@ -597,6 +610,13 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 		Local:      localName,
 		Wildcard:   wildcard,
 	}, true
+}
+
+func resolvedImportSymbol(matches []string, module string) (string, bool) {
+	if len(matches) > 2 && strings.TrimSpace(matches[2]) == ".*" {
+		return "*", true
+	}
+	return lastModuleSegment(module), false
 }
 
 func stripLineComment(line string) string {
@@ -841,15 +861,19 @@ func mergeDescriptors(manifest, lockfile []dependencyDescriptor) []dependencyDes
 		merged = append(merged, descriptor)
 	}
 	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Name == merged[j].Name {
-			if merged[i].Group == merged[j].Group {
-				return merged[i].Artifact < merged[j].Artifact
-			}
-			return merged[i].Group < merged[j].Group
-		}
-		return merged[i].Name < merged[j].Name
+		return compareDependencyDescriptors(merged[i], merged[j]) < 0
 	})
 	return merged
+}
+
+func compareDependencyDescriptors(left dependencyDescriptor, right dependencyDescriptor) int {
+	if cmp := strings.Compare(left.Name, right.Name); cmp != 0 {
+		return cmp
+	}
+	if cmp := strings.Compare(left.Group, right.Group); cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(left.Artifact, right.Artifact)
 }
 
 func descriptorKey(descriptor dependencyDescriptor) string {
@@ -928,38 +952,44 @@ func uniqueSortedStrings(values []string) []string {
 }
 
 func groupLookupStrategy(group, _ string) ([]string, []string) {
+	group = strings.TrimSpace(group)
 	if group == "" {
 		return nil, nil
 	}
-	group = strings.TrimSpace(group)
-	prefixes := []string{group}
-	aliases := []string{group}
+	aliasSet := map[string]struct{}{group: {}}
 	parts := strings.Split(group, ".")
 	if len(parts) >= 2 {
-		aliases = append(aliases, parts[0]+"."+parts[1], parts[len(parts)-1])
+		aliasSet[parts[0]+"."+parts[1]] = struct{}{}
 	}
-	return prefixes, aliases
+	if len(parts) > 0 {
+		aliasSet[parts[len(parts)-1]] = struct{}{}
+	}
+	aliases := make([]string, 0, len(aliasSet))
+	for alias := range aliasSet {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	return []string{group}, aliases
 }
 
 func artifactLookupStrategy(group, artifact string) ([]string, []string) {
+	artifact = strings.ReplaceAll(strings.TrimSpace(artifact), "-", ".")
 	if artifact == "" {
 		return nil, nil
 	}
-	artifact = strings.ReplaceAll(strings.TrimSpace(artifact), "-", ".")
-	prefixes := make([]string, 0, 1)
-	aliases := make([]string, 0, 1)
-	if group != "" && artifact != "" {
-		prefixes = append(prefixes, group+"."+artifact)
+	group = strings.TrimSpace(group)
+	aliases := []string{artifact}
+	if group == "" {
+		return nil, aliases
 	}
-	if artifact != "" {
-		aliases = append(aliases, artifact)
-	}
-	return prefixes, aliases
+	return []string{group + "." + artifact}, aliases
 }
 
 var gradleCoordinatePattern = regexp.MustCompile(`(?m)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*(?:platform\()?["']([^:"'\s]+):([^:"'\s]+)(?::([^"'\s]+))?["']\s*\)?\s*\)?`)
 
-var gradleMapPattern = regexp.MustCompile(`(?m)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*group\s*[:=]\s*["']([^"'\s]+)["']\s*,\s*name\s*[:=]\s*["']([^"'\s]+)["'](?:\s*,\s*version\s*[:=]\s*["']([^"'\s]+)["'])?`)
+var gradleMapInvocationPattern = regexp.MustCompile(`(?ms)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*((?:[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*["'][^"'\n]+["']\s*,?\s*)+)`)
+
+var gradleNamedArgPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*["']([^"']+)["']`)
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 	parser := func(content string) []dependencyDescriptor {
@@ -971,8 +1001,47 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
 	descriptors := make([]dependencyDescriptor, 0)
 	descriptors = append(descriptors, parseGradleDependencyMatches(content, gradleCoordinatePattern)...)
-	descriptors = append(descriptors, parseGradleDependencyMatches(content, gradleMapPattern)...)
+	descriptors = append(descriptors, parseGradleMapDependencies(content)...)
 	return dedupeDescriptors(descriptors)
+}
+
+func parseGradleMapDependencies(content string) []dependencyDescriptor {
+	matches := gradleMapInvocationPattern.FindAllStringSubmatch(content, -1)
+	descriptors := make([]dependencyDescriptor, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		args := match[1]
+		group := ""
+		artifact := ""
+		version := ""
+		for _, pair := range gradleNamedArgPattern.FindAllStringSubmatch(args, -1) {
+			if len(pair) != 3 {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(pair[1]))
+			value := strings.TrimSpace(pair[2])
+			switch key {
+			case "group":
+				group = value
+			case "name":
+				artifact = value
+			case "version":
+				version = value
+			}
+		}
+		if group == "" || artifact == "" {
+			continue
+		}
+		descriptors = append(descriptors, dependencyDescriptor{
+			Name:     artifact,
+			Group:    group,
+			Artifact: artifact,
+			Version:  version,
+		})
+	}
+	return descriptors
 }
 
 func parseGradleDependencyMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
