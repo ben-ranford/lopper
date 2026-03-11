@@ -242,12 +242,7 @@ func TestGitChangedFilesInGitRepo(t *testing.T) {
 	if !hasGit {
 		t.Fatalf("expected hasGit=true for git repo")
 	}
-	if _, ok := changed[manifestFileName]; !ok {
-		t.Fatalf("expected package.json to be detected as changed, got %#v", changed)
-	}
-	if _, ok := changed[newUntrackedFileName]; !ok {
-		t.Fatalf("expected untracked file to be detected, got %#v", changed)
-	}
+	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
 }
 
 func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
@@ -265,12 +260,7 @@ func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
 	if !hasGit {
 		t.Fatalf("expected hasGit=true when inside git worktree")
 	}
-	if _, ok := changed[manifestFileName]; !ok {
-		t.Fatalf("expected staged/unstaged manifest to be detected, got %#v", changed)
-	}
-	if _, ok := changed[newUntrackedFileName]; !ok {
-		t.Fatalf("expected untracked file to be detected, got %#v", changed)
-	}
+	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
 }
 
 func TestDetectLockfileDriftNoHeadDoesNotReturnGitError(t *testing.T) {
@@ -415,6 +405,15 @@ func TestGitExecutableAvailable(t *testing.T) {
 	}
 	if !gitexec.ExecutableAvailable(filePath) {
 		t.Fatalf("expected executable file to be available")
+	}
+}
+
+func assertChangedPathsPresent(t *testing.T, changed map[string]struct{}, expectedPaths ...string) {
+	t.Helper()
+	for _, path := range expectedPaths {
+		if _, ok := changed[path]; !ok {
+			t.Fatalf("expected %s to be detected as changed, got %#v", path, changed)
+		}
 	}
 }
 
