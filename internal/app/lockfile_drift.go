@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -261,15 +262,71 @@ func isGitWorktree(ctx context.Context, repoPath string) bool {
 }
 
 func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
-	command, err := gitCommandContext(ctx, repoPath, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--")
+	hasHead, err := gitHasVerifiedHead(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if hasHead {
+		return gitDiffNameOnly(ctx, repoPath, "HEAD")
+	}
+	// Unborn HEAD: derive tracked changes from staged + working tree diffs.
+	staged, err := gitDiffNameOnly(ctx, repoPath, "--cached")
+	if err != nil {
+		return nil, err
+	}
+	unstaged, err := gitDiffNameOnly(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return mergeGitPaths(staged, unstaged), nil
+}
+
+func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
+	command, err := gitCommandContext(ctx, repoPath, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	if err := command.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("run git rev-parse --verify --quiet HEAD: %w", err)
+	}
+	return true, nil
+}
+
+func gitDiffNameOnly(ctx context.Context, repoPath string, diffArgs ...string) ([]string, error) {
+	args := []string{"-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv"}
+	args = append(args, diffArgs...)
+	args = append(args, "--name-only", "--")
+	command, err := gitCommandContext(ctx, repoPath, args...)
 	if err != nil {
 		return nil, err
 	}
 	output, err := command.Output()
 	if err != nil {
-		return nil, fmt.Errorf("run git diff --no-ext-diff --no-textconv --name-only HEAD --: %w", err)
+		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
 	}
 	return parseGitOutputLines(output), nil
+}
+
+func mergeGitPaths(groups ...[]string) []string {
+	if len(groups) == 0 {
+		return nil
+	}
+	merged := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, path := range group {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			merged = append(merged, path)
+		}
+	}
+	return merged
 }
 
 func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
