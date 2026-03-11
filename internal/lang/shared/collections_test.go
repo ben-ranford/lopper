@@ -88,7 +88,7 @@ func TestReadYAMLUnderRepo(t *testing.T) {
 
 	invalidPath := filepath.Join(repo, "invalid.yaml")
 	testutil.MustWriteFile(t, invalidPath, "name: [\n")
-	if _, err := ReadYAMLUnderRepo[manifest](repo, invalidPath); err == nil || !strings.Contains(err.Error(), "parse "+invalidPath) {
+	if _, err := ReadYAMLUnderRepo[manifest](repo, invalidPath); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
 		t.Fatalf("expected parse error for invalid yaml, got %v", err)
 	}
 }

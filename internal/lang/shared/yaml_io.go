@@ -2,6 +2,8 @@ package shared
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,7 +18,20 @@ func ReadYAMLUnderRepo[T any](repoPath, path string) (T, error) {
 		return value, err
 	}
 	if err := yaml.Unmarshal(content, &value); err != nil {
-		return value, fmt.Errorf("parse %s: %w", path, err)
+		return value, fmt.Errorf("parse %s: %w", yamlDisplayPath(repoPath, path), err)
 	}
 	return value, nil
+}
+
+func yamlDisplayPath(repoPath, path string) string {
+	if !filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	if rel, err := filepath.Rel(repoPath, path); err == nil {
+		cleanRel := filepath.Clean(rel)
+		if cleanRel != ".." && !strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+			return cleanRel
+		}
+	}
+	return filepath.Base(path)
 }

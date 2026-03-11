@@ -11,6 +11,7 @@ The core contracts are in `internal/language`.
 - `jvm` (Java/Kotlin)
 - `go` (Go)
 - `php` (PHP)
+- `ruby` (Ruby)
 - `rust` (Rust/Cargo)
 - `dotnet` (C#/.NET)
 - `elixir` (Elixir/Mix)
