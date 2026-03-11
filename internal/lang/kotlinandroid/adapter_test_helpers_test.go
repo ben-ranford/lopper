@@ -59,20 +59,19 @@ func writeWorkspaceApp(t *testing.T, repo, rootBuild, appBuild string) string {
 
 func requirePositiveDetection(t *testing.T, adapter *Adapter, repo string) language.Detection {
 	t.Helper()
-	ok, err := adapter.Detect(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect: %v", err)
-	}
-	if !ok {
-		t.Fatalf("expected detect=true for %s", repo)
+	if ok, err := adapter.Detect(context.Background(), repo); err != nil || !ok {
+		t.Fatalf("expected Detect(%s) to succeed and match, ok=%v err=%v", repo, ok, err)
 	}
 
 	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect with confidence: %v", err)
+		t.Fatalf("DetectWithConfidence(%s): %v", repo, err)
 	}
-	if !detection.Matched || detection.Confidence <= 0 {
-		t.Fatalf("unexpected detection result: %#v", detection)
+	switch {
+	case !detection.Matched:
+		t.Fatalf("expected matched detection for %s, got %#v", repo, detection)
+	case detection.Confidence <= 0:
+		t.Fatalf("expected positive confidence for %s, got %#v", repo, detection)
 	}
 	return detection
 }

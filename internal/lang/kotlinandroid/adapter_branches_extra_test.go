@@ -118,9 +118,7 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), "dependencies {}\n")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := NewAdapter().DetectWithConfidence(ctx, repo); !errors.Is(err, context.Canceled) {
+	if _, err := NewAdapter().DetectWithConfidence(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
 
@@ -299,9 +297,7 @@ func TestAnalyseWarningsAndScanBranches(t *testing.T) {
 		t.Fatalf("expected scan error for missing repo path")
 	}
 
-	cancelCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := scanRepo(cancelCtx, repo, dependencyLookups{}); !errors.Is(err, context.Canceled) {
+	if _, err := scanRepo(testutil.CanceledContext(), repo, dependencyLookups{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled context error from scanRepo, got %v", err)
 	}
 }
