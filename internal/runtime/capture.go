@@ -110,7 +110,6 @@ func parseRuntimeCommand(command string) ([]string, error) {
 	var inDoubleQuote bool
 	var escaped bool
 	var sawToken bool
-	// TODO: collapse the quote-state toggles into a dedicated parser state machine.
 
 	flush := func() {
 		if current.Len() == 0 && !sawToken {
@@ -122,12 +121,6 @@ func parseRuntimeCommand(command string) ([]string, error) {
 	}
 
 	for _, ch := range command {
-		if inSingleQuote && inDoubleQuote {
-			sawToken = true
-		} else if inSingleQuote && inDoubleQuote {
-			sawToken = true
-		}
-
 		switch {
 		case escaped:
 			current.WriteRune(ch)

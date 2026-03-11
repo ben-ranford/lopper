@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -136,33 +137,39 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeCommandPreservesQuotedArgs(t *testing.T) {
+func TestBuildRuntimeCommandPreservesParsedArgs(t *testing.T) {
 	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
 
-	cmd, err := buildRuntimeCommand(context.Background(), `node -e "console.log('hello world')"`)
-	if err != nil {
-		t.Fatalf("build runtime command with quoted arg: %v", err)
+	testCases := []struct {
+		name    string
+		command string
+		want    []string
+	}{
+		{
+			name:    "quoted args",
+			command: `node -e "console.log('hello world')"`,
+			want:    []string{"node", "-e", "console.log('hello world')"},
+		},
+		{
+			name:    "escaped whitespace",
+			command: `make test\ target`,
+			want:    []string{"make", "test target"},
+		},
 	}
-	if len(cmd.Args) != 3 {
-		t.Fatalf("expected executable and two args, got %d: %#v", len(cmd.Args), cmd.Args)
-	}
-	if got := cmd.Args[2]; got != "console.log('hello world')" {
-		t.Fatalf("expected quoted script arg to be preserved, got %q", got)
-	}
-}
 
-func TestBuildRuntimeCommandPreservesEscapedWhitespace(t *testing.T) {
-	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
-
-	cmd, err := buildRuntimeCommand(context.Background(), `make test\ target`)
-	if err != nil {
-		t.Fatalf("build runtime command with escaped whitespace: %v", err)
-	}
-	if len(cmd.Args) != 2 {
-		t.Fatalf("expected executable and one arg, got %d: %#v", len(cmd.Args), cmd.Args)
-	}
-	if got := cmd.Args[1]; got != "test target" {
-		t.Fatalf("expected escaped whitespace to stay in one arg, got %q", got)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := buildRuntimeCommand(context.Background(), tc.command)
+			if err != nil {
+				t.Fatalf("build runtime command: %v", err)
+			}
+			if !slices.Equal(cmd.Args[1:], tc.want[1:]) {
+				t.Fatalf("expected args %q, got %q", tc.want[1:], cmd.Args[1:])
+			}
+			if got := filepath.Base(cmd.Path); got != tc.want[0] {
+				t.Fatalf("expected executable %q, got %q", tc.want[0], got)
+			}
+		})
 	}
 }
 
@@ -214,15 +221,34 @@ func TestBuildRuntimeCommandRequiresInput(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeCommandRejectsUnfinishedEscape(t *testing.T) {
-	if _, err := buildRuntimeCommand(context.Background(), `npm test\`); err == nil {
-		t.Fatalf("expected unfinished escape error")
+func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
+	testCases := []struct {
+		name    string
+		command string
+		wantErr string
+	}{
+		{
+			name:    "unfinished escape",
+			command: `npm test\`,
+			wantErr: "unfinished escape sequence",
+		},
+		{
+			name:    "unterminated quote",
+			command: `node -e "console.log('hello world')`,
+			wantErr: "unterminated quote",
+		},
 	}
-}
 
-func TestBuildRuntimeCommandRejectsUnterminatedQuote(t *testing.T) {
-	if _, err := buildRuntimeCommand(context.Background(), `node -e "console.log('hello world')`); err == nil {
-		t.Fatalf("expected unterminated quote error")
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildRuntimeCommand(context.Background(), tc.command)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 
