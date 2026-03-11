@@ -15,6 +15,8 @@ const (
 	EnvOn           = "LOPPER_NOTIFY_ON"
 	EnvSlackWebhook = "LOPPER_NOTIFY_SLACK_WEBHOOK"
 	EnvTeamsWebhook = "LOPPER_NOTIFY_TEAMS_WEBHOOK"
+
+	errInvalidNotificationsConfig = "invalid notifications config: %w"
 )
 
 func LoadConfigOverrides(path string) (Overrides, error) {
@@ -95,7 +97,7 @@ func parseRawConfig(path string, data []byte) (rawConfig, error) {
 		decoder := json.NewDecoder(bytes.NewReader(notificationsRaw))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&cfg.Notifications); err != nil {
-			return rawConfig{}, fmt.Errorf("invalid notifications config: %w", err)
+			return rawConfig{}, fmt.Errorf(errInvalidNotificationsConfig, err)
 		}
 	default:
 		root := map[string]any{}
@@ -108,12 +110,12 @@ func parseRawConfig(path string, data []byte) (rawConfig, error) {
 		}
 		encoded, err := yaml.Marshal(notificationsRaw)
 		if err != nil {
-			return rawConfig{}, fmt.Errorf("invalid notifications config: %w", err)
+			return rawConfig{}, fmt.Errorf(errInvalidNotificationsConfig, err)
 		}
 		decoder := yaml.NewDecoder(bytes.NewReader(encoded))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&cfg.Notifications); err != nil {
-			return rawConfig{}, fmt.Errorf("invalid notifications config: %w", err)
+			return rawConfig{}, fmt.Errorf(errInvalidNotificationsConfig, err)
 		}
 	}
 	return cfg, nil

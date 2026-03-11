@@ -13,6 +13,7 @@ func TestLoadConfigOverrides(t *testing.T) {
   on: breach
   slack:
     webhook: https://hooks.slack.com/services/A/B/CONFIG
+    on: always
   teams:
     webhook: https://outlook.office.com/webhook/CONFIG
     on: improvement
@@ -27,8 +28,8 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 
 	resolved := overrides.Apply(DefaultConfig())
-	if resolved.Slack.Trigger != TriggerBreach {
-		t.Fatalf("expected global trigger breach on slack, got %q", resolved.Slack.Trigger)
+	if resolved.Slack.Trigger != TriggerAlways {
+		t.Fatalf("expected slack trigger always override, got %q", resolved.Slack.Trigger)
 	}
 	if resolved.Teams.Trigger != TriggerImprovement {
 		t.Fatalf("expected teams trigger improvement, got %q", resolved.Teams.Trigger)
@@ -93,6 +94,15 @@ func TestLoadConfigOverridesErrors(t *testing.T) {
 		t.Fatalf("expected invalid notifications.slack.on error")
 	}
 
+	invalidTeamsPath := filepath.Join(t.TempDir(), "invalid-teams-trigger.yml")
+	invalidTeamsValue := "notifications:\n  teams:\n    on: invalid\n"
+	if err := os.WriteFile(invalidTeamsPath, []byte(invalidTeamsValue), 0o600); err != nil {
+		t.Fatalf("write invalid teams trigger config: %v", err)
+	}
+	if _, err := LoadConfigOverrides(invalidTeamsPath); err == nil {
+		t.Fatalf("expected invalid notifications.teams.on error")
+	}
+
 	invalidWebhookPath := filepath.Join(t.TempDir(), "invalid-webhook.yml")
 	invalidWebhook := "notifications:\n  teams:\n    webhook: hooks.slack.com/services/A/B/SECRET\n"
 	if err := os.WriteFile(invalidWebhookPath, []byte(invalidWebhook), 0o600); err != nil {
@@ -100,6 +110,15 @@ func TestLoadConfigOverridesErrors(t *testing.T) {
 	}
 	if _, err := LoadConfigOverrides(invalidWebhookPath); err == nil {
 		t.Fatalf("expected invalid notifications.teams.webhook error")
+	}
+
+	invalidSlackWebhookPath := filepath.Join(t.TempDir(), "invalid-slack-webhook.yml")
+	invalidSlackWebhook := "notifications:\n  slack:\n    webhook: outlook.office.com/webhook/SECRET\n"
+	if err := os.WriteFile(invalidSlackWebhookPath, []byte(invalidSlackWebhook), 0o600); err != nil {
+		t.Fatalf("write invalid slack webhook config: %v", err)
+	}
+	if _, err := LoadConfigOverrides(invalidSlackWebhookPath); err == nil {
+		t.Fatalf("expected invalid notifications.slack.webhook error")
 	}
 
 	unknownNotificationsFieldPath := filepath.Join(t.TempDir(), "unknown-notifications.yml")
@@ -118,6 +137,42 @@ func TestLoadConfigOverridesErrors(t *testing.T) {
 	}
 	if _, err := LoadConfigOverrides(unknownNotificationsFieldJSONPath); err == nil {
 		t.Fatalf("expected unknown notifications field JSON parse error")
+	}
+
+	invalidJSONPath := filepath.Join(t.TempDir(), "invalid.json")
+	if err := os.WriteFile(invalidJSONPath, []byte("{"), 0o600); err != nil {
+		t.Fatalf("write invalid json config: %v", err)
+	}
+	if _, err := LoadConfigOverrides(invalidJSONPath); err == nil {
+		t.Fatalf("expected invalid JSON parse error")
+	}
+}
+
+func TestLoadConfigOverridesWithoutNotificationsSection(t *testing.T) {
+	yamlPath := filepath.Join(t.TempDir(), "lopper.yml")
+	yamlConfig := "thresholds:\n  failOnIncreasePercent: 3\n"
+	if err := os.WriteFile(yamlPath, []byte(yamlConfig), 0o600); err != nil {
+		t.Fatalf("write yaml config without notifications: %v", err)
+	}
+	yamlOverrides, err := LoadConfigOverrides(yamlPath)
+	if err != nil {
+		t.Fatalf("load yaml overrides without notifications: %v", err)
+	}
+	if yamlOverrides != (Overrides{}) {
+		t.Fatalf("expected empty yaml overrides without notifications, got %#v", yamlOverrides)
+	}
+
+	jsonPath := filepath.Join(t.TempDir(), "lopper.json")
+	jsonConfig := `{"thresholds":{"failOnIncreasePercent":3}}`
+	if err := os.WriteFile(jsonPath, []byte(jsonConfig), 0o600); err != nil {
+		t.Fatalf("write json config without notifications: %v", err)
+	}
+	jsonOverrides, err := LoadConfigOverrides(jsonPath)
+	if err != nil {
+		t.Fatalf("load json overrides without notifications: %v", err)
+	}
+	if jsonOverrides != (Overrides{}) {
+		t.Fatalf("expected empty json overrides without notifications, got %#v", jsonOverrides)
 	}
 }
 
@@ -147,6 +202,12 @@ func TestLoadEnvOverridesInvalidValues(t *testing.T) {
 	t.Setenv(EnvSlackWebhook, "hooks.slack.com/services/A/B/SECRET")
 	if _, err := LoadEnvOverrides(os.LookupEnv); err == nil {
 		t.Fatalf("expected invalid webhook env error")
+	}
+
+	t.Setenv(EnvSlackWebhook, "")
+	t.Setenv(EnvTeamsWebhook, "outlook.office.com/webhook/SECRET")
+	if _, err := LoadEnvOverrides(os.LookupEnv); err == nil {
+		t.Fatalf("expected invalid teams webhook env error")
 	}
 }
 
