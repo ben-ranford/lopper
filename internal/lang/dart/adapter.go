@@ -384,7 +384,7 @@ func dependencyInfoFromSpec(dependency string, value any, hasPluginMetadata *boo
 	if !ok {
 		return info
 	}
-	if pathValue := asString(fields["path"]); pathValue != "" {
+	if asString(fields["path"]) != "" {
 		info.LocalPath = true
 	}
 	if sdkValue := asString(fields["sdk"]); strings.EqualFold(sdkValue, "flutter") {
@@ -438,7 +438,7 @@ func lockPackageName(description any) string {
 }
 
 func lockDescriptionTargetsFlutter(description any) bool {
-	if value := strings.TrimSpace(strings.ToLower(asString(description))); value == "flutter" {
+	if strings.EqualFold(strings.TrimSpace(asString(description)), "flutter") {
 		return true
 	}
 	fields, ok := toStringMap(description)
@@ -523,7 +523,7 @@ func collectManifestRoots(manifests []packageManifest) map[string]struct{} {
 	return roots
 }
 
-func mergeDeclaredDependencies(dest map[string]dependencyInfo, incoming map[string]dependencyInfo) {
+func mergeDeclaredDependencies(dest, incoming map[string]dependencyInfo) {
 	for dependency, info := range incoming {
 		mergeDependencyInfo(dest, dependency, info)
 	}
@@ -536,28 +536,41 @@ func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManif
 	}
 
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			if path != root {
-				cleanPath := filepath.Clean(path)
-				if _, ok := allRoots[cleanPath]; ok {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-
-		return scanPackageFileEntry(repoPath, path, manifest.Dependencies, scannedFiles, fileCount, result)
+		return walkPackageEntry(ctx, root, repoPath, path, entry, walkErr, manifest.Dependencies, allRoots, scannedFiles, fileCount, result)
 	})
+}
+
+func walkPackageEntry(ctx context.Context, root, repoPath, path string, entry fs.DirEntry, walkErr error, depLookup map[string]dependencyInfo, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	if err := walkContextErr(ctx, walkErr); err != nil {
+		return err
+	}
+	if entry.IsDir() {
+		return scanPackageDir(root, path, entry.Name(), allRoots)
+	}
+	return scanPackageFileEntry(repoPath, path, depLookup, scannedFiles, fileCount, result)
+}
+
+func walkContextErr(ctx context.Context, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+func scanPackageDir(root, path, name string, allRoots map[string]struct{}) error {
+	if shouldSkipDir(name) {
+		return filepath.SkipDir
+	}
+	if path == root {
+		return nil
+	}
+	if _, ok := allRoots[filepath.Clean(path)]; ok {
+		return filepath.SkipDir
+	}
+	return nil
 }
 
 func scanPackageFileEntry(repoPath string, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
@@ -972,36 +985,50 @@ func shouldSkipDir(name string) bool {
 
 func hasPluginMetadataValue(value any) bool {
 	switch typed := value.(type) {
-	case nil:
-		return false
 	case map[string]any:
-		for key, nested := range typed {
-			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if lowerKey == "plugin" || lowerKey == "pluginclass" || lowerKey == "ffiplugin" || lowerKey == "platforms" {
-				return true
-			}
-			if hasPluginMetadataValue(nested) {
-				return true
-			}
-		}
+		return hasPluginMetadataStringMap(typed)
 	case map[any]any:
-		for key, nested := range typed {
-			lowerKey := strings.ToLower(strings.TrimSpace(fmt.Sprint(key)))
-			if lowerKey == "plugin" || lowerKey == "pluginclass" || lowerKey == "ffiplugin" || lowerKey == "platforms" {
-				return true
-			}
-			if hasPluginMetadataValue(nested) {
-				return true
-			}
-		}
+		return hasPluginMetadataAnyMap(typed)
 	case []any:
-		for _, item := range typed {
-			if hasPluginMetadataValue(item) {
-				return true
-			}
+		return hasPluginMetadataSlice(typed)
+	}
+	return false
+}
+
+func hasPluginMetadataStringMap(values map[string]any) bool {
+	for key, nested := range values {
+		if isPluginMetadataKey(key) || hasPluginMetadataValue(nested) {
+			return true
 		}
 	}
 	return false
+}
+
+func hasPluginMetadataAnyMap(values map[any]any) bool {
+	for key, nested := range values {
+		if isPluginMetadataKey(fmt.Sprint(key)) || hasPluginMetadataValue(nested) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPluginMetadataSlice(values []any) bool {
+	for _, item := range values {
+		if hasPluginMetadataValue(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPluginMetadataKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "plugin", "pluginclass", "ffiplugin", "platforms":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLikelyFlutterPluginPackage(dependency string) bool {

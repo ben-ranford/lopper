@@ -15,7 +15,7 @@ import (
 func TestDartAdapterIdentityAndDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYAMLName), "name: app\ndependencies:\n  http: ^1.0.0\n")
-	writeFile(t, filepath.Join(repo, "lib", "main.dart"), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
 	writeFile(t, filepath.Join(repo, "packages", "feature", pubspecYAMLName), "name: feature\ndependencies:\n  collection: ^1.0.0\n")
 
 	adapter := NewAdapter()
@@ -92,7 +92,7 @@ flutter:
     source: hosted
     version: "4.0.2"
 `)
-	writeFile(t, filepath.Join(repo, "lib", "main.dart"), `import 'package:http/http.dart' as http;
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:http/http.dart' as http;
 import 'package:url_launcher_android/url_launcher_android.dart';
 export 'package:http_parser/http_parser.dart';
 
@@ -156,7 +156,7 @@ func TestDartAdapterUndeclaredImportRisk(t *testing.T) {
     source: hosted
     version: "1.0.0"
 `)
-	writeFile(t, filepath.Join(repo, "lib", "main.dart"), `import 'package:dio/dio.dart' as dio;
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:dio/dio.dart' as dio;
 void main() {
   dio.Dio();
 }
@@ -192,7 +192,7 @@ dependencies:
     path: ../local_pkg
   collection: ^1.18.0
 `)
-	writeFile(t, filepath.Join(repo, "lib", "main.dart"), `import 'package:local_pkg/local_pkg.dart' as local;
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:local_pkg/local_pkg.dart' as local;
 import 'package:collection/collection.dart' as coll;
 
 void main() {

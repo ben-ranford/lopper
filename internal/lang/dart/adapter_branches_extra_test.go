@@ -16,12 +16,18 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
+const (
+	fooPackageModule  = "package:foo/foo.dart"
+	mainDartFileName  = "main.dart"
+	emptyMainDartBody = "void main() {}\n"
+)
+
 func TestParseImportDirectiveAndShowSymbols(t *testing.T) {
 	kind, module, clause, ok := parseImportDirective(`import 'package:foo/foo.dart' show Foo, Bar hide Baz;`)
 	if !ok {
 		t.Fatalf("expected import directive to parse")
 	}
-	if kind != "import" || module != "package:foo/foo.dart" {
+	if kind != "import" || module != fooPackageModule {
 		t.Fatalf("unexpected directive parse: kind=%q module=%q", kind, module)
 	}
 	if got := parseShowSymbols(clause); !slices.Equal(got, []string{"Foo", "Bar"}) {
@@ -38,22 +44,22 @@ func TestParseImportDirectiveAndShowSymbols(t *testing.T) {
 
 func TestBuildDirectiveBindingsBranches(t *testing.T) {
 	location := report.Location{File: "lib/main.dart", Line: 1, Column: 1}
-	exportBindings := buildDirectiveBindings("export", "package:foo/foo.dart", "", "foo", location)
+	exportBindings := buildDirectiveBindings("export", fooPackageModule, "", "foo", location)
 	if len(exportBindings) != 1 || !exportBindings[0].Wildcard {
 		t.Fatalf("expected wildcard export binding, got %#v", exportBindings)
 	}
 
-	aliasBindings := buildDirectiveBindings("import", "package:foo/foo.dart", "as foo", "foo", location)
+	aliasBindings := buildDirectiveBindings("import", fooPackageModule, "as foo", "foo", location)
 	if len(aliasBindings) != 1 || aliasBindings[0].Local != "foo" {
 		t.Fatalf("expected alias binding, got %#v", aliasBindings)
 	}
 
-	showBindings := buildDirectiveBindings("import", "package:foo/foo.dart", "show Foo, Bar", "foo", location)
+	showBindings := buildDirectiveBindings("import", fooPackageModule, "show Foo, Bar", "foo", location)
 	if len(showBindings) != 2 {
 		t.Fatalf("expected two show bindings, got %#v", showBindings)
 	}
 
-	wildcardBindings := buildDirectiveBindings("import", "package:foo/foo.dart", "", "foo", location)
+	wildcardBindings := buildDirectiveBindings("import", fooPackageModule, "", "foo", location)
 	if len(wildcardBindings) != 1 || !wildcardBindings[0].Wildcard {
 		t.Fatalf("expected wildcard fallback binding, got %#v", wildcardBindings)
 	}
@@ -142,14 +148,19 @@ func TestPluginMetadataHelpersAndDiscoveryCap(t *testing.T) {
 	}
 }
 
-func TestDetectionHelpersBranches(t *testing.T) {
+func setupDetectionRepo(t *testing.T) string {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYMLName), "name: app\ndependencies: {}\n")
 	writeFile(t, filepath.Join(repo, pubspecLockName), "packages: {}\n")
-	writeFile(t, filepath.Join(repo, "lib", "main.dart"), "void main() {}\n")
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), emptyMainDartBody)
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o750); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
+	return repo
+}
+
+func TestDetectionRootSignals(t *testing.T) {
+	repo := setupDetectionRepo(t)
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
@@ -162,14 +173,17 @@ func TestDetectionHelpersBranches(t *testing.T) {
 	if _, ok := roots[repo]; !ok {
 		t.Fatalf("expected repo root in detection roots")
 	}
+}
 
+func TestDetectionWalkEntries(t *testing.T) {
+	repo := setupDetectionRepo(t)
 	entries, err := os.ReadDir(repo)
 	if err != nil {
 		t.Fatalf("read repo dir: %v", err)
 	}
 	visited := 0
-	detection = language.Detection{}
-	roots = map[string]struct{}{}
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
 	for _, entry := range entries {
 		path := filepath.Join(repo, entry.Name())
 		detectErr := walkDartDetectionEntry(path, entry, roots, &detection, &visited)
@@ -186,7 +200,10 @@ func TestDetectionHelpersBranches(t *testing.T) {
 	if !detection.Matched || detection.Confidence < 6 {
 		t.Fatalf("expected detection to match after walk, got %#v", detection)
 	}
+}
 
+func TestDetectionWalkEntryCap(t *testing.T) {
+	repo := setupDetectionRepo(t)
 	dartEntries, err := os.ReadDir(filepath.Join(repo, "lib"))
 	if err != nil {
 		t.Fatalf("read lib dir: %v", err)
@@ -194,7 +211,9 @@ func TestDetectionHelpersBranches(t *testing.T) {
 	if len(dartEntries) == 0 {
 		t.Fatalf("expected dart entries in lib")
 	}
-	visited = maxDetectionEntries
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	visited := maxDetectionEntries
 	capErr := walkDartDetectionEntry(filepath.Join(repo, "lib", dartEntries[0].Name()), dartEntries[0], roots, &detection, &visited)
 	if !errors.Is(capErr, fs.SkipAll) {
 		t.Fatalf("expected SkipAll after detection cap, got %v", capErr)
@@ -320,7 +339,7 @@ flutter:
 		t.Fatalf("expected no-source warning, got %#v", scan.Warnings)
 	}
 
-	writeFile(t, filepath.Join(repo, "lib", "small.dart"), "void main() {}\n")
+	writeFile(t, filepath.Join(repo, "lib", "small.dart"), emptyMainDartBody)
 	fileCount := maxScanFiles
 	result := scanResult{UnresolvedImports: make(map[string]int)}
 	scanned := map[string]struct{}{}
@@ -341,7 +360,7 @@ flutter:
 	}
 }
 
-func TestUtilityBranches(t *testing.T) {
+func TestShouldSkipDirAndPluginMetadataBranches(t *testing.T) {
 	if !shouldSkipDir("android") {
 		t.Fatalf("expected android to be skipped")
 	}
@@ -358,7 +377,9 @@ func TestUtilityBranches(t *testing.T) {
 	}) {
 		t.Fatalf("expected plugin metadata from []any + map[any]any branch")
 	}
+}
 
+func TestStringAndPathHelperBranches(t *testing.T) {
 	if _, ok := toStringMap("invalid"); ok {
 		t.Fatalf("expected toStringMap to reject non-map input")
 	}
@@ -378,7 +399,9 @@ func TestUtilityBranches(t *testing.T) {
 	if got := dedupeStrings([]string{"foo", " foo ", "", "bar", "foo"}); !slices.Equal(got, []string{"foo", "bar"}) {
 		t.Fatalf("unexpected dedupe strings result: %#v", got)
 	}
+}
 
+func TestThresholdAndWarningBranches(t *testing.T) {
 	if recommendationPriorityRank("high") != 0 || recommendationPriorityRank("medium") != 1 || recommendationPriorityRank("low") != 2 {
 		t.Fatalf("unexpected recommendation priority ranks")
 	}
@@ -406,7 +429,9 @@ func TestUtilityBranches(t *testing.T) {
 	if !containsWarning(warnings, "f") || !containsWarning(warnings, "e") {
 		t.Fatalf("expected highest unresolved dependencies in warnings, got %#v", warnings)
 	}
+}
 
+func TestBuildRequestedDartDependenciesEmptyRequest(t *testing.T) {
 	emptyDeps, emptyWarnings := buildRequestedDartDependencies(language.Request{}, scanResult{})
 	if len(emptyDeps) != 0 || !containsWarning(emptyWarnings, "no dependency or top-N target provided") {
 		t.Fatalf("expected empty request warning, got deps=%#v warnings=%#v", emptyDeps, emptyWarnings)
@@ -424,7 +449,7 @@ func TestErrorAndScanBranchCoverage(t *testing.T) {
 
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYAMLName), "name: app\ndependencies:\n  http: ^1.0.0\n")
-	writeFile(t, filepath.Join(repo, "lib", "main.dart"), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -442,7 +467,7 @@ func TestErrorAndScanBranchCoverage(t *testing.T) {
 		t.Fatalf("expected loadPackageManifest error when pubspec.lock is a directory")
 	}
 
-	if err := scanDartSourceFile(repo, filepath.Join(repo, "lib", "missing.dart"), map[string]dependencyInfo{}, &scanResult{UnresolvedImports: map[string]int{}}); err == nil {
+	if scanDartSourceFile(repo, filepath.Join(repo, "lib", "missing.dart"), map[string]dependencyInfo{}, &scanResult{UnresolvedImports: map[string]int{}}) == nil {
 		t.Fatalf("expected scanDartSourceFile error for missing file")
 	}
 
@@ -456,7 +481,7 @@ func TestErrorAndScanBranchCoverage(t *testing.T) {
 	}
 
 	dupPath := filepath.Join(repo, "lib", "dup.dart")
-	writeFile(t, dupPath, "void main() {}\n")
+	writeFile(t, dupPath, emptyMainDartBody)
 	scanned[filepath.Clean(dupPath)] = struct{}{}
 	if err := scanPackageFileEntry(repo, dupPath, map[string]dependencyInfo{}, scanned, &fileCount, &scanOut); err != nil {
 		t.Fatalf("expected duplicate scanned file to be ignored, got %v", err)
