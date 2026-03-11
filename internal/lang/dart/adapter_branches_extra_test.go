@@ -195,13 +195,7 @@ func TestDetectionHelpersBranches(t *testing.T) {
 		t.Fatalf("expected dart entries in lib")
 	}
 	visited = maxDetectionEntries
-	capErr := walkDartDetectionEntry(
-		filepath.Join(repo, "lib", dartEntries[0].Name()),
-		dartEntries[0],
-		roots,
-		&detection,
-		&visited,
-	)
+	capErr := walkDartDetectionEntry(filepath.Join(repo, "lib", dartEntries[0].Name()), dartEntries[0], roots, &detection, &visited)
 	if !errors.Is(capErr, fs.SkipAll) {
 		t.Fatalf("expected SkipAll after detection cap, got %v", capErr)
 	}
@@ -330,14 +324,7 @@ flutter:
 	fileCount := maxScanFiles
 	result := scanResult{UnresolvedImports: make(map[string]int)}
 	scanned := map[string]struct{}{}
-	entryErr := scanPackageFileEntry(
-		repo,
-		filepath.Join(repo, "lib", "small.dart"),
-		map[string]dependencyInfo{},
-		scanned,
-		&fileCount,
-		&result,
-	)
+	entryErr := scanPackageFileEntry(repo, filepath.Join(repo, "lib", "small.dart"), map[string]dependencyInfo{}, scanned, &fileCount, &result)
 	if !errors.Is(entryErr, fs.SkipAll) {
 		t.Fatalf("expected SkipAll for file cap branch, got %v", entryErr)
 	}
@@ -348,15 +335,7 @@ flutter:
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	fileCount = 0
-	canceled := scanPackageRoot(
-		ctx,
-		repo,
-		manifest,
-		collectManifestRoots([]packageManifest{manifest}),
-		map[string]struct{}{},
-		&fileCount,
-		&scanResult{UnresolvedImports: map[string]int{}},
-	)
+	canceled := scanPackageRoot(ctx, repo, manifest, collectManifestRoots([]packageManifest{manifest}), map[string]struct{}{}, &fileCount, &scanResult{UnresolvedImports: map[string]int{}})
 	if !errors.Is(canceled, context.Canceled) {
 		t.Fatalf("expected context canceled from scanPackageRoot, got %v", canceled)
 	}
@@ -511,7 +490,7 @@ func TestErrorAndScanBranchCoverage(t *testing.T) {
 }
 
 func TestAdditionalBranchCoverage(t *testing.T) {
-	if got := parseShowSymbols("as foo"); got != nil {
+	if got := parseShowSymbols("as foo"); len(got) != 0 {
 		t.Fatalf("expected nil symbols when no show clause exists, got %#v", got)
 	}
 	if got := parseShowSymbols("show Foo, Foo, 1invalid"); !slices.Equal(got, []string{"Foo"}) {
@@ -535,13 +514,14 @@ func TestAdditionalBranchCoverage(t *testing.T) {
 	}
 
 	hasPluginMetadata := false
-	info := dependencyInfoFromSpec("my_plugin_android", map[any]any{
+	pluginSpec := map[any]any{
 		"path": "../local",
 		"sdk":  "flutter",
 		"plugin": map[string]any{
 			"platforms": map[string]any{"android": map[string]any{}},
 		},
-	}, &hasPluginMetadata)
+	}
+	info := dependencyInfoFromSpec("my_plugin_android", pluginSpec, &hasPluginMetadata)
 	if !info.LocalPath || !info.FlutterSDK || !info.PluginLike || !hasPluginMetadata {
 		t.Fatalf("unexpected dependency info from spec: %#v (hasPluginMetadata=%v)", info, hasPluginMetadata)
 	}
@@ -551,18 +531,12 @@ func TestAdditionalBranchCoverage(t *testing.T) {
 		t.Fatalf("expected analyse to fail when repo path is missing")
 	}
 
-	err := scanPackageRoot(
-		context.Background(),
-		t.TempDir(),
-		packageManifest{
-			Root:         filepath.Join(t.TempDir(), "missing"),
-			Dependencies: map[string]dependencyInfo{},
-		},
-		map[string]struct{}{},
-		map[string]struct{}{},
-		new(int),
-		&scanResult{UnresolvedImports: map[string]int{}},
-	)
+	tempRepo := t.TempDir()
+	missingManifest := packageManifest{
+		Root:         filepath.Join(tempRepo, "missing"),
+		Dependencies: map[string]dependencyInfo{},
+	}
+	err := scanPackageRoot(context.Background(), tempRepo, missingManifest, map[string]struct{}{}, map[string]struct{}{}, new(int), &scanResult{UnresolvedImports: map[string]int{}})
 	if err == nil {
 		t.Fatalf("expected scanPackageRoot to fail for missing root")
 	}

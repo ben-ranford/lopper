@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -35,6 +33,12 @@ const (
 	maxScannableDartFile = 2 * 1024 * 1024
 	maxWarningSamples    = 5
 )
+
+var dartRootSignals = []shared.RootSignal{
+	{Name: pubspecYAMLName, Confidence: 60},
+	{Name: pubspecYMLName, Confidence: 60},
+	{Name: pubspecLockName, Confidence: 20},
+}
 
 type dependencyInfo struct {
 	Runtime    bool
@@ -142,25 +146,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func applyDartRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	signals := []struct {
-		name       string
-		confidence int
-	}{
-		{name: pubspecYAMLName, confidence: 60},
-		{name: pubspecYMLName, confidence: 60},
-		{name: pubspecLockName, confidence: 20},
-	}
-	for _, signal := range signals {
-		path := filepath.Join(repoPath, signal.name)
-		if _, err := os.Stat(path); err == nil {
-			detection.Matched = true
-			detection.Confidence += signal.confidence
-			roots[repoPath] = struct{}{}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
+	return shared.ApplyRootSignals(repoPath, dartRootSignals, detection, roots)
 }
 
 func walkDartDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int) error {
@@ -195,33 +181,48 @@ func walkDartDetectionEntry(path string, entry fs.DirEntry, roots map[string]str
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
-	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
+	repoPath, result, err := a.newReport(req.RepoPath)
 	if err != nil {
 		return report.Report{}, err
 	}
 
-	result := report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    repoPath,
-	}
-
-	manifests, warnings, err := collectManifestData(repoPath)
+	scan, err := a.scanRepo(ctx, repoPath, &result)
 	if err != nil {
 		return report.Report{}, err
 	}
-	result.Warnings = append(result.Warnings, warnings...)
-
-	scan, err := scanRepo(ctx, repoPath, manifests)
-	if err != nil {
-		return report.Report{}, err
-	}
-	result.Warnings = append(result.Warnings, scan.Warnings...)
 
 	dependencies, dependencyWarnings := buildRequestedDartDependencies(req, scan)
 	result.Dependencies = dependencies
 	result.Warnings = append(result.Warnings, dependencyWarnings...)
 	result.Summary = report.ComputeSummary(result.Dependencies)
 	return result, nil
+}
+
+func (a *Adapter) newReport(rawRepoPath string) (string, report.Report, error) {
+	repoPath, err := workspace.NormalizeRepoPath(rawRepoPath)
+	if err != nil {
+		return "", report.Report{}, err
+	}
+
+	return repoPath, report.Report{
+		GeneratedAt: a.Clock(),
+		RepoPath:    repoPath,
+	}, nil
+}
+
+func (a *Adapter) scanRepo(ctx context.Context, repoPath string, result *report.Report) (scanResult, error) {
+	manifests, warnings, err := collectManifestData(repoPath)
+	if err != nil {
+		return scanResult{}, err
+	}
+	result.Warnings = append(result.Warnings, warnings...)
+
+	scan, err := scanRepo(ctx, repoPath, manifests)
+	if err != nil {
+		return scanResult{}, err
+	}
+	result.Warnings = append(result.Warnings, scan.Warnings...)
+	return scan, nil
 }
 
 func collectManifestData(repoPath string) ([]packageManifest, []string, error) {
@@ -329,27 +330,11 @@ func loadPackageManifest(repoPath, manifestPath string) (packageManifest, []stri
 }
 
 func readPubspecManifest(repoPath, manifestPath string) (pubspecManifest, error) {
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
-	if err != nil {
-		return pubspecManifest{}, err
-	}
-	manifest := pubspecManifest{}
-	if err := yaml.Unmarshal(content, &manifest); err != nil {
-		return pubspecManifest{}, fmt.Errorf("parse %s: %w", manifestPath, err)
-	}
-	return manifest, nil
+	return shared.ReadYAMLUnderRepo[pubspecManifest](repoPath, manifestPath)
 }
 
 func readPubspecLock(repoPath, lockPath string) (pubspecLock, error) {
-	content, err := safeio.ReadFileUnder(repoPath, lockPath)
-	if err != nil {
-		return pubspecLock{}, err
-	}
-	lockData := pubspecLock{}
-	if err := yaml.Unmarshal(content, &lockData); err != nil {
-		return pubspecLock{}, fmt.Errorf("parse %s: %w", lockPath, err)
-	}
-	return lockData, nil
+	return shared.ReadYAMLUnderRepo[pubspecLock](repoPath, lockPath)
 }
 
 func parsePubspecDependencies(manifest pubspecManifest) (map[string]dependencyInfo, bool, bool, []string) {
@@ -544,15 +529,7 @@ func mergeDeclaredDependencies(dest map[string]dependencyInfo, incoming map[stri
 	}
 }
 
-func scanPackageRoot(
-	ctx context.Context,
-	repoPath string,
-	manifest packageManifest,
-	allRoots map[string]struct{},
-	scannedFiles map[string]struct{},
-	fileCount *int,
-	result *scanResult,
-) error {
+func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
 	root := manifest.Root
 	if root == "" {
 		root = repoPath
@@ -583,14 +560,7 @@ func scanPackageRoot(
 	})
 }
 
-func scanPackageFileEntry(
-	repoPath string,
-	path string,
-	depLookup map[string]dependencyInfo,
-	scannedFiles map[string]struct{},
-	fileCount *int,
-	result *scanResult,
-) error {
+func scanPackageFileEntry(repoPath string, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
 	if !strings.EqualFold(filepath.Ext(path), ".dart") {
 		return nil
 	}
@@ -943,24 +913,15 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	sort.Slice(dep.RiskCues, func(i, j int) bool {
 		return dep.RiskCues[i].Code < dep.RiskCues[j].Code
 	})
-	sort.Slice(dep.Recommendations, func(i, j int) bool {
-		left := recommendationPriorityRank(dep.Recommendations[i].Priority)
-		right := recommendationPriorityRank(dep.Recommendations[j].Priority)
-		if left == right {
-			return dep.Recommendations[i].Code < dep.Recommendations[j].Code
-		}
-		return left < right
-	})
+	shared.SortRecommendations(dep.Recommendations, recommendationPriorityRank)
 
 	return dep, warnings
 }
 
 func dartFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(
-		scan.Files,
-		func(file fileScan) []shared.ImportRecord { return file.Imports },
-		func(file fileScan) map[string]int { return file.Usage },
-	)
+	imports := func(file fileScan) []shared.ImportRecord { return file.Imports }
+	usage := func(file fileScan) map[string]int { return file.Usage }
+	return shared.MapFileUsages(scan.Files, imports, usage)
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
@@ -971,29 +932,10 @@ func resolveMinUsageRecommendationThreshold(value *int) int {
 }
 
 func summarizeUnresolved(unresolved map[string]int) []string {
-	if len(unresolved) == 0 {
-		return nil
-	}
-	type unresolvedItem struct {
-		dependency string
-		count      int
-	}
-	items := make([]unresolvedItem, 0, len(unresolved))
-	for dependency, count := range unresolved {
-		items = append(items, unresolvedItem{dependency: dependency, count: count})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].count == items[j].count {
-			return items[i].dependency < items[j].dependency
-		}
-		return items[i].count > items[j].count
-	})
-	if len(items) > maxWarningSamples {
-		items = items[:maxWarningSamples]
-	}
-	warnings := make([]string, 0, len(items))
-	for _, item := range items {
-		warnings = append(warnings, fmt.Sprintf("could not resolve Dart package import %q from pubspec data", item.dependency))
+	dependencies := shared.TopCountKeys(unresolved, maxWarningSamples)
+	warnings := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		warnings = append(warnings, fmt.Sprintf("could not resolve Dart package import %q from pubspec data", dependency))
 	}
 	return warnings
 }
@@ -1106,53 +1048,13 @@ func asString(value any) string {
 }
 
 func uniquePaths(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = filepath.Clean(strings.TrimSpace(value))
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	sort.Strings(result)
-	return result
+	return shared.UniqueCleanPaths(values)
 }
 
 func dedupeWarnings(warnings []string) []string {
-	seen := make(map[string]struct{}, len(warnings))
-	result := make([]string, 0, len(warnings))
-	for _, warning := range warnings {
-		warning = strings.TrimSpace(warning)
-		if warning == "" {
-			continue
-		}
-		if _, ok := seen[warning]; ok {
-			continue
-		}
-		seen[warning] = struct{}{}
-		result = append(result, warning)
-	}
-	return result
+	return shared.UniqueTrimmedStrings(warnings)
 }
 
 func dedupeStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
+	return shared.UniqueTrimmedStrings(values)
 }
