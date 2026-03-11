@@ -59,6 +59,9 @@ var (
 		"Swift",
 		"Foundation",
 		"FoundationNetworking",
+		"PackageDescription",
+		"PackagePlugin",
+		"CompilerPluginSupport",
 		"Dispatch",
 		"Darwin",
 		"Glibc",
@@ -932,9 +935,9 @@ func applyUnqualifiedUsageHeuristic(content []byte, imports []importBinding, usa
 func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding) bool {
 	importModules := importedModuleSet(imports)
 	localDeclaredSymbols := collectLocalDeclaredSymbols(content)
-	lines := strings.Split(string(content), "\n")
+	lines := swiftSymbolScanLines(content)
 	for _, rawLine := range lines {
-		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
+		line := strings.TrimSpace(rawLine)
 		if line == "" || swiftImportPattern.MatchString(line) {
 			continue
 		}
@@ -1013,11 +1016,134 @@ func isIgnoredUnqualifiedSymbol(key string, importModules map[string]struct{}, l
 	return false
 }
 
+func swiftSymbolScanLines(content []byte) []string {
+	return strings.Split(blankSwiftStringsAndComments(content), "\n")
+}
+
+func blankSwiftStringsAndComments(content []byte) string {
+	builder := strings.Builder{}
+	builder.Grow(len(content))
+
+	inString := false
+	multiline := false
+	rawHashCount := 0
+	escaped := false
+
+	for index := 0; index < len(content); {
+		if inString {
+			if matchesSwiftStringDelimiter(content, index, rawHashCount, multiline) {
+				delimiterLen := swiftStringDelimiterLength(rawHashCount, multiline)
+				builder.WriteString(strings.Repeat(" ", delimiterLen))
+				index += delimiterLen
+				inString = false
+				multiline = false
+				rawHashCount = 0
+				escaped = false
+				continue
+			}
+
+			ch := content[index]
+			if ch == '\n' {
+				builder.WriteByte('\n')
+				index++
+				escaped = false
+				continue
+			}
+			if !multiline && rawHashCount == 0 && ch == '\\' && !escaped {
+				escaped = true
+				builder.WriteByte(' ')
+				index++
+				continue
+			}
+			escaped = false
+			builder.WriteByte(' ')
+			index++
+			continue
+		}
+
+		if startsSwiftLineComment(content, index) {
+			index = blankSwiftLineComment(content, index, &builder)
+			continue
+		}
+		hashCount, nextIndex, isMultiline, ok := detectSwiftStringStart(content, index)
+		if ok {
+			builder.WriteString(strings.Repeat(" ", nextIndex-index))
+			index = nextIndex
+			inString = true
+			multiline = isMultiline
+			rawHashCount = hashCount
+			escaped = false
+			continue
+		}
+
+		builder.WriteByte(content[index])
+		index++
+	}
+	return builder.String()
+}
+
+func detectSwiftStringStart(content []byte, index int) (int, int, bool, bool) {
+	cursor := index
+	for cursor < len(content) && content[cursor] == '#' {
+		cursor++
+	}
+	if cursor >= len(content) || content[cursor] != '"' {
+		return 0, index, false, false
+	}
+	hashCount := cursor - index
+	if cursor+2 < len(content) && content[cursor+1] == '"' && content[cursor+2] == '"' {
+		return hashCount, cursor + 3, true, true
+	}
+	return hashCount, cursor + 1, false, true
+}
+
+func matchesSwiftStringDelimiter(content []byte, index int, rawHashCount int, multiline bool) bool {
+	delimiterLen := swiftStringDelimiterLength(rawHashCount, multiline)
+	if index+delimiterLen > len(content) {
+		return false
+	}
+	quoteCount := 1
+	if multiline {
+		quoteCount = 3
+	}
+	for offset := 0; offset < quoteCount; offset++ {
+		if content[index+offset] != '"' {
+			return false
+		}
+	}
+	for offset := 0; offset < rawHashCount; offset++ {
+		if content[index+quoteCount+offset] != '#' {
+			return false
+		}
+	}
+	return true
+}
+
+func swiftStringDelimiterLength(rawHashCount int, multiline bool) int {
+	quoteCount := 1
+	if multiline {
+		quoteCount = 3
+	}
+	return quoteCount + rawHashCount
+}
+
+func startsSwiftLineComment(content []byte, index int) bool {
+	return index+1 < len(content) && content[index] == '/' && content[index+1] == '/'
+}
+
+func blankSwiftLineComment(content []byte, index int, builder *strings.Builder) int {
+	for index < len(content) && content[index] != '\n' {
+		builder.WriteByte(' ')
+		index++
+	}
+	return index
+}
+
 func collectLocalDeclaredSymbols(content []byte) map[string]struct{} {
 	localDeclaredSymbols := make(map[string]struct{})
-	lines := strings.Split(string(content), "\n")
+	lines := swiftSymbolScanLines(content)
 	for _, rawLine := range lines {
-		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
+		line := strings.TrimSpace(rawLine)
 		if line == "" || swiftImportPattern.MatchString(line) {
 			continue
 		}

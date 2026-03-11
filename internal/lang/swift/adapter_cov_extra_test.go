@@ -132,6 +132,9 @@ func TestSwiftLookupHelpers(t *testing.T) {
 	if shouldTrackUnresolvedImport("Foundation", catalog) {
 		t.Fatalf("expected stdlib import to be ignored")
 	}
+	if shouldTrackUnresolvedImport("PackageDescription", catalog) {
+		t.Fatalf("expected SwiftPM manifest import to be ignored")
+	}
 	if shouldTrackUnresolvedImport("Demo", catalog) {
 		t.Fatalf("expected local module import to be ignored")
 	}
@@ -336,12 +339,21 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nstruct Session {}\nlet value = Session()"), singleDep, map[string]int{}); len(got) != 0 {
 		t.Fatalf("expected local declarations to avoid inferred usage, got %#v", got)
 	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = \"Session.default\""), singleDep, map[string]int{}); len(got) != 0 {
+		t.Fatalf("expected string literals to avoid inferred usage, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = \"\"\"\nSession.default\n\"\"\""), singleDep, map[string]int{}); len(got) != 0 {
+		t.Fatalf("expected multiline string literals to avoid inferred usage, got %#v", got)
+	}
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep, map[string]int{}); got["Session"] != 1 {
 		t.Fatalf("expected inferred unqualified usage, got %#v", got)
 	}
 
 	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: URL? = nil"), singleDep) {
 		t.Fatalf("expected standard Swift symbols to be ignored")
+	}
+	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value = \"Session.default\""), singleDep) {
+		t.Fatalf("expected string literal contents to be ignored")
 	}
 	if !hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep) {
 		t.Fatalf("expected non-standard symbol usage to be detected")
@@ -542,6 +554,50 @@ func TestSwiftFinalHelperBranches(t *testing.T) {
 	}
 	if detection.Matched {
 		t.Fatalf("expected Swift files in skipped dirs to be ignored, got %#v", detection)
+	}
+}
+
+func TestSwiftStringSanitizerHelpers(t *testing.T) {
+	if hashCount, nextIndex, multiline, ok := detectSwiftStringStart([]byte("value"), 0); ok || hashCount != 0 || nextIndex != 0 || multiline {
+		t.Fatalf("expected non-string prefix to be rejected, got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
+	}
+	if hashCount, nextIndex, multiline, ok := detectSwiftStringStart([]byte(`#"value"#`), 0); !ok || hashCount != 1 || nextIndex != 2 || multiline {
+		t.Fatalf("expected raw string prefix to be detected, got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
+	}
+	if hashCount, nextIndex, multiline, ok := detectSwiftStringStart([]byte(`##"""value"""##`), 0); !ok || hashCount != 2 || nextIndex != 5 || !multiline {
+		t.Fatalf("expected raw multiline string prefix to be detected, got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
+	}
+
+	if matchesSwiftStringDelimiter([]byte(`"`), 1, 0, false) {
+		t.Fatalf("expected out-of-range delimiter check to fail")
+	}
+	if matchesSwiftStringDelimiter([]byte(`'`), 0, 0, false) {
+		t.Fatalf("expected non-quote delimiter check to fail")
+	}
+	if !matchesSwiftStringDelimiter([]byte(`"##`), 0, 2, false) {
+		t.Fatalf("expected raw single-line delimiter to match")
+	}
+	if !matchesSwiftStringDelimiter([]byte(`"""##`), 0, 2, true) {
+		t.Fatalf("expected raw multiline delimiter to match")
+	}
+
+	sanitized := blankSwiftStringsAndComments([]byte("let quoted = \"Session.default\"\nlet raw = ##\"NetworkSession()\"##\nlet block = \"\"\"\nRunner.build()\n\"\"\"\n// struct Hidden {}\nstruct Visible {}\n"))
+	if strings.Contains(sanitized, "Session") || strings.Contains(sanitized, "Runner") || strings.Contains(sanitized, "Hidden") {
+		t.Fatalf("expected sanitized content to blank strings and comments, got %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "struct Visible") {
+		t.Fatalf("expected non-string code to remain visible, got %q", sanitized)
+	}
+
+	symbols := collectLocalDeclaredSymbols([]byte("let value = \"struct Hidden {}\"\n// protocol Masked {}\nstruct Visible {}\n"))
+	if _, ok := symbols[lookupKey("Hidden")]; ok {
+		t.Fatalf("expected string literal declarations to be ignored, got %#v", symbols)
+	}
+	if _, ok := symbols[lookupKey("Masked")]; ok {
+		t.Fatalf("expected comment declarations to be ignored, got %#v", symbols)
+	}
+	if _, ok := symbols[lookupKey("Visible")]; !ok {
+		t.Fatalf("expected real declaration to remain, got %#v", symbols)
 	}
 }
 
