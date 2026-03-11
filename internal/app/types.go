@@ -67,13 +67,12 @@ type DashboardRepo struct {
 }
 
 type DashboardRequest struct {
-	Repos             []DashboardRepo
-	ConfigPath        string
-	Format            string
-	OutputPath        string
-	TopN              int
-	DefaultLanguage   string
-	BaselineStorePath string
+	Repos           []DashboardRepo
+	ConfigPath      string
+	Format          string
+	OutputPath      string
+	TopN            int
+	DefaultLanguage string
 }
 
 func DefaultRequest() Request {

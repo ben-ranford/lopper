@@ -26,9 +26,9 @@ Options:
   --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
   --runtime-test-command CMD Run command with JS/TS runtime hooks to capture trace before analysis
-  --repos PATH1,PATH2       Comma-separated repo paths for org dashboard input
-  --include GLOBS          Comma-separated include path globs (repeatable; CLI overrides config scope.include)
-  --exclude GLOBS          Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
+  --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
+  --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
+  --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
   --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
   --output PATH, -o PATH     Write command output to file instead of stdout

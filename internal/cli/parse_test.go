@@ -315,7 +315,7 @@ func TestParseArgsAnalyseSuggestOnly(t *testing.T) {
 func TestParseArgsDashboardRepos(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"dashboard",
-		dashboardReposFlagName, "./api, ./frontend,./api",
+		dashboardReposFlagName, "./api, ./frontend,./api/,api/..//api",
 		dashboardFormatFlagName, "html",
 		"--top", "25",
 		languageFlagName, "all",
@@ -328,7 +328,7 @@ func TestParseArgsDashboardRepos(t *testing.T) {
 	if len(req.Dashboard.Repos) != 2 {
 		t.Fatalf("expected two repos after dedupe, got %#v", req.Dashboard.Repos)
 	}
-	if req.Dashboard.Repos[0].Path != "./api" || req.Dashboard.Repos[1].Path != "./frontend" {
+	if req.Dashboard.Repos[0].Path != filepath.Clean("./api") || req.Dashboard.Repos[1].Path != filepath.Clean("./frontend") {
 		t.Fatalf("unexpected dashboard repo paths: %#v", req.Dashboard.Repos)
 	}
 	if req.Dashboard.Format != "html" {
@@ -342,6 +342,13 @@ func TestParseArgsDashboardRepos(t *testing.T) {
 	}
 	if req.Dashboard.OutputPath != "org-report.html" {
 		t.Fatalf("expected dashboard output path, got %q", req.Dashboard.OutputPath)
+	}
+}
+
+func TestParseArgsDashboardRejectsBaselineStore(t *testing.T) {
+	err := expectParseArgsError(t, []string{"dashboard", "--repos", "./api", "--baseline-store", "./baselines"}, "expected dashboard baseline-store rejection")
+	if !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("expected unknown flag error for baseline-store, got %v", err)
 	}
 }
 

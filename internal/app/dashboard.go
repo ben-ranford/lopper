@@ -191,33 +191,36 @@ func (a *App) runDashboardAnalyses(ctx context.Context, request DashboardRequest
 		maxWorkers = len(repos)
 	}
 
-	workers := make(chan struct{}, maxWorkers)
+	jobs := make(chan int)
 	var waitGroup sync.WaitGroup
 
-	for index, repoInput := range repos {
-		index := index
-		repoInput := repoInput
+	for workerIndex := 0; workerIndex < maxWorkers; workerIndex++ {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			workers <- struct{}{}
-			defer func() { <-workers }()
+			for index := range jobs {
+				repoInput := repos[index]
+				reportData, err := a.Analyzer.Analyse(ctx, analysis.Request{
+					RepoPath:       repoInput.Path,
+					TopN:           topN,
+					ScopeMode:      analysis.ScopeModeRepo,
+					Language:       repoInput.Language,
+					RuntimeProfile: "node-import",
+				})
 
-			reportData, err := a.Analyzer.Analyse(ctx, analysis.Request{
-				RepoPath:       repoInput.Path,
-				TopN:           topN,
-				ScopeMode:      analysis.ScopeModeRepo,
-				Language:       repoInput.Language,
-				RuntimeProfile: "node-import",
-			})
-
-			results[index] = dashboard.RepoAnalysis{
-				Input:  repoInput,
-				Report: reportData,
-				Err:    err,
+				results[index] = dashboard.RepoAnalysis{
+					Input:  repoInput,
+					Report: reportData,
+					Err:    err,
+				}
 			}
 		}()
 	}
+
+	for index := range repos {
+		jobs <- index
+	}
+	close(jobs)
 
 	waitGroup.Wait()
 	return results

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
@@ -111,7 +112,6 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 	formatFlag := fs.String("format", "", "dashboard output format")
 	topFlag := fs.Int("top", req.Dashboard.TopN, "top N dependencies per repo")
 	languageFlag := fs.String("language", "", "default language adapter for repos")
-	baselineStoreFlag := fs.String("baseline-store", req.Dashboard.BaselineStorePath, "baseline snapshot directory")
 	outputFlag := fs.String("output", req.Dashboard.OutputPath, "output file path")
 	outputShortFlag := fs.String("o", req.Dashboard.OutputPath, "output file path")
 
@@ -146,13 +146,12 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 
 	req.Mode = app.ModeDashboard
 	req.Dashboard = app.DashboardRequest{
-		Repos:             dashboardRepos,
-		ConfigPath:        strings.TrimSpace(*configFlag),
-		Format:            strings.TrimSpace(*formatFlag),
-		OutputPath:        outputPath,
-		TopN:              *topFlag,
-		DefaultLanguage:   strings.TrimSpace(*languageFlag),
-		BaselineStorePath: strings.TrimSpace(*baselineStoreFlag),
+		Repos:           dashboardRepos,
+		ConfigPath:      strings.TrimSpace(*configFlag),
+		Format:          strings.TrimSpace(*formatFlag),
+		OutputPath:      outputPath,
+		TopN:            *topFlag,
+		DefaultLanguage: strings.TrimSpace(*languageFlag),
 	}
 
 	return req, nil
@@ -454,15 +453,16 @@ func splitRepoList(value string) []string {
 	repos := make([]string, 0, len(parts))
 	seen := make(map[string]struct{}, len(parts))
 	for _, part := range parts {
-		path := strings.TrimSpace(part)
-		if path == "" {
+		trimmedPath := strings.TrimSpace(part)
+		if trimmedPath == "" {
 			continue
 		}
-		if _, ok := seen[path]; ok {
+		normalizedPath := filepath.Clean(trimmedPath)
+		if _, ok := seen[normalizedPath]; ok {
 			continue
 		}
-		seen[path] = struct{}{}
-		repos = append(repos, path)
+		seen[normalizedPath] = struct{}{}
+		repos = append(repos, normalizedPath)
 	}
 	if len(repos) == 0 {
 		return nil
