@@ -791,7 +791,7 @@ func isLargeSwiftFile(entry fs.DirEntry) bool {
 	return err == nil && info.Size() > maxScannableSwiftFile
 }
 
-func (s *repoScanner) relativePath(path string, fallback string) string {
+func (s *repoScanner) relativePath(path, fallback string) string {
 	relPath, err := filepath.Rel(s.repoPath, path)
 	if err != nil {
 		return fallback
