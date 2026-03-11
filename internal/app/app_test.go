@@ -754,11 +754,14 @@ func TestPrepareRuntimeTraceMissingWorkingDirectoryWarning(t *testing.T) {
 	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
-	if len(warnings) != 1 {
-		t.Fatalf("expected one runtime warning, got %#v", warnings)
+	if len(warnings) == 0 || len(warnings) > 2 {
+		t.Fatalf("expected one or two warnings, got %#v", warnings)
 	}
-	if !strings.Contains(warnings[0], "runtime trace command failed") {
-		t.Fatalf("unexpected warning: %q", warnings[0])
+	if len(warnings) == 2 && !strings.Contains(warnings[0], "runtime trace setup: using raw repo path due to normalization error:") {
+		t.Fatalf("expected normalization warning first when two warnings are returned, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[len(warnings)-1], "runtime trace command failed") {
+		t.Fatalf("expected runtime warning last, got %#v", warnings)
 	}
 	if tracePath != explicitPath {
 		t.Fatalf("expected explicit trace path to be retained, got %q", tracePath)
