@@ -15,6 +15,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/golang"
 	"github.com/ben-ranford/lopper/internal/lang/js"
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
+	"github.com/ben-ranford/lopper/internal/lang/kotlinandroid"
 	"github.com/ben-ranford/lopper/internal/lang/php"
 	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/lang/ruby"
@@ -46,6 +47,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(jvm.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(kotlinandroid.NewAdapter())
 	}
 	if err == nil {
 		err = registry.Register(golang.NewAdapter())

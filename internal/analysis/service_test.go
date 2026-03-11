@@ -65,16 +65,83 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "go", "php", "ruby", "rust", "dotnet", "elixir"} {
+	for _, expectedLanguage := range []string{"js-ts", "python", "cpp", "jvm", "kotlin-android", "go", "php", "ruby", "rust", "dotnet", "elixir"} {
 		if !slices.Contains(languages, expectedLanguage) {
 			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
 		}
 	}
-	if len(reportData.LanguageBreakdown) < 10 {
+	if len(reportData.LanguageBreakdown) < 11 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 	if reportData.Scope == nil || reportData.Scope.Mode != ScopeModePackage || len(reportData.Scope.Packages) == 0 {
 		t.Fatalf("expected scope metadata with analyzed packages, got %#v", reportData.Scope)
+	}
+}
+
+func TestServiceAnalyseKotlinAndroidPackageScopeAvoidsRootOverlapDoubleCount(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "settings.gradle"), "rootProject.name = 'demo'\ninclude ':app'\n")
+	writeFile(t, filepath.Join(repo, "build.gradle"), "plugins { id 'com.android.application' version '8.5.0' apply false }\n")
+	writeFile(t, filepath.Join(repo, "app", "build.gradle"), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
+	writeFile(t, filepath.Join(repo, "app", "src", "main", "kotlin", "com", "example", "Main.kt"), `
+package com.example
+
+import androidx.core.view.isVisible
+
+class Main {
+  fun x(v: android.view.View) {
+    v.isVisible = true
+  }
+}
+`)
+
+	service := NewService()
+	repoReport, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "core-ktx",
+		Language:   "kotlin-android",
+		ScopeMode:  ScopeModeRepo,
+	})
+	if err != nil {
+		t.Fatalf("analyse repo scope: %v", err)
+	}
+	packageReport, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "core-ktx",
+		Language:   "kotlin-android",
+		ScopeMode:  ScopeModePackage,
+	})
+	if err != nil {
+		t.Fatalf("analyse package scope: %v", err)
+	}
+
+	if packageReport.Scope == nil || len(packageReport.Scope.Packages) != 1 || packageReport.Scope.Packages[0] != "app" {
+		t.Fatalf("expected package scope to include only app root, got %#v", packageReport.Scope)
+	}
+	if len(repoReport.Dependencies) != 1 || len(packageReport.Dependencies) != 1 {
+		t.Fatalf("expected one dependency in each scope, repo=%d package=%d", len(repoReport.Dependencies), len(packageReport.Dependencies))
+	}
+	repoDep := repoReport.Dependencies[0]
+	packageDep := packageReport.Dependencies[0]
+	if packageDep.UsedExportsCount != repoDep.UsedExportsCount {
+		t.Fatalf("expected package scope used exports to match repo scope after root pruning, repo=%d package=%d", repoDep.UsedExportsCount, packageDep.UsedExportsCount)
+	}
+	if len(packageDep.UsedImports) == 0 || len(repoDep.UsedImports) == 0 {
+		t.Fatalf("expected import usage evidence in both scopes")
+	}
+	if len(packageDep.UsedImports[0].Locations) != len(repoDep.UsedImports[0].Locations) {
+		t.Fatalf("expected package scope import locations to match repo scope after root pruning, repo=%d package=%d", len(repoDep.UsedImports[0].Locations), len(packageDep.UsedImports[0].Locations))
+	}
+
+	lockWarning := "gradle.lockfile not found; dependency versions may be incomplete"
+	warningCount := 0
+	for _, warning := range packageReport.Warnings {
+		if warning == lockWarning {
+			warningCount++
+		}
+	}
+	if warningCount != 1 {
+		t.Fatalf("expected one missing lockfile warning in package scope, got %d warnings: %#v", warningCount, packageReport.Warnings)
 	}
 }
 
