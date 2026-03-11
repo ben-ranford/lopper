@@ -70,6 +70,18 @@ func TestLoadAndParseFormat(t *testing.T) {
 	if _, err := ParseFormat("json"); err != nil {
 		t.Fatalf("parse json format: %v", err)
 	}
+	if _, err := ParseFormat("cyclonedx-json"); err != nil {
+		t.Fatalf("parse cyclonedx-json format: %v", err)
+	}
+	if _, err := ParseFormat("cyclonedx-xml"); err != nil {
+		t.Fatalf("parse cyclonedx-xml format: %v", err)
+	}
+	if _, err := ParseFormat("spdx-json"); err != nil {
+		t.Fatalf("parse spdx-json format: %v", err)
+	}
+	if _, err := ParseFormat("spdx-tv"); err != nil {
+		t.Fatalf("parse spdx-tv format: %v", err)
+	}
 	if _, err := ParseFormat("nope"); err == nil {
 		t.Fatalf("expected unknown format error")
 	}

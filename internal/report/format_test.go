@@ -1,19 +1,59 @@
 package report
 
 import (
+	"encoding/json"
+	"encoding/xml"
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
-const unexpectedErrFmt = "unexpected error: %v"
+const (
+	unexpectedErrFmt         = "unexpected error: %v"
+	formatTestGPL30OnlyUpper = "GPL-3.0-ONLY"
+	testSHA256               = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+func assertOutputContains(t *testing.T, output string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected output to contain %q", value)
+		}
+	}
+}
+
+func sampleEffectivePolicy(source string, failOnIncrease, lowConfidence, minUsage int, usageWeight, impactWeight, confidenceWeight float64) *EffectivePolicy {
+	return &EffectivePolicy{
+		Sources: []string{source},
+		Thresholds: EffectiveThresholds{
+			FailOnIncreasePercent:             failOnIncrease,
+			LowConfidenceWarningPercent:       lowConfidence,
+			MinUsagePercentForRecommendations: minUsage,
+		},
+		RemovalCandidateWeights: RemovalCandidateWeights{
+			Usage:      usageWeight,
+			Impact:     impactWeight,
+			Confidence: confidenceWeight,
+		},
+	}
+}
 
 func TestFormatTable(t *testing.T) {
 	reportData := Report{
+		UsageUncertainty: &UsageUncertainty{ConfirmedImportUses: 5, UncertainImportUses: 1},
+		Scope: &ScopeMetadata{
+			Mode:     "package",
+			Packages: []string{".", "packages/a"},
+		},
 		EffectiveThresholds: &EffectiveThresholds{
 			FailOnIncreasePercent:             2,
 			LowConfidenceWarningPercent:       35,
 			MinUsagePercentForRecommendations: 45,
+			MaxUncertainImportCount:           1,
 		},
+		EffectivePolicy: sampleEffectivePolicy("repo", 2, 35, 45, 0.6, 0.2, 0.2),
 		LanguageBreakdown: []LanguageSummary{
 			{Language: "js-ts", DependencyCount: 1, UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20.0},
 		},
@@ -24,32 +64,38 @@ func TestFormatTable(t *testing.T) {
 				UsedExportsCount:     2,
 				TotalExportsCount:    10,
 				EstimatedUnusedBytes: 1024,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   3,
+					Correlation: RuntimeCorrelationOverlap,
+				},
 				TopUsedSymbols: []SymbolUsage{
 					{Name: "map", Count: 3},
 				},
 			},
 		},
 	}
+	reportData.EffectivePolicy.Sources = []string{"repo", "defaults"}
 
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "lodash") {
-		t.Fatalf("expected output to include dependency name")
+	expected := []string{
+		"lodash",
+		"Language",
+		"Languages:",
+		"Effective thresholds:",
+		"Usage certainty: confirmed imports=5, uncertain imports=1",
+		"Effective policy:",
+		"Scope:",
+		"mode: package",
+		"packages: ., packages/a",
+		"sources: repo > defaults",
+		"map",
+		"Runtime",
+		"overlap (3 loads)",
 	}
-	if !strings.Contains(output, "Language") {
-		t.Fatalf("expected output to include language column")
-	}
-	if !strings.Contains(output, "Languages:") {
-		t.Fatalf("expected output to include language breakdown")
-	}
-	if !strings.Contains(output, "Effective thresholds:") {
-		t.Fatalf("expected output to include effective thresholds")
-	}
-	if !strings.Contains(output, "map") {
-		t.Fatalf("expected output to include top symbol")
-	}
+	assertOutputContains(t, output, expected...)
 }
 
 func TestFormatJSON(t *testing.T) {
@@ -58,36 +104,271 @@ func TestFormatJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "repoPath") {
-		t.Fatalf("expected json output to include repoPath")
+	assertOutputContains(t, output, "repoPath")
+}
+
+func TestFormatSARIF(t *testing.T) {
+	reportData := sampleSARIFReport()
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
 	}
+	assertOutputContains(t, output, "\"version\": \"2.1.0\"", "lopper/waste/unused-import", "src/main.ts")
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected valid SARIF JSON: %v", err)
+	}
+	if payload["version"] != "2.1.0" {
+		t.Fatalf("expected SARIF version 2.1.0, got %#v", payload["version"])
+	}
+}
+
+func sampleSBOMReport() Report {
+	return Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		RepoPath:    ".",
+		Dependencies: []DependencyReport{
+			{
+				Language:          "js-ts",
+				Name:              "lodash",
+				UsedExportsCount:  1,
+				TotalExportsCount: 4,
+				License: &DependencyLicense{
+					SPDX: "MIT",
+				},
+				Provenance: &DependencyProvenance{
+					Signals: []string{
+						"version:4.17.21",
+						"sha256:" + testSHA256,
+					},
+				},
+				Recommendations: []Recommendation{
+					{Code: "remove-unused-dependency", Priority: "high"},
+				},
+			},
+			{
+				Language:          "python",
+				Name:              "requests",
+				UsedExportsCount:  3,
+				TotalExportsCount: 4,
+				License: &DependencyLicense{
+					Unknown: true,
+				},
+			},
+		},
+	}
+}
+
+func TestFormatCycloneDXJSON(t *testing.T) {
+	output, err := NewFormatter().Format(sampleSBOMReport(), FormatCycloneDXJSON)
+	if err != nil {
+		t.Fatalf("format cyclonedx-json: %v", err)
+	}
+
+	var payload cyclonedxBOM
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected valid CycloneDX JSON output: %v", err)
+	}
+	if payload.BOMFormat != "CycloneDX" {
+		t.Fatalf("expected CycloneDX bom format, got %q", payload.BOMFormat)
+	}
+	if payload.SpecVersion != cycloneDXSpecVersion {
+		t.Fatalf("expected CycloneDX spec %q, got %q", cycloneDXSpecVersion, payload.SpecVersion)
+	}
+	if len(payload.Components) != 2 {
+		t.Fatalf("expected 2 components, got %d", len(payload.Components))
+	}
+	first := payload.Components[0]
+	if first.Name != "lodash" {
+		t.Fatalf("expected sorted first component lodash, got %q", first.Name)
+	}
+	if first.PURL != "pkg:npm/lodash@4.17.21" {
+		t.Fatalf("unexpected purl for lodash: %q", first.PURL)
+	}
+	if len(first.Hashes) != 1 || first.Hashes[0].Algorithm != "SHA-256" || first.Hashes[0].Content != testSHA256 {
+		t.Fatalf("unexpected cyclonedx hash block: %#v", first.Hashes)
+	}
+	propertyValues := map[string]string{}
+	for _, property := range first.Properties {
+		propertyValues[property.Name] = property.Value
+	}
+	if propertyValues["lopper:waste-score"] != "75.0" {
+		t.Fatalf("expected waste score property 75.0, got %#v", propertyValues)
+	}
+	if propertyValues["lopper:used-percent"] != "25.0" {
+		t.Fatalf("expected used percent property 25.0, got %#v", propertyValues)
+	}
+	if propertyValues["lopper:recommendation"] != "remove-unused-dependency" {
+		t.Fatalf("expected recommendation property, got %#v", propertyValues)
+	}
+}
+
+func TestFormatCycloneDXXML(t *testing.T) {
+	output, err := NewFormatter().Format(sampleSBOMReport(), FormatCycloneDXXML)
+	if err != nil {
+		t.Fatalf("format cyclonedx-xml: %v", err)
+	}
+	assertOutputContains(t, output, `<?xml version="1.0" encoding="UTF-8"?>`, `<bom`, `<components>`, `<purl>pkg:npm/lodash@4.17.21</purl>`)
+
+	var payload cyclonedxXMLBOM
+	if err := xml.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected valid CycloneDX XML output: %v", err)
+	}
+	if payload.SpecVersion != cycloneDXSpecVersion {
+		t.Fatalf("expected CycloneDX XML spec %q, got %q", cycloneDXSpecVersion, payload.SpecVersion)
+	}
+	if payload.Components == nil || len(payload.Components.Components) != 2 {
+		t.Fatalf("expected 2 CycloneDX XML components, got %#v", payload.Components)
+	}
+	if payload.Components.Components[0].Name != "lodash" {
+		t.Fatalf("expected sorted first xml component lodash, got %q", payload.Components.Components[0].Name)
+	}
+}
+
+func TestFormatSPDXJSON(t *testing.T) {
+	output, err := NewFormatter().Format(sampleSBOMReport(), FormatSPDXJSON)
+	if err != nil {
+		t.Fatalf("format spdx-json: %v", err)
+	}
+
+	var payload spdxDocument
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected valid SPDX JSON output: %v", err)
+	}
+	if payload.SPDXVersion != spdxVersion {
+		t.Fatalf("expected SPDX version %q, got %q", spdxVersion, payload.SPDXVersion)
+	}
+	if len(payload.Packages) != 2 {
+		t.Fatalf("expected 2 SPDX packages, got %d", len(payload.Packages))
+	}
+	first := payload.Packages[0]
+	if first.Name != "lodash" {
+		t.Fatalf("expected first SPDX package to be lodash, got %q", first.Name)
+	}
+	if len(first.ExternalRefs) != 1 || first.ExternalRefs[0].ReferenceLocator != "pkg:npm/lodash@4.17.21" {
+		t.Fatalf("unexpected SPDX external refs: %#v", first.ExternalRefs)
+	}
+	if first.LicenseConcluded != "MIT" || first.LicenseDeclared != "MIT" {
+		t.Fatalf("unexpected SPDX license mapping: %#v", first)
+	}
+	if len(first.Checksums) != 1 || first.Checksums[0].ChecksumValue != testSHA256 {
+		t.Fatalf("unexpected SPDX checksum mapping: %#v", first.Checksums)
+	}
+	if !strings.Contains(first.Comment, "lopper:waste-score=75.0") {
+		t.Fatalf("expected lopper metadata in SPDX package comment, got %q", first.Comment)
+	}
+	if len(payload.Relationships) != 2 {
+		t.Fatalf("expected document relationships for each package, got %#v", payload.Relationships)
+	}
+}
+
+func TestFormatSPDXTagValue(t *testing.T) {
+	output, err := NewFormatter().Format(sampleSBOMReport(), FormatSPDXTagValue)
+	if err != nil {
+		t.Fatalf("format spdx-tv: %v", err)
+	}
+	assertOutputContains(
+		t,
+		output,
+		"SPDXVersion: SPDX-2.3",
+		"DataLicense: CC0-1.0",
+		"PackageName: lodash",
+		"ExternalRef: PACKAGE-MANAGER purl pkg:npm/lodash@4.17.21",
+		"PackageChecksum: SHA256: "+testSHA256,
+		"PackageComment: lopper:waste-score=75.0; lopper:used-percent=25.0; lopper:recommendation=remove-unused-dependency",
+		"Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-1",
+	)
+}
+
+func TestFormatPRComment(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{
+				DependencyCountDelta: 2,
+				UsedPercentDelta:     -1.2,
+				WastePercentDelta:    1.2,
+				UnusedBytesDelta:     1024,
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Name: "lodash", Language: "js-ts", UsedPercentDelta: -2.5, UsedExportsCountDelta: -1, TotalExportsCountDelta: 0, EstimatedUnusedBytesDelta: 512},
+			},
+			Regressions: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Name: "lodash", Language: "js-ts", WastePercentDelta: 2.5},
+			},
+			UnchangedRows: 3,
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment: %v", err)
+	}
+	assertOutputContains(t, output, "## Lopper (Delta)", "| Dependency count | +2 |", "| Estimated unused bytes | +1.0 KB |", "### Dependency deltas", "`lodash`", "+512.0 B")
+}
+
+func TestFormatPRCommentNoBaseline(t *testing.T) {
+	output, err := NewFormatter().Format(Report{}, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment without baseline: %v", err)
+	}
+	assertOutputContains(t, output, "## Lopper (Delta)", "_No baseline comparison available.")
+}
+
+func TestFormatPRCommentNoDependencyDeltas(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta:  SummaryDelta{},
+			Dependencies:  nil,
+			Regressions:   nil,
+			Progressions:  nil,
+			Added:         nil,
+			Removed:       nil,
+			UnchangedRows: 4,
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment with no deltas: %v", err)
+	}
+	assertOutputContains(t, output, "_No dependency-surface deltas detected._")
+}
+
+func TestFormatPRCommentIncludesNewDeniedLicenses(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{},
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{Name: "left-pad", Language: "js-ts", SPDX: formatTestGPL30OnlyUpper},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment denied licenses: %v", err)
+	}
+	assertOutputContains(t, output, "### Newly denied licenses", "left-pad", formatTestGPL30OnlyUpper)
 }
 
 func TestFormatEmptyAndWarnings(t *testing.T) {
 	reportData := Report{
 		Warnings: []string{"warning-1"},
+		Scope:    &ScopeMetadata{Mode: "repo", Packages: []string{"."}},
 		EffectiveThresholds: &EffectiveThresholds{
 			FailOnIncreasePercent:             1,
 			LowConfidenceWarningPercent:       40,
 			MinUsagePercentForRecommendations: 35,
 		},
+		EffectivePolicy: sampleEffectivePolicy("defaults", 1, 40, 35, 0.5, 0.3, 0.2),
 	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	if !strings.Contains(output, "No dependencies to report.") {
-		t.Fatalf("expected empty report marker")
-	}
-	if !strings.Contains(output, "Warnings:") {
-		t.Fatalf("expected warnings section")
-	}
-	if !strings.Contains(output, "fail_on_increase_percent") {
-		t.Fatalf("expected threshold values in empty report output")
-	}
+	assertOutputContains(t, output, "No dependencies to report.", "Scope:", "mode: repo", "Warnings:", "fail_on_increase_percent", "Effective policy:")
 }
 
-func TestFormattingHelpers(t *testing.T) {
+func TestFormattingHelpersBytesAndSymbols(t *testing.T) {
 	if got := formatBytes(0); got != "0 B" {
 		t.Fatalf("unexpected 0-byte format: %q", got)
 	}
@@ -103,8 +384,53 @@ func TestFormattingHelpers(t *testing.T) {
 	if got := formatTopSymbols([]SymbolUsage{{Name: "map", Count: 2}}); !strings.Contains(got, "map (2)") {
 		t.Fatalf("expected symbol count annotation, got %q", got)
 	}
+}
+
+func TestFormattingHelpersColumnSelection(t *testing.T) {
 	if hasLanguageColumn([]DependencyReport{{Name: "x"}}) {
 		t.Fatalf("did not expect language column without language values")
+	}
+	if hasRuntimeColumn([]DependencyReport{{Name: "x"}}) {
+		t.Fatalf("did not expect runtime column without runtime data")
+	}
+	if !hasRuntimeColumn([]DependencyReport{{Name: "x", RuntimeUsage: &RuntimeUsage{LoadCount: 1}}}) {
+		t.Fatalf("expected runtime column with runtime data")
+	}
+}
+
+func TestFormattingHelpersLicenseFields(t *testing.T) {
+	if got := formatDependencyLicense(nil); got != "unknown" {
+		t.Fatalf("expected unknown license fallback, got %q", got)
+	}
+	if got := formatDependencyLicense(&DependencyLicense{SPDX: "MIT", Denied: true}); !strings.Contains(got, "denied") {
+		t.Fatalf("expected denied license marker, got %q", got)
+	}
+	if got := formatDependencyLicense(&DependencyLicense{Unknown: true, Denied: true}); !strings.Contains(got, "denied") {
+		t.Fatalf("expected denied marker for unknown denied license, got %q", got)
+	}
+}
+
+func TestFormattingHelpersProvenanceFields(t *testing.T) {
+	if got := formatDependencyProvenance(nil); got != "-" {
+		t.Fatalf("expected dash for nil provenance, got %q", got)
+	}
+	if got := formatDependencyProvenance(&DependencyProvenance{Source: "local", Signals: []string{"manifest"}}); !strings.Contains(got, "manifest") {
+		t.Fatalf("expected provenance signal rendering, got %q", got)
+	}
+	if got := formatDependencyProvenance(&DependencyProvenance{Source: "local"}); got != "local" {
+		t.Fatalf("expected source-only provenance, got %q", got)
+	}
+	if got := formatDependencyProvenance(&DependencyProvenance{}); got != "-" {
+		t.Fatalf("expected empty provenance to render dash, got %q", got)
+	}
+}
+
+func TestFormatRuntimeUsageBranches(t *testing.T) {
+	if got := formatRuntimeUsage(&RuntimeUsage{RuntimeOnly: true}); !strings.Contains(got, "runtime-only") {
+		t.Fatalf("expected runtime-only fallback correlation, got %q", got)
+	}
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
+		t.Fatalf("expected static-only fallback correlation, got %q", got)
 	}
 }
 
@@ -141,5 +467,246 @@ func TestFormatBytesGB(t *testing.T) {
 	value := int64(1024 * 1024 * 1024)
 	if got := formatBytes(value); !strings.Contains(got, "GB") {
 		t.Fatalf("expected GB output, got %q", got)
+	}
+}
+
+func TestTopDependencyDeltasAndSignedBytesBranches(t *testing.T) {
+	deltas := []DependencyDelta{
+		{Name: "a", Language: "js", EstimatedUnusedBytesDelta: -200},
+		{Name: "b", Language: "go", EstimatedUnusedBytesDelta: 100},
+	}
+	if got := topDependencyDeltas(deltas, 0); len(got) != 0 {
+		t.Fatalf("expected nil deltas when limit <= 0, got %#v", got)
+	}
+	got := topDependencyDeltas(deltas, 10)
+	if len(got) != 2 {
+		t.Fatalf("expected full delta set when limit exceeds length, got %#v", got)
+	}
+	if got[0].Name != "a" {
+		t.Fatalf("expected magnitude sort to prioritize biggest absolute delta, got %#v", got)
+	}
+	if signedBytes(-1024) != "-1.0 KB" {
+		t.Fatalf("expected negative byte formatting branch")
+	}
+}
+
+func TestTopDependencyDeltasTieBreakers(t *testing.T) {
+	deltas := []DependencyDelta{
+		{Name: "b", Language: "z", EstimatedUnusedBytesDelta: 100},
+		{Name: "a", Language: "a", EstimatedUnusedBytesDelta: -100},
+		{Name: "c", Language: "a", EstimatedUnusedBytesDelta: 100},
+	}
+	got := topDependencyDeltas(deltas, 2)
+	if len(got) != 2 {
+		t.Fatalf("expected limited tie-breaker slice, got %#v", got)
+	}
+	if got[0].Language != "a" || got[0].Name != "a" {
+		t.Fatalf("expected language/name tie-break ordering, got %#v", got)
+	}
+}
+
+func TestFormatCandidateFields(t *testing.T) {
+	candidate := &RemovalCandidate{
+		Score:      87.34,
+		Usage:      91.2,
+		Impact:     45.6,
+		Confidence: 78.9,
+	}
+	if got := formatCandidateScore(candidate); got != "87.3" {
+		t.Fatalf("unexpected candidate score format: %q", got)
+	}
+	if got := formatScoreComponents(candidate); got != "U:91.2 I:45.6 C:78.9" {
+		t.Fatalf("unexpected score components format: %q", got)
+	}
+}
+
+func TestFormatTopSymbolsSingleCountOmitsCounter(t *testing.T) {
+	if got := formatTopSymbols([]SymbolUsage{{Name: "uniq", Count: 1}}); got != "uniq" {
+		t.Fatalf("expected single-count symbol without annotation, got %q", got)
+	}
+}
+
+func TestFormatTableIncludesSummary(t *testing.T) {
+	reportData := Report{
+		Summary: &Summary{
+			DependencyCount:   1,
+			UsedExportsCount:  2,
+			TotalExportsCount: 4,
+			UsedPercent:       50,
+		},
+		Dependencies: []DependencyReport{
+			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with summary: %v", err)
+	}
+	if !strings.Contains(output, "Summary: 1 deps, Used/Total: 2/4 (50.0%)") {
+		t.Fatalf("expected summary header in output, got %q", output)
+	}
+}
+
+func TestFormatTableIncludesCacheMetadata(t *testing.T) {
+	reportData := Report{
+		Cache: &CacheMetadata{
+			Enabled:  true,
+			Path:     "/tmp/lopper-cache",
+			ReadOnly: true,
+			Hits:     3,
+			Misses:   1,
+			Writes:   0,
+			Invalidations: []CacheInvalidation{
+				{Key: "js-ts:/repo", Reason: "input-changed"},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with cache metadata: %v", err)
+	}
+	if !strings.Contains(output, "Cache:") || !strings.Contains(output, "hits: 3") || !strings.Contains(output, "invalidation: js-ts:/repo (input-changed)") {
+		t.Fatalf("expected cache metadata in output, got %q", output)
+	}
+}
+
+func TestFormatTableIncludesBaselineComparison(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "commit:abc123",
+			CurrentKey:  "commit:def456",
+			SummaryDelta: SummaryDelta{
+				WastePercentDelta: 1.5,
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "lodash", WastePercentDelta: 3.5, UsedPercentDelta: -3.5},
+			},
+			Regressions: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "lodash", WastePercentDelta: 3.5, UsedPercentDelta: -3.5},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "lodash", Language: "js-ts", UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with baseline comparison: %v", err)
+	}
+	if !strings.Contains(output, "Baseline comparison:") {
+		t.Fatalf("expected baseline comparison section, got %q", output)
+	}
+	if !strings.Contains(output, "baseline_key: commit:abc123") {
+		t.Fatalf("expected baseline key in output, got %q", output)
+	}
+	if !strings.Contains(output, "regression js-ts/lodash") {
+		t.Fatalf("expected regression line in output, got %q", output)
+	}
+}
+
+func TestFormatTableIncludesDeniedLicenseBaselineLines(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{
+				KnownLicenseCountDelta:   1,
+				UnknownLicenseCountDelta: -1,
+				DeniedLicenseCountDelta:  1,
+			},
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{Name: "pkg-a", Language: "js-ts", SPDX: formatTestGPL30OnlyUpper},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "pkg-a", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table denied baseline lines: %v", err)
+	}
+	assertOutputContains(t, output, "license_delta:", "new denied license js-ts/pkg-a")
+}
+
+func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name: "dep",
+				RemovalCandidate: &RemovalCandidate{
+					Score: math.NaN(),
+				},
+			},
+		},
+	}
+	if _, err := NewFormatter().Format(reportData, FormatJSON); err == nil {
+		t.Fatalf("expected json marshal error for NaN candidate score")
+	}
+}
+
+func TestFormatRuntimeUsageFallbacks(t *testing.T) {
+	if got := formatRuntimeUsage(nil); got != "-" {
+		t.Fatalf("expected runtime dash for nil usage, got %q", got)
+	}
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 1, RuntimeOnly: true}); !strings.Contains(got, "runtime-only") {
+		t.Fatalf("expected runtime-only fallback, got %q", got)
+	}
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
+		t.Fatalf("expected static-only fallback, got %q", got)
+	}
+}
+
+func TestTopWasteDeltasSortingAndLimit(t *testing.T) {
+	if got := topWasteDeltas(nil, 3); len(got) != 0 {
+		t.Fatalf("expected nil for empty deltas, got %#v", got)
+	}
+	if got := topWasteDeltas([]DependencyDelta{{Name: "x", WastePercentDelta: 1}}, 0); len(got) != 0 {
+		t.Fatalf("expected nil when limit is zero, got %#v", got)
+	}
+
+	input := []DependencyDelta{
+		{Name: "c", Language: "js-ts", WastePercentDelta: 1},
+		{Name: "a", Language: "go", WastePercentDelta: -5},
+		{Name: "b", Language: "go", WastePercentDelta: 5},
+		{Name: "d", Language: "python", WastePercentDelta: 2},
+	}
+	got := topWasteDeltas(input, 3)
+	if len(got) != 3 {
+		t.Fatalf("expected top 3 deltas, got %#v", got)
+	}
+	if got[0].Language != "go" || got[0].Name != "a" {
+		t.Fatalf("expected tie-break by language/name for equal magnitudes, got %#v", got[0])
+	}
+	if got[1].Language != "go" || got[1].Name != "b" {
+		t.Fatalf("expected second tie-break result to be go/b, got %#v", got[1])
+	}
+}
+
+func TestFormatTableRuntimeColumnWithoutLanguage(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "dep",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   1,
+					Correlation: RuntimeCorrelationOverlap,
+				},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table: %v", err)
+	}
+	if !strings.Contains(output, "Runtime") {
+		t.Fatalf("expected runtime column in table output, got %q", output)
+	}
+	if strings.Contains(output, "Language\tDependency") {
+		t.Fatalf("did not expect language column in single-language runtime table")
 	}
 }

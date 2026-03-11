@@ -61,6 +61,31 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseSBOMFormats(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+		want   report.Format
+	}{
+		{name: "cyclonedx-json", format: "cyclonedx-json", want: report.FormatCycloneDXJSON},
+		{name: "cyclonedx-xml", format: "cyclonedx-xml", want: report.FormatCycloneDXXML},
+		{name: "spdx-json", format: "spdx-json", want: report.FormatSPDXJSON},
+		{name: "spdx-tv", format: "spdx-tv", want: report.FormatSPDXTagValue},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := ParseArgs([]string{"analyse", "--top", "5", "--format", tc.format})
+			if err != nil {
+				t.Fatalf(unexpectedErrFmt, err)
+			}
+			if req.Analyse.Format != tc.want {
+				t.Fatalf("expected format %q, got %q", tc.want, req.Analyse.Format)
+			}
+		})
+	}
+}
+
 func TestParseArgsAnalyseLanguage(t *testing.T) {
 	req, err := ParseArgs([]string{"analyse", "lodash", languageFlagName, "js-ts"})
 	if err != nil {

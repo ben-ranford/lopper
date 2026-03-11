@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "lopper",
+          "informationUri": "https://github.com/ben-ranford/lopper",
+          "version": "0.1.0",
+          "rules": [
+            {
+              "id": "lopper/recommendation/prefer-subpath-imports",
+              "name": "prefer-subpath-imports",
+              "shortDescription": {
+                "text": "Dependency optimization recommendation"
+              },
+              "help": {
+                "text": "Apply recommendations to reduce unused dependency surface area."
+              },
+              "properties": {
+                "category": "recommendation",
+                "code": "prefer-subpath-imports"
+              }
+            },
+            {
+              "id": "lopper/risk/dynamic-loader",
+              "name": "dynamic-loader",
+              "shortDescription": {
+                "text": "Dependency risk cue"
+              },
+              "help": {
+                "text": "Review risk cues to reduce dependency attack surface and operational uncertainty."
+              },
+              "properties": {
+                "category": "risk",
+                "code": "dynamic-loader"
+              }
+            },
+            {
+              "id": "lopper/waste/increase",
+              "name": "waste-increase",
+              "shortDescription": {
+                "text": "Dependency waste increased versus baseline"
+              },
+              "help": {
+                "text": "Compare current and baseline reports to identify the dependencies causing additional waste."
+              },
+              "properties": {
+                "category": "waste"
+              }
+            },
+            {
+              "id": "lopper/waste/unused-export",
+              "name": "unused-export",
+              "shortDescription": {
+                "text": "Dependency export appears unused"
+              },
+              "help": {
+                "text": "Prefer subpath imports or alternatives that avoid shipping unused exports."
+              },
+              "properties": {
+                "category": "waste"
+              }
+            },
+            {
+              "id": "lopper/waste/unused-import",
+              "name": "unused-import",
+              "shortDescription": {
+                "text": "Imported symbol is not referenced"
+              },
+              "help": {
+                "text": "Remove unused imports or narrow dependency usage to reduce surface area."
+              },
+              "properties": {
+                "category": "waste"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "lopper/recommendation/prefer-subpath-imports",
+          "level": "warning",
+          "message": {
+            "text": "lodash: switch to subpath imports"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main.ts"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "dependency": "lodash",
+            "language": "js-ts",
+            "priority": "high"
+          }
+        },
+        {
+          "ruleId": "lopper/risk/dynamic-loader",
+          "level": "warning",
+          "message": {
+            "text": "lodash: dynamic module loading detected"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main.ts"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "dependency": "lodash",
+            "language": "js-ts",
+            "severity": "medium"
+          }
+        },
+        {
+          "ruleId": "lopper/waste/increase",
+          "level": "warning",
+          "message": {
+            "text": "Overall dependency waste increased by 2.5% compared with baseline."
+          },
+          "properties": {
+            "wasteIncreasePercent": 2.5
+          }
+        },
+        {
+          "ruleId": "lopper/waste/unused-export",
+          "level": "warning",
+          "message": {
+            "text": "lodash does not appear to use export \"omit\" from \"lodash\"."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main.ts"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "dependency": "lodash",
+            "language": "js-ts",
+            "module": "lodash",
+            "symbol": "omit"
+          }
+        },
+        {
+          "ruleId": "lopper/waste/unused-import",
+          "level": "warning",
+          "message": {
+            "text": "lodash imports \"debounce\" from \"lodash\" but it is unused."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main.ts"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "dependency": "lodash",
+            "language": "js-ts",
+            "module": "lodash",
+            "symbol": "debounce"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -57,6 +58,52 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	}
 	if len(reportData.LanguageBreakdown) < 7 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
+	}
+}
+
+func TestServiceAnalyseSBOMOutputIntegration(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	writeFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"name\": \"lodash\",\n  \"version\": \"4.17.21\",\n  \"main\": \"index.js\"\n}\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath: repo,
+		TopN:     5,
+		Language: "js-ts",
+	})
+	if err != nil {
+		t.Fatalf("analyse for sbom integration: %v", err)
+	}
+	if len(reportData.Dependencies) == 0 {
+		t.Fatalf("expected at least one dependency from js adapter")
+	}
+
+	formatter := report.NewFormatter()
+	cycloneJSON, err := formatter.Format(reportData, report.FormatCycloneDXJSON)
+	if err != nil {
+		t.Fatalf("format cyclonedx-json from service report: %v", err)
+	}
+	if !strings.Contains(cycloneJSON, "pkg:npm/lodash") {
+		t.Fatalf("expected CycloneDX purl mapping for lodash, got %q", cycloneJSON)
+	}
+
+	spdxJSON, err := formatter.Format(reportData, report.FormatSPDXJSON)
+	if err != nil {
+		t.Fatalf("format spdx-json from service report: %v", err)
+	}
+	if !strings.Contains(spdxJSON, "\"spdxVersion\": \"SPDX-2.3\"") {
+		t.Fatalf("expected SPDX version in spdx-json output, got %q", spdxJSON)
+	}
+
+	spdxTagValue, err := formatter.Format(reportData, report.FormatSPDXTagValue)
+	if err != nil {
+		t.Fatalf("format spdx-tv from service report: %v", err)
+	}
+	if !strings.Contains(spdxTagValue, "ExternalRef: PACKAGE-MANAGER purl pkg:npm/lodash") {
+		t.Fatalf("expected SPDX tag-value purl mapping for lodash, got %q", spdxTagValue)
 	}
 }
 

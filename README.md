@@ -10,7 +10,7 @@ recommendations across supported languages.
 
 - Analyze a single dependency or rank top dependencies by waste
 - Multi-language mode (`--language all`) with per-language breakdowns
-- JSON and table output formats
+- JSON, table, and SBOM output formats (CycloneDX/SPDX)
 - Optional runtime trace annotations for JS/TS dependency loads
 - Baseline comparison and CI-friendly waste increase gating
 - Tunable thresholds via CLI flags or repo config (`.lopper.yml` / `lopper.json`)
@@ -88,6 +88,18 @@ Emit JSON report:
 
 ```bash
 lopper analyse --top 20 --repo . --language all --format json
+```
+
+Emit CycloneDX JSON SBOM:
+
+```bash
+lopper analyse --top 20 --repo . --language all --format cyclonedx-json > lopper.cdx.json
+```
+
+Emit SPDX JSON SBOM:
+
+```bash
+lopper analyse --top 20 --repo . --language all --format spdx-json > lopper.spdx.json
 ```
 
 Run with explicit threshold tuning:
@@ -201,6 +213,7 @@ Git pre-commit hook:
 ## Documentation
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- SBOM export guide: `docs/sbom-export.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Adapter and architecture extensibility: `docs/extensibility.md`
 - CI and release workflow: `docs/ci-usage.md`
