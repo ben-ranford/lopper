@@ -47,6 +47,8 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return a.executeTUI(ctx, req)
 	case ModeAnalyse:
 		return a.executeAnalyse(ctx, req)
+	case ModeDashboard:
+		return a.executeDashboard(ctx, req)
 	default:
 		return "", ErrUnknownMode
 	}

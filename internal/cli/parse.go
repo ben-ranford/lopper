@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
@@ -32,6 +33,8 @@ func ParseArgs(args []string) (app.Request, error) {
 		return parseTUI(args[1:], req)
 	case "analyse":
 		return parseAnalyse(args[1:], req)
+	case "dashboard":
+		return parseDashboard(args[1:], req)
 	default:
 		return req, fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -93,6 +96,62 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		ConfigPath:         resolvedConfigPath,
 		PolicySources:      policySources,
 		Thresholds:         resolvedThresholds,
+	}
+
+	return req, nil
+}
+
+func parseDashboard(args []string, req app.Request) (app.Request, error) {
+	args = normalizeArgs(args)
+
+	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	reposFlag := fs.String("repos", "", "comma-separated repository paths")
+	configFlag := fs.String("config", req.Dashboard.ConfigPath, "dashboard config file path")
+	formatFlag := fs.String("format", "", "dashboard output format")
+	topFlag := fs.Int("top", req.Dashboard.TopN, "top N dependencies per repo")
+	languageFlag := fs.String("language", "", "default language adapter for repos")
+	outputFlag := fs.String("output", req.Dashboard.OutputPath, "output file path")
+	outputShortFlag := fs.String("o", req.Dashboard.OutputPath, "output file path")
+
+	if err := parseFlagSet(fs, args); err != nil {
+		return req, err
+	}
+	if fs.NArg() > 0 {
+		return req, fmt.Errorf("unexpected arguments for dashboard")
+	}
+	if *topFlag <= 0 {
+		return req, fmt.Errorf("--top must be > 0")
+	}
+
+	outputPath := strings.TrimSpace(*outputFlag)
+	shortOutputPath := strings.TrimSpace(*outputShortFlag)
+	if outputPath != "" && shortOutputPath != "" && outputPath != shortOutputPath {
+		return req, fmt.Errorf("--output and -o must match when both are provided")
+	}
+	if outputPath == "" {
+		outputPath = shortOutputPath
+	}
+
+	repos := splitRepoList(*reposFlag)
+	if len(repos) == 0 && strings.TrimSpace(*configFlag) == "" {
+		return req, fmt.Errorf("dashboard requires --repos or --config")
+	}
+
+	dashboardRepos := make([]app.DashboardRepo, 0, len(repos))
+	for _, repoPath := range repos {
+		dashboardRepos = append(dashboardRepos, app.DashboardRepo{Path: repoPath})
+	}
+
+	req.Mode = app.ModeDashboard
+	req.Dashboard = app.DashboardRequest{
+		Repos:           dashboardRepos,
+		ConfigPath:      strings.TrimSpace(*configFlag),
+		Format:          strings.TrimSpace(*formatFlag),
+		OutputPath:      outputPath,
+		TopN:            *topFlag,
+		DefaultLanguage: strings.TrimSpace(*languageFlag),
 	}
 
 	return req, nil
@@ -389,6 +448,28 @@ func splitPatternList(value string) []string {
 	return patterns
 }
 
+func splitRepoList(value string) []string {
+	parts := strings.Split(value, ",")
+	repos := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		trimmedPath := strings.TrimSpace(part)
+		if trimmedPath == "" {
+			continue
+		}
+		normalizedPath := filepath.Clean(trimmedPath)
+		if _, ok := seen[normalizedPath]; ok {
+			continue
+		}
+		seen[normalizedPath] = struct{}{}
+		repos = append(repos, normalizedPath)
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+	return repos
+}
+
 func parseTUI(args []string, req app.Request) (app.Request, error) {
 	args = normalizeArgs(args)
 
@@ -472,7 +553,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size", "--repos", "--output", "-o":
 		return true
 	default:
 		return false
