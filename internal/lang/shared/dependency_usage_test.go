@@ -201,6 +201,58 @@ func TestBuildDependencyStats(t *testing.T) {
 	}
 }
 
+func TestBuildDependencyReportFromStats(t *testing.T) {
+	stats := DependencyStats{
+		UsedCount:       2,
+		TotalCount:      4,
+		UsedPercent:     50,
+		TopSymbols:      []report.SymbolUsage{{Name: "map", Count: 3}},
+		UsedImports:     []report.ImportUse{{Name: "map", Module: "lodash/map"}},
+		UnusedImports:   []report.ImportUse{{Name: "filter", Module: "lodash/filter"}},
+		WildcardImports: 1,
+	}
+
+	dependencyReport := BuildDependencyReportFromStats("lodash", "js-ts", stats)
+	if dependencyReport.Name != "lodash" || dependencyReport.Language != "js-ts" {
+		t.Fatalf("unexpected report identity fields: %#v", dependencyReport)
+	}
+	if dependencyReport.UsedExportsCount != 2 || dependencyReport.TotalExportsCount != 4 || dependencyReport.UsedPercent != 50 {
+		t.Fatalf("unexpected usage fields: %#v", dependencyReport)
+	}
+	if len(dependencyReport.TopUsedSymbols) != 1 || dependencyReport.TopUsedSymbols[0].Name != "map" {
+		t.Fatalf("unexpected top symbols: %#v", dependencyReport.TopUsedSymbols)
+	}
+	if len(dependencyReport.UsedImports) != 1 || len(dependencyReport.UnusedImports) != 1 {
+		t.Fatalf("unexpected import slices: used=%#v unused=%#v", dependencyReport.UsedImports, dependencyReport.UnusedImports)
+	}
+}
+
+func TestBuildTopSymbolsLimitsToFive(t *testing.T) {
+	symbols := buildTopSymbols(map[string]int{
+		"f": 1,
+		"e": 2,
+		"d": 3,
+		"c": 4,
+		"b": 5,
+		"a": 6,
+	})
+	if len(symbols) != 5 {
+		t.Fatalf("expected top 5 symbols, got %#v", symbols)
+	}
+	if symbols[0].Name != "a" || symbols[0].Count != 6 {
+		t.Fatalf("expected highest-count symbol first, got %#v", symbols[0])
+	}
+	if symbols[4].Name != "e" {
+		t.Fatalf("expected lowest retained symbol to be e, got %#v", symbols[4])
+	}
+}
+
+func TestHasWildcardImportFalse(t *testing.T) {
+	if HasWildcardImport([]report.ImportUse{{Name: "named", Module: "pkg"}}) {
+		t.Fatalf("expected false when no wildcard imports are present")
+	}
+}
+
 func TestListDependenciesAndTopReports(t *testing.T) {
 	files := []FileUsage{
 		{Imports: []ImportRecord{{Dependency: "Alpha"}, {Dependency: "beta"}}},

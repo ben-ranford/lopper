@@ -5,9 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -32,6 +35,8 @@ func ParseArgs(args []string) (app.Request, error) {
 		return parseTUI(args[1:], req)
 	case "analyse":
 		return parseAnalyse(args[1:], req)
+	case "dashboard":
+		return parseDashboard(args[1:], req)
 	default:
 		return req, fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -67,6 +72,10 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	if err != nil {
 		return req, err
 	}
+	resolvedNotifications, err := resolveAnalyseNotifications(visited, flags, resolvedConfigPath)
+	if err != nil {
+		return req, err
+	}
 
 	req.Mode = app.ModeAnalyse
 	req.RepoPath = strings.TrimSpace(*flags.repoPath)
@@ -93,6 +102,63 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		ConfigPath:         resolvedConfigPath,
 		PolicySources:      policySources,
 		Thresholds:         resolvedThresholds,
+		Notifications:      resolvedNotifications,
+	}
+
+	return req, nil
+}
+
+func parseDashboard(args []string, req app.Request) (app.Request, error) {
+	args = normalizeArgs(args)
+
+	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	reposFlag := fs.String("repos", "", "comma-separated repository paths")
+	configFlag := fs.String("config", req.Dashboard.ConfigPath, "dashboard config file path")
+	formatFlag := fs.String("format", "", "dashboard output format")
+	topFlag := fs.Int("top", req.Dashboard.TopN, "top N dependencies per repo")
+	languageFlag := fs.String("language", "", "default language adapter for repos")
+	outputFlag := fs.String("output", req.Dashboard.OutputPath, "output file path")
+	outputShortFlag := fs.String("o", req.Dashboard.OutputPath, "output file path")
+
+	if err := parseFlagSet(fs, args); err != nil {
+		return req, err
+	}
+	if fs.NArg() > 0 {
+		return req, fmt.Errorf("unexpected arguments for dashboard")
+	}
+	if *topFlag <= 0 {
+		return req, fmt.Errorf("--top must be > 0")
+	}
+
+	outputPath := strings.TrimSpace(*outputFlag)
+	shortOutputPath := strings.TrimSpace(*outputShortFlag)
+	if outputPath != "" && shortOutputPath != "" && outputPath != shortOutputPath {
+		return req, fmt.Errorf("--output and -o must match when both are provided")
+	}
+	if outputPath == "" {
+		outputPath = shortOutputPath
+	}
+
+	repos := splitRepoList(*reposFlag)
+	if len(repos) == 0 && strings.TrimSpace(*configFlag) == "" {
+		return req, fmt.Errorf("dashboard requires --repos or --config")
+	}
+
+	dashboardRepos := make([]app.DashboardRepo, 0, len(repos))
+	for _, repoPath := range repos {
+		dashboardRepos = append(dashboardRepos, app.DashboardRepo{Path: repoPath})
+	}
+
+	req.Mode = app.ModeDashboard
+	req.Dashboard = app.DashboardRequest{
+		Repos:           dashboardRepos,
+		ConfigPath:      strings.TrimSpace(*configFlag),
+		Format:          strings.TrimSpace(*formatFlag),
+		OutputPath:      outputPath,
+		TopN:            *topFlag,
+		DefaultLanguage: strings.TrimSpace(*languageFlag),
 	}
 
 	return req, nil
@@ -131,6 +197,9 @@ type analyseFlagValues struct {
 	includePatterns               *patternListFlag
 	excludePatterns               *patternListFlag
 	lockfileDriftPolicy           *string
+	notifyOn                      *string
+	notifySlack                   *string
+	notifyTeams                   *string
 }
 
 func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
@@ -172,6 +241,9 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		includePatterns:               includePatterns,
 		excludePatterns:               excludePatterns,
 		lockfileDriftPolicy:           fs.String("lockfile-drift-policy", req.Analyse.Thresholds.LockfileDriftPolicy, "lockfile drift policy (off, warn, fail)"),
+		notifyOn:                      fs.String("notify-on", string(req.Analyse.Notifications.Slack.Trigger), "notification trigger"),
+		notifySlack:                   fs.String("notify-slack", req.Analyse.Notifications.Slack.WebhookURL, "Slack webhook URL"),
+		notifyTeams:                   fs.String("notify-teams", req.Analyse.Notifications.Teams.WebhookURL, "Teams webhook URL"),
 	}
 	fs.Var(includePatterns, "include", "comma-separated include path globs (repeatable)")
 	fs.Var(excludePatterns, "exclude", "comma-separated exclude path globs (repeatable)")
@@ -245,6 +317,30 @@ func resolveAnalyseThresholds(fs *flag.FlagSet, values analyseFlagValues) (thres
 	return resolvedThresholds, loadResult.Scope, policySources, loadResult.ConfigPath, nil
 }
 
+func resolveAnalyseNotifications(visited map[string]bool, values analyseFlagValues, resolvedConfigPath string) (notify.Config, error) {
+	resolved := notify.DefaultConfig()
+
+	configOverrides, err := notify.LoadConfigOverrides(resolvedConfigPath)
+	if err != nil {
+		return notify.Config{}, err
+	}
+	resolved = configOverrides.Apply(resolved)
+
+	envOverrides, err := notify.LoadEnvOverrides(os.LookupEnv)
+	if err != nil {
+		return notify.Config{}, err
+	}
+	resolved = envOverrides.Apply(resolved)
+
+	cliOverrides, err := cliNotificationOverrides(visited, values)
+	if err != nil {
+		return notify.Config{}, err
+	}
+	resolved = cliOverrides.Apply(resolved)
+
+	return resolved, nil
+}
+
 func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
 	overrides := thresholds.Overrides{}
 	if visited["fail-on-increase"] {
@@ -286,6 +382,36 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["lockfile-drift-policy"] {
 		overrides.LockfileDriftPolicy = values.lockfileDriftPolicy
 	}
+	return overrides, nil
+}
+
+func cliNotificationOverrides(visited map[string]bool, values analyseFlagValues) (notify.Overrides, error) {
+	overrides := notify.Overrides{}
+
+	if visited["notify-on"] {
+		trigger, err := notify.ParseTrigger(strings.TrimSpace(*values.notifyOn))
+		if err != nil {
+			return notify.Overrides{}, err
+		}
+		overrides.GlobalTrigger = &trigger
+	}
+
+	if visited["notify-slack"] {
+		webhookURL, err := notify.ParseWebhookURL(strings.TrimSpace(*values.notifySlack), "--notify-slack")
+		if err != nil {
+			return notify.Overrides{}, err
+		}
+		overrides.SlackWebhookURL = &webhookURL
+	}
+
+	if visited["notify-teams"] {
+		webhookURL, err := notify.ParseWebhookURL(strings.TrimSpace(*values.notifyTeams), "--notify-teams")
+		if err != nil {
+			return notify.Overrides{}, err
+		}
+		overrides.TeamsWebhookURL = &webhookURL
+	}
+
 	return overrides, nil
 }
 
@@ -389,6 +515,28 @@ func splitPatternList(value string) []string {
 	return patterns
 }
 
+func splitRepoList(value string) []string {
+	parts := strings.Split(value, ",")
+	repos := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		trimmedPath := strings.TrimSpace(part)
+		if trimmedPath == "" {
+			continue
+		}
+		normalizedPath := filepath.Clean(trimmedPath)
+		if _, ok := seen[normalizedPath]; ok {
+			continue
+		}
+		seen[normalizedPath] = struct{}{}
+		repos = append(repos, normalizedPath)
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+	return repos
+}
+
 func parseTUI(args []string, req app.Request) (app.Request, error) {
 	args = normalizeArgs(args)
 
@@ -472,7 +620,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--snapshot", "--filter", "--sort", "--page-size":
+	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--notify-on", "--notify-slack", "--notify-teams", "--snapshot", "--filter", "--sort", "--page-size", "--repos", "--output", "-o":
 		return true
 	default:
 		return false
