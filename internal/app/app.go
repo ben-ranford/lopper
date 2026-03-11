@@ -143,21 +143,27 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 
 	reportData, err = a.applyBaselineIfNeeded(reportData, req.RepoPath, req.Analyse)
 	if err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateFailOnIncrease(reportData, req.Analyse.Thresholds.FailOnIncreasePercent); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateUncertaintyThreshold(reportData, req.Analyse.Thresholds.MaxUncertainImportCount); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateDeniedLicenses(reportData, req.Analyse.Thresholds.LicenseFailOnDeny); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	reportData, err = a.saveBaselineIfNeeded(reportData, req.RepoPath, req.Analyse, time.Now())
 	if err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
+	a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, nil))
 	formatted, err := a.Formatter.Format(reportData, req.Analyse.Format)
 	if err != nil {
 		return "", err
@@ -334,4 +340,30 @@ func validateDeniedLicenses(reportData report.Report, failOnDeny bool) error {
 		return ErrDeniedLicenses
 	}
 	return nil
+}
+
+func (a *App) appendNotificationWarnings(ctx context.Context, cfg notify.Config, reportData *report.Report, outcome notify.Outcome) {
+	if reportData == nil {
+		return
+	}
+	if !cfg.HasTargets() {
+		return
+	}
+	notifyWarnings := a.Notify.Dispatch(ctx, cfg, *reportData, outcome)
+	reportData.Warnings = append(reportData.Warnings, notifyWarnings...)
+}
+
+func buildNotificationOutcome(reportData report.Report, runErr error) notify.Outcome {
+	outcome := notify.Outcome{
+		WasteIncreasePercent: reportData.WasteIncreasePercent,
+	}
+	if runErr == nil {
+		return outcome
+	}
+
+	if errors.Is(runErr, ErrFailOnIncrease) || errors.Is(runErr, ErrDeniedLicenses) || errors.Is(runErr, ErrUncertaintyThresholdExceeded) {
+		outcome.Breach = true
+	}
+
+	return outcome
 }

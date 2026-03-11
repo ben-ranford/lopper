@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -44,6 +45,18 @@ type fakeTUI struct {
 	snapshotCalled bool
 	lastOptions    ui.Options
 	lastSnapshot   string
+}
+
+type fakeNotifier struct {
+	lastDelivery notify.Delivery
+	called       bool
+	err          error
+}
+
+func (f *fakeNotifier) Notify(_ context.Context, delivery notify.Delivery) error {
+	f.called = true
+	f.lastDelivery = delivery
+	return f.err
 }
 
 func (f *fakeTUI) Start(_ context.Context, opts ui.Options) error {
@@ -161,6 +174,56 @@ func TestExecuteAnalyseFailOnIncreaseThreshold(t *testing.T) {
 	}
 	if err != ErrFailOnIncrease {
 		t.Fatalf("expected ErrFailOnIncrease, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseDispatchesNotifications(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:      ".",
+			Dependencies:  []report.DependencyReport{{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+			Warnings:      []string{"existing warning"},
+			GeneratedAt:   time.Now().UTC(),
+			SchemaVersion: report.SchemaVersion,
+		},
+	}
+	slackNotifier := &fakeNotifier{err: errors.New("slack unreachable")}
+	application := &App{
+		Analyzer:  analyzer,
+		Formatter: report.NewFormatter(),
+		Notify: notify.NewDispatcher(map[notify.Channel]notify.Notifier{
+			notify.ChannelSlack: slackNotifier,
+		}),
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Notifications = notify.Config{
+		Slack: notify.ChannelConfig{
+			WebhookURL: "https://hooks.slack.com/services/A/B/SECRET",
+			Trigger:    notify.TriggerAlways,
+		},
+	}
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute analyse: %v", err)
+	}
+	if !slackNotifier.called {
+		t.Fatalf("expected notification dispatch call")
+	}
+	if slackNotifier.lastDelivery.Channel != notify.ChannelSlack {
+		t.Fatalf("expected slack delivery channel, got %q", slackNotifier.lastDelivery.Channel)
+	}
+	assertContainsAll(t, output, []string{
+		"existing warning",
+		"notification delivery failed for slack",
+		"https://hooks.slack.com",
+	})
+	if strings.Contains(output, "SECRET") {
+		t.Fatalf("expected redacted webhook warning, got %q", output)
 	}
 }
 

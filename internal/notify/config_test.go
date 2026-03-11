@@ -101,6 +101,24 @@ func TestLoadConfigOverridesErrors(t *testing.T) {
 	if _, err := LoadConfigOverrides(invalidWebhookPath); err == nil {
 		t.Fatalf("expected invalid notifications.teams.webhook error")
 	}
+
+	unknownNotificationsFieldPath := filepath.Join(t.TempDir(), "unknown-notifications.yml")
+	unknownNotificationsField := "notifications:\n  slack:\n    webhok: https://hooks.slack.com/services/A/B/SECRET\n"
+	if err := os.WriteFile(unknownNotificationsFieldPath, []byte(unknownNotificationsField), 0o600); err != nil {
+		t.Fatalf("write unknown notifications field config: %v", err)
+	}
+	if _, err := LoadConfigOverrides(unknownNotificationsFieldPath); err == nil {
+		t.Fatalf("expected unknown notifications field parse error")
+	}
+
+	unknownNotificationsFieldJSONPath := filepath.Join(t.TempDir(), "unknown-notifications.json")
+	unknownNotificationsFieldJSON := `{"notifications":{"teams":{"triger":"always","webhook":"https://outlook.office.com/webhook/JSON"}}}`
+	if err := os.WriteFile(unknownNotificationsFieldJSONPath, []byte(unknownNotificationsFieldJSON), 0o600); err != nil {
+		t.Fatalf("write unknown notifications field JSON config: %v", err)
+	}
+	if _, err := LoadConfigOverrides(unknownNotificationsFieldJSONPath); err == nil {
+		t.Fatalf("expected unknown notifications field JSON parse error")
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {

@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -83,12 +84,36 @@ func parseRawConfig(path string, data []byte) (rawConfig, error) {
 	cfg := rawConfig{}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		root := map[string]json.RawMessage{}
+		if err := json.Unmarshal(data, &root); err != nil {
 			return rawConfig{}, fmt.Errorf("invalid JSON config: %w", err)
 		}
+		notificationsRaw, ok := root["notifications"]
+		if !ok {
+			return cfg, nil
+		}
+		decoder := json.NewDecoder(bytes.NewReader(notificationsRaw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg.Notifications); err != nil {
+			return rawConfig{}, fmt.Errorf("invalid notifications config: %w", err)
+		}
 	default:
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
+		root := map[string]any{}
+		if err := yaml.Unmarshal(data, &root); err != nil {
 			return rawConfig{}, fmt.Errorf("invalid YAML config: %w", err)
+		}
+		notificationsRaw, ok := root["notifications"]
+		if !ok {
+			return cfg, nil
+		}
+		encoded, err := yaml.Marshal(notificationsRaw)
+		if err != nil {
+			return rawConfig{}, fmt.Errorf("invalid notifications config: %w", err)
+		}
+		decoder := yaml.NewDecoder(bytes.NewReader(encoded))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&cfg.Notifications); err != nil {
+			return rawConfig{}, fmt.Errorf("invalid notifications config: %w", err)
 		}
 	}
 	return cfg, nil

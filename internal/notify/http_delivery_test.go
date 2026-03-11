@@ -32,14 +32,14 @@ func TestSendWebhookJSON(t *testing.T) {
 
 	t.Run("build error", func(t *testing.T) {
 		err := sendWebhookJSON(context.Background(), &http.Client{}, "://bad-url", []byte(`{}`), buildFailedErrMsg, sendFailedErrMsg, unexpectedStatus)
-		if err == nil || err.Error() != buildFailedErrMsg {
+		if err == nil || !strings.Contains(err.Error(), buildFailedErrMsg) || err.Error() == buildFailedErrMsg {
 			t.Fatalf("expected build error, got %v", err)
 		}
 	})
 
 	t.Run("send error", func(t *testing.T) {
 		err := sendWebhookJSON(context.Background(), &http.Client{}, "http://127.0.0.1:1", []byte(`{}`), buildFailedErrMsg, sendFailedErrMsg, unexpectedStatus)
-		if err == nil || err.Error() != sendFailedErrMsg {
+		if err == nil || !strings.Contains(err.Error(), sendFailedErrMsg) || err.Error() == sendFailedErrMsg {
 			t.Fatalf("expected send error, got %v", err)
 		}
 	})
