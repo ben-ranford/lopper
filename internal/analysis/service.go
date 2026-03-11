@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/cpp"
+	"github.com/ben-ranford/lopper/internal/lang/dart"
 	"github.com/ben-ranford/lopper/internal/lang/dotnet"
 	"github.com/ben-ranford/lopper/internal/lang/elixir"
 	"github.com/ben-ranford/lopper/internal/lang/golang"
@@ -20,6 +21,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/lang/ruby"
 	"github.com/ben-ranford/lopper/internal/lang/rust"
+	"github.com/ben-ranford/lopper/internal/lang/swift"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
@@ -68,6 +70,12 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(elixir.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(swift.NewAdapter())
+	}
+	if err == nil {
+		err = registry.Register(dart.NewAdapter())
 	}
 
 	return &Service{

@@ -2,6 +2,7 @@ package app
 
 import (
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -9,8 +10,9 @@ import (
 type Mode string
 
 const (
-	ModeTUI     Mode = "tui"
-	ModeAnalyse Mode = "analyse"
+	ModeTUI       Mode = "tui"
+	ModeAnalyse   Mode = "analyse"
+	ModeDashboard Mode = "dashboard"
 
 	ScopeModeRepo            = analysis.ScopeModeRepo
 	ScopeModePackage         = analysis.ScopeModePackage
@@ -18,10 +20,11 @@ const (
 )
 
 type Request struct {
-	Mode     Mode
-	RepoPath string
-	Analyse  AnalyseRequest
-	TUI      TUIRequest
+	Mode      Mode
+	RepoPath  string
+	Analyse   AnalyseRequest
+	TUI       TUIRequest
+	Dashboard DashboardRequest
 }
 
 type AnalyseRequest struct {
@@ -47,6 +50,7 @@ type AnalyseRequest struct {
 	ConfigPath         string
 	PolicySources      []string
 	Thresholds         thresholds.Values
+	Notifications      notify.Config
 }
 
 type TUIRequest struct {
@@ -56,6 +60,21 @@ type TUIRequest struct {
 	Sort         string
 	TopN         int
 	PageSize     int
+}
+
+type DashboardRepo struct {
+	Name     string
+	Path     string
+	Language string
+}
+
+type DashboardRequest struct {
+	Repos           []DashboardRepo
+	ConfigPath      string
+	Format          string
+	OutputPath      string
+	TopN            int
+	DefaultLanguage string
 }
 
 func DefaultRequest() Request {
@@ -69,12 +88,17 @@ func DefaultRequest() Request {
 			CacheEnabled:   true,
 			RuntimeProfile: "node-import",
 			Thresholds:     thresholds.Defaults(),
+			Notifications:  notify.DefaultConfig(),
 		},
 		TUI: TUIRequest{
 			Language: "auto",
 			Sort:     "waste",
 			TopN:     50,
 			PageSize: 10,
+		},
+		Dashboard: DashboardRequest{
+			TopN:            20,
+			DefaultLanguage: "auto",
 		},
 	}
 }

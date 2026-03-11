@@ -1,13 +1,41 @@
-Summary: 2 deps, Used/Total: 5/5 (100.0%)
+Summary: 3 deps, Used/Total: 6/6 (100.0%)
+
+Licenses: known=0, unknown=3, denied=0
+
+Scope:
+- mode: package
+- packages: .
+
+Cache:
+- enabled: false
+- path: /vhs/.lopper-cache
+- readonly: false
+- hits: 0
+- misses: 0
+- writes: 0
 
 Effective thresholds:
 - fail_on_increase_percent: 0
 - low_confidence_warning_percent: 40
 - min_usage_percent_for_recommendations: 40
+- max_uncertain_import_count: 0
+
+Effective policy:
+- sources: defaults
+- fail_on_increase_percent: 0
+- low_confidence_warning_percent: 40
+- min_usage_percent_for_recommendations: 40
+- max_uncertain_import_count: 0
+- removal_candidate_weight_usage: 0.500
+- removal_candidate_weight_impact: 0.300
+- removal_candidate_weight_confidence: 0.200
+- license_fail_on_deny: false
+- license_include_registry_provenance: false
 
 Languages:
-- go: 2 deps, Used/Total: 5/5 (100.0%)
+- go: 3 deps, Used/Total: 6/6 (100.0%)
 
-Language  Dependency                         Used/Total  Used%  Est. Unused Size  Top Symbols
-go        github.com/smacker/go-tree-sitter  4/4         100.0  0 B               sitter (72), javascript, tslang, tsxlang
-go        gopkg.in/yaml.v3                   1/1         100.0  0 B               yaml (9)
+Language  Dependency                         Used/Total  Used%  License  Provenance  Est. Unused Size  Candidate Score  Score Components     Top Symbols
+go        github.com/smacker/go-tree-sitter  4/4         100.0  unknown  -           0 B               20.0             U:0.0 I:0.0 C:100.0  sitter (100), javascript, tslang, tsxlang
+go        github.com/xeipuuv/gojsonschema    1/1         100.0  unknown  -           0 B               20.0             U:0.0 I:0.0 C:100.0  gojsonschema (3)
+go        gopkg.in/yaml.v3                   1/1         100.0  unknown  -           0 B               20.0             U:0.0 I:0.0 C:100.0  yaml (49)

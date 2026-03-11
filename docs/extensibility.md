@@ -12,9 +12,12 @@ The core contracts are in `internal/language`.
 - `kotlin-android` (Kotlin/Android Gradle)
 - `go` (Go)
 - `php` (PHP)
+- `ruby` (Ruby)
 - `rust` (Rust/Cargo)
 - `dotnet` (C#/.NET)
 - `elixir` (Elixir/Mix)
+- `swift` (Swift)
+- `dart` (Dart/Flutter)
 
 ## Adapter contract
 
