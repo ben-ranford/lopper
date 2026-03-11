@@ -3,8 +3,10 @@ package cli
 const usage = `Usage:
   lopper [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
-  lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--suggest-only]
-  lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--fail-on-increase PERCENT]
+  lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--suggest-only]
+  lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--fail-on-increase PERCENT]
+  lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--output PATH]
+  lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|go|php|ruby|rust|dotnet|elixir] [--output PATH]
 
 Options:
   --repo PATH                Repository path (default: .)
@@ -24,16 +26,21 @@ Options:
   --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
   --runtime-test-command CMD Run command with JS/TS runtime hooks to capture trace before analysis
-  --include GLOBS          Comma-separated include path globs (repeatable; CLI overrides config scope.include)
-  --exclude GLOBS          Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
+  --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
+  --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
+  --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
   --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
+  --output PATH, -o PATH     Write command output to file instead of stdout
   --lockfile-drift-policy MODE
                               Lockfile drift policy (off, warn, fail; default: warn)
   --license-deny SPDXS        Comma-separated denied SPDX IDs (e.g. GPL-3.0-only,AGPL-3.0-only)
   --license-fail-on-deny      Fail when denied licenses are detected
   --license-provenance-registry
                               Opt in to registry provenance heuristics for JS/TS dependencies
+  --notify-on MODE            Notify on always|breach|regression|improvement (CLI > env > config > defaults)
+  --notify-slack URL          Slack webhook URL (CLI > env > config)
+  --notify-teams URL          Teams webhook URL (CLI > env > config)
   --threshold-fail-on-increase N
                               Fail when waste increase is greater than N (CLI > config > defaults)
   --threshold-low-confidence-warning N

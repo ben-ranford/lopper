@@ -116,13 +116,28 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2
 ```
 
+Generate an org-level dashboard across multiple repos:
+
+```bash
+lopper dashboard \
+  --repos "./api,./frontend,./worker" \
+  --format html \
+  --output org-report.html
+```
+
+Use a dashboard config file:
+
+```bash
+lopper dashboard --config lopper-org.yml --format json
+```
+
 ## Terminal demos
 
 | Demo | What it demonstrates | GIF preview |
 | --- | --- | --- |
-| Quick start ranking | End-to-end `--top` workflow and waste-ranked dependency table for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
-| Single dependency deep dive | Focused analysis of one dependency with detailed usage signal and recommendation context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
-| Baseline gate in CI flow | Baseline comparison and increase gating to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
+| Quick start ranking | End-to-end `--top` workflow with license, policy, and candidate-score context for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
+| Single dependency deep dive | Focused analysis of one dependency with current usage, license, and scoring context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
+| Baseline gate in CI flow | Baseline comparison with threshold policy and delta summary to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
 
 ## Languages
 
@@ -170,6 +185,7 @@ Precedence is `CLI > repo config > imported policy packs > defaults`.
 Tuning guide with strict/balanced/noise-reduction profiles:
 
 - `docs/threshold-tuning.md`
+- `docs/notifications.md`
 
 Launch TUI:
 
@@ -214,6 +230,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and commands.
 ## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
+- Multi-repo dashboard: `docs/dashboard.md`
 - SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Runtime trace annotations: `scripts/runtime/`

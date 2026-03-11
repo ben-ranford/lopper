@@ -400,7 +400,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap.outputs.exists == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@83bb8c72e8bbeb6ffc77f827f06a9720a7779b7e
+        uses: Homebrew/actions/setup-homebrew@5b5b9415990a48a7938310ab90c4964bfcb42e89
 
       - name: Checkout tap formula
         if: ${{ steps.tap.outputs.exists == 'true' }}

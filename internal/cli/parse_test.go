@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
@@ -31,6 +32,13 @@ const (
 	scopeIncludeCombined        = "src/**/*.go,internal/**/*.go,cmd/**/*.go"
 	parseConfigFileName         = ".lopper.yml"
 	repoFlagName                = "--repo"
+	dashboardReposFlagName      = "--repos"
+	dashboardOutputFlagName     = "--output"
+	formatFlagName              = "--format"
+	dashboardFormatFlagName     = formatFlagName
+	dashboardConfigFlagName     = "--config"
+	dashboardConfigFileName     = "lopper-org.yml"
+	dashboardReportCSVFileName  = "report.csv"
 )
 
 func mustParseArgs(t *testing.T, args []string) app.Request {
@@ -51,6 +59,11 @@ func expectParseArgsError(t *testing.T, args []string, wantMsg string) error {
 		t.Fatal(wantMsg)
 	}
 	return err
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	testutil.MustWriteFile(t, path, contents)
 }
 
 func TestParseArgsDefault(t *testing.T) {
@@ -107,7 +120,7 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := mustParseArgs(t, []string{"analyse", "--top", "5", "--format", tc.format})
+			req := mustParseArgs(t, []string{"analyse", "--top", "5", formatFlagName, tc.format})
 			if req.Analyse.TopN != 5 {
 				t.Fatalf("expected top 5, got %d", req.Analyse.TopN)
 			}
@@ -305,6 +318,83 @@ func TestParseArgsAnalyseSuggestOnly(t *testing.T) {
 	}
 }
 
+func TestParseArgsDashboardRepos(t *testing.T) {
+	req := mustParseArgs(t, []string{
+		"dashboard",
+		dashboardReposFlagName, "./api, ./frontend,./api/,api/..//api",
+		dashboardFormatFlagName, "html",
+		"--top", "25",
+		languageFlagName, "all",
+		dashboardOutputFlagName, "org-report.html",
+	})
+
+	if req.Mode != app.ModeDashboard {
+		t.Fatalf(modeMismatchFmt, app.ModeDashboard, req.Mode)
+	}
+	if len(req.Dashboard.Repos) != 2 {
+		t.Fatalf("expected two repos after dedupe, got %#v", req.Dashboard.Repos)
+	}
+	if req.Dashboard.Repos[0].Path != filepath.Clean("./api") || req.Dashboard.Repos[1].Path != filepath.Clean("./frontend") {
+		t.Fatalf("unexpected dashboard repo paths: %#v", req.Dashboard.Repos)
+	}
+	if req.Dashboard.Format != "html" {
+		t.Fatalf("expected dashboard format html, got %q", req.Dashboard.Format)
+	}
+	if req.Dashboard.TopN != 25 {
+		t.Fatalf("expected dashboard top 25, got %d", req.Dashboard.TopN)
+	}
+	if req.Dashboard.DefaultLanguage != "all" {
+		t.Fatalf("expected dashboard default language all, got %q", req.Dashboard.DefaultLanguage)
+	}
+	if req.Dashboard.OutputPath != "org-report.html" {
+		t.Fatalf("expected dashboard output path, got %q", req.Dashboard.OutputPath)
+	}
+}
+
+func TestParseArgsDashboardRejectsBaselineStore(t *testing.T) {
+	err := expectParseArgsError(t, []string{"dashboard", "--repos", "./api", "--baseline-store", "./baselines"}, "expected dashboard baseline-store rejection")
+	if !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("expected unknown flag error for baseline-store, got %v", err)
+	}
+}
+
+func TestParseArgsDashboardConfig(t *testing.T) {
+	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName})
+	if req.Mode != app.ModeDashboard {
+		t.Fatalf(modeMismatchFmt, app.ModeDashboard, req.Mode)
+	}
+	if req.Dashboard.ConfigPath != dashboardConfigFileName {
+		t.Fatalf("expected dashboard config path, got %q", req.Dashboard.ConfigPath)
+	}
+	if req.Dashboard.TopN != app.DefaultRequest().Dashboard.TopN {
+		t.Fatalf("expected dashboard default top, got %d", req.Dashboard.TopN)
+	}
+}
+
+func TestParseArgsDashboardOutputFlags(t *testing.T) {
+	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, dashboardReportCSVFileName, "-o", dashboardReportCSVFileName})
+	if req.Dashboard.OutputPath != dashboardReportCSVFileName {
+		t.Fatalf("expected output path report.csv, got %q", req.Dashboard.OutputPath)
+	}
+
+	_, err := ParseArgs([]string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, "one.csv", "-o", "two.csv"})
+	if err == nil || !strings.Contains(err.Error(), "must match") {
+		t.Fatalf("expected output mismatch validation error, got %v", err)
+	}
+}
+
+func TestParseArgsDashboardValidation(t *testing.T) {
+	err := expectParseArgsError(t, []string{"dashboard"}, "expected dashboard source validation error")
+	if !strings.Contains(err.Error(), "--repos or --config") {
+		t.Fatalf("unexpected dashboard source validation error: %v", err)
+	}
+
+	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
+	if !strings.Contains(err.Error(), "--top must be > 0") {
+		t.Fatalf("unexpected dashboard top validation error: %v", err)
+	}
+}
+
 func TestParseArgsTUIFlags(t *testing.T) {
 	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
 	if req.Mode != app.ModeTUI {
@@ -498,6 +588,59 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
+	repo := t.TempDir()
+	config := `notifications:
+  on: breach
+  slack:
+    webhook: https://hooks.slack.com/services/A/B/CONFIG
+  teams:
+    webhook: https://outlook.office.com/webhook/CONFIG
+    on: improvement
+`
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
+
+	t.Setenv(notify.EnvOn, "regression")
+	t.Setenv(notify.EnvSlackWebhook, "https://hooks.slack.com/services/A/B/ENV")
+
+	req, err := ParseArgs([]string{
+		"analyse", "--top", "10",
+		"--repo", repo,
+		"--notify-on", "improvement",
+		"--notify-teams", "https://outlook.office.com/webhook/CLI",
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+
+	if req.Analyse.Notifications.Slack.Trigger != notify.TriggerImprovement {
+		t.Fatalf("expected CLI notify-on to set slack trigger, got %q", req.Analyse.Notifications.Slack.Trigger)
+	}
+	if req.Analyse.Notifications.Teams.Trigger != notify.TriggerImprovement {
+		t.Fatalf("expected CLI notify-on to set teams trigger, got %q", req.Analyse.Notifications.Teams.Trigger)
+	}
+	if !strings.Contains(req.Analyse.Notifications.Slack.WebhookURL, "/ENV") {
+		t.Fatalf("expected env slack webhook override, got %q", req.Analyse.Notifications.Slack.WebhookURL)
+	}
+	if !strings.Contains(req.Analyse.Notifications.Teams.WebhookURL, "/CLI") {
+		t.Fatalf("expected CLI teams webhook override, got %q", req.Analyse.Notifications.Teams.WebhookURL)
+	}
+}
+
+func TestParseArgsAnalyseInvalidNotificationInputs(t *testing.T) {
+	if _, err := ParseArgs([]string{"analyse", "--top", "1", "--notify-on", "bad"}); err == nil {
+		t.Fatalf("expected invalid notify-on error")
+	}
+
+	_, err := ParseArgs([]string{"analyse", "--top", "1", "--notify-slack", "hooks.slack.com/services/A/B/SECRET"})
+	if err == nil {
+		t.Fatalf("expected invalid notify-slack URL error")
+	}
+	if strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("expected parse error to redact webhook secrets, got %q", err.Error())
+	}
+}
+
 func TestParseArgsAnalyseRejectsInvalidThreshold(t *testing.T) {
 	err := expectParseArgsError(t, []string{"analyse", "--top", "2", thresholdLowWarnFlag, "101"}, "expected range validation error")
 	if !strings.Contains(err.Error(), "between 0 and 100") {
@@ -624,7 +767,7 @@ func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
 		args []string
 	}{
 		{name: "analyse_top_missing_value", args: []string{"analyse", "--top"}},
-		{name: "analyse_invalid_format", args: []string{"analyse", "dep", "--format", "invalid"}},
+		{name: "analyse_invalid_format", args: []string{"analyse", "dep", formatFlagName, "invalid"}},
 		{name: "analyse_missing_config", args: []string{"analyse", "--top", "1", "--config", "missing-config.yml"}},
 		{name: "tui_top_missing_value", args: []string{"tui", "--top"}},
 	}
