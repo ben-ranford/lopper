@@ -42,9 +42,10 @@ const (
 )
 
 var (
-	swiftImportPattern = regexp.MustCompile(`^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func|operator)\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*`)
+	swiftImportPattern          = regexp.MustCompile(`^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func|operator)\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*`)
 	swiftUpperIdentifierPattern = regexp.MustCompile(`\b[A-Z][A-Za-z0-9_]*\b`)
-	stringFieldPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"((?:\\.|[^"])*)"`)
+	swiftTypeDeclarationPattern = regexp.MustCompile(`\b(?:actor|class|enum|protocol|struct|typealias)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	stringFieldPattern          = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"((?:\\.|[^"])*)"`)
 
 	swiftSkippedDirs = map[string]bool{
 		".build":      true,
@@ -54,7 +55,7 @@ var (
 		"pods":        true,
 	}
 
-	standardSwiftModules = toLookupSet([]string{
+	standardSwiftSymbols = toLookupSet([]string{
 		"Swift",
 		"Foundation",
 		"FoundationNetworking",
@@ -81,6 +82,36 @@ var (
 		"SwiftData",
 		"OSLog",
 		"os",
+		"String",
+		"Substring",
+		"Character",
+		"Int",
+		"Int8",
+		"Int16",
+		"Int32",
+		"Int64",
+		"UInt",
+		"UInt8",
+		"UInt16",
+		"UInt32",
+		"UInt64",
+		"Double",
+		"Float",
+		"Bool",
+		"Array",
+		"Dictionary",
+		"Set",
+		"Optional",
+		"Result",
+		"Any",
+		"AnyObject",
+		"Data",
+		"Date",
+		"URL",
+		"UUID",
+		"Decimal",
+		"Error",
+		"Never",
 	})
 )
 
@@ -756,7 +787,7 @@ func shouldTrackUnresolvedImport(module string, catalog dependencyCatalog) bool 
 	if _, ok := catalog.LocalModules[key]; ok {
 		return false
 	}
-	if _, ok := standardSwiftModules[key]; ok {
+	if _, ok := standardSwiftSymbols[key]; ok {
 		return false
 	}
 	return true
@@ -831,6 +862,7 @@ func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding)
 			importModules[key] = struct{}{}
 		}
 	}
+	localDeclaredSymbols := collectLocalDeclaredSymbols(content)
 	lines := strings.Split(string(content), "\n")
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
@@ -846,7 +878,10 @@ func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding)
 			if _, ok := importModules[key]; ok {
 				continue
 			}
-			if _, ok := standardSwiftModules[key]; ok {
+			if _, ok := localDeclaredSymbols[key]; ok {
+				continue
+			}
+			if _, ok := standardSwiftSymbols[key]; ok {
 				continue
 			}
 			return true
@@ -855,10 +890,45 @@ func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding)
 	return false
 }
 
+func collectLocalDeclaredSymbols(content []byte) map[string]struct{} {
+	localDeclaredSymbols := make(map[string]struct{})
+	lines := strings.Split(string(content), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(shared.StripLineComment(rawLine, "//"))
+		if line == "" || swiftImportPattern.MatchString(line) {
+			continue
+		}
+		matches := swiftTypeDeclarationPattern.FindAllStringSubmatch(line, -1)
+		for _, match := range matches {
+			if len(match) != 2 {
+				continue
+			}
+			key := lookupKey(match[1])
+			if key == "" {
+				continue
+			}
+			localDeclaredSymbols[key] = struct{}{}
+		}
+	}
+	return localDeclaredSymbols
+}
+
 func buildRequestedSwiftDependencies(req language.Request, scan scanResult, catalog dependencyCatalog) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, func(dependency string, scan scanResult) (report.DependencyReport, []string) {
-		return buildDependencyReport(dependency, scan, catalog, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations))
-	}, resolveRemovalCandidateWeights, buildTopSwiftDependencies(scan, catalog, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)))
+	return shared.BuildRequestedDependenciesWithWeights(
+		req,
+		scan,
+		normalizeDependencyID,
+		func(dependency string, scan scanResult) (report.DependencyReport, []string) {
+			return buildDependencyReport(
+				dependency,
+				scan,
+				catalog,
+				resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+			)
+		},
+		resolveRemovalCandidateWeights,
+		buildTopSwiftDependencies(scan, catalog, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)),
+	)
 }
 
 func buildTopSwiftDependencies(scan scanResult, catalog dependencyCatalog, minUsagePercent int) func(int, scanResult, report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
