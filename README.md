@@ -135,9 +135,9 @@ lopper dashboard --config lopper-org.yml --format json
 
 | Demo | What it demonstrates | GIF preview |
 | --- | --- | --- |
-| Quick start ranking | End-to-end `--top` workflow and waste-ranked dependency table for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
-| Single dependency deep dive | Focused analysis of one dependency with detailed usage signal and recommendation context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
-| Baseline gate in CI flow | Baseline comparison and increase gating to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
+| Quick start ranking | End-to-end `--top` workflow with license, policy, and candidate-score context for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
+| Single dependency deep dive | Focused analysis of one dependency with current usage, license, and scoring context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
+| Baseline gate in CI flow | Baseline comparison with threshold policy and delta summary to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
 
 ## Languages
 
