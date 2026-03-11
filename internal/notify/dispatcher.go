@@ -34,10 +34,9 @@ func NewDispatcher(notifiers map[Channel]Notifier) *Dispatcher {
 }
 
 func NewDefaultDispatcher() *Dispatcher {
-	notifier := NewWebhookNotifier(nil)
 	return NewDispatcher(map[Channel]Notifier{
-		ChannelSlack: notifier,
-		ChannelTeams: notifier,
+		ChannelSlack: NewSlackNotifier(nil),
+		ChannelTeams: NewWebhookNotifier(nil),
 	})
 }
 

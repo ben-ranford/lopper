@@ -71,5 +71,5 @@ Notification configuration is resolved in this order:
 
 ## Payload format
 
-- Slack receives a JSON summary payload.
+- Slack receives a Block Kit payload (`text` fallback + `blocks`).
 - Teams receives a Microsoft Adaptive Card envelope (`application/vnd.microsoft.card.adaptive`).

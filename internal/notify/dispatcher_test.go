@@ -69,6 +69,12 @@ func TestDispatcherRedactsWebhookURLInWarnings(t *testing.T) {
 
 func TestNewDefaultDispatcherAndMissingNotifierWarning(t *testing.T) {
 	dispatcher := NewDefaultDispatcher()
+	if _, ok := dispatcher.notifiers[ChannelSlack].(*SlackNotifier); !ok {
+		t.Fatalf("expected default slack notifier to use SlackNotifier")
+	}
+	if _, ok := dispatcher.notifiers[ChannelTeams].(*WebhookNotifier); !ok {
+		t.Fatalf("expected default teams notifier to use WebhookNotifier")
+	}
 	cfg := DefaultConfig()
 	cfg.Slack.WebhookURL = "https://hooks.slack.com/services/A/B/C"
 	cfg.Slack.Trigger = TriggerAlways
