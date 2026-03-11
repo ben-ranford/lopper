@@ -3,6 +3,7 @@ package swift
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -316,6 +317,87 @@ func TestSwiftResolvedPackageFallbacks(t *testing.T) {
 	}
 	if depID, ok := resolveLookup(catalog.ModuleToDependency, lookupKey("Kingfisher")); !ok || depID != "kingfisher" {
 		t.Fatalf("expected package fallback module mapping, got %#v", catalog.ModuleToDependency)
+	}
+}
+
+func TestSwiftDetectionAndScannerFallbackBranches(t *testing.T) {
+	if err := contextError(nil); err != nil {
+		t.Fatalf("expected nil context error, got %v", err)
+	}
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, swiftBuildDirName, swiftMainFileName), "import Foundation\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// manifest\n")
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+
+	var buildEntry fs.DirEntry
+	var manifestEntry fs.DirEntry
+	for _, entry := range entries {
+		switch entry.Name() {
+		case swiftBuildDirName:
+			buildEntry = entry
+		case packageManifestName:
+			manifestEntry = entry
+		}
+	}
+	if buildEntry == nil || manifestEntry == nil {
+		t.Fatalf("expected build and manifest entries, got %#v", entries)
+	}
+
+	detection := language.Detection{}
+	roots := make(map[string]struct{})
+	visited := 0
+	if err := detectSwiftEntry(nil, filepath.Join(repo, swiftBuildDirName), buildEntry, &detection, roots, &visited); !errors.Is(err, filepath.SkipDir) {
+		t.Fatalf("expected skip dir for %s, got %v", swiftBuildDirName, err)
+	}
+	if err := detectSwiftEntry(nil, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); err != nil {
+		t.Fatalf("expected manifest detection to succeed, got %v", err)
+	}
+	if !detection.Matched || len(roots) != 1 {
+		t.Fatalf("expected manifest detection to record root, got detection=%#v roots=%#v", detection, roots)
+	}
+
+	visited = maxDetectFiles
+	if err := detectSwiftEntry(nil, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); !errors.Is(err, fs.SkipAll) {
+		t.Fatalf("expected max detect files to stop walk, got %v", err)
+	}
+
+	scanner := repoScanner{
+		repoPath:          repo,
+		catalog:           dependencyCatalog{Dependencies: map[string]dependencyMeta{"alamofire": {}}, ModuleToDependency: map[string]string{lookupKey("Alamofire"): "alamofire"}},
+		scan:              scanResult{ImportedDependencies: make(map[string]struct{})},
+		unresolvedImports: make(map[string]int),
+		visited:           maxScanFiles,
+		skippedLargeFiles: 2,
+	}
+	imports := scanner.resolveImports([]importBinding{{Module: "Alamofire"}, {Module: "MysteryKit"}})
+	if len(imports) != 1 || imports[0].Dependency != "alamofire" || imports[0].Name != "Alamofire" || imports[0].Local != "Alamofire" {
+		t.Fatalf("expected resolved import defaults to be populated, got %#v", imports)
+	}
+	if scanner.unresolvedImports["MysteryKit"] != 1 {
+		t.Fatalf("expected unresolved import to be tracked, got %#v", scanner.unresolvedImports)
+	}
+	if got := scanner.relativePath("main.swift", swiftMainFileName); got != swiftMainFileName {
+		t.Fatalf("expected relative path fallback, got %q", got)
+	}
+
+	scanner.finalize()
+	assertWarningContains(t, scanner.scan.Warnings, "no Swift files found for analysis")
+	assertWarningContains(t, scanner.scan.Warnings, "Swift scan capped")
+	assertWarningContains(t, scanner.scan.Warnings, "skipped 2 Swift file(s)")
+	assertWarningContains(t, scanner.scan.Warnings, "could not map some Swift imports")
+
+	if depID := resolvedPinDependencyID(resolvedPin{}); depID != "" {
+		t.Fatalf("expected empty resolved pin dependency id, got %q", depID)
+	}
+	if source := resolvedPinSource(resolvedPin{}); source != "" {
+		t.Fatalf("expected empty resolved pin source, got %q", source)
+	}
+	if !isIgnoredUnqualifiedSymbol("", nil, nil) {
+		t.Fatalf("expected empty symbol key to be ignored")
 	}
 }
 

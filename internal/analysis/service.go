@@ -69,10 +69,9 @@ func NewService() *Service {
 	}
 	if err == nil {
 		err = registry.Register(swift.NewAdapter())
-		err = registry.Register(dart.NewAdapter())
 	}
 	if err == nil {
-		err = registry.Register(swift.NewAdapter())
+		err = registry.Register(dart.NewAdapter())
 	}
 
 	return &Service{
