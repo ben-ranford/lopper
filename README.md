@@ -26,12 +26,14 @@ recommendations across supported languages.
 - `rust` (Cargo crate import analysis)
 - `dotnet` (C#/.NET project and namespace analysis)
   aliases: `csharp`, `cs`, `fsharp`, `fs`
+- `dart` (Dart/Flutter pubspec and package import analysis)
+  aliases: `flutter`, `pub`
 
 Language selection modes:
 
 - `auto`: choose the highest-confidence detected adapter
 - `all`: run all matching adapters and merge results
-- `<id>`: force one adapter (`js-ts`, `python`, `jvm`, `go`, `php`, `rust`, `dotnet`)
+- `<id>`: force one adapter (`js-ts`, `python`, `jvm`, `go`, `php`, `rust`, `dotnet`, `dart`)
 
 ## Quick start
 

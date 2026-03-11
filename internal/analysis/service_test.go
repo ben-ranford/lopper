@@ -36,6 +36,9 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "src", "lib.rs"), "use anyhow::Result;\npub fn run() -> Result<()> { Ok(()) }\n")
 	writeFile(t, filepath.Join(repo, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
 	writeFile(t, filepath.Join(repo, programFileName), "using JsonConvert = Newtonsoft.Json.JsonConvert;\npublic class Program { public static void Main() { _ = JsonConvert.SerializeObject(new { V = 1 }); } }\n")
+	writeFile(t, filepath.Join(repo, "pubspec.yaml"), "name: demo\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(repo, "pubspec.lock"), "packages:\n  http:\n    dependency: \"direct main\"\n    description: {name: http}\n    source: hosted\n    version: \"1.0.0\"\n")
+	writeFile(t, filepath.Join(repo, "lib", "main.dart"), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
 
 	service := NewService()
 	reportData, err := service.Analyse(context.Background(), Request{
@@ -53,10 +56,10 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") {
-		t.Fatalf("expected js-ts, python, jvm, go, php, rust, and dotnet dependencies, got %#v", languages)
+	if !slices.Contains(languages, "js-ts") || !slices.Contains(languages, "python") || !slices.Contains(languages, "jvm") || !slices.Contains(languages, "go") || !slices.Contains(languages, "php") || !slices.Contains(languages, "rust") || !slices.Contains(languages, "dotnet") || !slices.Contains(languages, "dart") {
+		t.Fatalf("expected js-ts, python, jvm, go, php, rust, dotnet, and dart dependencies, got %#v", languages)
 	}
-	if len(reportData.LanguageBreakdown) < 7 {
+	if len(reportData.LanguageBreakdown) < 8 {
 		t.Fatalf("expected language breakdown for multiple adapters, got %#v", reportData.LanguageBreakdown)
 	}
 }
