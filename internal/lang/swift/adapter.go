@@ -914,21 +914,11 @@ func collectLocalDeclaredSymbols(content []byte) map[string]struct{} {
 }
 
 func buildRequestedSwiftDependencies(req language.Request, scan scanResult, catalog dependencyCatalog) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(
-		req,
-		scan,
-		normalizeDependencyID,
-		func(dependency string, scan scanResult) (report.DependencyReport, []string) {
-			return buildDependencyReport(
-				dependency,
-				scan,
-				catalog,
-				resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
-			)
-		},
-		resolveRemovalCandidateWeights,
-		buildTopSwiftDependencies(scan, catalog, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)),
-	)
+	minUsagePercent := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
+	buildDependency := func(dependency string, scan scanResult) (report.DependencyReport, []string) {
+		return buildDependencyReport(dependency, scan, catalog, minUsagePercent)
+	}
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, resolveRemovalCandidateWeights, buildTopSwiftDependencies(scan, catalog, minUsagePercent))
 }
 
 func buildTopSwiftDependencies(scan scanResult, catalog dependencyCatalog, minUsagePercent int) func(int, scanResult, report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {

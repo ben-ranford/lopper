@@ -2,6 +2,7 @@ package swift
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -38,62 +39,17 @@ func TestSwiftAdapterDetectWithNestedPackageRoots(t *testing.T) {
 
 func TestSwiftAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageManifestName),
-		strings.Join([]string{
-			"import PackageDescription",
-			"let package = Package(",
-			"  name: \"Demo\",",
-			"  dependencies: [",
-			"    .package(url: \"https://github.com/Alamofire/Alamofire.git\", from: \"5.8.0\"),",
-			"    .package(name: \"swift-nio\", url: \"https://github.com/apple/swift-nio.git\", from: \"2.60.0\"),",
-			"  ],",
-			"  targets: [",
-			"    .target(",
-			"      name: \"Demo\",",
-			"      dependencies: [",
-			"        .product(name: \"Alamofire\", package: \"alamofire\"),",
-			"        .product(name: \"NIO\", package: \"swift-nio\")",
-			"      ]",
-			"    ),",
-			"  ]",
-			")",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageResolvedName),
-		strings.Join([]string{
-			"{",
-			"  \"pins\": [",
-			"    {",
-			"      \"identity\": \"alamofire\",",
-			"      \"location\": \"https://github.com/Alamofire/Alamofire.git\",",
-			"      \"state\": {\"revision\": \"abc\", \"version\": \"5.8.0\"}",
-			"    },",
-			"    {",
-			"      \"identity\": \"swift-nio\",",
-			"      \"location\": \"https://github.com/apple/swift-nio.git\",",
-			"      \"state\": {\"revision\": \"def\", \"version\": \"2.60.0\"}",
-			"    }",
-			"  ],",
-			"  \"version\": 2",
-			"}",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, "Sources", "Demo", "main.swift"),
-		strings.Join([]string{
-			"import Alamofire",
-			"import struct NIO.ByteBuffer",
-			"func run() {",
-			"  _ = Session.default",
-			"  _ = ByteBufferAllocator().buffer(capacity: 8)",
-			"}",
-		}, "\n"),
-	)
+	dependencies := []swiftFixtureDependency{
+		{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
+		{identity: "swift-nio", manifestName: "swift-nio", url: "https://github.com/apple/swift-nio.git", version: "2.60.0", productName: "NIO"},
+	}
+	mainContent := `import Alamofire
+import struct NIO.ByteBuffer
+func run() {
+  _ = Session.default
+  _ = ByteBufferAllocator().buffer(capacity: 8)
+}`
+	writeSwiftDemoPackage(t, repo, dependencies, mainContent)
 
 	adapter := NewAdapter()
 	depReport, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
@@ -126,215 +82,103 @@ func TestSwiftAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	}
 }
 
-func TestSwiftAdapterCountsUnqualifiedSingleDependencyUsage(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageManifestName),
-		strings.Join([]string{
-			"import PackageDescription",
-			"let package = Package(",
-			"  name: \"Demo\",",
-			"  dependencies: [",
-			"    .package(url: \"https://github.com/Alamofire/Alamofire.git\", from: \"5.8.0\")",
-			"  ],",
-			"  targets: [",
-			"    .target(name: \"Demo\", dependencies: [.product(name: \"Alamofire\", package: \"alamofire\")])",
-			"  ]",
-			")",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageResolvedName),
-		strings.Join([]string{
-			"{",
-			"  \"pins\": [",
-			"    {",
-			"      \"identity\": \"alamofire\",",
-			"      \"location\": \"https://github.com/Alamofire/Alamofire.git\",",
-			"      \"state\": {\"revision\": \"abc\", \"version\": \"5.8.0\"}",
-			"    }",
-			"  ],",
-			"  \"version\": 2",
-			"}",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, "Sources", "Demo", "main.swift"),
-		strings.Join([]string{
-			"import Alamofire",
-			"func run() {",
-			"  _ = Session.default",
-			"}",
-		}, "\n"),
-	)
-
-	depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
-	if err != nil {
-		t.Fatalf("analyse dependency: %v", err)
-	}
-	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
-	}
-	if depReport.Dependencies[0].UsedExportsCount == 0 {
-		t.Fatalf("expected unqualified usage to count as used, got %#v", depReport.Dependencies[0])
-	}
+func TestSwiftAdapterUsageAttribution(t *testing.T) {
+	testCases := []struct {
+		name               string
+		dependencies       []swiftFixtureDependency
+		mainContent        string
+		wantUsedExports    int
+		wantUsedExportsMin bool
+		failureDescription string
+	}{
+		{
+			name: "counts unqualified single dependency usage",
+			dependencies: []swiftFixtureDependency{
+				{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
+			},
+			mainContent: `import Alamofire
+func run() {
+  _ = Session.default
+}`,
+			wantUsedExports:    1,
+			wantUsedExportsMin: true,
+			failureDescription: "expected unqualified usage to count as used",
+		},
+		{
+			name: "does not attribute ambiguous unqualified usage",
+			dependencies: []swiftFixtureDependency{
+				{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
+				{identity: "kingfisher", url: "https://github.com/onevcat/Kingfisher.git", version: "7.9.0", productName: "Kingfisher"},
+			},
+			mainContent: `import Alamofire
+import Kingfisher
+func run() {
+  _ = Session.default
+}`,
+			wantUsedExports:    0,
+			failureDescription: "expected ambiguous unqualified usage to remain unattributed",
+		},
+		{
+			name: "does not count local type usage as dependency usage",
+			dependencies: []swiftFixtureDependency{
+				{identity: "alamofire", url: "https://github.com/Alamofire/Alamofire.git", version: "5.8.0", productName: "Alamofire"},
+			},
+			mainContent: `import Alamofire
+struct LocalThing {
+  let id: String
 }
+func run() {
+  let thing = LocalThing(id: "1")
+  _ = thing.id
+}`,
+			wantUsedExports:    0,
+			failureDescription: "expected local-only symbols to not count as dependency usage",
+		},
+	}
 
-func TestSwiftAdapterDoesNotAttributeAmbiguousUnqualifiedUsage(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageManifestName),
-		strings.Join([]string{
-			"import PackageDescription",
-			"let package = Package(",
-			"  name: \"Demo\",",
-			"  dependencies: [",
-			"    .package(url: \"https://github.com/Alamofire/Alamofire.git\", from: \"5.8.0\"),",
-			"    .package(url: \"https://github.com/onevcat/Kingfisher.git\", from: \"7.9.0\")",
-			"  ],",
-			"  targets: [",
-			"    .target(",
-			"      name: \"Demo\",",
-			"      dependencies: [",
-			"        .product(name: \"Alamofire\", package: \"alamofire\"),",
-			"        .product(name: \"Kingfisher\", package: \"kingfisher\")",
-			"      ]",
-			"    )",
-			"  ]",
-			")",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageResolvedName),
-		strings.Join([]string{
-			"{",
-			"  \"pins\": [",
-			"    {",
-			"      \"identity\": \"alamofire\",",
-			"      \"location\": \"https://github.com/Alamofire/Alamofire.git\",",
-			"      \"state\": {\"revision\": \"abc\", \"version\": \"5.8.0\"}",
-			"    },",
-			"    {",
-			"      \"identity\": \"kingfisher\",",
-			"      \"location\": \"https://github.com/onevcat/Kingfisher.git\",",
-			"      \"state\": {\"revision\": \"def\", \"version\": \"7.9.0\"}",
-			"    }",
-			"  ],",
-			"  \"version\": 2",
-			"}",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, "Sources", "Demo", "main.swift"),
-		strings.Join([]string{
-			"import Alamofire",
-			"import Kingfisher",
-			"func run() {",
-			"  _ = Session.default",
-			"}",
-		}, "\n"),
-	)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeSwiftDemoPackage(t, repo, testCase.dependencies, testCase.mainContent)
 
-	depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
-	if err != nil {
-		t.Fatalf("analyse dependency: %v", err)
-	}
-	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
-	}
-	if depReport.Dependencies[0].UsedExportsCount != 0 {
-		t.Fatalf("expected ambiguous unqualified usage to remain unattributed, got %#v", depReport.Dependencies[0])
-	}
-}
+			depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
+			if err != nil {
+				t.Fatalf("analyse dependency: %v", err)
+			}
+			if len(depReport.Dependencies) != 1 {
+				t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+			}
 
-func TestSwiftAdapterDoesNotCountLocalTypeUsageAsDependencyUsage(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageManifestName),
-		strings.Join([]string{
-			"import PackageDescription",
-			"let package = Package(",
-			"  name: \"Demo\",",
-			"  dependencies: [",
-			"    .package(url: \"https://github.com/Alamofire/Alamofire.git\", from: \"5.8.0\")",
-			"  ],",
-			"  targets: [",
-			"    .target(name: \"Demo\", dependencies: [.product(name: \"Alamofire\", package: \"alamofire\")])",
-			"  ]",
-			")",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, packageResolvedName),
-		strings.Join([]string{
-			"{",
-			"  \"pins\": [",
-			"    {",
-			"      \"identity\": \"alamofire\",",
-			"      \"location\": \"https://github.com/Alamofire/Alamofire.git\",",
-			"      \"state\": {\"revision\": \"abc\", \"version\": \"5.8.0\"}",
-			"    }",
-			"  ],",
-			"  \"version\": 2",
-			"}",
-		}, "\n"),
-	)
-	testutil.MustWriteFile(
-		t,
-		filepath.Join(repo, "Sources", "Demo", "main.swift"),
-		strings.Join([]string{
-			"import Alamofire",
-			"struct LocalThing {",
-			"  let id: String",
-			"}",
-			"func run() {",
-			"  let thing = LocalThing(id: \"1\")",
-			"  _ = thing.id",
-			"}",
-		}, "\n"),
-	)
-
-	depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "alamofire"})
-	if err != nil {
-		t.Fatalf("analyse dependency: %v", err)
-	}
-	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
-	}
-	if depReport.Dependencies[0].UsedExportsCount != 0 {
-		t.Fatalf("expected local-only symbols to not count as dependency usage, got %#v", depReport.Dependencies[0])
+			gotUsedExports := depReport.Dependencies[0].UsedExportsCount
+			if testCase.wantUsedExportsMin {
+				if gotUsedExports < testCase.wantUsedExports {
+					t.Fatalf("%s, got %#v", testCase.failureDescription, depReport.Dependencies[0])
+				}
+				return
+			}
+			if gotUsedExports != testCase.wantUsedExports {
+				t.Fatalf("%s, got %#v", testCase.failureDescription, depReport.Dependencies[0])
+			}
+		})
 	}
 }
 
 func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
 	t.Run("v1_object_pins", func(t *testing.T) {
 		repo := t.TempDir()
-		testutil.MustWriteFile(
-			t,
-			filepath.Join(repo, packageResolvedName),
-			strings.Join([]string{
-				"{",
-				"  \"object\": {",
-				"    \"pins\": [",
-				"      {",
-				"        \"package\": \"Kingfisher\",",
-				"        \"repositoryURL\": \"https://github.com/onevcat/Kingfisher.git\",",
-				"        \"state\": {\"revision\": \"abc\", \"version\": \"7.9.0\"}",
-				"      }",
-				"    ]",
-				"  },",
-				"  \"version\": 1",
-				"}",
-			}, "\n"),
-		)
+		resolvedContent := `{
+  "object": {
+    "pins": [
+      {
+        "package": "Kingfisher",
+        "repositoryURL": "https://github.com/onevcat/Kingfisher.git",
+        "state": {"revision": "abc", "version": "7.9.0"}
+      }
+    ]
+  },
+  "version": 1
+}`
+		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), resolvedContent)
 		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Kingfisher\n_ = KingfisherManager.shared\n")
 
 		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "kingfisher"})
@@ -351,22 +195,17 @@ func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
 
 	t.Run("v2_top_level_pins", func(t *testing.T) {
 		repo := t.TempDir()
-		testutil.MustWriteFile(
-			t,
-			filepath.Join(repo, packageResolvedName),
-			strings.Join([]string{
-				"{",
-				"  \"pins\": [",
-				"    {",
-				"      \"identity\": \"swift-collections\",",
-				"      \"location\": \"https://github.com/apple/swift-collections.git\",",
-				"      \"state\": {\"revision\": \"abc\", \"version\": \"1.1.0\"}",
-				"    }",
-				"  ],",
-				"  \"version\": 2",
-				"}",
-			}, "\n"),
-		)
+		resolvedContent := `{
+  "pins": [
+    {
+      "identity": "swift-collections",
+      "location": "https://github.com/apple/swift-collections.git",
+      "state": {"revision": "abc", "version": "1.1.0"}
+    }
+  ],
+  "version": 2
+}`
+		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), resolvedContent)
 		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import SwiftCollections\n")
 
 		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "swift-collections"})
@@ -396,15 +235,11 @@ func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 }
 
 func TestParseSwiftImportsPatterns(t *testing.T) {
-	imports := parseSwiftImports(
-		[]byte(strings.Join([]string{
-			"import Alamofire",
-			"@testable import NIO",
-			"import struct Foundation.Date",
-			"import class MyLib.Client",
-		}, "\n")),
-		"main.swift",
-	)
+	importsContent := []byte(`import Alamofire
+@testable import NIO
+import struct Foundation.Date
+import class MyLib.Client`)
+	imports := parseSwiftImports(importsContent, "main.swift")
 	modules := make([]string, 0, len(imports))
 	for _, imported := range imports {
 		modules = append(modules, imported.Module)
@@ -412,6 +247,77 @@ func TestParseSwiftImportsPatterns(t *testing.T) {
 	if !slices.Equal(modules, []string{"Alamofire", "NIO", "Foundation", "MyLib"}) {
 		t.Fatalf("unexpected parsed modules: %#v", modules)
 	}
+}
+
+type swiftFixtureDependency struct {
+	identity     string
+	manifestName string
+	url          string
+	version      string
+	productName  string
+}
+
+func writeSwiftDemoPackage(t *testing.T, repo string, dependencies []swiftFixtureDependency, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent(dependencies))
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), buildSwiftResolvedContent(dependencies))
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", "main.swift"), mainContent)
+}
+
+func buildSwiftManifestContent(dependencies []swiftFixtureDependency) string {
+	lines := []string{
+		"import PackageDescription",
+		"let package = Package(",
+		`  name: "Demo",`,
+		"  dependencies: [",
+	}
+	for index, dependency := range dependencies {
+		suffix := ","
+		if index == len(dependencies)-1 {
+			suffix = ""
+		}
+		if dependency.manifestName != "" {
+			lines = append(lines, fmt.Sprintf("    .package(name: %q, url: %q, from: %q)%s", dependency.manifestName, dependency.url, dependency.version, suffix))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("    .package(url: %q, from: %q)%s", dependency.url, dependency.version, suffix))
+	}
+	lines = append(lines, "  ],", "  targets: [")
+	if len(dependencies) == 1 {
+		lines = append(lines, fmt.Sprintf("    .target(name: %q, dependencies: [.product(name: %q, package: %q)])", "Demo", dependencies[0].productName, dependencies[0].identity))
+	} else {
+		lines = append(lines, `    .target(`, `      name: "Demo",`, "      dependencies: [")
+		for index, dependency := range dependencies {
+			suffix := ","
+			if index == len(dependencies)-1 {
+				suffix = ""
+			}
+			lines = append(lines, fmt.Sprintf("        .product(name: %q, package: %q)%s", dependency.productName, dependency.identity, suffix))
+		}
+		lines = append(lines, "      ]", "    )")
+	}
+	lines = append(lines, "  ]", ")")
+	return strings.Join(lines, "\n")
+}
+
+func buildSwiftResolvedContent(dependencies []swiftFixtureDependency) string {
+	lines := []string{"{", `  "pins": [`}
+	for index, dependency := range dependencies {
+		suffix := ","
+		if index == len(dependencies)-1 {
+			suffix = ""
+		}
+		entryLines := []string{
+			"    {",
+			fmt.Sprintf(`      "identity": %q,`, dependency.identity),
+			fmt.Sprintf(`      "location": %q,`, dependency.url),
+			fmt.Sprintf(`      "state": {"revision": %q, "version": %q}`, "abc", dependency.version),
+			"    }" + suffix,
+		}
+		lines = append(lines, entryLines...)
+	}
+	lines = append(lines, `  ],`, `  "version": 2`, "}")
+	return strings.Join(lines, "\n")
 }
 
 func assertWarningContains(t *testing.T, warnings []string, substring string) {
