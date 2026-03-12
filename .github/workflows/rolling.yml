@@ -254,7 +254,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@5edd97230ed47129c4f26ca168186ce7a2e94a7c
+        uses: Homebrew/actions/setup-homebrew@9926e3be887aa6c9523a027099bf5e882056f5c1
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}
