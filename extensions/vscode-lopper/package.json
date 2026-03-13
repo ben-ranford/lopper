@@ -1,0 +1,88 @@
+{
+  "name": "vscode-lopper",
+  "displayName": "Lopper",
+  "description": "VS Code diagnostics, hover details, and safe quick fixes powered by the Lopper CLI.",
+  "version": "0.0.1",
+  "publisher": "BenRanford",
+  "license": "MIT",
+  "preview": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ben-ranford/lopper.git",
+    "directory": "extensions/vscode-lopper"
+  },
+  "homepage": "https://github.com/ben-ranford/lopper",
+  "bugs": {
+    "url": "https://github.com/ben-ranford/lopper/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "lopper",
+    "dependencies",
+    "imports",
+    "diagnostics",
+    "quick-fix",
+    "typescript"
+  ],
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:lopper.refreshWorkspace"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "lopper.refreshWorkspace",
+        "title": "Lopper: Refresh Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "Lopper",
+      "properties": {
+        "lopper.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a lopper binary. Relative paths are resolved from the workspace root."
+        },
+        "lopper.topN": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Maximum number of dependencies to analyse per refresh."
+        },
+        "lopper.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh diagnostics when JavaScript or TypeScript files are saved."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest:e2e": "npm run compile",
+    "test:e2e": "node ./out/test/runTest.js",
+    "package:vsix": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.3.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.5.2",
+    "glob": "^11.0.3",
+    "mocha": "^11.7.2",
+    "typescript": "^5.9.2"
+  }
+}

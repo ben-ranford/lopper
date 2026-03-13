@@ -200,12 +200,61 @@ jobs:
           provenance: false
           sbom: true
 
+  build-vscode-extension:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extensions/vscode-lopper/package-lock.json
+
+      - name: Build local lopper binary
+        run: make build
+
+      - name: Install extension dependencies
+        run: make vscode-extension-install
+
+      - name: Run VS Code smoke tests
+        run: xvfb-run -a make vscode-extension-test
+
+      - name: Package VS Code extension
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version="${RELEASE_TAG#v}"
+          cd extensions/vscode-lopper
+          npm version "$version" --no-git-tag-version
+          npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
+
+      - name: Upload VS Code extension artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-vscode-extension
+          path: dist/*.vsix
+
   publish:
     needs:
       - prepare
       - build-linux-windows
       - build-darwin
       - build-ghcr
+      - build-vscode-extension
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -237,6 +286,12 @@ jobs:
             echo "- Tagged image: \`${ghcr_ref}\`"
             echo "- Package: [GHCR lopper package](${ghcr_package_url})"
             echo
+            echo "## VS Code extension"
+            echo
+            echo "- Marketplace ID: \`BenRanford.vscode-lopper\`"
+            echo "- VSIX asset: \`lopper-vscode-${current_tag#v}.vsix\`"
+            echo "- Marketplace publish: automatic when \`VSCE_PUBLISH\` is configured"
+            echo
             echo "---"
             echo
             echo "_GitHub auto-generated release notes follow._"
@@ -252,6 +307,30 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.vsix
+
+      - name: Setup Node
+        if: ${{ secrets.VSCE_PUBLISH != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extensions/vscode-lopper/package-lock.json
+
+      - name: Install extension dependencies for publish
+        if: ${{ secrets.VSCE_PUBLISH != '' }}
+        run: make vscode-extension-install
+
+      - name: Publish VS Code extension to Marketplace
+        if: ${{ secrets.VSCE_PUBLISH != '' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
+        run: |
+          set -euo pipefail
+          vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
+          test -n "$vsix_path"
+          cd extensions/vscode-lopper
+          npx @vscode/vsce publish --packagePath "../../${vsix_path}"
 
   update-homebrew-tap:
     needs:

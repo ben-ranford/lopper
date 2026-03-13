@@ -382,6 +382,47 @@ jobs:
           test -f bin/lopper
           ls -lh bin/lopper
 
+  vscode-smoke:
+    name: vscode-smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extensions/vscode-lopper/package-lock.json
+
+      - name: Build local lopper binary
+        run: make build
+
+      - name: Install extension dependencies
+        run: make vscode-extension-install
+
+      - name: Run VS Code smoke tests
+        run: |
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            xvfb-run -a make vscode-extension-test
+          else
+            make vscode-extension-test
+          fi
+
   homebrew-tap-verify:
     runs-on: ubuntu-latest
     permissions:

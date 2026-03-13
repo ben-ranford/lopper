@@ -35,6 +35,19 @@ Run without local install:
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
 
+VS Code extension:
+
+```bash
+# Install from Marketplace after publish.
+code --install-extension BenRanford.vscode-lopper
+```
+
+VS Code extension from a release `.vsix`:
+
+```bash
+code --install-extension lopper-vscode-<version>.vsix
+```
+
 ## Quick Start
 
 Analyze one dependency:
@@ -66,6 +79,29 @@ Launch the interactive TUI:
 ```bash
 lopper tui --repo . --language all
 ```
+
+## VS Code Extension
+
+The VS Code extension adds editor diagnostics, hover context, and safe quick fixes on top of the local `lopper` CLI.
+
+- Extension ID: `BenRanford.vscode-lopper`
+- Command: `Lopper: Refresh Diagnostics`
+- Required runtime: local `lopper` binary on `PATH`, `lopper.binaryPath`, or `LOPPER_BINARY_PATH`
+- Current focus: JavaScript and TypeScript dependency usage in-editor
+
+Local extension workflow:
+
+```bash
+make build
+make vscode-extension-install
+make vscode-extension-test
+make vscode-extension-package
+```
+
+CI and release behavior:
+
+- Extension smoke tests run in GitHub Actions on macOS and Linux with `@vscode/test-electron`
+- The release workflow packages a `.vsix`, attaches it to the GitHub release, and publishes to the VS Code Marketplace when `VSCE_PUBLISH` is configured
 
 Tune thresholds and score weights:
 
