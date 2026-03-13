@@ -9,6 +9,7 @@ The core contracts are in `internal/language`.
 - `python` (Python)
 - `cpp` (C/C++)
 - `jvm` (Java/Kotlin)
+- `kotlin-android` (Kotlin/Android Gradle)
 - `go` (Go)
 - `php` (PHP)
 - `ruby` (Ruby)
