@@ -86,11 +86,20 @@ const adapterByExtension = new Map<string, ConcreteLopperLanguage>([
 
 const alphabeticalOrder = new Intl.Collator("en").compare;
 const languageIds = Array.from(new Set(adapterByLanguageId.keys())).sort((left, right) => alphabeticalOrder(left, right));
+const extensionPatterns = Array.from(new Set(adapterByExtension.keys()))
+  .map((extension) => `**/*${extension}`)
+  .sort((left, right) => alphabeticalOrder(left, right));
 
-export const supportedDocumentSelectors: vscode.DocumentFilter[] = languageIds.map((language) => ({
-  scheme: "file",
-  language,
-}));
+export const supportedDocumentSelectors: vscode.DocumentFilter[] = [
+  ...languageIds.map((language) => ({
+    scheme: "file",
+    language,
+  })),
+  ...extensionPatterns.map((pattern) => ({
+    scheme: "file",
+    pattern,
+  })),
+];
 
 export function configuredLopperLanguage(folder?: vscode.WorkspaceFolder): LopperLanguage {
   const configured = vscode.workspace.getConfiguration("lopper", folder?.uri).get<string>("language", "auto");
