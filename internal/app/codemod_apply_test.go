@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestApplyCodemodIfNeededSuccessWritesRollbackAndSummary(t *testing.T) {
@@ -120,27 +121,7 @@ func TestApplyCodemodIfNeededMismatchReturnsErrorAndNoMutation(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
-	reportData := report.Report{
-		Dependencies: []report.DependencyReport{
-			{
-				Name: "lodash",
-				Codemod: &report.CodemodReport{
-					Mode: "suggest-only",
-					Suggestions: []report.CodemodSuggestion{
-						{
-							File:        "index.js",
-							Line:        1,
-							ImportName:  "map",
-							FromModule:  "lodash",
-							ToModule:    "lodash/map",
-							Original:    "import { map } from \"lodash\";",
-							Replacement: "import map from \"lodash/map\";",
-						},
-					},
-				},
-			},
-		},
-	}
+	reportData := singleLodashSuggestionReport("index.js")
 
 	req := AnalyseRequest{
 		Dependency:   "lodash",
@@ -282,8 +263,8 @@ func TestValidateCodemodApplyPreconditions(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
 		t.Fatalf("write tracked file: %v", err)
 	}
-	runCodemodGitCommand(t, repo, "add", "tracked.txt")
-	runCodemodGitCommand(t, repo, "commit", "-m", "tracked")
+	testutil.RunGit(t, repo, "add", "tracked.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "tracked")
 
 	if err := validateCodemodApplyPreconditions(context.Background(), repo, AnalyseRequest{ApplyCodemod: true}); err != nil {
 		t.Fatalf("expected clean git worktree to pass, got %v", err)
@@ -714,7 +695,22 @@ func TestCodemodApplyPathAndRollbackErrorBranches(t *testing.T) {
 		t.Fatalf("write blocked rollback path file: %v", err)
 	}
 
-	reportData := report.Report{
+	reportData := singleLodashSuggestionReport("index.js")
+	_, err := applyCodemodIfNeeded(context.Background(), reportData, repo, AnalyseRequest{Dependency: "lodash", ApplyCodemod: true, AllowDirty: true}, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "write codemod rollback artifact") {
+		t.Fatalf("expected rollback artifact error, got %v", err)
+	}
+}
+
+func initCodemodGitRepo(t *testing.T, repo string) {
+	t.Helper()
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.email", "codex@example.com")
+	testutil.RunGit(t, repo, "config", "user.name", "Codex")
+}
+
+func singleLodashSuggestionReport(file string) report.Report {
+	return report.Report{
 		Dependencies: []report.DependencyReport{
 			{
 				Name: "lodash",
@@ -722,7 +718,7 @@ func TestCodemodApplyPathAndRollbackErrorBranches(t *testing.T) {
 					Mode: "suggest-only",
 					Suggestions: []report.CodemodSuggestion{
 						{
-							File:        "index.js",
+							File:        file,
 							Line:        1,
 							ImportName:  "map",
 							FromModule:  "lodash",
@@ -734,26 +730,5 @@ func TestCodemodApplyPathAndRollbackErrorBranches(t *testing.T) {
 				},
 			},
 		},
-	}
-	_, err := applyCodemodIfNeeded(context.Background(), reportData, repo, AnalyseRequest{Dependency: "lodash", ApplyCodemod: true, AllowDirty: true}, time.Now())
-	if err == nil || !strings.Contains(err.Error(), "write codemod rollback artifact") {
-		t.Fatalf("expected rollback artifact error, got %v", err)
-	}
-}
-
-func initCodemodGitRepo(t *testing.T, repo string) {
-	t.Helper()
-	runCodemodGitCommand(t, repo, "init")
-	runCodemodGitCommand(t, repo, "config", "user.email", "codex@example.com")
-	runCodemodGitCommand(t, repo, "config", "user.name", "Codex")
-}
-
-func runCodemodGitCommand(t *testing.T, repo string, args ...string) {
-	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
-	command.Env = sanitizedGitEnv()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
 	}
 }

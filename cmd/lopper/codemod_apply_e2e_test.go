@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -118,33 +118,11 @@ func setupGitLodashFixture(t *testing.T, source string) (string, string) {
 		t.Fatalf("write dependency map.js: %v", err)
 	}
 
-	runGit(t, repo, "init")
-	runGit(t, repo, "config", "user.email", "codex@example.com")
-	runGit(t, repo, "config", "user.name", "Codex")
-	runGit(t, repo, "add", ".")
-	runGit(t, repo, "commit", "-m", "fixture")
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.email", "codex@example.com")
+	testutil.RunGit(t, repo, "config", "user.name", "Codex")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "fixture")
 
 	return repo, sourcePath
-}
-
-func runGit(t *testing.T, repo string, args ...string) {
-	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
-	command.Env = codemodGitEnv()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
-	}
-}
-
-func codemodGitEnv() []string {
-	env := os.Environ()
-	filtered := make([]string, 0, len(env))
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "GIT_DIR=") || strings.HasPrefix(entry, "GIT_WORK_TREE=") || strings.HasPrefix(entry, "GIT_INDEX_FILE=") {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	return filtered
 }
