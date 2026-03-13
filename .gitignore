@@ -12,3 +12,6 @@ coverage.out
 /lopper
 
 .lopper-cache/
+extensions/vscode-lopper/out/
+extensions/vscode-lopper/.vscode-test/
+extensions/vscode-lopper/node_modules/

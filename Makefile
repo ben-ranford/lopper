@@ -1,9 +1,11 @@
-.PHONY: format fmt format-check gostyle lint dup-check suppression-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check gostyle lint dup-check suppression-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
 BIN_DIR ?= bin
 DIST_DIR ?= dist
+VSCODE_EXTENSION_DIR ?= extensions/vscode-lopper
+VSCODE_EXTENSION_PACKAGE_PATH ?= $(DIST_DIR)/vscode-lopper.vsix
 VERSION ?= dev
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_MIN ?= 95
@@ -223,3 +225,16 @@ hooks-install:
 hooks-uninstall:
 	@git config --unset core.hooksPath || true
 	@echo "Removed custom core.hooksPath hook configuration"
+
+vscode-extension-install:
+	cd $(VSCODE_EXTENSION_DIR) && npm ci
+
+vscode-extension-compile:
+	cd $(VSCODE_EXTENSION_DIR) && npm run compile
+
+vscode-extension-test:
+	cd $(VSCODE_EXTENSION_DIR) && npm run test:e2e
+
+vscode-extension-package:
+	mkdir -p $(DIST_DIR)
+	cd $(VSCODE_EXTENSION_DIR) && npx @vscode/vsce package --out "../../$(VSCODE_EXTENSION_PACKAGE_PATH)"

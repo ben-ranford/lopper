@@ -7,6 +7,27 @@ on:
       - main
 
 jobs:
+  extension-changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      vscode_extension: ${{ steps.filter.outputs.vscode_extension }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect VS Code extension changes
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+        with:
+          filters: |
+            vscode_extension:
+              - 'extensions/vscode-lopper/**'
+
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -381,6 +402,49 @@ jobs:
         run: |
           test -f bin/lopper
           ls -lh bin/lopper
+
+  vscode-smoke:
+    name: vscode-smoke (${{ matrix.os }})
+    needs: extension-changes
+    if: ${{ needs.extension-changes.outputs.vscode_extension == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extensions/vscode-lopper/package-lock.json
+
+      - name: Build local lopper binary
+        run: make build
+
+      - name: Install extension dependencies
+        run: make vscode-extension-install
+
+      - name: Run VS Code smoke tests
+        run: |
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            xvfb-run -a make vscode-extension-test
+          else
+            make vscode-extension-test
+          fi
 
   homebrew-tap-verify:
     runs-on: ubuntu-latest

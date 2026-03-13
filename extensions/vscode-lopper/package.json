@@ -1,0 +1,139 @@
+{
+  "name": "vscode-lopper",
+  "displayName": "Lopper",
+  "description": "VS Code diagnostics and hover details across supported Lopper adapters, plus safe JS/TS quick fixes.",
+  "version": "1.0.1",
+  "publisher": "BenRanford",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ben-ranford/lopper.git",
+    "directory": "extensions/vscode-lopper"
+  },
+  "homepage": "https://github.com/ben-ranford/lopper",
+  "bugs": {
+    "url": "https://github.com/ben-ranford/lopper/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "lopper",
+    "dependencies",
+    "imports",
+    "diagnostics",
+    "quick-fix",
+    "typescript"
+  ],
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:lopper.refreshWorkspace"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "lopper.refreshWorkspace",
+        "title": "Lopper: Refresh Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "Lopper",
+      "properties": {
+        "lopper.language": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "all",
+            "cpp",
+            "dart",
+            "dotnet",
+            "elixir",
+            "go",
+            "js-ts",
+            "jvm",
+            "php",
+            "python",
+            "ruby",
+            "rust",
+            "swift"
+          ],
+          "enumDescriptions": [
+            "Infer the adapter from the active or saved editor when possible, then fall back to lopper's CLI auto detection.",
+            "Run every matching Lopper adapter in the workspace and merge the results.",
+            "Use the C/C++ adapter.",
+            "Use the Dart adapter.",
+            "Use the .NET adapter.",
+            "Use the Elixir adapter.",
+            "Use the Go adapter.",
+            "Use the JavaScript and TypeScript adapter.",
+            "Use the JVM adapter.",
+            "Use the PHP adapter.",
+            "Use the Python adapter.",
+            "Use the Ruby adapter.",
+            "Use the Rust adapter.",
+            "Use the Swift adapter."
+          ],
+          "markdownDescription": "Language adapter mode for workspace analysis. `auto` is the default and is editor-aware; `all` merges every matching adapter."
+        },
+        "lopper.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a lopper binary. Relative paths are resolved from the workspace root."
+        },
+        "lopper.topN": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Maximum number of dependencies to analyse per refresh."
+        },
+        "lopper.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh diagnostics when a saved file matches the selected adapter mode."
+        },
+        "lopper.autoDownloadBinary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically download a matching lopper release into extension-managed storage when no local binary is available."
+        },
+        "lopper.managedBinaryTag": {
+          "type": "string",
+          "default": "",
+          "description": "Optional lopper release tag to download for managed installs. Leave empty to use the latest GitHub release."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest:e2e": "npm run compile",
+    "test:e2e": "node ./src/test/runTest.mjs",
+    "package:vsix": "vsce package"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "tar": "^7.4.3"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.3.0",
+    "@types/adm-zip": "^0.5.7",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.5.2",
+    "glob": "^11.0.3",
+    "mocha": "^11.7.2",
+    "typescript": "^5.9.2"
+  }
+}
