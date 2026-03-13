@@ -15,6 +15,7 @@ Options:
   --format table|json|sarif|pr-comment
                              Output format for analyse (default: table)
   --language ID              Language adapter (default: auto)
+                             Supported IDs: auto, all, js-ts, python, cpp, jvm, kotlin-android, go, php, ruby, rust, dotnet, elixir, swift, dart
   --cache=true|false         Enable or disable incremental analysis cache (default: true)
   --cache-path PATH          Cache directory path (default: <repo>/.lopper-cache)
   --cache-readonly           Read cache entries but do not write misses

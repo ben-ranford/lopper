@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -11,6 +12,7 @@ export const lopperLanguageValues = [
   "go",
   "js-ts",
   "jvm",
+  "kotlin-android",
   "php",
   "python",
   "ruby",
@@ -28,6 +30,15 @@ interface DocumentLike {
 }
 
 const knownLanguages = new Set<LopperLanguage>(lopperLanguageValues);
+const jvmLikeLanguageIds = new Set(["java", "kotlin"]);
+const jvmLikeExtensions = new Set([".java", ".kt", ".kts"]);
+const androidBuildPluginMarkers = [
+  "com.android.application",
+  "com.android.dynamic-feature",
+  "com.android.library",
+  "com.android.test",
+  "org.jetbrains.kotlin.android",
+];
 
 const adapterByLanguageId = new Map<string, ConcreteLopperLanguage>([
   ["c", "cpp"],
@@ -106,17 +117,26 @@ export function configuredLopperLanguage(folder?: vscode.WorkspaceFolder): Loppe
   return normalizeLopperLanguage(configured);
 }
 
-export function inferLopperLanguageForDocument(document?: DocumentLike): ConcreteLopperLanguage | undefined {
+export function inferLopperLanguageForDocument(
+  document?: DocumentLike,
+  workspaceFolderPath?: string,
+): ConcreteLopperLanguage | undefined {
   if (!document || document.isUntitled) {
     return undefined;
   }
 
   const languageId = document.languageId.trim().toLowerCase();
+  if (jvmLikeLanguageIds.has(languageId)) {
+    return inferJvmFamilyAdapter(document.fileName, workspaceFolderPath);
+  }
   if (adapterByLanguageId.has(languageId)) {
     return adapterByLanguageId.get(languageId);
   }
 
   const extension = path.extname(document.fileName).toLowerCase();
+  if (jvmLikeExtensions.has(extension)) {
+    return inferJvmFamilyAdapter(document.fileName, workspaceFolderPath);
+  }
   if (adapterByExtension.has(extension)) {
     return adapterByExtension.get(extension);
   }
@@ -124,16 +144,24 @@ export function inferLopperLanguageForDocument(document?: DocumentLike): Concret
   return undefined;
 }
 
-export function resolveLopperLanguage(configuredLanguage: LopperLanguage, document?: DocumentLike): LopperLanguage {
+export function resolveLopperLanguage(
+  configuredLanguage: LopperLanguage,
+  document?: DocumentLike,
+  workspaceFolderPath?: string,
+): LopperLanguage {
   if (configuredLanguage !== "auto") {
     return configuredLanguage;
   }
 
-  return inferLopperLanguageForDocument(document) ?? "auto";
+  return inferLopperLanguageForDocument(document, workspaceFolderPath) ?? "auto";
 }
 
-export function shouldAutoRefreshForDocument(configuredLanguage: LopperLanguage, document: DocumentLike): boolean {
-  const inferred = inferLopperLanguageForDocument(document);
+export function shouldAutoRefreshForDocument(
+  configuredLanguage: LopperLanguage,
+  document: DocumentLike,
+  workspaceFolderPath?: string,
+): boolean {
+  const inferred = inferLopperLanguageForDocument(document, workspaceFolderPath);
   if (!inferred) {
     return false;
   }
@@ -151,4 +179,61 @@ function normalizeLopperLanguage(value: string | undefined): LopperLanguage {
     return "auto";
   }
   return normalized;
+}
+
+function inferJvmFamilyAdapter(fileName: string, workspaceFolderPath?: string): ConcreteLopperLanguage {
+  return hasAndroidModuleSignals(fileName, workspaceFolderPath) ? "kotlin-android" : "jvm";
+}
+
+function hasAndroidModuleSignals(fileName: string, workspaceFolderPath?: string): boolean {
+  if (!workspaceFolderPath) {
+    return false;
+  }
+
+  const workspaceRoot = path.resolve(workspaceFolderPath);
+  const resolvedFile = path.resolve(fileName);
+  const relativeFile = path.relative(workspaceRoot, resolvedFile);
+  if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) {
+    return false;
+  }
+
+  let currentDir = path.dirname(resolvedFile);
+  while (currentDir.startsWith(workspaceRoot)) {
+    if (moduleSignalsAndroid(currentDir)) {
+      return true;
+    }
+    if (currentDir === workspaceRoot) {
+      break;
+    }
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+
+  return false;
+}
+
+function moduleSignalsAndroid(moduleRoot: string): boolean {
+  if (fs.existsSync(path.join(moduleRoot, "src", "main", "AndroidManifest.xml"))) {
+    return true;
+  }
+
+  for (const buildFileName of ["build.gradle", "build.gradle.kts"]) {
+    const buildFilePath = path.join(moduleRoot, buildFileName);
+    if (!fs.existsSync(buildFilePath)) {
+      continue;
+    }
+    try {
+      const buildFile = fs.readFileSync(buildFilePath, "utf8").toLowerCase();
+      if (androidBuildPluginMarkers.some((marker) => buildFile.includes(marker))) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
 }

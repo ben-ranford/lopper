@@ -253,7 +253,7 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
     if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
       return false;
     }
-    return shouldAutoRefreshForDocument(configuredLopperLanguage(folder), document);
+    return shouldAutoRefreshForDocument(configuredLopperLanguage(folder), document, folder.uri.fsPath);
   }
 
   private renderAnalysis(analysis: WorkspaceAnalysis): void {
