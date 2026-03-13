@@ -23,6 +23,15 @@ make cov
 make build
 ```
 
+VS Code extension smoke tests:
+
+```bash
+make build
+make vscode-extension-install
+make vscode-extension-test
+make vscode-extension-package
+```
+
 Refresh terminal demos:
 
 ```bash

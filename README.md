@@ -1,6 +1,7 @@
 # Lopper
 [![Release](https://github.com/ben-ranford/lopper/actions/workflows/release.yml/badge.svg)](https://github.com/ben-ranford/lopper/actions/workflows/release.yml)
 [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ben-ranford_lopper&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ben-ranford_lopper)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098ff?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=BenRanford.vscode-lopper)
 
 Lopper is a local-first CLI/TUI for measuring dependency surface area in source repos.
 It compares imported dependencies to actual usage and reports waste, risk cues, and recommendations.
@@ -35,6 +36,19 @@ Run without local install:
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
 
+VS Code extension:
+
+```bash
+# Install from Marketplace after publish.
+code --install-extension BenRanford.vscode-lopper
+```
+
+VS Code extension from a release `.vsix`:
+
+```bash
+code --install-extension lopper-vscode-<version>.vsix
+```
+
 ## Quick Start
 
 Analyze one dependency:
@@ -66,6 +80,30 @@ Launch the interactive TUI:
 ```bash
 lopper tui --repo . --language all
 ```
+
+## VS Code Extension
+
+The VS Code extension adds editor diagnostics and hover context across supported Lopper adapters, plus safe JS/TS quick fixes on top of the local `lopper` CLI.
+
+- Extension ID: `BenRanford.vscode-lopper`
+- Command: `Lopper: Refresh Diagnostics`
+- Adapter mode: `lopper.language` with `auto` by default. `auto` follows the active or saved editor when possible, `all` merges matching adapters, or you can pin a specific adapter.
+- Binary resolution order: `LOPPER_BINARY_PATH`, `lopper.binaryPath`, workspace `bin/lopper`, `PATH`, then managed download from GitHub releases
+- Quick fixes: deterministic JS/TS subpath rewrites when `lopper` reports a safe codemod suggestion
+
+Local extension workflow:
+
+```bash
+make build
+make vscode-extension-install
+make vscode-extension-test
+make vscode-extension-package
+```
+
+CI and release behavior:
+
+- Extension smoke tests run in GitHub Actions on macOS and Linux with `@vscode/test-electron`
+- The release workflow packages a `.vsix`, attaches it to the GitHub release, and publishes to the VS Code Marketplace when `VSCE_PUBLISH` is configured
 
 Tune thresholds and score weights:
 
