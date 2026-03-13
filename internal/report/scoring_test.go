@@ -6,6 +6,11 @@ import (
 	"testing"
 )
 
+const (
+	removeUnusedDependencyCode = "remove-unused-dependency"
+	leftPadPackageName         = "left-pad"
+)
+
 func TestAnnotateRemovalCandidateScoresDeterministic(t *testing.T) {
 	deps := []DependencyReport{
 		{Name: "alpha", UsedExportsCount: 5, TotalExportsCount: 10, UsedPercent: 50},
@@ -278,7 +283,7 @@ func TestAnnotateFindingConfidence(t *testing.T) {
 			UnusedImports: []ImportUse{{Name: "chunk", Module: "lodash"}},
 			RiskCues:      []RiskCue{{Code: "dynamic-require", Severity: "high", Message: "dynamic usage"}},
 			Recommendations: []Recommendation{
-				{Code: "remove-unused-dependency", Priority: "high", Message: "remove"},
+				{Code: removeUnusedDependencyCode, Priority: "high", Message: "remove"},
 			},
 		},
 	}
@@ -303,12 +308,12 @@ func TestAnnotateFindingConfidence(t *testing.T) {
 func TestAnnotateFindingConfidenceUsesReachabilityAlias(t *testing.T) {
 	deps := []DependencyReport{
 		{
-			Name:                   "left-pad",
+			Name:                   leftPadPackageName,
 			ReachabilityConfidence: &ReachabilityConfidence{Score: 61.4, RationaleCodes: []string{confidenceReasonRuntimeOnlyUsage, confidenceReasonMissingExportInventory}},
-			UnusedExports:          []SymbolRef{{Name: "pad", Module: "left-pad"}},
-			UnusedImports:          []ImportUse{{Name: "pad", Module: "left-pad"}},
+			UnusedExports:          []SymbolRef{{Name: "pad", Module: leftPadPackageName}},
+			UnusedImports:          []ImportUse{{Name: "pad", Module: leftPadPackageName}},
 			RiskCues:               []RiskCue{{Code: "dynamic-loader", Severity: "medium", Message: "dynamic"}},
-			Recommendations:        []Recommendation{{Code: "remove-unused-dependency", Priority: "high", Message: "remove"}},
+			Recommendations:        []Recommendation{{Code: removeUnusedDependencyCode, Priority: "high", Message: "remove"}},
 		},
 	}
 
@@ -365,16 +370,14 @@ func TestReachabilityConfidenceJSONCompatibility(t *testing.T) {
 }
 
 func TestFilterFindingsByConfidence(t *testing.T) {
-	const packageName = "left-pad"
-
 	deps := []DependencyReport{
 		{
-			Name:          packageName,
-			UnusedExports: []SymbolRef{{Name: "pad", Module: packageName}},
-			UnusedImports: []ImportUse{{Name: "pad", Module: packageName}},
+			Name:          leftPadPackageName,
+			UnusedExports: []SymbolRef{{Name: "pad", Module: leftPadPackageName}},
+			UnusedImports: []ImportUse{{Name: "pad", Module: leftPadPackageName}},
 			RiskCues:      []RiskCue{{Code: "runtime-only", Severity: "low", Message: "runtime only"}},
 			Recommendations: []Recommendation{
-				{Code: "remove-unused-dependency", Priority: "high", Message: "remove"},
+				{Code: removeUnusedDependencyCode, Priority: "high", Message: "remove"},
 			},
 		},
 	}
@@ -400,8 +403,8 @@ func TestFilterFindingsByConfidence(t *testing.T) {
 func TestFilterFindingsByConfidenceNonPositiveNoop(t *testing.T) {
 	deps := []DependencyReport{
 		{
-			Name:          "left-pad",
-			UnusedExports: []SymbolRef{{Name: "pad", Module: "left-pad", ConfidenceScore: 10}},
+			Name:          leftPadPackageName,
+			UnusedExports: []SymbolRef{{Name: "pad", Module: leftPadPackageName, ConfidenceScore: 10}},
 		},
 	}
 
