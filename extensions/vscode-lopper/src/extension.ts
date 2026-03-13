@@ -139,25 +139,32 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
 
     const blocks = metadata.map((item) => {
       const markdown = new vscode.MarkdownString();
-      markdown.appendMarkdown(`**${item.dependency.name}**\n\n`);
-      markdown.appendMarkdown(
+      markdown.appendMarkdown("**");
+      markdown.appendText(item.dependency.name);
+      markdown.appendMarkdown("**\n\n");
+      markdown.appendText(
         `Used exports: ${item.dependency.usedExportsCount}/${item.dependency.totalExportsCount} (${item.dependency.usedPercent.toFixed(1)}%)`,
       );
       if (item.kind === "unused-import") {
         markdown.appendMarkdown(`\n\nUnused import on this line.`);
       }
       if (item.kind === "codemod" && item.suggestion) {
-        markdown.appendMarkdown(
-          `\n\nSafe quick fix available: \`${item.suggestion.fromModule}\` -> \`${item.suggestion.toModule}\`.`,
-        );
+        markdown.appendMarkdown(`\n\nSafe quick fix available: `);
+        markdown.appendMarkdown("`");
+        markdown.appendText(item.suggestion.fromModule);
+        markdown.appendMarkdown("` -> `");
+        markdown.appendText(item.suggestion.toModule);
+        markdown.appendMarkdown("`.");
       }
       const topRiskCue = item.dependency.riskCues?.[0];
       if (topRiskCue) {
-        markdown.appendMarkdown(`\n\nRisk cue: ${topRiskCue.message}`);
+        markdown.appendMarkdown(`\n\nRisk cue: `);
+        markdown.appendText(topRiskCue.message);
       }
       const recommendation = item.dependency.recommendations?.[0];
       if (recommendation) {
-        markdown.appendMarkdown(`\n\nRecommendation: ${recommendation.message}`);
+        markdown.appendMarkdown(`\n\nRecommendation: `);
+        markdown.appendText(recommendation.message);
       }
       return markdown;
     });
