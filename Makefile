@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint dup-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check gostyle lint dup-check suppression-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -17,6 +17,7 @@ DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
 DUPLICATION_BASE ?= origin/main
+SUPPRESSION_BASE ?= origin/main
 HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
@@ -85,6 +86,9 @@ dup-check:
 	echo "New-code duplication: $$pct% (duplicated added lines: $$dup_added / $$added, max: $(DUPLICATION_MAX)%, threshold: $(DUPLICATION_TOKEN_THRESHOLD) tokens, base: $$base_msg)"; \
 	awk -v p="$$pct" 'BEGIN { exit !(p <= $(DUPLICATION_MAX)) }' || (echo "Duplication gate failed: $$pct% > $(DUPLICATION_MAX)%"; exit 1)
 
+suppression-check:
+	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
+
 security:
 	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) ./...
 
@@ -104,7 +108,7 @@ build:
 	mkdir -p $(BIN_DIR)
 	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-ci: format-check lint dup-check security test build cov
+ci: format-check lint dup-check suppression-check security test build cov
 
 demos:
 	./scripts/demos/render.sh

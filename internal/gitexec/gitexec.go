@@ -1,8 +1,10 @@
 package gitexec
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -18,6 +20,28 @@ func ResolveBinaryPath() (string, error) {
 		return ExecutableFallback, nil
 	default:
 		return "", fmt.Errorf("git executable not found")
+	}
+}
+
+func Command(path string, args ...string) (*exec.Cmd, error) {
+	switch path {
+	case ExecutablePrimary:
+		return exec.Command(ExecutablePrimary, args...), nil
+	case ExecutableFallback:
+		return exec.Command(ExecutableFallback, args...), nil
+	default:
+		return nil, fmt.Errorf("unsupported git executable path: %q", path)
+	}
+}
+
+func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd, error) {
+	switch path {
+	case ExecutablePrimary:
+		return exec.CommandContext(ctx, ExecutablePrimary, args...), nil
+	case ExecutableFallback:
+		return exec.CommandContext(ctx, ExecutableFallback, args...), nil
+	default:
+		return nil, fmt.Errorf("unsupported git executable path: %q", path)
 	}
 }
 

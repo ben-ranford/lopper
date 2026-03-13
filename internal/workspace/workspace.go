@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +13,7 @@ import (
 )
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
+var execGitCommandFn = gitexec.Command
 
 func NormalizeRepoPath(path string) (string, error) {
 	if path == "" {
@@ -112,8 +112,10 @@ func resolveGitBinaryPath() (string, error) {
 
 func runGit(gitPath, repoPath string, args ...string) ([]byte, error) {
 	fullArgs := append([]string{"-C", repoPath}, args...)
-	// #nosec G204 -- arguments are fixed and repoPath is normalized to an absolute directory.
-	cmd := exec.Command(gitPath, fullArgs...)
+	cmd, err := execGitCommandFn(gitPath, fullArgs...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Env = sanitizedGitEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
