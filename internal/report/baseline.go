@@ -194,15 +194,15 @@ func ComputeSummary(dependencies []DependencyReport) *Summary {
 }
 
 func updateLicenseSummary(summary *Summary, license *DependencyLicense) {
+	if license != nil && license.Denied {
+		summary.DeniedLicenseCount++
+	}
 	if license == nil || license.Unknown || strings.TrimSpace(license.SPDX) == "" {
 		summary.UnknownLicenseCount++
 		return
 	}
 
 	summary.KnownLicenseCount++
-	if license.Denied {
-		summary.DeniedLicenseCount++
-	}
 }
 
 func updateConfidenceRollupStats(stats *confidenceRollupStats, confidence *ReachabilityConfidence) {

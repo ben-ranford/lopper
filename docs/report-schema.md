@@ -27,7 +27,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `dependencies[].codemod`: optional suggest-only patch previews and unsafe-transform skip reason codes for JS/TS subpath migrations.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used).
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
-- `summary.reachability`: repo-level v2 confidence rollup (`averageScore`, `lowestScore`, `highestScore`).
+- `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
 - `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `newDeniedLicenses`.
 

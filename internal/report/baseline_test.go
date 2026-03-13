@@ -69,6 +69,31 @@ func TestComputeSummaryIncludesReachabilityRollup(t *testing.T) {
 	}
 }
 
+func TestComputeSummaryCountsUnknownDeniedLicense(t *testing.T) {
+	summary := ComputeSummary([]DependencyReport{
+		{
+			Name: "mystery",
+			License: &DependencyLicense{
+				Unknown: true,
+				Denied:  true,
+			},
+		},
+	})
+
+	if summary == nil {
+		t.Fatal("expected summary")
+	}
+	if summary.UnknownLicenseCount != 1 {
+		t.Fatalf("expected one unknown license, got %#v", summary)
+	}
+	if summary.DeniedLicenseCount != 1 {
+		t.Fatalf("expected denied count to include unknown denied licenses, got %#v", summary)
+	}
+	if summary.KnownLicenseCount != 0 {
+		t.Fatalf("expected no known licenses, got %#v", summary)
+	}
+}
+
 func TestLoadAndParseFormat(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "report.json")
