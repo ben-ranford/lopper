@@ -98,7 +98,7 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
     if (!folder) {
       this.updateStatus("Lopper: no workspace", "Open a folder to analyse with Lopper.");
       if (revealErrors) {
-        void vscode.window.showInformationMessage("Open a folder before running Lopper diagnostics.");
+        await vscode.window.showInformationMessage("Open a folder before running Lopper diagnostics.");
       }
       return;
     }
@@ -117,12 +117,12 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
       if (error instanceof BinaryResolutionError) {
         if (revealErrors && !this.missingBinaryWarningShown) {
           this.missingBinaryWarningShown = true;
-          void vscode.window.showWarningMessage(message);
+          await vscode.window.showWarningMessage(message);
         }
         return;
       }
       if (revealErrors) {
-        void vscode.window.showErrorMessage(`Lopper refresh failed: ${message}`);
+        await vscode.window.showErrorMessage(`Lopper refresh failed: ${message}`);
       }
     }
   }
@@ -182,27 +182,28 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
         continue;
       }
       const metadata = documentMetadata.get(code);
-      if (!metadata || metadata.kind !== "codemod" || !metadata.suggestion) {
+      const suggestion = metadata?.suggestion;
+      if (metadata?.kind !== "codemod" || !suggestion) {
         continue;
       }
 
-      const lineIndex = metadata.suggestion.line - 1;
+      const lineIndex = suggestion.line - 1;
       if (lineIndex < 0 || lineIndex >= document.lineCount) {
         continue;
       }
       const currentLine = document.lineAt(lineIndex).text;
-      if (currentLine !== metadata.suggestion.original) {
+      if (currentLine !== suggestion.original) {
         continue;
       }
 
       const action = new vscode.CodeAction(
-        `Use ${metadata.suggestion.toModule} subpath import`,
+        `Use ${suggestion.toModule} subpath import`,
         vscode.CodeActionKind.QuickFix,
       );
       action.isPreferred = true;
       action.diagnostics = [diagnostic];
       const edit = new vscode.WorkspaceEdit();
-      edit.replace(document.uri, document.lineAt(lineIndex).range, metadata.suggestion.replacement);
+      edit.replace(document.uri, document.lineAt(lineIndex).range, suggestion.replacement);
       action.edit = edit;
       actions.push(action);
     }

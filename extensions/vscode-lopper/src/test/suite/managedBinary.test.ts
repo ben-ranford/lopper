@@ -6,7 +6,12 @@ import * as path from "node:path";
 import { suite, test } from "mocha";
 import * as tar from "tar";
 
-import { assetNameForRelease, ManagedBinaryInstaller, type GitHubRelease } from "../../managedBinary";
+import {
+  archiveDestinationPath,
+  assetNameForRelease,
+  ManagedBinaryInstaller,
+  type GitHubRelease,
+} from "../../managedBinary";
 
 suite("managed binary installer", () => {
   test("builds expected release asset names", () => {
@@ -58,6 +63,13 @@ suite("managed binary installer", () => {
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
+  });
+
+  test("rejects archive entries that escape the extraction directory", () => {
+    assert.throws(
+      () => archiveDestinationPath(path.join(process.cwd(), "extract-root"), "lopper_1.2.1_linux_amd64/../../lopper"),
+      /escapes the extraction directory/,
+    );
   });
 });
 
@@ -114,10 +126,11 @@ async function createZipFixture(
   releaseTag: string,
   host: { platform: "win32"; arch: string },
   contents: string,
+  binaryRelativePath = "lopper.exe",
 ): Promise<string> {
   const zip = new AdmZip();
   const rootDir = `lopper_${releaseTag.replace(/^v/, "")}_windows_${host.arch === "x64" ? "amd64" : "arm64"}`;
-  zip.addFile(`${rootDir}/lopper.exe`, Buffer.from(contents, "utf8"));
+  zip.addFile(`${rootDir}/${binaryRelativePath}`, Buffer.from(contents, "utf8"));
 
   const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
   zip.writeZip(archivePath);

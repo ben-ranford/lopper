@@ -84,7 +84,8 @@ const adapterByExtension = new Map<string, ConcreteLopperLanguage>([
   [".vb", "dotnet"],
 ]);
 
-const languageIds = Array.from(new Set(adapterByLanguageId.keys())).sort();
+const alphabeticalOrder = new Intl.Collator("en").compare;
+const languageIds = Array.from(new Set(adapterByLanguageId.keys())).sort((left, right) => alphabeticalOrder(left, right));
 
 export const supportedDocumentSelectors: vscode.DocumentFilter[] = languageIds.map((language) => ({
   scheme: "file",

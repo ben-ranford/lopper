@@ -155,31 +155,7 @@ export class ManagedBinaryInstaller {
 }
 
 export async function findExecutableInPath(command: string, platform = process.platform): Promise<string | undefined> {
-  const pathValue = process.env.PATH ?? "";
-  const pathEntries = pathValue.split(path.delimiter).filter((entry) => entry.length > 0);
-  const candidates = new Set<string>();
-
-  if (platform === "win32") {
-    const pathExt = (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
-    if (path.extname(command)) {
-      for (const entry of pathEntries) {
-        candidates.add(path.join(entry, command));
-      }
-    } else {
-      for (const entry of pathEntries) {
-        for (const extension of pathExt) {
-          candidates.add(path.join(entry, `${command}${extension.toLowerCase()}`));
-          candidates.add(path.join(entry, `${command}${extension.toUpperCase()}`));
-        }
-      }
-    }
-  } else {
-    for (const entry of pathEntries) {
-      candidates.add(path.join(entry, command));
-    }
-  }
-
-  for (const candidate of candidates) {
+  for (const candidate of executableCandidates(command, platform)) {
     if (await fileExists(candidate, true)) {
       return candidate;
     }
@@ -230,7 +206,7 @@ async function fetchRelease(releaseTag?: string): Promise<GitHubRelease> {
 
   const payload = (await response.json()) as Partial<GitHubRelease>;
   if (typeof payload.tag_name !== "string" || !Array.isArray(payload.assets)) {
-    throw new Error("release lookup returned an unexpected payload");
+    throw new TypeError("release lookup returned an unexpected payload");
   }
   return {
     tag_name: payload.tag_name,
@@ -261,15 +237,85 @@ async function downloadAsset(asset: GitHubReleaseAsset, destinationPath: string)
 
 async function extractArchive(archivePath: string, extractDir: string): Promise<void> {
   if (archivePath.endsWith(".zip")) {
-    const zip = new AdmZip(archivePath);
-    zip.extractAllTo(extractDir, true);
+    await extractZipArchive(archivePath, extractDir);
     return;
   }
   if (archivePath.endsWith(".tar.gz")) {
-    await tar.x({ file: archivePath, cwd: extractDir, gzip: true });
+    await extractTarArchive(archivePath, extractDir);
     return;
   }
   throw new Error(`unsupported archive type for ${path.basename(archivePath)}`);
+}
+
+function executableCandidates(command: string, platform: NodeJS.Platform): string[] {
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
+  if (platform !== "win32") {
+    return pathEntries.map((entry) => path.join(entry, command));
+  }
+
+  if (path.extname(command)) {
+    return pathEntries.map((entry) => path.join(entry, command));
+  }
+
+  const pathExtensions = (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
+  const candidates = new Set<string>();
+  for (const entry of pathEntries) {
+    for (const extension of pathExtensions) {
+      candidates.add(path.join(entry, `${command}${extension.toLowerCase()}`));
+      candidates.add(path.join(entry, `${command}${extension.toUpperCase()}`));
+    }
+  }
+  return Array.from(candidates);
+}
+
+async function extractZipArchive(archivePath: string, extractDir: string): Promise<void> {
+  const zip = new AdmZip(archivePath);
+  for (const entry of zip.getEntries()) {
+    const destinationPath = archiveDestinationPath(extractDir, entry.entryName);
+    if (entry.isDirectory) {
+      await mkdir(destinationPath, { recursive: true });
+      continue;
+    }
+    await mkdir(path.dirname(destinationPath), { recursive: true });
+    await writeFile(destinationPath, entry.getData());
+  }
+}
+
+async function extractTarArchive(archivePath: string, extractDir: string): Promise<void> {
+  await tar.t({
+    file: archivePath,
+    gzip: true,
+    onentry: (entry) => {
+      archiveDestinationPath(extractDir, entry.path);
+    },
+  });
+
+  await tar.x({
+    file: archivePath,
+    cwd: extractDir,
+    gzip: true,
+    filter: (entryPath) => {
+      archiveDestinationPath(extractDir, entryPath);
+      return true;
+    },
+  });
+}
+
+export function archiveDestinationPath(rootDir: string, entryName: string): string {
+  const normalizedEntry = entryName.replaceAll("\\", "/");
+  if (normalizedEntry.length === 0) {
+    throw new Error("archive entry path cannot be empty");
+  }
+  if (path.posix.isAbsolute(normalizedEntry)) {
+    throw new Error(`archive entry ${entryName} must be relative`);
+  }
+
+  const resolvedRoot = path.resolve(rootDir);
+  const destinationPath = path.resolve(resolvedRoot, normalizedEntry);
+  if (destinationPath !== resolvedRoot && !destinationPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`archive entry ${entryName} escapes the extraction directory`);
+  }
+  return destinationPath;
 }
 
 async function findBinaryInDirectory(rootDir: string, fileName: string): Promise<string | undefined> {

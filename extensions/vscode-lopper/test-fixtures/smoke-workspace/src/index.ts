@@ -1,4 +1,3 @@
-import { chunk } from "scope-lib";
-import { idle } from "scope-lib";
+import chunk from "scope-lib/chunk";
 
 console.log(chunk(["a", "b", "c"], 1));
