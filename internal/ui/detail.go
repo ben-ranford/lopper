@@ -92,6 +92,7 @@ func printDependencyHeader(out io.Writer, dep report.DependencyReport) error {
 
 func printDependencySections(out io.Writer, dep report.DependencyReport) error {
 	printers := []func(io.Writer) error{
+		func(w io.Writer) error { return printReachabilityConfidence(w, dep.ReachabilityConfidence) },
 		func(w io.Writer) error { return printRemovalCandidate(w, dep.RemovalCandidate) },
 		func(w io.Writer) error { return printRuntimeUsage(w, dep.RuntimeUsage) },
 		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
@@ -248,6 +249,47 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) error {
 	for _, line := range lines {
 		if err := writeln(out, line); err != nil {
 			return err
+		}
+	}
+	return writeln(out, "")
+}
+
+func printReachabilityConfidence(out io.Writer, confidence *report.ReachabilityConfidence) error {
+	if err := writeln(out, "Reachability confidence"); err != nil {
+		return err
+	}
+	if confidence == nil {
+		return writeNoneAndBlankLine(out)
+	}
+	lines := []string{
+		fmt.Sprintf("  - model: %s", confidence.Model),
+		fmt.Sprintf("  - score: %.1f", confidence.Score),
+	}
+	if confidence.Summary != "" {
+		lines = append(lines, fmt.Sprintf("  - summary: %s", confidence.Summary))
+	}
+	if len(confidence.RationaleCodes) > 0 {
+		lines = append(lines, fmt.Sprintf("  - rationale codes: %s", strings.Join(confidence.RationaleCodes, ", ")))
+	}
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	if len(confidence.Signals) == 0 {
+		return writeln(out, "")
+	}
+	if err := writeln(out, "  - signals:"); err != nil {
+		return err
+	}
+	for _, signal := range confidence.Signals {
+		if err := writef(out, "    - %s: score=%.1f weight=%.3f contribution=%.1f\n", signal.Code, signal.Score, signal.Weight, signal.Contribution); err != nil {
+			return err
+		}
+		if signal.Rationale != "" {
+			if err := writef(out, "      rationale: %s\n", signal.Rationale); err != nil {
+				return err
+			}
 		}
 	}
 	return writeln(out, "")

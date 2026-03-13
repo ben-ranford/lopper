@@ -19,6 +19,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `effectivePolicy`: resolved policy object, including precedence sources, scoring weights, and license policy controls (`CLI > repo config > imported policy packs > defaults`).
 - `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
 - `dependencies[].language`: language tag for each dependency row.
+- `dependencies[].reachabilityConfidence`: deterministic v2 per-dependency confidence artifact (`model`, `score`, `summary`, `rationaleCodes`, and weighted `signals`).
 - `dependencies[].license`: normalized per-dependency license detection (`spdx`, `source`, `confidence`, `unknown`, `denied`).
 - `dependencies[].provenance`: per-dependency provenance signals (`source`, `confidence`, `signals`).
 - `dependencies[].riskCues`: heuristic risk signals.
@@ -26,11 +27,16 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `dependencies[].codemod`: optional suggest-only patch previews and unsafe-transform skip reason codes for JS/TS subpath migrations.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used).
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
+- `summary.reachability`: repo-level v2 confidence rollup (`averageScore`, `lowestScore`, `highestScore`).
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
 - `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `newDeniedLicenses`.
 
 ## Notes
 
+- Reachability confidence v2 uses a deterministic weighted formula: `score = sum(signal.score * signal.weight)`, bounded to `0-100` and rounded to one decimal place.
+- Signal weights are fixed in v2: runtime correlation `0.20`, export inventory `0.30`, import precision `0.20`, repo usage uncertainty `0.15`, dependency dynamic-loader signal `0.10`, and risk severity `0.05`.
+- `dependencies[].removalCandidate.confidence` remains as a compatibility alias for `dependencies[].reachabilityConfidence.score`.
+- Finding-level `confidenceScore` and `confidenceReasonCodes` fields mirror `dependencies[].reachabilityConfidence.score` and `dependencies[].reachabilityConfidence.rationaleCodes`.
 - `runtimeUsage` currently annotates JS/TS dependencies.
 - `runtimeUsage.correlation` distinguishes `static-only`, `runtime-only`, and `overlap` evidence categories.
 - `runtimeUsage.modules` lists runtime-loaded module paths seen for a dependency.

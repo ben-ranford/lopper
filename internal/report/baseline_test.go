@@ -52,6 +52,23 @@ func TestComputeLanguageBreakdown(t *testing.T) {
 	}
 }
 
+func TestComputeSummaryIncludesReachabilityRollup(t *testing.T) {
+	summary := ComputeSummary([]DependencyReport{
+		{Name: "alpha", ReachabilityConfidence: &ReachabilityConfidence{Score: 80}},
+		{Name: "beta", ReachabilityConfidence: &ReachabilityConfidence{Score: 60}},
+	})
+
+	if summary == nil || summary.Reachability == nil {
+		t.Fatalf("expected reachability rollup on summary, got %#v", summary)
+	}
+	if summary.Reachability.Model != reachabilityConfidenceModelV2 {
+		t.Fatalf("expected reachability rollup model, got %#v", summary.Reachability)
+	}
+	if summary.Reachability.AverageScore != 70 || summary.Reachability.LowestScore != 60 || summary.Reachability.HighestScore != 80 {
+		t.Fatalf("unexpected reachability rollup values: %#v", summary.Reachability)
+	}
+}
+
 func TestLoadAndParseFormat(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "report.json")

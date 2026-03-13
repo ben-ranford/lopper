@@ -52,12 +52,13 @@ func formatTable(report Report) (string, error) {
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 	showLanguage := hasLanguageColumn(report.Dependencies)
 	showRuntime := hasRuntimeColumn(report.Dependencies)
-	if err := writeTableHeader(writer, showLanguage, showRuntime); err != nil {
+	showReachability := hasReachabilityColumn(report.Dependencies)
+	if err := writeTableHeader(writer, showLanguage, showRuntime, showReachability); err != nil {
 		return "", err
 	}
 
 	for _, dep := range report.Dependencies {
-		if _, err := fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime)); err != nil {
+		if _, err := fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime, showReachability)); err != nil {
 			return "", err
 		}
 	}
@@ -75,6 +76,9 @@ func appendSummary(buffer *bytes.Buffer, summary *Summary) {
 	}
 	buffer.WriteString(fmt.Sprintf("Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n", summary.DependencyCount, summary.UsedExportsCount, summary.TotalExportsCount, summary.UsedPercent))
 	buffer.WriteString(fmt.Sprintf("Licenses: known=%d, unknown=%d, denied=%d\n\n", summary.KnownLicenseCount, summary.UnknownLicenseCount, summary.DeniedLicenseCount))
+	if summary.Reachability != nil {
+		buffer.WriteString(fmt.Sprintf("Reachability confidence: avg=%.1f range=%.1f-%.1f (%s)\n\n", summary.Reachability.AverageScore, summary.Reachability.LowestScore, summary.Reachability.HighestScore, summary.Reachability.Model))
+	}
 }
 
 func appendCacheMetadata(buffer *bytes.Buffer, cache *CacheMetadata) {
@@ -112,8 +116,8 @@ func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) 
 	buffer.WriteString("\n")
 }
 
-func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) error {
-	columns := make([]string, 0, 11)
+func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime, showReachability bool) error {
+	columns := make([]string, 0, 12)
 	if showLanguage {
 		columns = append(columns, "Language")
 	}
@@ -121,18 +125,22 @@ func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) 
 	if showRuntime {
 		columns = append(columns, "Runtime")
 	}
-	columns = append(columns, "License", "Provenance", "Est. Unused Size", "Candidate Score", "Score Components", "Top Symbols")
+	columns = append(columns, "License", "Provenance", "Est. Unused Size", "Candidate Score", "Score Components")
+	if showReachability {
+		columns = append(columns, "Reachability")
+	}
+	columns = append(columns, "Top Symbols")
 	_, err := fmt.Fprintln(writer, strings.Join(columns, "\t"))
 	return err
 }
 
-func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string {
+func formatTableRow(dep DependencyReport, showLanguage, showRuntime, showReachability bool) string {
 	usedPercent := dep.UsedPercent
 	if usedPercent <= 0 && dep.TotalExportsCount > 0 {
 		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
 	}
 
-	columns := make([]string, 0, 11)
+	columns := make([]string, 0, 12)
 	if showLanguage {
 		columns = append(columns, dep.Language)
 	}
@@ -140,7 +148,11 @@ func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string
 	if showRuntime {
 		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
 	}
-	columns = append(columns, formatDependencyLicense(dep.License), formatDependencyProvenance(dep.Provenance), formatBytes(dep.EstimatedUnusedBytes), formatCandidateScore(dep.RemovalCandidate), formatScoreComponents(dep.RemovalCandidate), formatTopSymbols(dep.TopUsedSymbols))
+	columns = append(columns, formatDependencyLicense(dep.License), formatDependencyProvenance(dep.Provenance), formatBytes(dep.EstimatedUnusedBytes), formatCandidateScore(dep.RemovalCandidate), formatScoreComponents(dep.RemovalCandidate))
+	if showReachability {
+		columns = append(columns, formatReachabilityConfidence(dep.ReachabilityConfidence))
+	}
+	columns = append(columns, formatTopSymbols(dep.TopUsedSymbols))
 	return strings.Join(columns, "\t")
 }
 
@@ -156,6 +168,15 @@ func hasLanguageColumn(dependencies []DependencyReport) bool {
 func hasRuntimeColumn(dependencies []DependencyReport) bool {
 	for _, dep := range dependencies {
 		if dep.RuntimeUsage != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReachabilityColumn(dependencies []DependencyReport) bool {
+	for _, dep := range dependencies {
+		if dep.ReachabilityConfidence != nil {
 			return true
 		}
 	}
@@ -336,6 +357,16 @@ func formatScoreComponents(candidate *RemovalCandidate) string {
 		return "-"
 	}
 	return fmt.Sprintf("U:%.1f I:%.1f C:%.1f", candidate.Usage, candidate.Impact, candidate.Confidence)
+}
+
+func formatReachabilityConfidence(confidence *ReachabilityConfidence) string {
+	if confidence == nil {
+		return "-"
+	}
+	if strings.TrimSpace(confidence.Summary) == "" {
+		return fmt.Sprintf("%.1f", confidence.Score)
+	}
+	return fmt.Sprintf("%.1f (%s)", confidence.Score, confidence.Summary)
 }
 
 func formatBytes(value int64) string {

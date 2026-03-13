@@ -171,6 +171,10 @@ func ComputeSummary(dependencies []DependencyReport) *Summary {
 	}
 
 	summary := Summary{DependencyCount: len(dependencies)}
+	confidenceCount := 0
+	confidenceTotal := 0.0
+	confidenceLowest := 0.0
+	confidenceHighest := 0.0
 	for _, dep := range dependencies {
 		summary.UsedExportsCount += dep.UsedExportsCount
 		summary.TotalExportsCount += dep.TotalExportsCount
@@ -182,9 +186,28 @@ func ComputeSummary(dependencies []DependencyReport) *Summary {
 		if dep.License != nil && dep.License.Denied {
 			summary.DeniedLicenseCount++
 		}
+		if dep.ReachabilityConfidence != nil {
+			score := dep.ReachabilityConfidence.Score
+			confidenceTotal += score
+			if confidenceCount == 0 || score < confidenceLowest {
+				confidenceLowest = score
+			}
+			if confidenceCount == 0 || score > confidenceHighest {
+				confidenceHighest = score
+			}
+			confidenceCount++
+		}
 	}
 	if summary.TotalExportsCount > 0 {
 		summary.UsedPercent = (float64(summary.UsedExportsCount) / float64(summary.TotalExportsCount)) * 100
+	}
+	if confidenceCount > 0 {
+		summary.Reachability = &ReachabilityRollup{
+			Model:        reachabilityConfidenceModelV2,
+			AverageScore: roundTo(confidenceTotal/float64(confidenceCount), 1),
+			LowestScore:  roundTo(confidenceLowest, 1),
+			HighestScore: roundTo(confidenceHighest, 1),
+		}
 	}
 
 	return &summary
