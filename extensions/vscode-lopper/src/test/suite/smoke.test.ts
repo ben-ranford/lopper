@@ -15,6 +15,7 @@ suite("vscode-lopper smoke", () => {
     const extension = vscode.extensions.getExtension("BenRanford.vscode-lopper");
     assert.ok(extension, "expected vscode-lopper extension");
     await extension.activate();
+    assert.equal(vscode.workspace.getConfiguration("lopper").get("language"), "auto");
 
     const document = await vscode.workspace.openTextDocument(fixtureUri);
     await vscode.window.showTextDocument(document);

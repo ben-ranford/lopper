@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { configuredLopperLanguage, shouldAutoRefreshForDocument, supportedDocumentSelectors } from "./languageConfiguration";
 import { BinaryResolutionError, LopperRunner, type WorkspaceAnalysis } from "./lopperRunner";
 import type {
   LopperCodemodSuggestion,
@@ -28,7 +29,7 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("lopper");
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   private readonly output = vscode.window.createOutputChannel("Lopper");
-  private readonly runner = new LopperRunner(this.output);
+  private readonly runner: LopperRunner;
   private readonly metadataByDocument = new Map<string, Map<string, DiagnosticMetadata>>();
   private readonly documentUrisByWorkspace = new Map<string, Set<string>>();
   private readonly refreshTimers = new Map<string, NodeJS.Timeout>();
@@ -36,7 +37,8 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
   private missingBinaryWarningShown = false;
   private readonly disposable: vscode.Disposable;
 
-  constructor() {
+  constructor(context: vscode.ExtensionContext) {
+    this.runner = new LopperRunner(this.output, context);
     this.statusBar.command = "lopper.refreshWorkspace";
     this.statusBar.text = this.latestSummary;
     this.statusBar.tooltip = "Refresh Lopper diagnostics";
@@ -49,15 +51,10 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
       vscode.commands.registerCommand("lopper.refreshWorkspace", async () => {
         await this.refreshWorkspace();
       }),
-      vscode.languages.registerHoverProvider(
-        [{ scheme: "file", language: "javascript" }, { scheme: "file", language: "typescript" }],
-        this,
-      ),
-      vscode.languages.registerCodeActionsProvider(
-        [{ scheme: "file", language: "javascript" }, { scheme: "file", language: "typescript" }],
-        this,
-        { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] },
-      ),
+      vscode.languages.registerHoverProvider(supportedDocumentSelectors, this),
+      vscode.languages.registerCodeActionsProvider(supportedDocumentSelectors, this, {
+        providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+      }),
       vscode.workspace.onDidSaveTextDocument((document) => {
         if (!this.shouldAutoRefresh(document)) {
           return;
@@ -75,7 +72,7 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
           timerKey,
           setTimeout(() => {
             this.refreshTimers.delete(timerKey);
-            void this.refreshWorkspace(folder, false);
+            void this.refreshWorkspace(folder, false, document);
           }, 400),
         );
       }),
@@ -89,13 +86,14 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
       return;
     }
     if (vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
-      await this.refreshWorkspace(folder, false);
+      await this.refreshWorkspace(folder, false, this.activeDocumentForFolder(folder));
     }
   }
 
   async refreshWorkspace(
     folder = this.primaryWorkspaceFolder(),
     revealErrors = true,
+    document = this.activeDocumentForFolder(folder),
   ): Promise<void> {
     if (!folder) {
       this.updateStatus("Lopper: no workspace", "Open a folder to analyse with Lopper.");
@@ -108,7 +106,7 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
     this.updateStatus("Lopper: analysing...", `Scanning ${folder.name} with the local lopper CLI.`);
 
     try {
-      const analysis = await this.runner.analyseWorkspace(folder);
+      const analysis = await this.runner.analyseWorkspace(folder, document);
       this.renderAnalysis(analysis);
       this.missingBinaryWarningShown = false;
     } catch (error) {
@@ -224,15 +222,30 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
     return vscode.workspace.workspaceFolders?.[0];
   }
 
+  private activeDocumentForFolder(folder?: vscode.WorkspaceFolder): vscode.TextDocument | undefined {
+    const document = vscode.window.activeTextEditor?.document;
+    if (!document) {
+      return undefined;
+    }
+    if (!folder) {
+      return document;
+    }
+    const activeFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    return activeFolder?.uri.toString() === folder.uri.toString() ? document : undefined;
+  }
+
   private shouldAutoRefresh(document: vscode.TextDocument): boolean {
-    if (document.isUntitled || (document.languageId !== "javascript" && document.languageId !== "typescript")) {
+    if (document.isUntitled) {
       return false;
     }
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     if (!folder) {
       return false;
     }
-    return vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true);
+    if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
+      return false;
+    }
+    return shouldAutoRefreshForDocument(configuredLopperLanguage(folder), document);
   }
 
   private renderAnalysis(analysis: WorkspaceAnalysis): void {
@@ -262,7 +275,7 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
     const usedPercent = analysis.report.summary?.usedPercent ?? 0;
     this.updateStatus(
       `Lopper: ${dependencyCount} deps | ${usedPercent.toFixed(1)}% used`,
-      `Diagnostics sourced from ${path.basename(analysis.binaryPath)}`,
+      `Diagnostics sourced from ${path.basename(analysis.binaryPath)} (${analysis.requestedLanguage})`,
     );
   }
 
@@ -395,8 +408,8 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
 
 let controller: LopperController | undefined;
 
-export async function activate(): Promise<ExtensionApi> {
-  controller = new LopperController();
+export async function activate(context: vscode.ExtensionContext): Promise<ExtensionApi> {
+  controller = new LopperController(context);
   await controller.initialize();
   return {
     refreshWorkspace: async () => {

@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
+import { configuredLopperLanguage, resolveLopperLanguage, type LopperLanguage } from "./languageConfiguration";
+import { findExecutableInPath, ManagedBinaryInstaller } from "./managedBinary";
 import type {
   LopperCodemodReport,
   LopperDependencyReport,
@@ -15,6 +17,7 @@ const execFileAsync = promisify(execFile);
 export interface WorkspaceAnalysis {
   folder: vscode.WorkspaceFolder;
   binaryPath: string;
+  requestedLanguage: LopperLanguage;
   report: LopperReport;
   codemodsByDependency: Map<string, LopperCodemodReport>;
 }
@@ -27,10 +30,21 @@ export class BinaryResolutionError extends Error {
 }
 
 export class LopperRunner {
-  constructor(private readonly output: vscode.OutputChannel) {}
+  private readonly installer: ManagedBinaryInstaller;
 
-  async analyseWorkspace(folder: vscode.WorkspaceFolder): Promise<WorkspaceAnalysis> {
+  constructor(
+    private readonly output: Pick<vscode.OutputChannel, "appendLine">,
+    private readonly context: vscode.ExtensionContext,
+  ) {
+    this.installer = new ManagedBinaryInstaller(context.globalStorageUri.fsPath, output);
+  }
+
+  async analyseWorkspace(
+    folder: vscode.WorkspaceFolder,
+    document?: vscode.TextDocument,
+  ): Promise<WorkspaceAnalysis> {
     const binaryPath = await this.resolveBinaryPath(folder);
+    const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document);
     const topN = this.topN(folder);
     const report = await this.runReport(binaryPath, [
       "analyse",
@@ -39,20 +53,23 @@ export class LopperRunner {
       "--repo",
       folder.uri.fsPath,
       "--language",
-      "js-ts",
+      requestedLanguage,
       "--format",
       "json",
     ], folder.uri.fsPath);
 
     const codemodsByDependency = new Map<string, LopperCodemodReport>();
     for (const dependency of report.dependencies) {
+      if (!shouldFetchCodemod(dependency, requestedLanguage)) {
+        continue;
+      }
       const codemod = await this.fetchCodemod(binaryPath, folder, dependency);
       if (codemod) {
         codemodsByDependency.set(dependency.name, codemod);
       }
     }
 
-    return { folder, binaryPath, report, codemodsByDependency };
+    return { folder, binaryPath, requestedLanguage, report, codemodsByDependency };
   }
 
   private topN(folder: vscode.WorkspaceFolder): number {
@@ -91,7 +108,7 @@ export class LopperRunner {
   async resolveBinaryPath(folder: vscode.WorkspaceFolder): Promise<string> {
     const envBinaryPath = process.env.LOPPER_BINARY_PATH?.trim();
     if (envBinaryPath) {
-      return envBinaryPath;
+      return this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
     }
 
     const configuredBinaryPath = vscode.workspace
@@ -99,9 +116,10 @@ export class LopperRunner {
       .get<string>("binaryPath", "")
       .trim();
     if (configuredBinaryPath) {
-      return path.isAbsolute(configuredBinaryPath)
+      const resolvedPath = path.isAbsolute(configuredBinaryPath)
         ? configuredBinaryPath
         : path.join(folder.uri.fsPath, configuredBinaryPath);
+      return this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
     }
 
     const localBinary = path.join(folder.uri.fsPath, "bin", process.platform === "win32" ? "lopper.exe" : "lopper");
@@ -109,7 +127,58 @@ export class LopperRunner {
       await access(localBinary);
       return localBinary;
     } catch {
-      return process.platform === "win32" ? "lopper.exe" : "lopper";
+      const pathBinary = await findExecutableInPath(process.platform === "win32" ? "lopper.exe" : "lopper");
+      if (pathBinary) {
+        return pathBinary;
+      }
+    }
+
+    const autoDownloadEnabled = vscode.workspace
+      .getConfiguration("lopper", folder.uri)
+      .get<boolean>("autoDownloadBinary", true);
+    if (!autoDownloadEnabled) {
+      throw new BinaryResolutionError(
+        "Lopper binary not found. Install it manually, set lopper.binaryPath or LOPPER_BINARY_PATH, or enable lopper.autoDownloadBinary.",
+      );
+    }
+
+    const releaseTag = vscode.workspace
+      .getConfiguration("lopper", folder.uri)
+      .get<string>("managedBinaryTag", "")
+      .trim();
+
+    const cachedBinary = await this.installer.findInstalledBinary(releaseTag);
+    if (cachedBinary) {
+      return cachedBinary;
+    }
+
+    const installResult = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Installing lopper CLI",
+      },
+      async (progress) => {
+        progress.report({
+          message: releaseTag
+            ? `Downloading ${releaseTag} for ${process.platform}/${process.arch}`
+            : `Downloading latest release for ${process.platform}/${process.arch}`,
+        });
+        return this.installer.ensureInstalled(releaseTag);
+      },
+    );
+
+    if (installResult.downloaded) {
+      this.output.appendLine(`managed lopper binary installed: ${installResult.binaryPath} (${installResult.tag})`);
+    }
+    return installResult.binaryPath;
+  }
+
+  private async ensureConfiguredBinaryExists(binaryPath: string, source: string): Promise<string> {
+    try {
+      await access(binaryPath);
+      return binaryPath;
+    } catch {
+      throw new BinaryResolutionError(`${source} points to a missing binary: ${binaryPath}`);
     }
   }
 
@@ -152,4 +221,12 @@ export class LopperRunner {
       );
     }
   }
+}
+
+function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguage: LopperLanguage): boolean {
+  const dependencyLanguage = dependency.language?.trim().toLowerCase();
+  if (dependencyLanguage) {
+    return dependencyLanguage === "js-ts";
+  }
+  return requestedLanguage === "js-ts";
 }

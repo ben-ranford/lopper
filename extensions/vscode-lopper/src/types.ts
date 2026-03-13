@@ -10,6 +10,7 @@ export interface LopperSummary {
 }
 
 export interface LopperDependencyReport {
+  language?: string;
   name: string;
   usedExportsCount: number;
   totalExportsCount: number;
