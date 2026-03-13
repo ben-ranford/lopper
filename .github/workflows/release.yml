@@ -325,12 +325,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: extensions/vscode-lopper/package-lock.json
-
-      - name: Install extension dependencies for publish
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
-        run: make vscode-extension-install
 
       - name: Publish VS Code extension to Marketplace
         if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
@@ -340,8 +334,7 @@ jobs:
           set -euo pipefail
           vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
           test -n "$vsix_path"
-          cd extensions/vscode-lopper
-          npx @vscode/vsce publish --packagePath "../../${vsix_path}"
+          npx --yes @vscode/vsce publish --packagePath "$vsix_path"
 
   update-homebrew-tap:
     needs:
