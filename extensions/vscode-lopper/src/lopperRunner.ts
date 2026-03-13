@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
@@ -124,7 +125,17 @@ export class LopperRunner {
 
     const localBinary = path.join(folder.uri.fsPath, "bin", process.platform === "win32" ? "lopper.exe" : "lopper");
     try {
-      await access(localBinary);
+      const fileStat = await stat(localBinary);
+      if (!fileStat.isFile()) {
+        throw new Error("Local lopper binary is not a regular file");
+      }
+      if (process.platform === "win32") {
+        // On Windows, ensure the file is accessible; executability is inferred from the .exe extension.
+        await access(localBinary);
+      } else {
+        // On POSIX, ensure the file is executable.
+        await access(localBinary, fsConstants.X_OK);
+      }
       return localBinary;
     } catch {
       const pathBinary = await findExecutableInPath(process.platform === "win32" ? "lopper.exe" : "lopper");
