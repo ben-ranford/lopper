@@ -223,7 +223,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -322,7 +322,7 @@ jobs:
 
       - name: Setup Node
         if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
