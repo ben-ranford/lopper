@@ -1,0 +1,8 @@
+{
+  "name": "smoke-workspace",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "scope-lib": "1.0.0"
+  }
+}
