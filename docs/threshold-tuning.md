@@ -9,7 +9,7 @@ This guide explains how to tune `lopper` threshold behavior for CI quality gates
 - `min_usage_percent_for_recommendations`: controls when low-usage recommendations are emitted for dependencies.
 - `removal_candidate_weight_usage`: relative weight for removal-candidate usage signal.
 - `removal_candidate_weight_impact`: relative weight for removal-candidate impact signal.
-- `removal_candidate_weight_confidence`: relative weight for removal-candidate confidence signal.
+- `removal_candidate_weight_confidence`: relative weight for removal-candidate confidence signal. This uses `dependencies[].reachabilityConfidence.score` in v2; `removalCandidate.confidence` remains as the compatibility alias in report output.
 - `license_deny`: SPDX deny list used for license policy checks.
 - `license_fail_on_deny`: fail CI when denied licenses are detected.
 - `license_include_registry_provenance`: opt-in JS/TS registry provenance heuristics (default local-only).

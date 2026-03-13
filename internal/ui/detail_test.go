@@ -291,6 +291,52 @@ func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
 	}
 }
 
+func TestPrintReachabilityConfidenceDetailedOutput(t *testing.T) {
+	var out bytes.Buffer
+	printReachabilityConfidence(&out, &report.ReachabilityConfidence{
+		Model:          "reachability-v2",
+		Score:          91.4,
+		Summary:        "runtime overlap; export inventory; precise imports",
+		RationaleCodes: []string{"runtime-overlap", "export-inventory-known", "precise-static-imports"},
+		Signals: []report.ReachabilitySignal{
+			{Code: "runtime-overlap", Score: 100, Weight: 0.2, Contribution: 20, Rationale: "runtime and static evidence overlap"},
+		},
+	})
+	text := out.String()
+	for _, want := range []string{
+		"Reachability confidence",
+		"model: reachability-v2",
+		"score: 91.4",
+		"summary: runtime overlap; export inventory; precise imports",
+		"rationale codes: runtime-overlap, export-inventory-known, precise-static-imports",
+		"runtime-overlap: score=100.0 weight=0.200 contribution=20.0",
+		"rationale: runtime and static evidence overlap",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in reachability confidence output, got %q", want, text)
+		}
+	}
+}
+
+func TestPrintReachabilityConfidenceFallbackOutput(t *testing.T) {
+	var out bytes.Buffer
+	printReachabilityConfidence(&out, nil)
+	printReachabilityConfidence(&out, &report.ReachabilityConfidence{
+		Model: "reachability-v2",
+		Score: 72.5,
+	})
+	text := out.String()
+	if !strings.Contains(text, "(none)") {
+		t.Fatalf("expected nil reachability confidence placeholder, got %q", text)
+	}
+	if !strings.Contains(text, "score: 72.5") {
+		t.Fatalf("expected score-only reachability confidence output, got %q", text)
+	}
+	if strings.Contains(text, "signals:") {
+		t.Fatalf("expected no signals section for score-only confidence output, got %q", text)
+	}
+}
+
 func TestDetailWriteErrorPropagation(t *testing.T) {
 	writeErr := errors.New("write failed")
 
