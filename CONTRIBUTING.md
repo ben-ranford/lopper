@@ -18,6 +18,7 @@ make setup
 make fmt
 make test
 make lint
+make suppression-check
 make cov
 make build
 ```

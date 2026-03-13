@@ -1,11 +1,14 @@
 package gitexec
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+const versionArg = "--version"
 
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
@@ -33,6 +36,39 @@ func TestSanitizedEnv(t *testing.T) {
 	}
 	if !containsEnv(env, "KEEP_ME=1") {
 		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)
+	}
+}
+
+func TestCommandUsesKnownGitPaths(t *testing.T) {
+	for _, gitPath := range []string{ExecutablePrimary, ExecutableFallback} {
+		command, err := Command(gitPath, versionArg)
+		if err != nil {
+			t.Fatalf("build command for %s: %v", gitPath, err)
+		}
+		if command.Path != gitPath {
+			t.Fatalf("expected command path %q, got %q", gitPath, command.Path)
+		}
+	}
+}
+
+func TestCommandContextUsesKnownGitPaths(t *testing.T) {
+	for _, gitPath := range []string{ExecutablePrimary, ExecutableFallback} {
+		command, err := CommandContext(context.Background(), gitPath, versionArg)
+		if err != nil {
+			t.Fatalf("build command context for %s: %v", gitPath, err)
+		}
+		if command.Path != gitPath {
+			t.Fatalf("expected command path %q, got %q", gitPath, command.Path)
+		}
+	}
+}
+
+func TestCommandRejectsUnknownGitPath(t *testing.T) {
+	if _, err := Command("/tmp/fake-git", versionArg); err == nil {
+		t.Fatalf("expected unknown path error")
+	}
+	if _, err := CommandContext(context.Background(), "/tmp/fake-git", versionArg); err == nil {
+		t.Fatalf("expected unknown path error for context command")
 	}
 }
 

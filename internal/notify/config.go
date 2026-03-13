@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,8 +23,7 @@ func LoadConfigOverrides(path string) (Overrides, error) {
 	if strings.TrimSpace(path) == "" {
 		return Overrides{}, nil
 	}
-	// #nosec G304 -- config path is controlled via validated CLI config resolution.
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		return Overrides{}, fmt.Errorf("read notify config %s: %w", path, err)
 	}

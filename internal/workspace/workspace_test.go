@@ -3,6 +3,7 @@ package workspace
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -356,11 +357,13 @@ func TestParseChangedFileHelpers(t *testing.T) {
 
 func TestResolveGitBinaryPathMissing(t *testing.T) {
 	original := resolveGitBinaryPathFn
+	originalExec := execGitCommandFn
 	resolveGitBinaryPathFn = func() (string, error) {
 		return "", errors.New("git executable not found")
 	}
 	t.Cleanup(func() {
 		resolveGitBinaryPathFn = original
+		execGitCommandFn = originalExec
 	})
 
 	_, err := resolveGitBinaryPath()
@@ -371,8 +374,10 @@ func TestResolveGitBinaryPathMissing(t *testing.T) {
 
 func TestResolveGitBinaryPathUsesResolver(t *testing.T) {
 	original := resolveGitBinaryPathFn
+	originalExec := execGitCommandFn
 	t.Cleanup(func() {
 		resolveGitBinaryPathFn = original
+		execGitCommandFn = originalExec
 	})
 
 	const expectedPath = "/tmp/fake-git"
@@ -446,8 +451,10 @@ func TestGitExecutableAvailable(t *testing.T) {
 func setupFakeGitResolver(t *testing.T, script string) {
 	t.Helper()
 	original := resolveGitBinaryPathFn
+	originalExec := execGitCommandFn
 	t.Cleanup(func() {
 		resolveGitBinaryPathFn = original
+		execGitCommandFn = originalExec
 	})
 	fakeGit := filepath.Join(t.TempDir(), "fake-git.sh")
 	mustWrite(t, fakeGit, script)
@@ -456,5 +463,8 @@ func setupFakeGitResolver(t *testing.T, script string) {
 	}
 	resolveGitBinaryPathFn = func() (string, error) {
 		return fakeGit, nil
+	}
+	execGitCommandFn = func(path string, args ...string) (*exec.Cmd, error) {
+		return exec.Command(path, args...), nil
 	}
 }
