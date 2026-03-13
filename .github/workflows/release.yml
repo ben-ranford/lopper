@@ -20,6 +20,7 @@ jobs:
       previous_tag: ${{ steps.tag.outputs.previous_tag }}
       should_release: ${{ steps.tag.outputs.should_release }}
       release_reason: ${{ steps.tag.outputs.release_reason }}
+      is_stable_release: ${{ steps.tag.outputs.is_stable_release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -56,6 +57,10 @@ jobs:
 
           should_release="true"
           release_reason="changes_detected"
+          is_stable_release="false"
+          if [[ "$next_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            is_stable_release="true"
+          fi
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             release_reason="manual_dispatch"
           elif [ -z "${previous_tag}" ]; then
@@ -69,11 +74,13 @@ jobs:
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
           echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
           echo "release_reason=$release_reason" >> "$GITHUB_OUTPUT"
+          echo "is_stable_release=$is_stable_release" >> "$GITHUB_OUTPUT"
 
       - name: Log release gate decision
         run: |
           echo "Release gate: should_release=${{ steps.tag.outputs.should_release }}"
           echo "Release gate reason: ${{ steps.tag.outputs.release_reason }}"
+          echo "Stable semver release: ${{ steps.tag.outputs.is_stable_release }}"
 
   build-linux-windows:
     needs: prepare
@@ -232,6 +239,7 @@ jobs:
         run: xvfb-run -a make vscode-extension-test
 
       - name: Package VS Code extension
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' }}
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
@@ -243,6 +251,7 @@ jobs:
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Upload VS Code extension artifact
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: release-vscode-extension
@@ -290,7 +299,7 @@ jobs:
             echo
             echo "- Marketplace ID: \`BenRanford.vscode-lopper\`"
             echo "- VSIX asset: \`lopper-vscode-${current_tag#v}.vsix\`"
-            echo "- Marketplace publish: automatic when \`VSCE_PUBLISH\` is configured"
+            echo "- Marketplace publish: automatic for stable semver releases when \`VSCE_PUBLISH\` is configured"
             echo
             echo "---"
             echo
@@ -310,7 +319,7 @@ jobs:
             dist/*.vsix
 
       - name: Setup Node
-        if: ${{ secrets.VSCE_PUBLISH != '' }}
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && secrets.VSCE_PUBLISH != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -318,11 +327,11 @@ jobs:
           cache-dependency-path: extensions/vscode-lopper/package-lock.json
 
       - name: Install extension dependencies for publish
-        if: ${{ secrets.VSCE_PUBLISH != '' }}
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && secrets.VSCE_PUBLISH != '' }}
         run: make vscode-extension-install
 
       - name: Publish VS Code extension to Marketplace
-        if: ${{ secrets.VSCE_PUBLISH != '' }}
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && secrets.VSCE_PUBLISH != '' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
         run: |
