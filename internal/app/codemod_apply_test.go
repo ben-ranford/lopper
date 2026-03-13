@@ -299,9 +299,9 @@ func TestEnsureCleanWorktreeForCodemodPropagatesGitErrors(t *testing.T) {
 	execGitCommandContextFn = func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
 		commandLine := strings.Join(args, " ")
 		if strings.Contains(commandLine, "rev-parse --is-inside-work-tree") {
-			return exec.CommandContext(ctx, "sh", "-c", "printf true"), nil
+			return exec.CommandContext(ctx, "/usr/bin/printf", "true"), nil
 		}
-		return exec.CommandContext(ctx, "sh", "-c", "exit 2"), nil
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 2"), nil
 	}
 	defer func() {
 		resolveGitBinaryPathFn = originalResolve
@@ -644,11 +644,11 @@ func TestCodemodApplyHelpers(t *testing.T) {
 
 		readonlyRepo := t.TempDir()
 		readonlyDir := filepath.Join(readonlyRepo, codemodRollbackDir)
-		if err := os.MkdirAll(readonlyDir, 0o755); err != nil {
+		if err := os.MkdirAll(readonlyDir, 0o700); err != nil {
 			t.Fatalf("mkdir readonly rollback dir: %v", err)
 		}
 		t.Cleanup(func() {
-			if err := os.Chmod(readonlyDir, 0o755); err != nil && !os.IsNotExist(err) {
+			if err := os.Chmod(readonlyDir, 0o700); err != nil && !os.IsNotExist(err) {
 				t.Errorf("restore readonly rollback dir permissions: %v", err)
 			}
 		})
