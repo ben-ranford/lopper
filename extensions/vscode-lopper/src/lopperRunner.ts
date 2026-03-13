@@ -107,6 +107,20 @@ export class LopperRunner {
   }
 
   async resolveBinaryPath(folder: vscode.WorkspaceFolder): Promise<string> {
+    const configuredBinaryPath = await this.resolveConfiguredBinaryPath(folder);
+    if (configuredBinaryPath) {
+      return configuredBinaryPath;
+    }
+
+    const localBinaryPath = await this.resolveLocalBinaryPath(folder);
+    if (localBinaryPath) {
+      return localBinaryPath;
+    }
+
+    return this.resolveManagedBinaryPath(folder);
+  }
+
+  private async resolveConfiguredBinaryPath(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
     const envBinaryPath = process.env.LOPPER_BINARY_PATH?.trim();
     if (envBinaryPath) {
       return this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
@@ -116,14 +130,18 @@ export class LopperRunner {
       .getConfiguration("lopper", folder.uri)
       .get<string>("binaryPath", "")
       .trim();
-    if (configuredBinaryPath) {
-      const resolvedPath = path.isAbsolute(configuredBinaryPath)
-        ? configuredBinaryPath
-        : path.join(folder.uri.fsPath, configuredBinaryPath);
-      return this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
+    if (!configuredBinaryPath) {
+      return undefined;
     }
 
-    const localBinary = path.join(folder.uri.fsPath, "bin", process.platform === "win32" ? "lopper.exe" : "lopper");
+    const resolvedPath = path.isAbsolute(configuredBinaryPath)
+      ? configuredBinaryPath
+      : path.join(folder.uri.fsPath, configuredBinaryPath);
+    return this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
+  }
+
+  private async resolveLocalBinaryPath(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+    const localBinary = path.join(folder.uri.fsPath, "bin", lopperBinaryName());
     try {
       const fileStat = await stat(localBinary);
       if (!fileStat.isFile()) {
@@ -138,12 +156,11 @@ export class LopperRunner {
       }
       return localBinary;
     } catch {
-      const pathBinary = await findExecutableInPath(process.platform === "win32" ? "lopper.exe" : "lopper");
-      if (pathBinary) {
-        return pathBinary;
-      }
+      return findExecutableInPath(lopperBinaryName());
     }
+  }
 
+  private async resolveManagedBinaryPath(folder: vscode.WorkspaceFolder): Promise<string> {
     const autoDownloadEnabled = vscode.workspace
       .getConfiguration("lopper", folder.uri)
       .get<boolean>("autoDownloadBinary", true);
@@ -185,11 +202,29 @@ export class LopperRunner {
   }
 
   private async ensureConfiguredBinaryExists(binaryPath: string, source: string): Promise<string> {
+    const fileStats = await this.configuredBinaryStats(binaryPath, source);
+    if (!fileStats.isFile()) {
+      throw new BinaryResolutionError(`${source} must point to a file: ${binaryPath}`);
+    }
+    if (process.platform !== "win32") {
+      await this.ensureConfiguredBinaryExecutable(binaryPath, source);
+    }
+    return binaryPath;
+  }
+
+  private async configuredBinaryStats(binaryPath: string, source: string) {
     try {
-      await access(binaryPath);
-      return binaryPath;
+      return await stat(binaryPath);
     } catch {
       throw new BinaryResolutionError(`${source} points to a missing binary: ${binaryPath}`);
+    }
+  }
+
+  private async ensureConfiguredBinaryExecutable(binaryPath: string, source: string): Promise<void> {
+    try {
+      await access(binaryPath, fsConstants.X_OK);
+    } catch {
+      throw new BinaryResolutionError(`${source} points to a non-executable file: ${binaryPath}`);
     }
   }
 
@@ -240,4 +275,8 @@ function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguag
     return dependencyLanguage === "js-ts";
   }
   return requestedLanguage === "js-ts";
+}
+
+function lopperBinaryName(platform = process.platform): string {
+  return platform === "win32" ? "lopper.exe" : "lopper";
 }

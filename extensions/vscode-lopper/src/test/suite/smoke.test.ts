@@ -39,8 +39,11 @@ suite("vscode-lopper smoke", () => {
       .flatMap((hover) => hover.contents)
       .map((content) => (content instanceof vscode.MarkdownString ? content.value : String(content)))
       .join("\n");
-    assert.match(hoverText, /scope-lib/);
-    assert.match(hoverText, /Used exports:/);
+    const normalizedHoverText = hoverText
+      .replaceAll(String.raw`\-`, "-")
+      .replaceAll("&nbsp;", " ");
+    assert.match(normalizedHoverText, /scope-lib/);
+    assert.match(normalizedHoverText, /Used exports:/);
 
     const quickFixes = await vscode.commands.executeCommand<
       (vscode.CodeAction | vscode.Command)[]
