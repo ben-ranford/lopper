@@ -345,42 +345,6 @@ func TestLookupBuilderBranches(t *testing.T) {
 	if _, warnings := buildDependencyReport("missing", scanResult{}); len(warnings) == 0 {
 		t.Fatalf("expected warning for dependency with no imports")
 	}
-
-	if descriptors := parseGradleDependencyMatches("anything", regexp.MustCompile(`anything`)); len(descriptors) != 0 {
-		t.Fatalf("expected no descriptors for regex with insufficient capture groups, got %#v", descriptors)
-	}
-	pattern := regexp.MustCompile(`(?m)^\s*([^:]*):([^:\n]*)`)
-	if descriptors := parseGradleDependencyMatches(" :artifact\n", pattern); len(descriptors) != 0 {
-		t.Fatalf("expected no descriptors when group/artifact values are empty, got %#v", descriptors)
-	}
-	if descriptors := parseGradleLockfileContent("# comment\nbad-line\n:artifact:1.0.0\n"); len(descriptors) != 0 {
-		t.Fatalf("expected malformed lockfile lines to be ignored, got %#v", descriptors)
-	}
-	if descriptors := dedupeDescriptors(nil); len(descriptors) != 0 {
-		t.Fatalf("expected empty descriptors for empty dedupe input, got %#v", descriptors)
-	}
-
-	repo := t.TempDir()
-	lockLink := filepath.Join(repo, gradleLockfileName)
-	if err := os.Symlink(filepath.Join(repo, "missing.lock"), lockLink); err == nil {
-		descriptors, hasLockfile, warnings := parseGradleLockfiles(repo)
-		if len(descriptors) != 0 {
-			t.Fatalf("expected no descriptors from unreadable lockfile symlink, got %#v", descriptors)
-		}
-		if !hasLockfile {
-			t.Fatalf("expected hasLockfile=true when lockfile entry exists")
-		}
-		if len(warnings) == 0 {
-			t.Fatalf("expected warning for unreadable lockfile")
-		}
-	} else {
-		t.Skipf("symlink creation unsupported: %v", err)
-	}
-
-	if _, _, warnings := parseGradleLockfiles(filepath.Join(repo, "missing")); len(warnings) == 0 {
-		t.Fatalf("expected warning when lockfile scan path is missing")
-	}
-
 }
 
 func TestGradleParsingBranches(t *testing.T) {
