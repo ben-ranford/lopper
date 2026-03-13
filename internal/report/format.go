@@ -48,6 +48,7 @@ func formatTable(report Report) (string, error) {
 	appendEffectivePolicy(&buffer, report)
 	appendLanguageBreakdown(&buffer, report.LanguageBreakdown)
 	appendBaselineComparison(&buffer, report.BaselineComparison)
+	appendCodemodApply(&buffer, report.Dependencies)
 
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
 	showLanguage := hasLanguageColumn(report.Dependencies)
@@ -169,6 +170,7 @@ func formatEmpty(report Report) string {
 	appendScopeMetadata(&buffer, report.Scope)
 	appendEffectiveThresholds(&buffer, report)
 	appendEffectivePolicy(&buffer, report)
+	appendCodemodApply(&buffer, report.Dependencies)
 	appendWarnings(&buffer, report)
 	return buffer.String()
 }
@@ -276,6 +278,52 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 		buffer.WriteString(fmt.Sprintf("  progression %s/%s waste %+0.1f%% used %+0.1f%%\n", delta.Language, delta.Name, delta.WastePercentDelta, delta.UsedPercentDelta))
 	}
 	buffer.WriteString("\n")
+}
+
+func appendCodemodApply(buffer *bytes.Buffer, dependencies []DependencyReport) {
+	entries := collectCodemodApplyEntries(dependencies)
+	if len(entries) == 0 {
+		return
+	}
+	buffer.WriteString("Codemod apply:\n")
+	for _, entry := range entries {
+		buffer.WriteString("- dependency: ")
+		buffer.WriteString(entry.name)
+		buffer.WriteString("\n")
+		buffer.WriteString(fmt.Sprintf("  applied: %d file(s), %d patch(es)\n", entry.apply.AppliedFiles, entry.apply.AppliedPatches))
+		buffer.WriteString(fmt.Sprintf("  skipped: %d file(s), %d patch(es)\n", entry.apply.SkippedFiles, entry.apply.SkippedPatches))
+		buffer.WriteString(fmt.Sprintf("  failed: %d file(s), %d patch(es)\n", entry.apply.FailedFiles, entry.apply.FailedPatches))
+		if entry.apply.BackupPath != "" {
+			buffer.WriteString("  backup: ")
+			buffer.WriteString(entry.apply.BackupPath)
+			buffer.WriteString("\n")
+		}
+		for _, result := range entry.apply.Results {
+			buffer.WriteString(fmt.Sprintf("  %s %s (%d patch(es))", result.Status, result.File, result.PatchCount))
+			if strings.TrimSpace(result.Message) != "" {
+				buffer.WriteString(": ")
+				buffer.WriteString(result.Message)
+			}
+			buffer.WriteString("\n")
+		}
+	}
+	buffer.WriteString("\n")
+}
+
+type codemodApplyEntry struct {
+	name  string
+	apply *CodemodApplyReport
+}
+
+func collectCodemodApplyEntries(dependencies []DependencyReport) []codemodApplyEntry {
+	entries := make([]codemodApplyEntry, 0)
+	for _, dep := range dependencies {
+		if dep.Codemod == nil || dep.Codemod.Apply == nil {
+			continue
+		}
+		entries = append(entries, codemodApplyEntry{name: dep.Name, apply: dep.Codemod.Apply})
+	}
+	return entries
 }
 
 func topWasteDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {

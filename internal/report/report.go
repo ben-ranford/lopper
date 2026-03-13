@@ -207,6 +207,7 @@ type CodemodReport struct {
 	Mode        string              `json:"mode"`
 	Suggestions []CodemodSuggestion `json:"suggestions,omitempty"`
 	Skips       []CodemodSkip       `json:"skips,omitempty"`
+	Apply       *CodemodApplyReport `json:"apply,omitempty"`
 }
 
 type CodemodSuggestion struct {
@@ -227,6 +228,24 @@ type CodemodSkip struct {
 	Module     string `json:"module"`
 	ReasonCode string `json:"reasonCode"`
 	Message    string `json:"message"`
+}
+
+type CodemodApplyReport struct {
+	AppliedFiles   int                  `json:"appliedFiles,omitempty"`
+	AppliedPatches int                  `json:"appliedPatches,omitempty"`
+	SkippedFiles   int                  `json:"skippedFiles,omitempty"`
+	SkippedPatches int                  `json:"skippedPatches,omitempty"`
+	FailedFiles    int                  `json:"failedFiles,omitempty"`
+	FailedPatches  int                  `json:"failedPatches,omitempty"`
+	BackupPath     string               `json:"backupPath,omitempty"`
+	Results        []CodemodApplyResult `json:"results,omitempty"`
+}
+
+type CodemodApplyResult struct {
+	File       string `json:"file"`
+	Status     string `json:"status"`
+	PatchCount int    `json:"patchCount"`
+	Message    string `json:"message,omitempty"`
 }
 
 type RemovalCandidate struct {

@@ -23,7 +23,7 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 - `dependencies[].provenance`: per-dependency provenance signals (`source`, `confidence`, `signals`).
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
-- `dependencies[].codemod`: optional suggest-only patch previews and unsafe-transform skip reason codes for JS/TS subpath migrations.
+- `dependencies[].codemod`: optional codemod preview/apply data for JS/TS subpath migrations, including deterministic patch previews, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used).
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.

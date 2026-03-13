@@ -1,0 +1,447 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/workspace"
+)
+
+const (
+	codemodModeApply          = "apply"
+	codemodApplyStatusApplied = "applied"
+	codemodApplyStatusSkipped = "skipped"
+	codemodApplyStatusFailed  = "failed"
+	codemodRollbackDir        = ".artifacts/lopper-codemod-backups"
+)
+
+type preparedCodemodFile struct {
+	file       string
+	absPath    string
+	original   string
+	updated    string
+	patchCount int
+	mode       os.FileMode
+}
+
+type codemodRollbackArtifact struct {
+	GeneratedAt time.Time               `json:"generatedAt"`
+	Dependency  string                  `json:"dependency"`
+	Files       []codemodRollbackRecord `json:"files"`
+}
+
+type codemodRollbackRecord struct {
+	File    string `json:"file"`
+	Mode    uint32 `json:"mode"`
+	Content string `json:"content"`
+}
+
+func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
+	if !req.ApplyCodemod {
+		return reportData, nil
+	}
+
+	normalizedRepoPath, err := workspace.NormalizeRepoPath(repoPath)
+	if err != nil {
+		return reportData, err
+	}
+
+	codemod := findCodemodReport(&reportData, req.Dependency)
+	if codemod == nil {
+		return reportData, nil
+	}
+	codemod.Mode = codemodModeApply
+
+	skipResults := buildCodemodSkipResults(codemod.Skips)
+	prepared, failedResults := prepareCodemodFiles(normalizedRepoPath, codemod.Suggestions)
+
+	backupPath := ""
+	appliedResults := make([]report.CodemodApplyResult, 0, len(prepared))
+	if len(prepared) > 0 {
+		backupPath, err = writeCodemodRollbackArtifact(normalizedRepoPath, req.Dependency, prepared, now)
+		if err != nil {
+			return reportData, fmt.Errorf("write codemod rollback artifact: %w", err)
+		}
+		appliedResults, failedResults = applyPreparedCodemodFiles(prepared, failedResults)
+	}
+
+	results := append(skipResults, appliedResults...)
+	results = append(results, failedResults...)
+	sortCodemodApplyResults(results)
+
+	codemod.Apply = &report.CodemodApplyReport{
+		AppliedFiles:   countUniqueResultFiles(results, codemodApplyStatusApplied),
+		AppliedPatches: countResultPatches(results, codemodApplyStatusApplied),
+		SkippedFiles:   countUniqueResultFiles(results, codemodApplyStatusSkipped),
+		SkippedPatches: countResultPatches(results, codemodApplyStatusSkipped),
+		FailedFiles:    countUniqueResultFiles(results, codemodApplyStatusFailed),
+		FailedPatches:  countResultPatches(results, codemodApplyStatusFailed),
+		BackupPath:     backupPath,
+		Results:        results,
+	}
+	if codemod.Apply.FailedFiles > 0 {
+		return reportData, codemodApplyError(results)
+	}
+	return reportData, nil
+}
+
+func validateCodemodApplyPreconditions(ctx context.Context, repoPath string, req AnalyseRequest) error {
+	if !req.ApplyCodemod {
+		return nil
+	}
+	normalizedRepoPath, err := workspace.NormalizeRepoPath(repoPath)
+	if err != nil {
+		return err
+	}
+	return ensureCleanWorktreeForCodemod(ctx, normalizedRepoPath, req.AllowDirty)
+}
+
+func ensureCleanWorktreeForCodemod(ctx context.Context, repoPath string, allowDirty bool) error {
+	if allowDirty {
+		return nil
+	}
+	changed, hasGitContext, err := gitChangedFiles(ctx, repoPath)
+	if err != nil {
+		return err
+	}
+	if !hasGitContext || len(changed) == 0 {
+		return nil
+	}
+
+	files := make([]string, 0, len(changed))
+	for file := range changed {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+	if len(files) > 5 {
+		files = append(files[:5], fmt.Sprintf("+%d more", len(files)-5))
+	}
+	return fmt.Errorf("%w: detected uncommitted changes in %s; commit/stash them first or pass --allow-dirty", ErrDirtyWorktree, strings.Join(files, ", "))
+}
+
+func findCodemodReport(reportData *report.Report, dependency string) *report.CodemodReport {
+	if reportData == nil {
+		return nil
+	}
+	if strings.TrimSpace(dependency) != "" {
+		for i := range reportData.Dependencies {
+			if reportData.Dependencies[i].Name == dependency {
+				return reportData.Dependencies[i].Codemod
+			}
+		}
+	}
+	for i := range reportData.Dependencies {
+		if reportData.Dependencies[i].Codemod != nil {
+			return reportData.Dependencies[i].Codemod
+		}
+	}
+	return nil
+}
+
+func buildCodemodSkipResults(skips []report.CodemodSkip) []report.CodemodApplyResult {
+	if len(skips) == 0 {
+		return nil
+	}
+	grouped := make(map[string][]string)
+	for _, skip := range skips {
+		grouped[skip.File] = append(grouped[skip.File], skip.ReasonCode)
+	}
+
+	files := make([]string, 0, len(grouped))
+	for file := range grouped {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+
+	results := make([]report.CodemodApplyResult, 0, len(files))
+	for _, file := range files {
+		reasons := uniqueSortedStrings(grouped[file])
+		results = append(results, report.CodemodApplyResult{
+			File:       file,
+			Status:     codemodApplyStatusSkipped,
+			PatchCount: len(grouped[file]),
+			Message:    "reason codes: " + strings.Join(reasons, ", "),
+		})
+	}
+	return results
+}
+
+func prepareCodemodFiles(repoPath string, suggestions []report.CodemodSuggestion) ([]preparedCodemodFile, []report.CodemodApplyResult) {
+	grouped := make(map[string][]report.CodemodSuggestion)
+	for _, suggestion := range suggestions {
+		grouped[suggestion.File] = append(grouped[suggestion.File], suggestion)
+	}
+
+	files := make([]string, 0, len(grouped))
+	for file := range grouped {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+
+	prepared := make([]preparedCodemodFile, 0, len(files))
+	failures := make([]report.CodemodApplyResult, 0)
+	for _, file := range files {
+		fileSuggestions := append([]report.CodemodSuggestion{}, grouped[file]...)
+		sort.Slice(fileSuggestions, func(i, j int) bool {
+			if fileSuggestions[i].Line != fileSuggestions[j].Line {
+				return fileSuggestions[i].Line < fileSuggestions[j].Line
+			}
+			return fileSuggestions[i].ImportName < fileSuggestions[j].ImportName
+		})
+
+		absPath, err := resolveCodemodFilePath(repoPath, file)
+		if err != nil {
+			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
+			continue
+		}
+		content, err := safeio.ReadFileUnder(repoPath, absPath)
+		if err != nil {
+			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
+			continue
+		}
+		info, err := os.Stat(absPath)
+		if err != nil {
+			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
+			continue
+		}
+		updated, err := applySuggestionsToContent(string(content), fileSuggestions)
+		if err != nil {
+			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
+			continue
+		}
+		prepared = append(prepared, preparedCodemodFile{
+			file:       file,
+			absPath:    absPath,
+			original:   string(content),
+			updated:    updated,
+			patchCount: len(fileSuggestions),
+			mode:       info.Mode().Perm(),
+		})
+	}
+	return prepared, failures
+}
+
+func applySuggestionsToContent(content string, suggestions []report.CodemodSuggestion) (string, error) {
+	lineSeparator := "\n"
+	if strings.Contains(content, "\r\n") {
+		lineSeparator = "\r\n"
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	for _, suggestion := range suggestions {
+		if suggestion.Line <= 0 || suggestion.Line > len(lines) {
+			return "", fmt.Errorf("line %d is out of range for %s", suggestion.Line, suggestion.File)
+		}
+		if lines[suggestion.Line-1] != suggestion.Original {
+			return "", fmt.Errorf("source line mismatch at %s:%d", suggestion.File, suggestion.Line)
+		}
+		lines[suggestion.Line-1] = suggestion.Replacement
+	}
+	return strings.Join(lines, lineSeparator), nil
+}
+
+func applyPreparedCodemodFiles(prepared []preparedCodemodFile, failures []report.CodemodApplyResult) ([]report.CodemodApplyResult, []report.CodemodApplyResult) {
+	applied := make([]report.CodemodApplyResult, 0, len(prepared))
+	for _, item := range prepared {
+		if err := writeFileAtomically(item.absPath, item.updated, item.mode); err != nil {
+			failures = append(failures, report.CodemodApplyResult{
+				File:       item.file,
+				Status:     codemodApplyStatusFailed,
+				PatchCount: item.patchCount,
+				Message:    err.Error(),
+			})
+			continue
+		}
+		applied = append(applied, report.CodemodApplyResult{
+			File:       item.file,
+			Status:     codemodApplyStatusApplied,
+			PatchCount: item.patchCount,
+		})
+	}
+	return applied, failures
+}
+
+func writeCodemodRollbackArtifact(repoPath string, dependency string, prepared []preparedCodemodFile, now time.Time) (string, error) {
+	if len(prepared) == 0 {
+		return "", nil
+	}
+	if err := os.MkdirAll(filepath.Join(repoPath, codemodRollbackDir), 0o750); err != nil {
+		return "", err
+	}
+
+	fileName := fmt.Sprintf("%s-%d.json", sanitizeArtifactName(dependency), now.UTC().UnixNano())
+	relativePath := filepath.Join(codemodRollbackDir, fileName)
+	absPath := filepath.Join(repoPath, relativePath)
+
+	payload := codemodRollbackArtifact{
+		GeneratedAt: now.UTC(),
+		Dependency:  dependency,
+		Files:       make([]codemodRollbackRecord, 0, len(prepared)),
+	}
+	for _, item := range prepared {
+		payload.Files = append(payload.Files, codemodRollbackRecord{
+			File:    item.file,
+			Mode:    uint32(item.mode),
+			Content: item.original,
+		})
+	}
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := writeFileAtomically(absPath, string(data)+"\n", 0o600); err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(relativePath), nil
+}
+
+func writeFileAtomically(path string, content string, mode os.FileMode) (returnErr error) {
+	dir := filepath.Dir(path)
+	tempFile, err := os.CreateTemp(dir, ".lopper-codemod-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		removeErr := os.Remove(tempPath)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && returnErr == nil {
+			returnErr = removeErr
+		}
+	}()
+
+	if _, err := tempFile.WriteString(content); err != nil {
+		closeErr := tempFile.Close()
+		if closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+		return err
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		closeErr := tempFile.Close()
+		if closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func resolveCodemodFilePath(repoPath string, relativePath string) (string, error) {
+	if strings.TrimSpace(relativePath) == "" {
+		return "", fmt.Errorf("empty codemod file path")
+	}
+	if filepath.IsAbs(relativePath) {
+		return "", fmt.Errorf("codemod file path must be relative: %s", relativePath)
+	}
+
+	cleaned := filepath.Clean(relativePath)
+	absPath := filepath.Join(repoPath, cleaned)
+	rel, err := filepath.Rel(repoPath, absPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("codemod file path escapes repository: %s", relativePath)
+	}
+	return absPath, nil
+}
+
+func countUniqueResultFiles(results []report.CodemodApplyResult, status string) int {
+	files := make(map[string]struct{})
+	for _, result := range results {
+		if result.Status != status {
+			continue
+		}
+		files[result.File] = struct{}{}
+	}
+	return len(files)
+}
+
+func countResultPatches(results []report.CodemodApplyResult, status string) int {
+	total := 0
+	for _, result := range results {
+		if result.Status != status {
+			continue
+		}
+		total += result.PatchCount
+	}
+	return total
+}
+
+func codemodApplyError(results []report.CodemodApplyResult) error {
+	failures := make([]string, 0)
+	for _, result := range results {
+		if result.Status != codemodApplyStatusFailed {
+			continue
+		}
+		failures = append(failures, fmt.Sprintf("%s: %s", result.File, result.Message))
+	}
+	if len(failures) == 0 {
+		return ErrCodemodApplyFailed
+	}
+	return fmt.Errorf("%w: %s", ErrCodemodApplyFailed, strings.Join(failures, "; "))
+}
+
+func sortCodemodApplyResults(results []report.CodemodApplyResult) {
+	statusOrder := map[string]int{
+		codemodApplyStatusApplied: 0,
+		codemodApplyStatusSkipped: 1,
+		codemodApplyStatusFailed:  2,
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].File != results[j].File {
+			return results[i].File < results[j].File
+		}
+		if statusOrder[results[i].Status] != statusOrder[results[j].Status] {
+			return statusOrder[results[i].Status] < statusOrder[results[j].Status]
+		}
+		return results[i].PatchCount < results[j].PatchCount
+	})
+}
+
+func uniqueSortedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		unique = append(unique, trimmed)
+	}
+	sort.Strings(unique)
+	return unique
+}
+
+func sanitizeArtifactName(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "codemod"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-")
+	sanitized := replacer.Replace(trimmed)
+	sanitized = strings.Trim(sanitized, "-.")
+	if sanitized == "" {
+		return "codemod"
+	}
+	return sanitized
+}

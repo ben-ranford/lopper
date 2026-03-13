@@ -23,6 +23,8 @@ var (
 	ErrLockfileDrift                = errors.New("lockfile drift detected")
 	ErrUncertaintyThresholdExceeded = errors.New("uncertain dynamic import/require usage exceeded threshold")
 	ErrDeniedLicenses               = errors.New("denied licenses detected")
+	ErrDirtyWorktree                = errors.New("codemod apply requires a clean git worktree")
+	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
 )
 
 type App struct {
@@ -77,6 +79,9 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := validateCodemodApplyPreconditions(ctx, req.RepoPath, req.Analyse); err != nil {
+		return "", err
+	}
 
 	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
 	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
@@ -92,7 +97,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		Dependency:                        req.Analyse.Dependency,
 		TopN:                              req.Analyse.TopN,
 		ScopeMode:                         req.Analyse.ScopeMode,
-		SuggestOnly:                       req.Analyse.SuggestOnly,
+		SuggestOnly:                       req.Analyse.SuggestOnly || req.Analyse.ApplyCodemod,
 		Language:                          req.Analyse.Language,
 		ConfigPath:                        req.Analyse.ConfigPath,
 		RuntimeProfile:                    req.Analyse.RuntimeProfile,
@@ -155,6 +160,11 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}
 	if err := validateDeniedLicenses(reportData, req.Analyse.Thresholds.LicenseFailOnDeny); err != nil {
+		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
+		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
+	}
+	reportData, err = applyCodemodIfNeeded(ctx, reportData, req.RepoPath, req.Analyse, time.Now())
+	if err != nil {
 		a.appendNotificationWarnings(ctx, req.Analyse.Notifications, &reportData, buildNotificationOutcome(reportData, err))
 		return a.formatReportWithOriginalError(reportData, req.Analyse.Format, err)
 	}

@@ -32,6 +32,8 @@ type AnalyseRequest struct {
 	TopN               int
 	ScopeMode          string
 	SuggestOnly        bool
+	ApplyCodemod       bool
+	AllowDirty         bool
 	Format             report.Format
 	Language           string
 	CacheEnabled       bool

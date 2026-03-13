@@ -57,6 +57,9 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 	if err := validateSuggestOnlyTarget(*flags.suggestOnly, dependency, *flags.top); err != nil {
 		return req, err
 	}
+	if err := validateCodemodApplyFlags(*flags.suggestOnly, *flags.applyCodemod, *flags.applyCodemodConfirm, *flags.allowDirty, dependency, *flags.top); err != nil {
+		return req, err
+	}
 
 	format, err := report.ParseFormat(*flags.formatFlag)
 	if err != nil {
@@ -84,6 +87,8 @@ func parseAnalyse(args []string, req app.Request) (app.Request, error) {
 		TopN:               *flags.top,
 		ScopeMode:          scopeMode,
 		SuggestOnly:        *flags.suggestOnly,
+		ApplyCodemod:       *flags.applyCodemod,
+		AllowDirty:         *flags.allowDirty,
 		Format:             format,
 		Language:           strings.TrimSpace(*flags.languageFlag),
 		CacheEnabled:       *flags.cacheEnabled,
@@ -168,6 +173,9 @@ type analyseFlagValues struct {
 	repoPath                      *string
 	top                           *int
 	suggestOnly                   *bool
+	applyCodemod                  *bool
+	applyCodemodConfirm           *bool
+	allowDirty                    *bool
 	scopeMode                     *string
 	formatFlag                    *string
 	cacheEnabled                  *bool
@@ -212,6 +220,9 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
 		top:                           fs.Int("top", 0, "top N dependencies"),
 		suggestOnly:                   fs.Bool("suggest-only", false, "generate codemod patch previews without mutating source files"),
+		applyCodemod:                  fs.Bool("apply-codemod", req.Analyse.ApplyCodemod, "apply deterministic codemod patch previews for safe JS/TS subpath migrations"),
+		applyCodemodConfirm:           fs.Bool("apply-codemod-confirm", false, "confirm codemod apply mode will mutate source files"),
+		allowDirty:                    fs.Bool("allow-dirty", req.Analyse.AllowDirty, "allow codemod apply mode to run in a dirty git worktree"),
 		scopeMode:                     fs.String("scope-mode", req.Analyse.ScopeMode, "analysis scope mode"),
 		formatFlag:                    fs.String("format", string(req.Analyse.Format), "output format"),
 		cacheEnabled:                  fs.Bool("cache", req.Analyse.CacheEnabled, "enable incremental analysis cache"),
@@ -291,6 +302,31 @@ func validateSuggestOnlyTarget(suggestOnly bool, dependency string, top int) err
 	}
 	if strings.TrimSpace(dependency) == "" {
 		return fmt.Errorf("--suggest-only requires a dependency argument")
+	}
+	return nil
+}
+
+func validateCodemodApplyFlags(suggestOnly bool, applyCodemod bool, applyConfirm bool, allowDirty bool, dependency string, top int) error {
+	if suggestOnly && applyCodemod {
+		return fmt.Errorf("--suggest-only and --apply-codemod cannot be combined")
+	}
+	if !applyCodemod {
+		if applyConfirm {
+			return fmt.Errorf("--apply-codemod-confirm requires --apply-codemod")
+		}
+		if allowDirty {
+			return fmt.Errorf("--allow-dirty requires --apply-codemod")
+		}
+		return nil
+	}
+	if top > 0 {
+		return fmt.Errorf("--apply-codemod requires a specific dependency target")
+	}
+	if strings.TrimSpace(dependency) == "" {
+		return fmt.Errorf("--apply-codemod requires a dependency argument")
+	}
+	if !applyConfirm {
+		return fmt.Errorf("--apply-codemod requires --apply-codemod-confirm")
 	}
 	return nil
 }
