@@ -268,6 +268,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -319,7 +321,7 @@ jobs:
             dist/*.vsix
 
       - name: Setup Node
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && secrets.VSCE_PUBLISH != '' }}
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -327,13 +329,13 @@ jobs:
           cache-dependency-path: extensions/vscode-lopper/package-lock.json
 
       - name: Install extension dependencies for publish
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && secrets.VSCE_PUBLISH != '' }}
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
         run: make vscode-extension-install
 
       - name: Publish VS Code extension to Marketplace
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && secrets.VSCE_PUBLISH != '' }}
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
         env:
-          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
+          VSCE_PAT: ${{ env.VSCE_PUBLISH }}
         run: |
           set -euo pipefail
           vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
