@@ -12,7 +12,7 @@ import (
 
 func TestAdapterMetadataAndDetect(t *testing.T) {
 	adapter := NewAdapter()
-	if adapter.ID() != "kotlin-android" {
+	if adapter.ID() != testKotlinAndroidLanguage {
 		t.Fatalf("unexpected adapter id: %q", adapter.ID())
 	}
 	aliases := adapter.Aliases()
@@ -60,6 +60,22 @@ func TestDetectWithConfidenceRootSelection(t *testing.T) {
 	}
 }
 
+func TestDetectWithConfidenceIgnoresPlainGradleRepos(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoFiles(t, repo, map[string]string{
+		buildGradleName: testEmptyDependencies,
+		filepath.Join("src", "main", "kotlin", testMainSourceFileName): "package demo\n",
+	})
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect with confidence: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected non-Android Gradle repo to remain unmatched, got %#v", detection)
+	}
+}
+
 func TestAdapterAnalyseDependencyWithKotlinAndJavaImports(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoFiles(t, repo, map[string]string{
@@ -74,7 +90,7 @@ dependencies {
 }
 `,
 		filepath.Join("app", "src", "main", "AndroidManifest.xml"): testAppManifest,
-		filepath.Join("app", "src", "main", "kotlin", "Main.kt"): `
+		filepath.Join("app", "src", "main", "kotlin", testMainSourceFileName): `
 package com.example
 
 import androidx.core.content.ContextCompat
@@ -106,7 +122,7 @@ class Main {
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
-	if dep.Language != "kotlin-android" {
+	if dep.Language != testKotlinAndroidLanguage {
 		t.Fatalf("expected language kotlin-android, got %q", dep.Language)
 	}
 	if dep.UsedExportsCount == 0 {
@@ -118,7 +134,7 @@ class Main {
 func TestAdapterAnalyseTopNIncludesDeclaredDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoFiles(t, repo, map[string]string{
-		"build.gradle": `
+		buildGradleName: `
 dependencies {
   implementation "androidx.core:core-ktx:1.13.1"
   implementation "com.squareup.okhttp3:okhttp:4.12.0"
@@ -128,7 +144,7 @@ dependencies {
 androidx.core:core-ktx:1.13.1=compileClasspath,runtimeClasspath
 com.squareup.okhttp3:okhttp:4.12.0=compileClasspath,runtimeClasspath
 `,
-		filepath.Join("src", "main", "kotlin", "Main.kt"): `
+		filepath.Join("src", "main", "kotlin", testMainSourceFileName): `
 import okhttp3.OkHttpClient
 
 fun run() { OkHttpClient() }
@@ -157,13 +173,13 @@ fun run() { OkHttpClient() }
 func TestAdapterAnalyseStableDependencyOrdering(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoFiles(t, repo, map[string]string{
-		"build.gradle": `
+		buildGradleName: `
 dependencies {
   implementation "com.squareup.okhttp3:okhttp:4.12.0"
   implementation "androidx.core:core-ktx:1.13.1"
 }
 `,
-		filepath.Join("src", "main", "kotlin", "Main.kt"): `
+		filepath.Join("src", "main", "kotlin", testMainSourceFileName): `
 import androidx.core.content.ContextCompat
 import okhttp3.OkHttpClient as Client
 
@@ -230,8 +246,8 @@ dependencies {
 }
 `
 	writeRepoFiles(t, repo, map[string]string{
-		"build.gradle": manifest,
-		filepath.Join("src", "main", "kotlin", "Main.kt"): `
+		buildGradleName: manifest,
+		filepath.Join("src", "main", "kotlin", testMainSourceFileName): `
 import alpha.client.Widget
 import foo.bar.Baz
 

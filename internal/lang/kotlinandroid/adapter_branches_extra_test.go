@@ -44,7 +44,7 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 
 	scan := scanResult{
 		Files: []fileScan{{
-			Path: "Main.kt",
+			Path: testMainSourceFileName,
 			Imports: []importBinding{{
 				Dependency: "dep",
 				Module:     "x.dep",
@@ -68,8 +68,8 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 }
 
 func TestLookupBuildersAndMergeDescriptors(t *testing.T) {
-	manifest := []dependencyDescriptor{{Name: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp"}}
-	lock := []dependencyDescriptor{{Name: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp", Version: "4.12.0"}}
+	manifest := []dependencyDescriptor{{Name: "okhttp", Group: testOkHTTPGroup, Artifact: "okhttp"}}
+	lock := []dependencyDescriptor{{Name: "okhttp", Group: testOkHTTPGroup, Artifact: "okhttp", Version: "4.12.0"}}
 	merged := mergeDescriptors(manifest, lock)
 	if len(merged) != 1 {
 		t.Fatalf("expected one merged descriptor, got %#v", merged)
@@ -79,14 +79,14 @@ func TestLookupBuildersAndMergeDescriptors(t *testing.T) {
 	}
 
 	lookups := buildDescriptorLookups([]dependencyDescriptor{
-		{Name: "alpha-core", Group: "com.example.alpha", Artifact: "alpha-core"},
+		{Name: testAlphaCoreDependency, Group: "com.example.alpha", Artifact: testAlphaCoreDependency},
 		{Name: "alpha-runtime", Group: "org.sample.alpha", Artifact: "alpha-runtime"},
 	})
 	if _, ok := lookups.Ambiguous["alpha"]; !ok {
 		t.Fatalf("expected ambiguous alias for core, got %#v", lookups.Ambiguous)
 	}
-	if _, ok := lookups.DeclaredDependencies["alpha-core"]; !ok {
-		t.Fatalf("expected declared dependency for alpha-core")
+	if _, ok := lookups.DeclaredDependencies[testAlphaCoreDependency]; !ok {
+		t.Fatalf("expected declared dependency for %s", testAlphaCoreDependency)
 	}
 
 	dep, ambiguous := resolveDependency("alpha.client.Type", lookups)
@@ -116,15 +116,15 @@ func TestBuildRequestedDependenciesAndWarnings(t *testing.T) {
 
 func TestDetectAndWalkBranchGuards(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), "dependencies {}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), testEmptyDependencies)
 
 	if _, err := NewAdapter().DetectWithConfidence(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
 
-	testutil.MustWriteFile(t, filepath.Join(repo, "Main.kt"), "package demo\n")
-	if err := os.Mkdir(filepath.Join(repo, ".gradle"), 0o755); err != nil {
-		t.Fatalf("mkdir .gradle: %v", err)
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainSourceFileName), "package demo\n")
+	if err := os.Mkdir(filepath.Join(repo, testGradleDirectoryName), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", testGradleDirectoryName, err)
 	}
 	entries, err := os.ReadDir(repo)
 	if err != nil {
@@ -134,9 +134,9 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 	var gradleDirEntry fs.DirEntry
 	for _, entry := range entries {
 		switch entry.Name() {
-		case "Main.kt":
+		case testMainSourceFileName:
 			mainEntry = entry
-		case ".gradle":
+		case testGradleDirectoryName:
 			gradleDirEntry = entry
 		}
 	}
@@ -147,12 +147,13 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 	roots := map[string]struct{}{}
 	detection := language.Detection{}
 	visited := 0
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, ".gradle"), gradleDirEntry, roots, &detection, &visited, 5); !errors.Is(err, filepath.SkipDir) {
+	androidSpecific := false
+	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, roots, &detection, &visited, 5, &androidSpecific); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected SkipDir for skipped directory, got %v", err)
 	}
 
 	visited = 5
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, "Main.kt"), mainEntry, roots, &detection, &visited, 1); !errors.Is(err, fs.SkipAll) {
+	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testMainSourceFileName), mainEntry, roots, &detection, &visited, 1, &androidSpecific); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected SkipAll when file cap is exceeded, got %v", err)
 	}
 }
@@ -227,7 +228,7 @@ func TestModuleRootAndPathHelpers(t *testing.T) {
 func TestRootPruningAndSourceLayoutBranches(t *testing.T) {
 	repo := t.TempDir()
 	module := filepath.Join(repo, "app")
-	testutil.MustWriteFile(t, filepath.Join(module, buildGradleName), "dependencies {}\n")
+	testutil.MustWriteFile(t, filepath.Join(module, buildGradleName), testEmptyDependencies)
 
 	rootsNoBuild := map[string]struct{}{
 		repo:                       {},
@@ -259,11 +260,11 @@ func TestRootPruningAndSourceLayoutBranches(t *testing.T) {
 	}
 
 	sourceRepo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(sourceRepo, "src", "build", "generated", "Main.kt"), "package generated\n")
+	testutil.MustWriteFile(t, filepath.Join(sourceRepo, "src", "build", "generated", testMainSourceFileName), "package generated\n")
 	if hasRootSourceLayout(sourceRepo) {
 		t.Fatalf("did not expect source layout from generated directories")
 	}
-	testutil.MustWriteFile(t, filepath.Join(sourceRepo, "src", "main", "kotlin", "Main.kt"), "package app\n")
+	testutil.MustWriteFile(t, filepath.Join(sourceRepo, "src", "main", "kotlin", testMainSourceFileName), "package app\n")
 	if !hasRootSourceLayout(sourceRepo) {
 		t.Fatalf("expected source layout once real source files exist")
 	}
@@ -271,7 +272,7 @@ func TestRootPruningAndSourceLayoutBranches(t *testing.T) {
 
 func TestAnalyseWarningsAndScanBranches(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", "Main.kt"), "package demo\nimport foo.bar.Baz\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testMainSourceFileName), "package demo\nimport foo.bar.Baz\n")
 
 	result, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 5})
 	if err != nil {
@@ -302,7 +303,7 @@ func TestAnalyseWarningsAndScanBranches(t *testing.T) {
 	}
 }
 
-func TestLookupParserAndBuildFileEdgeBranches(t *testing.T) {
+func TestLookupBuilderBranches(t *testing.T) {
 	target := map[string]string{}
 	ambiguous := map[string][]string{}
 	recordLookup(target, ambiguous, "", "x")
@@ -380,12 +381,55 @@ func TestLookupParserAndBuildFileEdgeBranches(t *testing.T) {
 		t.Fatalf("expected warning when lockfile scan path is missing")
 	}
 
-	parser := func(_ string) []dependencyDescriptor {
-		return []dependencyDescriptor{{Name: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp"}}
+}
+
+func TestGradleParsingBranches(t *testing.T) {
+	if descriptors := parseGradleDependencyMatches("anything", regexp.MustCompile(`anything`)); len(descriptors) != 0 {
+		t.Fatalf("expected no descriptors for regex with insufficient capture groups, got %#v", descriptors)
 	}
-	testutil.MustWriteFile(t, filepath.Join(repo, ".gradle", buildGradleName), "dependencies {}\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "app", buildGradleName), "dependencies {}\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "module", buildGradleName), "dependencies {}\n")
+	pattern := regexp.MustCompile(`(?m)^\s*([^:]*):([^:\n]*)`)
+	if descriptors := parseGradleDependencyMatches(" :artifact\n", pattern); len(descriptors) != 0 {
+		t.Fatalf("expected no descriptors when group/artifact values are empty, got %#v", descriptors)
+	}
+	if descriptors := parseGradleLockfileContent("# comment\nbad-line\n:artifact:1.0.0\n"); len(descriptors) != 0 {
+		t.Fatalf("expected malformed lockfile lines to be ignored, got %#v", descriptors)
+	}
+	if descriptors := dedupeDescriptors(nil); len(descriptors) != 0 {
+		t.Fatalf("expected empty descriptors for empty dedupe input, got %#v", descriptors)
+	}
+}
+
+func TestGradleLockfileBranches(t *testing.T) {
+	repo := t.TempDir()
+	lockLink := filepath.Join(repo, gradleLockfileName)
+	if err := os.Symlink(filepath.Join(repo, "missing.lock"), lockLink); err == nil {
+		descriptors, hasLockfile, warnings := parseGradleLockfiles(repo)
+		if len(descriptors) != 0 {
+			t.Fatalf("expected no descriptors from unreadable lockfile symlink, got %#v", descriptors)
+		}
+		if !hasLockfile {
+			t.Fatalf("expected hasLockfile=true when lockfile entry exists")
+		}
+		if len(warnings) == 0 {
+			t.Fatalf("expected warning for unreadable lockfile")
+		}
+	} else {
+		t.Skipf("symlink creation unsupported: %v", err)
+	}
+
+	if _, _, warnings := parseGradleLockfiles(filepath.Join(repo, "missing")); len(warnings) == 0 {
+		t.Fatalf("expected warning when lockfile scan path is missing")
+	}
+}
+
+func TestBuildFileParsingBranches(t *testing.T) {
+	repo := t.TempDir()
+	parser := func(_ string) []dependencyDescriptor {
+		return []dependencyDescriptor{{Name: "okhttp", Group: testOkHTTPGroup, Artifact: "okhttp"}}
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, testGradleDirectoryName, buildGradleName), testEmptyDependencies)
+	testutil.MustWriteFile(t, filepath.Join(repo, "app", buildGradleName), testEmptyDependencies)
+	testutil.MustWriteFile(t, filepath.Join(repo, "module", buildGradleName), testEmptyDependencies)
 	brokenBuildLink := filepath.Join(repo, "broken", buildGradleName)
 	if err := os.MkdirAll(filepath.Dir(brokenBuildLink), 0o755); err != nil {
 		t.Fatalf("mkdir broken dir: %v", err)
@@ -409,29 +453,33 @@ func TestLookupParserAndBuildFileEdgeBranches(t *testing.T) {
 	}
 }
 
-func TestAdditionalHelperBranchCoverage(t *testing.T) {
+func TestAdditionalDetectionHelperBranches(t *testing.T) {
 	repo := t.TempDir()
 
 	testutil.MustWriteFile(t, filepath.Join(repo, gradleLockfileName), "x:y:1.0.0=\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "manifest-fallback", "AndroidManifest.xml"), "<manifest/>\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, testManifestFallbackDir, "AndroidManifest.xml"), "<manifest/>\n")
 	entries, err := os.ReadDir(repo)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
 	roots := map[string]struct{}{}
 	detection := &language.Detection{}
+	androidSpecific := false
 	for _, entry := range entries {
 		if entry.Name() == gradleLockfileName {
-			updateKotlinAndroidDetection(filepath.Join(repo, gradleLockfileName), entry, roots, detection)
+			updateKotlinAndroidDetection(filepath.Join(repo, gradleLockfileName), entry, roots, detection, &androidSpecific)
 		}
 	}
-	manifestEntries, err := os.ReadDir(filepath.Join(repo, "manifest-fallback"))
+	manifestEntries, err := os.ReadDir(filepath.Join(repo, testManifestFallbackDir))
 	if err != nil {
-		t.Fatalf("readdir manifest-fallback: %v", err)
+		t.Fatalf("readdir %s: %v", testManifestFallbackDir, err)
 	}
-	updateKotlinAndroidDetection(filepath.Join(repo, "manifest-fallback", "AndroidManifest.xml"), manifestEntries[0], roots, detection)
-	if _, ok := roots[filepath.Join(repo, "manifest-fallback")]; !ok {
+	updateKotlinAndroidDetection(filepath.Join(repo, testManifestFallbackDir, "AndroidManifest.xml"), manifestEntries[0], roots, detection, &androidSpecific)
+	if _, ok := roots[filepath.Join(repo, testManifestFallbackDir)]; !ok {
 		t.Fatalf("expected AndroidManifest fallback root to be captured")
+	}
+	if !androidSpecific {
+		t.Fatalf("expected AndroidManifest fallback to mark Android-specific detection")
 	}
 
 	if got := androidManifestModuleRoot(filepath.FromSlash("/src/main/AndroidManifest.xml")); got != "" {
@@ -462,7 +510,9 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 	if hasRootSourceLayout(repo) {
 		t.Fatalf("did not expect source layout from non-source extensions")
 	}
+}
 
+func TestInferenceWarningBranches(t *testing.T) {
 	scanState := newScanResult()
 	scanState.addFallbackModule("   ", "dep", false)
 	scanState.addAmbiguousModule("   ", []string{"a", "b"}, "a")
@@ -480,7 +530,11 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 	}
 	scanState.appendInferenceWarnings()
 	requireWarningContains(t, scanState.Warnings, "examples:")
+}
 
+func TestScanRepoAndImportBranches(t *testing.T) {
+	repo := t.TempDir()
+	scanState := newScanResult()
 	testutil.MustWriteFile(t, filepath.Join(repo, ".git", "src", "Ignored.kt"), "package ignored\n")
 	scanResult, err := scanRepo(context.Background(), repo, dependencyLookups{})
 	if err != nil {
@@ -488,7 +542,7 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 	}
 	requireWarningContains(t, scanResult.Warnings, "no Kotlin/Java source files found for analysis")
 
-	if err := scanKotlinAndroidSourceFile("", filepath.Join(repo, "missing.kt"), dependencyLookups{}, &scanState); err == nil {
+	if scanKotlinAndroidSourceFile("", filepath.Join(repo, "missing.kt"), dependencyLookups{}, &scanState) == nil {
 		t.Fatalf("expected read error for missing file")
 	}
 	testutil.MustWriteFile(t, filepath.Join(repo, "Loose.kt"), "package demo\nimport java.util.List\n")
@@ -496,7 +550,7 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 		t.Fatalf("scan loose source file: %v", err)
 	}
 
-	if imports := parseImports([]byte("import java.util.List\n"), "Main.kt", "pkg.demo", dependencyLookups{}, &scanState); len(imports) != 0 {
+	if imports := parseImports([]byte("import java.util.List\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{}, &scanState); len(imports) != 0 {
 		t.Fatalf("expected ignored framework imports to be dropped, got %#v", imports)
 	}
 	if _, ok := buildImportRecord([]string{"import", "a.", "", ""}, "a.", "dep"); ok {
@@ -512,16 +566,18 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 	if !shouldIgnoreImport("pkg.demo.service", "pkg.demo") {
 		t.Fatalf("expected package-local import to be ignored")
 	}
+}
 
+func TestResolveDependencyAndDescriptorBranches(t *testing.T) {
 	lookups := dependencyLookups{
-		Prefixes: map[string]string{"alpha": "dep-alpha", "alpha.beta": "dep-beta"},
+		Prefixes: map[string]string{"alpha": "dep-alpha", "alpha.beta": testDepBetaDependency},
 		Aliases:  map[string]string{},
 		Ambiguous: map[string][]string{
-			"alpha.beta": {"dep-beta", "dep-beta-alt"},
+			"alpha.beta": {testDepBetaDependency, "dep-beta-alt"},
 		},
 	}
 	resolved, ambiguousCandidates := resolveDependency("alpha.beta.Client", lookups)
-	if resolved != "dep-beta" || len(ambiguousCandidates) != 2 {
+	if resolved != testDepBetaDependency || len(ambiguousCandidates) != 2 {
 		t.Fatalf("expected longest-prefix dependency resolution with ambiguity metadata, got %q %#v", resolved, ambiguousCandidates)
 	}
 
@@ -534,9 +590,11 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 	if key := descriptorKey(dependencyDescriptor{Name: "nolookup"}); key != "nolookup" {
 		t.Fatalf("expected descriptor key fallback to name, got %q", key)
 	}
+}
 
+func TestLockfileScanSkippedDirectoryBranches(t *testing.T) {
 	lockRepo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(lockRepo, ".gradle", gradleLockfileName), "ignored:ignored:1.0.0=\n")
+	testutil.MustWriteFile(t, filepath.Join(lockRepo, testGradleDirectoryName, gradleLockfileName), "ignored:ignored:1.0.0=\n")
 	lockDescriptors, hasLockfile, lockWarnings := parseGradleLockfiles(lockRepo)
 	if hasLockfile {
 		t.Fatalf("did not expect hasLockfile when lockfile exists only under skipped directories")
@@ -544,11 +602,13 @@ func TestAdditionalHelperBranchCoverage(t *testing.T) {
 	if len(lockWarnings) != 0 || len(lockDescriptors) != 0 {
 		t.Fatalf("expected no lock descriptors or warnings from skipped directories, got %#v %#v", lockDescriptors, lockWarnings)
 	}
+}
 
+func TestDedupeDescriptorsRetainsVersions(t *testing.T) {
 	deduped := dedupeDescriptors([]dependencyDescriptor{
 		{Name: "okhttp", Group: "", Artifact: "okhttp"},
-		{Name: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp"},
-		{Name: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp", Version: "1.0.0"},
+		{Name: "okhttp", Group: testOkHTTPGroup, Artifact: "okhttp"},
+		{Name: "okhttp", Group: testOkHTTPGroup, Artifact: "okhttp", Version: "1.0.0"},
 		{Name: "other", Group: "com.example", Artifact: "other"},
 	})
 	if len(deduped) != 2 {

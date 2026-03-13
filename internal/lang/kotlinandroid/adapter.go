@@ -40,6 +40,14 @@ var kotlinAndroidSkippedDirectories = map[string]bool{
 	".settings":  true,
 }
 
+var androidBuildPluginMarkers = []string{
+	"com.android.application",
+	"com.android.dynamic-feature",
+	"com.android.library",
+	"com.android.test",
+	"org.jetbrains.kotlin.android",
+}
+
 func NewAdapter() *Adapter {
 	return &Adapter{Clock: time.Now}
 }
@@ -61,6 +69,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
+	androidSpecificSignal := false
 	if err := applyKotlinAndroidRootSignals(repoPath, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
@@ -74,17 +83,21 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return walkKotlinAndroidDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
+		return walkKotlinAndroidDetectionEntry(path, entry, roots, &detection, &visited, maxFiles, &androidSpecificSignal)
 	})
 	if err != nil && err != fs.SkipAll {
 		return language.Detection{}, err
 	}
 
+	if !androidSpecificSignal {
+		detection.Matched = false
+		clear(roots)
+	}
 	pruneKotlinAndroidRoots(repoPath, roots)
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
+func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int, androidSpecificSignal *bool) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
@@ -95,7 +108,7 @@ func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, roots map[s
 	if *visited > maxFiles {
 		return fs.SkipAll
 	}
-	updateKotlinAndroidDetection(path, entry, roots, detection)
+	updateKotlinAndroidDetection(path, entry, roots, detection, androidSpecificSignal)
 	return nil
 }
 
@@ -110,13 +123,16 @@ func applyKotlinAndroidRootSignals(repoPath string, detection *language.Detectio
 	return shared.ApplyRootSignals(repoPath, signals, detection, roots)
 }
 
-func updateKotlinAndroidDetection(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
+func updateKotlinAndroidDetection(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, androidSpecificSignal *bool) {
 	name := strings.ToLower(entry.Name())
 	switch name {
 	case buildGradleName, buildGradleKTSName:
 		detection.Matched = true
 		detection.Confidence += 12
 		roots[filepath.Dir(path)] = struct{}{}
+		if buildFileSignalsAndroidPlugin(path) {
+			markAndroidSpecificDetection(detection, androidSpecificSignal)
+		}
 	case settingsGradleName, settingsGradleKTS:
 		detection.Matched = true
 		detection.Confidence += 8
@@ -126,8 +142,7 @@ func updateKotlinAndroidDetection(path string, entry fs.DirEntry, roots map[stri
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
 	case androidManifestName:
-		detection.Matched = true
-		detection.Confidence += 18
+		markAndroidSpecificDetection(detection, androidSpecificSignal)
 		if root := androidManifestModuleRoot(path); root != "" {
 			roots[root] = struct{}{}
 		} else {
@@ -143,6 +158,28 @@ func updateKotlinAndroidDetection(path string, entry fs.DirEntry, roots map[stri
 			roots[root] = struct{}{}
 		}
 	}
+}
+
+func markAndroidSpecificDetection(detection *language.Detection, androidSpecificSignal *bool) {
+	detection.Matched = true
+	detection.Confidence += 18
+	if androidSpecificSignal != nil {
+		*androidSpecificSignal = true
+	}
+}
+
+func buildFileSignalsAndroidPlugin(path string) bool {
+	content, err := safeio.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	buildFile := strings.ToLower(string(content))
+	for _, marker := range androidBuildPluginMarkers {
+		if strings.Contains(buildFile, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func androidManifestModuleRoot(path string) string {
@@ -178,34 +215,25 @@ func sourceLayoutModuleRoot(path string) string {
 	if normalized == "" {
 		return ""
 	}
-	marker := "/src/"
-	candidate := normalized
-	offset := 0
-	for {
-		index := strings.Index(candidate, marker)
-		if index < 0 {
+	parts := strings.Split(normalized, "/")
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] != "src" || parts[i+1] != "main" {
+			continue
+		}
+		if !isAndroidSourceLayout(parts[i+2]) {
+			continue
+		}
+		root := strings.Join(parts[:i], "/")
+		if root == "" {
 			return ""
 		}
-		absoluteIndex := offset + index
-		after := normalized[absoluteIndex+len(marker):]
-		parts := strings.SplitN(after, "/", 3)
-		if len(parts) >= 2 && parts[0] == "main" && (parts[1] == "java" || parts[1] == "kotlin") {
-			if absoluteIndex == 0 {
-				return ""
-			}
-			root := strings.TrimSuffix(normalized[:absoluteIndex], "/")
-			if root == "" {
-				return ""
-			}
-			return filepath.FromSlash(root)
-		}
-		nextOffset := absoluteIndex + len(marker)
-		if nextOffset >= len(normalized) {
-			return ""
-		}
-		candidate = normalized[nextOffset:]
-		offset = nextOffset
+		return filepath.FromSlash(root)
 	}
+	return ""
+}
+
+func isAndroidSourceLayout(name string) bool {
+	return name == "java" || name == "kotlin"
 }
 
 func pruneKotlinAndroidRoots(repoPath string, roots map[string]struct{}) {
@@ -515,7 +543,7 @@ func scanKotlinAndroidSourceFile(repoPath string, path string, lookups dependenc
 	return nil
 }
 
-func readKotlinAndroidSource(repoPath string, path string) ([]byte, string, error) {
+func readKotlinAndroidSource(repoPath, path string) ([]byte, string, error) {
 	if strings.TrimSpace(repoPath) == "" {
 		content, err := safeio.ReadFile(path)
 		if err != nil {
@@ -856,7 +884,7 @@ func mergeDescriptors(manifest, lockfile []dependencyDescriptor) []dependencyDes
 	return merged
 }
 
-func compareDependencyDescriptors(left dependencyDescriptor, right dependencyDescriptor) int {
+func compareDependencyDescriptors(left, right dependencyDescriptor) int {
 	if cmp := strings.Compare(left.Name, right.Name); cmp != 0 {
 		return cmp
 	}

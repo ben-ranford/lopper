@@ -13,11 +13,19 @@ import (
 )
 
 const (
-	testSettingsGradle = "rootProject.name='demo'\ninclude ':app'\n"
-	testCoreKtxBuild   = "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n"
-	testAppSource      = "package com.example\n"
-	testAppManifest    = "<manifest package=\"com.example\"/>\n"
-	testAggregatorRoot = "plugins {\n  id 'com.android.application' version '8.5.0' apply false\n}\n"
+	testSettingsGradle        = "rootProject.name='demo'\ninclude ':app'\n"
+	testCoreKtxBuild          = "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n"
+	testEmptyDependencies     = "dependencies {}\n"
+	testAppSource             = "package com.example\n"
+	testAppManifest           = "<manifest package=\"com.example\"/>\n"
+	testAggregatorRoot        = "plugins {\n  id 'com.android.application' version '8.5.0' apply false\n}\n"
+	testMainSourceFileName    = "Main.kt"
+	testGradleDirectoryName   = ".gradle"
+	testKotlinAndroidLanguage = "kotlin-android"
+	testOkHTTPGroup           = "com.squareup.okhttp3"
+	testAlphaCoreDependency   = "alpha-core"
+	testManifestFallbackDir   = "manifest-fallback"
+	testDepBetaDependency     = "dep-beta"
 )
 
 func writeRepoFiles(t *testing.T, repo string, files map[string]string) {
@@ -30,8 +38,9 @@ func writeRepoFiles(t *testing.T, repo string, files map[string]string) {
 func writeAppModule(t *testing.T, repo, buildContent string) string {
 	t.Helper()
 	writeRepoFiles(t, repo, map[string]string{
-		filepath.Join("app", buildGradleName):                    buildContent,
-		filepath.Join("app", "src", "main", "kotlin", "Main.kt"): testAppSource,
+		filepath.Join("app", buildGradleName):                                 buildContent,
+		filepath.Join("app", "src", "main", "AndroidManifest.xml"):            testAppManifest,
+		filepath.Join("app", "src", "main", "kotlin", testMainSourceFileName): testAppSource,
 	})
 	return filepath.Join(repo, "app")
 }

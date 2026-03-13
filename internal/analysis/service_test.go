@@ -16,11 +16,13 @@ const (
 	programFileName           = "Program.cs"
 	packageJSONFileName       = "package.json"
 	indexJSFileName           = "index.js"
+	buildGradleFileName       = "build.gradle"
 	demoPackageJSONContent    = "{\n  \"name\": \"demo\"\n}\n"
 	nodeMainPackageJSON       = "{\n  \"main\": \"index.js\"\n}\n"
 	mapExportJSContent        = "export function map() {}\n"
 	leftPadDependencyID       = "left-pad"
 	newtonsoftDependencyID    = "newtonsoft.json"
+	kotlinAndroidLanguageID   = "kotlin-android"
 	expectedOneDependencyText = "expected one dependency report, got %d"
 )
 
@@ -31,7 +33,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
-	writeFile(t, filepath.Join(repo, "build.gradle"), "dependencies { implementation 'org.junit.jupiter:junit-jupiter-api:5.10.0' }\n")
+	writeFile(t, filepath.Join(repo, buildGradleFileName), "dependencies { implementation 'org.junit.jupiter:junit-jupiter-api:5.10.0' }\n")
+	writeFile(t, filepath.Join(repo, "src", "main", "AndroidManifest.xml"), "<manifest package=\"example.demo\"/>\n")
 	writeFile(t, filepath.Join(repo, "src", "test", "java", "ExampleTest.java"), "import org.junit.jupiter.api.Test;\nclass ExampleTest {}\n")
 	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/demo\n\nrequire github.com/google/uuid v1.6.0\n")
 	writeFile(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
@@ -68,7 +71,7 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	for _, dep := range reportData.Dependencies {
 		languages = append(languages, dep.Language)
 	}
-	expectedLanguages := []string{"js-ts", "python", "cpp", "jvm", "kotlin-android", "go", "php", "ruby", "rust", "dotnet", "elixir", "dart"}
+	expectedLanguages := []string{"js-ts", "python", "cpp", "jvm", kotlinAndroidLanguageID, "go", "php", "ruby", "rust", "dotnet", "elixir", "dart"}
 	for _, expectedLanguage := range expectedLanguages {
 		if !slices.Contains(languages, expectedLanguage) {
 			t.Fatalf("expected language %q in dependencies, got %#v", expectedLanguage, languages)
@@ -85,8 +88,8 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 func TestServiceAnalyseKotlinAndroidPackageScopeAvoidsRootOverlapDoubleCount(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "settings.gradle"), "rootProject.name = 'demo'\ninclude ':app'\n")
-	writeFile(t, filepath.Join(repo, "build.gradle"), "plugins { id 'com.android.application' version '8.5.0' apply false }\n")
-	writeFile(t, filepath.Join(repo, "app", "build.gradle"), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
+	writeFile(t, filepath.Join(repo, buildGradleFileName), "plugins { id 'com.android.application' version '8.5.0' apply false }\n")
+	writeFile(t, filepath.Join(repo, "app", buildGradleFileName), "dependencies { implementation 'androidx.core:core-ktx:1.13.1' }\n")
 	writeFile(t, filepath.Join(repo, "app", "src", "main", "kotlin", "com", "example", "Main.kt"), `
 package com.example
 
@@ -103,7 +106,7 @@ class Main {
 	repoReport, err := service.Analyse(context.Background(), Request{
 		RepoPath:   repo,
 		Dependency: "core-ktx",
-		Language:   "kotlin-android",
+		Language:   kotlinAndroidLanguageID,
 		ScopeMode:  ScopeModeRepo,
 	})
 	if err != nil {
@@ -112,7 +115,7 @@ class Main {
 	packageReport, err := service.Analyse(context.Background(), Request{
 		RepoPath:   repo,
 		Dependency: "core-ktx",
-		Language:   "kotlin-android",
+		Language:   kotlinAndroidLanguageID,
 		ScopeMode:  ScopeModePackage,
 	})
 	if err != nil {
