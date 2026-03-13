@@ -10,6 +10,23 @@ marker_prefix="no"
 marker_pattern="(^|[^[:alnum:]_])(${marker_prefix}sec|${marker_prefix}sonar)([^[:alnum:]_]|$)"
 diff_scope=""
 
+create_temp_file() {
+	local template="${TMPDIR:-/tmp}/inline-suppressions.XXXXXX"
+	local temp_file=""
+
+	if temp_file="$(mktemp "$template" 2>/dev/null)"; then
+		printf '%s\n' "$temp_file"
+		return 0
+	fi
+	if temp_file="$(mktemp -t inline-suppressions 2>/dev/null)"; then
+		printf '%s\n' "$temp_file"
+		return 0
+	fi
+
+	echo "unable to create temporary file for suppression check" >&2
+	return 1
+}
+
 if git diff --cached --quiet --exit-code -- .; then
 	base_ref="$requested_base_ref"
 	used_fallback=0
@@ -37,7 +54,7 @@ else
 	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AM --relative --)
 fi
 
-tmp_matches="$(mktemp)"
+tmp_matches="$(create_temp_file)"
 trap 'rm -f "$tmp_matches"' EXIT INT TERM
 
 set +e
