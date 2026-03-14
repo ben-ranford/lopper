@@ -22,7 +22,7 @@ jobs:
 
       - name: Detect VS Code extension changes
         id: filter
-        uses: dorny/paths-filter@9d7afb8d214ad99e78fbd4247752c4caed2b6e4c
+        uses: dorny/paths-filter@d8f7b061b24c30a325ff314b76c37adb05b041ce
         with:
           filters: |
             vscode_extension:

@@ -48,7 +48,8 @@
         "usedPercent": { "type": "number", "minimum": 0 },
         "knownLicenseCount": { "type": "integer", "minimum": 0 },
         "unknownLicenseCount": { "type": "integer", "minimum": 0 },
-        "deniedLicenseCount": { "type": "integer", "minimum": 0 }
+        "deniedLicenseCount": { "type": "integer", "minimum": 0 },
+        "reachability": { "$ref": "#/$defs/reachabilityRollup" }
       }
     },
     "languageSummary": {
@@ -169,6 +170,7 @@
         },
         "codemod": { "$ref": "#/$defs/codemodReport" },
         "runtimeUsage": { "$ref": "#/$defs/runtimeUsage" },
+        "reachabilityConfidence": { "$ref": "#/$defs/reachabilityConfidence" },
         "removalCandidate": { "$ref": "#/$defs/removalCandidate" },
         "license": { "$ref": "#/$defs/dependencyLicense" },
         "provenance": { "$ref": "#/$defs/dependencyProvenance" }
@@ -226,6 +228,11 @@
         "provenance": {
           "type": "array",
           "items": { "type": "string" }
+        },
+        "confidenceScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "confidenceReasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       }
     },
@@ -235,7 +242,12 @@
       "required": ["name", "module"],
       "properties": {
         "name": { "type": "string" },
-        "module": { "type": "string" }
+        "module": { "type": "string" },
+        "confidenceScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "confidenceReasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "location": {
@@ -255,7 +267,12 @@
       "properties": {
         "code": { "type": "string" },
         "severity": { "type": "string", "enum": ["low", "medium", "high"] },
-        "message": { "type": "string" }
+        "message": { "type": "string" },
+        "confidenceScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "confidenceReasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "recommendation": {
@@ -266,7 +283,12 @@
         "code": { "type": "string" },
         "priority": { "type": "string", "enum": ["low", "medium", "high"] },
         "message": { "type": "string" },
-        "rationale": { "type": "string" }
+        "rationale": { "type": "string" },
+        "confidenceScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "confidenceReasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "codemodReport": {
@@ -382,6 +404,47 @@
         "symbol": { "type": "string" },
         "module": { "type": "string" },
         "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "reachabilityConfidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "score"],
+      "properties": {
+        "model": { "type": "string" },
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "summary": { "type": "string" },
+        "rationaleCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reachabilitySignal" }
+        }
+      }
+    },
+    "reachabilitySignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "score", "weight", "contribution"],
+      "properties": {
+        "code": { "type": "string" },
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "contribution": { "type": "number", "minimum": 0, "maximum": 100 },
+        "rationale": { "type": "string" }
+      }
+    },
+    "reachabilityRollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "averageScore", "lowestScore", "highestScore"],
+      "properties": {
+        "model": { "type": "string" },
+        "averageScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "lowestScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "highestScore": { "type": "number", "minimum": 0, "maximum": 100 }
       }
     },
     "removalCandidate": {

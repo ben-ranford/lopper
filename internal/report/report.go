@@ -138,13 +138,14 @@ type EffectivePolicy struct {
 }
 
 type Summary struct {
-	DependencyCount     int     `json:"dependencyCount"`
-	UsedExportsCount    int     `json:"usedExportsCount"`
-	TotalExportsCount   int     `json:"totalExportsCount"`
-	UsedPercent         float64 `json:"usedPercent"`
-	KnownLicenseCount   int     `json:"knownLicenseCount"`
-	UnknownLicenseCount int     `json:"unknownLicenseCount"`
-	DeniedLicenseCount  int     `json:"deniedLicenseCount"`
+	DependencyCount     int                 `json:"dependencyCount"`
+	UsedExportsCount    int                 `json:"usedExportsCount"`
+	TotalExportsCount   int                 `json:"totalExportsCount"`
+	UsedPercent         float64             `json:"usedPercent"`
+	KnownLicenseCount   int                 `json:"knownLicenseCount"`
+	UnknownLicenseCount int                 `json:"unknownLicenseCount"`
+	DeniedLicenseCount  int                 `json:"deniedLicenseCount"`
+	Reachability        *ReachabilityRollup `json:"reachability,omitempty"`
 }
 
 type LicensePolicy struct {
@@ -168,23 +169,24 @@ type LanguageSummary struct {
 }
 
 type DependencyReport struct {
-	Language             string                `json:"language,omitempty"`
-	Name                 string                `json:"name"`
-	UsedExportsCount     int                   `json:"usedExportsCount"`
-	TotalExportsCount    int                   `json:"totalExportsCount"`
-	UsedPercent          float64               `json:"usedPercent"`
-	EstimatedUnusedBytes int64                 `json:"estimatedUnusedBytes"`
-	TopUsedSymbols       []SymbolUsage         `json:"topUsedSymbols,omitempty"`
-	UsedImports          []ImportUse           `json:"usedImports,omitempty"`
-	UnusedImports        []ImportUse           `json:"unusedImports,omitempty"`
-	UnusedExports        []SymbolRef           `json:"unusedExports,omitempty"`
-	RiskCues             []RiskCue             `json:"riskCues,omitempty"`
-	Recommendations      []Recommendation      `json:"recommendations,omitempty"`
-	Codemod              *CodemodReport        `json:"codemod,omitempty"`
-	RuntimeUsage         *RuntimeUsage         `json:"runtimeUsage,omitempty"`
-	RemovalCandidate     *RemovalCandidate     `json:"removalCandidate,omitempty"`
-	License              *DependencyLicense    `json:"license,omitempty"`
-	Provenance           *DependencyProvenance `json:"provenance,omitempty"`
+	Language               string                  `json:"language,omitempty"`
+	Name                   string                  `json:"name"`
+	UsedExportsCount       int                     `json:"usedExportsCount"`
+	TotalExportsCount      int                     `json:"totalExportsCount"`
+	UsedPercent            float64                 `json:"usedPercent"`
+	EstimatedUnusedBytes   int64                   `json:"estimatedUnusedBytes"`
+	TopUsedSymbols         []SymbolUsage           `json:"topUsedSymbols,omitempty"`
+	UsedImports            []ImportUse             `json:"usedImports,omitempty"`
+	UnusedImports          []ImportUse             `json:"unusedImports,omitempty"`
+	UnusedExports          []SymbolRef             `json:"unusedExports,omitempty"`
+	RiskCues               []RiskCue               `json:"riskCues,omitempty"`
+	Recommendations        []Recommendation        `json:"recommendations,omitempty"`
+	Codemod                *CodemodReport          `json:"codemod,omitempty"`
+	RuntimeUsage           *RuntimeUsage           `json:"runtimeUsage,omitempty"`
+	ReachabilityConfidence *ReachabilityConfidence `json:"reachabilityConfidence,omitempty"`
+	RemovalCandidate       *RemovalCandidate       `json:"removalCandidate,omitempty"`
+	License                *DependencyLicense      `json:"license,omitempty"`
+	Provenance             *DependencyProvenance   `json:"provenance,omitempty"`
 }
 
 type DependencyLicense struct {
@@ -255,6 +257,29 @@ type RemovalCandidate struct {
 	Confidence float64                 `json:"confidence"`
 	Weights    RemovalCandidateWeights `json:"weights"`
 	Rationale  []string                `json:"rationale,omitempty"`
+}
+
+type ReachabilityConfidence struct {
+	Model          string               `json:"model"`
+	Score          float64              `json:"score"`
+	Summary        string               `json:"summary,omitempty"`
+	RationaleCodes []string             `json:"rationaleCodes,omitempty"`
+	Signals        []ReachabilitySignal `json:"signals,omitempty"`
+}
+
+type ReachabilitySignal struct {
+	Code         string  `json:"code"`
+	Score        float64 `json:"score"`
+	Weight       float64 `json:"weight"`
+	Contribution float64 `json:"contribution"`
+	Rationale    string  `json:"rationale,omitempty"`
+}
+
+type ReachabilityRollup struct {
+	Model        string  `json:"model"`
+	AverageScore float64 `json:"averageScore"`
+	LowestScore  float64 `json:"lowestScore"`
+	HighestScore float64 `json:"highestScore"`
 }
 
 type RemovalCandidateWeights struct {

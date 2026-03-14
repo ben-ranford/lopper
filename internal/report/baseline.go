@@ -165,29 +165,73 @@ func sanitizeBaselineKey(key string) string {
 	return sanitized
 }
 
+type confidenceRollupStats struct {
+	count   int
+	total   float64
+	lowest  float64
+	highest float64
+}
+
 func ComputeSummary(dependencies []DependencyReport) *Summary {
 	if len(dependencies) == 0 {
 		return nil
 	}
 
 	summary := Summary{DependencyCount: len(dependencies)}
+	var confidenceStats confidenceRollupStats
 	for _, dep := range dependencies {
 		summary.UsedExportsCount += dep.UsedExportsCount
 		summary.TotalExportsCount += dep.TotalExportsCount
-		if dep.License == nil || dep.License.Unknown || strings.TrimSpace(dep.License.SPDX) == "" {
-			summary.UnknownLicenseCount++
-		} else {
-			summary.KnownLicenseCount++
-		}
-		if dep.License != nil && dep.License.Denied {
-			summary.DeniedLicenseCount++
-		}
+		updateLicenseSummary(&summary, dep.License)
+		updateConfidenceRollupStats(&confidenceStats, dep.ReachabilityConfidence)
 	}
 	if summary.TotalExportsCount > 0 {
 		summary.UsedPercent = (float64(summary.UsedExportsCount) / float64(summary.TotalExportsCount)) * 100
 	}
+	summary.Reachability = buildConfidenceRollup(confidenceStats)
 
 	return &summary
+}
+
+func updateLicenseSummary(summary *Summary, license *DependencyLicense) {
+	if license != nil && license.Denied {
+		summary.DeniedLicenseCount++
+	}
+	if license == nil || license.Unknown || strings.TrimSpace(license.SPDX) == "" {
+		summary.UnknownLicenseCount++
+		return
+	}
+
+	summary.KnownLicenseCount++
+}
+
+func updateConfidenceRollupStats(stats *confidenceRollupStats, confidence *ReachabilityConfidence) {
+	if confidence == nil {
+		return
+	}
+
+	score := confidence.Score
+	stats.total += score
+	if stats.count == 0 || score < stats.lowest {
+		stats.lowest = score
+	}
+	if stats.count == 0 || score > stats.highest {
+		stats.highest = score
+	}
+	stats.count++
+}
+
+func buildConfidenceRollup(stats confidenceRollupStats) *ReachabilityRollup {
+	if stats.count == 0 {
+		return nil
+	}
+
+	return &ReachabilityRollup{
+		Model:        reachabilityConfidenceModelV2,
+		AverageScore: roundTo(stats.total/float64(stats.count), 1),
+		LowestScore:  roundTo(stats.lowest, 1),
+		HighestScore: roundTo(stats.highest, 1),
+	}
 }
 
 func ComputeLanguageBreakdown(dependencies []DependencyReport) []LanguageSummary {
