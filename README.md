@@ -227,11 +227,13 @@ If `--runtime-trace` points to a missing file, analysis continues with static re
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and commands.
+For watched hotspot packages, run `make mem-profiles` to capture alloc-space summaries before or after performance-sensitive changes.
 
 ## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
 - Multi-repo dashboard: `docs/dashboard.md`
+- Memory profiling workflow: `docs/memory-profiling.md`
 - SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Runtime trace annotations: `scripts/runtime/`

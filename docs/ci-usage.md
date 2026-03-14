@@ -1,6 +1,6 @@
 # CI and release workflow
 
-This repository includes four GitHub Actions workflows:
+This repository includes five GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests and pushes to `main`
 - `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs when changes exist since the previous stable tag or when version alignment needs to promote the stable CLI tag to the VS Code extension version, then runs CI and publishes a GitHub release with:
@@ -9,6 +9,7 @@ This repository includes four GitHub Actions workflows:
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
 - `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with Linux/Windows/Darwin build artifacts plus source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper-rolling`
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
+- `.github/workflows/memory-profiles.yml`: scheduled/manual alloc-space profiling for the watched hotspot packages (`dotnet`, `rust`, `analysis`, `golang`) with uploaded artifacts and a workflow summary
 
 Homebrew tap automation:
 
@@ -55,6 +56,7 @@ If `SONAR_TOKEN` is set, it additionally posts/updates a SonarQube summary comme
 - `make format-check`: fail if `gofmt` changes are needed
 - `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=95`)
 - `make ci`: `format-check + lint + dup-check + suppression-check + security + test + build`
+- `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
 - `make toolchain-check`: verify required cross toolchain binaries
 - `make toolchain-install`: install required OS toolchains (`go`, `zig`) on macOS/Linux
 - `make setup`: bootstrap toolchain + module download + readiness checks
@@ -64,6 +66,7 @@ Coverage artifacts:
 
 - `.artifacts/coverage.out`: `go test` coverage profile
 - `.artifacts/coverage-total.txt`: total percentage used by CI gating
+- `.artifacts/memory-profiles/<timestamp>/`: watched-package alloc-space summaries, raw profiles, and logs
 
 On pull requests, if the coverage gate fails, CI posts/updates a PR comment with required vs. actual coverage.
 The 95% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.

@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint dup-check suppression-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint dup-check suppression-check security test cov build ci demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -20,6 +20,10 @@ DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
 DUPLICATION_BASE ?= origin/main
 SUPPRESSION_BASE ?= origin/main
+MEM_PROFILE_DIR ?= .artifacts/memory-profiles
+MEM_PROFILE_PACKAGES ?= ./internal/lang/dotnet ./internal/lang/rust ./internal/analysis ./internal/lang/golang
+MEM_PROFILE_COUNT ?= 1
+MEM_PROFILE_NODECOUNT ?= 20
 HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
@@ -117,6 +121,16 @@ demos:
 
 demos-check:
 	./scripts/demos/check.sh
+
+mem-profiles:
+	MEM_PROFILE_STAMP="$(MEM_PROFILE_STAMP)" \
+	MEM_PROFILE_DIR="$(MEM_PROFILE_DIR)" \
+	MEM_PROFILE_PACKAGES="$(MEM_PROFILE_PACKAGES)" \
+	MEM_PROFILE_COUNT="$(MEM_PROFILE_COUNT)" \
+	MEM_PROFILE_NODECOUNT="$(MEM_PROFILE_NODECOUNT)" \
+	GO="$(GO)" \
+	GOTOOLCHAIN="$(GO_TOOLCHAIN)" \
+	./scripts/profiling/memory_profiles.sh
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)
