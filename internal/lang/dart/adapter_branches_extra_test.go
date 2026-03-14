@@ -305,6 +305,13 @@ flutter:
 	if _, readErr := readPubspecLock(repo, invalidLockPath); readErr == nil {
 		t.Fatalf("expected lock parse error")
 	}
+
+	if dependency, ok := resolveDeclaredLockDependency(manifest.Dependencies, "url_launcher_android", map[string]any{"name": "url_launcher_android"}); !ok || dependency != "url_launcher_android" {
+		t.Fatalf("expected declared lock dependency to resolve, got dependency=%q ok=%v", dependency, ok)
+	}
+	if dependency, ok := resolveDeclaredLockDependency(manifest.Dependencies, "dio", map[string]any{"name": "dio"}); ok || dependency != "" {
+		t.Fatalf("expected lock-only dependency to stay unresolved, got dependency=%q ok=%v", dependency, ok)
+	}
 }
 
 func TestScanBranchesAndWarnings(t *testing.T) {
@@ -357,6 +364,15 @@ flutter:
 	canceled := scanPackageRoot(ctx, repo, manifest, collectManifestRoots([]packageManifest{manifest}), map[string]struct{}{}, &fileCount, &scanResult{UnresolvedImports: map[string]int{}})
 	if !errors.Is(canceled, context.Canceled) {
 		t.Fatalf("expected context canceled from scanPackageRoot, got %v", canceled)
+	}
+
+	fileCount = maxScanFiles
+	stop, err := scanManifestRoot(context.Background(), repo, manifest, collectManifestRoots([]packageManifest{manifest}), map[string]struct{}{}, &fileCount, &scanResult{UnresolvedImports: map[string]int{}})
+	if err != nil {
+		t.Fatalf("scanManifestRoot returned unexpected error: %v", err)
+	}
+	if !stop {
+		t.Fatalf("expected scanManifestRoot to stop on file cap")
 	}
 }
 
@@ -564,6 +580,45 @@ func TestAdditionalBranchCoverage(t *testing.T) {
 	err := scanPackageRoot(context.Background(), tempRepo, missingManifest, map[string]struct{}{}, map[string]struct{}{}, new(int), &scanResult{UnresolvedImports: map[string]int{}})
 	if err == nil {
 		t.Fatalf("expected scanPackageRoot to fail for missing root")
+	}
+}
+
+func TestScanRepoStopsScanningLaterManifestsAfterGlobalFileCap(t *testing.T) {
+	repo := t.TempDir()
+
+	firstPkg := filepath.Join(repo, "pkg1")
+	secondPkg := filepath.Join(repo, "pkg2")
+	writeFile(t, filepath.Join(firstPkg, pubspecYAMLName), "name: pkg1\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(secondPkg, pubspecYAMLName), "name: pkg2\ndependencies:\n  collection: ^1.0.0\n")
+	for i := range maxScanFiles + 1 {
+		writeFile(t, filepath.Join(firstPkg, "lib", "f"+itoa(i)+".dart"), emptyMainDartBody)
+	}
+	secondFile := filepath.Join(secondPkg, "lib", "second.dart")
+	writeFile(t, secondFile, "import 'package:collection/collection.dart' as coll;\nvoid main() { coll.ListEquality(); }\n")
+
+	firstManifest, _, err := loadPackageManifest(repo, filepath.Join(firstPkg, pubspecYAMLName))
+	if err != nil {
+		t.Fatalf("load first manifest: %v", err)
+	}
+	secondManifest, _, err := loadPackageManifest(repo, filepath.Join(secondPkg, pubspecYAMLName))
+	if err != nil {
+		t.Fatalf("load second manifest: %v", err)
+	}
+
+	scan, err := scanRepo(context.Background(), repo, []packageManifest{firstManifest, secondManifest})
+	if err != nil {
+		t.Fatalf("scanRepo: %v", err)
+	}
+	if !scan.SkippedFilesByBound {
+		t.Fatalf("expected scan to report file cap")
+	}
+	if _, ok := scan.DeclaredDependencies["collection"]; !ok {
+		t.Fatalf("expected declared dependencies to include later manifests even when scan stops")
+	}
+	for _, file := range scan.Files {
+		if file.Path == filepath.ToSlash("pkg2/lib/second.dart") {
+			t.Fatalf("expected later manifest file to be skipped after scan cap, got %#v", scan.Files)
+		}
 	}
 }
 

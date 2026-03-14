@@ -34,10 +34,15 @@ func scanRepo(ctx context.Context, repoPath string, manifests []packageManifest)
 		mergeDeclaredDependencies(result.DeclaredDependencies, manifest.Dependencies)
 		result.HasFlutterProject = result.HasFlutterProject || manifest.HasFlutterSection
 		result.HasPluginMetadata = result.HasPluginMetadata || manifest.HasFlutterPluginMetadata
+	}
 
-		err := scanPackageRoot(ctx, repoPath, manifest, allRoots, scannedFiles, &fileCount, &result)
-		if err != nil && err != fs.SkipAll {
+	for _, manifest := range manifests {
+		stop, err := scanManifestRoot(ctx, repoPath, manifest, allRoots, scannedFiles, &fileCount, &result)
+		if err != nil {
 			return scanResult{}, err
+		}
+		if stop {
+			break
 		}
 	}
 
@@ -47,6 +52,21 @@ func scanRepo(ctx context.Context, repoPath string, manifests []packageManifest)
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
 	result.Warnings = dedupeWarnings(result.Warnings)
 	return result, nil
+}
+
+func scanManifestRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) (bool, error) {
+	if result.SkippedFilesByBound {
+		return true, nil
+	}
+	err := scanPackageRoot(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result)
+	switch {
+	case result.SkippedFilesByBound, err == fs.SkipAll:
+		return true, nil
+	case err == nil:
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func collectManifestRoots(manifests []packageManifest) map[string]struct{} {

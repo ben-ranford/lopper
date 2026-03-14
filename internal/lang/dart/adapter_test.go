@@ -184,6 +184,46 @@ void main() {
 	}
 }
 
+func TestDartAdapterLockOnlyTransitiveImportStillFlagsUndeclaredRisk(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), "name: app\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(repo, pubspecLockName), `packages:
+  http:
+    dependency: "direct main"
+    description: {name: http}
+    source: hosted
+    version: "1.0.0"
+  dio:
+    dependency: transitive
+    description: {name: dio}
+    source: hosted
+    version: "5.0.0"
+`)
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:dio/dio.dart' as dio;
+void main() {
+  dio.Dio();
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "dio",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if !hasRiskCueCode(dep, "undeclared-package-import") {
+		t.Fatalf("expected undeclared-package-import cue, got %#v", dep.RiskCues)
+	}
+	if !hasRecommendationCode(dep, "declare-missing-dependency") {
+		t.Fatalf("expected declare-missing-dependency recommendation, got %#v", dep.Recommendations)
+	}
+}
+
 func TestDartAdapterSkipsPathDependenciesAndWarnsOnMissingLock(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYAMLName), `name: app

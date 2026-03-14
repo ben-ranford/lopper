@@ -164,11 +164,8 @@ func addDependencySection(dest map[string]dependencyInfo, section map[string]any
 
 func mergeLockDependencyData(dest map[string]dependencyInfo, packages map[string]pubspecLockPackage, hasPluginMetadata *bool) {
 	for rawName, item := range packages {
-		dependency := normalizeDependencyID(rawName)
-		if lockName := lockPackageName(item.Description); lockName != "" {
-			dependency = lockName
-		}
-		if dependency == "" {
+		dependency, ok := resolveDeclaredLockDependency(dest, rawName, item.Description)
+		if !ok {
 			continue
 		}
 		classification := strings.ToLower(strings.TrimSpace(item.Dependency))
@@ -190,6 +187,22 @@ func mergeLockDependencyData(dest map[string]dependencyInfo, packages map[string
 		}
 		mergeDependencyInfo(dest, dependency, info)
 	}
+}
+
+func resolveDeclaredLockDependency(dest map[string]dependencyInfo, rawName string, description any) (string, bool) {
+	candidates := make([]string, 0, 2)
+	if lockName := lockPackageName(description); lockName != "" {
+		candidates = append(candidates, lockName)
+	}
+	if dependency := normalizeDependencyID(rawName); dependency != "" {
+		candidates = append(candidates, dependency)
+	}
+	for _, dependency := range candidates {
+		if _, ok := dest[dependency]; ok {
+			return dependency, true
+		}
+	}
+	return "", false
 }
 
 func lockPackageName(description any) string {
