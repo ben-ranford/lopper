@@ -43,90 +43,105 @@ func TestJSScanFilesForDetectionMaxFiles(t *testing.T) {
 }
 
 func TestJSAdapterHelperBranchesExtra(t *testing.T) {
-	usedExports := map[string]struct{}{}
-	counts := map[string]int{}
-	used := applyImportUsage(ImportBinding{Kind: ImportKind("other"), ExportName: "x", LocalName: "x"}, FileScan{}, usedExports, counts)
-	if used {
-		t.Fatalf("expected unsupported import kind to return false")
-	}
-
-	imports := map[string]*report.ImportUse{}
-	addImportUse(imports, report.ImportUse{
-		Name:      "map",
-		Module:    "lodash",
-		Locations: []report.Location{{File: "a.js", Line: 1}},
-	})
-	addImportUse(imports, report.ImportUse{
-		Name:      "map",
-		Module:    "lodash",
-		Locations: []report.Location{{File: "b.js", Line: 2}},
-	})
-	addImportUse(imports, report.ImportUse{
-		Name:       "map",
-		Module:     "lodash",
-		Locations:  []report.Location{{File: "c.js", Line: 3}},
-		Provenance: []string{pkgLodashProvenance, pkgLodashProvenance},
-	})
-	flattened := flattenImportUses(imports)
-	if len(flattened) != 1 || len(flattened[0].Locations) != 3 {
-		t.Fatalf("expected merged import locations, got %#v", flattened)
-	}
-	if len(flattened[0].Provenance) != 1 || flattened[0].Provenance[0] != pkgLodashProvenance {
-		t.Fatalf("expected deduped provenance, got %#v", flattened[0].Provenance)
-	}
-
-	filtered := removeOverlappingUnusedImports([]report.ImportUse{{Name: "map", Module: "lodash"}, {Name: "filter", Module: "lodash"}}, []report.ImportUse{{Name: "map", Module: "lodash"}})
-	if len(filtered) != 1 || filtered[0].Name != "filter" {
-		t.Fatalf("expected overlap removal, got %#v", filtered)
-	}
-	usedImportList, unusedImportList := finalizeImportUsageLists(map[string]*report.ImportUse{"lodash:map": {Name: "map", Module: "lodash"}}, map[string]*report.ImportUse{"lodash:map": {Name: "map", Module: "lodash"}, "lodash:filter": {Name: "filter", Module: "lodash"}})
-	if len(usedImportList) != 1 || usedImportList[0].Name != "map" {
-		t.Fatalf("expected flattened used imports, got %#v", usedImportList)
-	}
-	if len(unusedImportList) != 1 || unusedImportList[0].Name != "filter" {
-		t.Fatalf("expected overlap-filtered unused imports, got %#v", unusedImportList)
-	}
-
-	if score, ok := shared.WasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
-		t.Fatalf("expected unknown waste score for zero exports, got score=%f ok=%v", score, ok)
-	}
-	if score, ok := shared.WasteScore(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25}); !ok || score != 75 {
-		t.Fatalf("expected computed waste score 75, got score=%f ok=%v", score, ok)
-	}
-
-	for _, module := range []string{"./local", "@scope", "@/pkg"} {
-		if dep := dependencyFromModule(module); dep != "" {
-			t.Fatalf("expected empty dependency for module %q, got %q", module, dep)
+	t.Run("apply import usage rejects unsupported kinds", func(t *testing.T) {
+		used := applyImportUsage(ImportBinding{Kind: ImportKind("other"), ExportName: "x", LocalName: "x"}, FileScan{}, map[string]struct{}{}, map[string]int{})
+		if used {
+			t.Fatalf("expected unsupported import kind to return false")
 		}
-	}
+	})
 
-	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
-		RepoPath:     "",
-		ImporterPath: "",
-		Dependency:   "dep",
-	}); got != "" {
-		t.Fatalf("expected empty resolution for invalid repo path, got %q", got)
-	}
-	repo := t.TempDir()
-	outside := t.TempDir()
-	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
-		RepoPath:     repo,
-		ImporterPath: filepath.Join(outside, testIndexJS),
-		Dependency:   "dep",
-	}); got != "" {
-		t.Fatalf("expected empty resolution for importer outside repo root, got %q", got)
-	}
+	t.Run("flatten import uses merges locations and provenance", func(t *testing.T) {
+		imports := map[string]*report.ImportUse{}
+		addImportUse(imports, report.ImportUse{
+			Name:      "map",
+			Module:    "lodash",
+			Locations: []report.Location{{File: "a.js", Line: 1}},
+		})
+		addImportUse(imports, report.ImportUse{
+			Name:      "map",
+			Module:    "lodash",
+			Locations: []report.Location{{File: "b.js", Line: 2}},
+		})
+		addImportUse(imports, report.ImportUse{
+			Name:       "map",
+			Module:     "lodash",
+			Locations:  []report.Location{{File: "c.js", Line: 3}},
+			Provenance: []string{pkgLodashProvenance, pkgLodashProvenance},
+		})
 
-	if warnings := dependencyUsageWarnings("dep", map[string]struct{}{}, true); len(warnings) != 2 {
-		t.Fatalf("expected both no-usage and wildcard warnings, got %#v", warnings)
-	}
+		flattened := flattenImportUses(imports)
+		if len(flattened) != 1 || len(flattened[0].Locations) != 3 {
+			t.Fatalf("expected merged import locations, got %#v", flattened)
+		}
+		if len(flattened[0].Provenance) != 1 || flattened[0].Provenance[0] != pkgLodashProvenance {
+			t.Fatalf("expected deduped provenance, got %#v", flattened[0].Provenance)
+		}
+	})
 
-	if !isPathWithin(filepath.Join(repo, "sub", "a.js"), repo) {
-		t.Fatalf("expected file under repo to be within root")
-	}
-	if isPathWithin(filepath.Dir(repo), repo) {
-		t.Fatalf("expected parent directory to be outside root")
-	}
+	t.Run("import usage lists drop overlaps", func(t *testing.T) {
+		filtered := removeOverlappingUnusedImports([]report.ImportUse{{Name: "map", Module: "lodash"}, {Name: "filter", Module: "lodash"}}, []report.ImportUse{{Name: "map", Module: "lodash"}})
+		if len(filtered) != 1 || filtered[0].Name != "filter" {
+			t.Fatalf("expected overlap removal, got %#v", filtered)
+		}
+
+		usedImports := map[string]*report.ImportUse{"lodash:map": {Name: "map", Module: "lodash"}}
+		allImports := map[string]*report.ImportUse{"lodash:map": {Name: "map", Module: "lodash"}, "lodash:filter": {Name: "filter", Module: "lodash"}}
+		usedImportList, unusedImportList := finalizeImportUsageLists(usedImports, allImports)
+		if len(usedImportList) != 1 || usedImportList[0].Name != "map" {
+			t.Fatalf("expected flattened used imports, got %#v", usedImportList)
+		}
+		if len(unusedImportList) != 1 || unusedImportList[0].Name != "filter" {
+			t.Fatalf("expected overlap-filtered unused imports, got %#v", unusedImportList)
+		}
+	})
+
+	t.Run("waste score handles empty and partial coverage", func(t *testing.T) {
+		if score, ok := shared.WasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {
+			t.Fatalf("expected unknown waste score for zero exports, got score=%f ok=%v", score, ok)
+		}
+		if score, ok := shared.WasteScore(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25}); !ok || score != 75 {
+			t.Fatalf("expected computed waste score 75, got score=%f ok=%v", score, ok)
+		}
+	})
+
+	t.Run("dependency resolution guards reject invalid paths", func(t *testing.T) {
+		for _, module := range []string{"./local", "@scope", "@/pkg"} {
+			if dep := dependencyFromModule(module); dep != "" {
+				t.Fatalf("expected empty dependency for module %q, got %q", module, dep)
+			}
+		}
+
+		if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+			RepoPath:     "",
+			ImporterPath: "",
+			Dependency:   "dep",
+		}); got != "" {
+			t.Fatalf("expected empty resolution for invalid repo path, got %q", got)
+		}
+
+		repo := t.TempDir()
+		outside := t.TempDir()
+		if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{
+			RepoPath:     repo,
+			ImporterPath: filepath.Join(outside, testIndexJS),
+			Dependency:   "dep",
+		}); got != "" {
+			t.Fatalf("expected empty resolution for importer outside repo root, got %q", got)
+		}
+
+		if !isPathWithin(filepath.Join(repo, "sub", "a.js"), repo) {
+			t.Fatalf("expected file under repo to be within root")
+		}
+		if isPathWithin(filepath.Dir(repo), repo) {
+			t.Fatalf("expected parent directory to be outside root")
+		}
+	})
+
+	t.Run("dependency usage warnings include wildcard notes", func(t *testing.T) {
+		if warnings := dependencyUsageWarnings("dep", map[string]struct{}{}, true); len(warnings) != 2 {
+			t.Fatalf("expected both no-usage and wildcard warnings, got %#v", warnings)
+		}
+	})
 }
 
 func TestResolveSurfaceWarningsBranches(t *testing.T) {
