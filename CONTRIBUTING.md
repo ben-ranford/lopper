@@ -51,6 +51,12 @@ Refresh terminal demos:
 make demos
 ```
 
+Capture watched-package memory profiles:
+
+```bash
+make mem-profiles
+```
+
 ## Workflow
 
 1. Create a branch for your change.
@@ -74,6 +80,7 @@ If you add a new language adapter, update the contributor-facing docs and user-f
 - Problem statement and intended behavior
 - What changed and why
 - Test evidence (`go test ./...`, manual commands, fixtures)
+- Memory-profile evidence for perf-sensitive changes when relevant
 - Backward compatibility notes (if any)
 
 If your change impacts CLI behavior shown in docs, refresh demo GIFs with `make demos` and include regenerated assets.
