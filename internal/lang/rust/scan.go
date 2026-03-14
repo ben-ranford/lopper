@@ -3,6 +3,7 @@ package rust
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -99,16 +100,11 @@ func compileScanWarnings(result scanResult) []string {
 }
 
 func scanRustSourceFile(repoPath string, crateRoot string, path string, depLookup map[string]dependencyInfo, result *scanResult) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if info.Size() > maxScannableRustFile {
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableRustFile)
+	if errors.Is(err, safeio.ErrFileTooLarge) {
 		result.SkippedLargeFiles++
 		return nil
 	}
-
-	content, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {
 		return err
 	}
