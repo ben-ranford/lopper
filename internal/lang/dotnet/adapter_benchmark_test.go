@@ -6,7 +6,10 @@ import (
 	"testing"
 )
 
-const benchmarkDotNetImportIterations = 200
+const (
+	benchmarkDotNetImportIterations = 200
+	benchmarkProgramSourceName      = "Program.cs"
+)
 
 func BenchmarkParseImports(b *testing.B) {
 	mapper := newDependencyMapper(benchmarkDeclaredDependencies(256))
@@ -17,7 +20,7 @@ func BenchmarkParseImports(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		imports, meta := parseImports(content, programSourceName, mapper)
+		imports, meta := parseImports(content, benchmarkProgramSourceName, mapper)
 		if len(imports) != expectedImports {
 			b.Fatalf("unexpected import count: got %d want %d", len(imports), expectedImports)
 		}
