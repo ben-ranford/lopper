@@ -320,18 +320,15 @@ func TestDashboardCSVHelpersPropagateWriteErrors(t *testing.T) {
 		},
 	}
 
-	alwaysFail := poisonedDashboardCSVWriter(t, &failingDashboardWriter{})
-	if err := writeDashboardSummaryCSV(alwaysFail, reportData); err == nil {
+	if err := writeDashboardSummaryCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}), reportData); err == nil {
 		t.Fatalf("expected summary CSV writer error")
 	}
 
-	rowFail := poisonedDashboardCSVWriter(t, &failingDashboardWriter{})
-	if err := writeDashboardRepoRowsCSV(rowFail, reportData.Repos); err == nil {
+	if err := writeDashboardRepoRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}), reportData.Repos); err == nil {
 		t.Fatalf("expected repo row CSV writer error")
 	}
 
-	crossRepoFail := poisonedDashboardCSVWriter(t, &failingDashboardWriter{})
-	if err := writeDashboardCrossRepoRowsCSV(crossRepoFail, reportData.CrossRepoDeps); err == nil {
+	if err := writeDashboardCrossRepoRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}), reportData.CrossRepoDeps); err == nil {
 		t.Fatalf("expected cross-repo CSV writer error")
 	}
 }

@@ -20,6 +20,7 @@ const (
 	cacheObjectsDirName   = "objects"
 	cacheTestGoModName    = "go.mod"
 	cacheTestGoModContent = "module demo\n"
+	cacheMissingFileName  = "missing.txt"
 )
 
 type analysisCacheLookupCase struct {
@@ -100,7 +101,7 @@ func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
 
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
-	missingPath := filepath.Join(dir, "missing.txt")
+	missingPath := filepath.Join(dir, cacheMissingFileName)
 	digest, err := hashFileOrMissing(missingPath)
 	if err != nil {
 		t.Fatalf("hash missing file: %v", err)
@@ -138,7 +139,7 @@ func TestWriteFileDigestAndMissingMarker(t *testing.T) {
 	}
 
 	var missing bytes.Buffer
-	if err := writeFileDigestOrMissing(&missing, filepath.Join(dir, "missing.txt")); err != nil {
+	if err := writeFileDigestOrMissing(&missing, filepath.Join(dir, cacheMissingFileName)); err != nil {
 		t.Fatalf("write missing digest marker: %v", err)
 	}
 	if missing.String() != "missing" {
