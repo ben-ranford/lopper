@@ -115,7 +115,7 @@ func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, wor
 		return nil
 	}
 
-	*visited++
+	*visited += 1
 	if *visited > maxDetectionEntries {
 		return fs.SkipAll
 	}

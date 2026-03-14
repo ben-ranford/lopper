@@ -135,7 +135,7 @@ func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
 		return nil, nil, err
 	}
 	if count > maxManifestCount {
-		warnings = append(warnings, "cargo manifest discovery capped at 256 manifests")
+		warnings = append(warnings, fmt.Sprintf("cargo manifest discovery capped at %d manifests", maxManifestCount))
 	}
 	if len(paths) == 0 {
 		warnings = append(warnings, "no Cargo.toml files found for analysis")
@@ -340,7 +340,7 @@ func parseInlineFields(value string) map[string]string {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(match[1]))
-		fields[key] = strings.TrimSpace(match[2])
+		fields[key] = strings.Trim(strings.TrimSpace(match[2]), `"'`)
 	}
 	return fields
 }
