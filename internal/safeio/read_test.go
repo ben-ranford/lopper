@@ -10,14 +10,15 @@ import (
 )
 
 const (
-	unexpectedErrFmt = "unexpected error: %v"
-	escapesRootErr   = "path escapes root"
-	getwdErrFmt      = "getwd: %v"
-	restoreWDErrFmt  = "restore wd %s: %v"
-	mkdirDeadDirFmt  = "mkdir deadDir: %v"
-	chdirDeadDirFmt  = "chdir deadDir: %v"
-	removeDeadDirFmt = "remove deadDir: %v"
-	writeFileErrFmt  = "write file: %v"
+	unexpectedErrFmt     = "unexpected error: %v"
+	unexpectedContentFmt = "unexpected content: got %q"
+	escapesRootErr       = "path escapes root"
+	getwdErrFmt          = "getwd: %v"
+	restoreWDErrFmt      = "restore wd %s: %v"
+	mkdirDeadDirFmt      = "mkdir deadDir: %v"
+	chdirDeadDirFmt      = "chdir deadDir: %v"
+	removeDeadDirFmt     = "remove deadDir: %v"
+	writeFileErrFmt      = "write file: %v"
 )
 
 func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
@@ -35,7 +36,7 @@ func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
 		t.Fatalf("ReadFileUnder returned error: %v", err)
 	}
 	if got := string(data); got != "hello" {
-		t.Fatalf("unexpected content: got %q", got)
+		t.Fatalf(unexpectedContentFmt, got)
 	}
 }
 
@@ -54,7 +55,7 @@ func TestReadFileUnderLimitReadsFileInsideRoot(t *testing.T) {
 		t.Fatalf("ReadFileUnderLimit returned error: %v", err)
 	}
 	if got := string(data); got != "hello" {
-		t.Fatalf("unexpected content: got %q", got)
+		t.Fatalf(unexpectedContentFmt, got)
 	}
 }
 
@@ -121,7 +122,7 @@ func TestReadOpenedFileAllowsMaxInt64Limit(t *testing.T) {
 		t.Fatalf("readOpenedFile returned error: %v", err)
 	}
 	if string(data) != "ok" {
-		t.Fatalf("unexpected content: got %q", string(data))
+		t.Fatalf(unexpectedContentFmt, string(data))
 	}
 	if writeErr := <-done; writeErr != nil {
 		t.Fatalf("pipe writer error: %v", writeErr)
