@@ -59,18 +59,18 @@ func TestAdapterIdentityAndDetect(t *testing.T) {
 	}
 }
 
-func TestManifestParsingHelpers(t *testing.T) {
-	manifest := strings.Join([]string{"[package]", `name = "demo"`, "", workspaceSection, `members = [`, `  "crates/a",`, `  "crates/b",`, `  "crates/a"`, "]", "", "[dependencies]", fmt.Sprintf(`serde_json = { package = %q, version = "1.0" }`, serdeJSONDep), `local_dep = { path = "./crates/local_dep" }`, `single_quote_dep = { package = 'serde_json', path = './quoted' }`, "", "[target.'cfg(unix)'.dependencies]", `clap = "4"`, ""}, "\n")
-
-	meta := parseCargoManifestContent(manifest)
+func TestParseCargoManifestContent(t *testing.T) {
+	meta := parseCargoManifestContent(manifestParsingHelpersFixture())
 	if !meta.HasPackage {
 		t.Fatalf("expected package section detection")
 	}
 	if len(meta.WorkspaceMembers) != 2 {
 		t.Fatalf("expected deduped workspace members, got %#v", meta.WorkspaceMembers)
 	}
+}
 
-	deps := parseCargoDependencies(manifest)
+func TestParseCargoDependencies(t *testing.T) {
+	deps := parseCargoDependencies(manifestParsingHelpersFixture())
 	if deps[serdeJSONDep].Canonical != serdeJSONDep {
 		t.Fatalf("expected canonical serde-json mapping, got %#v", deps[serdeJSONDep])
 	}
@@ -83,7 +83,9 @@ func TestManifestParsingHelpers(t *testing.T) {
 	if deps["clap"].Canonical != "clap" {
 		t.Fatalf("expected target dependencies parsing for clap")
 	}
+}
 
+func TestParseTomlAssignment(t *testing.T) {
 	key, value, ok := parseTomlAssignment(`foo = "bar"`)
 	if !ok || key != "foo" || value != `"bar"` {
 		t.Fatalf("unexpected toml assignment parse: %q %q %v", key, value, ok)
@@ -91,7 +93,9 @@ func TestManifestParsingHelpers(t *testing.T) {
 	if _, _, ok := parseTomlAssignment("broken"); ok {
 		t.Fatalf("expected invalid assignment")
 	}
+}
 
+func TestParseInlineFields(t *testing.T) {
 	fields := parseInlineFields(fmt.Sprintf(`{ package = %q, path = "./x" }`, serdeJSONDep))
 	if fields["package"] != serdeJSONDep || fields["path"] != "./x" {
 		t.Fatalf("unexpected inline fields: %#v", fields)
@@ -100,13 +104,39 @@ func TestManifestParsingHelpers(t *testing.T) {
 	if fields["package"] != "serde_json" || fields["path"] != "./x" {
 		t.Fatalf("unexpected single-quoted inline fields: %#v", fields)
 	}
+}
 
+func TestTomlCommentAndStringHelpers(t *testing.T) {
 	if got := stripTomlComment(`name = "x#y" # comment`); strings.TrimSpace(got) != `name = "x#y"` {
 		t.Fatalf("unexpected toml comment stripping: %q", got)
 	}
 	if got := extractQuotedStrings(`["a", 'b', "a"]`); len(got) != 2 {
 		t.Fatalf("expected quoted string extraction dedupe, got %#v", got)
 	}
+}
+
+func manifestParsingHelpersFixture() string {
+	lines := []string{
+		"[package]",
+		`name = "demo"`,
+		"",
+		workspaceSection,
+		`members = [`,
+		`  "crates/a",`,
+		`  "crates/b",`,
+		`  "crates/a"`,
+		"]",
+		"",
+		"[dependencies]",
+		fmt.Sprintf(`serde_json = { package = %q, version = "1.0" }`, serdeJSONDep),
+		`local_dep = { path = "./crates/local_dep" }`,
+		`single_quote_dep = { package = 'serde_json', path = './quoted' }`,
+		"",
+		"[target.'cfg(unix)'.dependencies]",
+		`clap = "4"`,
+		"",
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestManifestDiscoveryAndWorkspaceResolution(t *testing.T) {
