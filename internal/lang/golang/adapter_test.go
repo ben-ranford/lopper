@@ -28,10 +28,11 @@ const (
 	modulePrefix        = "module "
 	moduleDemoLine      = "module example.com/demo"
 	moduleOriginal      = "example.com/original"
+	go125Line           = "go 1.25"
 	requirePrefix       = "require "
 	replacePrefix       = "replace "
 	versionV160         = " v1.6.0"
-	go125Block          = "\n\ngo 1.25\n"
+	go125Block          = "\n\n" + go125Line + "\n"
 	errSymlinkFmt       = "symlink not supported: %v"
 	importLoLine        = "import \"github.com/samber/lo\""
 	packageMainLine     = "package main"
@@ -208,7 +209,7 @@ func TestParseImportsSkipsStdlibAndLocal(t *testing.T) {
 
 func TestAdapterDetectWithGoWorkRoots(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse (\n\t./services/api\n)\n")
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse (\n\t./services/api\n)\n")
 	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), "module example.com/api"+go125Block)
 	writeFile(t, filepath.Join(repo, "services", "api", fileMainGo), mainNoopProgram)
 
@@ -441,7 +442,7 @@ func TestLoadRootModuleInfoContract(t *testing.T) {
 		requirePrefix + depUUID + versionV160,
 		replacePrefix + moduleOriginal + " => github.com/fork/original v1.0.0",
 		"",
-		"go 1.25",
+		go125Line,
 	}
 	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join(rootGoModLines, "\n"))
 
@@ -473,7 +474,7 @@ func TestLoadRootModuleInfoContract(t *testing.T) {
 func TestLoadWorkspaceModulesContract(t *testing.T) {
 	repo := t.TempDir()
 	goWorkLines := []string{
-		"go 1.25",
+		go125Line,
 		"",
 		"use (",
 		workspaceSvcALine,
@@ -504,7 +505,7 @@ func TestLoadNestedModulesContract(t *testing.T) {
 		requirePrefix + pkgErrorsDependency + " v0.9.1",
 		replacePrefix + "example.com/other => " + sharedForkImport + " v1.1.0",
 		"",
-		"go 1.25",
+		go125Line,
 	}
 	writeFile(t, filepath.Join(repo, "nested", "x", fileGoMod), strings.Join(nestedXGoModLines, "\n"))
 
@@ -631,10 +632,10 @@ func TestLoadGoWorkLocalModulesReadError(t *testing.T) {
 func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
 	repo := t.TempDir()
 	localWorkLines := []string{
-		"go 1.25",
+		go125Line,
 		"",
 		"use (",
-		"\t./svc/a",
+		workspaceSvcALine,
 		"\t./svc/missing",
 		")",
 		"use ./svc/b",
@@ -840,7 +841,7 @@ func TestUseEntriesAndPathNormalization(t *testing.T) {
 
 func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, fileGoMod), "module example.com/root\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, fileGoMod), "module example.com/root\n\n"+go125Line+"\n")
 	writeFile(t, filepath.Join(repo, "sub", fileGoMod), "module example.com/sub\n\nrequire "+depUUID+" v1.6.0\n")
 
 	dirs, err := nestedModuleDirs(repo)
@@ -876,8 +877,8 @@ func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 
 func TestGoRootAndDetectionHelpers(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse ./svc/a\n")
-	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+"\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+"\n\n"+go125Line+"\n")
 
 	roots := map[string]struct{}{}
 	if err := addGoWorkRoots(repo, roots); err != nil {
@@ -890,10 +891,10 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 	repoEscape := t.TempDir()
 	outside := t.TempDir()
 	escapeWorkLines := []string{
-		"go 1.25",
+		go125Line,
 		"",
 		"use (",
-		"\t./svc/a",
+		workspaceSvcALine,
 		"\t../outside",
 		"\t" + outside,
 		")",
@@ -1137,7 +1138,7 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 func TestDetectWithConfidenceCapAndDefaultRepoPath(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemo)
-	writeFile(t, filepath.Join(repo, fileGoWork), "go 1.25\n\nuse ./\n")
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./\n")
 	for i := 0; i < 30; i++ {
 		writeFile(t, filepath.Join(repo, "pkg", "f"+string(rune('a'+(i%26)))+".go"), "package pkg\n")
 	}
@@ -1296,7 +1297,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 
 	workRepo := t.TempDir()
 	outsideGoWork := filepath.Join(outsideDir, "outside.work")
-	writeFile(t, outsideGoWork, "go 1.25\n\nuse ./\n")
+	writeFile(t, outsideGoWork, go125Line+"\n\nuse ./\n")
 	if err := os.Symlink(outsideGoWork, filepath.Join(workRepo, fileGoWork)); err != nil {
 		t.Skipf(errSymlinkFmt, err)
 	}
