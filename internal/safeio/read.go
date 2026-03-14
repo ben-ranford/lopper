@@ -77,7 +77,7 @@ func ReadFile(targetPath string) ([]byte, error) {
 	return io.ReadAll(file)
 }
 
-// OpenFile reads the exact targetPath by opening its parent directory as a root.
+// OpenFile opens the exact targetPath by opening its parent directory as a root.
 func OpenFile(targetPath string) (io.ReadCloser, error) {
 	targetAbs, err := filepath.Abs(targetPath)
 	if err != nil {

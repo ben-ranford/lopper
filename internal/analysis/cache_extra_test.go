@@ -341,7 +341,7 @@ func testAnalysisCacheNewCacheDisabled(t *testing.T) {
 	}
 }
 
-func TestCollectFileRecordWalkError(t *testing.T) {
+func TestCollectRelevantFileWalkError(t *testing.T) {
 	files := make([]cacheRelevantFile, 0)
 	root := t.TempDir()
 	if collectRelevantFile(root, filepath.Join(root, "missing"), nil, errors.New("walk failure"), &files) == nil {
