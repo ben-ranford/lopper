@@ -309,7 +309,6 @@ jobs:
             echo "## Weekly semver release"
             echo
             echo "- Tag: \`${current_tag}\`"
-            echo "- Trigger: scheduled Saturday release"
             echo
             echo "## Container image"
             echo
@@ -320,7 +319,6 @@ jobs:
             echo
             echo "- Marketplace ID: \`BenRanford.vscode-lopper\`"
             echo "- VSIX asset: \`lopper-vscode-${current_tag#v}.vsix\`"
-            echo "- Marketplace publish: automatic for stable semver releases when \`VSCE_PUBLISH\` is configured"
             echo
             echo "---"
             echo

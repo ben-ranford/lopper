@@ -23,7 +23,18 @@ make cov
 make build
 ```
 
-VS Code extension smoke tests:
+## VS Code Extension
+
+The VS Code extension adds editor diagnostics and hover context across supported Lopper adapters, plus safe JS/TS quick fixes on top of the local `lopper` CLI.
+
+- Extension ID: `BenRanford.vscode-lopper`
+- Command: `Lopper: Refresh Diagnostics`
+- Adapter mode: `lopper.language` with `auto` by default. `auto` follows the active or saved editor when possible, including Android Gradle Kotlin/Java modules and merged adapter matches, or you can pin a specific adapter.
+- Supported adapter pins: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `python`, `ruby`, `rust`, `swift`
+- Binary resolution order: `LOPPER_BINARY_PATH`, `lopper.binaryPath`, workspace `bin/lopper`, `PATH`, then managed download from GitHub releases
+- Quick fixes: deterministic JS/TS subpath rewrites when `lopper` reports a safe codemod suggestion
+
+Local extension workflow:
 
 ```bash
 make build
@@ -31,6 +42,8 @@ make vscode-extension-install
 make vscode-extension-test
 make vscode-extension-package
 ```
+
+Extension smoke tests run in GitHub Actions on macOS and Linux with `@vscode/test-electron`.
 
 Refresh terminal demos:
 
