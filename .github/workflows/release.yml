@@ -20,6 +20,7 @@ jobs:
       previous_tag: ${{ steps.tag.outputs.previous_tag }}
       should_release: ${{ steps.tag.outputs.should_release }}
       release_reason: ${{ steps.tag.outputs.release_reason }}
+      is_stable_release: ${{ steps.tag.outputs.is_stable_release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -28,20 +29,34 @@ jobs:
 
       - name: Compute weekly semver tag
         id: tag
+        shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
 
+          package_json_path="extensions/vscode-lopper/package.json"
+          release_floor="$(python3 scripts/read_package_version.py "$package_json_path")"
+          if [[ ! "$release_floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Extension version '$release_floor' is invalid"
+            exit 1
+          fi
+          release_floor_tag="v${release_floor}"
+
           latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1)"
           if [ -z "$latest_tag" ]; then
-            next_tag="v0.1.0"
+            next_tag="$release_floor_tag"
             previous_tag=""
           else
             if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
               major="${BASH_REMATCH[1]}"
               minor="${BASH_REMATCH[2]}"
               patch="${BASH_REMATCH[3]}"
-              next_tag="v${major}.${minor}.$((patch + 1))"
+              bumped_tag="v${major}.${minor}.$((patch + 1))"
+              if [ "$(printf '%s\n%s\n' "$release_floor" "${bumped_tag#v}" | sort -V | tail -n1)" = "$release_floor" ] && [ "$latest_tag" != "$release_floor_tag" ]; then
+                next_tag="$release_floor_tag"
+              else
+                next_tag="$bumped_tag"
+              fi
               previous_tag="$latest_tag"
             else
               echo "Latest semver tag '$latest_tag' is invalid"
@@ -56,10 +71,16 @@ jobs:
 
           should_release="true"
           release_reason="changes_detected"
+          is_stable_release="false"
+          if [[ "$next_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            is_stable_release="true"
+          fi
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             release_reason="manual_dispatch"
           elif [ -z "${previous_tag}" ]; then
             release_reason="initial_release"
+          elif [ "${next_tag}" = "${release_floor_tag}" ] && [ "${previous_tag}" != "${release_floor_tag}" ]; then
+            release_reason="version_alignment"
           elif [ "${commits_since_previous_tag}" = "0" ]; then
             should_release="false"
             release_reason="no_changes"
@@ -69,11 +90,13 @@ jobs:
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
           echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
           echo "release_reason=$release_reason" >> "$GITHUB_OUTPUT"
+          echo "is_stable_release=$is_stable_release" >> "$GITHUB_OUTPUT"
 
       - name: Log release gate decision
         run: |
           echo "Release gate: should_release=${{ steps.tag.outputs.should_release }}"
           echo "Release gate reason: ${{ steps.tag.outputs.release_reason }}"
+          echo "Stable semver release: ${{ steps.tag.outputs.is_stable_release }}"
 
   build-linux-windows:
     needs: prepare
@@ -91,7 +114,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
 
@@ -175,20 +198,20 @@ jobs:
           echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push release image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: .
           file: ./Dockerfile
@@ -200,16 +223,72 @@ jobs:
           provenance: false
           sbom: true
 
+  build-vscode-extension:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extensions/vscode-lopper/package-lock.json
+
+      - name: Build local lopper binary
+        run: make build
+
+      - name: Install extension dependencies
+        run: make vscode-extension-install
+
+      - name: Run VS Code smoke tests
+        run: xvfb-run -a make vscode-extension-test
+
+      - name: Package VS Code extension
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' }}
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version="${RELEASE_TAG#v}"
+          current_version="$(python3 scripts/read_package_version.py extensions/vscode-lopper/package.json)"
+          cd extensions/vscode-lopper
+          if [ "$current_version" != "$version" ]; then
+            npm version "$version" --no-git-tag-version
+          fi
+          npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
+
+      - name: Upload VS Code extension artifact
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-vscode-extension
+          path: dist/*.vsix
+
   publish:
     needs:
       - prepare
       - build-linux-windows
       - build-darwin
       - build-ghcr
+      - build-vscode-extension
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -230,12 +309,16 @@ jobs:
             echo "## Weekly semver release"
             echo
             echo "- Tag: \`${current_tag}\`"
-            echo "- Trigger: scheduled Saturday release"
             echo
             echo "## Container image"
             echo
             echo "- Tagged image: \`${ghcr_ref}\`"
             echo "- Package: [GHCR lopper package](${ghcr_package_url})"
+            echo
+            echo "## VS Code extension"
+            echo
+            echo "- Marketplace ID: \`BenRanford.vscode-lopper\`"
+            echo "- VSIX asset: \`lopper-vscode-${current_tag#v}.vsix\`"
             echo
             echo "---"
             echo
@@ -243,7 +326,7 @@ jobs:
           } > release-changelog.md
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: Release ${{ needs.prepare.outputs.tag }}
@@ -252,6 +335,23 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.vsix
+
+      - name: Setup Node
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Publish VS Code extension to Marketplace
+        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
+        env:
+          VSCE_PAT: ${{ env.VSCE_PUBLISH }}
+        run: |
+          set -euo pipefail
+          vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
+          test -n "$vsix_path"
+          npx --yes @vscode/vsce publish --packagePath "$vsix_path"
 
   update-homebrew-tap:
     needs:
@@ -275,7 +375,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@9926e3be887aa6c9523a027099bf5e882056f5c1
+        uses: Homebrew/actions/setup-homebrew@fb0fe15d936a80ac0ba4c6cee691bc3da3f00f4e
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}

@@ -1,0 +1,36 @@
+name: memory-profiles
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MEM_PROFILE_STAMP: github-${{ github.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Capture watched package memory profiles
+        run: make mem-profiles
+
+      - name: Publish profiling summary
+        run: cat ".artifacts/memory-profiles/${MEM_PROFILE_STAMP}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload profiling artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: memory-profiles-${{ github.run_number }}
+          path: .artifacts/memory-profiles/${{ env.MEM_PROFILE_STAMP }}
+          if-no-files-found: error
+          retention-days: 30

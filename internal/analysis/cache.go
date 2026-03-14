@@ -47,6 +47,17 @@ type analysisCache struct {
 	cacheable bool
 }
 
+type cacheRelevantFile struct {
+	absolutePath string
+	relativePath string
+}
+
+type cacheDigestInput struct {
+	sortKey      string
+	path         string
+	allowMissing bool
+}
+
 func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
 	metadata := report.CacheMetadata{
@@ -246,44 +257,72 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 
 func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
 	rootPath = filepath.Clean(rootPath)
-	records, err := c.collectRelevantFiles(rootPath)
+	files, err := c.collectRelevantFiles(rootPath)
 	if err != nil {
 		return "", err
 	}
 
-	if strings.TrimSpace(configPath) != "" {
-		configDigest, digestErr := hashFileOrMissing(strings.TrimSpace(configPath))
-		if digestErr != nil {
-			return "", digestErr
-		}
-		records = append(records, "config\x00"+filepath.Clean(strings.TrimSpace(configPath))+"\x00"+configDigest)
+	inputs := make([]cacheDigestInput, 0, len(files)+1)
+	for _, file := range files {
+		inputs = append(inputs, cacheDigestInput{
+			sortKey: file.relativePath,
+			path:    file.absolutePath,
+		})
 	}
 
-	sort.Strings(records)
+	if strings.TrimSpace(configPath) != "" {
+		cleanConfigPath := filepath.Clean(strings.TrimSpace(configPath))
+		inputs = append(inputs, cacheDigestInput{
+			sortKey:      "config\x00" + cleanConfigPath,
+			path:         cleanConfigPath,
+			allowMissing: true,
+		})
+	}
+
+	sort.Slice(inputs, func(i, j int) bool {
+		return inputs[i].sortKey < inputs[j].sortKey
+	})
 	hasher := sha256.New()
-	for _, record := range records {
-		if _, err := io.WriteString(hasher, record); err != nil {
-			return "", err
-		}
-		if _, err := io.WriteString(hasher, "\n"); err != nil {
+	for _, input := range inputs {
+		if err := writeInputDigestRecord(hasher, input); err != nil {
 			return "", err
 		}
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func (c *analysisCache) collectRelevantFiles(rootPath string) ([]string, error) {
-	records := make([]string, 0, 128)
+func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {
+	if _, err := io.WriteString(w, input.sortKey); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\x00"); err != nil {
+		return err
+	}
+	if input.allowMissing {
+		if err := writeFileDigestOrMissing(w, input.path); err != nil {
+			return err
+		}
+	} else if err := writeFileDigest(w, input.path); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *analysisCache) collectRelevantFiles(rootPath string) ([]cacheRelevantFile, error) {
+	files := make([]cacheRelevantFile, 0, 128)
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
-		return collectFileRecord(rootPath, path, d, walkErr, &records)
+		return collectRelevantFile(rootPath, path, d, walkErr, &files)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return records, nil
+	return files, nil
 }
 
-func collectFileRecord(rootPath, path string, d fs.DirEntry, walkErr error, records *[]string) error {
+func collectRelevantFile(rootPath, path string, d fs.DirEntry, walkErr error, files *[]cacheRelevantFile) error {
 	if walkErr != nil {
 		return walkErr
 	}
@@ -296,11 +335,11 @@ func collectFileRecord(rootPath, path string, d fs.DirEntry, walkErr error, reco
 	if !shouldHashFile(path, d) {
 		return nil
 	}
-	record, err := buildFileRecord(rootPath, path)
+	record, err := buildRelevantFile(rootPath, path)
 	if err != nil {
 		return err
 	}
-	*records = append(*records, record)
+	*files = append(*files, record)
 	return nil
 }
 
@@ -312,16 +351,23 @@ func shouldHashFile(path string, d fs.DirEntry) bool {
 	return d.Type().IsRegular() && isCacheRelevantFile(path)
 }
 
-func buildFileRecord(rootPath, path string) (string, error) {
+func buildRelevantFile(rootPath, path string) (cacheRelevantFile, error) {
 	rel, err := filepath.Rel(rootPath, path)
 	if err != nil {
-		return "", err
+		return cacheRelevantFile{}, err
 	}
-	digest, err := hashFile(path)
+	return cacheRelevantFile{
+		absolutePath: path,
+		relativePath: filepath.ToSlash(rel),
+	}, nil
+}
+
+func writeFileDigest(w io.Writer, path string) error {
+	digest, err := hashFileDigest(path)
 	if err != nil {
-		return "", err
+		return err
 	}
-	return filepath.ToSlash(rel) + "\x00" + digest, nil
+	return writeHexDigest(w, digest)
 }
 
 func shouldSkipCacheDir(name string) bool {
@@ -355,17 +401,41 @@ func lockOrConfigFile(base string) bool {
 	}
 }
 
+func writeFileDigestOrMissing(w io.Writer, path string) error {
+	digest, err := hashFileDigest(path)
+	if err == nil {
+		return writeHexDigest(w, digest)
+	}
+	if os.IsNotExist(err) {
+		_, writeErr := io.WriteString(w, "missing")
+		return writeErr
+	}
+	return err
+}
+
+func hashFileDigest(path string) ([sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
+	file, err := safeio.OpenFile(path)
+	if err != nil {
+		return digest, err
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	var copyBuffer [32 * 1024]byte
+	if _, err := io.CopyBuffer(hasher, file, copyBuffer[:]); err != nil {
+		return digest, err
+	}
+	hasher.Sum(digest[:0])
+	return digest, nil
+}
+
 func hashFile(path string) (string, error) {
-	data, err := safeio.ReadFile(path)
+	digest, err := hashFileDigest(path)
 	if err != nil {
 		return "", err
 	}
-
-	hasher := sha256.New()
-	if _, err := hasher.Write(data); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	return encodeHexDigest(digest), nil
 }
 
 func hashFileOrMissing(path string) (string, error) {
@@ -390,6 +460,17 @@ func hashJSON(value any) (string, error) {
 func sha256Hex(data []byte) string {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
+}
+
+func encodeHexDigest(digest [sha256.Size]byte) string {
+	return hex.EncodeToString(digest[:])
+}
+
+func writeHexDigest(w io.Writer, digest [sha256.Size]byte) error {
+	var encoded [sha256.Size * 2]byte
+	hex.Encode(encoded[:], digest[:])
+	_, err := w.Write(encoded[:])
+	return err
 }
 
 func writeFileAtomic(path string, data []byte) error {

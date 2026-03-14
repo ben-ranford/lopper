@@ -1,9 +1,11 @@
-.PHONY: format fmt format-check gostyle lint dup-check security test cov build ci demos demos-check release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check gostyle lint dup-check suppression-check security test cov build ci demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
 BIN_DIR ?= bin
 DIST_DIR ?= dist
+VSCODE_EXTENSION_DIR ?= extensions/vscode-lopper
+VSCODE_EXTENSION_PACKAGE_PATH ?= $(DIST_DIR)/vscode-lopper.vsix
 VERSION ?= dev
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_MIN ?= 95
@@ -17,6 +19,11 @@ DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
 DUPLICATION_BASE ?= origin/main
+SUPPRESSION_BASE ?= origin/main
+MEM_PROFILE_DIR ?= .artifacts/memory-profiles
+MEM_PROFILE_PACKAGES ?= ./internal/lang/dotnet ./internal/lang/rust ./internal/analysis ./internal/lang/golang
+MEM_PROFILE_COUNT ?= 1
+MEM_PROFILE_NODECOUNT ?= 20
 HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
@@ -85,6 +92,9 @@ dup-check:
 	echo "New-code duplication: $$pct% (duplicated added lines: $$dup_added / $$added, max: $(DUPLICATION_MAX)%, threshold: $(DUPLICATION_TOKEN_THRESHOLD) tokens, base: $$base_msg)"; \
 	awk -v p="$$pct" 'BEGIN { exit !(p <= $(DUPLICATION_MAX)) }' || (echo "Duplication gate failed: $$pct% > $(DUPLICATION_MAX)%"; exit 1)
 
+suppression-check:
+	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
+
 security:
 	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) ./...
 
@@ -104,13 +114,23 @@ build:
 	mkdir -p $(BIN_DIR)
 	$(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-ci: format-check lint dup-check security test build cov
+ci: format-check lint dup-check suppression-check security test build cov
 
 demos:
 	./scripts/demos/render.sh
 
 demos-check:
 	./scripts/demos/check.sh
+
+mem-profiles:
+	MEM_PROFILE_STAMP="$(MEM_PROFILE_STAMP)" \
+	MEM_PROFILE_DIR="$(MEM_PROFILE_DIR)" \
+	MEM_PROFILE_PACKAGES="$(MEM_PROFILE_PACKAGES)" \
+	MEM_PROFILE_COUNT="$(MEM_PROFILE_COUNT)" \
+	MEM_PROFILE_NODECOUNT="$(MEM_PROFILE_NODECOUNT)" \
+	GO="$(GO)" \
+	GOTOOLCHAIN="$(GO_TOOLCHAIN)" \
+	./scripts/profiling/memory_profiles.sh
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)
@@ -219,3 +239,16 @@ hooks-install:
 hooks-uninstall:
 	@git config --unset core.hooksPath || true
 	@echo "Removed custom core.hooksPath hook configuration"
+
+vscode-extension-install:
+	cd $(VSCODE_EXTENSION_DIR) && npm ci
+
+vscode-extension-compile:
+	cd $(VSCODE_EXTENSION_DIR) && npm run compile
+
+vscode-extension-test:
+	cd $(VSCODE_EXTENSION_DIR) && npm run test:e2e
+
+vscode-extension-package:
+	mkdir -p $(DIST_DIR)
+	cd $(VSCODE_EXTENSION_DIR) && npx @vscode/vsce package --out "../../$(VSCODE_EXTENSION_PACKAGE_PATH)"

@@ -18,14 +18,43 @@ make setup
 make fmt
 make test
 make lint
+make suppression-check
 make cov
 make build
 ```
+
+## VS Code Extension
+
+The VS Code extension adds editor diagnostics and hover context across supported Lopper adapters, plus safe JS/TS quick fixes on top of the local `lopper` CLI.
+
+- Extension ID: `BenRanford.vscode-lopper`
+- Command: `Lopper: Refresh Diagnostics`
+- Adapter mode: `lopper.language` with `auto` by default. `auto` follows the active or saved editor when possible, including Android Gradle Kotlin/Java modules and merged adapter matches, or you can pin a specific adapter.
+- Supported adapter pins: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `python`, `ruby`, `rust`, `swift`
+- Binary resolution order: `LOPPER_BINARY_PATH`, `lopper.binaryPath`, workspace `bin/lopper`, `PATH`, then managed download from GitHub releases
+- Quick fixes: deterministic JS/TS subpath rewrites when `lopper` reports a safe codemod suggestion
+
+Local extension workflow:
+
+```bash
+make build
+make vscode-extension-install
+make vscode-extension-test
+make vscode-extension-package
+```
+
+Extension smoke tests run in GitHub Actions on macOS and Linux with `@vscode/test-electron`.
 
 Refresh terminal demos:
 
 ```bash
 make demos
+```
+
+Capture watched-package memory profiles:
+
+```bash
+make mem-profiles
 ```
 
 ## Workflow
@@ -35,11 +64,23 @@ make demos
 3. Keep commits focused and descriptive.
 4. Open a pull request with clear context, scope, and validation steps.
 
+## Adapter docs checklist
+
+If you add a new language adapter, update the contributor-facing docs and user-facing metadata in the same change:
+
+- `docs/extensibility.md`: add the adapter to `Current adapters` and keep the "Adding a new adapter" checklist current.
+- `internal/cli/usage.go`: update every `--language` list and the supported adapter IDs help text.
+- `extensions/vscode-lopper/package.json`: update `lopper.language` enum values, descriptions, and extension marketplace copy if the adapter changes extension support.
+- `extensions/vscode-lopper/src/languageConfiguration.ts`: update editor inference and auto-refresh behavior for the new adapter.
+- `extensions/vscode-lopper/README.md`: update the extension adapter-mode docs and any pinned adapter lists.
+- `README.md`: update the root supported adapter lists only after the contributor/docs updates above are correct.
+
 ## What to include in PRs
 
 - Problem statement and intended behavior
 - What changed and why
 - Test evidence (`go test ./...`, manual commands, fixtures)
+- Memory-profile evidence for perf-sensitive changes when relevant
 - Backward compatibility notes (if any)
 
 If your change impacts CLI behavior shown in docs, refresh demo GIFs with `make demos` and include regenerated assets.

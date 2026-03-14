@@ -1,6 +1,7 @@
 # Lopper
 [![Release](https://github.com/ben-ranford/lopper/actions/workflows/release.yml/badge.svg)](https://github.com/ben-ranford/lopper/actions/workflows/release.yml)
 [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ben-ranford_lopper&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ben-ranford_lopper)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098ff?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=BenRanford.vscode-lopper)
 
 Lopper is a local-first CLI/TUI for measuring dependency surface area in source repos.
 It compares imported dependencies to actual usage and reports waste, risk cues, and recommendations.
@@ -34,6 +35,14 @@ Run without local install:
 ```bash
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
+
+## Terminal demos
+
+| Demo | What it demonstrates | GIF preview |
+| --- | --- | --- |
+| Quick start ranking | End-to-end `--top` workflow with license, policy, and candidate-score context for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
+| Single dependency deep dive | Focused analysis of one dependency with current usage, license, and scoring context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
+| Baseline gate in CI flow | Baseline comparison with threshold policy and delta summary to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
 
 ## Quick Start
 
@@ -131,14 +140,6 @@ Use a dashboard config file:
 lopper dashboard --config lopper-org.yml --format json
 ```
 
-## Terminal demos
-
-| Demo | What it demonstrates | GIF preview |
-| --- | --- | --- |
-| Quick start ranking | End-to-end `--top` workflow with license, policy, and candidate-score context for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
-| Single dependency deep dive | Focused analysis of one dependency with current usage, license, and scoring context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
-| Baseline gate in CI flow | Baseline comparison with threshold policy and delta summary to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
-
 ## Languages
 
 - Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`
@@ -226,11 +227,13 @@ If `--runtime-trace` points to a missing file, analysis continues with static re
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and commands.
+For watched hotspot packages, run `make mem-profiles` to capture alloc-space summaries before or after performance-sensitive changes.
 
 ## Docs
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
 - Multi-repo dashboard: `docs/dashboard.md`
+- Memory profiling workflow: `docs/memory-profiling.md`
 - SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
 - Runtime trace annotations: `scripts/runtime/`

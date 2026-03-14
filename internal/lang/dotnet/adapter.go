@@ -1,6 +1,7 @@
 package dotnet
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -455,26 +456,40 @@ func parseImports(content []byte, relativePath string, mapper dependencyMapper) 
 		ambiguousByDependency:  make(map[string]int),
 		undeclaredByDependency: make(map[string]int),
 	}
-	lines := strings.Split(string(content), "\n")
 	imports := make([]importBinding, 0)
-
-	for i, raw := range lines {
-		line := stripLineComment(raw)
-		if line == "" {
-			continue
-		}
-		if binding, handled := parseCSharpImportLine(line, raw, relativePath, i+1, mapper, &meta); handled {
-			if binding != nil {
-				imports = append(imports, *binding)
-			}
-			continue
-		}
-		if binding := parseFSharpImportLine(line, raw, relativePath, i+1, mapper, &meta); binding != nil {
+	forEachSourceLine(content, func(lineNo int, raw, line []byte) {
+		if binding := parseImportLine(line, raw, relativePath, lineNo, mapper, &meta); binding != nil {
 			imports = append(imports, *binding)
 		}
-	}
+	})
 
 	return imports, meta
+}
+
+func forEachSourceLine(content []byte, visit func(lineNo int, raw, line []byte)) {
+	for lineNo, start := 1, 0; start <= len(content); lineNo++ {
+		end := start
+		for end < len(content) && content[end] != '\n' {
+			end++
+		}
+		raw := trimTrailingCarriageReturn(content[start:end])
+		visit(lineNo, raw, stripLineCommentBytes(raw))
+		if end == len(content) {
+			break
+		}
+		start = end + 1
+	}
+}
+
+func parseImportLine(line, raw []byte, relativePath string, lineNo int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
+	if len(line) == 0 {
+		return nil
+	}
+	column := firstContentColumnBytes(raw)
+	if binding, handled := parseCSharpImportLine(line, relativePath, lineNo, column, mapper, meta); handled {
+		return binding
+	}
+	return parseFSharpImportLine(line, relativePath, lineNo, column, mapper, meta)
 }
 
 type repoScanner struct {
@@ -631,8 +646,8 @@ func sortedDependencies(set map[string]struct{}) []string {
 	return dependencies
 }
 
-func parseCSharpImportLine(line, raw, relativePath string, lineNumber int, mapper dependencyMapper, meta *mappingMetadata) (*importBinding, bool) {
-	module, alias, ok := parseCSharpUsing(line)
+func parseCSharpImportLine(line []byte, relativePath string, lineNumber, column int, mapper dependencyMapper, meta *mappingMetadata) (*importBinding, bool) {
+	module, alias, ok := parseCSharpUsingBytes(line)
 	if !ok {
 		return nil, false
 	}
@@ -648,7 +663,7 @@ func parseCSharpImportLine(line, raw, relativePath string, lineNumber int, mappe
 			wildcard:     true,
 			relativePath: relativePath,
 			lineNumber:   lineNumber,
-			raw:          raw,
+			column:       column,
 		})
 		return &binding, true
 	}
@@ -659,13 +674,13 @@ func parseCSharpImportLine(line, raw, relativePath string, lineNumber int, mappe
 		local:        alias,
 		relativePath: relativePath,
 		lineNumber:   lineNumber,
-		raw:          raw,
+		column:       column,
 	})
 	return &binding, true
 }
 
-func parseFSharpImportLine(line, raw, relativePath string, lineNumber int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
-	module, ok := parseFSharpOpen(line)
+func parseFSharpImportLine(line []byte, relativePath string, lineNumber, column int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
+	module, ok := parseFSharpOpenBytes(line)
 	if !ok {
 		return nil
 	}
@@ -680,7 +695,7 @@ func parseFSharpImportLine(line, raw, relativePath string, lineNumber int, mappe
 		wildcard:     true,
 		relativePath: relativePath,
 		lineNumber:   lineNumber,
-		raw:          raw,
+		column:       column,
 	})
 	return &binding
 }
@@ -707,7 +722,7 @@ type importBindingArgs struct {
 	wildcard     bool
 	relativePath string
 	lineNumber   int
-	raw          string
+	column       int
 }
 
 func buildImportBinding(args importBindingArgs) importBinding {
@@ -720,45 +735,106 @@ func buildImportBinding(args importBindingArgs) importBinding {
 		Location: report.Location{
 			File:   args.relativePath,
 			Line:   args.lineNumber,
-			Column: shared.FirstContentColumn(args.raw),
+			Column: args.column,
 		},
 	}
 }
 
 func parseCSharpUsing(line string) (module string, alias string, ok bool) {
-	matches := csharpUsingPattern.FindStringSubmatch(line)
-	if len(matches) != 2 {
-		return "", "", false
-	}
-	expression := strings.TrimSpace(matches[1])
-	if expression == "" {
-		return "", "", false
-	}
-	if strings.Contains(expression, "=") {
-		parts := strings.SplitN(expression, "=", 2)
-		if len(parts) != 2 {
-			return "", "", false
-		}
-		alias = strings.TrimSpace(parts[0])
-		module = strings.TrimSpace(parts[1])
-		return normalizeNamespace(module), alias, true
-	}
-	return normalizeNamespace(expression), "", true
+	return parseCSharpUsingBytes([]byte(line))
 }
 
 func parseFSharpOpen(line string) (module string, ok bool) {
-	matches := fsharpOpenPattern.FindStringSubmatch(line)
-	if len(matches) != 2 {
-		return "", false
-	}
-	module = normalizeNamespace(matches[1])
-	return module, module != ""
+	return parseFSharpOpenBytes([]byte(line))
 }
 
 func normalizeNamespace(module string) string {
 	module = strings.TrimSpace(module)
 	module = strings.TrimPrefix(module, "global::")
 	return module
+}
+
+func parseCSharpUsingBytes(line []byte) (module string, alias string, ok bool) {
+	line = bytes.TrimSpace(line)
+	if next, matched := consumeKeyword(line, "global"); matched {
+		line = next
+	}
+	next, matched := consumeKeyword(line, "using")
+	if !matched {
+		return "", "", false
+	}
+	line = next
+	if next, matched = consumeKeyword(line, "static"); matched {
+		line = next
+	}
+	end := bytes.IndexByte(line, ';')
+	if end < 0 {
+		return "", "", false
+	}
+	expression := bytes.TrimSpace(line[:end])
+	if len(expression) == 0 {
+		return "", "", false
+	}
+	if split := bytes.IndexByte(expression, '='); split >= 0 {
+		alias = string(bytes.TrimSpace(expression[:split]))
+		module = normalizeNamespace(string(bytes.TrimSpace(expression[split+1:])))
+		if alias == "" || module == "" {
+			return "", "", false
+		}
+		return module, alias, true
+	}
+	module = normalizeNamespace(string(expression))
+	return module, "", module != ""
+}
+
+func parseFSharpOpenBytes(line []byte) (module string, ok bool) {
+	line = bytes.TrimSpace(line)
+	next, matched := consumeKeyword(line, "open")
+	if !matched || len(next) == 0 || !isNamespaceStartByte(next[0]) {
+		return "", false
+	}
+	end := 1
+	for end < len(next) && isNamespaceByte(next[end]) {
+		end++
+	}
+	module = normalizeNamespace(string(next[:end]))
+	return module, module != ""
+}
+
+func consumeKeyword(line []byte, keyword string) ([]byte, bool) {
+	if !hasBytesPrefix(line, keyword) || len(line) <= len(keyword) || !isSpaceByte(line[len(keyword)]) {
+		return nil, false
+	}
+	return bytes.TrimSpace(line[len(keyword):]), true
+}
+
+func hasBytesPrefix(line []byte, prefix string) bool {
+	if len(line) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if line[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func isSpaceByte(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func isNamespaceStartByte(ch byte) bool {
+	return ch == '_' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+}
+
+func isNamespaceByte(ch byte) bool {
+	return isNamespaceStartByte(ch) || ch == '.' || (ch >= '0' && ch <= '9')
 }
 
 func shouldSkipDir(name string) bool {
@@ -799,12 +875,40 @@ func stripLineComment(line string) string {
 	return strings.TrimSpace(line)
 }
 
+func stripLineCommentBytes(line []byte) []byte {
+	for i := 0; i+1 < len(line); i++ {
+		if line[i] == '/' && line[i+1] == '/' {
+			line = line[:i]
+			break
+		}
+	}
+	return bytes.TrimSpace(line)
+}
+
+func trimTrailingCarriageReturn(line []byte) []byte {
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		return line[:len(line)-1]
+	}
+	return line
+}
+
+func firstContentColumnBytes(line []byte) int {
+	for i := 0; i < len(line); i++ {
+		if line[i] != ' ' && line[i] != '\t' {
+			return i + 1
+		}
+	}
+	return 1
+}
+
 func lastSegment(value string) string {
 	if value == "" {
 		return ""
 	}
-	parts := strings.Split(value, ".")
-	return strings.TrimSpace(parts[len(parts)-1])
+	if index := strings.LastIndexByte(value, '.'); index >= 0 {
+		return strings.TrimSpace(value[index+1:])
+	}
+	return strings.TrimSpace(value)
 }
 
 func normalizeDependencyID(value string) string {
@@ -812,16 +916,32 @@ func normalizeDependencyID(value string) string {
 }
 
 type dependencyMapper struct {
-	declared []string
+	declared []declaredDependency
 }
 
 func newDependencyMapper(declared []string) dependencyMapper {
-	return dependencyMapper{declared: declared}
+	items := make([]declaredDependency, 0, len(declared))
+	for _, dependency := range declared {
+		id := normalizeDependencyID(dependency)
+		if id == "" {
+			continue
+		}
+		items = append(items, declaredDependency{
+			id:       id,
+			segments: splitNamespace(id),
+		})
+	}
+	return dependencyMapper{declared: items}
 }
 
-type dependencyCandidate struct {
-	id    string
-	score int
+type declaredDependency struct {
+	id       string
+	segments namespaceSegments
+}
+
+type namespaceSegments struct {
+	first string
+	last  string
 }
 
 func (m *dependencyMapper) resolve(module string) (dependency string, ambiguous bool, undeclared bool) {
@@ -829,57 +949,66 @@ func (m *dependencyMapper) resolve(module string) (dependency string, ambiguous 
 	if module == "" {
 		return "", false, false
 	}
-	if strings.HasPrefix(strings.ToLower(module), "system.") || strings.EqualFold(module, "system") {
+	moduleID := normalizeDependencyID(module)
+	if moduleID == "system" || strings.HasPrefix(moduleID, "system.") {
 		return "", false, false
 	}
-
-	moduleID := normalizeDependencyID(module)
-	candidates := make([]dependencyCandidate, 0)
+	moduleSegments := splitNamespace(moduleID)
+	bestID := ""
+	bestScore := 0
+	bestMatches := 0
 	for _, dep := range m.declared {
-		score := matchScore(moduleID, dep)
-		if score > 0 {
-			candidates = append(candidates, dependencyCandidate{id: dep, score: score})
+		score := matchScoreWithSegments(moduleID, dep.id, moduleSegments, dep.segments)
+		if score == 0 {
+			continue
+		}
+		switch {
+		case score > bestScore:
+			bestScore = score
+			bestID = dep.id
+			bestMatches = 1
+		case score == bestScore:
+			bestMatches++
+			if bestID == "" || dep.id < bestID {
+				bestID = dep.id
+			}
 		}
 	}
-	if len(candidates) == 0 {
-		return fallbackDependency(moduleID), false, true
+	if bestScore == 0 {
+		return fallbackDependencyID(moduleID), false, true
 	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].score == candidates[j].score {
-			return candidates[i].id < candidates[j].id
-		}
-		return candidates[i].score > candidates[j].score
-	})
-	if len(candidates) > 1 && candidates[0].score == candidates[1].score {
-		return candidates[0].id, true, false
-	}
-	return candidates[0].id, false, false
+	return bestID, bestMatches > 1, false
 }
 
 func matchScore(module, dependency string) int {
+	return matchScoreWithSegments(module, dependency, splitNamespace(module), splitNamespace(dependency))
+}
+
+func matchScoreWithSegments(module, dependency string, moduleSegments, dependencySegments namespaceSegments) int {
 	if module == dependency {
 		return 100
 	}
-	if strings.HasPrefix(module, dependency+".") {
+	if hasDottedPrefix(module, dependency) {
 		return 90
 	}
-	if strings.HasPrefix(dependency, module+".") {
+	if hasDottedPrefix(dependency, module) {
 		return 75
 	}
 
-	moduleFirst := firstSegment(module)
-	dependencyFirst := firstSegment(dependency)
-	if moduleFirst != "" && moduleFirst == dependencyFirst {
+	if moduleSegments.first != "" && moduleSegments.first == dependencySegments.first {
 		return 60
 	}
-	if lastSegment(module) == lastSegment(dependency) && lastSegment(module) != "" {
+	if moduleSegments.last != "" && moduleSegments.last == dependencySegments.last {
 		return 50
 	}
 	if strings.Contains(module, dependency) || strings.Contains(dependency, module) {
 		return 40
 	}
 	return 0
+}
+
+func hasDottedPrefix(value, prefix string) bool {
+	return prefix != "" && len(value) > len(prefix) && strings.HasPrefix(value, prefix) && value[len(prefix)] == '.'
 }
 
 func isProjectManifestName(lowerName string) bool {
@@ -895,16 +1024,39 @@ func isSourceFileName(lowerName string) bool {
 }
 
 func fallbackDependency(module string) string {
-	segments := strings.Split(module, ".")
-	if len(segments) > 1 {
-		return strings.ToLower(strings.Join(segments[:2], "."))
+	return fallbackDependencyID(normalizeDependencyID(module))
+}
+
+func fallbackDependencyID(moduleID string) string {
+	if moduleID == "" {
+		return ""
 	}
-	return strings.ToLower(segments[0])
+	firstDot := strings.IndexByte(moduleID, '.')
+	if firstDot < 0 {
+		return moduleID
+	}
+	secondDot := strings.IndexByte(moduleID[firstDot+1:], '.')
+	if secondDot < 0 {
+		return moduleID
+	}
+	return moduleID[:firstDot+1+secondDot]
 }
 
 func firstSegment(value string) string {
-	parts := strings.Split(value, ".")
-	return parts[0]
+	if value == "" {
+		return ""
+	}
+	if index := strings.IndexByte(value, '.'); index >= 0 {
+		return value[:index]
+	}
+	return value
+}
+
+func splitNamespace(value string) namespaceSegments {
+	return namespaceSegments{
+		first: firstSegment(value),
+		last:  lastSegment(value),
+	}
 }
 
 func addSolutionRoots(repoPath string, solutionPath string, roots map[string]struct{}) error {
@@ -950,7 +1102,5 @@ func isRepoBoundedPath(repoPath, candidatePath string) bool {
 var (
 	packageReferencePattern = regexp.MustCompile(`(?is)<PackageReference\b[^>]*\bInclude\s*=\s*["']([^"']+)["']`)
 	packageVersionPattern   = regexp.MustCompile(`(?is)<PackageVersion\b[^>]*\bInclude\s*=\s*["']([^"']+)["']`)
-	csharpUsingPattern      = regexp.MustCompile(`^\s*(?:global\s+)?using\s+(?:static\s+)?([^;]+);`)
-	fsharpOpenPattern       = regexp.MustCompile(`^\s*open\s+([A-Za-z_][A-Za-z0-9_\.]*)`)
 	solutionProjectPattern  = regexp.MustCompile(`Project\([^\)]*\)\s*=\s*"[^"]+"\s*,\s*"([^"]+\.(?:csproj|fsproj))"`)
 )

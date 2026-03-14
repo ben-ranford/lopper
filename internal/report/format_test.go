@@ -104,6 +104,51 @@ func TestFormatJSON(t *testing.T) {
 	assertOutputContains(t, output, "repoPath")
 }
 
+func TestFormatTableIncludesCodemodApplySummary(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "lodash",
+				UsedExportsCount:  1,
+				TotalExportsCount: 1,
+				UsedPercent:       100,
+				Codemod: &CodemodReport{
+					Mode: "apply",
+					Apply: &CodemodApplyReport{
+						AppliedFiles:   1,
+						AppliedPatches: 2,
+						SkippedFiles:   1,
+						SkippedPatches: 1,
+						FailedFiles:    1,
+						FailedPatches:  1,
+						BackupPath:     ".artifacts/lopper-codemod-backups/lodash.json",
+						Results: []CodemodApplyResult{
+							{File: "src/index.js", Status: "applied", PatchCount: 2},
+							{File: "src/unsafe.js", Status: "skipped", PatchCount: 1, Message: "reason codes: alias-conflict"},
+							{File: "src/bad.js", Status: "failed", PatchCount: 1, Message: "source line mismatch at src/bad.js:1"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	expected := []string{
+		"Codemod apply:",
+		"dependency: lodash",
+		"applied: 1 file(s), 2 patch(es)",
+		"skipped: 1 file(s), 1 patch(es)",
+		"failed: 1 file(s), 1 patch(es)",
+		"backup: .artifacts/lopper-codemod-backups/lodash.json",
+		"applied src/index.js (2 patch(es))",
+	}
+	assertOutputContains(t, output, expected...)
+}
+
 func TestFormatSARIF(t *testing.T) {
 	reportData := sampleSARIFReport()
 
@@ -360,6 +405,18 @@ func TestFormatCandidateFields(t *testing.T) {
 	}
 }
 
+func TestFormatReachabilityConfidence(t *testing.T) {
+	if got := formatReachabilityConfidence(nil); got != "-" {
+		t.Fatalf("expected nil reachability confidence to render as -, got %q", got)
+	}
+	if got := formatReachabilityConfidence(&ReachabilityConfidence{Score: 83.2}); got != "83.2" {
+		t.Fatalf("unexpected score-only reachability confidence format: %q", got)
+	}
+	if got := formatReachabilityConfidence(&ReachabilityConfidence{Score: 83.2, Summary: "runtime overlap; export inventory"}); got != "83.2 (runtime overlap; export inventory)" {
+		t.Fatalf("unexpected reachability confidence format: %q", got)
+	}
+}
+
 func TestFormatTopSymbolsSingleCountOmitsCounter(t *testing.T) {
 	if got := formatTopSymbols([]SymbolUsage{{Name: "uniq", Count: 1}}); got != "uniq" {
 		t.Fatalf("expected single-count symbol without annotation, got %q", got)
@@ -373,9 +430,10 @@ func TestFormatTableIncludesSummary(t *testing.T) {
 			UsedExportsCount:  2,
 			TotalExportsCount: 4,
 			UsedPercent:       50,
+			Reachability:      &ReachabilityRollup{Model: reachabilityConfidenceModelV2, AverageScore: 88.2, LowestScore: 88.2, HighestScore: 88.2},
 		},
 		Dependencies: []DependencyReport{
-			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50},
+			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50, ReachabilityConfidence: &ReachabilityConfidence{Score: 88.2, Summary: "runtime overlap; export inventory"}},
 		},
 	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
@@ -384,6 +442,12 @@ func TestFormatTableIncludesSummary(t *testing.T) {
 	}
 	if !strings.Contains(output, "Summary: 1 deps, Used/Total: 2/4 (50.0%)") {
 		t.Fatalf("expected summary header in output, got %q", output)
+	}
+	if !strings.Contains(output, "Reachability confidence: avg=88.2 range=88.2-88.2 (reachability-v2)") {
+		t.Fatalf("expected reachability rollup in output, got %q", output)
+	}
+	if !strings.Contains(output, "Reachability") || !strings.Contains(output, "88.2 (runtime overlap; export inventory)") {
+		t.Fatalf("expected reachability column in output, got %q", output)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 const lockfileDriftWarningPrefix = "lockfile drift detected: "
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
+var execGitCommandContextFn = gitexec.CommandContext
 
 type lockfileRule struct {
 	manager   string
@@ -350,8 +351,10 @@ func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*e
 		return nil, err
 	}
 	commandArgs := append([]string{"-C", repoPath}, args...)
-	// #nosec G204 -- executable path and arguments are fixed by callers.
-	command := exec.CommandContext(ctx, gitPath, commandArgs...)
+	command, err := execGitCommandContextFn(ctx, gitPath, commandArgs...)
+	if err != nil {
+		return nil, err
+	}
 	command.Env = sanitizedGitEnv()
 	return command, nil
 }
