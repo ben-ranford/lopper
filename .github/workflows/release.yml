@@ -29,12 +29,13 @@ jobs:
 
       - name: Compute weekly semver tag
         id: tag
+        shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
 
           package_json_path="extensions/vscode-lopper/package.json"
-          release_floor="$(python3 -c $'import json\nimport sys\n\npath = sys.argv[1]\ntry:\n    with open(path, encoding=\"utf-8\") as handle:\n        package = json.load(handle)\nexcept FileNotFoundError:\n    print(f\"Missing {path}\", file=sys.stderr)\n    sys.exit(1)\nexcept json.JSONDecodeError as exc:\n    print(f\"Invalid JSON in {path}: {exc}\", file=sys.stderr)\n    sys.exit(1)\n\nversion = package.get(\"version\")\nif not isinstance(version, str) or version == \"\":\n    print(f\"Missing string version in {path}\", file=sys.stderr)\n    sys.exit(1)\n\nprint(version)\n' "$package_json_path")"
+          release_floor="$(python3 scripts/read_package_version.py "$package_json_path")"
           if [[ ! "$release_floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Extension version '$release_floor' is invalid"
             exit 1
