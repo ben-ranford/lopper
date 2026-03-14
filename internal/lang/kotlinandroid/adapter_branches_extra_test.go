@@ -148,12 +148,12 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 	detection := language.Detection{}
 	visited := 0
 	androidSpecific := false
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, roots, &detection, &visited, 5, &androidSpecific); !errors.Is(err, filepath.SkipDir) {
+	if err := walkKotlinAndroidDetectionEntry(repo, filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, roots, &detection, &visited, 5, &androidSpecific); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected SkipDir for skipped directory, got %v", err)
 	}
 
 	visited = 5
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testMainSourceFileName), mainEntry, roots, &detection, &visited, 1, &androidSpecific); !errors.Is(err, fs.SkipAll) {
+	if err := walkKotlinAndroidDetectionEntry(repo, filepath.Join(repo, testMainSourceFileName), mainEntry, roots, &detection, &visited, 1, &androidSpecific); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected SkipAll when file cap is exceeded, got %v", err)
 	}
 }
@@ -412,6 +412,9 @@ func TestBuildFileParsingBranches(t *testing.T) {
 	if descriptors[0].Name != "okhttp" || !descriptors[0].FromManifest {
 		t.Fatalf("unexpected parsed descriptor metadata: %#v", descriptors[0])
 	}
+	if _, _, warnings := collectDeclaredDependencies(repo); len(warnings) == 0 {
+		t.Fatalf("expected collectDeclaredDependencies to surface broken build file warnings")
+	}
 	if descriptors := parseBuildFiles(filepath.Join(repo, "missing"), parser, buildGradleName); len(descriptors) != 0 {
 		t.Fatalf("expected empty descriptors when build-file walk path is missing, got %#v", descriptors)
 	}
@@ -431,14 +434,14 @@ func TestAdditionalDetectionHelperBranches(t *testing.T) {
 	androidSpecific := false
 	for _, entry := range entries {
 		if entry.Name() == gradleLockfileName {
-			updateKotlinAndroidDetection(filepath.Join(repo, gradleLockfileName), entry, roots, detection, &androidSpecific)
+			updateKotlinAndroidDetection(repo, filepath.Join(repo, gradleLockfileName), entry, roots, detection, &androidSpecific)
 		}
 	}
 	manifestEntries, err := os.ReadDir(filepath.Join(repo, testManifestFallbackDir))
 	if err != nil {
 		t.Fatalf("readdir %s: %v", testManifestFallbackDir, err)
 	}
-	updateKotlinAndroidDetection(filepath.Join(repo, testManifestFallbackDir, "AndroidManifest.xml"), manifestEntries[0], roots, detection, &androidSpecific)
+	updateKotlinAndroidDetection(repo, filepath.Join(repo, testManifestFallbackDir, "AndroidManifest.xml"), manifestEntries[0], roots, detection, &androidSpecific)
 	if _, ok := roots[filepath.Join(repo, testManifestFallbackDir)]; !ok {
 		t.Fatalf("expected AndroidManifest fallback root to be captured")
 	}

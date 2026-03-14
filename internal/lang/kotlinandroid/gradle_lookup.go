@@ -29,13 +29,13 @@ type dependencyLookups struct {
 }
 
 func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, dependencyLookups, []string) {
-	manifestDescriptors := parseGradleDependencies(repoPath)
+	manifestDescriptors, manifestWarnings := parseGradleDependenciesWithWarnings(repoPath)
 	lockfileDescriptors, hasLockfile, lockWarnings := parseGradleLockfiles(repoPath)
 
 	descriptors := mergeDescriptors(manifestDescriptors, lockfileDescriptors)
 	lookups := buildDescriptorLookups(descriptors)
 	lookups.HasLockfile = hasLockfile
-	return descriptors, lookups, lockWarnings
+	return descriptors, lookups, append(manifestWarnings, lockWarnings...)
 }
 
 func mergeDescriptors(manifest, lockfile []dependencyDescriptor) []dependencyDescriptor {
@@ -196,10 +196,15 @@ var gradleMapInvocationPattern = regexp.MustCompile(`(?ms)\b(?:implementation|ap
 var gradleNamedArgPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*["']([^"']+)["']`)
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
+	descriptors, _ := parseGradleDependenciesWithWarnings(repoPath)
+	return descriptors
+}
+
+func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	parser := func(content string) []dependencyDescriptor {
 		return parseGradleDependencyContent(content)
 	}
-	return parseBuildFiles(repoPath, parser, buildGradleName, buildGradleKTSName)
+	return parseBuildFilesWithWarnings(repoPath, parser, buildGradleName, buildGradleKTSName)
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
@@ -375,6 +380,11 @@ func dedupeDescriptors(descriptors []dependencyDescriptor) []dependencyDescripto
 }
 
 func parseBuildFiles(repoPath string, parser func(content string) []dependencyDescriptor, names ...string) []dependencyDescriptor {
+	descriptors, _ := parseBuildFilesWithWarnings(repoPath, parser, names...)
+	return descriptors
+}
+
+func parseBuildFilesWithWarnings(repoPath string, parser func(content string) []dependencyDescriptor, names ...string) ([]dependencyDescriptor, []string) {
 	collector := buildFileCollector{
 		repoPath: repoPath,
 		parser:   parser,
@@ -383,9 +393,9 @@ func parseBuildFiles(repoPath string, parser func(content string) []dependencyDe
 	}
 	err := filepath.WalkDir(repoPath, collector.visit)
 	if err != nil {
-		return collector.descriptors
+		return collector.descriptors, collector.warnings
 	}
-	return collector.descriptors
+	return collector.descriptors, collector.warnings
 }
 
 type buildFileCollector struct {
@@ -394,6 +404,7 @@ type buildFileCollector struct {
 	names       []string
 	seen        map[string]struct{}
 	descriptors []dependencyDescriptor
+	warnings    []string
 }
 
 func (c *buildFileCollector) visit(path string, entry fs.DirEntry, walkErr error) error {
@@ -411,6 +422,11 @@ func (c *buildFileCollector) visit(path string, entry fs.DirEntry, walkErr error
 	}
 	content, err := safeio.ReadFileUnder(c.repoPath, path)
 	if err != nil {
+		relPath := path
+		if rel, relErr := filepath.Rel(c.repoPath, path); relErr == nil {
+			relPath = rel
+		}
+		c.warnings = append(c.warnings, fmt.Sprintf("unable to read %s: %v", relPath, err))
 		return nil
 	}
 	for _, descriptor := range c.parser(string(content)) {

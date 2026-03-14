@@ -31,7 +31,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return walkKotlinAndroidDetectionEntry(path, entry, roots, &detection, &visited, maxFiles, &androidSpecificSignal)
+		return walkKotlinAndroidDetectionEntry(repoPath, path, entry, roots, &detection, &visited, maxFiles, &androidSpecificSignal)
 	})
 	if err != nil && err != fs.SkipAll {
 		return language.Detection{}, err
@@ -45,7 +45,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int, androidSpecificSignal *bool) error {
+func walkKotlinAndroidDetectionEntry(repoPath string, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int, androidSpecificSignal *bool) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
@@ -56,7 +56,7 @@ func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, roots map[s
 	if *visited > maxFiles {
 		return fs.SkipAll
 	}
-	updateKotlinAndroidDetection(path, entry, roots, detection, androidSpecificSignal)
+	updateKotlinAndroidDetection(repoPath, path, entry, roots, detection, androidSpecificSignal)
 	return nil
 }
 
@@ -71,14 +71,14 @@ func applyKotlinAndroidRootSignals(repoPath string, detection *language.Detectio
 	return shared.ApplyRootSignals(repoPath, signals, detection, roots)
 }
 
-func updateKotlinAndroidDetection(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, androidSpecificSignal *bool) {
+func updateKotlinAndroidDetection(repoPath string, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, androidSpecificSignal *bool) {
 	name := strings.ToLower(entry.Name())
 	switch name {
 	case buildGradleName, buildGradleKTSName:
 		detection.Matched = true
 		detection.Confidence += 12
 		roots[filepath.Dir(path)] = struct{}{}
-		if buildFileSignalsAndroidPlugin(path) {
+		if buildFileSignalsAndroidPlugin(repoPath, path) {
 			markAndroidSpecificDetection(detection, androidSpecificSignal)
 		}
 	case settingsGradleName, settingsGradleKTS:
@@ -116,8 +116,16 @@ func markAndroidSpecificDetection(detection *language.Detection, androidSpecific
 	}
 }
 
-func buildFileSignalsAndroidPlugin(path string) bool {
-	content, err := safeio.ReadFile(path)
+func buildFileSignalsAndroidPlugin(repoPath string, path string) bool {
+	var (
+		content []byte
+		err     error
+	)
+	if strings.TrimSpace(repoPath) != "" {
+		content, err = safeio.ReadFileUnder(repoPath, path)
+	} else {
+		content, err = safeio.ReadFile(path)
+	}
 	if err != nil {
 		return false
 	}

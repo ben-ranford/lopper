@@ -75,7 +75,7 @@ func (s *scanResult) appendInferenceWarnings() {
 		if len(examples) > 3 {
 			examples = examples[:3]
 		}
-		warning := fmt.Sprintf("%d import(s) were conservatively attributed because no declared Gradle mapping matched (examples: %s)", len(s.fallbackModules), strings.Join(examples, "; "))
+		warning := fmt.Sprintf("%d unique module(s) were conservatively attributed because no declared Gradle mapping matched (examples: %s)", len(s.fallbackModules), strings.Join(examples, "; "))
 		s.Warnings = append(s.Warnings, warning)
 	}
 
@@ -97,7 +97,7 @@ func (s *scanResult) appendInferenceWarnings() {
 		if len(examples) > 3 {
 			examples = examples[:3]
 		}
-		warning := fmt.Sprintf("%d import(s) matched multiple Gradle dependencies; deterministic fallback selected first candidate (examples: %s)", len(s.ambiguousModules), strings.Join(examples, "; "))
+		warning := fmt.Sprintf("%d unique module(s) matched multiple Gradle dependencies; deterministic fallback preserved the first-seen candidate (examples: %s)", len(s.ambiguousModules), strings.Join(examples, "; "))
 		s.Warnings = append(s.Warnings, warning)
 	}
 }
