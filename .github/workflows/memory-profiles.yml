@@ -28,7 +28,7 @@ jobs:
         run: cat ".artifacts/memory-profiles/${MEM_PROFILE_STAMP}/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload profiling artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: memory-profiles-${{ github.run_number }}
           path: .artifacts/memory-profiles/${{ env.MEM_PROFILE_STAMP }}

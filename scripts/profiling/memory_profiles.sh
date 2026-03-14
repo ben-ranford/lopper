@@ -42,6 +42,7 @@ summary_index="$RUN_DIR/summary.md"
 for pkg in "${packages[@]}"; do
 	import_path="$("$GO_BIN" list "$pkg")"
 	rel_path="${import_path#${module_path}/}"
+	pprof_pattern="$(printf '%s' "$import_path" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
 	slug="$(printf '%s' "$rel_path" | tr '/.' '__')"
 	profile_file="$RUN_DIR/${slug}.mem.pprof"
 	summary_file="$RUN_DIR/${slug}.alloc-space.txt"
@@ -49,7 +50,7 @@ for pkg in "${packages[@]}"; do
 
 	echo "==> profiling $pkg"
 	"$GO_BIN" test "$pkg" -run "$TEST_PATTERN" -count "$COUNT" -memprofile "$profile_file" 2>&1 | tee "$log_file"
-	"$GO_BIN" tool pprof -sample_index=alloc_space -nodecount "$NODECOUNT" -focus "$import_path" -show "$import_path" -top "$profile_file" >"$summary_file"
+	"$GO_BIN" tool pprof -sample_index=alloc_space -nodecount "$NODECOUNT" -focus "$pprof_pattern" -show "$pprof_pattern" -top "$profile_file" >"$summary_file"
 
 	headline="$(awk '/^Showing nodes accounting for/ {print; exit}' "$summary_file")"
 
