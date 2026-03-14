@@ -1,6 +1,7 @@
 package dotnet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
@@ -21,6 +22,7 @@ const (
 	acmeBarName         = "acme.bar"
 	acmeLoggingName     = "acme.logging"
 	acmeFooSourceImport = "using Acme.Foo;\n"
+	fooBarImportLine    = "using Foo.Bar;"
 )
 
 func TestDetectAndRootSignalBranches(t *testing.T) {
@@ -134,6 +136,77 @@ func TestParsingHelperBranches(t *testing.T) {
 	}
 	if got := lastSegment(""); got != "" {
 		t.Fatalf("lastSegment empty mismatch: %q", got)
+	}
+}
+
+func TestByteCSharpAndFSharpParsingBranches(t *testing.T) {
+	if mod, alias, ok := parseCSharpUsingBytes([]byte(" " + fooBarImportLine + " ")); !ok || mod != "Foo.Bar" || alias != "" {
+		t.Fatalf("expected byte csharp using parse, got mod=%q alias=%q ok=%v", mod, alias, ok)
+	}
+	if _, _, ok := parseCSharpUsingBytes([]byte("using Foo.Bar")); ok {
+		t.Fatalf("expected missing semicolon to fail")
+	}
+	if _, _, ok := parseCSharpUsingBytes([]byte("using Alias = ;")); ok {
+		t.Fatalf("expected empty alias target to fail")
+	}
+	if _, ok := parseFSharpOpenBytes([]byte("open 1Invalid.Namespace")); ok {
+		t.Fatalf("expected invalid fsharp namespace to fail")
+	}
+}
+
+func TestByteWhitespaceAndCommentHelpers(t *testing.T) {
+	if next, ok := consumeKeyword([]byte(fooBarImportLine), "using"); !ok || string(next) != "Foo.Bar;" {
+		t.Fatalf("consumeKeyword mismatch: next=%q ok=%v", next, ok)
+	}
+	if _, ok := consumeKeyword([]byte("using"), "using"); ok {
+		t.Fatalf("expected consumeKeyword to require trailing whitespace")
+	}
+	if !hasBytesPrefix([]byte("using Foo"), "using") || hasBytesPrefix([]byte("use Foo"), "using") {
+		t.Fatalf("unexpected hasBytesPrefix behavior")
+	}
+	if !isSpaceByte('\n') || isSpaceByte('x') {
+		t.Fatalf("unexpected isSpaceByte behavior")
+	}
+	if !bytes.Equal(stripLineCommentBytes([]byte(" "+fooBarImportLine+" // note ")), []byte(fooBarImportLine)) {
+		t.Fatalf("stripLineCommentBytes failed to trim comment")
+	}
+	if !bytes.Equal(stripLineCommentBytes([]byte(" "+fooBarImportLine+" ")), []byte(fooBarImportLine)) {
+		t.Fatalf("stripLineCommentBytes failed to trim whitespace")
+	}
+	if got := string(trimTrailingCarriageReturn([]byte("value\r"))); got != "value" {
+		t.Fatalf("trimTrailingCarriageReturn mismatch: %q", got)
+	}
+	if got := string(trimTrailingCarriageReturn([]byte("value"))); got != "value" {
+		t.Fatalf("trimTrailingCarriageReturn without carriage return mismatch: %q", got)
+	}
+	if got := firstContentColumnBytes([]byte("\t  value")); got != 4 {
+		t.Fatalf("firstContentColumnBytes mismatch: %d", got)
+	}
+	if got := firstContentColumnBytes([]byte("   ")); got != 1 {
+		t.Fatalf("firstContentColumnBytes blank mismatch: %d", got)
+	}
+}
+
+func TestByteDependencyHelperBranches(t *testing.T) {
+	mapper := newDependencyMapper([]string{"Acme.Core", "", "serilog.aspnetcore"})
+	if len(mapper.declared) != 2 || mapper.declared[0].id != "acme.core" {
+		t.Fatalf("unexpected mapper normalization: %#v", mapper.declared)
+	}
+	if got := fallbackDependencyID(""); got != "" {
+		t.Fatalf("fallbackDependencyID empty mismatch: %q", got)
+	}
+	if got := fallbackDependencyID("one.two"); got != "one.two" {
+		t.Fatalf("fallbackDependencyID two segment mismatch: %q", got)
+	}
+	if binding := parseFSharpImportLine([]byte("open System"), programSourceName, 1, 1, mapper, &mappingMetadata{}); binding != nil {
+		t.Fatalf("expected unresolved system open to be ignored, got %#v", binding)
+	}
+}
+
+func TestParseImportsWithCRLFPreservesColumns(t *testing.T) {
+	imports, _ := parseImports([]byte("\t"+fooBarImportLine+"\r\n// comment only\r\n"), programSourceName, newDependencyMapper([]string{"foo.bar"}))
+	if len(imports) != 1 || imports[0].Location.Column != 2 {
+		t.Fatalf("expected CRLF import parse with preserved column, got %#v", imports)
 	}
 }
 
