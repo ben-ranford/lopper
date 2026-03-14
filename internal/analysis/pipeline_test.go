@@ -10,6 +10,16 @@ import (
 )
 
 func TestAnalysisPipelineFinalReportMergedPath(t *testing.T) {
+	got := runMergedFinalReport(t)
+	assertMergedFinalReportMetadata(t, got)
+	assertMergedFinalReportWarnings(t, got)
+	assertMergedFinalReportScope(t, got)
+	assertMergedFinalReportSummary(t, got)
+}
+
+func runMergedFinalReport(t *testing.T) report.Report {
+	t.Helper()
+
 	cache := &analysisCache{
 		metadata: report.CacheMetadata{
 			Enabled: true,
@@ -45,24 +55,45 @@ func TestAnalysisPipelineFinalReportMergedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("final report: %v", err)
 	}
+	return got
+}
+
+func assertMergedFinalReportMetadata(t *testing.T, got report.Report) {
+	t.Helper()
+
 	if got.SchemaVersion != report.SchemaVersion {
 		t.Fatalf("expected schema version %q, got %q", report.SchemaVersion, got.SchemaVersion)
 	}
 	if got.Cache == nil || !got.Cache.Enabled || got.Cache.Hits != 1 {
 		t.Fatalf("expected cache metadata preserved, got %#v", got.Cache)
 	}
+}
+
+func assertMergedFinalReportWarnings(t *testing.T, got report.Report) {
+	t.Helper()
+
 	joinedWarnings := strings.Join(got.Warnings, "\n")
 	for _, want := range []string{"scope warning", "candidate warning", "cache warning"} {
 		if !strings.Contains(joinedWarnings, want) {
 			t.Fatalf("expected warning %q in %q", want, joinedWarnings)
 		}
 	}
+}
+
+func assertMergedFinalReportScope(t *testing.T, got report.Report) {
+	t.Helper()
+
 	if got.Scope == nil || got.Scope.Mode != ScopeModeChangedPackages {
 		t.Fatalf("expected scope metadata, got %#v", got.Scope)
 	}
 	if len(got.Scope.Packages) != 1 || got.Scope.Packages[0] != "packages/a" {
 		t.Fatalf("expected remapped analyzed roots, got %#v", got.Scope.Packages)
 	}
+}
+
+func assertMergedFinalReportSummary(t *testing.T, got report.Report) {
+	t.Helper()
+
 	if got.Summary == nil || got.Summary.DependencyCount != 1 {
 		t.Fatalf("expected computed summary, got %#v", got.Summary)
 	}

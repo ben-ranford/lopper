@@ -34,8 +34,7 @@ func TestRegisterAdaptersBuildsRegistryFromFactories(t *testing.T) {
 }
 
 func TestRegisterAdaptersRejectsNilFactory(t *testing.T) {
-	err := registerAdapters(language.NewRegistry(), []adapterFactory{nil})
-	if !errors.Is(err, errNilAdapterFactory) {
+	if err := registerAdapters(language.NewRegistry(), []adapterFactory{nil}); !errors.Is(err, errNilAdapterFactory) {
 		t.Fatalf("expected nil factory error, got %v", err)
 	}
 }
