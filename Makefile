@@ -6,7 +6,7 @@ BIN_DIR ?= bin
 DIST_DIR ?= dist
 VERSION ?= dev
 COVERAGE_FILE ?= .artifacts/coverage.out
-COVERAGE_MIN ?= 95
+COVERAGE_MIN ?= 98
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.0
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)

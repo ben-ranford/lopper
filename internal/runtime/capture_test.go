@@ -257,6 +257,92 @@ func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+func TestCaptureTracePathSetupErrors(t *testing.T) {
+	t.Run("create trace directory", func(t *testing.T) {
+		repo := t.TempDir()
+		blocker := filepath.Join(repo, "blocked")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write blocker: %v", err)
+		}
+
+		err := Capture(context.Background(), CaptureRequest{
+			RepoPath:  repo,
+			TracePath: filepath.Join(blocker, "runtime.ndjson"),
+			Command:   "make -v",
+		})
+		if err == nil || !strings.Contains(err.Error(), "create runtime trace directory") {
+			t.Fatalf("expected trace directory creation error, got %v", err)
+		}
+	})
+
+	t.Run("remove previous runtime trace", func(t *testing.T) {
+		repo := t.TempDir()
+		tracePath := filepath.Join(repo, "traces", "runtime.ndjson")
+		if err := os.MkdirAll(tracePath, 0o750); err != nil {
+			t.Fatalf("mkdir trace path: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tracePath, "keep.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write trace child: %v", err)
+		}
+
+		err := Capture(context.Background(), CaptureRequest{
+			RepoPath:  repo,
+			TracePath: tracePath,
+			Command:   "make -v",
+		})
+		if err == nil || !strings.Contains(err.Error(), "remove previous runtime trace") {
+			t.Fatalf("expected trace cleanup error, got %v", err)
+		}
+	})
+}
+
+func TestCaptureCommandFailureWithoutOutput(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "make", "#!/bin/sh\nexit 3\n"))
+
+	err := Capture(context.Background(), CaptureRequest{
+		RepoPath: repo,
+		Command:  "make test",
+	})
+	if err == nil {
+		t.Fatalf("expected silent command failure")
+	}
+	if !strings.Contains(err.Error(), "runtime test command failed") {
+		t.Fatalf("expected runtime command failure error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("expected silent failure without command output, got %v", err)
+	}
+}
+
+func TestResolveRuntimeExecutablePathSkipsNonExecutableCandidate(t *testing.T) {
+	firstDir := t.TempDir()
+	secondDir := t.TempDir()
+
+	firstPath := filepath.Join(firstDir, "npm")
+	if err := os.WriteFile(firstPath, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatalf("write non-executable tool: %v", err)
+	}
+	secondPath := filepath.Join(secondDir, "npm")
+	if err := os.WriteFile(secondPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write executable tool: %v", err)
+	}
+
+	got, err := resolveRuntimeExecutablePath("npm", []string{firstDir, secondDir})
+	if err != nil {
+		t.Fatalf("resolve runtime executable path: %v", err)
+	}
+	if got != secondPath {
+		t.Fatalf("expected executable path %q, got %q", secondPath, got)
+	}
+}
+
+func TestNewAllowlistedRuntimeCommandRejectsUnsupportedExecutable(t *testing.T) {
+	if _, err := newAllowlistedRuntimeCommand(context.Background(), "python"); err == nil {
+		t.Fatalf("expected unsupported executable error")
+	}
+}
+
 func TestMergeEnvAndReadEnvValue(t *testing.T) {
 	base := []string{"A=1", "BADENTRY", "NODE_OPTIONS=--max-old-space-size=2048"}
 	merged := mergeEnv(base, map[string]string{"A": "2", "B": "3"})
@@ -294,6 +380,17 @@ func setupFakeRuntimeTools(t *testing.T) string {
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 			t.Fatalf("write fake runtime tool %q: %v", tool, err)
 		}
+	}
+	return toolDir
+}
+
+func setupFakeRuntimeToolScript(t *testing.T, tool string, script string) string {
+	t.Helper()
+
+	toolDir := setupFakeRuntimeTools(t)
+	path := filepath.Join(toolDir, tool)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake runtime tool script %q: %v", tool, err)
 	}
 	return toolDir
 }

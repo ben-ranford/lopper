@@ -184,9 +184,6 @@ func buildFileSignalsAndroidPlugin(path string) bool {
 
 func androidManifestModuleRoot(path string) string {
 	normalized := filepath.ToSlash(filepath.Clean(path))
-	if normalized == "" {
-		return ""
-	}
 	parts := strings.Split(normalized, "/")
 	if len(parts) < 4 {
 		return ""
@@ -212,9 +209,6 @@ func androidManifestModuleRoot(path string) string {
 
 func sourceLayoutModuleRoot(path string) string {
 	normalized := filepath.ToSlash(filepath.Clean(path))
-	if normalized == "" {
-		return ""
-	}
 	parts := strings.Split(normalized, "/")
 	for i := 0; i+2 < len(parts); i++ {
 		if parts[i] != "src" || parts[i+1] != "main" {
@@ -1027,17 +1021,11 @@ func parseGradleMapDependencies(content string) []dependencyDescriptor {
 	matches := gradleMapInvocationPattern.FindAllStringSubmatch(content, -1)
 	descriptors := make([]dependencyDescriptor, 0, len(matches))
 	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
 		args := match[1]
 		group := ""
 		artifact := ""
 		version := ""
 		for _, pair := range gradleNamedArgPattern.FindAllStringSubmatch(args, -1) {
-			if len(pair) != 3 {
-				continue
-			}
 			key := strings.ToLower(strings.TrimSpace(pair[1]))
 			value := strings.TrimSpace(pair[2])
 			switch key {

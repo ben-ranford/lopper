@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -232,10 +231,7 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	}
 
 	pointer := cachePointer{InputDigest: entry.InputDigest, ObjectDigest: objectDigest}
-	serializedPointer, err := json.Marshal(pointer)
-	if err != nil {
-		return err
-	}
+	serializedPointer := serializeCachePointer(pointer)
 	pointerPath := filepath.Join(c.options.Path, "keys", entry.KeyDigest+".json")
 	if err := writeFileAtomic(pointerPath, serializedPointer); err != nil {
 		return err
@@ -260,16 +256,12 @@ func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string,
 	}
 
 	sort.Strings(records)
-	hasher := sha256.New()
-	for _, record := range records {
-		if _, err := io.WriteString(hasher, record); err != nil {
-			return "", err
-		}
-		if _, err := io.WriteString(hasher, "\n"); err != nil {
-			return "", err
-		}
+	payload := strings.Join(records, "\n")
+	if len(records) > 0 {
+		payload += "\n"
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (c *analysisCache) collectRelevantFiles(rootPath string) ([]string, error) {
@@ -360,12 +352,8 @@ func hashFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	hasher := sha256.New()
-	if _, err := hasher.Write(data); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func hashFileOrMissing(path string) (string, error) {
@@ -390,6 +378,10 @@ func hashJSON(value any) (string, error) {
 func sha256Hex(data []byte) string {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
+}
+
+func serializeCachePointer(pointer cachePointer) []byte {
+	return []byte(`{"inputDigest":"` + pointer.InputDigest + `","objectDigest":"` + pointer.ObjectDigest + `"}`)
 }
 
 func writeFileAtomic(path string, data []byte) error {

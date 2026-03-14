@@ -80,6 +80,20 @@ func TestAnnotateRemovalCandidateScoresWithWeights(t *testing.T) {
 	}
 }
 
+func TestDependencyUsageSignalAndRawImpactBranches(t *testing.T) {
+	score, ok := dependencyUsageSignal(DependencyReport{
+		UsedExportsCount:  1,
+		TotalExportsCount: 4,
+	})
+	if !ok || score != 75 {
+		t.Fatalf("expected fallback usage score of 75, got score=%f ok=%v", score, ok)
+	}
+
+	if impact := rawImpact(DependencyReport{UsedExportsCount: 5, TotalExportsCount: 3}); impact != 0 {
+		t.Fatalf("expected raw impact to clamp negative unused exports, got %f", impact)
+	}
+}
+
 func TestNormalizeRemovalCandidateWeightsFallback(t *testing.T) {
 	defaults := DefaultRemovalCandidateWeights()
 	got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: -1, Impact: 0.5, Confidence: 0.5})
@@ -187,5 +201,28 @@ func TestFilterFindingsByConfidence(t *testing.T) {
 	}
 	if len(dep.Recommendations) != 0 {
 		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
+	}
+}
+
+func TestFilterFindingsByConfidenceBypassesAndKeepsMatches(t *testing.T) {
+	deps := []DependencyReport{
+		{
+			UnusedExports: []SymbolRef{
+				{Name: "keep", ConfidenceScore: 90},
+				{Name: "drop", ConfidenceScore: 40},
+			},
+		},
+	}
+
+	FilterFindingsByConfidence(deps, 0)
+	if len(deps[0].UnusedExports) != 2 {
+		t.Fatalf("expected non-positive threshold to leave findings unchanged, got %#v", deps[0].UnusedExports)
+	}
+
+	kept := filterByConfidenceScore(deps[0].UnusedExports, 50, func(item SymbolRef) float64 {
+		return item.ConfidenceScore
+	})
+	if len(kept) != 1 || kept[0].Name != "keep" {
+		t.Fatalf("expected confidence filter to keep only high-confidence items, got %#v", kept)
 	}
 }

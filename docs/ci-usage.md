@@ -52,7 +52,7 @@ If `SONAR_TOKEN` is set, it additionally posts/updates a SonarQube summary comme
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make format-check`: fail if `gofmt` changes are needed
-- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=95`)
+- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=98`)
 - `make ci`: `format-check + lint + dup-check + security + test + build`
 - `make toolchain-check`: verify required cross toolchain binaries
 - `make toolchain-install`: install required OS toolchains (`go`, `zig`) on macOS/Linux
@@ -65,7 +65,7 @@ Coverage artifacts:
 - `.artifacts/coverage-total.txt`: total percentage used by CI gating
 
 On pull requests, if the coverage gate fails, CI posts/updates a PR comment with required vs. actual coverage.
-The 95% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.
+The 98% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.
 
 Cross-compilation uses `zig cc` for CGO targets.
 Current cross-CGO release targets are Linux and Windows.

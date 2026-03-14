@@ -358,7 +358,7 @@ func scopeMetadata(mode, repoPath string, roots []string) *report.ScopeMetadata 
 		if err != nil {
 			continue
 		}
-		if rel == "" {
+		if rel == "." {
 			rel = "."
 		}
 		packages = append(packages, filepath.ToSlash(rel))

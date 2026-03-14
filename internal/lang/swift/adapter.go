@@ -512,13 +512,7 @@ func parseStringFields(expression string) map[string]string {
 	matches := stringFieldPattern.FindAllStringSubmatch(expression, -1)
 	fields := make(map[string]string, len(matches))
 	for _, match := range matches {
-		if len(match) != 3 {
-			continue
-		}
 		key := strings.ToLower(strings.TrimSpace(match[1]))
-		if key == "" {
-			continue
-		}
 		value := match[2]
 		if unquoted, err := strconv.Unquote("\"" + value + "\""); err == nil {
 			value = unquoted
@@ -904,9 +898,6 @@ func parseSwiftImports(content []byte, filePath string) []importBinding {
 			return nil
 		}
 		moduleName := strings.TrimSpace(matches[1])
-		if moduleName == "" {
-			return nil
-		}
 		return []shared.ImportRecord{{
 			Module:   moduleName,
 			Name:     moduleName,
@@ -1160,9 +1151,6 @@ func collectLocalDeclaredSymbols(content []byte) map[string]struct{} {
 		}
 		matches := swiftTypeDeclarationPattern.FindAllStringSubmatch(line, -1)
 		for _, match := range matches {
-			if len(match) != 2 {
-				continue
-			}
 			key := lookupKey(match[1])
 			if key == "" {
 				continue

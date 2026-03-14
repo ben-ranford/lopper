@@ -736,9 +736,6 @@ func parseCSharpUsing(line string) (module string, alias string, ok bool) {
 	}
 	if strings.Contains(expression, "=") {
 		parts := strings.SplitN(expression, "=", 2)
-		if len(parts) != 2 {
-			return "", "", false
-		}
 		alias = strings.TrimSpace(parts[0])
 		module = strings.TrimSpace(parts[1])
 		return normalizeNamespace(module), alias, true

@@ -311,7 +311,7 @@ func loadPackageManifest(repoPath, manifestPath string) (packageManifest, []stri
 		mergeLockDependencyData(dependencies, lockData.Packages, &hasPluginMetadata)
 	} else if os.IsNotExist(statErr) {
 		relRoot, relErr := filepath.Rel(repoPath, root)
-		if relErr != nil || relRoot == "" {
+		if relErr != nil {
 			relRoot = "."
 		}
 		warnings = append(warnings, fmt.Sprintf("pubspec.lock not found in %s; resolved package metadata may be partial", relRoot))
@@ -515,9 +515,6 @@ func collectManifestRoots(manifests []packageManifest) map[string]struct{} {
 	roots := make(map[string]struct{}, len(manifests))
 	for _, manifest := range manifests {
 		root := filepath.Clean(strings.TrimSpace(manifest.Root))
-		if root == "" {
-			continue
-		}
 		roots[root] = struct{}{}
 	}
 	return roots
@@ -667,9 +664,6 @@ func parseImportDirective(line string) (string, string, string, bool) {
 	kind := strings.TrimSpace(strings.ToLower(match[1]))
 	module := strings.TrimSpace(match[2])
 	clause := strings.TrimSpace(match[3])
-	if kind != "import" && kind != "export" {
-		return "", "", "", false
-	}
 	return kind, module, clause, true
 }
 
@@ -729,11 +723,7 @@ func extractAlias(clause string) string {
 	if len(match) != 2 {
 		return ""
 	}
-	alias := strings.TrimSpace(match[1])
-	if !identPattern.MatchString(alias) {
-		return ""
-	}
-	return alias
+	return strings.TrimSpace(match[1])
 }
 
 func parseShowSymbols(clause string) []string {

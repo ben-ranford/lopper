@@ -571,9 +571,6 @@ func parseTomlAssignment(line string) (string, string, bool) {
 func parseInlineFields(value string) map[string]string {
 	fields := make(map[string]string)
 	for _, match := range stringFieldPattern.FindAllStringSubmatch(value, -1) {
-		if len(match) != 3 {
-			continue
-		}
 		key := strings.ToLower(strings.TrimSpace(match[1]))
 		fields[key] = strings.TrimSpace(match[2])
 	}
@@ -1248,9 +1245,6 @@ func uniquePaths(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = filepath.Clean(strings.TrimSpace(value))
-		if value == "" {
-			continue
-		}
 		if _, ok := seen[value]; ok {
 			continue
 		}

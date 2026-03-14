@@ -1,6 +1,7 @@
 package report
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -179,6 +180,29 @@ func TestLoadWithKeySupportsLegacyReportFile(t *testing.T) {
 	}
 }
 
+func TestLoadWithKeySnapshotBackfillsSummaryAndLanguageBreakdown(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "snapshot.json")
+	content := `{"baselineSchemaVersion":"1.0.0","key":"label:manual","savedAt":"2026-01-01T00:00:00Z","report":{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"language":"js-ts","name":"dep","usedExportsCount":1,"totalExportsCount":2,"usedPercent":50}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	rep, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	if key != "label:manual" {
+		t.Fatalf("expected key label:manual, got %q", key)
+	}
+	if rep.Summary == nil || rep.Summary.TotalExportsCount != 2 {
+		t.Fatalf("expected summary to be backfilled, got %#v", rep.Summary)
+	}
+	if len(rep.LanguageBreakdown) != 1 || rep.LanguageBreakdown[0].Language != "js-ts" {
+		t.Fatalf("expected language breakdown to be backfilled, got %#v", rep.LanguageBreakdown)
+	}
+}
+
 func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	current := Report{
 		Dependencies: []DependencyReport{
@@ -260,6 +284,24 @@ func TestComputeBaselineComparisonTracksNewDeniedLicenses(t *testing.T) {
 	}
 }
 
+func TestComputeBaselineComparisonCountsUnchangedRows(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{
+			{Name: "same", Language: "go", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{
+			{Name: "same", Language: "go", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if comparison.UnchangedRows != 1 {
+		t.Fatalf("expected one unchanged row, got %#v", comparison)
+	}
+}
+
 func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "snapshot.json")
@@ -301,6 +343,27 @@ func TestSaveSnapshotMkdirFailure(t *testing.T) {
 	}
 }
 
+func TestSaveSnapshotPermissionAndEncodeErrors(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	protectedDir := filepath.Join(t.TempDir(), "protected")
+	if err := os.MkdirAll(protectedDir, 0o500); err != nil {
+		t.Fatalf("mkdir protected dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(protectedDir, 0o700); err != nil {
+			t.Fatalf("restore protected dir perms: %v", err)
+		}
+	})
+
+	if _, err := SaveSnapshot(protectedDir, "release", Report{Dependencies: []DependencyReport{{Name: "dep", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 2}}}, now); err == nil {
+		t.Fatalf("expected save snapshot to fail when the baseline directory is not writable")
+	}
+
+	if _, err := SaveSnapshot(t.TempDir(), "nan", Report{Summary: &Summary{DependencyCount: 1, UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: math.NaN()}}, now); err == nil {
+		t.Fatalf("expected save snapshot to fail when report JSON encoding fails")
+	}
+}
+
 func TestSaveSnapshotSortsDependenciesDeterministically(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
 	reportData := Report{
@@ -326,6 +389,80 @@ func TestSaveSnapshotSortsDependenciesDeterministically(t *testing.T) {
 	wantOrder := []string{"go/alpha", "go/beta", "python/zeta"}
 	if !slices.Equal(gotOrder, wantOrder) {
 		t.Fatalf("unexpected dependency order: got=%v want=%v", gotOrder, wantOrder)
+	}
+}
+
+func TestBaselineHelperFallbacksAndDeniedSorting(t *testing.T) {
+	if got := sanitizeBaselineKey(""); got != "baseline" {
+		t.Fatalf("expected empty key to fall back to baseline, got %q", got)
+	}
+	if got := sanitizeBaselineKey("!!!"); got != "baseline" {
+		t.Fatalf("expected punctuation-only key to fall back to baseline, got %q", got)
+	}
+	if got := sanitizeBaselineKey(" Release-2026_A "); got != "Release-2026_A" {
+		t.Fatalf("expected alphanumeric key to be preserved, got %q", got)
+	}
+	if got := safeSummaryField(nil, func(s *Summary) int { return s.DependencyCount }); got != 0 {
+		t.Fatalf("expected zero summary field for nil summary, got %d", got)
+	}
+	if got := safeSummaryFloat(nil, func(s *Summary) float64 { return s.UsedPercent }); got != 0 {
+		t.Fatalf("expected zero summary float for nil summary, got %f", got)
+	}
+	if got := wasteFromSummary(nil); got != 0 {
+		t.Fatalf("expected zero waste percent for nil summary, got %f", got)
+	}
+	if got := wasteFromSummary(&Summary{TotalExportsCount: 0}); got != 0 {
+		t.Fatalf("expected zero waste percent for empty summary totals, got %f", got)
+	}
+	if got := wasteFromDependency(DependencyReport{}); got != 0 {
+		t.Fatalf("expected zero waste percent for dependency with no totals, got %f", got)
+	}
+
+	if delta, ok := dependencyDelta(DependencyReport{Name: "same", Language: "go", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}, true, DependencyReport{Name: "same", Language: "go", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}, true); ok || delta != (DependencyDelta{}) {
+		t.Fatalf("expected unchanged dependency delta to be omitted, got %#v ok=%v", delta, ok)
+	}
+
+	current := map[string]DependencyReport{
+		"go\x00b": {
+			Name:     "b",
+			Language: "go",
+			License:  &DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true},
+		},
+		"js-ts\x00a": {
+			Name:     "a",
+			Language: "js-ts",
+			License:  &DependencyLicense{SPDX: "AGPL-3.0-ONLY", Denied: true},
+		},
+	}
+	baseline := map[string]DependencyReport{
+		"go\x00b": {
+			Name:     "b",
+			Language: "go",
+			License:  &DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true},
+		},
+	}
+	got := newlyDeniedLicenses(current, baseline)
+	if len(got) != 1 || got[0].Language != "js-ts" || got[0].Name != "a" {
+		t.Fatalf("expected only newly denied dependency sorted into output, got %#v", got)
+	}
+
+	got = newlyDeniedLicenses(map[string]DependencyReport{"python\x00b": {Name: "b", Language: "python", License: &DependencyLicense{SPDX: "BSD-3-Clause", Denied: true}}, "js-ts\x00z": {Name: "z", Language: "js-ts", License: &DependencyLicense{SPDX: "MIT", Denied: true}}, "js-ts\x00a": {Name: "a", Language: "js-ts", License: &DependencyLicense{SPDX: "Apache-2.0", Denied: true}}}, map[string]DependencyReport{})
+	want := []DeniedLicenseDelta{
+		{Language: "js-ts", Name: "a", SPDX: "Apache-2.0"},
+		{Language: "js-ts", Name: "z", SPDX: "MIT"},
+		{Language: "python", Name: "b", SPDX: "BSD-3-Clause"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected denied license sort order: got=%#v want=%#v", got, want)
+	}
+}
+
+func TestComputeLanguageBreakdownIgnoresDependenciesWithoutLanguage(t *testing.T) {
+	breakdown := ComputeLanguageBreakdown([]DependencyReport{
+		{Name: "dep-without-language", UsedExportsCount: 1, TotalExportsCount: 1},
+	})
+	if len(breakdown) != 0 {
+		t.Fatalf("expected no language breakdown rows for blank language dependencies, got %#v", breakdown)
 	}
 }
 

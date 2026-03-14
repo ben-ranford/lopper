@@ -2,6 +2,7 @@ package elixir
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -155,6 +156,86 @@ func TestResolveWeights(t *testing.T) {
 	}
 }
 
+func TestDetectUmbrellaAppsPathBranches(t *testing.T) {
+	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: []\n")); umbrella || appsPath != "" {
+		t.Fatalf("expected non-umbrella config without apps_path, got umbrella=%v appsPath=%q", umbrella, appsPath)
+	}
+	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: [apps_path: \"   \"]\n")); !umbrella || appsPath != "apps" {
+		t.Fatalf("expected blank apps_path to fall back to apps, got umbrella=%v appsPath=%q", umbrella, appsPath)
+	}
+}
+
+func TestAddUmbrellaRootsAndDependencyFallbacks(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "apps", "api", mixExsName), "defmodule Api.MixProject do\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "apps", "README.md"), "not a mix app\n")
+
+	roots := map[string]struct{}{}
+	if err := addUmbrellaRoots(repo, "apps", roots); err != nil {
+		t.Fatalf("add umbrella roots: %v", err)
+	}
+	if _, ok := roots[filepath.Join(repo, "apps", "api")]; !ok {
+		t.Fatalf("expected api umbrella root, got %#v", roots)
+	}
+	if dep := dependencyFromModule("", map[string]struct{}{"foo-bar": {}}); dep != "" {
+		t.Fatalf("expected empty dependency for empty module, got %q", dep)
+	}
+	if dep := dependencyFromModule("FooBar.Client", map[string]struct{}{"foo-bar": {}}); dep != "foo-bar" {
+		t.Fatalf("expected hyphenated dependency fallback, got %q", dep)
+	}
+}
+
+func TestAddUmbrellaRootsRejectsInvalidGlobPattern(t *testing.T) {
+	if err := addUmbrellaRoots(t.TempDir(), "[", map[string]struct{}{}); err == nil {
+		t.Fatalf("expected invalid glob pattern error")
+	}
+}
+
+func TestDetectFromRootFilesReturnsStatErrorForInvalidRepoPath(t *testing.T) {
+	repoFile := filepath.Join(t.TempDir(), "not-a-dir")
+	testutil.MustWriteFile(t, repoFile, "x")
+
+	_, err := detectFromRootFiles(repoFile, &language.Detection{}, map[string]struct{}{})
+	if err == nil {
+		t.Fatalf("expected detectFromRootFiles to fail for non-directory repo path")
+	}
+}
+
+func TestLineBytesAndParseAliasLocalEdgeCases(t *testing.T) {
+	if got := lineBytes([]byte("alias Foo.Bar\n"), -1); len(got) != 0 {
+		t.Fatalf("expected nil line bytes for negative start, got %q", string(got))
+	}
+	if got := lineBytes([]byte("alias Foo.Bar"), 100); len(got) != 0 {
+		t.Fatalf("expected nil line bytes for out-of-range start, got %q", string(got))
+	}
+	if got := parseAliasLocal([]byte("alias Foo.Bar")); got != "" {
+		t.Fatalf("expected no alias local without as:, got %q", got)
+	}
+}
+
+func TestLoadDeclaredDependenciesReturnsReadErrors(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, mixLockName), 0o755); err != nil {
+		t.Fatalf("mkdir mix.lock: %v", err)
+	}
+
+	if _, err := loadDeclaredDependencies(repo); err == nil {
+		t.Fatalf("expected loadDeclaredDependencies to fail when mix.lock is a directory")
+	}
+}
+
+func TestBuildRequestedDependenciesWarnsWhenDependencyHasNoImports(t *testing.T) {
+	dependencies, warnings := buildRequestedDependencies(language.Request{Dependency: "ecto"}, scanResult{
+		declared: map[string]struct{}{"ecto": {}},
+	})
+	if len(dependencies) != 1 || dependencies[0].Name != "ecto" {
+		t.Fatalf("expected one dependency report, got %#v", dependencies)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "no imports found") {
+		t.Fatalf("expected no-import warning, got %#v", warnings)
+	}
+}
+
 func TestDetectReturnsErrorOnMissingRepo(t *testing.T) {
 	adapter := NewAdapter()
 	matched, err := adapter.Detect(context.Background(), filepath.Join(t.TempDir(), "missing"))
@@ -175,6 +256,64 @@ func TestAnalyseReturnsErrorOnMissingRepo(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected analyse error for missing repo path")
 	}
+}
+
+func TestElixirAdditionalReachableBranches(t *testing.T) {
+	t.Run("detect root file read and walk errors", func(t *testing.T) {
+		repo := t.TempDir()
+		mixExs := filepath.Join(repo, mixExsName)
+		if err := os.WriteFile(mixExs, []byte("defmodule Demo.MixProject do end\n"), 0o000); err != nil {
+			t.Fatalf("write unreadable mix.exs: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(mixExs, 0o600); err != nil {
+				t.Fatalf("restore mix.exs perms: %v", err)
+			}
+		})
+		if _, err := NewAdapter().DetectWithConfidence(context.Background(), repo); err == nil {
+			t.Fatalf("expected unreadable root mix.exs to fail detection")
+		}
+		if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+			t.Fatalf("expected missing repo to fail detection walk")
+		}
+	})
+
+	t.Run("scan repo unreadable source and helper edges", func(t *testing.T) {
+		repo := t.TempDir()
+		unreadable := filepath.Join(repo, "lib", "demo.ex")
+		testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do end\n")
+		if err := os.MkdirAll(filepath.Dir(unreadable), 0o755); err != nil {
+			t.Fatalf("mkdir lib: %v", err)
+		}
+		if err := os.WriteFile(unreadable, []byte("alias Foo.Bar\n"), 0o000); err != nil {
+			t.Fatalf("write unreadable source: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(unreadable, 0o600); err != nil {
+				t.Fatalf("restore unreadable source perms: %v", err)
+			}
+		})
+
+		if _, err := scanElixirRepo(context.Background(), repo, map[string]struct{}{"foo": {}}); err == nil {
+			t.Fatalf("expected unreadable source file to fail scan")
+		}
+		if got := string(lineBytes([]byte("alias Foo.Bar"), 0)); got != "alias Foo.Bar" {
+			t.Fatalf("expected lineBytes without newline to return remaining content, got %q", got)
+		}
+	})
+
+	t.Run("declared dependency read branches", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.Mkdir(filepath.Join(repo, mixExsName), 0o755); err != nil {
+			t.Fatalf("mkdir mix.exs: %v", err)
+		}
+		if _, err := loadDeclaredDependencies(repo); err == nil {
+			t.Fatalf("expected loadDeclaredDependencies to fail when mix.exs is a directory")
+		}
+		if dep := dependencyFromModule("FooBar.Client", map[string]struct{}{"foo-bar": {}}); dep != "foo-bar" {
+			t.Fatalf("expected direct normalized dependency match, got %q", dep)
+		}
+	})
 }
 
 func containsSuffix(values []string, suffix string) bool {

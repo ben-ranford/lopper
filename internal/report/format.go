@@ -57,12 +57,12 @@ func formatTable(report Report) (string, error) {
 	}
 
 	for _, dep := range report.Dependencies {
-		if _, err := fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime)); err != nil {
+		if err := writeTableLine(writer, formatTableRow(dep, showLanguage, showRuntime)); err != nil {
 			return "", err
 		}
 	}
 
-	if err := writer.Flush(); err != nil {
+	if err := flushTableWriter(writer); err != nil {
 		return "", err
 	}
 	appendWarnings(&buffer, report)
@@ -122,8 +122,16 @@ func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime bool) 
 		columns = append(columns, "Runtime")
 	}
 	columns = append(columns, "License", "Provenance", "Est. Unused Size", "Candidate Score", "Score Components", "Top Symbols")
-	_, err := fmt.Fprintln(writer, strings.Join(columns, "\t"))
+	return writeTableLine(writer, strings.Join(columns, "\t"))
+}
+
+func writeTableLine(writer *tabwriter.Writer, line string) error {
+	_, err := fmt.Fprintln(writer, line)
 	return err
+}
+
+func flushTableWriter(writer *tabwriter.Writer) error {
+	return writer.Flush()
 }
 
 func formatTableRow(dep DependencyReport, showLanguage, showRuntime bool) string {
