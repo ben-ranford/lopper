@@ -3,7 +3,7 @@
 This repository includes four GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests and pushes to `main`
-- `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs only when changes exist since the previous stable tag, then runs CI and publishes a GitHub release with:
+- `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs only when changes exist since the previous stable tag, promotes the stable CLI tag to the VS Code extension version when that version is ahead, then runs CI and publishes a GitHub release with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
@@ -75,7 +75,7 @@ For Darwin artifacts, build on a macOS runner with native architecture.
 To build multiple platforms:
 
 ```bash
-make release VERSION=v0.1.0 PLATFORMS="linux/amd64 darwin/arm64 windows/amd64"
+make release VERSION=v1.0.2 PLATFORMS="linux/amd64 darwin/arm64 windows/amd64"
 ```
 
 Install toolchain support with:

@@ -33,16 +33,28 @@ jobs:
           set -euo pipefail
           git fetch --tags --force
 
+          release_floor="$(grep -m1 '"version"' extensions/vscode-lopper/package.json | sed -E 's/.*"version": "([^"]+)".*/\1/')"
+          if [[ ! "$release_floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Extension version '$release_floor' is invalid"
+            exit 1
+          fi
+          release_floor_tag="v${release_floor}"
+
           latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1)"
           if [ -z "$latest_tag" ]; then
-            next_tag="v0.1.0"
+            next_tag="$release_floor_tag"
             previous_tag=""
           else
             if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
               major="${BASH_REMATCH[1]}"
               minor="${BASH_REMATCH[2]}"
               patch="${BASH_REMATCH[3]}"
-              next_tag="v${major}.${minor}.$((patch + 1))"
+              bumped_tag="v${major}.${minor}.$((patch + 1))"
+              if [ "$(printf '%s\n%s\n' "$release_floor" "${bumped_tag#v}" | sort -V | tail -n1)" = "$release_floor" ] && [ "$latest_tag" != "$release_floor_tag" ]; then
+                next_tag="$release_floor_tag"
+              else
+                next_tag="$bumped_tag"
+              fi
               previous_tag="$latest_tag"
             else
               echo "Latest semver tag '$latest_tag' is invalid"
@@ -65,6 +77,8 @@ jobs:
             release_reason="manual_dispatch"
           elif [ -z "${previous_tag}" ]; then
             release_reason="initial_release"
+          elif [ "${next_tag}" = "${release_floor_tag}" ] && [ "${previous_tag}" != "${release_floor_tag}" ]; then
+            release_reason="version_alignment"
           elif [ "${commits_since_previous_tag}" = "0" ]; then
             should_release="false"
             release_reason="no_changes"

@@ -3,6 +3,7 @@
 ## 1.0.2
 
 - Republished the Marketplace package at a new patch version to supersede the earlier `1.0.1` and `1.0.0` extension builds.
+- Aligned the stable CLI release stream so GitHub release executables can publish at `v1.0.2` as well.
 
 ## 1.0.1
 
