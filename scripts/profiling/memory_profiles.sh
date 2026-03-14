@@ -61,7 +61,7 @@ for pkg in "${packages[@]}"; do
 		echo "- Profile: \`${profile_file#$ROOT_DIR/}\`"
 		echo "- Summary: \`${summary_file#$ROOT_DIR/}\`"
 		echo "- Test log: \`${log_file#$ROOT_DIR/}\`"
-		if [ -n "$headline" ]; then
+		if [[ -n "$headline" ]]; then
 			echo "- Snapshot: $headline"
 		fi
 		echo
