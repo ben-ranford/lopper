@@ -1,6 +1,7 @@
 package rust
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -31,6 +32,9 @@ const (
 	unknownCrateID       = "unknown-crate"
 	dirWithManifest      = "dir-with-manifest"
 	workspaceMembersGlob = "crates/*"
+	externCrateSerdeStmt = "extern crate serde"
+	serdeDeserializeStmt = "use serde::de::DeserializeOwned;"
+	pubCrateSerdeStmt    = "pub(crate) use serde::de::DeserializeOwned;"
 )
 
 func TestAdapterIdentityAndDetect(t *testing.T) {
@@ -352,7 +356,7 @@ func TestImportParsingAndResolveWarnings(t *testing.T) {
 	}
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 
-	content := strings.Join([]string{"extern crate serde as serde_alias;", "pub extern crate serde as serde_pub_alias;", "use serde::de::DeserializeOwned;", "pub(crate) use serde::ser::Serialize;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
+	content := strings.Join([]string{"extern crate serde as serde_alias;", "pub extern crate serde as serde_pub_alias;", serdeDeserializeStmt, "pub(crate) use serde::ser::Serialize;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
 
 	extern := parseExternCrateImports(content, srcLibRS, repo, lookup, scan)
 	if len(extern) != 2 || extern[0].Dependency != "serde" || extern[1].Dependency != "serde" {
@@ -365,6 +369,146 @@ func TestImportParsingAndResolveWarnings(t *testing.T) {
 	}
 	if scan.UnresolvedImports[unknownCrateID] == 0 {
 		t.Fatalf("expected unresolved alias tracking, got %#v", scan.UnresolvedImports)
+	}
+}
+
+func TestMatchRustUseStatement(t *testing.T) {
+	if offset, ok := matchRustUseStatement([]byte("use")); !ok || offset != len("use") {
+		t.Fatalf("expected bare use statement match, got offset=%d ok=%v", offset, ok)
+	}
+	if offset, ok := matchRustUseStatement([]byte(serdeDeserializeStmt)); !ok || offset != len("use") {
+		t.Fatalf("expected qualified use statement match, got offset=%d ok=%v", offset, ok)
+	}
+	if _, ok := matchRustUseStatement([]byte("useful::thing")); ok {
+		t.Fatalf("did not expect identifier prefix to match use statement")
+	}
+}
+
+func TestMatchExternCrateStatement(t *testing.T) {
+	if offset, ok := matchExternCrateStatement([]byte(externCrateSerdeStmt)); !ok || offset != len("extern crate") {
+		t.Fatalf("expected extern crate statement match, got offset=%d ok=%v", offset, ok)
+	}
+	if _, ok := matchExternCrateStatement([]byte("external crate serde")); ok {
+		t.Fatalf("did not expect invalid extern crate prefix to match")
+	}
+}
+
+func TestParseExternCrateClauseBytes(t *testing.T) {
+	lookup := map[string]dependencyInfo{"serde": {Canonical: "serde"}}
+
+	binding, ok := parseExternCrateClause([]byte("serde as serde_alias"), srcLibRS, "", lookup, nil, 2, 3)
+	if !ok {
+		t.Fatalf("expected extern crate alias clause to parse")
+	}
+	if binding.Dependency != "serde" || binding.Local != "serde_alias" {
+		t.Fatalf("unexpected extern crate alias binding: %#v", binding)
+	}
+
+	if binding, ok := parseExternCrateClause([]byte("  serde as serde_alias"), srcLibRS, "", lookup, nil, 3, 4); !ok || binding.Local != "serde_alias" {
+		t.Fatalf("expected leading whitespace to be trimmed, got binding=%#v ok=%v", binding, ok)
+	}
+	if _, ok := parseExternCrateClause([]byte("serde trailing"), srcLibRS, "", lookup, nil, 1, 1); ok {
+		t.Fatalf("did not expect malformed extern crate clause to parse")
+	}
+}
+
+func TestParseExternCrateImportsBytesSkipsUseSideEffects(t *testing.T) {
+	lookup := map[string]dependencyInfo{"serde": {Canonical: "serde"}}
+	scan := &scanResult{UnresolvedImports: map[string]int{}}
+
+	extern := parseExternCrateImportsBytes([]byte(externCrateSerdeStmt+";\nuse unknown_crate::Thing;\n"), srcLibRS, "", lookup, scan)
+	if len(extern) != 1 || extern[0].Dependency != "serde" {
+		t.Fatalf("expected extern crate import parse for serde, got %#v", extern)
+	}
+	if len(scan.UnresolvedImports) != 0 {
+		t.Fatalf("did not expect use parsing to mutate unresolved imports, got %#v", scan.UnresolvedImports)
+	}
+}
+
+func TestLineColumnBytesFrom(t *testing.T) {
+	content := []byte("first\n  " + serdeDeserializeStmt + "\n")
+	line, col := lineColumnBytesFrom(content, 1, 0, bytes.Index(content, []byte("serde")))
+	if line != 2 || col != 7 {
+		t.Fatalf("unexpected line/column for serde: %d:%d", line, col)
+	}
+
+	line, col = lineColumnBytesFrom([]byte("abc"), 4, 0, -1)
+	if line != 4 || col != 1 {
+		t.Fatalf("expected negative offset to clamp to base position, got %d:%d", line, col)
+	}
+
+	line, col = lineColumnBytesFrom([]byte("abc"), 4, 0, 99)
+	if line != 4 || col != 4 {
+		t.Fatalf("expected past-end offset to clamp to end-of-line, got %d:%d", line, col)
+	}
+}
+
+func TestParseRustImportStatementBytes(t *testing.T) {
+	content := []byte("extern crate serde as serde_alias;\n" + pubCrateSerdeStmt + "\n")
+
+	kind, stmt, ok := parseRustImportStatement(content, 0, bytes.IndexByte(content, '\n'), 1, true)
+	if !ok || kind != rustImportExternCrate {
+		t.Fatalf("expected extern crate statement parse, got kind=%d ok=%v", kind, ok)
+	}
+	if string(stmt.Clause) != "serde as serde_alias" || stmt.Line != 1 || stmt.Column != 1 {
+		t.Fatalf("unexpected extern crate statement: %#v", stmt)
+	}
+
+	useLineStart := bytes.IndexByte(content, '\n') + 1
+	useLineEnd := len(content) - 1
+	kind, stmt, ok = parseRustImportStatement(content, useLineStart, useLineEnd, 2, true)
+	if !ok || kind != rustImportUse {
+		t.Fatalf("expected use statement parse, got kind=%d ok=%v", kind, ok)
+	}
+	if string(stmt.Clause) != "serde::de::DeserializeOwned" || stmt.Line != 2 || stmt.Column != 16 {
+		t.Fatalf("unexpected use statement: %#v", stmt)
+	}
+}
+
+func TestBuildRustExternCrateStatementRequiresSemicolon(t *testing.T) {
+	if _, ok := buildRustExternCrateStatement([]byte(externCrateSerdeStmt), len(externCrateSerdeStmt), 1, 0, 0, []byte(externCrateSerdeStmt)); ok {
+		t.Fatalf("did not expect extern crate statement without semicolon to parse")
+	}
+}
+
+func TestRustByteScannerEdgeHelpers(t *testing.T) {
+	if got := firstContentByteIndex([]byte(" \t")); got != 2 {
+		t.Fatalf("expected blank line content index to equal length, got %d", got)
+	}
+	if got := skipRustVisibilityPrefix([]byte(pubCrateSerdeStmt)); got != len("pub(crate) ") {
+		t.Fatalf("unexpected visibility prefix offset: %d", got)
+	}
+	if got := skipRustVisibilityPrefix([]byte("public use serde::de::DeserializeOwned;")); got != 0 {
+		t.Fatalf("did not expect non-visibility prefix to be consumed, got %d", got)
+	}
+	if _, ok := matchExternCrateStatement([]byte("extern thing serde")); ok {
+		t.Fatalf("did not expect missing crate keyword to match")
+	}
+	if _, ok := buildRustUseStatement([]byte("use serde::de::DeserializeOwned"), 0, 1, 0, []byte("use serde::de::DeserializeOwned")); ok {
+		t.Fatalf("did not expect use statement without semicolon to parse")
+	}
+	if _, _, ok := consumeRustIdentifier([]byte("9serde")); ok {
+		t.Fatalf("did not expect identifier starting with a digit to parse")
+	}
+
+	content := pubCrateSerdeStmt
+	clauseStart := strings.Index(content, "serde")
+	clauseEnd := strings.Index(content, ";")
+	clause, line, column, ok := parseUseStatementIndex(content, []int{0, len(content), clauseStart, clauseEnd})
+	if !ok || clause != "serde::de::DeserializeOwned" || line != 1 || column != 16 {
+		t.Fatalf("unexpected parseUseStatementIndex result: clause=%q line=%d column=%d ok=%v", clause, line, column, ok)
+	}
+
+	name, local := normalizeUseSymbolNames(usePathEntry{Wildcard: true}, "serde::de")
+	if name != "*" || local != "de" {
+		t.Fatalf("expected wildcard fallback names, got name=%q local=%q", name, local)
+	}
+
+	if _, _, ok := parseRustImportStatement([]byte("pub(crate)   "), 0, len("pub(crate)   "), 1, true); ok {
+		t.Fatalf("did not expect visibility-only line to parse as an import")
+	}
+	if _, _, ok := parseRustImportStatement([]byte(serdeDeserializeStmt), 0, len(serdeDeserializeStmt), 1, false); ok {
+		t.Fatalf("did not expect use statement to parse when use parsing is disabled")
 	}
 }
 
