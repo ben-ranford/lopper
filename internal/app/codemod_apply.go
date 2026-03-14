@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +70,7 @@ func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPat
 		if err != nil {
 			return reportData, fmt.Errorf("write codemod rollback artifact: %w", err)
 		}
-		appliedResults, failedResults = applyPreparedCodemodFiles(prepared, failedResults)
+		appliedResults, failedResults = applyPreparedCodemodFiles(normalizedRepoPath, prepared, failedResults)
 	}
 
 	results := append(skipResults, appliedResults...)
@@ -248,10 +247,10 @@ func applySuggestionsToContent(content string, suggestions []report.CodemodSugge
 	return strings.Join(lines, lineSeparator), nil
 }
 
-func applyPreparedCodemodFiles(prepared []preparedCodemodFile, failures []report.CodemodApplyResult) ([]report.CodemodApplyResult, []report.CodemodApplyResult) {
+func applyPreparedCodemodFiles(repoPath string, prepared []preparedCodemodFile, failures []report.CodemodApplyResult) ([]report.CodemodApplyResult, []report.CodemodApplyResult) {
 	applied := make([]report.CodemodApplyResult, 0, len(prepared))
 	for _, item := range prepared {
-		if err := writeFileAtomically(item.absPath, item.updated, item.mode); err != nil {
+		if err := writeFileAtomically(repoPath, item.absPath, item.updated, item.mode); err != nil {
 			failures = append(failures, report.CodemodApplyResult{
 				File:       item.file,
 				Status:     codemodApplyStatusFailed,
@@ -269,11 +268,16 @@ func applyPreparedCodemodFiles(prepared []preparedCodemodFile, failures []report
 	return applied, failures
 }
 
-func writeCodemodRollbackArtifact(repoPath string, dependency string, prepared []preparedCodemodFile, now time.Time) (string, error) {
+func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []preparedCodemodFile, now time.Time) (string, error) {
 	if len(prepared) == 0 {
 		return "", nil
 	}
-	if err := os.MkdirAll(filepath.Join(repoPath, codemodRollbackDir), 0o750); err != nil {
+	root, err := os.OpenRoot(repoPath)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	if err := root.MkdirAll(codemodRollbackDir, 0o750); err != nil {
 		return "", err
 	}
 
@@ -298,44 +302,14 @@ func writeCodemodRollbackArtifact(repoPath string, dependency string, prepared [
 	if err != nil {
 		return "", err
 	}
-	if err := writeFileAtomically(absPath, string(data)+"\n", 0o600); err != nil {
+	if err := writeFileAtomically(repoPath, absPath, string(data)+"\n", 0o600); err != nil {
 		return "", err
 	}
 	return filepath.ToSlash(relativePath), nil
 }
 
-func writeFileAtomically(path string, content string, mode os.FileMode) (returnErr error) {
-	dir := filepath.Dir(path)
-	tempFile, err := os.CreateTemp(dir, ".lopper-codemod-*")
-	if err != nil {
-		return err
-	}
-	tempPath := tempFile.Name()
-	defer func() {
-		removeErr := os.Remove(tempPath)
-		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && returnErr == nil {
-			returnErr = removeErr
-		}
-	}()
-
-	if _, err := tempFile.WriteString(content); err != nil {
-		closeErr := tempFile.Close()
-		if closeErr != nil {
-			return errors.Join(err, closeErr)
-		}
-		return err
-	}
-	if err := tempFile.Chmod(mode); err != nil {
-		closeErr := tempFile.Close()
-		if closeErr != nil {
-			return errors.Join(err, closeErr)
-		}
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempPath, path)
+func writeFileAtomically(repoPath, path, content string, mode os.FileMode) error {
+	return safeio.WriteFileUnder(repoPath, path, []byte(content), mode)
 }
 
 func resolveCodemodFilePath(repoPath string, relativePath string) (string, error) {
