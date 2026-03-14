@@ -8,9 +8,15 @@ import (
 	"testing"
 )
 
+const (
+	writeTestFileName   = "file.txt"
+	openRootErrFmt      = "open root: %v"
+	closeTempFileErrFmt = "close temp file: %v"
+)
+
 func TestWriteFileUnderWritesFileInsideRoot(t *testing.T) {
 	rootDir := t.TempDir()
-	targetPath := filepath.Join(rootDir, "nested", "file.txt")
+	targetPath := filepath.Join(rootDir, "nested", writeTestFileName)
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		t.Fatalf("create parent dir: %v", err)
 	}
@@ -66,12 +72,12 @@ func TestWriteFileUnderRejectsSymlinkedParentEscapingRoot(t *testing.T) {
 		t.Fatalf("create escaping symlink: %v", err)
 	}
 
-	targetPath := filepath.Join(rootDir, "src", "file.txt")
+	targetPath := filepath.Join(rootDir, "src", writeTestFileName)
 	err := WriteFileUnder(rootDir, targetPath, []byte("secret"), 0o600)
 	if err == nil {
 		t.Fatal("expected symlink escape write to fail")
 	}
-	if _, statErr := os.Stat(filepath.Join(outsideDir, "file.txt")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(outsideDir, writeTestFileName)); !os.IsNotExist(statErr) {
 		t.Fatalf("expected outside file to remain absent, got err=%v", statErr)
 	}
 }
@@ -114,7 +120,7 @@ func TestWriteFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 		t.Fatalf(removeDeadDirFmt, err)
 	}
 
-	err = WriteFileUnder(".", "file.txt", []byte("hello"), 0o600)
+	err = WriteFileUnder(".", writeTestFileName, []byte("hello"), 0o600)
 	if err == nil {
 		t.Fatal("expected root path resolution error")
 	}
@@ -157,7 +163,7 @@ func TestWriteFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 
 func TestWriteFileUnderReturnsErrorForMissingParentDir(t *testing.T) {
 	rootDir := t.TempDir()
-	targetPath := filepath.Join(rootDir, "missing", "file.txt")
+	targetPath := filepath.Join(rootDir, "missing", writeTestFileName)
 
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {
@@ -190,7 +196,7 @@ func TestCreateAtomicTempFileInRootDir(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := os.OpenRoot(rootDir)
 	if err != nil {
-		t.Fatalf("open root: %v", err)
+		t.Fatalf(openRootErrFmt, err)
 	}
 	defer root.Close()
 
@@ -202,7 +208,7 @@ func TestCreateAtomicTempFileInRootDir(t *testing.T) {
 		t.Fatalf("expected root-relative temp file name, got %q", tempRel)
 	}
 	if err := tempFile.Close(); err != nil {
-		t.Fatalf("close temp file: %v", err)
+		t.Fatalf(closeTempFileErrFmt, err)
 	}
 	if err := root.Remove(tempRel); err != nil {
 		t.Fatalf("remove temp file: %v", err)
@@ -213,14 +219,14 @@ func TestCreateAtomicTempFileReturnsErrorForMissingDir(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := os.OpenRoot(rootDir)
 	if err != nil {
-		t.Fatalf("open root: %v", err)
+		t.Fatalf(openRootErrFmt, err)
 	}
 	defer root.Close()
 
 	_, tempFile, err := createAtomicTempFile(root, "missing", 0o600)
 	if tempFile != nil {
 		if closeErr := tempFile.Close(); closeErr != nil {
-			t.Fatalf("close temp file: %v", closeErr)
+			t.Fatalf(closeTempFileErrFmt, closeErr)
 		}
 	}
 	if err == nil {
@@ -232,7 +238,7 @@ func TestCreateAtomicTempFilePropagatesRandomNameError(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := os.OpenRoot(rootDir)
 	if err != nil {
-		t.Fatalf("open root: %v", err)
+		t.Fatalf(openRootErrFmt, err)
 	}
 	defer root.Close()
 
@@ -252,7 +258,7 @@ func TestCreateAtomicTempFileFailsAfterRepeatedCollisions(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := os.OpenRoot(rootDir)
 	if err != nil {
-		t.Fatalf("open root: %v", err)
+		t.Fatalf(openRootErrFmt, err)
 	}
 	defer root.Close()
 	if err := root.WriteFile("fixed", []byte("x"), 0o600); err != nil {
@@ -275,7 +281,7 @@ func TestCleanupAtomicTempFileIgnoresClosedFileAndMissingTempPath(t *testing.T) 
 	rootDir := t.TempDir()
 	root, err := os.OpenRoot(rootDir)
 	if err != nil {
-		t.Fatalf("open root: %v", err)
+		t.Fatalf(openRootErrFmt, err)
 	}
 	defer root.Close()
 
@@ -284,7 +290,7 @@ func TestCleanupAtomicTempFileIgnoresClosedFileAndMissingTempPath(t *testing.T) 
 		t.Fatalf("create temp file: %v", err)
 	}
 	if err := tempFile.Close(); err != nil {
-		t.Fatalf("close temp file: %v", err)
+		t.Fatalf(closeTempFileErrFmt, err)
 	}
 	if err := root.Remove("temp"); err != nil {
 		t.Fatalf("remove temp file: %v", err)
@@ -299,7 +305,7 @@ func TestCleanupAtomicTempFileReturnsRootRemoveError(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := os.OpenRoot(rootDir)
 	if err != nil {
-		t.Fatalf("open root: %v", err)
+		t.Fatalf(openRootErrFmt, err)
 	}
 
 	tempFile, err := root.OpenFile("temp", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
