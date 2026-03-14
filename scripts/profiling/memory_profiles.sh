@@ -20,7 +20,7 @@ export GOFLAGS="${orig_goflags:+$orig_goflags }-buildvcs=false"
 mkdir -p "$RUN_DIR"
 
 IFS=' ' read -r -a packages <<<"$PACKAGES_RAW"
-if [ "${#packages[@]}" -eq 0 ]; then
+if [[ "${#packages[@]}" -eq 0 ]]; then
 	echo "MEM_PROFILE_PACKAGES must include at least one package" >&2
 	exit 1
 fi
