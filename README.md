@@ -36,18 +36,13 @@ Run without local install:
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
 
-VS Code extension:
+## Terminal demos
 
-```bash
-# Install from Marketplace after publish.
-code --install-extension BenRanford.vscode-lopper
-```
-
-VS Code extension from a release `.vsix`:
-
-```bash
-code --install-extension lopper-vscode-<version>.vsix
-```
+| Demo | What it demonstrates | GIF preview |
+| --- | --- | --- |
+| Quick start ranking | End-to-end `--top` workflow with license, policy, and candidate-score context for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
+| Single dependency deep dive | Focused analysis of one dependency with current usage, license, and scoring context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
+| Baseline gate in CI flow | Baseline comparison with threshold policy and delta summary to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
 
 ## Quick Start
 
@@ -80,31 +75,6 @@ Launch the interactive TUI:
 ```bash
 lopper tui --repo . --language all
 ```
-
-## VS Code Extension
-
-The VS Code extension adds editor diagnostics and hover context across supported Lopper adapters, plus safe JS/TS quick fixes on top of the local `lopper` CLI.
-
-- Extension ID: `BenRanford.vscode-lopper`
-- Command: `Lopper: Refresh Diagnostics`
-- Adapter mode: `lopper.language` with `auto` by default. `auto` follows the active or saved editor when possible, including Android Gradle Kotlin/Java modules, `all` merges matching adapters, or you can pin a specific adapter.
-- Supported adapter pins: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `python`, `ruby`, `rust`, `swift`
-- Binary resolution order: `LOPPER_BINARY_PATH`, `lopper.binaryPath`, workspace `bin/lopper`, `PATH`, then managed download from GitHub releases
-- Quick fixes: deterministic JS/TS subpath rewrites when `lopper` reports a safe codemod suggestion
-
-Local extension workflow:
-
-```bash
-make build
-make vscode-extension-install
-make vscode-extension-test
-make vscode-extension-package
-```
-
-CI and release behavior:
-
-- Extension smoke tests run in GitHub Actions on macOS and Linux with `@vscode/test-electron`
-- The release workflow packages a `.vsix`, attaches it to the GitHub release, and publishes to the VS Code Marketplace when `VSCE_PUBLISH` is configured
 
 Tune thresholds and score weights:
 
@@ -169,14 +139,6 @@ Use a dashboard config file:
 ```bash
 lopper dashboard --config lopper-org.yml --format json
 ```
-
-## Terminal demos
-
-| Demo | What it demonstrates | GIF preview |
-| --- | --- | --- |
-| Quick start ranking | End-to-end `--top` workflow with license, policy, and candidate-score context for fast triage. | ![Quick start top ranking demo](docs/demos/assets/quickstart-top.gif) |
-| Single dependency deep dive | Focused analysis of one dependency with current usage, license, and scoring context. | ![Single dependency demo](docs/demos/assets/single-dependency.gif) |
-| Baseline gate in CI flow | Baseline comparison with threshold policy and delta summary to catch regression risk in automated checks. | ![Baseline gating demo](docs/demos/assets/baseline-gate.gif) |
 
 ## Languages
 

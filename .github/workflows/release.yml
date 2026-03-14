@@ -309,7 +309,6 @@ jobs:
             echo "## Weekly semver release"
             echo
             echo "- Tag: \`${current_tag}\`"
-            echo "- Trigger: scheduled Saturday release"
             echo
             echo "## Container image"
             echo
