@@ -59,92 +59,93 @@ func TestLoadConfigOverridesJSON(t *testing.T) {
 	}
 }
 
+func writeConfigFile(t *testing.T, dir string, name string, content string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config %s: %v", name, err)
+	}
+	return path
+}
+
+func requireLoadConfigOverridesError(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := LoadConfigOverrides(path); err == nil {
+		t.Fatalf("expected LoadConfigOverrides(%q) to fail", path)
+	}
+}
+
 func TestLoadConfigOverridesErrors(t *testing.T) {
-	if overrides, err := LoadConfigOverrides(""); err != nil || overrides != (Overrides{}) {
-		t.Fatalf("expected empty path to return empty overrides, got overrides=%#v err=%v", overrides, err)
+	t.Run("empty path returns empty overrides", func(t *testing.T) {
+		if overrides, err := LoadConfigOverrides(""); err != nil || overrides != (Overrides{}) {
+			t.Fatalf("expected empty path to return empty overrides, got overrides=%#v err=%v", overrides, err)
+		}
+	})
+
+	t.Run("missing file fails", func(t *testing.T) {
+		requireLoadConfigOverridesError(t, filepath.Join(t.TempDir(), "missing.yml"))
+	})
+
+	tempDir := t.TempDir()
+	cases := []struct {
+		name    string
+		file    string
+		content string
+	}{
+		{
+			name:    "invalid yaml",
+			file:    ".lopper.yml",
+			content: "notifications: [",
+		},
+		{
+			name:    "invalid global trigger",
+			file:    "invalid-trigger.yml",
+			content: "notifications:\n  on: invalid\n",
+		},
+		{
+			name:    "invalid slack trigger",
+			file:    "invalid-channel.yml",
+			content: "notifications:\n  slack:\n    on: invalid\n",
+		},
+		{
+			name:    "invalid teams trigger",
+			file:    "invalid-teams-trigger.yml",
+			content: "notifications:\n  teams:\n    on: invalid\n",
+		},
+		{
+			name:    "invalid teams webhook",
+			file:    "invalid-webhook.yml",
+			content: "notifications:\n  teams:\n    webhook: hooks.slack.com/services/A/B/SECRET\n",
+		},
+		{
+			name:    "invalid slack webhook",
+			file:    "invalid-slack-webhook.yml",
+			content: "notifications:\n  slack:\n    webhook: outlook.office.com/webhook/SECRET\n",
+		},
+		{
+			name:    "unknown yaml field",
+			file:    "unknown-notifications.yml",
+			content: "notifications:\n  slack:\n    webhok: https://hooks.slack.com/services/A/B/SECRET\n",
+		},
+		{
+			name:    "unknown json field",
+			file:    "unknown-notifications.json",
+			content: `{"notifications":{"teams":{"triger":"always","webhook":"https://outlook.office.com/webhook/JSON"}}}`,
+		},
+		{
+			name:    "invalid json",
+			file:    "invalid.json",
+			content: "{",
+		},
 	}
 
-	if _, err := LoadConfigOverrides(filepath.Join(t.TempDir(), "missing.yml")); err == nil {
-		t.Fatalf("expected missing file error")
-	}
-
-	badPath := filepath.Join(t.TempDir(), ".lopper.yml")
-	if err := os.WriteFile(badPath, []byte("notifications: ["), 0o600); err != nil {
-		t.Fatalf("write bad yaml: %v", err)
-	}
-	if _, err := LoadConfigOverrides(badPath); err == nil {
-		t.Fatalf("expected invalid YAML parse error")
-	}
-
-	invalidTriggerPath := filepath.Join(t.TempDir(), "invalid-trigger.yml")
-	invalidTrigger := "notifications:\n  on: invalid\n"
-	if err := os.WriteFile(invalidTriggerPath, []byte(invalidTrigger), 0o600); err != nil {
-		t.Fatalf("write invalid trigger config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(invalidTriggerPath); err == nil {
-		t.Fatalf("expected invalid notifications.on error")
-	}
-
-	invalidChannelPath := filepath.Join(t.TempDir(), "invalid-channel.yml")
-	invalidChannel := "notifications:\n  slack:\n    on: invalid\n"
-	if err := os.WriteFile(invalidChannelPath, []byte(invalidChannel), 0o600); err != nil {
-		t.Fatalf("write invalid channel config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(invalidChannelPath); err == nil {
-		t.Fatalf("expected invalid notifications.slack.on error")
-	}
-
-	invalidTeamsPath := filepath.Join(t.TempDir(), "invalid-teams-trigger.yml")
-	invalidTeamsValue := "notifications:\n  teams:\n    on: invalid\n"
-	if err := os.WriteFile(invalidTeamsPath, []byte(invalidTeamsValue), 0o600); err != nil {
-		t.Fatalf("write invalid teams trigger config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(invalidTeamsPath); err == nil {
-		t.Fatalf("expected invalid notifications.teams.on error")
-	}
-
-	invalidWebhookPath := filepath.Join(t.TempDir(), "invalid-webhook.yml")
-	invalidWebhook := "notifications:\n  teams:\n    webhook: hooks.slack.com/services/A/B/SECRET\n"
-	if err := os.WriteFile(invalidWebhookPath, []byte(invalidWebhook), 0o600); err != nil {
-		t.Fatalf("write invalid webhook config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(invalidWebhookPath); err == nil {
-		t.Fatalf("expected invalid notifications.teams.webhook error")
-	}
-
-	invalidSlackWebhookPath := filepath.Join(t.TempDir(), "invalid-slack-webhook.yml")
-	invalidSlackWebhook := "notifications:\n  slack:\n    webhook: outlook.office.com/webhook/SECRET\n"
-	if err := os.WriteFile(invalidSlackWebhookPath, []byte(invalidSlackWebhook), 0o600); err != nil {
-		t.Fatalf("write invalid slack webhook config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(invalidSlackWebhookPath); err == nil {
-		t.Fatalf("expected invalid notifications.slack.webhook error")
-	}
-
-	unknownNotificationsFieldPath := filepath.Join(t.TempDir(), "unknown-notifications.yml")
-	unknownNotificationsField := "notifications:\n  slack:\n    webhok: https://hooks.slack.com/services/A/B/SECRET\n"
-	if err := os.WriteFile(unknownNotificationsFieldPath, []byte(unknownNotificationsField), 0o600); err != nil {
-		t.Fatalf("write unknown notifications field config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(unknownNotificationsFieldPath); err == nil {
-		t.Fatalf("expected unknown notifications field parse error")
-	}
-
-	unknownNotificationsFieldJSONPath := filepath.Join(t.TempDir(), "unknown-notifications.json")
-	unknownNotificationsFieldJSON := `{"notifications":{"teams":{"triger":"always","webhook":"https://outlook.office.com/webhook/JSON"}}}`
-	if err := os.WriteFile(unknownNotificationsFieldJSONPath, []byte(unknownNotificationsFieldJSON), 0o600); err != nil {
-		t.Fatalf("write unknown notifications field JSON config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(unknownNotificationsFieldJSONPath); err == nil {
-		t.Fatalf("expected unknown notifications field JSON parse error")
-	}
-
-	invalidJSONPath := filepath.Join(t.TempDir(), "invalid.json")
-	if err := os.WriteFile(invalidJSONPath, []byte("{"), 0o600); err != nil {
-		t.Fatalf("write invalid json config: %v", err)
-	}
-	if _, err := LoadConfigOverrides(invalidJSONPath); err == nil {
-		t.Fatalf("expected invalid JSON parse error")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigFile(t, tempDir, tc.file, tc.content)
+			requireLoadConfigOverridesError(t, path)
+		})
 	}
 }
 
