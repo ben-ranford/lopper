@@ -55,7 +55,7 @@ func TestAdapterIdentityAndDetect(t *testing.T) {
 }
 
 func TestManifestParsingHelpers(t *testing.T) {
-	manifest := strings.Join([]string{"[package]", `name = "demo"`, "", workspaceSection, `members = [`, `  "crates/a",`, `  "crates/b",`, `  "crates/a"`, "]", "", "[dependencies]", fmt.Sprintf(`serde_json = { package = %q, version = "1.0" }`, serdeJSONDep), `local_dep = { path = "./crates/local_dep" }`, "", "[target.'cfg(unix)'.dependencies]", `clap = "4"`, ""}, "\n")
+	manifest := strings.Join([]string{"[package]", `name = "demo"`, "", workspaceSection, `members = [`, `  "crates/a",`, `  "crates/b",`, `  "crates/a"`, "]", "", "[dependencies]", fmt.Sprintf(`serde_json = { package = %q, version = "1.0" }`, serdeJSONDep), `local_dep = { path = "./crates/local_dep" }`, `single_quote_dep = { package = 'serde_json', path = './quoted' }`, "", "[target.'cfg(unix)'.dependencies]", `clap = "4"`, ""}, "\n")
 
 	meta := parseCargoManifestContent(manifest)
 	if !meta.HasPackage {
@@ -72,6 +72,9 @@ func TestManifestParsingHelpers(t *testing.T) {
 	if !deps["local-dep"].LocalPath {
 		t.Fatalf("expected local path dependency handling, got %#v", deps["local-dep"])
 	}
+	if deps["single-quote-dep"].Canonical != serdeJSONDep || !deps["single-quote-dep"].LocalPath {
+		t.Fatalf("expected single-quoted inline field handling, got %#v", deps["single-quote-dep"])
+	}
 	if deps["clap"].Canonical != "clap" {
 		t.Fatalf("expected target dependencies parsing for clap")
 	}
@@ -87,6 +90,10 @@ func TestManifestParsingHelpers(t *testing.T) {
 	fields := parseInlineFields(fmt.Sprintf(`{ package = %q, path = "./x" }`, serdeJSONDep))
 	if fields["package"] != serdeJSONDep || fields["path"] != "./x" {
 		t.Fatalf("unexpected inline fields: %#v", fields)
+	}
+	fields = parseInlineFields(`{ package = 'serde_json', path = './x' }`)
+	if fields["package"] != "serde_json" || fields["path"] != "./x" {
+		t.Fatalf("unexpected single-quoted inline fields: %#v", fields)
 	}
 
 	if got := stripTomlComment(`name = "x#y" # comment`); strings.TrimSpace(got) != `name = "x#y"` {
@@ -345,15 +352,15 @@ func TestImportParsingAndResolveWarnings(t *testing.T) {
 	}
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 
-	content := strings.Join([]string{"extern crate serde as serde_alias;", "use serde::de::DeserializeOwned;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
+	content := strings.Join([]string{"extern crate serde as serde_alias;", "pub extern crate serde as serde_pub_alias;", "use serde::de::DeserializeOwned;", "pub(crate) use serde::ser::Serialize;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
 
 	extern := parseExternCrateImports(content, srcLibRS, repo, lookup, scan)
-	if len(extern) != 1 || extern[0].Dependency != "serde" {
+	if len(extern) != 2 || extern[0].Dependency != "serde" || extern[1].Dependency != "serde" {
 		t.Fatalf("expected extern crate parse for serde, got %#v", extern)
 	}
 
 	imports := parseRustImports(content, srcLibRS, repo, lookup, scan)
-	if len(imports) < 2 {
+	if len(imports) < 4 {
 		t.Fatalf("expected parsed rust imports, got %#v", imports)
 	}
 	if scan.UnresolvedImports[unknownCrateID] == 0 {
@@ -904,7 +911,7 @@ func TestLocalModuleCacheBranches(t *testing.T) {
 
 func TestParseRustImportsWildcardDefaults(t *testing.T) {
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
-	content := "use ::serde::de::*;\n"
+	content := "pub(crate) use ::serde::de::*;\n"
 	imports := parseRustImports(content, srcLibRS, "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
 	if len(imports) != 1 {
 		t.Fatalf("expected one wildcard import, got %#v", imports)
