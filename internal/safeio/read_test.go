@@ -2,6 +2,7 @@ package safeio
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -276,47 +277,30 @@ func TestReadFileUnderRootPathAsTargetReturnsError(t *testing.T) {
 	}
 }
 
-func TestReadFileReadsAbsoluteAndRelativePaths(t *testing.T) {
+func TestPathReadersReadAbsoluteAndRelativePaths(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, "target.txt")
 	if err := os.WriteFile(targetPath, []byte("content"), 0o600); err != nil {
 		t.Fatalf("write target file: %v", err)
 	}
 
-	content, err := ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("ReadFile absolute path: %v", err)
-	}
-	if string(content) != "content" {
-		t.Fatalf("unexpected content from absolute path: %q", string(content))
-	}
-
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf(getwdErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf(restoreWDErrFmt, originalWD, err)
-		}
-	})
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir rootDir: %v", err)
-	}
-
-	content, err = ReadFile("target.txt")
-	if err != nil {
-		t.Fatalf("ReadFile relative path: %v", err)
-	}
-	if string(content) != "content" {
-		t.Fatalf("unexpected content from relative path: %q", string(content))
+	for _, reader := range pathReaders() {
+		t.Run(reader.name, func(t *testing.T) {
+			assertReadContent(t, reader.read, targetPath, "content")
+			withWorkingDir(t, rootDir)
+			assertReadContent(t, reader.read, "target.txt", "content")
+		})
 	}
 }
 
-func TestReadFileReturnsErrorForMissingFile(t *testing.T) {
-	_, err := ReadFile(filepath.Join(t.TempDir(), "missing.txt"))
-	if err == nil {
-		t.Fatal("expected error for missing file")
+func TestPathReadersReturnErrorForMissingFile(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing.txt")
+	for _, reader := range pathReaders() {
+		t.Run(reader.name, func(t *testing.T) {
+			if _, err := reader.read(missingPath); err == nil {
+				t.Fatal("expected error for missing file")
+			}
+		})
 	}
 }
 
@@ -364,5 +348,65 @@ func TestReadFileTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolve target path") && !strings.Contains(err.Error(), "open parent root") {
 		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
+type pathReaderCase struct {
+	name string
+	read func(string) (string, error)
+}
+
+func pathReaders() []pathReaderCase {
+	return []pathReaderCase{
+		{name: "read-file", read: readFileContent},
+		{name: "open-file", read: openFileContent},
+	}
+}
+
+func readFileContent(path string) (string, error) {
+	content, err := ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func openFileContent(path string) (string, error) {
+	file, err := OpenFile(path)
+	if err != nil {
+		return "", err
+	}
+	content, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return "", errors.Join(readErr, closeErr)
+	}
+	return string(content), nil
+}
+
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf(getwdErrFmt, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf(restoreWDErrFmt, originalWD, err)
+		}
+	})
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir %s: %v", dir, err)
+	}
+}
+
+func assertReadContent(t *testing.T, read func(string) (string, error), path, want string) {
+	t.Helper()
+	content, err := read(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if content != want {
+		t.Fatalf("unexpected content from %s: %q", path, content)
 	}
 }
