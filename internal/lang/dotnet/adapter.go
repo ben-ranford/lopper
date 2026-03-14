@@ -457,35 +457,39 @@ func parseImports(content []byte, relativePath string, mapper dependencyMapper) 
 		undeclaredByDependency: make(map[string]int),
 	}
 	imports := make([]importBinding, 0)
+	forEachSourceLine(content, func(lineNo int, raw, line []byte) {
+		if binding := parseImportLine(line, raw, relativePath, lineNo, mapper, &meta); binding != nil {
+			imports = append(imports, *binding)
+		}
+	})
+
+	return imports, meta
+}
+
+func forEachSourceLine(content []byte, visit func(lineNo int, raw, line []byte)) {
 	for lineNo, start := 1, 0; start <= len(content); lineNo++ {
 		end := start
 		for end < len(content) && content[end] != '\n' {
 			end++
 		}
 		raw := trimTrailingCarriageReturn(content[start:end])
-		line := stripLineCommentBytes(raw)
-		if len(line) == 0 {
-			if end == len(content) {
-				break
-			}
-			start = end + 1
-			continue
-		}
-		column := firstContentColumnBytes(raw)
-		if binding, handled := parseCSharpImportLine(line, relativePath, lineNo, column, mapper, &meta); handled {
-			if binding != nil {
-				imports = append(imports, *binding)
-			}
-		} else if binding := parseFSharpImportLine(line, relativePath, lineNo, column, mapper, &meta); binding != nil {
-			imports = append(imports, *binding)
-		}
+		visit(lineNo, raw, stripLineCommentBytes(raw))
 		if end == len(content) {
 			break
 		}
 		start = end + 1
 	}
+}
 
-	return imports, meta
+func parseImportLine(line, raw []byte, relativePath string, lineNo int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
+	if len(line) == 0 {
+		return nil
+	}
+	column := firstContentColumnBytes(raw)
+	if binding, handled := parseCSharpImportLine(line, relativePath, lineNo, column, mapper, meta); handled {
+		return binding
+	}
+	return parseFSharpImportLine(line, relativePath, lineNo, column, mapper, meta)
 }
 
 type repoScanner struct {
