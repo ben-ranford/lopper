@@ -360,6 +360,18 @@ func TestFormatCandidateFields(t *testing.T) {
 	}
 }
 
+func TestFormatReachabilityConfidence(t *testing.T) {
+	if got := formatReachabilityConfidence(nil); got != "-" {
+		t.Fatalf("expected nil reachability confidence to render as -, got %q", got)
+	}
+	if got := formatReachabilityConfidence(&ReachabilityConfidence{Score: 83.2}); got != "83.2" {
+		t.Fatalf("unexpected score-only reachability confidence format: %q", got)
+	}
+	if got := formatReachabilityConfidence(&ReachabilityConfidence{Score: 83.2, Summary: "runtime overlap; export inventory"}); got != "83.2 (runtime overlap; export inventory)" {
+		t.Fatalf("unexpected reachability confidence format: %q", got)
+	}
+}
+
 func TestFormatTopSymbolsSingleCountOmitsCounter(t *testing.T) {
 	if got := formatTopSymbols([]SymbolUsage{{Name: "uniq", Count: 1}}); got != "uniq" {
 		t.Fatalf("expected single-count symbol without annotation, got %q", got)
@@ -373,9 +385,10 @@ func TestFormatTableIncludesSummary(t *testing.T) {
 			UsedExportsCount:  2,
 			TotalExportsCount: 4,
 			UsedPercent:       50,
+			Reachability:      &ReachabilityRollup{Model: reachabilityConfidenceModelV2, AverageScore: 88.2, LowestScore: 88.2, HighestScore: 88.2},
 		},
 		Dependencies: []DependencyReport{
-			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50},
+			{Name: "dep", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50, ReachabilityConfidence: &ReachabilityConfidence{Score: 88.2, Summary: "runtime overlap; export inventory"}},
 		},
 	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
@@ -384,6 +397,12 @@ func TestFormatTableIncludesSummary(t *testing.T) {
 	}
 	if !strings.Contains(output, "Summary: 1 deps, Used/Total: 2/4 (50.0%)") {
 		t.Fatalf("expected summary header in output, got %q", output)
+	}
+	if !strings.Contains(output, "Reachability confidence: avg=88.2 range=88.2-88.2 (reachability-v2)") {
+		t.Fatalf("expected reachability rollup in output, got %q", output)
+	}
+	if !strings.Contains(output, "Reachability") || !strings.Contains(output, "88.2 (runtime overlap; export inventory)") {
+		t.Fatalf("expected reachability column in output, got %q", output)
 	}
 }
 

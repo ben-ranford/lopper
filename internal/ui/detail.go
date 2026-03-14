@@ -92,6 +92,7 @@ func printDependencyHeader(out io.Writer, dep report.DependencyReport) error {
 
 func printDependencySections(out io.Writer, dep report.DependencyReport) error {
 	printers := []func(io.Writer) error{
+		func(w io.Writer) error { return printReachabilityConfidence(w, dep.ReachabilityConfidence) },
 		func(w io.Writer) error { return printRemovalCandidate(w, dep.RemovalCandidate) },
 		func(w io.Writer) error { return printRuntimeUsage(w, dep.RuntimeUsage) },
 		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
@@ -253,6 +254,57 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) error {
 	return writeln(out, "")
 }
 
+func printReachabilityConfidence(out io.Writer, confidence *report.ReachabilityConfidence) error {
+	if err := writeln(out, "Reachability confidence"); err != nil {
+		return err
+	}
+	if confidence == nil {
+		return writeNoneAndBlankLine(out)
+	}
+	if err := writeLines(out, reachabilityConfidenceLines(confidence)); err != nil {
+		return err
+	}
+	if err := printReachabilitySignals(out, confidence.Signals); err != nil {
+		return err
+	}
+	return writeln(out, "")
+}
+
+func reachabilityConfidenceLines(confidence *report.ReachabilityConfidence) []string {
+	lines := []string{
+		fmt.Sprintf("  - model: %s", confidence.Model),
+		fmt.Sprintf("  - score: %.1f", confidence.Score),
+	}
+	if confidence.Summary != "" {
+		lines = append(lines, fmt.Sprintf("  - summary: %s", confidence.Summary))
+	}
+	if len(confidence.RationaleCodes) > 0 {
+		lines = append(lines, fmt.Sprintf("  - rationale codes: %s", strings.Join(confidence.RationaleCodes, ", ")))
+	}
+	return lines
+}
+
+func printReachabilitySignals(out io.Writer, signals []report.ReachabilitySignal) error {
+	if len(signals) == 0 {
+		return nil
+	}
+	if err := writeln(out, "  - signals:"); err != nil {
+		return err
+	}
+	for _, signal := range signals {
+		if err := writef(out, "    - %s: score=%.1f weight=%.3f contribution=%.1f\n", signal.Code, signal.Score, signal.Weight, signal.Contribution); err != nil {
+			return err
+		}
+		if signal.Rationale == "" {
+			continue
+		}
+		if err := writef(out, "      rationale: %s\n", signal.Rationale); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) error {
 	if err := writeln(out, "Removal candidate scoring"); err != nil {
 		return err
@@ -290,6 +342,15 @@ func writeNoneAndBlankLine(out io.Writer) error {
 		return err
 	}
 	return writeln(out, "")
+}
+
+func writeLines(out io.Writer, lines []string) error {
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writef(out io.Writer, format string, args ...any) error {

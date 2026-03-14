@@ -136,6 +136,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 		return report.Report{}, err
 	}
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
+	report.AnnotateReachabilityConfidence(&reportData)
 	report.AnnotateFindingConfidence(reportData.Dependencies)
 	report.FilterFindingsByConfidence(reportData.Dependencies, lowConfidenceThreshold)
 	report.NormalizeDependencyLicenses(reportData.Dependencies)
