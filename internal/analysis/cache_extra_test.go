@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ const (
 	cacheObjectsDirName   = "objects"
 	cacheTestGoModName    = "go.mod"
 	cacheTestGoModContent = "module demo\n"
+	cacheMissingFileName  = "missing.txt"
 )
 
 type analysisCacheLookupCase struct {
@@ -99,7 +101,7 @@ func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
 
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
-	missingPath := filepath.Join(dir, "missing.txt")
+	missingPath := filepath.Join(dir, cacheMissingFileName)
 	digest, err := hashFileOrMissing(missingPath)
 	if err != nil {
 		t.Fatalf("hash missing file: %v", err)
@@ -118,6 +120,30 @@ func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	}
 	if digest == "" || digest == "missing" {
 		t.Fatalf("expected real digest for existing file, got %q", digest)
+	}
+}
+
+func TestWriteFileDigestAndMissingMarker(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+
+	var existing bytes.Buffer
+	if err := writeFileDigest(&existing, targetPath); err != nil {
+		t.Fatalf("write existing digest: %v", err)
+	}
+	if len(strings.TrimSpace(existing.String())) != 64 {
+		t.Fatalf("expected SHA-256 hex digest, got %q", existing.String())
+	}
+
+	var missing bytes.Buffer
+	if err := writeFileDigestOrMissing(&missing, filepath.Join(dir, cacheMissingFileName)); err != nil {
+		t.Fatalf("write missing digest marker: %v", err)
+	}
+	if missing.String() != "missing" {
+		t.Fatalf("expected missing marker, got %q", missing.String())
 	}
 }
 
