@@ -29,6 +29,7 @@ const (
 	rustRunFn            = "pub fn run() {}\n"
 	cargoLockVersion3    = "version = 3\n"
 	serdeJSONDep         = "serde-json"
+	singleQuoteDep       = "single-quote-dep"
 	unknownCrateID       = "unknown-crate"
 	dirWithManifest      = "dir-with-manifest"
 	workspaceMembersGlob = "crates/*"
@@ -76,8 +77,8 @@ func TestManifestParsingHelpers(t *testing.T) {
 	if !deps["local-dep"].LocalPath {
 		t.Fatalf("expected local path dependency handling, got %#v", deps["local-dep"])
 	}
-	if deps["single-quote-dep"].Canonical != serdeJSONDep || !deps["single-quote-dep"].LocalPath {
-		t.Fatalf("expected single-quoted inline field handling, got %#v", deps["single-quote-dep"])
+	if deps[singleQuoteDep].Canonical != serdeJSONDep || !deps[singleQuoteDep].LocalPath {
+		t.Fatalf("expected single-quoted inline field handling, got %#v", deps[singleQuoteDep])
 	}
 	if deps["clap"].Canonical != "clap" {
 		t.Fatalf("expected target dependencies parsing for clap")
