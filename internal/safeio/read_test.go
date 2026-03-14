@@ -69,6 +69,33 @@ func TestReadFileUnderLimitRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestReadOpenedFileRejectsOversizedPipeContent(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer reader.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, writeErr := writer.Write([]byte("hello"))
+		closeErr := writer.Close()
+		if writeErr != nil {
+			done <- writeErr
+			return
+		}
+		done <- closeErr
+	}()
+
+	_, err = readOpenedFile(reader, 4)
+	if !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge for pipe content, got %v", err)
+	}
+	if writeErr := <-done; writeErr != nil {
+		t.Fatalf("pipe writer error: %v", writeErr)
+	}
+}
+
 func TestReadFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	parentDir := t.TempDir()
 	rootDir := filepath.Join(parentDir, "root")

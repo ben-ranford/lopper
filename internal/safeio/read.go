@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,11 +78,23 @@ func ReadFile(targetPath string) ([]byte, error) {
 }
 
 func readOpenedFile(file *os.File, maxBytes int64) ([]byte, error) {
-	if maxBytes > 0 {
-		info, err := file.Stat()
-		if err == nil && info.Mode().IsRegular() && info.Size() > maxBytes {
-			return nil, ErrFileTooLarge
-		}
+	if maxBytes <= 0 {
+		return io.ReadAll(file)
 	}
-	return io.ReadAll(file)
+	if info, err := file.Stat(); err == nil && info.Mode().IsRegular() && info.Size() > maxBytes {
+		return nil, ErrFileTooLarge
+	}
+
+	readLimit := maxBytes + 1
+	if maxBytes >= math.MaxInt64-1 {
+		readLimit = math.MaxInt64
+	}
+	data, err := io.ReadAll(io.LimitReader(file, readLimit))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, ErrFileTooLarge
+	}
+	return data, nil
 }
