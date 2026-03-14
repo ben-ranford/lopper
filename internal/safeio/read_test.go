@@ -1,6 +1,7 @@
 package safeio
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,38 @@ func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
 	}
 	if got := string(data); got != "hello" {
 		t.Fatalf("unexpected content: got %q", got)
+	}
+}
+
+func TestReadFileUnderLimitReadsFileInsideRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "nested", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("create parent dir: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	data, err := ReadFileUnderLimit(rootDir, targetPath, 5)
+	if err != nil {
+		t.Fatalf("ReadFileUnderLimit returned error: %v", err)
+	}
+	if got := string(data); got != "hello" {
+		t.Fatalf("unexpected content: got %q", got)
+	}
+}
+
+func TestReadFileUnderLimitRejectsOversizedFile(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "large.txt")
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, err := ReadFileUnderLimit(rootDir, targetPath, 4)
+	if !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge, got %v", err)
 	}
 }
 

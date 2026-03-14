@@ -2,6 +2,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/build/constraint"
@@ -333,15 +334,15 @@ func appendUndeclaredDependencyWarnings(result *scanResult) {
 }
 
 func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scanResult) error {
-	content, err := safeio.ReadFileUnder(repoPath, path)
-	if err != nil {
-		return err
-	}
-	if len(content) > maxScannableGoFile {
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableGoFile)
+	if errors.Is(err, safeio.ErrFileTooLarge) {
 		if result != nil {
 			result.SkippedLargeFiles++
 		}
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if isGeneratedGoFile(content) {
 		if result != nil {
