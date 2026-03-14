@@ -2,6 +2,7 @@ package safeio
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ const (
 	mkdirDeadDirFmt  = "mkdir deadDir: %v"
 	chdirDeadDirFmt  = "chdir deadDir: %v"
 	removeDeadDirFmt = "remove deadDir: %v"
+	writeFileErrFmt  = "write file: %v"
 )
 
 func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
@@ -25,7 +27,7 @@ func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
 		t.Fatalf("create parent dir: %v", err)
 	}
 	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
+		t.Fatalf(writeFileErrFmt, err)
 	}
 
 	data, err := ReadFileUnder(rootDir, targetPath)
@@ -44,7 +46,7 @@ func TestReadFileUnderLimitReadsFileInsideRoot(t *testing.T) {
 		t.Fatalf("create parent dir: %v", err)
 	}
 	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
+		t.Fatalf(writeFileErrFmt, err)
 	}
 
 	data, err := ReadFileUnderLimit(rootDir, targetPath, 5)
@@ -60,7 +62,7 @@ func TestReadFileUnderLimitRejectsOversizedFile(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, "large.txt")
 	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
+		t.Fatalf(writeFileErrFmt, err)
 	}
 
 	_, err := ReadFileUnderLimit(rootDir, targetPath, 4)
@@ -90,6 +92,36 @@ func TestReadOpenedFileRejectsOversizedPipeContent(t *testing.T) {
 	_, err = readOpenedFile(reader, 4)
 	if !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected ErrFileTooLarge for pipe content, got %v", err)
+	}
+	if writeErr := <-done; writeErr != nil {
+		t.Fatalf("pipe writer error: %v", writeErr)
+	}
+}
+
+func TestReadOpenedFileAllowsMaxInt64Limit(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer reader.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, writeErr := writer.Write([]byte("ok"))
+		closeErr := writer.Close()
+		if writeErr != nil {
+			done <- writeErr
+			return
+		}
+		done <- closeErr
+	}()
+
+	data, err := readOpenedFile(reader, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("readOpenedFile returned error: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("unexpected content: got %q", string(data))
 	}
 	if writeErr := <-done; writeErr != nil {
 		t.Fatalf("pipe writer error: %v", writeErr)
