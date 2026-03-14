@@ -40,7 +40,7 @@ func TestRegisterAdaptersRejectsNilFactory(t *testing.T) {
 }
 
 func TestRegisterAdaptersRejectsNilRegistry(t *testing.T) {
-	if err := registerAdapters(nil, nil); err == nil {
+	if registerAdapters(nil, nil) == nil {
 		t.Fatalf("expected nil registry error")
 	}
 }
