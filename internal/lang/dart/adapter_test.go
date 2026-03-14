@@ -12,9 +12,15 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	appHTTPManifest             = "name: app\ndependencies:\n  http: ^1.0.0\n"
+	expectedOneDependencyReport = "expected one dependency report, got %d"
+	analyseErrorFormat          = "analyse: %v"
+)
+
 func TestDartAdapterIdentityAndDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, pubspecYAMLName), "name: app\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
 	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), "import 'package:http/http.dart' as http;\nvoid main() { http.Client(); }\n")
 	writeFile(t, filepath.Join(repo, "packages", "feature", pubspecYAMLName), "name: feature\ndependencies:\n  collection: ^1.0.0\n")
 
@@ -111,7 +117,7 @@ void main() {
 		t.Fatalf("analyse dependency: %v", err)
 	}
 	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+		t.Fatalf(expectedOneDependencyReport, len(depReport.Dependencies))
 	}
 	dep := depReport.Dependencies[0]
 	if dep.Language != "dart" {
@@ -148,7 +154,7 @@ void main() {
 
 func TestDartAdapterUndeclaredImportRisk(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, pubspecYAMLName), "name: app\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
 	writeFile(t, filepath.Join(repo, pubspecLockName), `packages:
   http:
     dependency: "direct main"
@@ -167,10 +173,10 @@ void main() {
 		Dependency: "dio",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(analyseErrorFormat, err)
 	}
 	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+		t.Fatalf(expectedOneDependencyReport, len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
 	if !hasRiskCueCode(dep, "undeclared-package-import") {
@@ -186,7 +192,7 @@ void main() {
 
 func TestDartAdapterLockOnlyTransitiveImportStillFlagsUndeclaredRisk(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, pubspecYAMLName), "name: app\ndependencies:\n  http: ^1.0.0\n")
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
 	writeFile(t, filepath.Join(repo, pubspecLockName), `packages:
   http:
     dependency: "direct main"
@@ -210,10 +216,10 @@ void main() {
 		Dependency: "dio",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(analyseErrorFormat, err)
 	}
 	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+		t.Fatalf(expectedOneDependencyReport, len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
 	if !hasRiskCueCode(dep, "undeclared-package-import") {
@@ -246,7 +252,7 @@ void main() {
 		TopN:     20,
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(analyseErrorFormat, err)
 	}
 	if !containsWarning(reportData.Warnings, "pubspec.lock not found") {
 		t.Fatalf("expected missing lock warning, got %#v", reportData.Warnings)
