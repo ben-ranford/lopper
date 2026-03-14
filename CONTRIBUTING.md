@@ -45,6 +45,17 @@ make demos
 3. Keep commits focused and descriptive.
 4. Open a pull request with clear context, scope, and validation steps.
 
+## Adapter docs checklist
+
+If you add a new language adapter, update the contributor-facing docs and user-facing metadata in the same change:
+
+- `docs/extensibility.md`: add the adapter to `Current adapters` and keep the "Adding a new adapter" checklist current.
+- `internal/cli/usage.go`: update every `--language` list and the supported adapter IDs help text.
+- `extensions/vscode-lopper/package.json`: update `lopper.language` enum values, descriptions, and extension marketplace copy if the adapter changes extension support.
+- `extensions/vscode-lopper/src/languageConfiguration.ts`: update editor inference and auto-refresh behavior for the new adapter.
+- `extensions/vscode-lopper/README.md`: update the extension adapter-mode docs and any pinned adapter lists.
+- `README.md`: update the root supported adapter lists only after the contributor/docs updates above are correct.
+
 ## What to include in PRs
 
 - Problem statement and intended behavior

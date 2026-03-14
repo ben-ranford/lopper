@@ -1,8 +1,8 @@
 {
   "name": "vscode-lopper",
   "displayName": "Lopper",
-  "description": "VS Code diagnostics and hover details across supported Lopper adapters, plus safe JS/TS quick fixes.",
-  "version": "1.0.1",
+  "description": "VS Code diagnostics, hover details, and safe JS/TS quick fixes across Lopper adapters, including Kotlin Android.",
+  "version": "1.0.2",
   "publisher": "BenRanford",
   "license": "MIT",
   "repository": {
@@ -61,6 +61,7 @@
             "go",
             "js-ts",
             "jvm",
+            "kotlin-android",
             "php",
             "python",
             "ruby",
@@ -68,7 +69,7 @@
             "swift"
           ],
           "enumDescriptions": [
-            "Infer the adapter from the active or saved editor when possible, then fall back to lopper's CLI auto detection.",
+            "Infer the adapter from the active or saved editor when possible, including Android Gradle Kotlin/Java modules, then fall back to lopper's CLI auto detection.",
             "Run every matching Lopper adapter in the workspace and merge the results.",
             "Use the C/C++ adapter.",
             "Use the Dart adapter.",
@@ -77,13 +78,14 @@
             "Use the Go adapter.",
             "Use the JavaScript and TypeScript adapter.",
             "Use the JVM adapter.",
+            "Use the Kotlin Android adapter.",
             "Use the PHP adapter.",
             "Use the Python adapter.",
             "Use the Ruby adapter.",
             "Use the Rust adapter.",
             "Use the Swift adapter."
           ],
-          "markdownDescription": "Language adapter mode for workspace analysis. `auto` is the default and is editor-aware; `all` merges every matching adapter."
+          "markdownDescription": "Language adapter mode for workspace analysis. `auto` is the default and is editor-aware, including Android Gradle Kotlin/Java modules; `all` merges every matching adapter."
         },
         "lopper.binaryPath": {
           "type": "string",

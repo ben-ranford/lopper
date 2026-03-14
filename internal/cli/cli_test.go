@@ -57,6 +57,9 @@ func TestRunHelp(t *testing.T) {
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("expected usage output")
 	}
+	if !strings.Contains(out.String(), "kotlin-android") {
+		t.Fatalf("expected help output to include kotlin-android adapter")
+	}
 }
 
 func TestRunHelpWriterFailure(t *testing.T) {
@@ -157,5 +160,8 @@ func TestRunOutputWriterFailure(t *testing.T) {
 func TestUsageReturnsText(t *testing.T) {
 	if !strings.Contains(Usage(), "lopper analyse") {
 		t.Fatalf("expected usage text to include analyse command")
+	}
+	if !strings.Contains(Usage(), "Supported IDs: auto, all, js-ts, python, cpp, jvm, kotlin-android") {
+		t.Fatalf("expected usage text to include supported adapter ids")
 	}
 }

@@ -64,7 +64,15 @@ Merged output deduplicates by `(language, dependency)` and computes:
 3. Ensure dependency rows set `DependencyReport.Language`.
 4. Add tests in `internal/lang/<id>/adapter_test.go`.
 5. Register the adapter in `analysis.NewService()`.
-6. Update CLI/docs language lists (`internal/cli/usage.go`, `README.md`).
+6. Update contributor/docs surfaces before the README:
+   - `docs/extensibility.md`
+   - `CONTRIBUTING.md`
+7. Update user-facing adapter lists and metadata:
+   - `internal/cli/usage.go`
+   - `extensions/vscode-lopper/package.json`
+   - `extensions/vscode-lopper/src/languageConfiguration.ts`
+   - `extensions/vscode-lopper/README.md`
+   - `README.md`
 
 ## Guidance for detection
 
