@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Republished the Marketplace package at a new patch version to supersede the earlier `1.0.1` and `1.0.0` extension builds.
+
 ## 1.0.1
 
 - Added adapter-aware `lopper.language` selection with `auto` as the default and `all` as the merged multi-adapter mode.
