@@ -746,7 +746,7 @@ func parseRustImports(content, filePath, crateRoot string, depLookup map[string]
 }
 
 func parseRustImportsBytes(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
-	externImports, useImports := collectRustImports(content, filePath, crateRoot, depLookup, scan)
+	externImports, useImports := collectRustImports(content, filePath, crateRoot, depLookup, scan, true)
 	return append(externImports, useImports...)
 }
 
@@ -838,7 +838,7 @@ func parseExternCrateImports(content, filePath, crateRoot string, depLookup map[
 }
 
 func parseExternCrateImportsBytes(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
-	imports, _ := collectRustImports(content, filePath, crateRoot, depLookup, scan)
+	imports, _ := collectRustImports(content, filePath, crateRoot, depLookup, scan, false)
 	return imports
 }
 
@@ -983,10 +983,10 @@ type rustImportStatement struct {
 	Column int
 }
 
-func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) ([]importBinding, []importBinding) {
+func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool) ([]importBinding, []importBinding) {
 	externImports := make([]importBinding, 0)
 	useImports := make([]importBinding, 0)
-	scanRustImportStatements(content, func(kind rustImportKind, stmt rustImportStatement) {
+	scanRustImportStatements(content, includeUse, func(kind rustImportKind, stmt rustImportStatement) {
 		switch kind {
 		case rustImportExternCrate:
 			binding, ok := parseExternCrateClause(stmt.Clause, filePath, crateRoot, depLookup, scan, stmt.Line, stmt.Column)
@@ -1008,14 +1008,14 @@ func collectRustImports(content []byte, filePath, crateRoot string, depLookup ma
 	return externImports, useImports
 }
 
-func scanRustImportStatements(content []byte, visit func(rustImportKind, rustImportStatement)) {
+func scanRustImportStatements(content []byte, includeUse bool, visit func(rustImportKind, rustImportStatement)) {
 	for lineStart, line := 0, 1; lineStart < len(content); line++ {
 		lineEnd := lineStart
 		for lineEnd < len(content) && content[lineEnd] != '\n' {
 			lineEnd++
 		}
 
-		if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line); ok {
+		if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line, includeUse); ok {
 			visit(kind, stmt)
 		}
 
@@ -1026,7 +1026,7 @@ func scanRustImportStatements(content []byte, visit func(rustImportKind, rustImp
 	}
 }
 
-func parseRustImportStatement(content []byte, lineStart, lineEnd, line int) (rustImportKind, rustImportStatement, bool) {
+func parseRustImportStatement(content []byte, lineStart, lineEnd, line int, includeUse bool) (rustImportKind, rustImportStatement, bool) {
 	currentLine := content[lineStart:lineEnd]
 	firstContent := firstContentByteIndex(currentLine)
 	if firstContent >= len(currentLine) {
@@ -1035,8 +1035,10 @@ func parseRustImportStatement(content []byte, lineStart, lineEnd, line int) (rus
 
 	statementStart := lineStart + firstContent
 	statement := currentLine[firstContent:]
-	if stmt, ok := buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
-		return rustImportUse, stmt, true
+	if includeUse {
+		if stmt, ok := buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
+			return rustImportUse, stmt, true
+		}
 	}
 	if stmt, ok := buildRustExternCrateStatement(content, lineEnd, line, firstContent, statementStart, statement); ok {
 		return rustImportExternCrate, stmt, true
@@ -1118,6 +1120,7 @@ func matchExternCrateStatement(line []byte) (int, bool) {
 }
 
 func parseExternCrateClause(clause []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, line, column int) (importBinding, bool) {
+	clause = bytes.TrimSpace(clause)
 	root, offset, ok := consumeRustIdentifier(clause)
 	if !ok {
 		return importBinding{}, false
@@ -1129,11 +1132,12 @@ func parseExternCrateClause(clause []byte, filePath, crateRoot string, depLookup
 		if len(rest) <= len("as") || !bytes.HasPrefix(rest, []byte("as")) || !isRustWhitespace(rest[len("as")]) {
 			return importBinding{}, false
 		}
-		alias, next, ok := consumeRustIdentifier(bytes.TrimSpace(rest[len("as"):]))
+		aliasClause := bytes.TrimSpace(rest[len("as"):])
+		alias, next, ok := consumeRustIdentifier(aliasClause)
 		if !ok {
 			return importBinding{}, false
 		}
-		if len(bytes.TrimSpace(bytes.TrimSpace(rest[len("as"):])[next:])) > 0 {
+		if len(bytes.TrimSpace(aliasClause[next:])) > 0 {
 			return importBinding{}, false
 		}
 		local = alias
@@ -1204,7 +1208,7 @@ func isRustWhitespace(b byte) bool {
 
 func lineColumnBytesFrom(content []byte, baseLine, baseOffset, offset int) (int, int) {
 	if offset < 0 {
-		return 1, 1
+		return baseLine, 1
 	}
 	if offset > len(content) {
 		offset = len(content)

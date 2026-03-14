@@ -790,8 +790,16 @@ func TestMatchExternCrateStatementAndClauseBranches(t *testing.T) {
 	if binding.Location.Line != 2 || binding.Location.Column != 3 {
 		t.Fatalf("unexpected extern crate location: %#v", binding.Location)
 	}
+	if binding, ok := parseExternCrateClause([]byte("  serde as serde_alias"), srcLibRS, "", lookup, nil, 3, 4); !ok || binding.Local != "serde_alias" {
+		t.Fatalf("expected leading whitespace extern crate clause to parse, got %#v %v", binding, ok)
+	}
 	if _, ok := parseExternCrateClause([]byte("serde trailing"), srcLibRS, "", lookup, nil, 1, 1); ok {
 		t.Fatalf("expected invalid extern crate clause to fail")
+	}
+	scan := &scanResult{UnresolvedImports: map[string]int{}}
+	extern := parseExternCrateImportsBytes([]byte("extern crate serde;\nuse unknown_crate::Thing;\n"), srcLibRS, "", lookup, scan)
+	if len(extern) != 1 || scan.UnresolvedImports[unknownCrateID] != 0 {
+		t.Fatalf("expected extern-only parsing without use resolution side effects, got imports=%#v unresolved=%#v", extern, scan.UnresolvedImports)
 	}
 }
 
@@ -817,6 +825,10 @@ func TestLineColumnBytesFromBranches(t *testing.T) {
 	if line != 2 || col != 3 {
 		t.Fatalf("unexpected byte line/column for serde: %d:%d", line, col)
 	}
+	line, col = lineColumnBytesFrom([]byte("abc"), 4, 0, -1)
+	if line != 4 || col != 1 {
+		t.Fatalf("unexpected byte line/column for negative offset: %d:%d", line, col)
+	}
 	line, col = lineColumnBytesFrom([]byte("abc"), 4, 0, 99)
 	if line != 4 || col != 4 {
 		t.Fatalf("unexpected byte line/column for past-end offset: %d:%d", line, col)
@@ -826,7 +838,7 @@ func TestLineColumnBytesFromBranches(t *testing.T) {
 func TestRustImportStatementBuilderBranches(t *testing.T) {
 	content := []byte("extern crate serde as serde_alias;\nuse\n  serde::Serialize;\n")
 
-	kind, stmt, ok := parseRustImportStatement(content, 0, bytes.IndexByte(content, '\n'), 1)
+	kind, stmt, ok := parseRustImportStatement(content, 0, bytes.IndexByte(content, '\n'), 1, true)
 	if !ok || kind != rustImportExternCrate {
 		t.Fatalf("expected extern crate statement parse, got kind=%v stmt=%#v ok=%v", kind, stmt, ok)
 	}
@@ -836,7 +848,7 @@ func TestRustImportStatementBuilderBranches(t *testing.T) {
 
 	useLineStart := bytes.Index(content, []byte("use\n"))
 	useLineEnd := useLineStart + bytes.IndexByte(content[useLineStart:], '\n')
-	kind, stmt, ok = parseRustImportStatement(content, useLineStart, useLineEnd, 2)
+	kind, stmt, ok = parseRustImportStatement(content, useLineStart, useLineEnd, 2, true)
 	if !ok || kind != rustImportUse {
 		t.Fatalf("expected use statement parse, got kind=%v stmt=%#v ok=%v", kind, stmt, ok)
 	}
