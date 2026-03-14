@@ -148,12 +148,21 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 	detection := language.Detection{}
 	visited := 0
 	androidSpecific := false
-	if err := walkKotlinAndroidDetectionEntry(repo, filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, roots, &detection, &visited, 5, &androidSpecific); !errors.Is(err, filepath.SkipDir) {
+	state := detectionWalkState{
+		repoPath:              repo,
+		roots:                 roots,
+		detection:             &detection,
+		visited:               &visited,
+		maxFiles:              5,
+		androidSpecificSignal: &androidSpecific,
+	}
+	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, state); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected SkipDir for skipped directory, got %v", err)
 	}
 
 	visited = 5
-	if err := walkKotlinAndroidDetectionEntry(repo, filepath.Join(repo, testMainSourceFileName), mainEntry, roots, &detection, &visited, 1, &androidSpecific); !errors.Is(err, fs.SkipAll) {
+	state.maxFiles = 1
+	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testMainSourceFileName), mainEntry, state); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected SkipAll when file cap is exceeded, got %v", err)
 	}
 }
@@ -432,16 +441,22 @@ func TestAdditionalDetectionHelperBranches(t *testing.T) {
 	roots := map[string]struct{}{}
 	detection := &language.Detection{}
 	androidSpecific := false
+	state := detectionWalkState{
+		repoPath:              repo,
+		roots:                 roots,
+		detection:             detection,
+		androidSpecificSignal: &androidSpecific,
+	}
 	for _, entry := range entries {
 		if entry.Name() == gradleLockfileName {
-			updateKotlinAndroidDetection(repo, filepath.Join(repo, gradleLockfileName), entry, roots, detection, &androidSpecific)
+			updateKotlinAndroidDetection(filepath.Join(repo, gradleLockfileName), entry, state)
 		}
 	}
 	manifestEntries, err := os.ReadDir(filepath.Join(repo, testManifestFallbackDir))
 	if err != nil {
 		t.Fatalf("readdir %s: %v", testManifestFallbackDir, err)
 	}
-	updateKotlinAndroidDetection(repo, filepath.Join(repo, testManifestFallbackDir, "AndroidManifest.xml"), manifestEntries[0], roots, detection, &androidSpecific)
+	updateKotlinAndroidDetection(filepath.Join(repo, testManifestFallbackDir, "AndroidManifest.xml"), manifestEntries[0], state)
 	if _, ok := roots[filepath.Join(repo, testManifestFallbackDir)]; !ok {
 		t.Fatalf("expected AndroidManifest fallback root to be captured")
 	}

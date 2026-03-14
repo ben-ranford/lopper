@@ -24,6 +24,14 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	const maxFiles = 1200
 	visited := 0
+	state := detectionWalkState{
+		repoPath:              repoPath,
+		roots:                 roots,
+		detection:             &detection,
+		visited:               &visited,
+		maxFiles:              maxFiles,
+		androidSpecificSignal: &androidSpecificSignal,
+	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -31,7 +39,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return walkKotlinAndroidDetectionEntry(repoPath, path, entry, roots, &detection, &visited, maxFiles, &androidSpecificSignal)
+		return walkKotlinAndroidDetectionEntry(path, entry, state)
 	})
 	if err != nil && err != fs.SkipAll {
 		return language.Detection{}, err
@@ -45,18 +53,27 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func walkKotlinAndroidDetectionEntry(repoPath string, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int, androidSpecificSignal *bool) error {
+type detectionWalkState struct {
+	repoPath              string
+	roots                 map[string]struct{}
+	detection             *language.Detection
+	visited               *int
+	maxFiles              int
+	androidSpecificSignal *bool
+}
+
+func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, state detectionWalkState) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
 		}
 		return nil
 	}
-	(*visited)++
-	if *visited > maxFiles {
+	(*state.visited)++
+	if *state.visited > state.maxFiles {
 		return fs.SkipAll
 	}
-	updateKotlinAndroidDetection(repoPath, path, entry, roots, detection, androidSpecificSignal)
+	updateKotlinAndroidDetection(path, entry, state)
 	return nil
 }
 
@@ -71,39 +88,39 @@ func applyKotlinAndroidRootSignals(repoPath string, detection *language.Detectio
 	return shared.ApplyRootSignals(repoPath, signals, detection, roots)
 }
 
-func updateKotlinAndroidDetection(repoPath string, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, androidSpecificSignal *bool) {
+func updateKotlinAndroidDetection(path string, entry fs.DirEntry, state detectionWalkState) {
 	name := strings.ToLower(entry.Name())
 	switch name {
 	case buildGradleName, buildGradleKTSName:
-		detection.Matched = true
-		detection.Confidence += 12
-		roots[filepath.Dir(path)] = struct{}{}
-		if buildFileSignalsAndroidPlugin(repoPath, path) {
-			markAndroidSpecificDetection(detection, androidSpecificSignal)
+		state.detection.Matched = true
+		state.detection.Confidence += 12
+		state.roots[filepath.Dir(path)] = struct{}{}
+		if buildFileSignalsAndroidPlugin(state.repoPath, path) {
+			markAndroidSpecificDetection(state.detection, state.androidSpecificSignal)
 		}
 	case settingsGradleName, settingsGradleKTS:
-		detection.Matched = true
-		detection.Confidence += 8
-		roots[filepath.Dir(path)] = struct{}{}
+		state.detection.Matched = true
+		state.detection.Confidence += 8
+		state.roots[filepath.Dir(path)] = struct{}{}
 	case gradleLockfileName:
-		detection.Matched = true
-		detection.Confidence += 10
-		roots[filepath.Dir(path)] = struct{}{}
+		state.detection.Matched = true
+		state.detection.Confidence += 10
+		state.roots[filepath.Dir(path)] = struct{}{}
 	case androidManifestName:
-		markAndroidSpecificDetection(detection, androidSpecificSignal)
+		markAndroidSpecificDetection(state.detection, state.androidSpecificSignal)
 		if root := androidManifestModuleRoot(path); root != "" {
-			roots[root] = struct{}{}
+			state.roots[root] = struct{}{}
 		} else {
-			roots[filepath.Dir(path)] = struct{}{}
+			state.roots[filepath.Dir(path)] = struct{}{}
 		}
 	}
 
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".java", ".kt":
-		detection.Matched = true
-		detection.Confidence += 2
+		state.detection.Matched = true
+		state.detection.Confidence += 2
 		if root := sourceLayoutModuleRoot(path); root != "" {
-			roots[root] = struct{}{}
+			state.roots[root] = struct{}{}
 		}
 	}
 }
@@ -116,7 +133,7 @@ func markAndroidSpecificDetection(detection *language.Detection, androidSpecific
 	}
 }
 
-func buildFileSignalsAndroidPlugin(repoPath string, path string) bool {
+func buildFileSignalsAndroidPlugin(repoPath, path string) bool {
 	var (
 		content []byte
 		err     error
