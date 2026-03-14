@@ -1,6 +1,7 @@
 package rust
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -758,6 +759,60 @@ func TestAdditionalHelperBranches(t *testing.T) {
 	}
 	if dep := resolveDependency("", "", map[string]dependencyInfo{}, &scanResult{UnresolvedImports: map[string]int{}}); dep != "" {
 		t.Fatalf("expected empty path resolution to be empty, got %q", dep)
+	}
+}
+
+func TestByteScannerHelperBranches(t *testing.T) {
+	if offset, ok := matchRustUseStatement([]byte("use")); !ok || offset != len("use") {
+		t.Fatalf("expected bare use keyword match, got offset=%d ok=%v", offset, ok)
+	}
+	if _, ok := matchRustUseStatement([]byte("useful::thing")); ok {
+		t.Fatalf("expected non-use prefix to fail match")
+	}
+	if offset, ok := matchExternCrateStatement([]byte("extern crate serde")); !ok || offset != len("extern crate") {
+		t.Fatalf("expected extern crate match, got offset=%d ok=%v", offset, ok)
+	}
+	if _, ok := matchExternCrateStatement([]byte("external crate serde")); ok {
+		t.Fatalf("expected invalid extern prefix to fail match")
+	}
+
+	lookup := map[string]dependencyInfo{"serde": {Canonical: "serde"}}
+	binding, ok := parseExternCrateClause([]byte("serde as serde_alias"), srcLibRS, "", lookup, nil, 2, 3)
+	if !ok {
+		t.Fatalf("expected extern crate alias parse to succeed")
+	}
+	if binding.Dependency != "serde" || binding.Local != "serde_alias" {
+		t.Fatalf("unexpected extern crate binding: %#v", binding)
+	}
+	if binding.Location.Line != 2 || binding.Location.Column != 3 {
+		t.Fatalf("unexpected extern crate location: %#v", binding.Location)
+	}
+	if _, ok := parseExternCrateClause([]byte("serde trailing"), srcLibRS, "", lookup, nil, 1, 1); ok {
+		t.Fatalf("expected invalid extern crate clause to fail")
+	}
+
+	if ident, next, ok := consumeRustIdentifier([]byte(" _serde123 rest")); !ok || ident != "_serde123" || next != len("_serde123") {
+		t.Fatalf("unexpected rust identifier parse: %q %d %v", ident, next, ok)
+	}
+	if _, _, ok := consumeRustIdentifier([]byte("1serde")); ok {
+		t.Fatalf("expected identifier starting with digit to fail")
+	}
+
+	if got := firstContentByteIndex([]byte("\t  use serde")); got != 3 {
+		t.Fatalf("unexpected first content index: %d", got)
+	}
+	if got := firstContentByteIndex([]byte(" \t ")); got != len(" \t ") {
+		t.Fatalf("expected all-whitespace line to return length, got %d", got)
+	}
+
+	content := []byte("use\n  serde::Serialize;\n")
+	line, col := lineColumnBytesFrom(content, 1, 0, bytes.Index(content, []byte("serde")))
+	if line != 2 || col != 3 {
+		t.Fatalf("unexpected byte line/column for serde: %d:%d", line, col)
+	}
+	line, col = lineColumnBytesFrom([]byte("abc"), 4, 0, 99)
+	if line != 4 || col != 4 {
+		t.Fatalf("unexpected byte line/column for past-end offset: %d:%d", line, col)
 	}
 }
 

@@ -1,6 +1,7 @@
 package rust
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -67,8 +68,6 @@ type scanResult struct {
 var (
 	tablePattern        = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
 	stringFieldPattern  = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"(.*?)"`)
-	externCratePattern  = regexp.MustCompile(`^\s*extern\s+crate\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;`)
-	useStmtPattern      = regexp.MustCompile(`(?ms)^\s*use\s+(.+?);`)
 	macroInvokePattern  = regexp.MustCompile(`(?m)\b[A-Za-z_][A-Za-z0-9_]*!\s*(?:\(|\{|\[)`)
 	workspaceFieldStart = "members"
 )
@@ -730,7 +729,7 @@ func scanRustSourceFile(repoPath string, crateRoot string, path string, depLooku
 		relativePath = path
 	}
 
-	imports := parseRustImports(string(content), relativePath, crateRoot, depLookup, result)
+	imports := parseRustImportsBytes(content, relativePath, crateRoot, depLookup, result)
 	result.Files = append(result.Files, fileScan{
 		Path:    relativePath,
 		Imports: imports,
@@ -743,23 +742,12 @@ func scanRustSourceFile(repoPath string, crateRoot string, path string, depLooku
 }
 
 func parseRustImports(content, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
-	imports := parseExternCrateImports(content, filePath, crateRoot, depLookup, scan)
-	for _, idx := range useStmtPattern.FindAllStringSubmatchIndex(content, -1) {
-		clause, line, column, ok := parseUseStatementIndex(content, idx)
-		if !ok {
-			continue
-		}
-		ctx := useImportContext{
-			FilePath:  filePath,
-			Line:      line,
-			Column:    column,
-			CrateRoot: crateRoot,
-			DepLookup: depLookup,
-			Scan:      scan,
-		}
-		imports = append(imports, appendUseClauseImports(clause, ctx)...)
-	}
-	return imports
+	return parseRustImportsBytes([]byte(content), filePath, crateRoot, depLookup, scan)
+}
+
+func parseRustImportsBytes(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
+	externImports, useImports := collectRustImports(content, filePath, crateRoot, depLookup, scan)
+	return append(externImports, useImports...)
 }
 
 func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) {
@@ -784,8 +772,7 @@ type useImportContext struct {
 	Scan      *scanResult
 }
 
-func appendUseClauseImports(clause string, ctx useImportContext) []importBinding {
-	imports := make([]importBinding, 0)
+func appendUseClauseImports(imports []importBinding, clause string, ctx useImportContext) []importBinding {
 	entries := parseUseClause(clause)
 	for _, entry := range entries {
 		binding, ok := makeUseImportBinding(entry, ctx)
@@ -847,34 +834,11 @@ type usePathEntry struct {
 }
 
 func parseExternCrateImports(content, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
-	lines := strings.Split(content, "\n")
-	imports := make([]importBinding, 0)
-	for i, line := range lines {
-		match := externCratePattern.FindStringSubmatch(line)
-		if len(match) < 2 {
-			continue
-		}
-		root := strings.TrimSpace(match[1])
-		local := root
-		if len(match) >= 3 && strings.TrimSpace(match[2]) != "" {
-			local = strings.TrimSpace(match[2])
-		}
-		dependency := resolveDependency(root, crateRoot, depLookup, scan)
-		if dependency == "" {
-			continue
-		}
-		imports = append(imports, importBinding{
-			Dependency: dependency,
-			Module:     root,
-			Name:       root,
-			Local:      local,
-			Location: report.Location{
-				File:   filePath,
-				Line:   i + 1,
-				Column: shared.FirstContentColumn(line),
-			},
-		})
-	}
+	return parseExternCrateImportsBytes([]byte(content), filePath, crateRoot, depLookup, scan)
+}
+
+func parseExternCrateImportsBytes(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) []importBinding {
+	imports, _ := collectRustImports(content, filePath, crateRoot, depLookup, scan)
 	return imports
 }
 
@@ -1004,6 +968,222 @@ func splitTopLevel(value string, sep rune) []string {
 	}
 	parts = append(parts, strings.TrimSpace(value[start:]))
 	return parts
+}
+
+type rustImportKind uint8
+
+const (
+	rustImportExternCrate rustImportKind = iota
+	rustImportUse
+)
+
+type rustImportStatement struct {
+	Clause []byte
+	Line   int
+	Column int
+}
+
+func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) ([]importBinding, []importBinding) {
+	externImports := make([]importBinding, 0)
+	useImports := make([]importBinding, 0)
+	scanRustImportStatements(content, func(kind rustImportKind, stmt rustImportStatement) {
+		switch kind {
+		case rustImportExternCrate:
+			binding, ok := parseExternCrateClause(stmt.Clause, filePath, crateRoot, depLookup, scan, stmt.Line, stmt.Column)
+			if ok {
+				externImports = append(externImports, binding)
+			}
+		case rustImportUse:
+			ctx := useImportContext{
+				FilePath:  filePath,
+				Line:      stmt.Line,
+				Column:    stmt.Column,
+				CrateRoot: crateRoot,
+				DepLookup: depLookup,
+				Scan:      scan,
+			}
+			useImports = appendUseClauseImports(useImports, string(stmt.Clause), ctx)
+		}
+	})
+	return externImports, useImports
+}
+
+func scanRustImportStatements(content []byte, visit func(rustImportKind, rustImportStatement)) {
+	for lineStart, line := 0, 1; lineStart < len(content); line++ {
+		lineEnd := lineStart
+		for lineEnd < len(content) && content[lineEnd] != '\n' {
+			lineEnd++
+		}
+
+		currentLine := content[lineStart:lineEnd]
+		firstContent := firstContentByteIndex(currentLine)
+		if firstContent < len(currentLine) {
+			statementStart := lineStart + firstContent
+			statement := currentLine[firstContent:]
+			if clauseStart, ok := matchRustUseStatement(statement); ok {
+				clauseOffset := skipRustWhitespace(content, statementStart+clauseStart)
+				if clauseOffset < len(content) {
+					if end := bytes.IndexByte(content[clauseOffset:], ';'); end >= 0 {
+						stmtLine, column := lineColumnBytesFrom(content, line, lineStart, clauseOffset)
+						visit(rustImportUse, rustImportStatement{
+							Clause: bytes.TrimSpace(content[clauseOffset : clauseOffset+end]),
+							Line:   stmtLine,
+							Column: column,
+						})
+					}
+				}
+			} else if clauseStart, ok := matchExternCrateStatement(statement); ok {
+				if end := bytes.IndexByte(content[statementStart+clauseStart:lineEnd], ';'); end >= 0 {
+					visit(rustImportExternCrate, rustImportStatement{
+						Clause: bytes.TrimSpace(content[statementStart+clauseStart : statementStart+clauseStart+end]),
+						Line:   line,
+						Column: firstContent + 1,
+					})
+				}
+			}
+		}
+
+		if lineEnd == len(content) {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+}
+
+func matchRustUseStatement(line []byte) (int, bool) {
+	if !bytes.HasPrefix(line, []byte("use")) {
+		return 0, false
+	}
+	if len(line) == len("use") {
+		return len("use"), true
+	}
+	if !isRustWhitespace(line[len("use")]) {
+		return 0, false
+	}
+	return len("use"), true
+}
+
+func matchExternCrateStatement(line []byte) (int, bool) {
+	if !bytes.HasPrefix(line, []byte("extern")) {
+		return 0, false
+	}
+	if len(line) <= len("extern") || !isRustWhitespace(line[len("extern")]) {
+		return 0, false
+	}
+	index := skipRustWhitespace(line, len("extern"))
+	if !bytes.HasPrefix(line[index:], []byte("crate")) {
+		return 0, false
+	}
+	index += len("crate")
+	if index >= len(line) || !isRustWhitespace(line[index]) {
+		return 0, false
+	}
+	return index, true
+}
+
+func parseExternCrateClause(clause []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, line, column int) (importBinding, bool) {
+	root, offset, ok := consumeRustIdentifier(clause)
+	if !ok {
+		return importBinding{}, false
+	}
+
+	local := root
+	rest := bytes.TrimSpace(clause[offset:])
+	if len(rest) > 0 {
+		if len(rest) <= len("as") || !bytes.HasPrefix(rest, []byte("as")) || !isRustWhitespace(rest[len("as")]) {
+			return importBinding{}, false
+		}
+		alias, next, ok := consumeRustIdentifier(bytes.TrimSpace(rest[len("as"):]))
+		if !ok {
+			return importBinding{}, false
+		}
+		if len(bytes.TrimSpace(bytes.TrimSpace(rest[len("as"):])[next:])) > 0 {
+			return importBinding{}, false
+		}
+		local = alias
+	}
+
+	dependency := resolveDependency(root, crateRoot, depLookup, scan)
+	if dependency == "" {
+		return importBinding{}, false
+	}
+
+	return importBinding{
+		Dependency: dependency,
+		Module:     root,
+		Name:       root,
+		Local:      local,
+		Location: report.Location{
+			File:   filePath,
+			Line:   line,
+			Column: column,
+		},
+	}, true
+}
+
+func consumeRustIdentifier(value []byte) (string, int, bool) {
+	value = bytes.TrimSpace(value)
+	if len(value) == 0 || !isRustIdentifierStart(value[0]) {
+		return "", 0, false
+	}
+	index := 1
+	for index < len(value) && isRustIdentifierContinue(value[index]) {
+		index++
+	}
+	return string(value[:index]), index, true
+}
+
+func isRustIdentifierStart(b byte) bool {
+	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func isRustIdentifierContinue(b byte) bool {
+	return isRustIdentifierStart(b) || (b >= '0' && b <= '9')
+}
+
+func firstContentByteIndex(line []byte) int {
+	for index := 0; index < len(line); index++ {
+		if line[index] != ' ' && line[index] != '\t' {
+			return index
+		}
+	}
+	return len(line)
+}
+
+func skipRustWhitespace(value []byte, index int) int {
+	for index < len(value) && isRustWhitespace(value[index]) {
+		index++
+	}
+	return index
+}
+
+func isRustWhitespace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func lineColumnBytesFrom(content []byte, baseLine, baseOffset, offset int) (int, int) {
+	if offset < 0 {
+		return 1, 1
+	}
+	if offset > len(content) {
+		offset = len(content)
+	}
+	if offset <= baseOffset {
+		return baseLine, 1
+	}
+	segment := content[baseOffset:offset]
+	lineDelta := bytes.Count(segment, []byte{'\n'})
+	if lineDelta == 0 {
+		return baseLine, offset - baseOffset + 1
+	}
+	lastNewline := bytes.LastIndexByte(segment, '\n')
+	lineStart := baseOffset + lastNewline + 1
+	return baseLine + lineDelta, offset - lineStart + 1
 }
 
 func resolveDependency(path string, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) string {
