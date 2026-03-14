@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -69,6 +70,19 @@ func TestWebhookNotifierNotifySuccess(t *testing.T) {
 	}
 	if payload["channel"] != string(ChannelSlack) {
 		t.Fatalf("expected channel field, got %#v", payload["channel"])
+	}
+}
+
+func TestWebhookNotifierNotifyBuildPayloadError(t *testing.T) {
+	err := NewWebhookNotifier(nil).Notify(context.Background(), Delivery{
+		Channel:    ChannelSlack,
+		WebhookURL: "https://example.com/hook",
+		Report: report.Report{
+			Summary: &report.Summary{DependencyCount: 1, TotalExportsCount: 1, UsedPercent: math.NaN()},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected notify to fail when webhook payload JSON encoding fails")
 	}
 }
 
@@ -274,5 +288,25 @@ func TestSummaryDependencyCountThresholdStatusAndRepoPathOrDefault(t *testing.T)
 	expected := "Waste change vs baseline: " + strconv.FormatFloat(delta, 'f', 1, 64) + "%"
 	if got != expected {
 		t.Fatalf("expected zero delta label %q, got %q", expected, got)
+	}
+}
+
+func TestWebhookHelperBranches(t *testing.T) {
+	if got := summaryUsedPercent(report.Report{Summary: &report.Summary{TotalExportsCount: 0}}); got != "n/a" {
+		t.Fatalf("expected n/a when summary has no totals, got %q", got)
+	}
+
+	if value, err := ParseWebhookURL("https://example.com/hook", "source"); err != nil || value != "https://example.com/hook" {
+		t.Fatalf("expected valid webhook URL to round-trip, value=%q err=%v", value, err)
+	}
+	if _, err := ParseWebhookURL("https://[::1", "source"); err == nil {
+		t.Fatalf("expected webhook URL parse failure to be reported")
+	}
+
+	if got := RedactWebhookURL("   "); got != "<redacted-webhook>" {
+		t.Fatalf("expected empty webhook URL to use fallback redaction, got %q", got)
+	}
+	if got := RedactWebhookURL("//hooks.slack.com/services/A/B/SECRET"); got != "https://hooks.slack.com/..." {
+		t.Fatalf("expected schemeless webhook URL to default to https, got %q", got)
 	}
 }

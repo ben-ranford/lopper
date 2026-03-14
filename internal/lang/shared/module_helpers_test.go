@@ -1,20 +1,21 @@
 package shared
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFallbackDependency(t *testing.T) {
-	normalize := func(value string) string {
-		return "[" + value + "]"
-	}
+	normalize := strings.ToUpper
 
 	tests := []struct {
 		name   string
 		module string
 		want   string
 	}{
-		{name: "single segment", module: "androidx", want: "[androidx]"},
-		{name: "multiple segments", module: "androidx.appcompat.widget", want: "[androidx.appcompat]"},
-		{name: "empty module", module: "", want: "[]"},
+		{name: "single segment", module: "ecto", want: "ECTO"},
+		{name: "multiple segments", module: "phoenix.html.safe", want: "PHOENIX.HTML"},
+		{name: "empty module", module: "", want: ""},
 	}
 
 	for _, tc := range tests {
@@ -34,7 +35,7 @@ func TestLastModuleSegment(t *testing.T) {
 	}{
 		{name: "empty module", module: "", want: ""},
 		{name: "single segment", module: "androidx", want: "androidx"},
-		{name: "trims final segment", module: "androidx.appcompat. widget ", want: "widget"},
+		{name: "trims final segment", module: "Foo.Bar ", want: "Bar"},
 	}
 
 	for _, tc := range tests {

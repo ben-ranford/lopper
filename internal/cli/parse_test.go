@@ -308,6 +308,22 @@ func TestMergePatternsWithEmptyNextKeepsExisting(t *testing.T) {
 	}
 }
 
+func TestMergePatternsSkipsDuplicatesAlreadySeen(t *testing.T) {
+	merged := mergePatterns([]string{scopeGoGlob}, []string{scopeGoGlob, "internal/**/*.go"})
+	if strings.Join(merged, ",") != "src/**/*.go,internal/**/*.go" {
+		t.Fatalf("expected duplicates to be skipped, got %#v", merged)
+	}
+}
+
+func TestSplitPatternListSkipsEmptyAndDuplicateEntries(t *testing.T) {
+	if got := splitPatternList(" , " + scopeGoGlob + ", " + scopeGoGlob + " , "); !reflect.DeepEqual(got, []string{scopeGoGlob}) {
+		t.Fatalf("expected split pattern list to keep one trimmed value, got %#v", got)
+	}
+	if got := splitPatternList(" , , "); len(got) != 0 {
+		t.Fatalf("expected nil pattern list when all values are blank, got %#v", got)
+	}
+}
+
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if req.Analyse.RuntimeTestCommand != "npm test" {
@@ -451,6 +467,13 @@ func TestParseArgsDashboardValidation(t *testing.T) {
 	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
 	if !strings.Contains(err.Error(), "--top must be > 0") {
 		t.Fatalf("unexpected dashboard top validation error: %v", err)
+	}
+}
+
+func TestParseArgsDashboardRejectsUnexpectedArguments(t *testing.T) {
+	_, err := ParseArgs([]string{"dashboard", "--repos", "./api", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected arguments for dashboard") {
+		t.Fatalf("expected dashboard positional argument error, got %v", err)
 	}
 }
 
@@ -697,6 +720,34 @@ func TestParseArgsAnalyseInvalidNotificationInputs(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("expected parse error to redact webhook secrets, got %q", err.Error())
+	}
+}
+
+func TestResolveAnalyseNotificationsErrors(t *testing.T) {
+	t.Run("invalid config overrides", func(t *testing.T) {
+		repo := t.TempDir()
+		configPath := filepath.Join(repo, parseConfigFileName)
+		writeFile(t, configPath, "notifications:\n  slack:\n    on: definitely-not-valid\n")
+
+		_, err := resolveAnalyseNotifications(map[string]bool{}, analyseFlagValues{}, configPath)
+		if err == nil {
+			t.Fatalf("expected config notification parse error")
+		}
+	})
+
+	t.Run("invalid env overrides", func(t *testing.T) {
+		t.Setenv(notify.EnvOn, "definitely-not-valid")
+
+		_, err := resolveAnalyseNotifications(map[string]bool{}, analyseFlagValues{}, "")
+		if err == nil {
+			t.Fatalf("expected env notification parse error")
+		}
+	})
+}
+
+func TestValidateSuggestOnlyTargetRequiresDependency(t *testing.T) {
+	if err := validateSuggestOnlyTarget(true, "   ", 0); err == nil {
+		t.Fatalf("expected suggest-only validation to require dependency")
 	}
 }
 

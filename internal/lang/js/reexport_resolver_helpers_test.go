@@ -1,6 +1,9 @@
 package js
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 const (
 	testImporterPath = "src/index.ts"
@@ -184,5 +187,55 @@ func TestReExportResolverResolveExportCandidateBranches(t *testing.T) {
 
 	if _, ok = resolver.resolveExportCandidate(req, ReExportBinding{SourceModule: testMissingPath, SourceExportName: "x", ExportName: "x"}, map[string]struct{}{}); ok {
 		t.Fatalf("expected unresolved local source to be skipped")
+	}
+}
+
+func TestReExportResolverAdditionalCoverageBranches(t *testing.T) {
+	resolver := &reExportResolver{
+		filesByPath: map[string]FileScan{
+			testBarrelPath: {
+				Path: testBarrelPath,
+				ReExports: []ReExportBinding{
+					{SourceModule: "lodash", SourceExportName: "default", ExportName: "default"},
+				},
+			},
+		},
+		resolveCache: map[string]string{},
+		warningSet:   map[string]struct{}{},
+	}
+
+	if _, ok := resolver.resolveImportAttribution(testMainPath, ImportBinding{Module: testMissingPath, ExportName: "map", Kind: ImportNamed}, "lodash"); ok {
+		t.Fatalf("expected unresolved local module attribution to fail")
+	}
+
+	attr, ok := resolver.resolveImportAttribution(testMainPath, ImportBinding{Module: "./barrel", LocalName: "lodash", Kind: ImportDefault}, "lodash")
+	if !ok || attr.Module != "lodash" || attr.ExportName != "default" {
+		t.Fatalf("expected default import attribution to resolve, got attr=%#v ok=%v", attr, ok)
+	}
+
+	if _, ok := resolver.resolveExportOrigin(resolveExportRequest{
+		importerPath:    testImporterPath,
+		currentFilePath: "src/missing.ts",
+		requestedExport: "x",
+		visited:         map[string]struct{}{},
+	}); ok {
+		t.Fatalf("expected export origin resolution to fail for missing file metadata")
+	}
+
+	assertResolvedModule(t, resolver, testMainPath, "./barrel", testBarrelPath)
+	assertResolvedModule(t, resolver, testMainPath, "./barrel", testBarrelPath)
+
+	candidates := localModuleCandidates("src/utils.ts")
+	if !slices.Contains(candidates, "src/utils") || !slices.Contains(candidates, "src/utils/index.ts") {
+		t.Fatalf("expected extensionless and index candidates, got %#v", candidates)
+	}
+	count := 0
+	for _, candidate := range candidates {
+		if candidate == "src/utils.ts" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected local module candidates to deduplicate repeated paths, got %#v", candidates)
 	}
 }

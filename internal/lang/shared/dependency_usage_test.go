@@ -606,4 +606,7 @@ func TestIsPathWithin(t *testing.T) {
 	if IsPathWithin("\x00", inside) {
 		t.Fatalf("expected invalid root to return false")
 	}
+	if IsPathWithin(repo, "\x00") {
+		t.Fatalf("expected invalid candidate to return false")
+	}
 }
