@@ -33,6 +33,8 @@ const (
 	dirWithManifest      = "dir-with-manifest"
 	workspaceMembersGlob = "crates/*"
 	externCrateSerdeStmt = "extern crate serde"
+	serdeDeserializeStmt = "use serde::de::DeserializeOwned;"
+	pubCrateSerdeStmt    = "pub(crate) use serde::de::DeserializeOwned;"
 )
 
 func TestAdapterIdentityAndDetect(t *testing.T) {
@@ -354,7 +356,7 @@ func TestImportParsingAndResolveWarnings(t *testing.T) {
 	}
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 
-	content := strings.Join([]string{"extern crate serde as serde_alias;", "pub extern crate serde as serde_pub_alias;", "use serde::de::DeserializeOwned;", "pub(crate) use serde::ser::Serialize;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
+	content := strings.Join([]string{"extern crate serde as serde_alias;", "pub extern crate serde as serde_pub_alias;", serdeDeserializeStmt, "pub(crate) use serde::ser::Serialize;", "use unknown_crate::Thing;", "use crate::localmod::run;", ""}, "\n")
 
 	extern := parseExternCrateImports(content, srcLibRS, repo, lookup, scan)
 	if len(extern) != 2 || extern[0].Dependency != "serde" || extern[1].Dependency != "serde" {
@@ -374,7 +376,7 @@ func TestMatchRustUseStatement(t *testing.T) {
 	if offset, ok := matchRustUseStatement([]byte("use")); !ok || offset != len("use") {
 		t.Fatalf("expected bare use statement match, got offset=%d ok=%v", offset, ok)
 	}
-	if offset, ok := matchRustUseStatement([]byte("use serde::de::DeserializeOwned;")); !ok || offset != len("use") {
+	if offset, ok := matchRustUseStatement([]byte(serdeDeserializeStmt)); !ok || offset != len("use") {
 		t.Fatalf("expected qualified use statement match, got offset=%d ok=%v", offset, ok)
 	}
 	if _, ok := matchRustUseStatement([]byte("useful::thing")); ok {
@@ -424,7 +426,7 @@ func TestParseExternCrateImportsBytesSkipsUseSideEffects(t *testing.T) {
 }
 
 func TestLineColumnBytesFrom(t *testing.T) {
-	content := []byte("first\n  use serde::de::DeserializeOwned;\n")
+	content := []byte("first\n  " + serdeDeserializeStmt + "\n")
 	line, col := lineColumnBytesFrom(content, 1, 0, bytes.Index(content, []byte("serde")))
 	if line != 2 || col != 7 {
 		t.Fatalf("unexpected line/column for serde: %d:%d", line, col)
@@ -442,7 +444,7 @@ func TestLineColumnBytesFrom(t *testing.T) {
 }
 
 func TestParseRustImportStatementBytes(t *testing.T) {
-	content := []byte("extern crate serde as serde_alias;\npub(crate) use serde::de::DeserializeOwned;\n")
+	content := []byte("extern crate serde as serde_alias;\n" + pubCrateSerdeStmt + "\n")
 
 	kind, stmt, ok := parseRustImportStatement(content, 0, bytes.IndexByte(content, '\n'), 1, true)
 	if !ok || kind != rustImportExternCrate {
@@ -473,7 +475,7 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	if got := firstContentByteIndex([]byte(" \t")); got != 2 {
 		t.Fatalf("expected blank line content index to equal length, got %d", got)
 	}
-	if got := skipRustVisibilityPrefix([]byte("pub(crate) use serde::de::DeserializeOwned;")); got != len("pub(crate) ") {
+	if got := skipRustVisibilityPrefix([]byte(pubCrateSerdeStmt)); got != len("pub(crate) ") {
 		t.Fatalf("unexpected visibility prefix offset: %d", got)
 	}
 	if got := skipRustVisibilityPrefix([]byte("public use serde::de::DeserializeOwned;")); got != 0 {
@@ -489,7 +491,7 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 		t.Fatalf("did not expect identifier starting with a digit to parse")
 	}
 
-	content := "pub(crate) use serde::de::DeserializeOwned;"
+	content := pubCrateSerdeStmt
 	clauseStart := strings.Index(content, "serde")
 	clauseEnd := strings.Index(content, ";")
 	clause, line, column, ok := parseUseStatementIndex(content, []int{0, len(content), clauseStart, clauseEnd})
@@ -505,7 +507,7 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	if _, _, ok := parseRustImportStatement([]byte("pub(crate)   "), 0, len("pub(crate)   "), 1, true); ok {
 		t.Fatalf("did not expect visibility-only line to parse as an import")
 	}
-	if _, _, ok := parseRustImportStatement([]byte("use serde::de::DeserializeOwned;"), 0, len("use serde::de::DeserializeOwned;"), 1, false); ok {
+	if _, _, ok := parseRustImportStatement([]byte(serdeDeserializeStmt), 0, len(serdeDeserializeStmt), 1, false); ok {
 		t.Fatalf("did not expect use statement to parse when use parsing is disabled")
 	}
 }
