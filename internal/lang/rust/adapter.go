@@ -1015,32 +1015,8 @@ func scanRustImportStatements(content []byte, visit func(rustImportKind, rustImp
 			lineEnd++
 		}
 
-		currentLine := content[lineStart:lineEnd]
-		firstContent := firstContentByteIndex(currentLine)
-		if firstContent < len(currentLine) {
-			statementStart := lineStart + firstContent
-			statement := currentLine[firstContent:]
-			if clauseStart, ok := matchRustUseStatement(statement); ok {
-				clauseOffset := skipRustWhitespace(content, statementStart+clauseStart)
-				if clauseOffset < len(content) {
-					if end := bytes.IndexByte(content[clauseOffset:], ';'); end >= 0 {
-						stmtLine, column := lineColumnBytesFrom(content, line, lineStart, clauseOffset)
-						visit(rustImportUse, rustImportStatement{
-							Clause: bytes.TrimSpace(content[clauseOffset : clauseOffset+end]),
-							Line:   stmtLine,
-							Column: column,
-						})
-					}
-				}
-			} else if clauseStart, ok := matchExternCrateStatement(statement); ok {
-				if end := bytes.IndexByte(content[statementStart+clauseStart:lineEnd], ';'); end >= 0 {
-					visit(rustImportExternCrate, rustImportStatement{
-						Clause: bytes.TrimSpace(content[statementStart+clauseStart : statementStart+clauseStart+end]),
-						Line:   line,
-						Column: firstContent + 1,
-					})
-				}
-			}
+		if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line); ok {
+			visit(kind, stmt)
 		}
 
 		if lineEnd == len(content) {
@@ -1048,6 +1024,66 @@ func scanRustImportStatements(content []byte, visit func(rustImportKind, rustImp
 		}
 		lineStart = lineEnd + 1
 	}
+}
+
+func parseRustImportStatement(content []byte, lineStart, lineEnd, line int) (rustImportKind, rustImportStatement, bool) {
+	currentLine := content[lineStart:lineEnd]
+	firstContent := firstContentByteIndex(currentLine)
+	if firstContent >= len(currentLine) {
+		return 0, rustImportStatement{}, false
+	}
+
+	statementStart := lineStart + firstContent
+	statement := currentLine[firstContent:]
+	if stmt, ok := buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
+		return rustImportUse, stmt, true
+	}
+	if stmt, ok := buildRustExternCrateStatement(content, lineEnd, line, firstContent, statementStart, statement); ok {
+		return rustImportExternCrate, stmt, true
+	}
+	return 0, rustImportStatement{}, false
+}
+
+func buildRustUseStatement(content []byte, lineStart, line, statementStart int, statement []byte) (rustImportStatement, bool) {
+	clauseStart, ok := matchRustUseStatement(statement)
+	if !ok {
+		return rustImportStatement{}, false
+	}
+
+	clauseOffset := skipRustWhitespace(content, statementStart+clauseStart)
+	if clauseOffset >= len(content) {
+		return rustImportStatement{}, false
+	}
+
+	end := bytes.IndexByte(content[clauseOffset:], ';')
+	if end < 0 {
+		return rustImportStatement{}, false
+	}
+
+	stmtLine, column := lineColumnBytesFrom(content, line, lineStart, clauseOffset)
+	return rustImportStatement{
+		Clause: bytes.TrimSpace(content[clauseOffset : clauseOffset+end]),
+		Line:   stmtLine,
+		Column: column,
+	}, true
+}
+
+func buildRustExternCrateStatement(content []byte, lineEnd, line, firstContent, statementStart int, statement []byte) (rustImportStatement, bool) {
+	clauseStart, ok := matchExternCrateStatement(statement)
+	if !ok {
+		return rustImportStatement{}, false
+	}
+
+	end := bytes.IndexByte(content[statementStart+clauseStart:lineEnd], ';')
+	if end < 0 {
+		return rustImportStatement{}, false
+	}
+
+	return rustImportStatement{
+		Clause: bytes.TrimSpace(content[statementStart+clauseStart : statementStart+clauseStart+end]),
+		Line:   line,
+		Column: firstContent + 1,
+	}, true
 }
 
 func matchRustUseStatement(line []byte) (int, bool) {

@@ -762,13 +762,16 @@ func TestAdditionalHelperBranches(t *testing.T) {
 	}
 }
 
-func TestByteScannerHelperBranches(t *testing.T) {
+func TestMatchRustUseStatementBranches(t *testing.T) {
 	if offset, ok := matchRustUseStatement([]byte("use")); !ok || offset != len("use") {
 		t.Fatalf("expected bare use keyword match, got offset=%d ok=%v", offset, ok)
 	}
 	if _, ok := matchRustUseStatement([]byte("useful::thing")); ok {
 		t.Fatalf("expected non-use prefix to fail match")
 	}
+}
+
+func TestMatchExternCrateStatementAndClauseBranches(t *testing.T) {
 	if offset, ok := matchExternCrateStatement([]byte("extern crate serde")); !ok || offset != len("extern crate") {
 		t.Fatalf("expected extern crate match, got offset=%d ok=%v", offset, ok)
 	}
@@ -790,7 +793,9 @@ func TestByteScannerHelperBranches(t *testing.T) {
 	if _, ok := parseExternCrateClause([]byte("serde trailing"), srcLibRS, "", lookup, nil, 1, 1); ok {
 		t.Fatalf("expected invalid extern crate clause to fail")
 	}
+}
 
+func TestRustIdentifierBranchHelpers(t *testing.T) {
 	if ident, next, ok := consumeRustIdentifier([]byte(" _serde123 rest")); !ok || ident != "_serde123" || next != len("_serde123") {
 		t.Fatalf("unexpected rust identifier parse: %q %d %v", ident, next, ok)
 	}
@@ -804,7 +809,9 @@ func TestByteScannerHelperBranches(t *testing.T) {
 	if got := firstContentByteIndex([]byte(" \t ")); got != len(" \t ") {
 		t.Fatalf("expected all-whitespace line to return length, got %d", got)
 	}
+}
 
+func TestLineColumnBytesFromBranches(t *testing.T) {
 	content := []byte("use\n  serde::Serialize;\n")
 	line, col := lineColumnBytesFrom(content, 1, 0, bytes.Index(content, []byte("serde")))
 	if line != 2 || col != 3 {
@@ -813,6 +820,56 @@ func TestByteScannerHelperBranches(t *testing.T) {
 	line, col = lineColumnBytesFrom([]byte("abc"), 4, 0, 99)
 	if line != 4 || col != 4 {
 		t.Fatalf("unexpected byte line/column for past-end offset: %d:%d", line, col)
+	}
+}
+
+func TestRustImportStatementBuilderBranches(t *testing.T) {
+	content := []byte("extern crate serde as serde_alias;\nuse\n  serde::Serialize;\n")
+
+	kind, stmt, ok := parseRustImportStatement(content, 0, bytes.IndexByte(content, '\n'), 1)
+	if !ok || kind != rustImportExternCrate {
+		t.Fatalf("expected extern crate statement parse, got kind=%v stmt=%#v ok=%v", kind, stmt, ok)
+	}
+	if string(stmt.Clause) != "serde as serde_alias" || stmt.Line != 1 || stmt.Column != 1 {
+		t.Fatalf("unexpected extern crate statement: %#v", stmt)
+	}
+
+	useLineStart := bytes.Index(content, []byte("use\n"))
+	useLineEnd := useLineStart + bytes.IndexByte(content[useLineStart:], '\n')
+	kind, stmt, ok = parseRustImportStatement(content, useLineStart, useLineEnd, 2)
+	if !ok || kind != rustImportUse {
+		t.Fatalf("expected use statement parse, got kind=%v stmt=%#v ok=%v", kind, stmt, ok)
+	}
+	if string(stmt.Clause) != "serde::Serialize" || stmt.Line != 3 || stmt.Column != 3 {
+		t.Fatalf("unexpected use statement: %#v", stmt)
+	}
+
+	if _, ok := buildRustExternCrateStatement([]byte("extern crate serde"), len("extern crate serde"), 1, 0, 0, []byte("extern crate serde")); ok {
+		t.Fatalf("expected unterminated extern crate statement to fail")
+	}
+}
+
+func TestRemainingRustHelperBranches(t *testing.T) {
+	if !isRustIdentifierStart('a') || isRustIdentifierStart('1') {
+		t.Fatalf("unexpected rust identifier start classification")
+	}
+	if !isRustIdentifierContinue('9') || isRustIdentifierContinue('-') {
+		t.Fatalf("unexpected rust identifier continuation classification")
+	}
+	if !isRustWhitespace('\r') || isRustWhitespace('x') {
+		t.Fatalf("unexpected rust whitespace classification")
+	}
+	if !samePath(".", ".") {
+		t.Fatalf("expected samePath to treat identical paths as equal")
+	}
+	if got := lastPathSegment("::serde::Serialize"); got != "Serialize" {
+		t.Fatalf("unexpected lastPathSegment: %q", got)
+	}
+	if high, medium, low := recommendationPriorityRank("high"), recommendationPriorityRank("medium"), recommendationPriorityRank("low"); high != 0 || medium != 1 || low != 2 {
+		t.Fatalf("unexpected recommendation priority ordering: %d %d %d", high, medium, low)
+	}
+	if clause, line, column, ok := parseUseStatementIndex("use serde::Serialize;", []int{0, 21, 4, 20}); !ok || clause != "serde::Serialize" || line != 1 || column != 5 {
+		t.Fatalf("unexpected parseUseStatementIndex success parse: %q %d:%d %v", clause, line, column, ok)
 	}
 }
 
