@@ -24,6 +24,9 @@ const (
 	saveBaselineStoreErr    = "--save-baseline requires --baseline-store"
 	baselineStorePath       = ".artifacts/baselines"
 	executeAnalyseErrFmt    = "execute analyse: %v"
+	deniedLicenseSPDX       = "GPL-3.0-ONLY"
+	runtimeTraceCommandErr  = "runtime trace command failed"
+	testRuntimeTracePath    = "trace.ndjson"
 )
 
 type fakeAnalyzer struct {
@@ -305,12 +308,10 @@ func TestValidateFailOnIncreaseRequiresBaseline(t *testing.T) {
 }
 
 func TestValidateDeniedLicenses(t *testing.T) {
-	const deniedSPDX = "GPL-3.0-ONLY"
-
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{
 			{Name: "a", License: &report.DependencyLicense{SPDX: "MIT", Denied: false}},
-			{Name: "b", License: &report.DependencyLicense{SPDX: deniedSPDX, Denied: true}},
+			{Name: "b", License: &report.DependencyLicense{SPDX: deniedLicenseSPDX, Denied: true}},
 		},
 	}
 	if err := validateDeniedLicenses(reportData, true); !errors.Is(err, ErrDeniedLicenses) {
@@ -333,15 +334,13 @@ func TestValidateDeniedLicensesNoDeniedReturnsNil(t *testing.T) {
 }
 
 func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
-	const deniedSPDX = "GPL-3.0-ONLY"
-
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{
 			{Name: "safe", License: &report.DependencyLicense{SPDX: "MIT", Denied: false}},
 		},
 		BaselineComparison: &report.BaselineComparison{
 			NewDeniedLicenses: []report.DeniedLicenseDelta{
-				{Name: "unsafe", Language: "js-ts", SPDX: deniedSPDX},
+				{Name: "unsafe", Language: "js-ts", SPDX: deniedLicenseSPDX},
 			},
 		},
 	}
@@ -351,7 +350,7 @@ func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
 
 	reportData.BaselineComparison.NewDeniedLicenses = nil
 	reportData.Dependencies = []report.DependencyReport{
-		{Name: "existing-denied", License: &report.DependencyLicense{SPDX: deniedSPDX, Denied: true}},
+		{Name: "existing-denied", License: &report.DependencyLicense{SPDX: deniedLicenseSPDX, Denied: true}},
 	}
 	if err := validateDeniedLicenses(reportData, true); err != nil {
 		t.Fatalf("expected no denied-license error for baseline mode without newly introduced denied licenses, got %v", err)
@@ -406,7 +405,7 @@ func TestExecuteAnalyseDeniedLicensesError(t *testing.T) {
 			Dependencies: []report.DependencyReport{
 				{
 					Name:    "copyleft",
-					License: &report.DependencyLicense{SPDX: "GPL-3.0-ONLY", Denied: true},
+					License: &report.DependencyLicense{SPDX: deniedLicenseSPDX, Denied: true},
 				},
 			},
 		},
@@ -712,7 +711,7 @@ func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {
 	if len(warnings) != 1 {
 		t.Fatalf("expected one runtime warning, got %#v", warnings)
 	}
-	if !strings.Contains(warnings[0], "runtime trace command failed") {
+	if !strings.Contains(warnings[0], runtimeTraceCommandErr) {
 		t.Fatalf("unexpected warning: %q", warnings[0])
 	}
 	if tracePath != "" {
@@ -732,7 +731,7 @@ func TestPrepareRuntimeTraceFailureKeepsExplicitTracePath(t *testing.T) {
 	if len(warnings) != 1 {
 		t.Fatalf("expected one runtime warning, got %#v", warnings)
 	}
-	if !strings.Contains(warnings[0], "runtime trace command failed") {
+	if !strings.Contains(warnings[0], runtimeTraceCommandErr) {
 		t.Fatalf("unexpected warning: %q", warnings[0])
 	}
 	if tracePath != explicitPath {
@@ -747,7 +746,7 @@ func TestPrepareRuntimeTraceMissingWorkingDirectoryWarning(t *testing.T) {
 		t.Fatalf("remove orphaned cwd: %v", err)
 	}
 
-	explicitPath := filepath.Join(t.TempDir(), "trace.ndjson")
+	explicitPath := filepath.Join(t.TempDir(), testRuntimeTracePath)
 	req := DefaultRequest()
 	req.RepoPath = "."
 	req.Analyse.RuntimeTracePath = explicitPath
@@ -760,7 +759,7 @@ func TestPrepareRuntimeTraceMissingWorkingDirectoryWarning(t *testing.T) {
 	if len(warnings) == 2 && !strings.Contains(warnings[0], "runtime trace setup: using raw repo path due to normalization error:") {
 		t.Fatalf("expected normalization warning first when two warnings are returned, got %#v", warnings)
 	}
-	if !strings.Contains(warnings[len(warnings)-1], "runtime trace command failed") {
+	if !strings.Contains(warnings[len(warnings)-1], runtimeTraceCommandErr) {
 		t.Fatalf("expected runtime warning last, got %#v", warnings)
 	}
 	if tracePath != explicitPath {
@@ -781,12 +780,12 @@ func TestAppendNotificationWarningsNilReportData(t *testing.T) {
 
 func TestPrepareRuntimeTraceWithoutCommandUsesProvidedTracePath(t *testing.T) {
 	req := DefaultRequest()
-	req.Analyse.RuntimeTracePath = "trace.ndjson"
+	req.Analyse.RuntimeTracePath = testRuntimeTracePath
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
 	if len(warnings) != 0 {
 		t.Fatalf("did not expect warnings without runtime command, got %#v", warnings)
 	}
-	if tracePath != "trace.ndjson" {
+	if tracePath != testRuntimeTracePath {
 		t.Fatalf("expected provided trace path without capture command, got %q", tracePath)
 	}
 }
@@ -813,7 +812,7 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute analyse with runtime warning: %v", err)
 	}
-	if !strings.Contains(output, "runtime trace command failed; continuing with static analysis") {
+	if !strings.Contains(output, runtimeTraceCommandErr+"; continuing with static analysis") {
 		t.Fatalf("expected runtime warning in output, got %q", output)
 	}
 }
