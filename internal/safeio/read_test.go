@@ -2,6 +2,7 @@ package safeio
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -364,5 +365,65 @@ func TestReadFileTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolve target path") && !strings.Contains(err.Error(), "open parent root") {
 		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
+func TestOpenFileReadsAbsoluteAndRelativePaths(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "target.txt")
+	if err := os.WriteFile(targetPath, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+
+	file, err := OpenFile(targetPath)
+	if err != nil {
+		t.Fatalf("OpenFile absolute path: %v", err)
+	}
+	content, err := io.ReadAll(file)
+	closeErr := file.Close()
+	if err != nil {
+		t.Fatalf("read absolute path: %v", err)
+	}
+	if closeErr != nil {
+		t.Fatalf("close absolute path: %v", closeErr)
+	}
+	if string(content) != "content" {
+		t.Fatalf("unexpected content from absolute path: %q", string(content))
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf(getwdErrFmt, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf(restoreWDErrFmt, originalWD, err)
+		}
+	})
+	if err := os.Chdir(rootDir); err != nil {
+		t.Fatalf("chdir rootDir: %v", err)
+	}
+
+	file, err = OpenFile("target.txt")
+	if err != nil {
+		t.Fatalf("OpenFile relative path: %v", err)
+	}
+	content, err = io.ReadAll(file)
+	closeErr = file.Close()
+	if err != nil {
+		t.Fatalf("read relative path: %v", err)
+	}
+	if closeErr != nil {
+		t.Fatalf("close relative path: %v", closeErr)
+	}
+	if string(content) != "content" {
+		t.Fatalf("unexpected content from relative path: %q", string(content))
+	}
+}
+
+func TestOpenFileReturnsErrorForMissingFile(t *testing.T) {
+	_, err := OpenFile(filepath.Join(t.TempDir(), "missing.txt"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }
