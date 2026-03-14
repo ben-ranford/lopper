@@ -45,7 +45,7 @@ export class LopperRunner {
     document?: vscode.TextDocument,
   ): Promise<WorkspaceAnalysis> {
     const binaryPath = await this.resolveBinaryPath(folder);
-    const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document);
+    const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const topN = this.topN(folder);
     const report = await this.runReport(binaryPath, [
       "analyse",
