@@ -118,6 +118,27 @@ func TestBaselineSnapshotPathSanitizesKey(t *testing.T) {
 	}
 }
 
+func TestSanitizeBaselineKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "empty", key: "", want: "baseline"},
+		{name: "valid", key: "release-1.2_prod", want: "release-1.2_prod"},
+		{name: "replaces invalid and trims separators", key: "../feature branch#", want: "feature_branch"},
+		{name: "all separators fallback", key: "._-", want: "baseline"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeBaselineKey(tc.key); got != tc.want {
+				t.Fatalf("sanitizeBaselineKey(%q) = %q, want %q", tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSaveSnapshotMkdirFailure(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
 	root := t.TempDir()

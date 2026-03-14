@@ -61,6 +61,32 @@ func TestApplyBaselineCurrentWithoutTotalsError(t *testing.T) {
 	}
 }
 
+func TestSummaryHelpersHandleNilInputs(t *testing.T) {
+	if got := safeSummaryField(nil, func(summary *Summary) int {
+		return summary.DependencyCount
+	}); got != 0 {
+		t.Fatalf("expected nil safeSummaryField to return 0, got %d", got)
+	}
+
+	if got := safeSummaryFloat(nil, func(summary *Summary) float64 {
+		return summary.UsedPercent
+	}); got != 0 {
+		t.Fatalf("expected nil safeSummaryFloat to return 0, got %f", got)
+	}
+
+	if got := wasteFromSummary(nil); got != 0 {
+		t.Fatalf("expected nil summary waste to return 0, got %f", got)
+	}
+
+	if got := wasteFromSummary(&Summary{TotalExportsCount: 0, UsedPercent: 75}); got != 0 {
+		t.Fatalf("expected zero-export summary waste to return 0, got %f", got)
+	}
+
+	if got := wasteFromSummary(&Summary{TotalExportsCount: 10, UsedPercent: 72.5}); got != 27.5 {
+		t.Fatalf("expected waste percentage to be derived from used percent, got %f", got)
+	}
+}
+
 func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	current := Report{
 		Dependencies: []DependencyReport{

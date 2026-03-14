@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/csv"
 	"errors"
 	"os"
 	"path/filepath"
@@ -305,4 +306,52 @@ func TestLoadConfigInvalidYAML(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected YAML parse error for invalid config")
 	}
+}
+
+func TestDashboardCSVHelpersPropagateWriteErrors(t *testing.T) {
+	reportData := Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		Repos: []RepoResult{
+			{Name: testRepoA, Path: "./a", Language: "go", DependencyCount: 1},
+		},
+		Summary: Summary{TotalRepos: 1, TotalDeps: 1},
+		CrossRepoDeps: []CrossRepoDependency{
+			{Name: "shared", Count: 3, Repositories: []string{"api", "web", "worker"}},
+		},
+	}
+
+	if writeDashboardSummaryCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}), reportData) == nil {
+		t.Fatalf("expected summary CSV writer error")
+	}
+
+	if writeDashboardRepoRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}), reportData.Repos) == nil {
+		t.Fatalf("expected repo row CSV writer error")
+	}
+
+	if writeDashboardCrossRepoRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}), reportData.CrossRepoDeps) == nil {
+		t.Fatalf("expected cross-repo CSV writer error")
+	}
+}
+
+func poisonedDashboardCSVWriter(t *testing.T, writer *failingDashboardWriter) *csv.Writer {
+	t.Helper()
+
+	csvWriter := csv.NewWriter(writer)
+	if err := csvWriter.Write([]string{"seed"}); err != nil {
+		t.Fatalf("seed csv writer: %v", err)
+	}
+	csvWriter.Flush()
+	if csvWriter.Error() == nil {
+		t.Fatalf("expected seed write to poison csv writer")
+	}
+	return csvWriter
+}
+
+type failingDashboardWriter struct {
+	writes int
+}
+
+func (w *failingDashboardWriter) Write(_ []byte) (int, error) {
+	w.writes++
+	return 0, errors.New("boom")
 }
