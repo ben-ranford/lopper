@@ -460,7 +460,7 @@ func runSummaryDependencyPipeline(reportData report.Report, state summaryState) 
 	return sorted, paged, state, totalPages
 }
 
-func normalizeSummaryPage(page int, totalPages int) int {
+func normalizeSummaryPage(page, totalPages int) int {
 	if page > totalPages {
 		return totalPages
 	}

@@ -312,7 +312,7 @@ func writeFileAtomically(repoPath, path, content string, mode os.FileMode) error
 	return safeio.WriteFileUnder(repoPath, path, []byte(content), mode)
 }
 
-func resolveCodemodFilePath(repoPath string, relativePath string) (string, error) {
+func resolveCodemodFilePath(repoPath, relativePath string) (string, error) {
 	if strings.TrimSpace(relativePath) == "" {
 		return "", fmt.Errorf("empty codemod file path")
 	}
