@@ -32,6 +32,7 @@ const (
 	unknownCrateID       = "unknown-crate"
 	dirWithManifest      = "dir-with-manifest"
 	workspaceMembersGlob = "crates/*"
+	externCrateSerdeStmt = "extern crate serde"
 )
 
 func TestAdapterIdentityAndDetect(t *testing.T) {
@@ -772,7 +773,7 @@ func TestMatchRustUseStatementBranches(t *testing.T) {
 }
 
 func TestMatchExternCrateStatementAndClauseBranches(t *testing.T) {
-	if offset, ok := matchExternCrateStatement([]byte("extern crate serde")); !ok || offset != len("extern crate") {
+	if offset, ok := matchExternCrateStatement([]byte(externCrateSerdeStmt)); !ok || offset != len("extern crate") {
 		t.Fatalf("expected extern crate match, got offset=%d ok=%v", offset, ok)
 	}
 	if _, ok := matchExternCrateStatement([]byte("external crate serde")); ok {
@@ -797,7 +798,7 @@ func TestMatchExternCrateStatementAndClauseBranches(t *testing.T) {
 		t.Fatalf("expected invalid extern crate clause to fail")
 	}
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
-	extern := parseExternCrateImportsBytes([]byte("extern crate serde;\nuse unknown_crate::Thing;\n"), srcLibRS, "", lookup, scan)
+	extern := parseExternCrateImportsBytes([]byte(externCrateSerdeStmt+";\nuse unknown_crate::Thing;\n"), srcLibRS, "", lookup, scan)
 	if len(extern) != 1 || scan.UnresolvedImports[unknownCrateID] != 0 {
 		t.Fatalf("expected extern-only parsing without use resolution side effects, got imports=%#v unresolved=%#v", extern, scan.UnresolvedImports)
 	}
@@ -856,7 +857,7 @@ func TestRustImportStatementBuilderBranches(t *testing.T) {
 		t.Fatalf("unexpected use statement: %#v", stmt)
 	}
 
-	if _, ok := buildRustExternCrateStatement([]byte("extern crate serde"), len("extern crate serde"), 1, 0, 0, []byte("extern crate serde")); ok {
+	if _, ok := buildRustExternCrateStatement([]byte(externCrateSerdeStmt), len(externCrateSerdeStmt), 1, 0, 0, []byte(externCrateSerdeStmt)); ok {
 		t.Fatalf("expected unterminated extern crate statement to fail")
 	}
 }
