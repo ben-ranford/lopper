@@ -262,8 +262,11 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           version="${RELEASE_TAG#v}"
+          current_version="$(python3 scripts/read_package_version.py extensions/vscode-lopper/package.json)"
           cd extensions/vscode-lopper
-          npm version "$version" --no-git-tag-version
+          if [ "$current_version" != "$version" ]; then
+            npm version "$version" --no-git-tag-version
+          fi
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Upload VS Code extension artifact
