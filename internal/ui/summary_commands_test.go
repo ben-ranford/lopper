@@ -53,61 +53,75 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 }
 
 func TestSummaryCommandHandlersPagingAndShortcuts(t *testing.T) {
-	t.Run("page navigation commands", func(t *testing.T) {
-		state := newSummaryCommandState()
+	t.Run("page navigation commands", testSummaryPageNavigationCommands)
+	t.Run("size command resets page", testSummarySizeCommandResetsPage)
+	t.Run("sort toggle shortcut", testSummarySortToggleShortcut)
+	t.Run("direct sort shortcuts", testSummaryDirectSortShortcuts)
+	t.Run("unknown command returns false", testSummaryUnknownCommandReturnsFalse)
+}
 
-		if !applySummaryCommand(state, "page 3", io.Discard) || state.page != 3 {
-			t.Fatalf("expected page command to apply")
-		}
-		if !applySummaryCommand(state, "next", io.Discard) || state.page != 4 {
-			t.Fatalf("expected next to increment page")
-		}
-		if !applySummaryCommand(state, "prev", io.Discard) || state.page != 3 {
-			t.Fatalf("expected prev to decrement page")
-		}
-	})
+func testSummaryPageNavigationCommands(t *testing.T) {
+	state := newSummaryCommandState()
 
-	t.Run("size command resets page", func(t *testing.T) {
-		state := newSummaryCommandState()
+	assertSummaryCommandApplied(t, state, "page 3")
+	assertSummaryState(t, state, summaryState{page: 3, pageSize: 10, sortMode: sortByWaste}, "page command")
+	assertSummaryCommandApplied(t, state, "next")
+	assertSummaryState(t, state, summaryState{page: 4, pageSize: 10, sortMode: sortByWaste}, "next command")
+	assertSummaryCommandApplied(t, state, "prev")
+	assertSummaryState(t, state, summaryState{page: 3, pageSize: 10, sortMode: sortByWaste}, "prev command")
+}
 
-		if !applySummaryCommand(state, "size 7", io.Discard) || state.pageSize != 7 || state.page != 1 {
-			t.Fatalf("expected size command to set page size and reset page")
-		}
-	})
+func testSummarySizeCommandResetsPage(t *testing.T) {
+	state := newSummaryCommandState()
 
-	t.Run("sort toggle shortcut", func(t *testing.T) {
-		state := newSummaryCommandState()
+	assertSummaryCommandApplied(t, state, "size 7")
+	assertSummaryState(t, state, summaryState{page: 1, pageSize: 7, sortMode: sortByWaste}, "size command")
+}
 
-		if !applySummaryCommand(state, "s", io.Discard) {
-			t.Fatalf("expected toggle sort to work")
-		}
-		if state.sortMode != sortByName {
-			t.Fatalf("expected toggle sort to switch to name sort")
-		}
-		if !applySummaryCommand(state, "s", io.Discard) {
-			t.Fatalf("expected second toggle sort to work")
-		}
-		if state.sortMode != sortByWaste {
-			t.Fatalf("expected second toggle sort to switch back to waste sort")
-		}
-	})
+func testSummarySortToggleShortcut(t *testing.T) {
+	state := newSummaryCommandState()
 
-	t.Run("direct sort shortcuts", func(t *testing.T) {
-		state := newSummaryCommandState()
+	assertSummaryCommandApplied(t, state, "s")
+	assertSummaryState(t, state, summaryState{page: 1, pageSize: 10, sortMode: sortByName}, "first sort toggle")
+	assertSummaryCommandApplied(t, state, "s")
+	assertSummaryState(t, state, summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}, "second sort toggle")
+}
 
-		if !applySummaryCommand(state, "w", io.Discard) || state.sortMode != sortByWaste {
-			t.Fatalf("expected w shortcut to set waste sort")
-		}
-		if !applySummaryCommand(state, "a", io.Discard) || state.sortMode != sortByName {
-			t.Fatalf("expected a shortcut to set name sort")
-		}
-	})
+func testSummaryDirectSortShortcuts(t *testing.T) {
+	state := newSummaryCommandState()
 
-	t.Run("unknown command returns false", func(t *testing.T) {
-		if applySummaryCommand(newSummaryCommandState(), "unknown", io.Discard) {
-			t.Fatalf("expected unknown command to return false")
-		}
-	})
+	assertSummaryCommandApplied(t, state, "w")
+	assertSummaryState(t, state, summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}, "w shortcut")
+	assertSummaryCommandApplied(t, state, "a")
+	assertSummaryState(t, state, summaryState{page: 1, pageSize: 10, sortMode: sortByName}, "a shortcut")
+}
+
+func testSummaryUnknownCommandReturnsFalse(t *testing.T) {
+	assertSummaryCommandRejected(t, newSummaryCommandState(), "unknown")
+}
+
+func assertSummaryCommandApplied(t *testing.T, state *summaryState, command string) {
+	t.Helper()
+
+	if !applySummaryCommand(state, command, io.Discard) {
+		t.Fatalf("expected %q command to apply", command)
+	}
+}
+
+func assertSummaryCommandRejected(t *testing.T, state *summaryState, command string) {
+	t.Helper()
+
+	if applySummaryCommand(state, command, io.Discard) {
+		t.Fatalf("expected %q command to return false", command)
+	}
+}
+
+func assertSummaryState(t *testing.T, state *summaryState, want summaryState, context string) {
+	t.Helper()
+
+	if *state != want {
+		t.Fatalf("unexpected state after %s: got %#v want %#v", context, *state, want)
+	}
 }
 
 func TestSummaryHelpers(t *testing.T) {
