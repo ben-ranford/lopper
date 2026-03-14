@@ -33,30 +33,8 @@ jobs:
           set -euo pipefail
           git fetch --tags --force
 
-          release_floor="$(
-            python3 - <<'PY'
-import json
-import sys
-
-path = "extensions/vscode-lopper/package.json"
-try:
-    with open(path, encoding="utf-8") as handle:
-        package = json.load(handle)
-except FileNotFoundError:
-    print(f"Missing {path}", file=sys.stderr)
-    sys.exit(1)
-except json.JSONDecodeError as exc:
-    print(f"Invalid JSON in {path}: {exc}", file=sys.stderr)
-    sys.exit(1)
-
-version = package.get("version")
-if not isinstance(version, str) or version == "":
-    print(f"Missing string version in {path}", file=sys.stderr)
-    sys.exit(1)
-
-print(version)
-PY
-          )"
+          package_json_path="extensions/vscode-lopper/package.json"
+          release_floor="$(python3 -c $'import json\nimport sys\n\npath = sys.argv[1]\ntry:\n    with open(path, encoding=\"utf-8\") as handle:\n        package = json.load(handle)\nexcept FileNotFoundError:\n    print(f\"Missing {path}\", file=sys.stderr)\n    sys.exit(1)\nexcept json.JSONDecodeError as exc:\n    print(f\"Invalid JSON in {path}: {exc}\", file=sys.stderr)\n    sys.exit(1)\n\nversion = package.get(\"version\")\nif not isinstance(version, str) or version == \"\":\n    print(f\"Missing string version in {path}\", file=sys.stderr)\n    sys.exit(1)\n\nprint(version)\n' "$package_json_path")"
           if [[ ! "$release_floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Extension version '$release_floor' is invalid"
             exit 1
