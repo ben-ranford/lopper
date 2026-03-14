@@ -6,7 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
 func CanceledContext() context.Context {
@@ -72,4 +75,21 @@ func MustFirstFileEntry(t *testing.T, dir string) fs.DirEntry {
 	}
 	t.Fatalf("expected file entry in %s", dir)
 	return nil
+}
+
+func RunGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	gitPath, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve git path: %v", err)
+	}
+	command, err := gitexec.CommandContext(context.Background(), gitPath, append([]string{"-C", repo}, args...)...)
+	if err != nil {
+		t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
+	}
+	command.Env = gitexec.SanitizedEnv()
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
 }

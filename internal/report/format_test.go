@@ -104,6 +104,51 @@ func TestFormatJSON(t *testing.T) {
 	assertOutputContains(t, output, "repoPath")
 }
 
+func TestFormatTableIncludesCodemodApplySummary(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "lodash",
+				UsedExportsCount:  1,
+				TotalExportsCount: 1,
+				UsedPercent:       100,
+				Codemod: &CodemodReport{
+					Mode: "apply",
+					Apply: &CodemodApplyReport{
+						AppliedFiles:   1,
+						AppliedPatches: 2,
+						SkippedFiles:   1,
+						SkippedPatches: 1,
+						FailedFiles:    1,
+						FailedPatches:  1,
+						BackupPath:     ".artifacts/lopper-codemod-backups/lodash.json",
+						Results: []CodemodApplyResult{
+							{File: "src/index.js", Status: "applied", PatchCount: 2},
+							{File: "src/unsafe.js", Status: "skipped", PatchCount: 1, Message: "reason codes: alias-conflict"},
+							{File: "src/bad.js", Status: "failed", PatchCount: 1, Message: "source line mismatch at src/bad.js:1"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	expected := []string{
+		"Codemod apply:",
+		"dependency: lodash",
+		"applied: 1 file(s), 2 patch(es)",
+		"skipped: 1 file(s), 1 patch(es)",
+		"failed: 1 file(s), 1 patch(es)",
+		"backup: .artifacts/lopper-codemod-backups/lodash.json",
+		"applied src/index.js (2 patch(es))",
+	}
+	assertOutputContains(t, output, expected...)
+}
+
 func TestFormatSARIF(t *testing.T) {
 	reportData := sampleSARIFReport()
 

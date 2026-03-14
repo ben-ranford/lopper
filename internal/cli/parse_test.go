@@ -21,6 +21,9 @@ const (
 	includeFlagName             = "--include"
 	excludeFlagName             = "--exclude"
 	suggestOnlyFlag             = "--suggest-only"
+	applyCodemodFlag            = "--apply-codemod"
+	applyCodemodConfirmFlag     = "--apply-codemod-confirm"
+	allowDirtyFlag              = "--allow-dirty"
 	failAliasFlag               = "--fail-on-increase"
 	thresholdFailFlag           = "--threshold-fail-on-increase"
 	thresholdLowWarnFlag        = "--threshold-low-confidence-warning"
@@ -315,6 +318,61 @@ func TestParseArgsAnalyseSuggestOnly(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "lodash", suggestOnlyFlag})
 	if !req.Analyse.SuggestOnly {
 		t.Fatalf("expected suggest-only to be enabled")
+	}
+}
+
+func TestParseArgsAnalyseApplyCodemod(t *testing.T) {
+	req := mustParseArgs(t, []string{"analyse", "lodash", applyCodemodFlag, applyCodemodConfirmFlag, allowDirtyFlag})
+	if !req.Analyse.ApplyCodemod {
+		t.Fatalf("expected apply-codemod to be enabled")
+	}
+	if !req.Analyse.AllowDirty {
+		t.Fatalf("expected allow-dirty to be enabled")
+	}
+	if req.Analyse.SuggestOnly {
+		t.Fatalf("expected suggest-only to remain disabled")
+	}
+}
+
+func TestParseArgsAnalyseApplyCodemodValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing_confirm",
+			args: []string{"analyse", "lodash", applyCodemodFlag},
+			want: "--apply-codemod requires --apply-codemod-confirm",
+		},
+		{
+			name: "confirm_without_apply",
+			args: []string{"analyse", "lodash", applyCodemodConfirmFlag},
+			want: "--apply-codemod-confirm requires --apply-codemod",
+		},
+		{
+			name: "allow_dirty_without_apply",
+			args: []string{"analyse", "lodash", allowDirtyFlag},
+			want: "--allow-dirty requires --apply-codemod",
+		},
+		{
+			name: "conflicts_with_suggest_only",
+			args: []string{"analyse", "lodash", suggestOnlyFlag, applyCodemodFlag, applyCodemodConfirmFlag},
+			want: "--suggest-only and --apply-codemod cannot be combined",
+		},
+		{
+			name: "top_not_supported",
+			args: []string{"analyse", "--top", "5", applyCodemodFlag, applyCodemodConfirmFlag},
+			want: "--apply-codemod requires a specific dependency target",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := expectParseArgsError(t, tc.args, "expected apply-codemod validation error")
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 

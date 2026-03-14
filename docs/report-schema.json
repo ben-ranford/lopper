@@ -296,7 +296,7 @@
       "additionalProperties": false,
       "required": ["mode"],
       "properties": {
-        "mode": { "type": "string", "enum": ["suggest-only"] },
+        "mode": { "type": "string", "enum": ["suggest-only", "apply"] },
         "suggestions": {
           "type": "array",
           "items": { "$ref": "#/$defs/codemodSuggestion" }
@@ -304,6 +304,9 @@
         "skips": {
           "type": "array",
           "items": { "$ref": "#/$defs/codemodSkip" }
+        },
+        "apply": {
+          "$ref": "#/$defs/codemodApplyReport"
         }
       }
     },
@@ -332,6 +335,34 @@
         "importName": { "type": "string" },
         "module": { "type": "string" },
         "reasonCode": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "codemodApplyReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "appliedFiles": { "type": "integer", "minimum": 0 },
+        "appliedPatches": { "type": "integer", "minimum": 0 },
+        "skippedFiles": { "type": "integer", "minimum": 0 },
+        "skippedPatches": { "type": "integer", "minimum": 0 },
+        "failedFiles": { "type": "integer", "minimum": 0 },
+        "failedPatches": { "type": "integer", "minimum": 0 },
+        "backupPath": { "type": "string" },
+        "results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/codemodApplyResult" }
+        }
+      }
+    },
+    "codemodApplyResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "status", "patchCount"],
+      "properties": {
+        "file": { "type": "string" },
+        "status": { "type": "string", "enum": ["applied", "skipped", "failed"] },
+        "patchCount": { "type": "integer", "minimum": 0 },
         "message": { "type": "string" }
       }
     },
