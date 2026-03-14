@@ -319,7 +319,6 @@ jobs:
             echo
             echo "- Marketplace ID: \`BenRanford.vscode-lopper\`"
             echo "- VSIX asset: \`lopper-vscode-${current_tag#v}.vsix\`"
-            echo "- Marketplace publish: automatic for stable semver releases when \`VSCE_PUBLISH\` is configured"
             echo
             echo "---"
             echo
