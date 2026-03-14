@@ -277,7 +277,7 @@ func testAnalysisCacheWriteAtomicAndHashFileErrors(t *testing.T) {
 	if err := os.MkdirAll(targetDir, 0o750); err != nil {
 		t.Fatalf("mkdir target: %v", err)
 	}
-	if err := writeFileAtomic(targetDir, []byte("x")); err == nil {
+	if writeFileAtomic(targetDir, []byte("x")) == nil {
 		t.Fatalf("expected writeFileAtomic to fail when target is directory")
 	}
 	if _, err := hashFile(targetDir); err == nil {
