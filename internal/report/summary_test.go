@@ -68,6 +68,6 @@ func TestComputeSummaryAndLanguageBreakdownEmpty(t *testing.T) {
 		t.Fatalf("expected nil summary for empty dependencies, got %#v", got)
 	}
 	if got := ComputeLanguageBreakdown(nil); len(got) != 0 {
-		t.Fatalf("expected nil language breakdown for empty dependencies, got %#v", got)
+		t.Fatalf("expected empty language breakdown for empty dependencies, got %#v", got)
 	}
 }
