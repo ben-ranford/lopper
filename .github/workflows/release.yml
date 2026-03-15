@@ -326,7 +326,7 @@ jobs:
           } > release-changelog.md
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@71d29a04ae7c63895f38299d7a5e05d238f7f445 # v2.5.1
+        uses: softprops/action-gh-release@1853d73993c8ca1b2c9c1a7fede39682d0ab5c2a # v2.5.3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: Release ${{ needs.prepare.outputs.tag }}
