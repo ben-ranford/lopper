@@ -133,53 +133,38 @@ func TestAnalysisCacheAdditionalStoreBranches(t *testing.T) {
 		t.Skip("permission-based cache write failures are not portable on windows")
 	}
 
-	t.Run("object write failure", func(t *testing.T) {
-		cachePath := filepath.Join(t.TempDir(), cacheDirName)
-		objectsDir := filepath.Join(cachePath, cacheObjectsDirName)
-		keysDir := filepath.Join(cachePath, cacheKeysDirName)
-		if err := os.MkdirAll(objectsDir, 0o755); err != nil {
-			t.Fatalf("mkdir objects dir: %v", err)
-		}
-		if err := os.MkdirAll(keysDir, 0o755); err != nil {
-			t.Fatalf("mkdir keys dir: %v", err)
-		}
-		if err := os.Chmod(objectsDir, 0o500); err != nil {
-			t.Fatalf("chmod objects dir: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(objectsDir, 0o700); err != nil {
-				t.Fatalf("restore objects dir perms: %v", err)
+	for _, tc := range []struct {
+		name       string
+		blockedDir string
+		keyDigest  string
+	}{
+		{name: "object write failure", blockedDir: cacheObjectsDirName, keyDigest: "object-write"},
+		{name: "pointer write failure", blockedDir: cacheKeysDirName, keyDigest: "pointer-write"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cachePath := filepath.Join(t.TempDir(), cacheDirName)
+			objectsDir := filepath.Join(cachePath, cacheObjectsDirName)
+			keysDir := filepath.Join(cachePath, cacheKeysDirName)
+			for _, dir := range []string{objectsDir, keysDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", dir, err)
+				}
+			}
+
+			blockedPath := filepath.Join(cachePath, tc.blockedDir)
+			if err := os.Chmod(blockedPath, 0o500); err != nil {
+				t.Fatalf("chmod %s: %v", blockedPath, err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(blockedPath, 0o700); err != nil {
+					t.Fatalf("restore %s perms: %v", blockedPath, err)
+				}
+			})
+
+			cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, cacheable: true}
+			if err := cache.store(cacheEntryDescriptor{KeyDigest: tc.keyDigest, InputDigest: "input"}, report.Report{RepoPath: "repo"}); err == nil {
+				t.Fatalf("expected cache store to fail when %s is not writable", tc.blockedDir)
 			}
 		})
-
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, cacheable: true}
-		if err := cache.store(cacheEntryDescriptor{KeyDigest: "object-write", InputDigest: "input"}, report.Report{RepoPath: "repo"}); err == nil {
-			t.Fatalf("expected object write failure")
-		}
-	})
-
-	t.Run("pointer write failure", func(t *testing.T) {
-		cachePath := filepath.Join(t.TempDir(), cacheDirName)
-		objectsDir := filepath.Join(cachePath, cacheObjectsDirName)
-		keysDir := filepath.Join(cachePath, cacheKeysDirName)
-		if err := os.MkdirAll(objectsDir, 0o755); err != nil {
-			t.Fatalf("mkdir objects dir: %v", err)
-		}
-		if err := os.MkdirAll(keysDir, 0o755); err != nil {
-			t.Fatalf("mkdir keys dir: %v", err)
-		}
-		if err := os.Chmod(keysDir, 0o500); err != nil {
-			t.Fatalf("chmod keys dir: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(keysDir, 0o700); err != nil {
-				t.Fatalf("restore keys dir perms: %v", err)
-			}
-		})
-
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, cacheable: true}
-		if err := cache.store(cacheEntryDescriptor{KeyDigest: "pointer-write", InputDigest: "input"}, report.Report{RepoPath: "repo"}); err == nil {
-			t.Fatalf("expected pointer write failure")
-		}
-	})
+	}
 }

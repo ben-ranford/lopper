@@ -186,6 +186,23 @@ func TestChdir(t *testing.T) {
 	})
 }
 
+func TestChdirRemovedDir(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	t.Run("removed cwd", func(t *testing.T) {
+		ChdirRemovedDir(t)
+	})
+
+	if cwd, err := os.Getwd(); err != nil {
+		t.Fatalf("getwd after cleanup: %v", err)
+	} else if cwd != originalWD {
+		t.Fatalf("expected cwd restored to %s, got %s", originalWD, cwd)
+	}
+}
+
 func TestRunGit(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")

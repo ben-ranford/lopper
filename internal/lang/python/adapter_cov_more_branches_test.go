@@ -8,6 +8,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestPythonAdditionalHelperBranches(t *testing.T) {
@@ -82,26 +83,7 @@ func testPythonDetectWithMissingRepoReturnsWalkError(t *testing.T) {
 }
 
 func testPythonAnalyseEmptyRepoPathFailsWhenCWDisGone(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf("restore wd %s: %v", originalWD, err)
-		}
-	})
-
-	deadDir := filepath.Join(t.TempDir(), "dead")
-	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf("mkdir dead dir: %v", err)
-	}
-	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf("chdir dead dir: %v", err)
-	}
-	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf("remove dead dir: %v", err)
-	}
+	testutil.ChdirRemovedDir(t)
 
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{}); err == nil {
 		t.Fatalf("expected analyse to fail when cwd cannot be resolved")
