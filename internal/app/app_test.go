@@ -176,7 +176,7 @@ func TestExecuteAnalyseFailOnIncreaseThreshold(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected fail-on-increase error")
 	}
-	if err != ErrFailOnIncrease {
+	if !errors.Is(err, ErrFailOnIncrease) {
 		t.Fatalf("expected ErrFailOnIncrease, got %v", err)
 	}
 }
@@ -1004,7 +1004,7 @@ func TestExecuteAnalyseFailOnIncreasePreservesOriginalWhenFormatFails(t *testing
 	req.Analyse.Thresholds.FailOnIncreasePercent = 1
 
 	_, err := application.Execute(context.Background(), req)
-	if err != ErrFailOnIncrease {
+	if !errors.Is(err, ErrFailOnIncrease) {
 		t.Fatalf("expected ErrFailOnIncrease, got %v", err)
 	}
 }

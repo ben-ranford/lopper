@@ -8,20 +8,22 @@ Requirements:
 
 - Go `1.26.x`
 - `zig` (required for cross-CGO release builds)
+- `shellcheck` (required for `make ci` and git hooks)
 - `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
 - `gostyle` (optional for faster local runs; `make lint` auto-runs a pinned version)
+- `actionlint` (optional for faster local runs; `make actionlint` auto-runs a pinned version)
+- `govulncheck` (optional for faster local runs; `make vuln-check` auto-runs a pinned version)
 
 Install dependencies and run checks:
 
 ```bash
 make setup
-make fmt
-make test
-make lint
-make suppression-check
-make cov
-make build
+make ci
+make demos-check
 ```
+
+`make ci` includes goroutine leak detection and the curated memory benchmark delta gate against `origin/main`.
+If a change intentionally increases the tracked memory benchmarks beyond the configured thresholds, note that in the PR and ask a maintainer to apply the `memory-approved` label.
 
 ## VS Code Extension
 
@@ -79,8 +81,8 @@ If you add a new language adapter, update the contributor-facing docs and user-f
 
 - Problem statement and intended behavior
 - What changed and why
-- Test evidence (`go test ./...`, manual commands, fixtures)
-- Memory-profile evidence for perf-sensitive changes when relevant
+- Test evidence (`make ci`, `make demos-check`, `act pull_request -W .github/workflows/ci.yml --job verify`, manual commands, fixtures)
+- Performance notes when memory benchmark deltas are intentional, including whether `memory-approved` is needed
 - Backward compatibility notes (if any)
 
 If your change impacts CLI behavior shown in docs, refresh demo GIFs with `make demos` and include regenerated assets.

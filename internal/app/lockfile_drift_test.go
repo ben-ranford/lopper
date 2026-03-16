@@ -168,12 +168,15 @@ func TestGitHelperErrors(t *testing.T) {
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected non-git temp dir to not be worktree")
 	}
+	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitTrackedChanges(nil, repo); err == nil {
 		t.Fatalf("expected tracked changes command with nil context to fail outside git repo")
 	}
+	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitUntrackedFiles(nil, repo); err == nil {
 		t.Fatalf("expected untracked files command with nil context to fail outside git repo")
 	}
+	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if isGitWorktree(nil, repo) {
 		t.Fatalf("expected non-git temp dir to not be worktree with nil context")
 	}

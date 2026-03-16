@@ -533,7 +533,9 @@ func TestFinalizeGoModuleInfoContract(t *testing.T) {
 		LocalModulePaths:     []string{"  example.com/z  ", exampleModuleA, "example.com/z", ""},
 		DeclaredDependencies: []string{" " + pkgErrorsDependency + " ", depUUID, pkgErrorsDependency, ""},
 	}
-	finalizeGoModuleInfo(&info)
+	if err := finalizeGoModuleInfo(&info); err != nil {
+		t.Fatalf("finalize go module info: %v", err)
+	}
 	if !slices.Equal(info.LocalModulePaths, []string{exampleModuleA, "example.com/z"}) {
 		t.Fatalf("expected finalized local modules to be deduped and sorted, got %#v", info.LocalModulePaths)
 	}
@@ -941,12 +943,12 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "vendor"), 0o755); err != nil {
 		t.Fatalf("mkdir vendor: %v", err)
 	}
-	if err := walkGoDetectionEntry(filepath.Join(repo, "vendor"), mustDirEntry(t, filepath.Join(repo, "vendor")), roots2, &detection, &visited, 5); err != filepath.SkipDir {
+	if err := walkGoDetectionEntry(filepath.Join(repo, "vendor"), mustDirEntry(t, filepath.Join(repo, "vendor")), roots2, &detection, &visited, 5); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected skip dir from walk helper, got %v", err)
 	}
 	filePath := writeTempFile(t, repo, "tiny.go", packageMainLine)
 	visited = 6
-	if err := walkGoDetectionEntry(filePath, mustDirEntry(t, filePath), roots2, &detection, &visited, 5); err != fs.SkipAll {
+	if err := walkGoDetectionEntry(filePath, mustDirEntry(t, filePath), roots2, &detection, &visited, 5); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected fs.SkipAll from max file bound, got %v", err)
 	}
 }
@@ -1112,15 +1114,15 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 		t.Fatalf("stat vendor: %v", err)
 	}
 	vendorEntry := fs.FileInfoToDirEntry(vendorInfo)
-	if err := handleScanDirEntry(vendor, repo, vendorEntry, nil, nil); err != filepath.SkipDir {
+	if err := handleScanDirEntry(vendor, repo, vendorEntry, nil, nil); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected vendor skip dir, got %v", err)
 	}
 	nested := map[string]struct{}{child: {}}
 	result := newScanResult()
-	if err := handleScanDirEntry(child, repo, entry, nested, &result); err != filepath.SkipDir {
+	if err := handleScanDirEntry(child, repo, entry, nested, &result); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected nested module skip, got %v", err)
 	}
-	if err := handleScanDirEntry(child, repo, entry, nested, nil); err != filepath.SkipDir {
+	if err := handleScanDirEntry(child, repo, entry, nested, nil); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected nested module skip with nil result, got %v", err)
 	}
 

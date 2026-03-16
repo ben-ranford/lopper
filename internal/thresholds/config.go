@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -578,7 +579,7 @@ func extractRemotePolicyPin(fragment string) (string, error) {
 	return normalized, nil
 }
 
-func readRemotePolicyFile(location string) ([]byte, error) {
+func readRemotePolicyFile(location string) (_ []byte, err error) {
 	parsed, err := url.Parse(location)
 	if err != nil {
 		return nil, fmt.Errorf("parse remote policy URL: %w", err)
@@ -593,7 +594,11 @@ func readRemotePolicyFile(location string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch remote policy: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, fmt.Errorf("fetch remote policy: unexpected status %d", response.StatusCode)

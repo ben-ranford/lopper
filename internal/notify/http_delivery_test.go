@@ -58,6 +58,10 @@ func TestSendWebhookJSON(t *testing.T) {
 }
 
 func TestCloseResponseBodyNilSafe(t *testing.T) {
-	closeResponseBody(nil)
-	closeResponseBody(&http.Response{})
+	if err := closeResponseBody(nil); err != nil {
+		t.Fatalf("close nil response body: %v", err)
+	}
+	if err := closeResponseBody(&http.Response{}); err != nil {
+		t.Fatalf("close empty response body: %v", err)
+	}
 }

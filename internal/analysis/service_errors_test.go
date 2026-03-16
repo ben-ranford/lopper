@@ -221,7 +221,7 @@ func TestPrepareAnalysisRepoPathAbsErrorFallback(t *testing.T) {
 	}
 
 	svc := &Service{Registry: language.NewRegistry()}
-	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err == nil {
-		// this branch is platform dependent; treat nil as acceptable.
+	if _, err := svc.prepareAnalysis(Request{RepoPath: ".", Language: "all"}); err != nil {
+		t.Logf("prepareAnalysis returned platform-dependent error: %v", err)
 	}
 }

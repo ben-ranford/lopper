@@ -49,10 +49,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return err
 	}
 	if len(reportData.Dependencies) == 0 {
-		if err := writef(d.Out, "No data for dependency %q\n", dependency); err != nil {
-			return err
-		}
-		return nil
+		return writef(d.Out, "No data for dependency %q\n", dependency)
 	}
 
 	dep := reportData.Dependencies[0]

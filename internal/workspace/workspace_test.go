@@ -201,6 +201,25 @@ func TestInspectGitDirScenarios(t *testing.T) {
 			t.Fatalf("expected empty gitdir path error, got %v", err)
 		}
 	})
+
+	t.Run("unreadable git file", func(t *testing.T) {
+		repo := t.TempDir()
+		gitFile := filepath.Join(repo, ".git")
+		mustWrite(t, gitFile, "gitdir: .git-meta\n")
+		if err := os.Chmod(gitFile, 0o000); err != nil {
+			t.Fatalf("chmod .git file: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(gitFile, 0o600); err != nil {
+				t.Fatalf("restore .git file perms: %v", err)
+			}
+		})
+
+		_, _, err := inspectGitDir(repo)
+		if err == nil {
+			t.Fatalf("expected inspectGitDir to fail when .git file is unreadable")
+		}
+	})
 }
 
 func TestResolveRefSHAErrorPaths(t *testing.T) {
@@ -310,6 +329,21 @@ func TestChangedFilesErrorsForNonRepoPath(t *testing.T) {
 	}
 }
 
+func TestChangedFilesReturnsResolverError(t *testing.T) {
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) {
+		return "", errors.New("git unavailable")
+	}
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = original
+	})
+
+	_, err := ChangedFiles(t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "git unavailable") {
+		t.Fatalf("expected resolver error, got %v", err)
+	}
+}
+
 func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -335,6 +369,18 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 				t.Fatalf("expected parsed changed names, got %#v", changed)
 			}
 		})
+	}
+}
+
+func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
+	setupFakeGitResolver(t, "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff failed\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"status failed\" >&2\n  exit 3\nfi\nexit 1\n")
+
+	_, err := ChangedFiles(t.TempDir())
+	if err == nil {
+		t.Fatalf("expected joined git errors")
+	}
+	if !strings.Contains(err.Error(), "diff failed") || !strings.Contains(err.Error(), "status failed") {
+		t.Fatalf("expected combined git stderr in error, got %v", err)
 	}
 }
 

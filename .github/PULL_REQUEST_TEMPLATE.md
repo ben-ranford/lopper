@@ -11,7 +11,9 @@ Describe the problem and the intent of this change.
 Commands and checks run:
 
 ```bash
-go test ./...
+make ci
+make demos-check
+act pull_request -W .github/workflows/ci.yml --job verify
 ```
 
 Additional manual validation:
@@ -30,4 +32,3 @@ Additional manual validation:
 - [ ] Docs updated (README/docs/schema) if needed
 - [ ] No unrelated changes included
 - [ ] Ready for review
-

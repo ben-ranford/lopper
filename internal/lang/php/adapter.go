@@ -3,6 +3,7 @@ package php
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -65,7 +66,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 		return walkPHPDetectionEntry(path, entry, roots, &detection, &visited, maxDetectFiles)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -362,7 +363,7 @@ func scanRepo(ctx context.Context, repoPath string, composer composerData) (scan
 		}
 		return scanEntry(repoPath, path, entry, resolver, &result, &state)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return result, err
 	}
 
@@ -729,12 +730,12 @@ func parseUseStatement(statement, filePath string, line int, resolver dependency
 
 func parseGroupedUseStatement(statement, filePath string, line int, resolver dependencyResolver) ([]importBinding, map[string]struct{}, int, bool) {
 	open := strings.Index(statement, "{")
-	close := strings.LastIndex(statement, "}")
-	if open < 0 || close <= open {
+	closeBrace := strings.LastIndex(statement, "}")
+	if open < 0 || closeBrace <= open {
 		return nil, nil, 0, false
 	}
 	base := normalizeNamespace(statement[:open])
-	inside := statement[open+1 : close]
+	inside := statement[open+1 : closeBrace]
 	imports, groupedDeps, unresolved := parseUseParts(strings.Split(inside, ","), base, filePath, line, resolver, true)
 	return imports, groupedDeps, unresolved, true
 }

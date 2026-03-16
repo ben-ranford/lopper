@@ -1,6 +1,7 @@
 package js
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -215,7 +216,7 @@ func detectBindingGyp(depRoot string) ([]string, error) {
 func detectNodeBinary(depRoot string) (string, error) {
 	const maxVisited = 600
 	scanner := nodeBinaryScanner{maxVisited: maxVisited}
-	if err := filepath.WalkDir(depRoot, scanner.walk); err != nil && err != fs.SkipAll {
+	if err := filepath.WalkDir(depRoot, scanner.walk); err != nil && !errors.Is(err, fs.SkipAll) {
 		return "", err
 	}
 	return scanner.found, nil

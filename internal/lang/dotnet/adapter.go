@@ -3,6 +3,7 @@ package dotnet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -102,7 +103,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 		return updateDetection(repoPath, path, entry.Name(), &detection, roots)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -130,17 +131,17 @@ func updateDetection(repoPath, path, name string, detection *language.Detection,
 
 func applyDetectionSignal(repoPath, path, name, root string, detection *language.Detection, roots map[string]struct{}, weights detectionWeights) error {
 	signal := signalForName(name)
-	switch {
-	case signal == fileSignalCentral:
+	switch signal {
+	case fileSignalCentral:
 		markDetection(detection, roots, weights.central, root)
-	case signal == fileSignalProject:
+	case fileSignalProject:
 		markDetection(detection, roots, weights.project, root)
-	case signal == fileSignalSolution:
+	case fileSignalSolution:
 		markDetection(detection, roots, weights.solution, root)
 		if err := addSolutionRoots(repoPath, path, roots); err != nil {
 			return err
 		}
-	case signal == fileSignalSource:
+	case fileSignalSource:
 		markDetection(detection, roots, weights.source, "")
 	}
 	return nil
@@ -375,7 +376,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		}
 		return scanner.walk(path, entry, walkErr)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return result, err
 	}
 	appendScanWarnings(&result)

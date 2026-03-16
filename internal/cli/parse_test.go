@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -743,13 +744,13 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 }
 
 func TestParseArgsErrorsAndHelp(t *testing.T) {
-	if _, err := ParseArgs([]string{"help"}); err != ErrHelpRequested {
+	if _, err := ParseArgs([]string{"help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected top-level help request error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"analyse", "--help"}); err != ErrHelpRequested {
+	if _, err := ParseArgs([]string{"analyse", "--help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected analyse help request error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"tui", "--help"}); err != ErrHelpRequested {
+	if _, err := ParseArgs([]string{"tui", "--help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected tui help request error, got %v", err)
 	}
 	if _, err := ParseArgs([]string{"unknown"}); err == nil {
@@ -775,7 +776,7 @@ func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ParseArgs(tc.args)
 			if tc.wantErr != nil {
-				if err != tc.wantErr {
+				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("expected error %v, got %v", tc.wantErr, err)
 				}
 				return

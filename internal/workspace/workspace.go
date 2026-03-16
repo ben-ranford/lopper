@@ -68,9 +68,7 @@ func ChangedFiles(repoPath string) ([]string, error) {
 
 func parseChangedFileLines(output []byte) []string {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	return collectUniquePaths(lines, func(line string) string {
-		return strings.TrimSpace(line)
-	})
+	return collectUniquePaths(lines, strings.TrimSpace)
 }
 
 func collectUniquePaths(lines []string, extractor func(string) string) []string {
@@ -296,18 +294,22 @@ func resolveCommonGitDir(gitDir string) (string, error) {
 	return filepath.Clean(filepath.Join(gitDir, commonDir)), nil
 }
 
-func readGitPath(gitDir, name string) (string, error) {
+func readGitPath(gitDir, name string) (data string, err error) {
 	root, err := os.OpenRoot(gitDir)
 	if err != nil {
 		return "", err
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
-	data, err := root.ReadFile(filepath.Clean(name))
+	bytes, err := root.ReadFile(filepath.Clean(name))
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	return string(bytes), nil
 }
 
 func validSHA(value string) bool {

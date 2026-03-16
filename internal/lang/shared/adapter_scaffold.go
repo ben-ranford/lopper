@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir f
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		return walker.handle(ctx, path, entry, walkErr)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return err
 	}
 	return nil

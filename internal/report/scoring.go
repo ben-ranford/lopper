@@ -620,12 +620,12 @@ func hasWildcardImport(imports []ImportUse) bool {
 	return false
 }
 
-func clamp(value, min, max float64) float64 {
-	if value < min {
-		return min
+func clamp(value, minValue, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
 	}
-	if value > max {
-		return max
+	if value > maxValue {
+		return maxValue
 	}
 	return value
 }

@@ -489,10 +489,7 @@ func writeDependency(repo, name, entrypoint string) error {
 	if err := os.WriteFile(filepath.Join(depDir, testPackageJSONName), []byte(packageJSON), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644); err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644)
 }
 
 func mustWritePackage(t *testing.T, root string, pkgJSON string) {

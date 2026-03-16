@@ -104,7 +104,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -331,10 +331,7 @@ func loadBundlerDependencies(repoPath string, out map[string]struct{}) error {
 	if err := loadGemfileDependencies(repoPath, out); err != nil {
 		return err
 	}
-	if err := loadGemfileLockDependencies(repoPath, out); err != nil {
-		return err
-	}
-	return nil
+	return loadGemfileLockDependencies(repoPath, out)
 }
 
 func loadGemfileDependencies(repoPath string, out map[string]struct{}) error {

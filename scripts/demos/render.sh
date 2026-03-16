@@ -33,4 +33,4 @@ if [[ "${#sources[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-printf '%s\n' "${sources[@]}" | LC_ALL=C sort | xargs shasum -a 256 > docs/demos/assets/.sources.sha256
+printf '%s\0' "${sources[@]}" | LC_ALL=C sort -z | xargs -0 shasum -a 256 > docs/demos/assets/.sources.sha256

@@ -5,6 +5,32 @@ run:
 linters:
   default: none
   enable:
+    - errcheck
+    - errorlint
+    - gocritic
     - govet
     - unused
     - ineffassign
+    - revive
+    - staticcheck
+  settings:
+    gocritic:
+      enabled-checks:
+        - boolExprSimplify
+        - builtinShadow
+        - emptyFallthrough
+        - equalFold
+    revive:
+      rules:
+        - name: duplicated-imports
+        - name: empty-block
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: unreachable-code
