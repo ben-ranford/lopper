@@ -53,61 +53,78 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 }
 
 func TestSummaryCommandHandlersPagingAndShortcuts(t *testing.T) {
-	t.Run("page navigation commands", func(t *testing.T) {
-		state := newSummaryCommandState()
+	testCases := []struct {
+		name         string
+		expectations []summaryCommandExpectation
+	}{
+		{
+			name: "page navigation commands",
+			expectations: []summaryCommandExpectation{
+				newSummaryCommandExpectation("page 3", true, 3, 10, sortByWaste),
+				newSummaryCommandExpectation("next", true, 4, 10, sortByWaste),
+				newSummaryCommandExpectation("prev", true, 3, 10, sortByWaste),
+			},
+		},
+		{
+			name: "size command resets page",
+			expectations: []summaryCommandExpectation{
+				newSummaryCommandExpectation("size 7", true, 1, 7, sortByWaste),
+			},
+		},
+		{
+			name: "sort toggle shortcut",
+			expectations: []summaryCommandExpectation{
+				newSummaryCommandExpectation("s", true, 1, 10, sortByName),
+				newSummaryCommandExpectation("s", true, 1, 10, sortByWaste),
+			},
+		},
+		{
+			name: "direct sort shortcuts",
+			expectations: []summaryCommandExpectation{
+				newSummaryCommandExpectation("w", true, 1, 10, sortByWaste),
+				newSummaryCommandExpectation("a", true, 1, 10, sortByName),
+			},
+		},
+		{
+			name: "unknown command returns false",
+			expectations: []summaryCommandExpectation{
+				newSummaryCommandExpectation("unknown", false, 2, 10, sortByWaste),
+			},
+		},
+	}
 
-		if !applySummaryCommand(state, "page 3", io.Discard) || state.page != 3 {
-			t.Fatalf("expected page command to apply")
-		}
-		if !applySummaryCommand(state, "next", io.Discard) || state.page != 4 {
-			t.Fatalf("expected next to increment page")
-		}
-		if !applySummaryCommand(state, "prev", io.Discard) || state.page != 3 {
-			t.Fatalf("expected prev to decrement page")
-		}
-	})
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			assertSummaryCommands(t, newSummaryCommandState(), testCase.expectations)
+		})
+	}
+}
 
-	t.Run("size command resets page", func(t *testing.T) {
-		state := newSummaryCommandState()
+func newSummaryCommandExpectation(command string, wantApplied bool, page int, pageSize int, sortMode sortMode) summaryCommandExpectation {
+	return summaryCommandExpectation{
+		command:     command,
+		want:        summaryState{page: page, pageSize: pageSize, sortMode: sortMode},
+		wantApplied: wantApplied,
+	}
+}
 
-		if !applySummaryCommand(state, "size 7", io.Discard) || state.pageSize != 7 || state.page != 1 {
-			t.Fatalf("expected size command to set page size and reset page")
-		}
-	})
+type summaryCommandExpectation struct {
+	command     string
+	want        summaryState
+	wantApplied bool
+}
 
-	t.Run("sort toggle shortcut", func(t *testing.T) {
-		state := newSummaryCommandState()
+func assertSummaryCommands(t *testing.T, state *summaryState, expectations []summaryCommandExpectation) {
+	t.Helper()
 
-		if !applySummaryCommand(state, "s", io.Discard) {
-			t.Fatalf("expected toggle sort to work")
+	for _, expectation := range expectations {
+		if got := applySummaryCommand(state, expectation.command, io.Discard); got != expectation.wantApplied {
+			t.Fatalf("unexpected result for %q: got %t want %t", expectation.command, got, expectation.wantApplied)
 		}
-		if state.sortMode != sortByName {
-			t.Fatalf("expected toggle sort to switch to name sort")
+		if *state != expectation.want {
+			t.Fatalf("unexpected state after %q: got %#v want %#v", expectation.command, *state, expectation.want)
 		}
-		if !applySummaryCommand(state, "s", io.Discard) {
-			t.Fatalf("expected second toggle sort to work")
-		}
-		if state.sortMode != sortByWaste {
-			t.Fatalf("expected second toggle sort to switch back to waste sort")
-		}
-	})
-
-	t.Run("direct sort shortcuts", func(t *testing.T) {
-		state := newSummaryCommandState()
-
-		if !applySummaryCommand(state, "w", io.Discard) || state.sortMode != sortByWaste {
-			t.Fatalf("expected w shortcut to set waste sort")
-		}
-		if !applySummaryCommand(state, "a", io.Discard) || state.sortMode != sortByName {
-			t.Fatalf("expected a shortcut to set name sort")
-		}
-	})
-
-	t.Run("unknown command returns false", func(t *testing.T) {
-		if applySummaryCommand(newSummaryCommandState(), "unknown", io.Discard) {
-			t.Fatalf("expected unknown command to return false")
-		}
-	})
+	}
 }
 
 func TestSummaryHelpers(t *testing.T) {
