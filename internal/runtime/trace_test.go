@@ -15,9 +15,12 @@ const (
 	scopePkgDependency         = "@scope/pkg"
 	lodashMapModule            = "lodash/map"
 	expectedGotFormat          = "%s: expected %q, got %q"
+	loadTraceErrFmt            = "load trace: %v"
 	leftPadDependency          = "left-pad"
 	leftPadModule              = "left-pad/index"
 	leftPadResolvedIndexModule = "/repo/node_modules/left-pad/index.js"
+	alphaIndexModule           = "alpha/index.js"
+	zetaIndexModule            = "zeta/index.js"
 )
 
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
@@ -29,7 +32,7 @@ func TestLoadTrace(t *testing.T) {
 	trace, err := loadTraceFromContent(t, `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n")
 
 	if err != nil {
-		t.Fatalf("load trace: %v", err)
+		t.Fatalf(loadTraceErrFmt, err)
 	}
 	if trace.DependencyLoads["lodash"] != 1 {
 		t.Fatalf("expected lodash load count=1, got %d", trace.DependencyLoads["lodash"])
@@ -199,7 +202,7 @@ func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
 func TestLoadTraceSkipsBlankLines(t *testing.T) {
 	trace, err := loadTraceFromContent(t, "\n   \n{\"module\":\""+lodashMapModule+"\"}\n")
 	if err != nil {
-		t.Fatalf("load trace: %v", err)
+		t.Fatalf(loadTraceErrFmt, err)
 	}
 	if got := trace.DependencyLoads["lodash"]; got != 1 {
 		t.Fatalf("expected lodash load count 1, got %d", got)
@@ -219,7 +222,7 @@ func TestLoadTraceMissingFileError(t *testing.T) {
 func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
 	trace, err := loadTraceFromContent(t, "{\"module\":\"./local\"}\n{\"resolved\":\"/repo/src/index.js\"}\n")
 	if err != nil {
-		t.Fatalf("load trace: %v", err)
+		t.Fatalf(loadTraceErrFmt, err)
 	}
 	if len(trace.DependencyLoads) != 0 || len(trace.DependencyModules) != 0 || len(trace.DependencySymbols) != 0 {
 		t.Fatalf("expected dependency-free events to be ignored, got %#v", trace)
@@ -390,20 +393,20 @@ func TestRuntimeModulesAndSymbolsFormatting(t *testing.T) {
 
 func TestRuntimeModulesSortsTieByModuleName(t *testing.T) {
 	modules := runtimeModules(map[string]int{
-		"zeta/index.js":  1,
-		"alpha/index.js": 1,
+		zetaIndexModule:  1,
+		alphaIndexModule: 1,
 	})
-	if len(modules) != 2 || modules[0].Module != "alpha/index.js" || modules[1].Module != "zeta/index.js" {
+	if len(modules) != 2 || modules[0].Module != alphaIndexModule || modules[1].Module != zetaIndexModule {
 		t.Fatalf("expected alphabetical order for equal counts, got %#v", modules)
 	}
 }
 
 func TestRuntimeSymbolsSortsEqualSymbolsByModuleName(t *testing.T) {
 	symbols := runtimeSymbols(map[string]int{
-		"zeta/index.js\x00same":  1,
-		"alpha/index.js\x00same": 1,
+		zetaIndexModule + "\x00same":  1,
+		alphaIndexModule + "\x00same": 1,
 	})
-	if len(symbols) != 2 || symbols[0].Module != "alpha/index.js" || symbols[1].Module != "zeta/index.js" {
+	if len(symbols) != 2 || symbols[0].Module != alphaIndexModule || symbols[1].Module != zetaIndexModule {
 		t.Fatalf("expected equal symbols to sort by module name, got %#v", symbols)
 	}
 }

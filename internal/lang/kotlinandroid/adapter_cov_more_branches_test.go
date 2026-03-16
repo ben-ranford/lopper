@@ -27,7 +27,7 @@ func TestKotlinAndroidDetectionAndHelperMoreBranches(t *testing.T) {
 		t.Fatalf("expected cleared roots without android-specific signal, got %#v", detection.Roots)
 	}
 
-	if buildFileSignalsAndroidPlugin("", repo) {
+	if buildFileSignalsAndroidPlugin(repo, repo) {
 		t.Fatalf("expected directory read to fail closed for android plugin detection")
 	}
 	if got := androidManifestModuleRoot(filepath.FromSlash("src/main/androidmanifest.xml")); got != "" {
@@ -98,49 +98,52 @@ func TestKotlinAndroidLookupAndGradleMoreBranches(t *testing.T) {
 }
 
 func TestKotlinAndroidAdditionalReachableBranches(t *testing.T) {
-	t.Run("detection walk and manifest helpers", func(t *testing.T) {
-		if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
-			t.Fatalf("expected missing repo to fail detection walk")
-		}
-		if got := androidManifestModuleRoot(filepath.FromSlash("src/main/AndroidManifest.xml/ignored")); got != "" {
-			t.Fatalf("expected rootless manifest path to resolve empty, got %q", got)
-		}
+	t.Run("detection walk and manifest helpers", testKotlinAndroidDetectionWalkAndManifestHelpers)
+	t.Run("analyse normalize error when cwd is gone", testKotlinAndroidAnalyseNormalizeErrorWhenCWDIsGone)
+}
 
-		repo := t.TempDir()
-		roots := map[string]struct{}{
-			filepath.Join(repo, "module"): {},
-			filepath.Join(repo, "other"):  {},
-		}
-		pruneKotlinAndroidRoots(repo, roots)
-		if len(roots) != 2 {
-			t.Fatalf("expected repo-absent roots to remain untouched, got %#v", roots)
+func testKotlinAndroidDetectionWalkAndManifestHelpers(t *testing.T) {
+	if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatalf("expected missing repo to fail detection walk")
+	}
+	if got := androidManifestModuleRoot(filepath.FromSlash("src/main/AndroidManifest.xml/ignored")); got != "" {
+		t.Fatalf("expected rootless manifest path to resolve empty, got %q", got)
+	}
+
+	repo := t.TempDir()
+	roots := map[string]struct{}{
+		filepath.Join(repo, "module"): {},
+		filepath.Join(repo, "other"):  {},
+	}
+	pruneKotlinAndroidRoots(repo, roots)
+	if len(roots) != 2 {
+		t.Fatalf("expected repo-absent roots to remain untouched, got %#v", roots)
+	}
+}
+
+func testKotlinAndroidAnalyseNormalizeErrorWhenCWDIsGone(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
 		}
 	})
 
-	t.Run("analyse normalize error when cwd is gone", func(t *testing.T) {
-		originalWD, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("getwd: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chdir(originalWD); err != nil {
-				t.Fatalf("restore wd %s: %v", originalWD, err)
-			}
-		})
+	deadDir := filepath.Join(t.TempDir(), "dead")
+	if err := os.MkdirAll(deadDir, 0o755); err != nil {
+		t.Fatalf("mkdir dead dir: %v", err)
+	}
+	if err := os.Chdir(deadDir); err != nil {
+		t.Fatalf("chdir dead dir: %v", err)
+	}
+	if err := os.RemoveAll(deadDir); err != nil {
+		t.Fatalf("remove dead dir: %v", err)
+	}
 
-		deadDir := filepath.Join(t.TempDir(), "dead")
-		if err := os.MkdirAll(deadDir, 0o755); err != nil {
-			t.Fatalf("mkdir dead dir: %v", err)
-		}
-		if err := os.Chdir(deadDir); err != nil {
-			t.Fatalf("chdir dead dir: %v", err)
-		}
-		if err := os.RemoveAll(deadDir); err != nil {
-			t.Fatalf("remove dead dir: %v", err)
-		}
-
-		if _, err := NewAdapter().Analyse(context.Background(), language.Request{}); err == nil {
-			t.Fatalf("expected analyse to fail when cwd cannot be resolved")
-		}
-	})
+	if _, err := NewAdapter().Analyse(context.Background(), language.Request{}); err == nil {
+		t.Fatalf("expected analyse to fail when cwd cannot be resolved")
+	}
 }

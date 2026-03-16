@@ -8,6 +8,12 @@ import (
 )
 
 func TestRiskAdditionalBranches(t *testing.T) {
+	testJSDepthRiskCueAdditionalBranch(t)
+	testJSNodeBinaryScannerSkipBranch(t)
+	testJSTransitiveDepthAndDependencyHelpers(t)
+}
+
+func testJSDepthRiskCueAdditionalBranch(t *testing.T) {
 	repo := t.TempDir()
 	root := filepath.Join(repo, "node_modules", "root")
 	deps := []string{"a", "b", "c", "d", "e", "f", "g"}
@@ -36,7 +42,10 @@ func TestRiskAdditionalBranches(t *testing.T) {
 	if len(warnings) != 0 || len(cues) != 1 || cues[0].Severity != "high" {
 		t.Fatalf("expected high-severity deep graph cue, got cues=%#v warnings=%#v", cues, warnings)
 	}
+}
 
+func testJSNodeBinaryScannerSkipBranch(t *testing.T) {
+	repo := t.TempDir()
 	nodeModulesDir := filepath.Join(repo, "node_modules")
 	if err := os.MkdirAll(nodeModulesDir, 0o755); err != nil {
 		t.Fatalf("mkdir node_modules: %v", err)
@@ -54,7 +63,11 @@ func TestRiskAdditionalBranches(t *testing.T) {
 			t.Fatalf("expected nodeBinaryScanner to skip nested node_modules dir, got %v", err)
 		}
 	}
+}
 
+func testJSTransitiveDepthAndDependencyHelpers(t *testing.T) {
+	repo := t.TempDir()
+	root := filepath.Join(repo, "node_modules", "root")
 	memo := map[string]int{"cached": 4}
 	depth, err := transitiveDepth(repo, "cached", packageJSON{}, memo, map[string]struct{}{}, 5)
 	if err != nil || depth != 4 {

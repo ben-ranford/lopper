@@ -91,4 +91,9 @@ func TestLicenseAdditionalBranches(t *testing.T) {
 	if !spdxExpressionContainsDenied("MIT / GPL-2.0-only", deny) {
 		t.Fatalf("expected denied token match after delimiter flush")
 	}
+
+	ApplyLicensePolicy(deps, []string{reportTestGPL30OnlyLower})
+	if deps[0].License != nil {
+		t.Fatalf("expected nil license to remain untouched when deny list is set")
+	}
 }

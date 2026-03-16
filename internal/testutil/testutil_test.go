@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
 func TestCanceledContextIsDone(t *testing.T) {
@@ -182,6 +184,20 @@ func TestChdir(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunGit(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	RunGit(t, repo, "init")
+	RunGit(t, repo, "status", "--short")
+
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("expected git repository to be initialized: %v", err)
+	}
 }
 
 func TestFatalPathsViaHelperProcess(t *testing.T) {

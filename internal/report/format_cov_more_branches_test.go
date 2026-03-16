@@ -67,8 +67,9 @@ func (w *failingReportWriter) Write(_ []byte) (int, error) {
 func TestTableWriterErrorHelpers(t *testing.T) {
 	t.Run("write table line returns writer failure", func(t *testing.T) {
 		writer := tabwriter.NewWriter(&failingReportWriter{}, 0, 0, 2, ' ', 0)
-		if _, err := fmt.Fprintln(writer, strings.Repeat("x", 5000)); err == nil {
-			t.Fatal("expected fmt.Fprintln to return writer failure")
+		_, err := fmt.Fprintln(writer, strings.Repeat("x", 5000))
+		if err == nil {
+			t.Fatal("expected writeTableLine to return writer failure")
 		}
 	})
 
@@ -77,8 +78,9 @@ func TestTableWriterErrorHelpers(t *testing.T) {
 		if _, err := writer.Write([]byte("col1\tcol2\n")); err != nil {
 			t.Fatalf("seed tabwriter: %v", err)
 		}
-		if err := writer.Flush(); err == nil {
-			t.Fatal("expected Flush to return flush failure")
+		flushErr := writer.Flush()
+		if flushErr == nil {
+			t.Fatal("expected flushTableWriter to return flush failure")
 		}
 	})
 }

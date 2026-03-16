@@ -24,7 +24,7 @@ func TestWriteOutputAdditionalBranches(t *testing.T) {
 	}
 
 	c = New(&fakeRunner{}, &failOnNthWrite{n: 2}, &bytes.Buffer{})
-	if err := c.writeOutput("ok"); err == nil {
+	if c.writeOutput("ok") == nil {
 		t.Fatalf("expected newline append write to fail")
 	}
 }

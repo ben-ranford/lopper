@@ -10,6 +10,14 @@ import (
 )
 
 func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
+	testRustDetectAndAnalysisPathErrors(t)
+	testRustManifestAndScanErrors(t)
+	testRustUseParsingAndPathHelpers(t)
+	testRustManifestDiscoveryBranches(t)
+	testRustWorkspaceMemberFileMatchBranch(t)
+}
+
+func testRustDetectAndAnalysisPathErrors(t *testing.T) {
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), "\x00"); err == nil {
 		t.Fatalf("expected invalid repo path to fail detection")
 	}
@@ -19,7 +27,9 @@ func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00"}); err == nil {
 		t.Fatalf("expected invalid repo path to fail analysis")
 	}
+}
 
+func testRustManifestAndScanErrors(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, cargoManifestFile), 0o755); err != nil {
 		t.Fatalf("mkdir Cargo.toml dir: %v", err)
@@ -27,13 +37,16 @@ func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
 	if _, _, _, _, err := collectManifestData(repo); err == nil {
 		t.Fatalf("expected collectManifestData to fail when Cargo.toml is a directory")
 	}
-	if err := scanRepoRoot(context.Background(), repo, filepath.Join(repo, "missing"), map[string]dependencyInfo{}, map[string]struct{}{}, new(int), &scanResult{}); err == nil {
+	if scanRepoRoot(context.Background(), repo, filepath.Join(repo, "missing"), map[string]dependencyInfo{}, map[string]struct{}{}, new(int), &scanResult{}) == nil {
 		t.Fatalf("expected scanRepoRoot to fail for missing root")
 	}
-	if err := scanRustSourceFile(repo, repo, filepath.Join(repo, "missing.rs"), map[string]dependencyInfo{}, &scanResult{}); err == nil {
+	if scanRustSourceFile(repo, repo, filepath.Join(repo, "missing.rs"), map[string]dependencyInfo{}, &scanResult{}) == nil {
 		t.Fatalf("expected scanRustSourceFile to fail for missing file")
 	}
+}
 
+func testRustUseParsingAndPathHelpers(t *testing.T) {
+	repo := t.TempDir()
 	if got := resolveDependency("dep::thing", repo, map[string]dependencyInfo{"dep": {Canonical: "dep", LocalPath: true}}, &scanResult{UnresolvedImports: map[string]int{}, LocalModuleCache: map[string]bool{}}); got != "" {
 		t.Fatalf("expected local-path dependency to resolve to empty, got %q", got)
 	}
@@ -45,6 +58,9 @@ func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
 	if name != "*" || local != "" {
 		t.Fatalf("expected wildcard fallback with empty module to keep empty local, got name=%q local=%q", name, local)
 	}
+	if _, _, _, ok := parseUseStatementIndex("use serde::Deserialize;", []int{0, 1, -1, 5}); ok {
+		t.Fatalf("expected negative use-statement bounds to fail")
+	}
 
 	if isSubPath("\x00", repo) {
 		t.Fatalf("expected invalid root path to fail subpath detection")
@@ -52,7 +68,9 @@ func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
 	if samePath(repo, "\x00") {
 		t.Fatalf("expected mismatched valid/invalid paths not to compare equal")
 	}
+}
 
+func testRustManifestDiscoveryBranches(t *testing.T) {
 	paths, warnings, err := discoverManifestsByWalk(t.TempDir())
 	if err != nil {
 		t.Fatalf("discoverManifestsByWalk empty repo: %v", err)
@@ -61,7 +79,7 @@ func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
 		t.Fatalf("expected missing-manifest warning for empty repo, paths=%#v warnings=%#v", paths, warnings)
 	}
 
-	repo = t.TempDir()
+	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "target"), 0o755); err != nil {
 		t.Fatalf("mkdir target dir: %v", err)
 	}
@@ -75,11 +93,9 @@ func TestRustAdditionalManifestAndScanBranches(t *testing.T) {
 	if len(paths) != 0 || len(warnings) == 0 {
 		t.Fatalf("expected skipped directories and non-manifest files to yield no paths, got paths=%#v warnings=%#v", paths, warnings)
 	}
+}
 
-	if _, _, _, ok := parseUseStatementIndex("use serde::Deserialize;", []int{0, 1, -1, 5}); ok {
-		t.Fatalf("expected negative use-statement bounds to fail")
-	}
-
+func testRustWorkspaceMemberFileMatchBranch(t *testing.T) {
 	fileMatchRepo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(fileMatchRepo, "crates"), 0o755); err != nil {
 		t.Fatalf("mkdir crates dir: %v", err)

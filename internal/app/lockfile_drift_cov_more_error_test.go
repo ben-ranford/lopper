@@ -2,23 +2,16 @@ package app
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"testing"
 )
 
 func TestDetectLockfileDriftPropagatesGitContextErrors(t *testing.T) {
-	originalResolve := resolveGitBinaryPathFn
-	originalExec := execGitCommandContextFn
-	defer func() {
-		resolveGitBinaryPathFn = originalResolve
-		execGitCommandContextFn = originalExec
-	}()
+	original := resolveGitBinaryPathFn
+	defer func() { resolveGitBinaryPathFn = original }()
 
 	resolveGitBinaryPathFn = func() (string, error) { return writeFakeGitBinary(t), nil }
-	execGitCommandContextFn = func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
-		return exec.CommandContext(ctx, gitPath, args...), nil
-	}
+	useFakeGitCommandContext(t)
 
 	cases := []struct {
 		name    string
@@ -48,8 +41,9 @@ func TestDetectLockfileDriftPropagatesGitContextErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("FAKE_GIT_MODE", tc.mode)
-			err := tc.run(context.Background(), t.TempDir())
+			repo := t.TempDir()
+			writeFakeGitMode(t, repo, tc.mode)
+			err := tc.run(context.Background(), repo)
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
 				t.Fatalf("expected %q error, got %v", tc.wantSub, err)
 			}

@@ -16,6 +16,7 @@ import (
 )
 
 const decodePayloadErrFmt = "decode payload: %v"
+const exampleHookURL = "https://example.com/hook"
 
 func newPayloadCaptureServer(t *testing.T, payload *map[string]any) *httptest.Server {
 	t.Helper()
@@ -76,7 +77,7 @@ func TestWebhookNotifierNotifySuccess(t *testing.T) {
 func TestWebhookNotifierNotifyBuildPayloadError(t *testing.T) {
 	err := NewWebhookNotifier(nil).Notify(context.Background(), Delivery{
 		Channel:    ChannelSlack,
-		WebhookURL: "https://example.com/hook",
+		WebhookURL: exampleHookURL,
 		Report: report.Report{
 			Summary: &report.Summary{DependencyCount: 1, TotalExportsCount: 1, UsedPercent: math.NaN()},
 		},

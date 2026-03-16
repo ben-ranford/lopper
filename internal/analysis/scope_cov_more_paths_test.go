@@ -8,44 +8,33 @@ import (
 	"testing"
 )
 
+const scopePathTextFile = "file.txt"
+
 func TestPathWithinRejectsInvalidRoot(t *testing.T) {
-	if pathWithin("\x00", filepath.Join(t.TempDir(), "file.txt")) {
+	if pathWithin("\x00", filepath.Join(t.TempDir(), scopePathTextFile)) {
 		t.Fatalf("expected invalid root to be rejected")
 	}
 }
 
 func TestCopyFileAdditionalEscapeBranches(t *testing.T) {
-	if err := copyFile("\x00", t.TempDir(), "file.txt"); err == nil {
+	if copyFile("\x00", t.TempDir(), scopePathTextFile) == nil {
 		t.Fatalf("expected invalid source root to be rejected")
 	}
 
 	repo := t.TempDir()
-	if err := copyFile(repo, "\x00", "file.txt"); err == nil {
+	if copyFile(repo, "\x00", scopePathTextFile) == nil {
 		t.Fatalf("expected invalid target root to be rejected")
 	}
 }
 
 func TestScopeWalkerAdditionalBranches(t *testing.T) {
 	repo := t.TempDir()
-	filePath := filepath.Join(repo, "file.txt")
+	filePath := filepath.Join(repo, scopePathTextFile)
 	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
-	var fileEntry os.DirEntry
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir repo: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.Name() == "file.txt" {
-			fileEntry = entry
-			break
-		}
-	}
-	if fileEntry == nil {
-		t.Fatal("expected file entry")
-	}
+	fileEntry := mustScopePathEntry(t, repo, scopePathTextFile)
 
 	includePattern := compiledPattern{pattern: "**/*", regex: regexp.MustCompile(".*")}
 	walker := &scopeWalker{
@@ -55,7 +44,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 		includeCompiled: []compiledPattern{includePattern},
 		stats:           newScopeStats([]string{"**/*"}, nil),
 	}
-	if err := walker.walk(filePath, fileEntry, nil); err == nil {
+	if walker.walk(filePath, fileEntry, nil) == nil {
 		t.Fatalf("expected invalid repo root to fail relative-path resolution")
 	}
 
@@ -66,7 +55,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 		includeCompiled: []compiledPattern{includePattern},
 		stats:           newScopeStats([]string{"**/*"}, nil),
 	}
-	if err := walker.walk(filePath, fileEntry, nil); err == nil {
+	if walker.walk(filePath, fileEntry, nil) == nil {
 		t.Fatalf("expected invalid scoped root to fail file copy")
 	}
 
@@ -74,7 +63,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
-	entries, err = os.ReadDir(repo)
+	entries, err := os.ReadDir(repo)
 	if err != nil {
 		t.Fatalf("readdir repo with .git: %v", err)
 	}
@@ -89,4 +78,20 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 		return
 	}
 	t.Fatal("expected .git entry")
+}
+
+func mustScopePathEntry(t *testing.T, dir, name string) os.DirEntry {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return entry
+		}
+	}
+	t.Fatalf("expected %s entry", name)
+	return nil
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+const packAPolicySource = "pack-a"
+
 func TestThresholdConfigAdditionalBranches(t *testing.T) {
 	if _, err := LoadWithPolicy("\x00", ""); err == nil {
 		t.Fatalf("expected LoadWithPolicy to reject invalid repo path")
@@ -24,8 +26,8 @@ func TestThresholdConfigAdditionalBranches(t *testing.T) {
 		t.Fatalf("expected max_uncertain_import_count override to merge, got %#v", merged)
 	}
 
-	sources := (&resolveMergeResult{appliedSourcesLow: []string{"pack-a", defaultPolicySource, "pack-a"}}).policySourcesHighToLow()
-	if !reflect.DeepEqual(sources, []string{"pack-a", defaultPolicySource}) {
+	sources := (&resolveMergeResult{appliedSourcesLow: []string{packAPolicySource, defaultPolicySource, packAPolicySource}}).policySourcesHighToLow()
+	if !reflect.DeepEqual(sources, []string{packAPolicySource, defaultPolicySource}) {
 		t.Fatalf("unexpected policy source ordering: %#v", sources)
 	}
 

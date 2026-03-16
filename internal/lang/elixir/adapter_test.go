@@ -13,6 +13,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	elixirFooBarDependency = "foo-bar"
+	elixirAliasFooBar      = "alias Foo.Bar"
+)
+
 func fixturePath(parts ...string) string {
 	base := []string{"..", "..", "..", "testdata", "elixir"}
 	return filepath.Join(append(base, parts...)...)
@@ -177,16 +182,16 @@ func TestAddUmbrellaRootsAndDependencyFallbacks(t *testing.T) {
 	if _, ok := roots[filepath.Join(repo, "apps", "api")]; !ok {
 		t.Fatalf("expected api umbrella root, got %#v", roots)
 	}
-	if dep := dependencyFromModule("", map[string]struct{}{"foo-bar": {}}); dep != "" {
+	if dep := dependencyFromModule("", map[string]struct{}{elixirFooBarDependency: {}}); dep != "" {
 		t.Fatalf("expected empty dependency for empty module, got %q", dep)
 	}
-	if dep := dependencyFromModule("FooBar.Client", map[string]struct{}{"foo-bar": {}}); dep != "foo-bar" {
+	if dep := dependencyFromModule("FooBar.Client", map[string]struct{}{elixirFooBarDependency: {}}); dep != elixirFooBarDependency {
 		t.Fatalf("expected hyphenated dependency fallback, got %q", dep)
 	}
 }
 
 func TestAddUmbrellaRootsRejectsInvalidGlobPattern(t *testing.T) {
-	if err := addUmbrellaRoots(t.TempDir(), "[", map[string]struct{}{}); err == nil {
+	if addUmbrellaRoots(t.TempDir(), "[", map[string]struct{}{}) == nil {
 		t.Fatalf("expected invalid glob pattern error")
 	}
 }
@@ -202,13 +207,13 @@ func TestDetectFromRootFilesReturnsStatErrorForInvalidRepoPath(t *testing.T) {
 }
 
 func TestLineBytesAndParseAliasLocalEdgeCases(t *testing.T) {
-	if got := lineBytes([]byte("alias Foo.Bar\n"), -1); len(got) != 0 {
+	if got := lineBytes([]byte(elixirAliasFooBar+"\n"), -1); len(got) != 0 {
 		t.Fatalf("expected nil line bytes for negative start, got %q", string(got))
 	}
-	if got := lineBytes([]byte("alias Foo.Bar"), 100); len(got) != 0 {
+	if got := lineBytes([]byte(elixirAliasFooBar), 100); len(got) != 0 {
 		t.Fatalf("expected nil line bytes for out-of-range start, got %q", string(got))
 	}
-	if got := parseAliasLocal([]byte("alias Foo.Bar")); got != "" {
+	if got := parseAliasLocal([]byte(elixirAliasFooBar)); got != "" {
 		t.Fatalf("expected no alias local without as:, got %q", got)
 	}
 }
@@ -259,61 +264,65 @@ func TestAnalyseReturnsErrorOnMissingRepo(t *testing.T) {
 }
 
 func TestElixirAdditionalReachableBranches(t *testing.T) {
-	t.Run("detect root file read and walk errors", func(t *testing.T) {
-		repo := t.TempDir()
-		mixExs := filepath.Join(repo, mixExsName)
-		if err := os.WriteFile(mixExs, []byte("defmodule Demo.MixProject do end\n"), 0o000); err != nil {
-			t.Fatalf("write unreadable mix.exs: %v", err)
+	t.Run("detect root file read and walk errors", testElixirDetectRootFileReadAndWalkErrors)
+	t.Run("scan repo unreadable source and helper edges", testElixirScanRepoUnreadableSourceAndHelperEdges)
+	t.Run("declared dependency read branches", testElixirDeclaredDependencyReadBranches)
+}
+
+func testElixirDetectRootFileReadAndWalkErrors(t *testing.T) {
+	repo := t.TempDir()
+	mixExs := filepath.Join(repo, mixExsName)
+	if err := os.WriteFile(mixExs, []byte("defmodule Demo.MixProject do end\n"), 0o000); err != nil {
+		t.Fatalf("write unreadable mix.exs: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(mixExs, 0o600); err != nil {
+			t.Fatalf("restore mix.exs perms: %v", err)
 		}
-		t.Cleanup(func() {
-			if err := os.Chmod(mixExs, 0o600); err != nil {
-				t.Fatalf("restore mix.exs perms: %v", err)
-			}
-		})
-		if _, err := NewAdapter().DetectWithConfidence(context.Background(), repo); err == nil {
-			t.Fatalf("expected unreadable root mix.exs to fail detection")
-		}
-		if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
-			t.Fatalf("expected missing repo to fail detection walk")
+	})
+	if _, err := NewAdapter().DetectWithConfidence(context.Background(), repo); err == nil {
+		t.Fatalf("expected unreadable root mix.exs to fail detection")
+	}
+	if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatalf("expected missing repo to fail detection walk")
+	}
+}
+
+func testElixirScanRepoUnreadableSourceAndHelperEdges(t *testing.T) {
+	repo := t.TempDir()
+	unreadable := filepath.Join(repo, "lib", "demo.ex")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do end\n")
+	if err := os.MkdirAll(filepath.Dir(unreadable), 0o755); err != nil {
+		t.Fatalf("mkdir lib: %v", err)
+	}
+	if err := os.WriteFile(unreadable, []byte(elixirAliasFooBar+"\n"), 0o000); err != nil {
+		t.Fatalf("write unreadable source: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(unreadable, 0o600); err != nil {
+			t.Fatalf("restore unreadable source perms: %v", err)
 		}
 	})
 
-	t.Run("scan repo unreadable source and helper edges", func(t *testing.T) {
-		repo := t.TempDir()
-		unreadable := filepath.Join(repo, "lib", "demo.ex")
-		testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do end\n")
-		if err := os.MkdirAll(filepath.Dir(unreadable), 0o755); err != nil {
-			t.Fatalf("mkdir lib: %v", err)
-		}
-		if err := os.WriteFile(unreadable, []byte("alias Foo.Bar\n"), 0o000); err != nil {
-			t.Fatalf("write unreadable source: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(unreadable, 0o600); err != nil {
-				t.Fatalf("restore unreadable source perms: %v", err)
-			}
-		})
+	if _, err := scanElixirRepo(context.Background(), repo, map[string]struct{}{"foo": {}}); err == nil {
+		t.Fatalf("expected unreadable source file to fail scan")
+	}
+	if got := string(lineBytes([]byte(elixirAliasFooBar), 0)); got != elixirAliasFooBar {
+		t.Fatalf("expected lineBytes without newline to return remaining content, got %q", got)
+	}
+}
 
-		if _, err := scanElixirRepo(context.Background(), repo, map[string]struct{}{"foo": {}}); err == nil {
-			t.Fatalf("expected unreadable source file to fail scan")
-		}
-		if got := string(lineBytes([]byte("alias Foo.Bar"), 0)); got != "alias Foo.Bar" {
-			t.Fatalf("expected lineBytes without newline to return remaining content, got %q", got)
-		}
-	})
-
-	t.Run("declared dependency read branches", func(t *testing.T) {
-		repo := t.TempDir()
-		if err := os.Mkdir(filepath.Join(repo, mixExsName), 0o755); err != nil {
-			t.Fatalf("mkdir mix.exs: %v", err)
-		}
-		if _, err := loadDeclaredDependencies(repo); err == nil {
-			t.Fatalf("expected loadDeclaredDependencies to fail when mix.exs is a directory")
-		}
-		if dep := dependencyFromModule("FooBar.Client", map[string]struct{}{"foo-bar": {}}); dep != "foo-bar" {
-			t.Fatalf("expected direct normalized dependency match, got %q", dep)
-		}
-	})
+func testElixirDeclaredDependencyReadBranches(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, mixExsName), 0o755); err != nil {
+		t.Fatalf("mkdir mix.exs: %v", err)
+	}
+	if _, err := loadDeclaredDependencies(repo); err == nil {
+		t.Fatalf("expected loadDeclaredDependencies to fail when mix.exs is a directory")
+	}
+	if dep := dependencyFromModule("FooBar.Client", map[string]struct{}{elixirFooBarDependency: {}}); dep != elixirFooBarDependency {
+		t.Fatalf("expected direct normalized dependency match, got %q", dep)
+	}
 }
 
 func containsSuffix(values []string, suffix string) bool {

@@ -9,6 +9,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const sharedYAMLAppFile = "app.yaml"
+
 func TestSharedAdditionalHelperBranches(t *testing.T) {
 	symbols := buildTopSymbols(map[string]int{
 		"beta":  2,
@@ -54,16 +56,16 @@ func TestSharedAdditionalHelperBranches(t *testing.T) {
 
 func TestYAMLDisplayPathAdditionalBranches(t *testing.T) {
 	repo := t.TempDir()
-	inside := filepath.Join(repo, "configs", "app.yaml")
-	outside := filepath.Join(t.TempDir(), "app.yaml")
+	inside := filepath.Join(repo, "configs", sharedYAMLAppFile)
+	outside := filepath.Join(t.TempDir(), sharedYAMLAppFile)
 
-	if got := yamlDisplayPath(repo, filepath.Join(".", "configs", "..", "configs", "app.yaml")); got != filepath.Join("configs", "app.yaml") {
+	if got := yamlDisplayPath(repo, filepath.Join(".", "configs", "..", "configs", sharedYAMLAppFile)); got != filepath.Join("configs", sharedYAMLAppFile) {
 		t.Fatalf("expected relative path to be cleaned, got %q", got)
 	}
-	if got := yamlDisplayPath(repo, inside); got != filepath.Join("configs", "app.yaml") {
+	if got := yamlDisplayPath(repo, inside); got != filepath.Join("configs", sharedYAMLAppFile) {
 		t.Fatalf("expected repo-relative display path, got %q", got)
 	}
-	if got := yamlDisplayPath(repo, outside); got != "app.yaml" {
+	if got := yamlDisplayPath(repo, outside); got != sharedYAMLAppFile {
 		t.Fatalf("expected outside absolute path to fall back to basename, got %q", got)
 	}
 }

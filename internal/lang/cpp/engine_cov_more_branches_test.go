@@ -12,6 +12,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const cppMainSourcePath = "src/main.cpp"
+
 func TestCPPDetectAndAnalyseMoreBranches(t *testing.T) {
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
 	testutil.MustWriteFile(t, repoFile, "x")
@@ -28,7 +30,7 @@ func TestCPPLoadCompileContextCapAndHelpers(t *testing.T) {
 	for i := 0; i <= maxCompileDatabases; i++ {
 		dir := filepath.Join(repo, fmt.Sprintf("build-%02d", i))
 		testutil.MustWriteFile(t, filepath.Join(dir, compileCommandsFile), `[
-  {"directory":".","file":"src/main.cpp","command":"c++ -Iinclude -c src/main.cpp"}
+  {"directory":".","file":"`+cppMainSourcePath+`","command":"c++ -Iinclude -c `+cppMainSourcePath+`"}
 ]`)
 	}
 
@@ -69,10 +71,10 @@ func TestCPPLoadCompileContextCapAndHelpers(t *testing.T) {
 func TestCPPRequestedDependencyMoreBranches(t *testing.T) {
 	scan := scanResult{
 		Files: []fileScan{{
-			Path: "src/main.cpp",
+			Path: cppMainSourcePath,
 			Includes: []includeRecord{
-				{Dependency: "fmt", Header: "fmt/core.h", Location: report.Location{File: "src/main.cpp", Line: 1, Column: 1}},
-				{Dependency: "zlib", Header: "zlib.h", Location: report.Location{File: "src/main.cpp", Line: 2, Column: 1}},
+				{Dependency: "fmt", Header: "fmt/core.h", Location: report.Location{File: cppMainSourcePath, Line: 1, Column: 1}},
+				{Dependency: "zlib", Header: "zlib.h", Location: report.Location{File: cppMainSourcePath, Line: 2, Column: 1}},
 			},
 		}},
 	}
@@ -84,80 +86,84 @@ func TestCPPRequestedDependencyMoreBranches(t *testing.T) {
 }
 
 func TestCPPAdditionalCoverageBranches(t *testing.T) {
-	t.Run("makefile detection and normalize failure", func(t *testing.T) {
-		detection := language.Detection{}
-		roots := map[string]struct{}{}
-		makefilePath := filepath.Join(t.TempDir(), "Makefile")
-		updateDetection(makefilePath, &detection, roots)
-		if !detection.Matched || detection.Confidence == 0 || len(roots) != 1 {
-			t.Fatalf("expected Makefile detection signal, got detection=%#v roots=%#v", detection, roots)
-		}
+	t.Run("makefile detection and normalize failure", testCPPMakefileDetectionAndNormalizeFailure)
+	t.Run("compile database read errors bubble out", testCPPCompileDatabaseReadErrorsBubbleOut)
+	t.Run("include mapping fallback branches", testCPPIncludeMappingFallbackBranches)
+}
 
-		originalWD, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("getwd: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chdir(originalWD); err != nil {
-				t.Fatalf("restore wd %s: %v", originalWD, err)
-			}
-		})
-		deadDir := filepath.Join(t.TempDir(), "dead")
-		if err := os.MkdirAll(deadDir, 0o755); err != nil {
-			t.Fatalf("mkdir dead dir: %v", err)
-		}
-		if err := os.Chdir(deadDir); err != nil {
-			t.Fatalf("chdir dead dir: %v", err)
-		}
-		if err := os.RemoveAll(deadDir); err != nil {
-			t.Fatalf("remove dead dir: %v", err)
-		}
-		if _, err := NewAdapter().Analyse(context.Background(), language.Request{}); err == nil {
-			t.Fatalf("expected analyse to fail when cwd cannot be resolved")
+func testCPPMakefileDetectionAndNormalizeFailure(t *testing.T) {
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	makefilePath := filepath.Join(t.TempDir(), "Makefile")
+	updateDetection(makefilePath, &detection, roots)
+	if !detection.Matched || detection.Confidence == 0 || len(roots) != 1 {
+		t.Fatalf("expected Makefile detection signal, got detection=%#v roots=%#v", detection, roots)
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore wd %s: %v", originalWD, err)
 		}
 	})
+	deadDir := filepath.Join(t.TempDir(), "dead")
+	if err := os.MkdirAll(deadDir, 0o755); err != nil {
+		t.Fatalf("mkdir dead dir: %v", err)
+	}
+	if err := os.Chdir(deadDir); err != nil {
+		t.Fatalf("chdir dead dir: %v", err)
+	}
+	if err := os.RemoveAll(deadDir); err != nil {
+		t.Fatalf("remove dead dir: %v", err)
+	}
+	if _, err := NewAdapter().Analyse(context.Background(), language.Request{}); err == nil {
+		t.Fatalf("expected analyse to fail when cwd cannot be resolved")
+	}
+}
 
-	t.Run("compile database read errors bubble out", func(t *testing.T) {
-		repo := t.TempDir()
-		compileDB := filepath.Join(repo, compileCommandsFile)
-		if err := os.WriteFile(compileDB, []byte("[]"), 0o000); err != nil {
-			t.Fatalf("write unreadable compile db: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(compileDB, 0o600); err != nil {
-				t.Fatalf("restore compile db perms: %v", err)
-			}
-		})
-		if _, err := loadCompileContext(repo); err == nil {
-			t.Fatalf("expected unreadable compile database to fail load")
-		}
-		if _, err := collectCompileDatabase(compileDB, repo, map[string]struct{}{}, map[string]struct{}{}); err == nil {
-			t.Fatalf("expected unreadable compile database to fail direct collection")
+func testCPPCompileDatabaseReadErrorsBubbleOut(t *testing.T) {
+	repo := t.TempDir()
+	compileDB := filepath.Join(repo, compileCommandsFile)
+	if err := os.WriteFile(compileDB, []byte("[]"), 0o000); err != nil {
+		t.Fatalf("write unreadable compile db: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(compileDB, 0o600); err != nil {
+			t.Fatalf("restore compile db perms: %v", err)
 		}
 	})
+	if _, err := loadCompileContext(repo); err == nil {
+		t.Fatalf("expected unreadable compile database to fail load")
+	}
+	if _, err := collectCompileDatabase(compileDB, repo, map[string]struct{}{}, map[string]struct{}{}); err == nil {
+		t.Fatalf("expected unreadable compile database to fail direct collection")
+	}
+}
 
-	t.Run("include mapping fallback branches", func(t *testing.T) {
-		if dirs := extractIncludeDirs([]string{" ", "-I"}, "/repo"); len(dirs) != 0 {
-			t.Fatalf("expected blank args and missing include values to be ignored, got %#v", dirs)
-		}
+func testCPPIncludeMappingFallbackBranches(t *testing.T) {
+	if dirs := extractIncludeDirs([]string{" ", "-I"}, "/repo"); len(dirs) != 0 {
+		t.Fatalf("expected blank args and missing include values to be ignored, got %#v", dirs)
+	}
 
-		if dep, unresolved := mapIncludeToDependency("/repo", "/repo/main.cpp", parsedInclude{Path: ".", Delimiter: '<'}, nil); dep != "" || !unresolved {
-			t.Fatalf("expected dot include to stay unresolved, got dep=%q unresolved=%v", dep, unresolved)
-		}
-		if got := dependencyFromIncludePath("./"); got != "" {
-			t.Fatalf("expected dot-slash include path to map empty, got %q", got)
-		}
-		if got := dependencyFromIncludePath(".h"); got != "" {
-			t.Fatalf("expected extension-only include path to map empty, got %q", got)
-		}
-		if isLikelyStdHeader("   ") {
-			t.Fatalf("expected blank std header candidate to be rejected")
-		}
+	if dep, unresolved := mapIncludeToDependency("/repo", "/repo/main.cpp", parsedInclude{Path: ".", Delimiter: '<'}, nil); dep != "" || !unresolved {
+		t.Fatalf("expected dot include to stay unresolved, got dep=%q unresolved=%v", dep, unresolved)
+	}
+	if got := dependencyFromIncludePath("./"); got != "" {
+		t.Fatalf("expected dot-slash include path to map empty, got %q", got)
+	}
+	if got := dependencyFromIncludePath(".h"); got != "" {
+		t.Fatalf("expected extension-only include path to map empty, got %q", got)
+	}
+	if isLikelyStdHeader("   ") {
+		t.Fatalf("expected blank std header candidate to be rejected")
+	}
 
-		custom := &report.RemovalCandidateWeights{Usage: 1, Impact: 2, Confidence: 3}
-		got := resolveRemovalCandidateWeights(custom)
-		if got == report.DefaultRemovalCandidateWeights() {
-			t.Fatalf("expected non-nil weights to normalize instead of using defaults")
-		}
-	})
+	custom := &report.RemovalCandidateWeights{Usage: 1, Impact: 2, Confidence: 3}
+	got := resolveRemovalCandidateWeights(custom)
+	if got == report.DefaultRemovalCandidateWeights() {
+		t.Fatalf("expected non-nil weights to normalize instead of using defaults")
+	}
 }

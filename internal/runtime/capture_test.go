@@ -9,7 +9,11 @@ import (
 	"testing"
 )
 
-const npmTestCommand = "npm test"
+const (
+	npmTestCommand     = "npm test"
+	runtimeTraceNDJSON = "runtime.ndjson"
+	makeVersionCommand = "make -v"
+)
 
 func TestDefaultTracePath(t *testing.T) {
 	repo := "/tmp/repo"
@@ -48,11 +52,11 @@ func TestWithRuntimeTraceEnv(t *testing.T) {
 
 func TestCapture(t *testing.T) {
 	repo := t.TempDir()
-	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
 	err := Capture(context.Background(), CaptureRequest{
 		RepoPath:  repo,
 		TracePath: tracePath,
-		Command:   "make -v",
+		Command:   makeVersionCommand,
 	})
 	if err != nil {
 		t.Fatalf("capture runtime trace: %v", err)
@@ -267,8 +271,8 @@ func TestCaptureTracePathSetupErrors(t *testing.T) {
 
 		err := Capture(context.Background(), CaptureRequest{
 			RepoPath:  repo,
-			TracePath: filepath.Join(blocker, "runtime.ndjson"),
-			Command:   "make -v",
+			TracePath: filepath.Join(blocker, runtimeTraceNDJSON),
+			Command:   makeVersionCommand,
 		})
 		if err == nil || !strings.Contains(err.Error(), "create runtime trace directory") {
 			t.Fatalf("expected trace directory creation error, got %v", err)
@@ -277,7 +281,7 @@ func TestCaptureTracePathSetupErrors(t *testing.T) {
 
 	t.Run("remove previous runtime trace", func(t *testing.T) {
 		repo := t.TempDir()
-		tracePath := filepath.Join(repo, "traces", "runtime.ndjson")
+		tracePath := filepath.Join(repo, "traces", runtimeTraceNDJSON)
 		if err := os.MkdirAll(tracePath, 0o750); err != nil {
 			t.Fatalf("mkdir trace path: %v", err)
 		}
@@ -288,7 +292,7 @@ func TestCaptureTracePathSetupErrors(t *testing.T) {
 		err := Capture(context.Background(), CaptureRequest{
 			RepoPath:  repo,
 			TracePath: tracePath,
-			Command:   "make -v",
+			Command:   makeVersionCommand,
 		})
 		if err == nil || !strings.Contains(err.Error(), "remove previous runtime trace") {
 			t.Fatalf("expected trace cleanup error, got %v", err)

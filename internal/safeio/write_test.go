@@ -343,6 +343,25 @@ func TestCleanupAtomicTempFileReturnsRootRemoveError(t *testing.T) {
 	}
 }
 
+func TestCleanupAtomicTempFileJoinsCloseAndRemoveErrors(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf(openRootErrFmt, err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close root: %v", err)
+	}
+
+	err = cleanupAtomicTempFile(root, "temp", &os.File{})
+	if err == nil {
+		t.Fatal("expected cleanupAtomicTempFile to join close and remove errors")
+	}
+	if !strings.Contains(err.Error(), "invalid argument") {
+		t.Fatalf("expected close error in joined cleanup error, got %v", err)
+	}
+}
+
 func TestRandomTempName(t *testing.T) {
 	name, err := randomTempName()
 	if err != nil {
