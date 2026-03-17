@@ -748,7 +748,7 @@ func TestResolveAnalyseNotificationsErrors(t *testing.T) {
 }
 
 func TestValidateSuggestOnlyTargetRequiresDependency(t *testing.T) {
-	if err := validateSuggestOnlyTarget(true, "   ", 0); err == nil {
+	if validateSuggestOnlyTarget(true, "   ", 0) == nil {
 		t.Fatalf("expected suggest-only validation to require dependency")
 	}
 }

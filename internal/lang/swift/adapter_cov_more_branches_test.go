@@ -39,21 +39,31 @@ func testSwiftDetectionHelpers(t *testing.T) {
 }
 
 func testSwiftManifestAndResolvedLoaders(t *testing.T) {
+	testSwiftManifestDirectoryFailure(t)
+	testSwiftResolvedLoaderEmptyPins(t)
+	testSwiftManifestLoaderSkipsIncompleteDeclarations(t)
+	testSwiftResolvedLoaderSkipsBlankPins(t)
+	testSwiftCollectLocalModulesIgnoresBlankNames(t)
+}
+
+func testSwiftManifestDirectoryFailure(t *testing.T) {
+	t.Helper()
+
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, packageManifestName), 0o755); err != nil {
 		t.Fatalf("mkdir package manifest dir: %v", err)
 	}
-	catalog := dependencyCatalog{
-		Dependencies:       map[string]dependencyMeta{},
-		AliasToDependency:  map[string]string{},
-		ModuleToDependency: map[string]string{},
-		LocalModules:       map[string]struct{}{},
-	}
+	catalog := newTestSwiftCatalog()
 	if _, _, err := loadManifestData(repo, &catalog); err == nil {
 		t.Fatalf("expected manifest directory to fail load")
 	}
+}
 
-	repo = t.TempDir()
+func testSwiftResolvedLoaderEmptyPins(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	catalog := newTestSwiftCatalog()
 	if err := os.WriteFile(filepath.Join(repo, packageResolvedName), []byte(`{"pins":[]}`), 0o644); err != nil {
 		t.Fatalf("write empty Package.resolved: %v", err)
 	}
@@ -70,8 +80,12 @@ func testSwiftManifestAndResolvedLoaders(t *testing.T) {
 	if got := resolvedPinSource(resolvedPin{}); got != "" {
 		t.Fatalf("expected empty resolved pin source, got %q", got)
 	}
+}
 
-	repo = t.TempDir()
+func testSwiftManifestLoaderSkipsIncompleteDeclarations(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
 	manifest := `import PackageDescription
 let package = Package(
   name: "Demo",
@@ -89,7 +103,8 @@ let package = Package(
 	if err := os.WriteFile(filepath.Join(repo, packageManifestName), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write package manifest: %v", err)
 	}
-	found, warnings, err = loadManifestData(repo, &catalog)
+	catalog := newTestSwiftCatalog()
+	found, warnings, err := loadManifestData(repo, &catalog)
 	if err != nil || !found {
 		t.Fatalf("expected manifest loader success, found=%v err=%v", found, err)
 	}
@@ -99,19 +114,18 @@ let package = Package(
 	if _, ok := catalog.Dependencies[swiftNIOID]; !ok {
 		t.Fatalf("expected valid dependency to remain discoverable, got %#v", catalog.Dependencies)
 	}
+}
 
-	repo = t.TempDir()
+func testSwiftResolvedLoaderSkipsBlankPins(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
 	resolved := `{"pins":[{},{"identity":"swift-nio","location":"https://github.com/apple/swift-nio.git","state":{"version":"2.0.0"}}]}`
 	if err := os.WriteFile(filepath.Join(repo, packageResolvedName), []byte(resolved), 0o644); err != nil {
 		t.Fatalf("write package resolved: %v", err)
 	}
-	catalog = dependencyCatalog{
-		Dependencies:       map[string]dependencyMeta{},
-		AliasToDependency:  map[string]string{},
-		ModuleToDependency: map[string]string{},
-		LocalModules:       map[string]struct{}{},
-	}
-	found, warnings, err = loadResolvedData(repo, &catalog)
+	catalog := newTestSwiftCatalog()
+	found, warnings, err := loadResolvedData(repo, &catalog)
 	if err != nil || !found {
 		t.Fatalf("expected resolved loader success with skipped blank pin, found=%v err=%v", found, err)
 	}
@@ -121,8 +135,12 @@ let package = Package(
 	if _, ok := catalog.Dependencies[swiftNIOID]; !ok {
 		t.Fatalf("expected valid resolved pin to be merged, got %#v", catalog.Dependencies)
 	}
+}
 
-	catalog = dependencyCatalog{LocalModules: map[string]struct{}{}}
+func testSwiftCollectLocalModulesIgnoresBlankNames(t *testing.T) {
+	t.Helper()
+
+	catalog := dependencyCatalog{LocalModules: map[string]struct{}{}}
 	collectLocalModules(`.target(name: "")`, &catalog)
 	if len(catalog.LocalModules) != 0 {
 		t.Fatalf("expected blank local module names to be ignored, got %#v", catalog.LocalModules)
@@ -214,6 +232,14 @@ func testSwiftUnqualifiedUsageHelpers(t *testing.T) {
 }
 
 func testSwiftInvalidPathAndHelperGuardBranches(t *testing.T) {
+	testSwiftInvalidPathBranches(t)
+	testSwiftStringAndImportHelpers(t)
+	testSwiftDependencyReportHelpers(t)
+}
+
+func testSwiftInvalidPathBranches(t *testing.T) {
+	t.Helper()
+
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), "\x00"); err == nil {
 		t.Fatalf("expected invalid repo path to fail detection")
 	}
@@ -237,6 +263,10 @@ func testSwiftInvalidPathAndHelperGuardBranches(t *testing.T) {
 	if closed, valid := advanceParenthesisDepth(')', &depth); closed || valid {
 		t.Fatalf("expected negative depth to report invalid state, closed=%v valid=%v depth=%d", closed, valid, depth)
 	}
+}
+
+func testSwiftStringAndImportHelpers(t *testing.T) {
+	t.Helper()
 
 	if imports := parseSwiftImports([]byte("import \n"), swiftMainFileName); len(imports) != 0 {
 		t.Fatalf("expected blank Swift import to be ignored, got %#v", imports)
@@ -255,6 +285,10 @@ func testSwiftInvalidPathAndHelperGuardBranches(t *testing.T) {
 	if len(symbols) != 0 {
 		t.Fatalf("expected non-alphanumeric local declaration names to be ignored, got %#v", symbols)
 	}
+}
+
+func testSwiftDependencyReportHelpers(t *testing.T) {
+	t.Helper()
 
 	depReport, warnings := buildDependencyReport("dep", scanResult{}, dependencyCatalog{}, 50)
 	if depReport.Name != "dep" || len(warnings) != 1 || !strings.Contains(warnings[0], "no imports found") {
@@ -268,57 +302,75 @@ func testSwiftInvalidPathAndHelperGuardBranches(t *testing.T) {
 }
 
 func testSwiftScannerWalkBranches(t *testing.T) {
+	testSwiftScannerWalkErrorPassthrough(t)
+	testSwiftScannerFileBoundSkip(t)
+	testSwiftScannerRemovedFile(t)
+}
+
+func testSwiftScannerWalkErrorPassthrough(t *testing.T) {
+	t.Helper()
+
 	repo := t.TempDir()
 	scanner := newRepoScanner(repo, dependencyCatalog{})
 	if err := scanner.walk(context.Background(), filepath.Join(repo, "missing.swift"), nil, fs.ErrNotExist); !os.IsNotExist(err) {
 		t.Fatalf("expected walk error passthrough, got %v", err)
 	}
+}
 
+func testSwiftScannerFileBoundSkip(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	scanner := newRepoScanner(repo, dependencyCatalog{})
 	limitedPath := filepath.Join(repo, "Limited.swift")
 	if err := os.WriteFile(limitedPath, []byte("import Foundation\n"), 0o644); err != nil {
 		t.Fatalf("write limited swift file: %v", err)
 	}
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read repo dir: %v", err)
-	}
-	var limitedEntry fs.DirEntry
-	for _, entry := range entries {
-		if entry.Name() == "Limited.swift" {
-			limitedEntry = entry
-			break
-		}
-	}
-	if limitedEntry == nil {
-		t.Fatalf("expected Limited.swift dir entry")
-	}
+	limitedEntry := mustReadSwiftDirEntry(t, repo, "Limited.swift")
 	scanner.visited = maxScanFiles
 	if err := scanner.scanSwiftFile(limitedPath, limitedEntry); err != fs.SkipAll {
 		t.Fatalf("expected scan file bound skip, got %v", err)
 	}
+}
 
+func testSwiftScannerRemovedFile(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
 	missingPath := filepath.Join(repo, "Missing.swift")
 	if err := os.WriteFile(missingPath, []byte("import Foundation\n"), 0o644); err != nil {
 		t.Fatalf("write missing swift file: %v", err)
 	}
-	entries, err = os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("re-read repo dir: %v", err)
-	}
-	var missingEntry fs.DirEntry
-	for _, entry := range entries {
-		if entry.Name() == "Missing.swift" {
-			missingEntry = entry
-			break
-		}
-	}
-	if missingEntry == nil {
-		t.Fatalf("expected Missing.swift dir entry")
-	}
+	missingEntry := mustReadSwiftDirEntry(t, repo, "Missing.swift")
 	if err := os.Remove(missingPath); err != nil {
 		t.Fatalf("remove missing swift file: %v", err)
 	}
 	if newRepoScanner(repo, dependencyCatalog{}).scanSwiftFile(missingPath, missingEntry) == nil {
 		t.Fatalf("expected removed Swift source file to fail scan")
 	}
+}
+
+func newTestSwiftCatalog() dependencyCatalog {
+	return dependencyCatalog{
+		Dependencies:       map[string]dependencyMeta{},
+		AliasToDependency:  map[string]string{},
+		ModuleToDependency: map[string]string{},
+		LocalModules:       map[string]struct{}{},
+	}
+}
+
+func mustReadSwiftDirEntry(t *testing.T, dir, name string) fs.DirEntry {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return entry
+		}
+	}
+	t.Fatalf("expected %s dir entry", name)
+	return nil
 }

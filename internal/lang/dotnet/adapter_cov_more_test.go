@@ -12,6 +12,7 @@ import (
 )
 
 const dotNetProgramSource = "Program.cs"
+const dotNetMkdirObjDirErrFmt = "mkdir obj dir: %v"
 
 func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
@@ -28,7 +29,7 @@ func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 
 	repo = t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, "obj"), 0o755); err != nil {
-		t.Fatalf("mkdir obj dir: %v", err)
+		t.Fatalf(dotNetMkdirObjDirErrFmt, err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, dotNetProgramSource), []byte("using System;\n"), 0o644); err != nil {
 		t.Fatalf("write Program.cs: %v", err)
@@ -95,7 +96,7 @@ func TestDotNetScannerSkipsObjDirAndMissingSource(t *testing.T) {
 	repo := t.TempDir()
 	repoEntryPath := filepath.Join(repo, "obj")
 	if err := os.Mkdir(repoEntryPath, 0o755); err != nil {
-		t.Fatalf("mkdir obj dir: %v", err)
+		t.Fatalf(dotNetMkdirObjDirErrFmt, err)
 	}
 	objEntry := mustReadDirEntry(t, repo, "obj")
 
@@ -137,7 +138,7 @@ func TestDotNetCollectorSkipsObjDir(t *testing.T) {
 	repo := t.TempDir()
 	repoEntryPath := filepath.Join(repo, "obj")
 	if err := os.Mkdir(repoEntryPath, 0o755); err != nil {
-		t.Fatalf("mkdir obj dir: %v", err)
+		t.Fatalf(dotNetMkdirObjDirErrFmt, err)
 	}
 	objEntry := mustReadDirEntry(t, repo, "obj")
 	if err := newDependencyCollector(repo, map[string]struct{}{}).walk(repoEntryPath, objEntry, nil); err != filepath.SkipDir {

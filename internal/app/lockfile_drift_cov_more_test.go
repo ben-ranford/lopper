@@ -10,6 +10,8 @@ import (
 	"testing"
 )
 
+const lockfileRunGitErr = "run git"
+
 func TestLockfileDriftAdditionalPathAndWalkBranches(t *testing.T) {
 	if _, err := detectLockfileDrift(context.Background(), "\x00", false); err == nil {
 		t.Fatalf("expected detectLockfileDrift to reject invalid repo path")
@@ -59,17 +61,17 @@ func TestLockfileDriftGitErrorBranches(t *testing.T) {
 	}
 
 	writeFakeGitMode(t, repo, "difffail-head")
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "run git") {
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
 		t.Fatalf("expected gitTrackedChanges HEAD diff failure, got %v", err)
 	}
 
 	writeFakeGitMode(t, repo, "difffail-unstaged")
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "run git") {
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
 		t.Fatalf("expected gitTrackedChanges unstaged diff failure, got %v", err)
 	}
 
 	writeFakeGitMode(t, repo, "difffail-cached")
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "run git") {
+	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
 		t.Fatalf("expected gitTrackedChanges cached diff failure, got %v", err)
 	}
 

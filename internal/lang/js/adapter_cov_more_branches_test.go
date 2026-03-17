@@ -9,6 +9,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestJSAdapterAdditionalBranchCoverage(t *testing.T) {
@@ -170,6 +171,14 @@ func testJSDependencyCollectorAndResolutionHelpers(t *testing.T) {
 		t.Fatalf("write dep package: %v", err)
 	}
 
+	testJSDependencyCollectorTracksResolvedDeps(t, repo, importer)
+	testJSResolveRemovalCandidateWeights(t)
+	testJSResolveDependencyRootFailures(t, repo)
+}
+
+func testJSDependencyCollectorTracksResolvedDeps(t *testing.T, repo, importer string) {
+	t.Helper()
+
 	collector := newDependencyCollector()
 	collector.recordImport(repo, importer, ImportBinding{Module: "dep"})
 	collector.recordImport(repo, filepath.Join(t.TempDir(), testIndexJS), ImportBinding{Module: "dep"})
@@ -185,32 +194,22 @@ func testJSDependencyCollectorAndResolutionHelpers(t *testing.T) {
 	if second := cacheCollector.cachedDependencyRoot(req); second == "" || len(cacheCollector.cache) != 1 {
 		t.Fatalf("expected cached dependency root reuse, got second=%q cache=%#v", second, cacheCollector.cache)
 	}
+}
+
+func testJSResolveRemovalCandidateWeights(t *testing.T) {
+	t.Helper()
 
 	custom := &report.RemovalCandidateWeights{Usage: 1, Impact: 2, Confidence: 3}
 	got := resolveRemovalCandidateWeights(custom)
 	if got == report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected non-nil weights to normalize instead of using defaults")
 	}
+}
 
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf("restore wd %s: %v", originalWD, err)
-		}
-	})
-	deadDir := filepath.Join(t.TempDir(), "dead-resolution")
-	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf("mkdir dead resolution dir: %v", err)
-	}
-	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf("chdir dead resolution dir: %v", err)
-	}
-	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf("remove dead resolution dir: %v", err)
-	}
+func testJSResolveDependencyRootFailures(t *testing.T, repo string) {
+	t.Helper()
+
+	testutil.ChdirRemovedDir(t)
 	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{RepoPath: ".", ImporterPath: "src/index.js", Dependency: "dep"}); got != "" {
 		t.Fatalf("expected repo abs resolution failure to return empty root, got %q", got)
 	}

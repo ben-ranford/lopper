@@ -98,6 +98,15 @@ func testDartScanHelpersAndWarnings(t *testing.T) {
 	}
 
 	root := t.TempDir()
+	testDartScanPackageDirGuards(t, root)
+	testDartScanPackageFileEntryBranches(t, root)
+	testDartScanPackageRootBranches(t, root)
+	testDartCompileScanWarnings(t)
+}
+
+func testDartScanPackageDirGuards(t *testing.T, root string) {
+	t.Helper()
+
 	nestedRoot := filepath.Join(root, "packages", "demo")
 	if err := os.MkdirAll(nestedRoot, 0o755); err != nil {
 		t.Fatalf("mkdir nested root: %v", err)
@@ -111,6 +120,10 @@ func testDartScanHelpersAndWarnings(t *testing.T) {
 	if err := scanPackageDir(root, filepath.Join(root, "android"), "android", nil); err != filepath.SkipDir {
 		t.Fatalf("expected android directory to be skipped, got %v", err)
 	}
+}
+
+func testDartScanPackageFileEntryBranches(t *testing.T, root string) {
+	t.Helper()
 
 	scanned := map[string]struct{}{}
 	fileCount := 0
@@ -144,6 +157,10 @@ func testDartScanHelpersAndWarnings(t *testing.T) {
 	if scanDartSourceFile(root, outsidePath, map[string]dependencyInfo{}, &scanResult{}) == nil {
 		t.Fatalf("expected repo-bounded read failure for outside dart file")
 	}
+}
+
+func testDartScanPackageRootBranches(t *testing.T, root string) {
+	t.Helper()
 
 	manifest := packageManifest{Root: "", Dependencies: map[string]dependencyInfo{}}
 	if err := scanPackageRoot(context.Background(), root, manifest, map[string]struct{}{}, map[string]struct{}{}, new(int), &scanResult{}); err != nil {
@@ -153,6 +170,10 @@ func testDartScanHelpersAndWarnings(t *testing.T) {
 	if scanPackageRoot(context.Background(), root, packageManifest{Root: filepath.Join(root, "missing"), Dependencies: map[string]dependencyInfo{}}, map[string]struct{}{}, map[string]struct{}{}, new(int), &scanResult{}) == nil {
 		t.Fatalf("expected missing manifest root to fail scan")
 	}
+}
+
+func testDartCompileScanWarnings(t *testing.T) {
+	t.Helper()
 
 	warnings := compileScanWarnings(scanResult{
 		SkippedLargeFiles:   1,

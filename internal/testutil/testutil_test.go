@@ -12,6 +12,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
+const testutilGetwdErrFmt = "getwd: %v"
+
 func TestCanceledContextIsDone(t *testing.T) {
 	ctx := CanceledContext()
 	select {
@@ -123,7 +125,7 @@ func TestWriteTempFile(t *testing.T) {
 func TestChdirAndMustFirstFileEntry(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf(testutilGetwdErrFmt, err)
 	}
 
 	dir := t.TempDir()
@@ -157,7 +159,7 @@ func TestChdirAndMustFirstFileEntry(t *testing.T) {
 func TestChdir(t *testing.T) {
 	original, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf(testutilGetwdErrFmt, err)
 	}
 	dir := t.TempDir()
 	Chdir(t, dir)
@@ -189,7 +191,7 @@ func TestChdir(t *testing.T) {
 func TestChdirRemovedDir(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf(testutilGetwdErrFmt, err)
 	}
 
 	t.Run("removed cwd", func(t *testing.T) {

@@ -163,7 +163,7 @@ func TestParseWebhookURLValidations(t *testing.T) {
 	if _, err := ParseWebhookURL(withCredentials, "source"); err == nil {
 		t.Fatalf("expected user info validation error")
 	}
-	if _, err := ParseWebhookURL("https://example.com/hook#frag", "source"); err == nil {
+	if _, err := ParseWebhookURL(exampleHookURL+"#frag", "source"); err == nil {
 		t.Fatalf("expected fragment validation error")
 	}
 	if _, err := ParseWebhookURL("https:///hook", "source"); err == nil {
@@ -297,7 +297,7 @@ func TestWebhookHelperBranches(t *testing.T) {
 		t.Fatalf("expected n/a when summary has no totals, got %q", got)
 	}
 
-	if value, err := ParseWebhookURL("https://example.com/hook", "source"); err != nil || value != "https://example.com/hook" {
+	if value, err := ParseWebhookURL(exampleHookURL, "source"); err != nil || value != exampleHookURL {
 		t.Fatalf("expected valid webhook URL to round-trip, value=%q err=%v", value, err)
 	}
 	if _, err := ParseWebhookURL("https://[::1", "source"); err == nil {
