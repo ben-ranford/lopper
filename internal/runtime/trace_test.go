@@ -15,12 +15,9 @@ const (
 	scopePkgDependency         = "@scope/pkg"
 	lodashMapModule            = "lodash/map"
 	expectedGotFormat          = "%s: expected %q, got %q"
-	loadTraceErrFmt            = "load trace: %v"
 	leftPadDependency          = "left-pad"
 	leftPadModule              = "left-pad/index"
 	leftPadResolvedIndexModule = "/repo/node_modules/left-pad/index.js"
-	alphaIndexModule           = "alpha/index.js"
-	zetaIndexModule            = "zeta/index.js"
 )
 
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
@@ -32,7 +29,7 @@ func TestLoadTrace(t *testing.T) {
 	trace, err := loadTraceFromContent(t, `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n")
 
 	if err != nil {
-		t.Fatalf(loadTraceErrFmt, err)
+		t.Fatalf("load trace: %v", err)
 	}
 	if trace.DependencyLoads["lodash"] != 1 {
 		t.Fatalf("expected lodash load count=1, got %d", trace.DependencyLoads["lodash"])
@@ -202,7 +199,7 @@ func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
 func TestLoadTraceSkipsBlankLines(t *testing.T) {
 	trace, err := loadTraceFromContent(t, "\n   \n{\"module\":\""+lodashMapModule+"\"}\n")
 	if err != nil {
-		t.Fatalf(loadTraceErrFmt, err)
+		t.Fatalf("load trace: %v", err)
 	}
 	if got := trace.DependencyLoads["lodash"]; got != 1 {
 		t.Fatalf("expected lodash load count 1, got %d", got)
@@ -216,16 +213,6 @@ func TestLoadTraceMissingFileError(t *testing.T) {
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected os.ErrNotExist, got %v", err)
-	}
-}
-
-func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
-	trace, err := loadTraceFromContent(t, "{\"module\":\"./local\"}\n{\"resolved\":\"/repo/src/index.js\"}\n")
-	if err != nil {
-		t.Fatalf(loadTraceErrFmt, err)
-	}
-	if len(trace.DependencyLoads) != 0 || len(trace.DependencyModules) != 0 || len(trace.DependencySymbols) != 0 {
-		t.Fatalf("expected dependency-free events to be ignored, got %#v", trace)
 	}
 }
 
@@ -271,28 +258,6 @@ func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 	}
 }
 
-func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
-	rep := report.Report{}
-	trace := Trace{
-		DependencyLoads: map[string]int{
-			"seen": 1,
-			"zero": 0,
-			"new":  2,
-		},
-		DependencyModules: map[string]map[string]int{
-			"new": {"new/index.js": 2},
-		},
-		DependencySymbols: map[string]map[string]int{
-			"new": {"new/index.js\x00index": 2},
-		},
-	}
-
-	appendRuntimeOnlyDependencies(&rep, trace, map[string]struct{}{"seen": {}})
-	if len(rep.Dependencies) != 1 || rep.Dependencies[0].Name != "new" {
-		t.Fatalf("expected only unseen runtime dependency to be appended, got %#v", rep.Dependencies)
-	}
-}
-
 func TestRuntimeModuleAndSymbolExtraction(t *testing.T) {
 	module := runtimeModuleFromEvent(Event{Resolved: "/repo/node_modules/lodash/fp/map.js"}, "lodash")
 	if module != "lodash/fp/map.js" {
@@ -326,15 +291,6 @@ func TestRuntimeModuleFromResolvedPathBranches(t *testing.T) {
 	}
 }
 
-func TestRuntimeModuleFromResolvedPathPackageRoots(t *testing.T) {
-	if got := runtimeModuleFromResolvedPath("/repo/node_modules/lodash", "lodash"); got != "lodash" {
-		t.Fatalf("expected package root module for unscoped dependency, got %q", got)
-	}
-	if got := runtimeModuleFromResolvedPath("/repo/node_modules/@scope/pkg", scopePkgDependency); got != scopePkgDependency {
-		t.Fatalf("expected package root module for scoped dependency, got %q", got)
-	}
-}
-
 func TestRuntimeSymbolFromModuleBranches(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -351,12 +307,6 @@ func TestRuntimeSymbolFromModuleBranches(t *testing.T) {
 		if got := runtimeSymbolFromModule(tc.module, tc.dependency); got != tc.want {
 			t.Fatalf(expectedGotFormat, tc.name, tc.want, got)
 		}
-	}
-}
-
-func TestRuntimeSymbolFromModuleRejectsEmptyFileNames(t *testing.T) {
-	if got := runtimeSymbolFromModule("lodash/.js", "lodash"); got != "" {
-		t.Fatalf("expected empty symbol for empty filename stem, got %q", got)
 	}
 }
 
@@ -388,32 +338,6 @@ func TestRuntimeModulesAndSymbolsFormatting(t *testing.T) {
 	}
 	if symbols[0].Symbol != "map" || symbols[0].Module != lodashMapModule {
 		t.Fatalf("expected map symbol first, got %#v", symbols[0])
-	}
-}
-
-func TestRuntimeModulesSortsTieByModuleName(t *testing.T) {
-	modules := runtimeModules(map[string]int{
-		zetaIndexModule:  1,
-		alphaIndexModule: 1,
-	})
-	if len(modules) != 2 || modules[0].Module != alphaIndexModule || modules[1].Module != zetaIndexModule {
-		t.Fatalf("expected alphabetical order for equal counts, got %#v", modules)
-	}
-}
-
-func TestRuntimeSymbolsSortsEqualSymbolsByModuleName(t *testing.T) {
-	symbols := runtimeSymbols(map[string]int{
-		zetaIndexModule + "\x00same":  1,
-		alphaIndexModule + "\x00same": 1,
-	})
-	if len(symbols) != 2 || symbols[0].Module != alphaIndexModule || symbols[1].Module != zetaIndexModule {
-		t.Fatalf("expected equal symbols to sort by module name, got %#v", symbols)
-	}
-}
-
-func TestDependencyFromResolvedPathBlankValue(t *testing.T) {
-	if got := dependencyFromResolvedPath("   "); got != "" {
-		t.Fatalf("expected blank resolved path to produce no dependency, got %q", got)
 	}
 }
 

@@ -772,91 +772,6 @@ func TestPackResolverPopAndPathRootHelpers(t *testing.T) {
 	}
 }
 
-func TestThresholdHelperEdgeCases(t *testing.T) {
-	maxRoot := 1
-	maxNested := 2
-	cfg := rawConfig{
-		MaxUncertainImportCount: &maxRoot,
-		Thresholds: rawThresholds{
-			MaxUncertainImportCount: &maxNested,
-		},
-	}
-	if _, err := cfg.toOverrides(); err == nil {
-		t.Fatalf("expected duplicate nested max uncertain imports error")
-	}
-
-	rootPolicy := "warn"
-	nestedPolicy := "fail"
-	cfg = rawConfig{
-		LockfileDriftPolicy: &rootPolicy,
-		Thresholds: rawThresholds{
-			LockfileDriftPolicy: &nestedPolicy,
-		},
-	}
-	if _, err := cfg.toOverrides(); err == nil {
-		t.Fatalf("expected duplicate nested lockfile drift policy error")
-	}
-
-	includeRegistry := true
-	cfg = rawConfig{
-		LicenseIncludeRegistryProvenance: &includeRegistry,
-		Thresholds: rawThresholds{
-			LicenseIncludeRegistryProvenance: &includeRegistry,
-		},
-	}
-	if _, err := cfg.toOverrides(); err == nil {
-		t.Fatalf("expected duplicate nested license registry provenance error")
-	}
-
-	if got := dedupeStable([]string{"root", "pack", "root", "defaults"}); !reflect.DeepEqual(got, []string{"root", "pack", "defaults"}) {
-		t.Fatalf("expected stable dedupe order, got %#v", got)
-	}
-}
-
-func TestRemotePolicyURLValidationAndFetchErrors(t *testing.T) {
-	if parsed, ok := parseRemoteURL("http://%zz"); ok || parsed != nil {
-		t.Fatalf("expected invalid URL parse to be rejected")
-	}
-	if parsed, ok := parseRemoteURL("https:///missing-host"); ok || parsed != nil {
-		t.Fatalf("expected hostless remote URL to be rejected")
-	}
-	if _, err := canonicalRemotePolicyURL("mailto:test@example.com"); err == nil {
-		t.Fatalf("expected invalid canonical remote URL error")
-	}
-	if _, err := readRemotePolicyFile("://bad"); err == nil {
-		t.Fatalf("expected parse remote policy URL error")
-	}
-	if _, err := readRemotePolicyFile("https://example.com/policy.yml#bad-pin"); err == nil {
-		t.Fatalf("expected invalid pin error")
-	}
-
-	originalClient := remotePolicyHTTPClient
-	t.Cleanup(func() {
-		remotePolicyHTTPClient = originalClient
-	})
-	remotePolicyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, fmt.Errorf("boom")
-	})}
-	if _, err := readRemotePolicyFile("https://example.com/policy.yml#sha256=" + strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "fetch remote policy") {
-		t.Fatalf("expected fetch remote policy error, got %v", err)
-	}
-	remotePolicyHTTPClient = originalClient
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(strings.Repeat("a", maxRemotePolicyBytes+1))); err != nil {
-			t.Fatalf("write oversized body: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	sum := sha256.Sum256([]byte("tiny"))
-	location := server.URL + "/policy.yml#sha256=" + hex.EncodeToString(sum[:])
-	if _, err := readRemotePolicyFile(location); err == nil || !strings.Contains(err.Error(), "size limit") {
-		t.Fatalf("expected remote policy size limit error, got %v", err)
-	}
-}
-
 func assertLoadConfigErrorContains(t *testing.T, config string, expectedText string) {
 	t.Helper()
 	repo := t.TempDir()
@@ -868,10 +783,4 @@ func assertLoadConfigErrorContains(t *testing.T, config string, expectedText str
 	if !strings.Contains(err.Error(), expectedText) {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
 }

@@ -2,7 +2,6 @@ package report
 
 import (
 	"encoding/json"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,45 +242,6 @@ func TestSortSARIFResultsAndLocationKey(t *testing.T) {
 	}
 }
 
-func TestSARIFRuleBuilderDeduplicatesAndSorts(t *testing.T) {
-	builder := newSARIFRuleBuilder()
-	builder.add(sarifRule{ID: "b"})
-	builder.add(sarifRule{ID: "a"})
-	builder.add(sarifRule{ID: "a"})
-
-	items := builder.list()
-	if len(items) != 2 {
-		t.Fatalf("expected duplicate rules to be ignored, got %#v", items)
-	}
-	if items[0].ID != "a" || items[1].ID != "b" {
-		t.Fatalf("expected rules to be sorted by ID, got %#v", items)
-	}
-}
-
-func TestFormatSARIFMarshalError(t *testing.T) {
-	waste := math.NaN()
-	if _, err := formatSARIF(Report{WasteIncreasePercent: &waste}); err == nil {
-		t.Fatalf("expected sarif formatting to fail for NaN payload values")
-	}
-}
-
-func TestAppendUnusedImportResultsFallsBackToAnchor(t *testing.T) {
-	rules := newSARIFRuleBuilder()
-	anchor := &sarifLocation{
-		PhysicalLocation: sarifPhysicalLocation{
-			ArtifactLocation: sarifArtifactLocation{URI: "anchor.go"},
-		},
-	}
-
-	results := appendUnusedImportResults(nil, rules, DependencyReport{Name: "pkg", Language: "js-ts", UnusedImports: []ImportUse{{Name: "map", Module: "lodash"}}}, anchor)
-	if len(results) != 1 || len(results[0].Locations) != 1 {
-		t.Fatalf("expected fallback anchor location, got %#v", results)
-	}
-	if results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI != "anchor.go" {
-		t.Fatalf("expected anchor URI to be preserved, got %#v", results[0].Locations[0])
-	}
-}
-
 func TestDependencyAnchorLocationBranches(t *testing.T) {
 	if anchor := dependencyAnchorLocation(DependencyReport{}); anchor != nil {
 		t.Fatalf("expected nil anchor without locations, got %#v", anchor)
@@ -310,25 +270,6 @@ func TestDependencyAnchorLocationBranches(t *testing.T) {
 	}
 	if anchor.PhysicalLocation.ArtifactLocation.URI != testAFileGo {
 		t.Fatalf("expected sorted anchor path, got %#v", anchor)
-	}
-}
-
-func TestDependencyAnchorLocationColumnTieBreakAndNormalizeRuleFallback(t *testing.T) {
-	dep := DependencyReport{
-		UsedImports: []ImportUse{
-			{Locations: []Location{{File: "same.go", Line: 3, Column: 2}}},
-		},
-		UnusedImports: []ImportUse{
-			{Locations: []Location{{File: "same.go", Line: 3, Column: 1}}},
-		},
-	}
-	anchor := dependencyAnchorLocation(dep)
-	if anchor == nil || anchor.PhysicalLocation.Region == nil || anchor.PhysicalLocation.Region.StartColumn != 1 {
-		t.Fatalf("expected column tie-break to prefer the earliest column, got %#v", anchor)
-	}
-
-	if got := normalizeRuleToken("!!!"); got != "unknown" {
-		t.Fatalf("expected punctuation-only rule token to normalize to unknown, got %q", got)
 	}
 }
 

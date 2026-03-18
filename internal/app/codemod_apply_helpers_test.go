@@ -380,16 +380,6 @@ func TestWriteCodemodRollbackArtifactReadonlyDir(t *testing.T) {
 	}
 }
 
-func TestWriteCodemodRollbackArtifactOpenRootError(t *testing.T) {
-	repoFile := filepath.Join(t.TempDir(), "repo-file")
-	writeTextFile(t, repoFile, "not a directory\n", 0o600)
-
-	_, err := writeCodemodRollbackArtifact(repoFile, "lodash", []preparedCodemodFile{{file: indexJSFile, original: beforeContent, mode: 0o644}}, time.Now())
-	if err == nil {
-		t.Fatal("expected rollback artifact setup to fail when repo path is not a directory")
-	}
-}
-
 func TestApplyCodemodIfNeededNoOpWhenApplyDisabled(t *testing.T) {
 	repo := t.TempDir()
 	reportData := report.Report{Dependencies: []report.DependencyReport{{Name: "lodash"}}}

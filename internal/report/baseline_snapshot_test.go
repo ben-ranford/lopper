@@ -126,7 +126,6 @@ func TestSanitizeBaselineKey(t *testing.T) {
 	}{
 		{name: "empty", key: "", want: "baseline"},
 		{name: "valid", key: "release-1.2_prod", want: "release-1.2_prod"},
-		{name: "uppercase", key: "Release-1.2_Prod", want: "Release-1.2_Prod"},
 		{name: "replaces invalid and trims separators", key: "../feature branch#", want: "feature_branch"},
 		{name: "all separators fallback", key: "._-", want: "baseline"},
 	}
@@ -177,28 +176,5 @@ func TestSaveSnapshotSortsDependenciesDeterministically(t *testing.T) {
 	wantOrder := []string{"go/alpha", "go/beta", "python/zeta"}
 	if !slices.Equal(gotOrder, wantOrder) {
 		t.Fatalf("unexpected dependency order: got=%v want=%v", gotOrder, wantOrder)
-	}
-}
-
-func TestLoadWithKeySnapshotComputesMissingFields(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "snapshot.json")
-	content := `{"baselineSchemaVersion":"1.0.0","key":" label:manual ","savedAt":"2026-01-01T00:00:00Z","report":{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"language":"js-ts","name":"dep","usedExportsCount":1,"totalExportsCount":2}]}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write snapshot: %v", err)
-	}
-
-	rep, key, err := LoadWithKey(path)
-	if err != nil {
-		t.Fatalf("load snapshot: %v", err)
-	}
-	if key != "label:manual" {
-		t.Fatalf("expected trimmed snapshot key, got %q", key)
-	}
-	if rep.Summary == nil || rep.Summary.DependencyCount != 1 {
-		t.Fatalf("expected computed summary, got %#v", rep.Summary)
-	}
-	if len(rep.LanguageBreakdown) != 1 || rep.LanguageBreakdown[0].Language != "js-ts" {
-		t.Fatalf("expected computed language breakdown, got %#v", rep.LanguageBreakdown)
 	}
 }

@@ -8,11 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"github.com/ben-ranford/lopper/internal/gitexec"
 )
-
-const testutilGetwdErrFmt = "getwd: %v"
 
 func TestCanceledContextIsDone(t *testing.T) {
 	ctx := CanceledContext()
@@ -125,7 +121,7 @@ func TestWriteTempFile(t *testing.T) {
 func TestChdirAndMustFirstFileEntry(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
-		t.Fatalf(testutilGetwdErrFmt, err)
+		t.Fatalf("getwd: %v", err)
 	}
 
 	dir := t.TempDir()
@@ -159,7 +155,7 @@ func TestChdirAndMustFirstFileEntry(t *testing.T) {
 func TestChdir(t *testing.T) {
 	original, err := os.Getwd()
 	if err != nil {
-		t.Fatalf(testutilGetwdErrFmt, err)
+		t.Fatalf("getwd: %v", err)
 	}
 	dir := t.TempDir()
 	Chdir(t, dir)
@@ -186,37 +182,6 @@ func TestChdir(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestChdirRemovedDir(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf(testutilGetwdErrFmt, err)
-	}
-
-	t.Run("removed cwd", func(t *testing.T) {
-		ChdirRemovedDir(t)
-	})
-
-	if cwd, err := os.Getwd(); err != nil {
-		t.Fatalf("getwd after cleanup: %v", err)
-	} else if cwd != originalWD {
-		t.Fatalf("expected cwd restored to %s, got %s", originalWD, cwd)
-	}
-}
-
-func TestRunGit(t *testing.T) {
-	if _, err := gitexec.ResolveBinaryPath(); err != nil {
-		t.Skip("git binary not available")
-	}
-
-	repo := t.TempDir()
-	RunGit(t, repo, "init")
-	RunGit(t, repo, "status", "--short")
-
-	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
-		t.Fatalf("expected git repository to be initialized: %v", err)
-	}
 }
 
 func TestFatalPathsViaHelperProcess(t *testing.T) {

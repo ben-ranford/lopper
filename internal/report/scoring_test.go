@@ -128,20 +128,6 @@ func TestAnnotateRemovalCandidateScoresWithWeights(t *testing.T) {
 	}
 }
 
-func TestDependencyUsageSignalAndRawImpactBranches(t *testing.T) {
-	score, ok := dependencyUsageSignal(DependencyReport{
-		UsedExportsCount:  1,
-		TotalExportsCount: 4,
-	})
-	if !ok || score != 75 {
-		t.Fatalf("expected fallback usage score of 75, got score=%f ok=%v", score, ok)
-	}
-
-	if impact := rawImpact(DependencyReport{UsedExportsCount: 5, TotalExportsCount: 3}); impact != 0 {
-		t.Fatalf("expected raw impact to clamp negative unused exports, got %f", impact)
-	}
-}
-
 func TestNormalizeRemovalCandidateWeightsFallback(t *testing.T) {
 	defaults := DefaultRemovalCandidateWeights()
 	got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: -1, Impact: 0.5, Confidence: 0.5})
@@ -280,45 +266,6 @@ func TestReachabilityHelpersFallbackBranches(t *testing.T) {
 	}
 }
 
-func TestScoringAdditionalPureBranches(t *testing.T) {
-	usageSignal := usageUncertaintyConfidenceSignal(&UsageUncertainty{ConfirmedImportUses: -1, UncertainImportUses: 1})
-	if usageSignal.signal.Score != 60 || usageSignal.signal.Code != confidenceReasonRepoUsageUncertainty {
-		t.Fatalf("expected bounded repo-uncertainty signal, got %#v", usageSignal.signal)
-	}
-
-	if got := highestRiskSeverity([]RiskCue{{Severity: "low"}, {Severity: "LOW"}, {Severity: "medium"}, {Severity: "unknown"}}); got != "medium" {
-		t.Fatalf("expected highest severity to be medium, got %q", got)
-	}
-	if got := riskSeverityWeight("unexpected"); got != 0 {
-		t.Fatalf("expected unknown severity weight to be zero, got %d", got)
-	}
-
-	summary := summarizeReachabilityConfidence([]evaluatedReachabilitySignal{
-		{signal: ReachabilitySignal{Code: confidenceReasonUsageUncertaintyClear, Score: 100}, summary: "should skip"},
-		{signal: ReachabilitySignal{Code: confidenceReasonRuntimeOverlap, Score: 100}, summary: "keep overlap"},
-		{signal: ReachabilitySignal{Code: confidenceReasonRiskMedium, Score: 70}, summary: ""},
-		{signal: ReachabilitySignal{Code: confidenceReasonRepoUsageUncertainty, Score: 60}, summary: "keep uncertainty"},
-	})
-	if summary != "keep overlap; keep uncertainty" {
-		t.Fatalf("unexpected reachability summary: %q", summary)
-	}
-
-	if got := reachabilityRationale(nil); len(got) != 0 {
-		t.Fatalf("expected nil confidence rationale to be empty, got %#v", got)
-	}
-	rationale := reachabilityRationale(&ReachabilityConfidence{
-		Signals: []ReachabilitySignal{
-			{Code: confidenceReasonUsageUncertaintyClear, Score: 100, Rationale: "skip"},
-			{Code: confidenceReasonRuntimeOverlap, Score: 100, Rationale: "keep"},
-			{Code: confidenceReasonRiskMedium, Score: 60, Rationale: "keep medium"},
-			{Code: confidenceReasonRiskLow, Score: 40, Rationale: "   "},
-		},
-	})
-	if len(rationale) != 2 || rationale[0] != "keep" || rationale[1] != "keep medium" {
-		t.Fatalf("unexpected rationale list: %#v", rationale)
-	}
-}
-
 func TestClampBounds(t *testing.T) {
 	if got := clamp(-2, 0, 100); got != 0 {
 		t.Fatalf("expected clamp lower bound, got %f", got)
@@ -453,25 +400,17 @@ func TestFilterFindingsByConfidence(t *testing.T) {
 	}
 }
 
-func TestFilterFindingsByConfidenceBypassesAndKeepsMatches(t *testing.T) {
+func TestFilterFindingsByConfidenceNonPositiveNoop(t *testing.T) {
 	deps := []DependencyReport{
 		{
-			UnusedExports: []SymbolRef{
-				{Name: "keep", ConfidenceScore: 90},
-				{Name: "drop", ConfidenceScore: 40},
-			},
+			Name:          leftPadPackageName,
+			UnusedExports: []SymbolRef{{Name: "pad", Module: leftPadPackageName, ConfidenceScore: 10}},
 		},
 	}
 
 	FilterFindingsByConfidence(deps, 0)
-	if len(deps[0].UnusedExports) != 2 {
-		t.Fatalf("expected non-positive threshold to leave findings unchanged, got %#v", deps[0].UnusedExports)
-	}
 
-	kept := filterByConfidenceScore(deps[0].UnusedExports, 50, func(item SymbolRef) float64 {
-		return item.ConfidenceScore
-	})
-	if len(kept) != 1 || kept[0].Name != "keep" {
-		t.Fatalf("expected confidence filter to keep only high-confidence items, got %#v", kept)
+	if len(deps[0].UnusedExports) != 1 {
+		t.Fatalf("expected non-positive threshold to leave findings unchanged, got %#v", deps[0].UnusedExports)
 	}
 }

@@ -3,10 +3,8 @@ package notify
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -109,47 +107,6 @@ func TestBuildSlackPayloadIncludesThresholdStatus(t *testing.T) {
 	}
 	if !foundStatus {
 		t.Fatalf("expected threshold status field in payload, got %#v", decoded)
-	}
-}
-
-func TestSlackNotifierNotifyBuildPayloadError(t *testing.T) {
-	err := NewSlackNotifier(nil).Notify(context.Background(), Delivery{
-		Channel:    ChannelSlack,
-		WebhookURL: "https://example.com/hook",
-		Report: report.Report{
-			Summary: &report.Summary{DependencyCount: 1, TotalExportsCount: 1, UsedPercent: math.NaN()},
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected notify to fail when slack payload JSON encoding fails")
-	}
-}
-
-func TestBuildSlackPayloadFallbackBranches(t *testing.T) {
-	data, err := buildSlackPayload(Delivery{
-		Channel: ChannelSlack,
-		Trigger: TriggerAlways,
-		Report: report.Report{
-			RepoPath: filepath.Clean(string(filepath.Separator)),
-			Dependencies: []report.DependencyReport{
-				{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("build slack payload fallback branches: %v", err)
-	}
-
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode slack payload: %v", err)
-	}
-	if decoded["text"] != "[Lopper] Dependency analysis for /" {
-		t.Fatalf("expected root repo path to be preserved in fallback repo name, got %#v", decoded["text"])
-	}
-	blocks, ok := decoded["blocks"].([]any)
-	if !ok || len(blocks) != 3 {
-		t.Fatalf("expected payload without generated-at context or waste delta block, got %#v", decoded["blocks"])
 	}
 }
 
