@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 )
 
 const decodePayloadErrFmt = "decode payload: %v"
+const exampleHookURL = "https://example.com/hook"
 
 func newPayloadCaptureServer(t *testing.T, payload *map[string]any) *httptest.Server {
 	t.Helper()
@@ -69,6 +71,19 @@ func TestWebhookNotifierNotifySuccess(t *testing.T) {
 	}
 	if payload["channel"] != string(ChannelSlack) {
 		t.Fatalf("expected channel field, got %#v", payload["channel"])
+	}
+}
+
+func TestWebhookNotifierNotifyBuildPayloadError(t *testing.T) {
+	err := NewWebhookNotifier(nil).Notify(context.Background(), Delivery{
+		Channel:    ChannelSlack,
+		WebhookURL: exampleHookURL,
+		Report: report.Report{
+			Summary: &report.Summary{DependencyCount: 1, TotalExportsCount: 1, UsedPercent: math.NaN()},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected notify to fail when webhook payload JSON encoding fails")
 	}
 }
 
@@ -148,7 +163,7 @@ func TestParseWebhookURLValidations(t *testing.T) {
 	if _, err := ParseWebhookURL(withCredentials, "source"); err == nil {
 		t.Fatalf("expected user info validation error")
 	}
-	if _, err := ParseWebhookURL("https://example.com/hook#frag", "source"); err == nil {
+	if _, err := ParseWebhookURL(exampleHookURL+"#frag", "source"); err == nil {
 		t.Fatalf("expected fragment validation error")
 	}
 	if _, err := ParseWebhookURL("https:///hook", "source"); err == nil {
@@ -274,5 +289,25 @@ func TestSummaryDependencyCountThresholdStatusAndRepoPathOrDefault(t *testing.T)
 	expected := "Waste change vs baseline: " + strconv.FormatFloat(delta, 'f', 1, 64) + "%"
 	if got != expected {
 		t.Fatalf("expected zero delta label %q, got %q", expected, got)
+	}
+}
+
+func TestWebhookHelperBranches(t *testing.T) {
+	if got := summaryUsedPercent(report.Report{Summary: &report.Summary{TotalExportsCount: 0}}); got != "n/a" {
+		t.Fatalf("expected n/a when summary has no totals, got %q", got)
+	}
+
+	if value, err := ParseWebhookURL(exampleHookURL, "source"); err != nil || value != exampleHookURL {
+		t.Fatalf("expected valid webhook URL to round-trip, value=%q err=%v", value, err)
+	}
+	if _, err := ParseWebhookURL("https://[::1", "source"); err == nil {
+		t.Fatalf("expected webhook URL parse failure to be reported")
+	}
+
+	if got := RedactWebhookURL("   "); got != "<redacted-webhook>" {
+		t.Fatalf("expected empty webhook URL to use fallback redaction, got %q", got)
+	}
+	if got := RedactWebhookURL("//hooks.slack.com/services/A/B/SECRET"); got != "https://hooks.slack.com/..." {
+		t.Fatalf("expected schemeless webhook URL to default to https, got %q", got)
 	}
 }

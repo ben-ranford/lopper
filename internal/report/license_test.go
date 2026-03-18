@@ -72,3 +72,28 @@ func TestSPDXExpressionContainsDeniedTokens(t *testing.T) {
 		t.Fatalf("did not expect denied match for empty expression/denylist")
 	}
 }
+
+func TestLicenseAdditionalBranches(t *testing.T) {
+	deps := []DependencyReport{
+		{Name: "nil-license"},
+		{Name: "set", License: &DependencyLicense{Denied: true}},
+	}
+	ApplyLicensePolicy(deps, nil)
+	if deps[1].License.Denied {
+		t.Fatalf("expected deny flag to clear when deny list is empty")
+	}
+
+	if got := SortedDenyList([]string{"###"}); len(got) != 0 {
+		t.Fatalf("expected invalid deny list to normalize to nil, got %#v", got)
+	}
+
+	deny := map[string]struct{}{"GPL-2.0-ONLY": {}}
+	if !spdxExpressionContainsDenied("MIT / GPL-2.0-only", deny) {
+		t.Fatalf("expected denied token match after delimiter flush")
+	}
+
+	ApplyLicensePolicy(deps, []string{reportTestGPL30OnlyLower})
+	if deps[0].License != nil {
+		t.Fatalf("expected nil license to remain untouched when deny list is set")
+	}
+}

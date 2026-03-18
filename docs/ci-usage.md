@@ -74,7 +74,7 @@ When running locally with `act`, target the Linux-backed jobs explicitly (for ex
 - `make test-race`: run `go test -race ./...`
 - `make bench-mem`: run the curated memory benchmark suite with `-benchmem`
 - `make bench-gate`: compare curated memory benchmark deltas against a base ref (defaults: `MEMORY_BENCH_BASE=origin/main`, `MEMORY_BENCH_MAX_BYTES_PCT=15`, `MEMORY_BENCH_MAX_ALLOCS_PCT=10`)
-- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=95`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
+- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=98`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
 - `make smoke`: run cross-OS smoke checks (`mod-check + test-race + build`)
 - `make ci`: `format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
 - `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
@@ -101,7 +101,7 @@ Memory benchmark approval:
 - Newly added benchmarks are reported but not gated until the same benchmark name exists on both the base and head refs, which keeps first-rollout noise manageable.
 
 On pull requests, if the coverage gate fails, CI posts/updates a PR comment with required vs. actual coverage.
-The 95% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.
+The 98% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.
 
 Cross-compilation uses `zig cc` for CGO targets.
 Current cross-CGO release targets are Linux and Windows.

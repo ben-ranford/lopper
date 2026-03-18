@@ -130,7 +130,6 @@ func sanitizedGitEnv() []string {
 
 func resolveGitDir(repoPath string) (string, error) {
 	searchDir := filepath.Clean(repoPath)
-	var lastErr error
 
 	for {
 		gitDir, found, err := inspectGitDir(searchDir)
@@ -140,13 +139,9 @@ func resolveGitDir(repoPath string) (string, error) {
 		if found {
 			return gitDir, nil
 		}
-		lastErr = os.ErrNotExist
 
 		parent := filepath.Dir(searchDir)
 		if parent == searchDir {
-			if lastErr != nil {
-				return "", lastErr
-			}
 			return "", os.ErrNotExist
 		}
 		searchDir = parent

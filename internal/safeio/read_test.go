@@ -138,6 +138,22 @@ func TestReadOpenedFileAllowsMaxInt64Limit(t *testing.T) {
 	}
 }
 
+func TestReadOpenedFileDirectoryReadError(t *testing.T) {
+	dirFile, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := dirFile.Close(); closeErr != nil {
+			t.Fatalf("close temp dir file: %v", closeErr)
+		}
+	})
+
+	if _, err := readOpenedFile(dirFile, 1); err == nil {
+		t.Fatalf("expected readOpenedFile to fail when reading a directory")
+	}
+}
+
 func TestReadFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	parentDir := t.TempDir()
 	rootDir := filepath.Join(parentDir, "root")

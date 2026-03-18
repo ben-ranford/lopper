@@ -33,6 +33,7 @@ const (
 	scopeGoGlob                 = "src/**/*.go"
 	scopeExcludeTestGlob        = "**/*_test.go"
 	scopeVendorGlob             = "vendor/**"
+	scopeAnalyseGoGlobs         = "src/**/*.go,internal/**/*.go"
 	scopeIncludeCombined        = "src/**/*.go,internal/**/*.go,cmd/**/*.go"
 	parseConfigFileName         = ".lopper.yml"
 	repoFlagName                = "--repo"
@@ -43,6 +44,7 @@ const (
 	dashboardConfigFlagName     = "--config"
 	dashboardConfigFileName     = "lopper-org.yml"
 	dashboardReportCSVFileName  = "report.csv"
+	notifyOnFlag                = "--notify-on"
 )
 
 func mustParseArgs(t *testing.T, args []string) app.Request {
@@ -241,10 +243,10 @@ func TestParseArgsAnalyseScopeFlags(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"analyse",
 		"--top", "3",
-		includeFlagName, "src/**/*.go,internal/**/*.go",
+		includeFlagName, scopeAnalyseGoGlobs,
 		excludeFlagName, scopeExcludeTestGlob,
 	})
-	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != "src/**/*.go,internal/**/*.go" {
+	if got := strings.Join(req.Analyse.IncludePatterns, ","); got != scopeAnalyseGoGlobs {
 		t.Fatalf("unexpected include patterns: %q", got)
 	}
 	if got := strings.Join(req.Analyse.ExcludePatterns, ","); got != scopeExcludeTestGlob {
@@ -305,6 +307,22 @@ func TestMergePatternsWithEmptyNextKeepsExisting(t *testing.T) {
 	merged := mergePatterns(existing, nil)
 	if strings.Join(merged, ",") != scopeGoGlob {
 		t.Fatalf("expected merge with empty next to preserve existing patterns, got %#v", merged)
+	}
+}
+
+func TestMergePatternsSkipsDuplicatesAlreadySeen(t *testing.T) {
+	merged := mergePatterns([]string{scopeGoGlob}, []string{scopeGoGlob, "internal/**/*.go"})
+	if strings.Join(merged, ",") != scopeAnalyseGoGlobs {
+		t.Fatalf("expected duplicates to be skipped, got %#v", merged)
+	}
+}
+
+func TestSplitPatternListSkipsEmptyAndDuplicateEntries(t *testing.T) {
+	if got := splitPatternList(" , " + scopeGoGlob + ", " + scopeGoGlob + " , "); !reflect.DeepEqual(got, []string{scopeGoGlob}) {
+		t.Fatalf("expected split pattern list to keep one trimmed value, got %#v", got)
+	}
+	if got := splitPatternList(" , , "); len(got) != 0 {
+		t.Fatalf("expected nil pattern list when all values are blank, got %#v", got)
 	}
 }
 
@@ -411,7 +429,7 @@ func TestParseArgsDashboardRepos(t *testing.T) {
 }
 
 func TestParseArgsDashboardRejectsBaselineStore(t *testing.T) {
-	err := expectParseArgsError(t, []string{"dashboard", "--repos", "./api", "--baseline-store", "./baselines"}, "expected dashboard baseline-store rejection")
+	err := expectParseArgsError(t, []string{"dashboard", dashboardReposFlagName, "./api", "--baseline-store", "./baselines"}, "expected dashboard baseline-store rejection")
 	if !strings.Contains(err.Error(), "flag provided but not defined") {
 		t.Fatalf("expected unknown flag error for baseline-store, got %v", err)
 	}
@@ -451,6 +469,13 @@ func TestParseArgsDashboardValidation(t *testing.T) {
 	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
 	if !strings.Contains(err.Error(), "--top must be > 0") {
 		t.Fatalf("unexpected dashboard top validation error: %v", err)
+	}
+}
+
+func TestParseArgsDashboardRejectsUnexpectedArguments(t *testing.T) {
+	_, err := ParseArgs([]string{"dashboard", dashboardReposFlagName, "./api", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected arguments for dashboard") {
+		t.Fatalf("expected dashboard positional argument error, got %v", err)
 	}
 }
 
@@ -665,7 +690,7 @@ func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "10",
 		"--repo", repo,
-		"--notify-on", "improvement",
+		notifyOnFlag, "improvement",
 		"--notify-teams", "https://outlook.office.com/webhook/CLI",
 	})
 	if err != nil {
@@ -687,7 +712,7 @@ func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
 }
 
 func TestParseArgsAnalyseInvalidNotificationInputs(t *testing.T) {
-	if _, err := ParseArgs([]string{"analyse", "--top", "1", "--notify-on", "bad"}); err == nil {
+	if _, err := ParseArgs([]string{"analyse", "--top", "1", notifyOnFlag, "bad"}); err == nil {
 		t.Fatalf("expected invalid notify-on error")
 	}
 
@@ -697,6 +722,34 @@ func TestParseArgsAnalyseInvalidNotificationInputs(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("expected parse error to redact webhook secrets, got %q", err.Error())
+	}
+}
+
+func TestResolveAnalyseNotificationsErrors(t *testing.T) {
+	t.Run("invalid config overrides", func(t *testing.T) {
+		repo := t.TempDir()
+		configPath := filepath.Join(repo, parseConfigFileName)
+		writeFile(t, configPath, "notifications:\n  slack:\n    on: definitely-not-valid\n")
+
+		_, err := resolveAnalyseNotifications(map[string]bool{}, analyseFlagValues{}, configPath)
+		if err == nil {
+			t.Fatalf("expected config notification parse error")
+		}
+	})
+
+	t.Run("invalid env overrides", func(t *testing.T) {
+		t.Setenv(notify.EnvOn, "definitely-not-valid")
+
+		_, err := resolveAnalyseNotifications(map[string]bool{}, analyseFlagValues{}, "")
+		if err == nil {
+			t.Fatalf("expected env notification parse error")
+		}
+	})
+}
+
+func TestValidateSuggestOnlyTargetRequiresDependency(t *testing.T) {
+	if validateSuggestOnlyTarget(true, "   ", 0) == nil {
+		t.Fatalf("expected suggest-only validation to require dependency")
 	}
 }
 
