@@ -204,11 +204,11 @@ func TestSummaryHelperFilterDependencies(t *testing.T) {
 
 func TestSummaryHelperParseSortModes(t *testing.T) {
 	t.Run("lenient parser supports aliases and defaults", func(t *testing.T) {
-		assertLenientSortModes(t, map[string]sortMode{
-			"alpha":   sortByName,
-			"waste":   sortByWaste,
-			"unknown": sortByWaste,
-			" NAME ":  sortByName,
+		assertLenientSortModes(t, []sortModeExpectation{
+			{input: "alpha", want: sortByName},
+			{input: "waste", want: sortByWaste},
+			{input: "unknown", want: sortByWaste},
+			{input: " NAME ", want: sortByName},
 		})
 	})
 
@@ -219,12 +219,17 @@ func TestSummaryHelperParseSortModes(t *testing.T) {
 	})
 }
 
-func assertLenientSortModes(t *testing.T, testCases map[string]sortMode) {
+type sortModeExpectation struct {
+	input string
+	want  sortMode
+}
+
+func assertLenientSortModes(t *testing.T, testCases []sortModeExpectation) {
 	t.Helper()
 
-	for input, want := range testCases {
-		if got := parseSortMode(input); got != want {
-			t.Fatalf("unexpected lenient parse for %q: got %q want %q", input, got, want)
+	for _, testCase := range testCases {
+		if got := parseSortMode(testCase.input); got != testCase.want {
+			t.Fatalf("unexpected lenient parse for %q: got %q want %q", testCase.input, got, testCase.want)
 		}
 	}
 }
