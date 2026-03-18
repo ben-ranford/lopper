@@ -2,6 +2,8 @@ package notify
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,13 +57,41 @@ func TestSendWebhookJSON(t *testing.T) {
 			t.Fatalf("expected status error, got %v", err)
 		}
 	})
+
+	t.Run("close error is ignored", func(t *testing.T) {
+		client := &http.Client{
+			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       &errReadCloser{Reader: strings.NewReader(`{"ok":true}`), closeErr: errors.New("close failed")},
+					Header:     make(http.Header),
+				}, nil
+			}),
+		}
+
+		err := sendWebhookJSON(context.Background(), client, "https://example.test/webhook", []byte(`{"ok":true}`), buildFailedErrMsg, sendFailedErrMsg, unexpectedStatus)
+		if err != nil {
+			t.Fatalf("expected success despite close error, got %v", err)
+		}
+	})
 }
 
 func TestCloseResponseBodyNilSafe(t *testing.T) {
-	if err := closeResponseBody(nil); err != nil {
-		t.Fatalf("close nil response body: %v", err)
-	}
-	if err := closeResponseBody(&http.Response{}); err != nil {
-		t.Fatalf("close empty response body: %v", err)
-	}
+	closeResponseBody(nil)
+	closeResponseBody(&http.Response{})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+type errReadCloser struct {
+	io.Reader
+	closeErr error
+}
+
+func (r *errReadCloser) Close() error {
+	return r.closeErr
 }

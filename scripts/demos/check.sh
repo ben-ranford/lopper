@@ -34,7 +34,9 @@ fi
 
 tmp_manifest="$(mktemp)"
 trap 'rm -f "$tmp_manifest"' EXIT
-printf '%s\0' "${sources[@]}" | LC_ALL=C sort -z | xargs -0 shasum -a 256 > "$tmp_manifest"
+while IFS= read -r source; do
+  shasum -a 256 "$source"
+done < <(printf '%s\n' "${sources[@]}" | LC_ALL=C sort) > "$tmp_manifest"
 
 if ! cmp -s "$manifest" "$tmp_manifest"; then
   echo "demo sources changed without refreshed assets" >&2
