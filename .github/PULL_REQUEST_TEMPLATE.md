@@ -25,10 +25,12 @@ Additional manual validation:
 - Breaking changes:
 - Migration required:
 - Performance impact:
+- Memory benchmark impact:
 
 ## Checklist
 
 - [ ] Tests added/updated for behavior changes
 - [ ] Docs updated (README/docs/schema) if needed
+- [ ] `memory-approved` requested/applied if intentional memory benchmark regressions exceed CI thresholds
 - [ ] No unrelated changes included
 - [ ] Ready for review

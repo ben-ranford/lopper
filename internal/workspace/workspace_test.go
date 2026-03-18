@@ -159,12 +159,7 @@ func TestResolveRefSHAFallsBackToCommonDir(t *testing.T) {
 
 func TestInspectGitDirRejectsInvalidGitFile(t *testing.T) {
 	repo := t.TempDir()
-	mustWrite(t, filepath.Join(repo, ".git"), "bogus\n")
-
-	_, _, err := inspectGitDir(repo)
-	if err == nil || !strings.Contains(err.Error(), "invalid .git file format") {
-		t.Fatalf("expected invalid .git file format error, got %v", err)
-	}
+	assertInspectGitDirErrorContains(t, repo, "bogus\n", "invalid .git file format")
 }
 
 func TestInspectGitDirWithDirectory(t *testing.T) {
@@ -194,11 +189,7 @@ func TestInspectGitDirWithoutEntry(t *testing.T) {
 
 func TestInspectGitDirWithEmptyGitDirPath(t *testing.T) {
 	repo := t.TempDir()
-	mustWrite(t, filepath.Join(repo, ".git"), "gitdir:\n")
-	_, _, err := inspectGitDir(repo)
-	if err == nil || !strings.Contains(err.Error(), "empty gitdir path") {
-		t.Fatalf("expected empty gitdir path error, got %v", err)
-	}
+	assertInspectGitDirErrorContains(t, repo, "gitdir:\n", "empty gitdir path")
 }
 
 func TestInspectGitDirWithUnreadableGitFile(t *testing.T) {
@@ -217,6 +208,16 @@ func TestInspectGitDirWithUnreadableGitFile(t *testing.T) {
 	_, _, err := inspectGitDir(repo)
 	if err == nil {
 		t.Fatalf("expected inspectGitDir to fail when .git file is unreadable")
+	}
+}
+
+func assertInspectGitDirErrorContains(t *testing.T, repo, gitFileContents, want string) {
+	t.Helper()
+
+	mustWrite(t, filepath.Join(repo, ".git"), gitFileContents)
+	_, _, err := inspectGitDir(repo)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected error containing %q, got %v", want, err)
 	}
 }
 

@@ -171,10 +171,12 @@ jobs:
         id: lopper_base
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          base_ref="${PR_BASE_REF:-main}"
           mkdir -p .artifacts
-          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
-          git worktree add --detach .artifacts/base "origin/${{ github.event.pull_request.base.ref }}"
+          git worktree add --detach .artifacts/base "origin/${base_ref}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 

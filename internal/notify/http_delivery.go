@@ -31,7 +31,7 @@ func closeResponseBody(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
-	if err := resp.Body.Close(); err != nil {
+	if resp.Body.Close() != nil {
 		return
 	}
 }
