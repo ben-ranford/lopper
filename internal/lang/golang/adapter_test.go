@@ -843,7 +843,7 @@ func TestUseEntriesAndPathNormalization(t *testing.T) {
 
 func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, fileGoMod), "module example.com/root\n\n"+go125Line+"\n")
+	writeFile(t, filepath.Join(repo, fileGoMod), modulePrefix+"example.com/root"+go125Block)
 	writeFile(t, filepath.Join(repo, "sub", fileGoMod), "module example.com/sub\n\nrequire "+depUUID+" v1.6.0\n")
 
 	dirs, err := nestedModuleDirs(repo)
@@ -880,7 +880,7 @@ func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 func TestGoRootAndDetectionHelpers(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
-	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), "module "+exampleModuleA+"\n\n"+go125Line+"\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), modulePrefix+exampleModuleA+go125Block)
 
 	roots := map[string]struct{}{}
 	if err := addGoWorkRoots(repo, roots); err != nil {

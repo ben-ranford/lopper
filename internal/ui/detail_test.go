@@ -124,7 +124,7 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 	}
 }
 
-func TestDetailHelpersAndErrors(t *testing.T) {
+func TestDetailRejectsEmptyDependency(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "")
 	if detail.Show(context.Background(), "") == nil {
@@ -133,7 +133,10 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "").Language, "auto") {
 		t.Fatalf("expected default language to be auto")
 	}
+}
 
+func TestDetailPrintHelpers(t *testing.T) {
+	var out bytes.Buffer
 	out.Reset()
 	if err := printImportList(&out, "Used imports", nil); err != nil {
 		t.Fatalf("print empty import list: %v", err)
@@ -170,7 +173,9 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(out.String(), "provenance: "+indexJSFile+" -> barrel.js -> lodash#map") {
 		t.Fatalf("expected provenance detail in import list output")
 	}
+}
 
+func TestIsDetailCommand(t *testing.T) {
 	if dep, ok := isDetailCommand("open lodash"); !ok || dep != "lodash" {
 		t.Fatalf("expected open detail command parse")
 	}

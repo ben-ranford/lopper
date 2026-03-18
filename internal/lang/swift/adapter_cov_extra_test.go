@@ -341,6 +341,7 @@ func TestSwiftDetectionAndScannerFallbackBranches(t *testing.T) {
 func testSwiftContextErrorAcceptsNil(t *testing.T) {
 	t.Helper()
 
+	//nolint:staticcheck // Deliberate nil context coverage.
 	if err := contextError(nil); err != nil {
 		t.Fatalf("expected nil context error, got %v", err)
 	}
@@ -354,9 +355,11 @@ func testSwiftDetectEntryFallbacks(t *testing.T) {
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 	visited := 0
+	//nolint:staticcheck // Deliberate nil context coverage.
 	if err := detectSwiftEntry(nil, filepath.Join(repo, swiftBuildDirName), buildEntry, &detection, roots, &visited); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected skip dir for %s, got %v", swiftBuildDirName, err)
 	}
+	//nolint:staticcheck // Deliberate nil context coverage.
 	if err := detectSwiftEntry(nil, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); err != nil {
 		t.Fatalf("expected manifest detection to succeed, got %v", err)
 	}
@@ -365,6 +368,7 @@ func testSwiftDetectEntryFallbacks(t *testing.T) {
 	}
 
 	visited = maxDetectFiles
+	//nolint:staticcheck // Deliberate nil context coverage.
 	if err := detectSwiftEntry(nil, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected max detect files to stop walk, got %v", err)
 	}
