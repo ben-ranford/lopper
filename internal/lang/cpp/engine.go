@@ -155,7 +155,7 @@ func loadCompileContext(repoPath string) (compileContext, error) {
 	sourceFileSet := make(map[string]struct{})
 	visited := 0
 
-	err := shared.WalkRepoFiles(nil, repoPath, 0, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
+	err := shared.WalkRepoFiles(context.Background(), repoPath, 0, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
 		if filepath.Base(path) != compileCommandsFile {
 			return nil
 		}
@@ -525,7 +525,7 @@ func dependencyFromIncludePath(header string) string {
 		return ""
 	}
 	for _, r := range token {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '+') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '+' {
 			return ""
 		}
 	}

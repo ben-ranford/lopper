@@ -35,30 +35,52 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: make tools-install
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make ci
       - run: make demos-check
-      - run: make cov
+  os-smoke:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: make smoke
 ```
 
 On pull requests, `ci.yml` also runs lopper delta analysis against the PR base and posts/updates a bot comment.
 If `SONAR_TOKEN` is set, it additionally posts/updates a SonarQube summary comment.
+When running locally with `act`, target the Linux-backed jobs explicitly (for example `act pull_request -W .github/workflows/ci.yml --job verify`), because Docker-based `act` environments do not provide hosted macOS runners.
 
 ## Make targets used by CI
 
 - `make build`: build local executable at `bin/lopper`
-- `make lint`: run `golangci-lint`
+- `make lint`: run `golangci-lint` with `govet`, `unused`, `ineffassign`, `staticcheck`, `errcheck`, `gocritic`, `errorlint`, and `revive`
+- `make actionlint`: validate GitHub Actions workflow syntax and expressions
+- `make shellcheck`: validate tracked shell scripts and git hooks
+- `make mod-check`: enforce `go mod tidy -diff` and `go mod verify`
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make suppression-check`: fail when staged changes or branch-added lines introduce inline suppression markers
 - `make format-check`: fail if `gofmt` changes are needed
-- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=95`)
-- `make ci`: `format-check + lint + dup-check + suppression-check + security + test + build`
+- `make security`: run `gosec`
+- `make vuln-check`: run `govulncheck`
+- `make test-leaks`: run `go test ./...` with `goleak` enabled to catch leaked goroutines
+- `make test-race`: run `go test -race ./...`
+- `make bench-mem`: run the curated memory benchmark suite with `-benchmem`
+- `make bench-gate`: compare curated memory benchmark deltas against a base ref (defaults: `MEMORY_BENCH_BASE=origin/main`, `MEMORY_BENCH_MAX_BYTES_PCT=15`, `MEMORY_BENCH_MAX_ALLOCS_PCT=10`)
+- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=95`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
+- `make smoke`: run cross-OS smoke checks (`mod-check + test-race + build`)
+- `make ci`: `format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
 - `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
-- `make toolchain-check`: verify required cross toolchain binaries
-- `make toolchain-install`: install required OS toolchains (`go`, `zig`) on macOS/Linux
+- `make toolchain-check`: verify required cross toolchain binaries plus `shellcheck`
+- `make toolchain-install`: install required OS toolchains (`go`, `zig`, `shellcheck`) on macOS/Linux
+- `make tools-install`: install pinned Go-based CI tools locally (`golangci-lint`, `gostyle`, `gosec`, `actionlint`, `govulncheck`)
 - `make setup`: bootstrap toolchain + module download + readiness checks
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
 
@@ -66,7 +88,17 @@ Coverage artifacts:
 
 - `.artifacts/coverage.out`: `go test` coverage profile
 - `.artifacts/coverage-total.txt`: total percentage used by CI gating
+- `.artifacts/bench-base.out`: benchmark output captured from the base ref
+- `.artifacts/bench-head.out`: benchmark output captured from the current ref
+- `.artifacts/memory-bench-summary.md`: markdown summary posted to PRs
+- `.artifacts/memory-bench-status.txt`: exit status from the memory benchmark gate (`0` pass, `1` regression, `2` execution/parsing error)
 - `.artifacts/memory-profiles/<timestamp>/`: watched-package alloc-space summaries, raw profiles, and logs
+
+Memory benchmark approval:
+
+- PR CI runs the memory benchmark delta gate in report-only mode and comments the summary on the PR.
+- Regressions are still blocked unless a maintainer applies the `memory-approved` label.
+- Newly added benchmarks are reported but not gated until the same benchmark name exists on both the base and head refs, which keeps first-rollout noise manageable.
 
 On pull requests, if the coverage gate fails, CI posts/updates a PR comment with required vs. actual coverage.
 The 95% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.

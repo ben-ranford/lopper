@@ -76,7 +76,7 @@ func walkLockfileDrift(ctx context.Context, normalizedPath string, changedFiles 
 	err := filepath.WalkDir(normalizedPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		return processLockfileDir(ctx, path, entry, walkErr, state)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return nil, err
 	}
 	return warnings, nil

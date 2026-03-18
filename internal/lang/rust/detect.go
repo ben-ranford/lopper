@@ -2,6 +2,7 @@ package rust
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 		return walkRustDetectionEntry(path, entry, repoPath, workspaceOnlyRoot, roots, &detection, &visited)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -115,7 +116,7 @@ func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, wor
 		return nil
 	}
 
-	*visited += 1
+	(*visited)++
 	if *visited > maxDetectionEntries {
 		return fs.SkipAll
 	}

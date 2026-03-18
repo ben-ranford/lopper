@@ -2,6 +2,7 @@ package kotlinandroid
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -41,7 +42,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 		return walkKotlinAndroidDetectionEntry(path, entry, state)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -168,7 +169,7 @@ func androidManifestModuleRoot(path string) string {
 		if parts[i] != "src" || parts[i+1] != "main" {
 			continue
 		}
-		if strings.ToLower(parts[i+2]) != "androidmanifest.xml" {
+		if !strings.EqualFold(parts[i+2], "androidmanifest.xml") {
 			continue
 		}
 		if i == 0 {
@@ -283,7 +284,7 @@ func hasRootSourceLayout(repoPath string) bool {
 		}
 		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return false
 	}
 	return found

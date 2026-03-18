@@ -2,6 +2,7 @@ package dart
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -60,7 +61,7 @@ func scanManifestRoot(ctx context.Context, repoPath string, manifest packageMani
 	}
 	err := scanPackageRoot(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result)
 	switch {
-	case result.SkippedFilesByBound, err == fs.SkipAll:
+	case result.SkippedFilesByBound, errors.Is(err, fs.SkipAll):
 		return true, nil
 	case err == nil:
 		return false, nil

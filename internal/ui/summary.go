@@ -391,7 +391,9 @@ func (s *Summary) Snapshot(ctx context.Context, opts Options, outputPath string)
 		return err
 	}
 	if s.Out != nil {
-		fmt.Fprintf(s.Out, "Snapshot written to %s\n", outputPath)
+		if _, err := fmt.Fprintf(s.Out, "Snapshot written to %s\n", outputPath); err != nil {
+			return err
+		}
 	}
 	return nil
 }

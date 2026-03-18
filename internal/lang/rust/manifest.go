@@ -1,6 +1,7 @@
 package rust
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -131,7 +132,7 @@ func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
 		paths = append(paths, path)
 		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return nil, nil, err
 	}
 	if count > maxManifestCount {

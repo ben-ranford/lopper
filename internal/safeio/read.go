@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ func ReadFileUnder(rootDir, targetPath string) ([]byte, error) {
 
 // ReadFileUnderLimit reads targetPath only if it resolves under rootDir and
 // does not exceed maxBytes when a positive limit is provided.
-func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) ([]byte, error) {
+func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, err error) {
 	rootAbs, err := filepath.Abs(rootDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve root path: %w", err)
@@ -54,25 +55,40 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("open root: %w", err)
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	rel = filepath.Clean(rel)
 	file, err := root.Open(rel)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}
+		}
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	return readOpenedFile(file, maxBytes)
 }
 
 // ReadFile reads the exact targetPath by opening its parent directory as a root.
-func ReadFile(targetPath string) ([]byte, error) {
+func ReadFile(targetPath string) (data []byte, err error) {
 	file, err := OpenFile(targetPath)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	return io.ReadAll(file)
 }
@@ -93,6 +109,12 @@ func OpenFile(targetPath string) (io.ReadCloser, error) {
 
 	file, err := root.Open(fileName)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if closeErr := root.Close(); closeErr != nil {
+				return nil, errors.Join(&fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}, closeErr)
+			}
+			return nil, &fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}
+		}
 		if closeErr := root.Close(); closeErr != nil {
 			return nil, errors.Join(err, closeErr)
 		}

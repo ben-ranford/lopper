@@ -82,11 +82,12 @@ func formatRuntimeUsage(usage *RuntimeUsage) string {
 	}
 	correlation := string(usage.Correlation)
 	if correlation == "" {
-		if usage.RuntimeOnly {
+		switch {
+		case usage.RuntimeOnly:
 			correlation = string(RuntimeCorrelationRuntimeOnly)
-		} else if usage.LoadCount > 0 {
+		case usage.LoadCount > 0:
 			correlation = string(RuntimeCorrelationOverlap)
-		} else {
+		default:
 			correlation = string(RuntimeCorrelationStaticOnly)
 		}
 	}

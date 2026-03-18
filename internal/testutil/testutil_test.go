@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -198,7 +199,8 @@ func TestFatalPathsViaHelperProcess(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected helper to fail for scenario %s", tc)
 			}
-			if _, ok := err.(*exec.ExitError); !ok {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
 				t.Fatalf("expected ExitError, got %T: %v", err, err)
 			}
 		})

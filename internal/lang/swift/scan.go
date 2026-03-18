@@ -2,6 +2,7 @@ package swift
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -17,7 +18,7 @@ func scanRepo(ctx context.Context, repoPath string, catalog dependencyCatalog) (
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		return scanner.walk(ctx, path, entry, walkErr)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return scanner.scan, err
 	}
 	scanner.finalize()

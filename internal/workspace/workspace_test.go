@@ -159,48 +159,66 @@ func TestResolveRefSHAFallsBackToCommonDir(t *testing.T) {
 
 func TestInspectGitDirRejectsInvalidGitFile(t *testing.T) {
 	repo := t.TempDir()
-	mustWrite(t, filepath.Join(repo, ".git"), "bogus\n")
+	assertInspectGitDirErrorContains(t, repo, "bogus\n", "invalid .git file format")
+}
 
-	_, _, err := inspectGitDir(repo)
-	if err == nil || !strings.Contains(err.Error(), "invalid .git file format") {
-		t.Fatalf("expected invalid .git file format error, got %v", err)
+func TestInspectGitDirWithDirectory(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git dir: %v", err)
+	}
+	gitDir, found, err := inspectGitDir(repo)
+	if err != nil {
+		t.Fatalf("inspect .git dir: %v", err)
+	}
+	if !found || gitDir != filepath.Join(repo, ".git") {
+		t.Fatalf("unexpected inspect result: found=%v dir=%q", found, gitDir)
 	}
 }
 
-func TestInspectGitDirScenarios(t *testing.T) {
-	t.Run("git directory", func(t *testing.T) {
-		repo := t.TempDir()
-		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
-			t.Fatalf("mkdir .git dir: %v", err)
-		}
-		gitDir, found, err := inspectGitDir(repo)
-		if err != nil {
-			t.Fatalf("inspect .git dir: %v", err)
-		}
-		if !found || gitDir != filepath.Join(repo, ".git") {
-			t.Fatalf("unexpected inspect result: found=%v dir=%q", found, gitDir)
+func TestInspectGitDirWithoutEntry(t *testing.T) {
+	repo := t.TempDir()
+	gitDir, found, err := inspectGitDir(repo)
+	if err != nil {
+		t.Fatalf("inspect empty dir: %v", err)
+	}
+	if found || gitDir != "" {
+		t.Fatalf("expected no git entry, got found=%v dir=%q", found, gitDir)
+	}
+}
+
+func TestInspectGitDirWithEmptyGitDirPath(t *testing.T) {
+	repo := t.TempDir()
+	assertInspectGitDirErrorContains(t, repo, "gitdir:\n", "empty gitdir path")
+}
+
+func TestInspectGitDirWithUnreadableGitFile(t *testing.T) {
+	repo := t.TempDir()
+	gitFile := filepath.Join(repo, ".git")
+	mustWrite(t, gitFile, "gitdir: .git-meta\n")
+	if err := os.Chmod(gitFile, 0o000); err != nil {
+		t.Fatalf("chmod .git file: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(gitFile, 0o600); err != nil {
+			t.Fatalf("restore .git file perms: %v", err)
 		}
 	})
 
-	t.Run("no git entry", func(t *testing.T) {
-		repo := t.TempDir()
-		gitDir, found, err := inspectGitDir(repo)
-		if err != nil {
-			t.Fatalf("inspect empty dir: %v", err)
-		}
-		if found || gitDir != "" {
-			t.Fatalf("expected no git entry, got found=%v dir=%q", found, gitDir)
-		}
-	})
+	_, _, err := inspectGitDir(repo)
+	if err == nil {
+		t.Fatalf("expected inspectGitDir to fail when .git file is unreadable")
+	}
+}
 
-	t.Run("empty gitdir path", func(t *testing.T) {
-		repo := t.TempDir()
-		mustWrite(t, filepath.Join(repo, ".git"), "gitdir:\n")
-		_, _, err := inspectGitDir(repo)
-		if err == nil || !strings.Contains(err.Error(), "empty gitdir path") {
-			t.Fatalf("expected empty gitdir path error, got %v", err)
-		}
-	})
+func assertInspectGitDirErrorContains(t *testing.T, repo, gitFileContents, want string) {
+	t.Helper()
+
+	mustWrite(t, filepath.Join(repo, ".git"), gitFileContents)
+	_, _, err := inspectGitDir(repo)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected error containing %q, got %v", want, err)
+	}
 }
 
 func TestResolveRefSHAErrorPaths(t *testing.T) {
@@ -310,6 +328,21 @@ func TestChangedFilesErrorsForNonRepoPath(t *testing.T) {
 	}
 }
 
+func TestChangedFilesReturnsResolverError(t *testing.T) {
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) {
+		return "", errors.New("git unavailable")
+	}
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = original
+	})
+
+	_, err := ChangedFiles(t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "git unavailable") {
+		t.Fatalf("expected resolver error, got %v", err)
+	}
+}
+
 func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -335,6 +368,18 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 				t.Fatalf("expected parsed changed names, got %#v", changed)
 			}
 		})
+	}
+}
+
+func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
+	setupFakeGitResolver(t, "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff failed\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"status failed\" >&2\n  exit 3\nfi\nexit 1\n")
+
+	_, err := ChangedFiles(t.TempDir())
+	if err == nil {
+		t.Fatalf("expected joined git errors")
+	}
+	if !strings.Contains(err.Error(), "diff failed") || !strings.Contains(err.Error(), "status failed") {
+		t.Fatalf("expected combined git stderr in error, got %v", err)
 	}
 }
 

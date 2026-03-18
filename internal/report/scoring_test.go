@@ -211,16 +211,16 @@ func TestReachabilityConfidenceUsageUncertaintyBounded(t *testing.T) {
 		UsedImports:       []ImportUse{{Name: "map", Module: "dep"}},
 	}
 
-	clear := buildReachabilityConfidence(dep, nil)
+	clearConfidence := buildReachabilityConfidence(dep, nil)
 	uncertain := buildReachabilityConfidence(dep, &UsageUncertainty{
 		ConfirmedImportUses: 0,
 		UncertainImportUses: 100,
 	})
 
-	if uncertain.Score >= clear.Score {
-		t.Fatalf("expected repo uncertainty to reduce confidence, clear=%f uncertain=%f", clear.Score, uncertain.Score)
+	if uncertain.Score >= clearConfidence.Score {
+		t.Fatalf("expected repo uncertainty to reduce confidence, clear=%f uncertain=%f", clearConfidence.Score, uncertain.Score)
 	}
-	if delta := clear.Score - uncertain.Score; delta > 6.1 {
+	if delta := clearConfidence.Score - uncertain.Score; delta > 6.1 {
 		t.Fatalf("expected bounded uncertainty penalty, got delta=%f", delta)
 	}
 }

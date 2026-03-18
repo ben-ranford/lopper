@@ -3,6 +3,7 @@ package rust
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -593,7 +594,7 @@ func assertDetectAndScanRootSignals(t *testing.T, repo string) (language.Detecti
 func assertDetectAndScanWalkBranches(t *testing.T, repo string, detection *language.Detection, roots map[string]struct{}) {
 	targetDirEntry := mustFindDirEntryByName(t, repo, "target")
 	visited := 0
-	if got := walkRustDetectionEntry(filepath.Join(repo, "target"), targetDirEntry, repo, false, roots, detection, &visited); got != filepath.SkipDir {
+	if got := walkRustDetectionEntry(filepath.Join(repo, "target"), targetDirEntry, repo, false, roots, detection, &visited); !errors.Is(got, filepath.SkipDir) {
 		t.Fatalf("expected skip dir for target, got %v", got)
 	}
 
@@ -602,7 +603,7 @@ func assertDetectAndScanWalkBranches(t *testing.T, repo string, detection *langu
 		t.Fatalf("readdir src: %v", err)
 	}
 	visited = maxDetectionEntries
-	if got := walkRustDetectionEntry(filepath.Join(repo, "crates", "a", "src", rustLibFile), fileEntries[0], repo, false, roots, detection, &visited); got != fs.SkipAll {
+	if got := walkRustDetectionEntry(filepath.Join(repo, "crates", "a", "src", rustLibFile), fileEntries[0], repo, false, roots, detection, &visited); !errors.Is(got, fs.SkipAll) {
 		t.Fatalf("expected scan bound skip all, got %v", got)
 	}
 }

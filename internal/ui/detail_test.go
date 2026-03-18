@@ -124,7 +124,7 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 	}
 }
 
-func TestDetailHelpersAndErrors(t *testing.T) {
+func TestDetailRejectsEmptyDependency(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "")
 	if detail.Show(context.Background(), "") == nil {
@@ -133,20 +133,37 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "").Language, "auto") {
 		t.Fatalf("expected default language to be auto")
 	}
+}
 
+func TestDetailPrintHelpers(t *testing.T) {
+	var out bytes.Buffer
 	out.Reset()
-	printImportList(&out, "Used imports", nil)
-	printImportList(&out, "Used imports", []report.ImportUse{{
+	if err := printImportList(&out, "Used imports", nil); err != nil {
+		t.Fatalf("print empty import list: %v", err)
+	}
+	if err := printImportList(&out, "Used imports", []report.ImportUse{{
 		Name:       "map",
 		Module:     "lodash",
 		Locations:  []report.Location{{File: indexJSFile, Line: 2}},
 		Provenance: []string{indexJSFile + " -> barrel.js -> lodash#map"},
-	}})
-	printExportsList(&out, "Unused exports", nil)
-	printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}})
-	printRiskCues(&out, nil)
-	printRecommendations(&out, nil)
-	printRuntimeUsage(&out, nil)
+	}}); err != nil {
+		t.Fatalf("print populated import list: %v", err)
+	}
+	if err := printExportsList(&out, "Unused exports", nil); err != nil {
+		t.Fatalf("print empty exports list: %v", err)
+	}
+	if err := printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}}); err != nil {
+		t.Fatalf("print populated exports list: %v", err)
+	}
+	if err := printRiskCues(&out, nil); err != nil {
+		t.Fatalf("print empty risk cues: %v", err)
+	}
+	if err := printRecommendations(&out, nil); err != nil {
+		t.Fatalf("print empty recommendations: %v", err)
+	}
+	if err := printRuntimeUsage(&out, nil); err != nil {
+		t.Fatalf("print empty runtime usage: %v", err)
+	}
 	if !strings.Contains(out.String(), "(none)") {
 		t.Fatalf("expected none labels in helper output")
 	}
@@ -156,7 +173,9 @@ func TestDetailHelpersAndErrors(t *testing.T) {
 	if !strings.Contains(out.String(), "provenance: "+indexJSFile+" -> barrel.js -> lodash#map") {
 		t.Fatalf("expected provenance detail in import list output")
 	}
+}
 
+func TestIsDetailCommand(t *testing.T) {
 	if dep, ok := isDetailCommand("open lodash"); !ok || dep != "lodash" {
 		t.Fatalf("expected open detail command parse")
 	}
@@ -209,15 +228,17 @@ func TestDetailShowNoDataAndAnalyzerError(t *testing.T) {
 
 func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 	var out bytes.Buffer
-	printRecommendations(&out, []report.Recommendation{
+	if err := printRecommendations(&out, []report.Recommendation{
 		{
 			Code:      "rec",
 			Priority:  "high",
 			Message:   "message",
 			Rationale: "because",
 		},
-	})
-	printRuntimeUsage(&out, &report.RuntimeUsage{
+	}); err != nil {
+		t.Fatalf("print recommendations: %v", err)
+	}
+	if err := printRuntimeUsage(&out, &report.RuntimeUsage{
 		LoadCount:   2,
 		Correlation: report.RuntimeCorrelationRuntimeOnly,
 		RuntimeOnly: true,
@@ -227,7 +248,9 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 		TopSymbols: []report.RuntimeSymbolUsage{
 			{Symbol: "index", Count: 2},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("print runtime usage: %v", err)
+	}
 	text := out.String()
 	if !strings.Contains(text, "rationale: because") {
 		t.Fatalf("expected rationale output, got %q", text)
@@ -268,13 +291,15 @@ func TestDetailShowWarningsAndCommandBranches(t *testing.T) {
 
 func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
 	var out bytes.Buffer
-	printRemovalCandidate(&out, &report.RemovalCandidate{
+	if err := printRemovalCandidate(&out, &report.RemovalCandidate{
 		Score:      88.2,
 		Usage:      90.1,
 		Impact:     50.0,
 		Confidence: 77.7,
 		Rationale:  []string{"reason-a", "reason-b"},
-	})
+	}); err != nil {
+		t.Fatalf("print removal candidate: %v", err)
+	}
 	text := out.String()
 	for _, want := range []string{
 		"score: 88.2",
@@ -293,7 +318,7 @@ func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
 
 func TestPrintReachabilityConfidenceDetailedOutput(t *testing.T) {
 	var out bytes.Buffer
-	printReachabilityConfidence(&out, &report.ReachabilityConfidence{
+	if err := printReachabilityConfidence(&out, &report.ReachabilityConfidence{
 		Model:          "reachability-v2",
 		Score:          91.4,
 		Summary:        "runtime overlap; export inventory; precise imports",
@@ -301,7 +326,9 @@ func TestPrintReachabilityConfidenceDetailedOutput(t *testing.T) {
 		Signals: []report.ReachabilitySignal{
 			{Code: "runtime-overlap", Score: 100, Weight: 0.2, Contribution: 20, Rationale: "runtime and static evidence overlap"},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("print detailed reachability confidence: %v", err)
+	}
 	text := out.String()
 	for _, want := range []string{
 		"Reachability confidence",
@@ -320,11 +347,15 @@ func TestPrintReachabilityConfidenceDetailedOutput(t *testing.T) {
 
 func TestPrintReachabilityConfidenceFallbackOutput(t *testing.T) {
 	var out bytes.Buffer
-	printReachabilityConfidence(&out, nil)
-	printReachabilityConfidence(&out, &report.ReachabilityConfidence{
+	if err := printReachabilityConfidence(&out, nil); err != nil {
+		t.Fatalf("print nil reachability confidence: %v", err)
+	}
+	if err := printReachabilityConfidence(&out, &report.ReachabilityConfidence{
 		Model: "reachability-v2",
 		Score: 72.5,
-	})
+	}); err != nil {
+		t.Fatalf("print score-only reachability confidence: %v", err)
+	}
 	text := out.String()
 	if !strings.Contains(text, "(none)") {
 		t.Fatalf("expected nil reachability confidence placeholder, got %q", text)

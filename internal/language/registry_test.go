@@ -119,7 +119,7 @@ func TestResolveAutoTieReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected tie error, got nil")
 	}
-	if err != ErrMultipleLanguages {
+	if !errors.Is(err, ErrMultipleLanguages) {
 		t.Fatalf("expected ErrMultipleLanguages, got %v", err)
 	}
 }

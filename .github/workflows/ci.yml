@@ -52,22 +52,116 @@ jobs:
             apt-get update
             apt-get install -y golang-go
           fi
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y shellcheck
+          fi
           go version
 
-      - name: Install tooling
+      - name: Install shellcheck
+        if: ${{ !env.ACT }}
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
           if [ -z "${ACT:-}" ]; then
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Run CI target
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          base_ref="${PR_BASE_REF:-main}"
+          git fetch --no-tags --depth=1 origin "${base_ref}"
+
+      - name: Run CI target
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
+            base_ref="${PR_BASE_REF:-main}"
+            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_ENFORCE=0
+          fi
           if [ -n "${ACT:-}" ]; then
             PATH="$(go env GOPATH)/bin:$PATH" make ci
           else
             make ci
+          fi
+
+      - name: Comment memory benchmark report on PR
+        if: ${{ github.event_name == 'pull_request' && !env.ACT && always() }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const marker = '<!-- lopper-memory-bench -->';
+            const summaryPath = '.artifacts/memory-bench-summary.md';
+            const statusPath = '.artifacts/memory-bench-status.txt';
+            const labels = context.payload.pull_request?.labels || [];
+            const approved = labels.some((label) => label?.name === 'memory-approved');
+            const status = fs.existsSync(statusPath) ? fs.readFileSync(statusPath, 'utf8').trim() : '';
+            const summary = fs.existsSync(summaryPath)
+              ? fs.readFileSync(summaryPath, 'utf8').trim()
+              : '## Memory Benchmarks\n\n❌ Memory benchmark summary was not produced.';
+
+            const footer =
+              status === '1'
+                ? approved
+                  ? 'Approval: `memory-approved` label present. The regression is acknowledged for this PR.'
+                  : 'Approval required: add the `memory-approved` label to merge an intentional memory regression.'
+                : status === '0'
+                  ? 'Approval: not required.'
+                  : 'Approval: unavailable because the memory benchmark gate did not complete cleanly.';
+
+            const body = [marker, summary, '', footer].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail on unapproved memory regression
+        if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
+        run: |
+          if [ ! -f .artifacts/memory-bench-status.txt ]; then
+            exit 0
+          fi
+          status="$(tr -d '[:space:]' < .artifacts/memory-bench-status.txt)"
+          if [ "$status" = "1" ]; then
+            echo "Memory benchmark regression detected. Add the memory-approved label to acknowledge and merge it."
+            exit 1
           fi
 
       - name: Verify demo assets are up to date
@@ -77,10 +171,12 @@ jobs:
         id: lopper_base
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          base_ref="${PR_BASE_REF:-main}"
           mkdir -p .artifacts
-          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
-          git worktree add --detach .artifacts/base "origin/${{ github.event.pull_request.base.ref }}"
+          git worktree add --detach .artifacts/base "origin/${base_ref}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
@@ -402,6 +498,29 @@ jobs:
         run: |
           test -f bin/lopper
           ls -lh bin/lopper
+
+  os-smoke:
+    name: os-smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run smoke checks
+        run: make smoke
 
   vscode-smoke:
     name: vscode-smoke (${{ matrix.os }})

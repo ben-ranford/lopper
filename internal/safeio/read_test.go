@@ -78,7 +78,11 @@ func TestReadOpenedFileRejectsOversizedPipeContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	defer reader.Close()
+	t.Cleanup(func() {
+		if closeErr := reader.Close(); closeErr != nil {
+			t.Fatalf("close pipe reader: %v", closeErr)
+		}
+	})
 
 	done := make(chan error, 1)
 	go func() {
@@ -105,7 +109,11 @@ func TestReadOpenedFileAllowsMaxInt64Limit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	defer reader.Close()
+	t.Cleanup(func() {
+		if closeErr := reader.Close(); closeErr != nil {
+			t.Fatalf("close pipe reader: %v", closeErr)
+		}
+	})
 
 	done := make(chan error, 1)
 	go func() {

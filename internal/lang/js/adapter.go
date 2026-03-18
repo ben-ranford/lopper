@@ -2,6 +2,7 @@ package js
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -59,7 +60,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 
 	err := scanFilesForJSDetection(repoPath, &detection, roots)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		err = nil
 	}
 	if err != nil {

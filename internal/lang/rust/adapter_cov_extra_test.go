@@ -129,9 +129,6 @@ func assertRustDependencyResolutionHelpers(t *testing.T) {
 func assertRustPathAndWeightsHelpers(t *testing.T) {
 	t.Helper()
 	repo := t.TempDir()
-	if !isLocalRustModuleWithCache(nil, repo, "missing_mod") {
-		// nil scan path executes non-cached branch; missing module should be false
-	}
 	if isLocalRustModuleWithCache(nil, repo, "missing_mod") {
 		t.Fatalf("expected missing local module to be false")
 	}

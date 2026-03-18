@@ -2,6 +2,7 @@ package swift
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 
 	err := walkSwiftDetection(ctx, repoPath, &detection, roots)
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -52,7 +53,7 @@ func detectSwiftEntry(ctx context.Context, path string, entry fs.DirEntry, detec
 		return maybeSkipSwiftDir(entry.Name())
 	}
 
-	*visited += 1
+	(*visited)++
 	if *visited > maxDetectFiles {
 		return fs.SkipAll
 	}

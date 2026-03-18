@@ -32,6 +32,6 @@ func closeResponseBody(resp *http.Response) {
 		return
 	}
 	if resp.Body.Close() != nil {
-		// Best effort close in notifier path.
+		return
 	}
 }

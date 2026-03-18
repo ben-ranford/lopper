@@ -319,9 +319,9 @@ func consumeQuotedByte(ch byte, inString *byte, escaped *bool) bool {
 func advanceParenthesisDepth(ch byte, depth *int) (bool, bool) {
 	switch ch {
 	case '(':
-		*depth += 1
+		(*depth)++
 	case ')':
-		*depth -= 1
+		(*depth)--
 		if *depth == 0 {
 			return true, true
 		}

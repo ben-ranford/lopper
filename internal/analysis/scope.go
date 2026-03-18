@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -257,7 +258,7 @@ func formatPatternMatches(patterns []string, matches map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-func copyFile(repoPath, scopedRoot, relativePath string) error {
+func copyFile(repoPath, scopedRoot, relativePath string) (err error) {
 	if !isSafeRelativePath(relativePath) {
 		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
 	}
@@ -278,29 +279,35 @@ func copyFile(repoPath, scopedRoot, relativePath string) error {
 	if err != nil {
 		return fmt.Errorf("open source root: %w", err)
 	}
-	defer sourceRoot.Close()
+	defer joinCloseError(&err, sourceRoot.Close)
 
 	source, err := sourceRoot.Open(cleanRelativePath)
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer joinCloseError(&err, source.Close)
 
 	targetRoot, err := os.OpenRoot(scopedRoot)
 	if err != nil {
 		return fmt.Errorf("open target root: %w", err)
 	}
-	defer targetRoot.Close()
+	defer joinCloseError(&err, targetRoot.Close)
 
 	target, err := targetRoot.OpenFile(cleanRelativePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	defer target.Close()
+	defer joinCloseError(&err, target.Close)
 	if _, err := io.Copy(target, source); err != nil {
 		return err
 	}
 	return nil
+}
+
+func joinCloseError(target *error, closeFn func() error) {
+	if closeErr := closeFn(); closeErr != nil {
+		*target = errors.Join(*target, closeErr)
+	}
 }
 
 func pathWithin(root, candidate string) bool {

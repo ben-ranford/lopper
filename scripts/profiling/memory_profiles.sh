@@ -41,7 +41,7 @@ summary_index="$RUN_DIR/summary.md"
 
 for pkg in "${packages[@]}"; do
 	import_path="$("$GO_BIN" list "$pkg")"
-	rel_path="${import_path#${module_path}/}"
+	rel_path="${import_path#"${module_path}"/}"
 	pprof_pattern="$(printf '%s' "$import_path" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
 	slug="$(printf '%s' "$rel_path" | tr '/.' '__')"
 	profile_file="$RUN_DIR/${slug}.mem.pprof"
@@ -58,9 +58,9 @@ for pkg in "${packages[@]}"; do
 		echo "## \`$rel_path\`"
 		echo
 		echo "- Import path: \`$import_path\`"
-		echo "- Profile: \`${profile_file#$ROOT_DIR/}\`"
-		echo "- Summary: \`${summary_file#$ROOT_DIR/}\`"
-		echo "- Test log: \`${log_file#$ROOT_DIR/}\`"
+			echo "- Profile: \`${profile_file#"$ROOT_DIR"/}\`"
+			echo "- Summary: \`${summary_file#"$ROOT_DIR"/}\`"
+			echo "- Test log: \`${log_file#"$ROOT_DIR"/}\`"
 		if [[ -n "$headline" ]]; then
 			echo "- Snapshot: $headline"
 		fi

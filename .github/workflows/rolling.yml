@@ -28,8 +28,10 @@ jobs:
           short_sha="${source_sha::7}"
           date_tag="$(date -u +'%Y%m%d%H%M%S')"
           tag="rolling-${date_tag}-${short_sha}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${tag}"
+            echo "source_sha=${source_sha}"
+          } >> "$GITHUB_OUTPUT"
 
   build-rolling-linux-windows:
     needs:
@@ -53,10 +55,14 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Install tooling
+      - name: Install shellcheck
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project
@@ -93,10 +99,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tooling
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Install Go tooling
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+          make tools-install
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Validate project

@@ -2,6 +2,7 @@ package jvm
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -70,7 +71,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 		return walkJVMDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
@@ -689,7 +690,7 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 
 func matchesBuildFile(fileName string, names []string) bool {
 	for _, name := range names {
-		if fileName == strings.ToLower(name) {
+		if strings.EqualFold(fileName, name) {
 			return true
 		}
 	}
