@@ -2,9 +2,11 @@ package safeio
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -357,8 +359,12 @@ func TestCleanupAtomicTempFileJoinsCloseAndRemoveErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected cleanupAtomicTempFile to join close and remove errors")
 	}
-	if !strings.Contains(err.Error(), "invalid argument") {
-		t.Fatalf("expected close error in joined cleanup error, got %v", err)
+	var closeErrno syscall.Errno
+	if !errors.Is(err, fs.ErrInvalid) && !errors.As(err, &closeErrno) {
+		t.Fatalf("expected joined cleanup error to include a stable close failure, got %v", err)
+	}
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("expected joined cleanup error to include closed root remove, got %v", err)
 	}
 }
 
