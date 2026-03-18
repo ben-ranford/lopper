@@ -2,11 +2,11 @@ package analysis
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestAnalysisPipelineAdditionalSetupBranches(t *testing.T) {
@@ -22,17 +22,27 @@ func TestAnalysisPipelineAdditionalSetupBranches(t *testing.T) {
 }
 
 func TestScopedCandidateRootsChangedPackagesSuccessBranch(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	repoRoot := filepath.Clean(filepath.Join(cwd, "..", ".."))
+	repoRoot := t.TempDir()
+	rootA := filepath.Join(repoRoot, "packages", "a")
+	rootB := filepath.Join(repoRoot, "packages", "b")
+	writeFile(t, filepath.Join(rootA, "a.txt"), "a1\n")
+	writeFile(t, filepath.Join(rootB, "b.txt"), "b1\n")
 
-	roots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, []string{repoRoot}, repoRoot)
+	testutil.RunGit(t, repoRoot, "init", "-b", "main")
+	testutil.RunGit(t, repoRoot, "config", "user.email", "codex@example.com")
+	testutil.RunGit(t, repoRoot, "config", "user.name", "Codex")
+	testutil.RunGit(t, repoRoot, "add", ".")
+	testutil.RunGit(t, repoRoot, "commit", "-m", "base")
+
+	writeFile(t, filepath.Join(rootA, "a.txt"), "a2\n")
+	testutil.RunGit(t, repoRoot, "add", ".")
+	testutil.RunGit(t, repoRoot, "commit", "-m", "change package a")
+
+	roots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, []string{rootA, rootB}, repoRoot)
 	if len(warnings) != 0 {
 		t.Fatalf("expected changed-packages resolution without warnings, got %#v", warnings)
 	}
-	if len(roots) != 1 || roots[0] != repoRoot {
-		t.Fatalf("expected changed-packages scope to keep repo root, got %#v", roots)
+	if len(roots) != 1 || roots[0] != rootA {
+		t.Fatalf("expected changed-packages scope to keep the changed package root, got %#v", roots)
 	}
 }
