@@ -581,9 +581,6 @@ func parseImports(content []byte, filePath string, resolver dependencyResolver) 
 	unresolved := 0
 
 	for _, match := range matches {
-		if len(match) < 4 {
-			continue
-		}
 		statement := strings.TrimSpace(text[match[2]:match[3]])
 		line := lineNumberAt(text, match[2])
 		bindings, groupedDeps, unresolvedCount := parseUseStatement(statement, filePath, line, resolver)
@@ -650,9 +647,6 @@ func parseNamespaceReferenceMetadata(text string, match []int) (string, int, str
 	}
 	line := lineNumberAt(text, start)
 	local := lastNamespaceSegment(module)
-	if local == "" {
-		return "", 0, "", false
-	}
 	return module, line, local, true
 }
 
@@ -790,9 +784,6 @@ func parseUsePartModuleAndLocal(part, base string) (string, string, bool) {
 	}
 	if local == "" {
 		local = lastNamespaceSegment(module)
-	}
-	if local == "" {
-		return "", "", false
 	}
 	return module, local, true
 }

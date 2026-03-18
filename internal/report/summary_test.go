@@ -71,3 +71,19 @@ func TestComputeSummaryAndLanguageBreakdownEmpty(t *testing.T) {
 		t.Fatalf("expected empty language breakdown for empty dependencies, got %#v", got)
 	}
 }
+
+func TestComputeLanguageBreakdownAdditionalBranches(t *testing.T) {
+	if got := ComputeLanguageBreakdown([]DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2}}); len(got) != 0 {
+		t.Fatalf("expected empty breakdown when all dependencies have empty language, got %#v", got)
+	}
+
+	breakdown := ComputeLanguageBreakdown([]DependencyReport{
+		{Language: "go", Name: "dep", UsedExportsCount: 1, TotalExportsCount: 0},
+	})
+	if len(breakdown) != 1 {
+		t.Fatalf("expected one language summary, got %#v", breakdown)
+	}
+	if breakdown[0].UsedPercent != 0 {
+		t.Fatalf("expected zero used percent when totals are zero, got %#v", breakdown[0])
+	}
+}

@@ -111,3 +111,10 @@ func TestSanitizeErrorMessageVariants(t *testing.T) {
 		t.Fatalf("expected encoded webhook to be redacted, got %q", got)
 	}
 }
+
+func TestDispatcherNilReceiverReturnsNilWarnings(t *testing.T) {
+	var dispatcher *Dispatcher
+	if warnings := dispatcher.Dispatch(context.Background(), DefaultConfig(), report.Report{}, Outcome{}); len(warnings) != 0 {
+		t.Fatalf("expected nil dispatcher to return nil warnings, got %#v", warnings)
+	}
+}
