@@ -43,7 +43,11 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	if err != nil {
 		return fmt.Errorf("open root: %w", err)
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
 
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(rel), perm)
 	if err != nil {

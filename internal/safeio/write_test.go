@@ -198,7 +198,11 @@ func TestCreateAtomicTempFileInRootDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf(openRootErrFmt, err)
 	}
-	defer root.Close()
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
 
 	tempRel, tempFile, err := createAtomicTempFile(root, ".", 0o600)
 	if err != nil {
@@ -221,7 +225,11 @@ func TestCreateAtomicTempFileReturnsErrorForMissingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf(openRootErrFmt, err)
 	}
-	defer root.Close()
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
 
 	_, tempFile, err := createAtomicTempFile(root, "missing", 0o600)
 	if tempFile != nil {
@@ -240,7 +248,11 @@ func TestCreateAtomicTempFilePropagatesRandomNameError(t *testing.T) {
 	if err != nil {
 		t.Fatalf(openRootErrFmt, err)
 	}
-	defer root.Close()
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
 
 	originalRandomTempNameFn := randomTempNameFn
 	randomTempNameFn = func() (string, error) { return "", errors.New("boom") }
@@ -260,7 +272,11 @@ func TestCreateAtomicTempFileFailsAfterRepeatedCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatalf(openRootErrFmt, err)
 	}
-	defer root.Close()
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
 	if err := root.WriteFile("fixed", []byte("x"), 0o600); err != nil {
 		t.Fatalf("seed colliding temp file: %v", err)
 	}
@@ -283,7 +299,11 @@ func TestCleanupAtomicTempFileIgnoresClosedFileAndMissingTempPath(t *testing.T) 
 	if err != nil {
 		t.Fatalf(openRootErrFmt, err)
 	}
-	defer root.Close()
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
 
 	tempFile, err := root.OpenFile("temp", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

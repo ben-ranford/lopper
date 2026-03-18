@@ -65,7 +65,7 @@ func LoadWithKey(path string) (Report, string, error) {
 	return rep, "", nil
 }
 
-func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
+func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path string, err error) {
 	trimmedDir := strings.TrimSpace(dir)
 	trimmedKey := strings.TrimSpace(key)
 	if trimmedDir == "" {
@@ -80,12 +80,16 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, er
 	}
 
 	sanitizedFileName := sanitizeBaselineKey(trimmedKey) + ".json"
-	path := filepath.Join(trimmedDir, sanitizedFileName)
+	path = filepath.Join(trimmedDir, sanitizedFileName)
 	root, err := os.OpenRoot(trimmedDir)
 	if err != nil {
 		return "", err
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	file, err := root.OpenFile(sanitizedFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -93,7 +97,11 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, er
 		}
 		return "", err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	snapshot := BaselineSnapshot{
 		BaselineSchemaVersion: BaselineSnapshotSchemaVersion,

@@ -79,12 +79,16 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 }
 
 // ReadFile reads the exact targetPath by opening its parent directory as a root.
-func ReadFile(targetPath string) ([]byte, error) {
+func ReadFile(targetPath string) (data []byte, err error) {
 	file, err := OpenFile(targetPath)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	return io.ReadAll(file)
 }

@@ -1,6 +1,7 @@
 package report
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func TestApplyBaselineMissingAndZeroTotalsErrors(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected missing baseline summary error")
 	}
-	if err != ErrBaselineMissing {
+	if !errors.Is(err, ErrBaselineMissing) {
 		t.Fatalf("expected ErrBaselineMissing, got %v", err)
 	}
 

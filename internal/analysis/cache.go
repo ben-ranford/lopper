@@ -413,13 +413,16 @@ func writeFileDigestOrMissing(w io.Writer, path string) error {
 	return err
 }
 
-func hashFileDigest(path string) ([sha256.Size]byte, error) {
-	var digest [sha256.Size]byte
+func hashFileDigest(path string) (digest [sha256.Size]byte, err error) {
 	file, err := safeio.OpenFile(path)
 	if err != nil {
 		return digest, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	hasher := sha256.New()
 	var copyBuffer [32 * 1024]byte

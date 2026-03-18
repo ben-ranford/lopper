@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type samples struct {
@@ -70,8 +72,7 @@ func exitErr(err error) {
 }
 
 func parseBenchmarkFile(path string) (result benchmarkData, err error) {
-	// #nosec G304 -- paths come from local CI-generated benchmark artifact flags.
-	file, err := os.Open(path)
+	file, err := safeio.OpenFile(path)
 	if err != nil {
 		return nil, err
 	}

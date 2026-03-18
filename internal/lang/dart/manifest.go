@@ -1,6 +1,7 @@
 package dart
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -54,7 +55,7 @@ func discoverPubspecPaths(repoPath string) ([]string, []string, error) {
 		paths = append(paths, path)
 		return nil
 	})
-	if err != nil && err != fs.SkipAll {
+	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return nil, nil, err
 	}
 

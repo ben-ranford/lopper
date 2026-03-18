@@ -201,10 +201,7 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 }
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
-	parser := func(content string) []dependencyDescriptor {
-		return parseGradleDependencyContent(content)
-	}
-	return parseBuildFilesWithWarnings(repoPath, parser, buildGradleName, buildGradleKTSName)
+	return parseBuildFilesWithWarnings(repoPath, parseGradleDependencyContent, buildGradleName, buildGradleKTSName)
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
@@ -447,7 +444,7 @@ func (c *buildFileCollector) recordDescriptor(descriptor dependencyDescriptor) {
 
 func matchesBuildFile(fileName string, names []string) bool {
 	for _, name := range names {
-		if fileName == strings.ToLower(name) {
+		if strings.EqualFold(fileName, name) {
 			return true
 		}
 	}

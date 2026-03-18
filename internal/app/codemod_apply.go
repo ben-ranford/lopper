@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,7 +74,9 @@ func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPat
 		appliedResults, failedResults = applyPreparedCodemodFiles(normalizedRepoPath, prepared, failedResults)
 	}
 
-	results := append(skipResults, appliedResults...)
+	results := make([]report.CodemodApplyResult, 0, len(skipResults)+len(appliedResults)+len(failedResults))
+	results = append(results, skipResults...)
+	results = append(results, appliedResults...)
 	results = append(results, failedResults...)
 	sortCodemodApplyResults(results)
 
@@ -268,7 +271,7 @@ func applyPreparedCodemodFiles(repoPath string, prepared []preparedCodemodFile, 
 	return applied, failures
 }
 
-func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []preparedCodemodFile, now time.Time) (string, error) {
+func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []preparedCodemodFile, now time.Time) (relativePath string, err error) {
 	if len(prepared) == 0 {
 		return "", nil
 	}
@@ -276,13 +279,17 @@ func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []prepar
 	if err != nil {
 		return "", err
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	if err := root.MkdirAll(codemodRollbackDir, 0o750); err != nil {
 		return "", err
 	}
 
 	fileName := fmt.Sprintf("%s-%d.json", sanitizeArtifactName(dependency), now.UTC().UnixNano())
-	relativePath := filepath.Join(codemodRollbackDir, fileName)
+	relativePath = filepath.Join(codemodRollbackDir, fileName)
 	absPath := filepath.Join(repoPath, relativePath)
 
 	payload := codemodRollbackArtifact{

@@ -26,7 +26,7 @@ func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depL
 	fileCount := 0
 	for _, root := range roots {
 		err := scanRepoRoot(ctx, repoPath, root, depLookup, scannedFiles, &fileCount, &result)
-		if err != nil && err != fs.SkipAll {
+		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}
 	}
@@ -74,7 +74,7 @@ func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]depende
 	}
 	scannedFiles[path] = struct{}{}
 
-	*fileCount += 1
+	(*fileCount)++
 	if *fileCount > maxScanFiles {
 		result.SkippedFilesByBoundLimit = true
 		return fs.SkipAll
