@@ -68,12 +68,11 @@ actionlint:
 
 shellcheck:
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH"; exit 1)
-	@files=$$(find scripts .githooks -type f \( -name '*.sh' -o -path '.githooks/*' \) | LC_ALL=C sort); \
-	if [ -z "$$files" ]; then \
+	@if [ -z "$$(find scripts .githooks -type f \( -name '*.sh' -o -path '.githooks/*' \) -print -quit)" ]; then \
 		echo "No shell scripts found for shellcheck."; \
 		exit 0; \
 	fi; \
-	printf '%s\n' "$$files" | xargs shellcheck
+	find scripts .githooks -type f \( -name '*.sh' -o -path '.githooks/*' \) -print0 | xargs -0 shellcheck
 
 mod-check:
 	$(GO_CMD) mod tidy -diff
@@ -141,14 +140,22 @@ test-race:
 	$(GO_CMD) test -race ./...
 
 bench-mem:
-	@mkdir -p $$(dirname "$(BENCH_OUTPUT)")
-	GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) | tee "$(BENCH_OUTPUT)"
+	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
+	bench_output_tmp=$$(mktemp); \
+	trap 'rm -f "$$bench_output_tmp"' EXIT INT TERM; \
+	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$bench_output_tmp" 2>&1; then \
+		cat "$$bench_output_tmp"; \
+		exit 1; \
+	fi; \
+	cat "$$bench_output_tmp"; \
+	cp "$$bench_output_tmp" "$(BENCH_OUTPUT)"
 
 bench-delta:
 	$(GO_CMD) run ./tools/benchdelta -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" -summary-out "$(MEMORY_BENCH_SUMMARY)"
 
 bench-gate:
-	@requested_base_ref="$(MEMORY_BENCH_BASE)"; \
+	@set -eu; \
+	requested_base_ref="$(MEMORY_BENCH_BASE)"; \
 	base_ref="$$requested_base_ref"; \
 	used_fallback=0; \
 	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
@@ -171,7 +178,9 @@ bench-gate:
 	fi; \
 	bench_dir=$$(mktemp -d); \
 	base_tree="$$bench_dir/base"; \
-	cleanup() { git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true; rm -rf "$$bench_dir"; }; \
+	base_output_tmp=$$(mktemp); \
+	head_output_tmp=$$(mktemp); \
+	cleanup() { git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true; rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
 	trap cleanup EXIT INT TERM; \
 	if [ "$$used_fallback" -eq 1 ]; then \
 		echo "Running memory benchmark delta against fallback base $$base_ref (requested $$requested_base_ref)."; \
@@ -179,8 +188,18 @@ bench-gate:
 		echo "Running memory benchmark delta against $$base_ref."; \
 	fi; \
 	git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null; \
-	(cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) | tee "$(BENCH_BASE_OUTPUT)"; \
-	GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) | tee "$(BENCH_HEAD_OUTPUT)"; \
+	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
+		cat "$$base_output_tmp"; \
+		exit 1; \
+	fi; \
+	cat "$$base_output_tmp"; \
+	cp "$$base_output_tmp" "$(BENCH_BASE_OUTPUT)"; \
+	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$head_output_tmp" 2>&1; then \
+		cat "$$head_output_tmp"; \
+		exit 1; \
+	fi; \
+	cat "$$head_output_tmp"; \
+	cp "$$head_output_tmp" "$(BENCH_HEAD_OUTPUT)"; \
 	set +e; \
 	$(GO_CMD) run ./tools/benchdelta -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" -summary-out "$(MEMORY_BENCH_SUMMARY)"; \
 	status=$$?; \
