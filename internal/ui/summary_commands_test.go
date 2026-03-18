@@ -204,31 +204,41 @@ func TestSummaryHelperFilterDependencies(t *testing.T) {
 
 func TestSummaryHelperParseSortModes(t *testing.T) {
 	t.Run("lenient parser supports aliases and defaults", func(t *testing.T) {
-		if parseSortMode("alpha") != sortByName {
-			t.Fatalf("expected alpha alias to parse as name sort")
-		}
-		if parseSortMode("waste") != sortByWaste {
-			t.Fatalf("expected waste sort to parse")
-		}
-		if parseSortMode("unknown") != sortByWaste {
-			t.Fatalf("expected unknown sort to default to waste")
-		}
-		if parseSortMode(" NAME ") != sortByName {
-			t.Fatalf("expected parser to trim and normalize case")
-		}
+		assertLenientSortModes(t, map[string]sortMode{
+			"alpha":   sortByName,
+			"waste":   sortByWaste,
+			"unknown": sortByWaste,
+			" NAME ":  sortByName,
+		})
 	})
 
 	t.Run("strict parser validates values", func(t *testing.T) {
-		if mode, ok := parseSortModeStrict("waste"); !ok || mode != sortByWaste {
-			t.Fatalf("expected strict parser to accept waste")
-		}
-		if mode, ok := parseSortModeStrict("alpha"); !ok || mode != sortByName {
-			t.Fatalf("expected strict parser to accept alpha alias")
-		}
-		if _, ok := parseSortModeStrict("unknown"); ok {
-			t.Fatalf("expected strict parser to reject unknown sort mode")
-		}
+		assertStrictSortMode(t, "waste", sortByWaste, true)
+		assertStrictSortMode(t, "alpha", sortByName, true)
+		assertStrictSortMode(t, "unknown", sortMode(""), false)
 	})
+}
+
+func assertLenientSortModes(t *testing.T, testCases map[string]sortMode) {
+	t.Helper()
+
+	for input, want := range testCases {
+		if got := parseSortMode(input); got != want {
+			t.Fatalf("unexpected lenient parse for %q: got %q want %q", input, got, want)
+		}
+	}
+}
+
+func assertStrictSortMode(t *testing.T, input string, want sortMode, wantOK bool) {
+	t.Helper()
+
+	got, ok := parseSortModeStrict(input)
+	if ok != wantOK {
+		t.Fatalf("unexpected strict parse status for %q: got %t want %t", input, ok, wantOK)
+	}
+	if ok && got != want {
+		t.Fatalf("unexpected strict parse result for %q: got %q want %q", input, got, want)
+	}
 }
 
 func TestSummaryHelperToggleSortMode(t *testing.T) {
