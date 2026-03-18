@@ -11,6 +11,7 @@ import (
 const (
 	writeTestFileName   = "file.txt"
 	openRootErrFmt      = "open root: %v"
+	closeRootErrFmt     = "close root: %v"
 	closeTempFileErrFmt = "close temp file: %v"
 )
 
@@ -200,7 +201,7 @@ func TestCreateAtomicTempFileInRootDir(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf("close root: %v", closeErr)
+			t.Fatalf(closeRootErrFmt, closeErr)
 		}
 	})
 
@@ -227,7 +228,7 @@ func TestCreateAtomicTempFileReturnsErrorForMissingDir(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf("close root: %v", closeErr)
+			t.Fatalf(closeRootErrFmt, closeErr)
 		}
 	})
 
@@ -250,7 +251,7 @@ func TestCreateAtomicTempFilePropagatesRandomNameError(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf("close root: %v", closeErr)
+			t.Fatalf(closeRootErrFmt, closeErr)
 		}
 	})
 
@@ -274,7 +275,7 @@ func TestCreateAtomicTempFileFailsAfterRepeatedCollisions(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf("close root: %v", closeErr)
+			t.Fatalf(closeRootErrFmt, closeErr)
 		}
 	})
 	if err := root.WriteFile("fixed", []byte("x"), 0o600); err != nil {
@@ -301,7 +302,7 @@ func TestCleanupAtomicTempFileIgnoresClosedFileAndMissingTempPath(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf("close root: %v", closeErr)
+			t.Fatalf(closeRootErrFmt, closeErr)
 		}
 	})
 
@@ -333,7 +334,7 @@ func TestCleanupAtomicTempFileReturnsRootRemoveError(t *testing.T) {
 		t.Fatalf("create temp file: %v", err)
 	}
 	if err := root.Close(); err != nil {
-		t.Fatalf("close root: %v", err)
+		t.Fatalf(closeRootErrFmt, err)
 	}
 
 	err = cleanupAtomicTempFile(root, "temp", tempFile)

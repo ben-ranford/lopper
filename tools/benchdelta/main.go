@@ -21,6 +21,11 @@ type samples struct {
 
 type benchmarkData map[string]samples
 
+type deltaThresholds struct {
+	bytesPct  float64
+	allocsPct float64
+}
+
 type comparisonRow struct {
 	name            string
 	baseBytes       float64
@@ -54,7 +59,11 @@ func main() {
 		exitErr(fmt.Errorf("parse head benchmarks: %w", err))
 	}
 
-	summary, hasRegression := compareBenchmarks(baseData, headData, *maxBytesPct, *maxAllocsPct)
+	limits := deltaThresholds{
+		bytesPct:  *maxBytesPct,
+		allocsPct: *maxAllocsPct,
+	}
+	summary, hasRegression := compareBenchmarks(baseData, headData, limits)
 	fmt.Print(summary)
 	if *summaryOut != "" {
 		if err := os.WriteFile(*summaryOut, []byte(summary), 0o600); err != nil {
@@ -110,7 +119,7 @@ func parseBenchmarkFile(path string) (result benchmarkData, err error) {
 	return result, nil
 }
 
-func parseBenchmarkLine(currentPkg string, line string) (string, samples, bool) {
+func parseBenchmarkLine(currentPkg, line string) (string, samples, bool) {
 	fields := strings.Fields(line)
 	if len(fields) < 4 {
 		return "", samples{}, false
@@ -156,80 +165,100 @@ func normalizeBenchmarkName(name string) string {
 	return name[:idx]
 }
 
-func compareBenchmarks(baseData, headData benchmarkData, maxBytesPct, maxAllocsPct float64) (string, bool) {
+func compareBenchmarks(baseData, headData benchmarkData, limits deltaThresholds) (string, bool) {
 	matchedNames := intersectKeys(baseData, headData)
 	newOnlyNames := differenceKeys(headData, baseData)
 	baseOnlyNames := differenceKeys(baseData, headData)
 
+	rows, hasRegression := buildComparisonRows(matchedNames, baseData, headData, limits)
+
+	var buf bytes.Buffer
+	writeComparisonSummary(&buf, rows, newOnlyNames, baseOnlyNames, limits, hasRegression)
+
+	return buf.String(), hasRegression
+}
+
+func buildComparisonRows(matchedNames []string, baseData, headData benchmarkData, limits deltaThresholds) ([]comparisonRow, bool) {
 	rows := make([]comparisonRow, 0, len(matchedNames))
 	hasRegression := false
 
 	for _, name := range matchedNames {
-		base := baseData[name]
-		head := headData[name]
-		baseBytes := average(base.bytesPerOp)
-		headBytes := average(head.bytesPerOp)
-		baseAllocs := average(base.allocsPerOp)
-		headAllocs := average(head.allocsPerOp)
-		bytesPct, bytesRegressed := percentDelta(baseBytes, headBytes, maxBytesPct)
-		allocsPct, allocsRegressed := percentDelta(baseAllocs, headAllocs, maxAllocsPct)
-		hasRegression = hasRegression || bytesRegressed || allocsRegressed
-
-		rows = append(rows, comparisonRow{
-			name:            name,
-			baseBytes:       baseBytes,
-			headBytes:       headBytes,
-			baseAllocs:      baseAllocs,
-			headAllocs:      headAllocs,
-			bytesDeltaPct:   bytesPct,
-			allocsDeltaPct:  allocsPct,
-			regressedBytes:  bytesRegressed,
-			regressedAllocs: allocsRegressed,
-		})
+		row := newComparisonRow(name, baseData[name], headData[name], limits)
+		hasRegression = hasRegression || row.regressedBytes || row.regressedAllocs
+		rows = append(rows, row)
 	}
 
-	var buf bytes.Buffer
+	return rows, hasRegression
+}
+
+func newComparisonRow(name string, baseSample, headSample samples, limits deltaThresholds) comparisonRow {
+	baseBytes := average(baseSample.bytesPerOp)
+	headBytes := average(headSample.bytesPerOp)
+	baseAllocs := average(baseSample.allocsPerOp)
+	headAllocs := average(headSample.allocsPerOp)
+	bytesPct, bytesRegressed := percentDelta(baseBytes, headBytes, limits.bytesPct)
+	allocsPct, allocsRegressed := percentDelta(baseAllocs, headAllocs, limits.allocsPct)
+
+	return comparisonRow{
+		name:            name,
+		baseBytes:       baseBytes,
+		headBytes:       headBytes,
+		baseAllocs:      baseAllocs,
+		headAllocs:      headAllocs,
+		bytesDeltaPct:   bytesPct,
+		allocsDeltaPct:  allocsPct,
+		regressedBytes:  bytesRegressed,
+		regressedAllocs: allocsRegressed,
+	}
+}
+
+func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, newOnlyNames, baseOnlyNames []string, limits deltaThresholds, hasRegression bool) {
 	buf.WriteString("## Memory Benchmarks\n\n")
-	fmt.Fprintf(&buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", maxBytesPct, maxAllocsPct)
+	fmt.Fprintf(buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", limits.bytesPct, limits.allocsPct)
 
-	if len(rows) == 0 {
-		buf.WriteString("No overlapping benchmark names were found between base and head.\n\n")
-	} else {
-		buf.WriteString("| Benchmark | Base B/op | Head B/op | Delta B/op | Base allocs/op | Head allocs/op | Delta allocs/op | Status |\n")
-		buf.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
-		for _, row := range rows {
-			status := "ok"
-			if row.regressedBytes || row.regressedAllocs {
-				status = "regression"
-			}
-			fmt.Fprintf(&buf, "| `%s` | %.1f | %.1f | %s | %.1f | %.1f | %s | %s |\n", row.name, row.baseBytes, row.headBytes, row.bytesDeltaPct, row.baseAllocs, row.headAllocs, row.allocsDeltaPct, status)
-		}
-		buf.WriteString("\n")
-	}
-
-	if len(newOnlyNames) > 0 {
-		buf.WriteString("New-only benchmarks (reported, not gated until present on base):\n")
-		for _, name := range newOnlyNames {
-			fmt.Fprintf(&buf, "- `%s`\n", name)
-		}
-		buf.WriteString("\n")
-	}
-
-	if len(baseOnlyNames) > 0 {
-		buf.WriteString("Base-only benchmarks (not compared on head):\n")
-		for _, name := range baseOnlyNames {
-			fmt.Fprintf(&buf, "- `%s`\n", name)
-		}
-		buf.WriteString("\n")
-	}
+	writeComparisonTable(buf, rows)
+	writeBenchmarkNameList(buf, "New-only benchmarks (reported, not gated until present on base):", newOnlyNames)
+	writeBenchmarkNameList(buf, "Base-only benchmarks (not compared on head):", baseOnlyNames)
 
 	if hasRegression {
 		buf.WriteString("Result: memory benchmark regression detected.\n")
-	} else {
-		buf.WriteString("Result: memory benchmark gate passed.\n")
+		return
+	}
+	buf.WriteString("Result: memory benchmark gate passed.\n")
+}
+
+func writeComparisonTable(buf *bytes.Buffer, rows []comparisonRow) {
+	if len(rows) == 0 {
+		buf.WriteString("No overlapping benchmark names were found between base and head.\n\n")
+		return
 	}
 
-	return buf.String(), hasRegression
+	buf.WriteString("| Benchmark | Base B/op | Head B/op | Delta B/op | Base allocs/op | Head allocs/op | Delta allocs/op | Status |\n")
+	buf.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
+	for _, row := range rows {
+		fmt.Fprintf(buf, "| `%s` | %.1f | %.1f | %s | %.1f | %.1f | %s | %s |\n", row.name, row.baseBytes, row.headBytes, row.bytesDeltaPct, row.baseAllocs, row.headAllocs, row.allocsDeltaPct, comparisonStatus(row))
+	}
+	buf.WriteString("\n")
+}
+
+func writeBenchmarkNameList(buf *bytes.Buffer, title string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+
+	buf.WriteString(title)
+	buf.WriteString("\n")
+	for _, name := range names {
+		fmt.Fprintf(buf, "- `%s`\n", name)
+	}
+	buf.WriteString("\n")
+}
+
+func comparisonStatus(row comparisonRow) string {
+	if row.regressedBytes || row.regressedAllocs {
+		return "regression"
+	}
+	return "ok"
 }
 
 func intersectKeys(left, right benchmarkData) []string {

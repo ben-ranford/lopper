@@ -18,26 +18,10 @@ var (
 
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.
 func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
-	rootAbs, err := filepath.Abs(rootDir)
+	rootAbs, rel, err := resolveWriteTarget(rootDir, targetPath)
 	if err != nil {
-		return fmt.Errorf("resolve root path: %w", err)
+		return err
 	}
-	targetAbs, err := filepath.Abs(targetPath)
-	if err != nil {
-		return fmt.Errorf("resolve target path: %w", err)
-	}
-
-	rel, err := filepath.Rel(rootAbs, targetAbs)
-	if err != nil {
-		return fmt.Errorf("compute relative path: %w", err)
-	}
-	if rel == "." {
-		return fmt.Errorf("target path resolves to root directory: %s", targetPath)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("path escapes root: %s", targetPath)
-	}
-	rel = filepath.Clean(rel)
 
 	root, err := os.OpenRoot(rootAbs)
 	if err != nil {
@@ -75,6 +59,37 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	}
 	tempRel = ""
 	return nil
+}
+
+func resolveWriteTarget(rootDir, targetPath string) (string, string, error) {
+	rootAbs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve root path: %w", err)
+	}
+	targetAbs, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve target path: %w", err)
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return "", "", fmt.Errorf("compute relative path: %w", err)
+	}
+	rel, err = validateRelativeTarget(targetPath, rel)
+	if err != nil {
+		return "", "", err
+	}
+	return rootAbs, rel, nil
+}
+
+func validateRelativeTarget(targetPath, rel string) (string, error) {
+	switch {
+	case rel == ".":
+		return "", fmt.Errorf("target path resolves to root directory: %s", targetPath)
+	case rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)):
+		return "", fmt.Errorf("path escapes root: %s", targetPath)
+	default:
+		return filepath.Clean(rel), nil
+	}
 }
 
 func cleanupAtomicTempFile(root *os.Root, tempRel string, tempFile *os.File) error {

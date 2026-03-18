@@ -49,7 +49,10 @@ func TestParseBenchmarkFileAndCompare(t *testing.T) {
 		t.Fatalf("parse head: %v", err)
 	}
 
-	summary, hasRegression := compareBenchmarks(baseData, headData, 15, 10)
+	summary, hasRegression := compareBenchmarks(baseData, headData, deltaThresholds{
+		bytesPct:  15,
+		allocsPct: 10,
+	})
 	if !hasRegression {
 		t.Fatalf("expected regression from increased bytes/op and allocs/op")
 	}
