@@ -383,7 +383,7 @@ jobs:
 
       - name: Set up Homebrew
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: Homebrew/actions/setup-homebrew@4ebd32341e5b59ae7e1581111aa99d5d34cef962
+        uses: Homebrew/actions/setup-homebrew@b2a302b9a642580cae998e6ba2076ffd28e61317
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}
