@@ -16,7 +16,7 @@ import (
 
 type Summary struct {
 	Analyzer  analysis.Analyser
-	Formatter *report.Formatter
+	Formatter summaryFormatter
 	Out       io.Writer
 	In        io.Reader
 	TopN      int
@@ -27,7 +27,7 @@ type Summary struct {
 func NewSummary(out io.Writer, in io.Reader, analyzer analysis.Analyser, formatter *report.Formatter) *Summary {
 	return &Summary{
 		Analyzer:  analyzer,
-		Formatter: formatter,
+		Formatter: newSummaryFormatter(formatter),
 		Out:       out,
 		In:        in,
 		TopN:      50,
@@ -39,11 +39,7 @@ func NewSummary(out io.Writer, in io.Reader, analyzer analysis.Analyser, formatt
 func (s *Summary) Start(ctx context.Context, opts Options) error {
 	opts = s.applyDefaults(opts)
 
-	reportData, err := s.Analyzer.Analyse(ctx, analysis.Request{
-		RepoPath: opts.RepoPath,
-		TopN:     opts.TopN,
-		Language: opts.Language,
-	})
+	reportView, err := s.analyseSummaryView(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -57,7 +53,7 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 				return err
 			}
 		}
-		if err := s.renderSummaryOutput(reportData, state); err != nil {
+		if err := s.renderSummaryOutput(reportView, state); err != nil {
 			return err
 		}
 
@@ -75,8 +71,8 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 	}
 }
 
-func (s *Summary) renderSummaryOutput(reportData report.Report, state summaryState) error {
-	output, err := s.renderSummary(reportData, state)
+func (s *Summary) renderSummaryOutput(reportView summaryReportView, state summaryState) error {
+	output, err := s.renderSummary(reportView, state)
 	if err != nil {
 		return err
 	}
@@ -100,7 +96,7 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, state *s
 		return true, nil
 	}
 	if dependency, ok := isDetailCommand(input); ok {
-		detail := NewDetail(s.Out, s.Analyzer, s.Formatter, opts.RepoPath, opts.Language)
+		detail := NewDetail(s.Out, s.Analyzer, opts.RepoPath, opts.Language)
 		if err := detail.Show(ctx, dependency); err != nil {
 			return false, err
 		}
@@ -114,13 +110,13 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, state *s
 	return false, nil
 }
 
-func filterDependencies(deps []report.DependencyReport, filter string) []report.DependencyReport {
+func filterDependencies(deps []summaryDependencyView, filter string) []summaryDependencyView {
 	if filter == "" {
 		return deps
 	}
 	filter = strings.ToLower(filter)
 
-	filtered := make([]report.DependencyReport, 0, len(deps))
+	filtered := make([]summaryDependencyView, 0, len(deps))
 	for _, dep := range deps {
 		if strings.Contains(strings.ToLower(dep.Name+" "+dep.Language), filter) {
 			filtered = append(filtered, dep)
@@ -287,8 +283,8 @@ func parsePositiveInt(value string) (int, error) {
 	return parsed, nil
 }
 
-func sortDependencies(deps []report.DependencyReport, mode sortMode) []report.DependencyReport {
-	sorted := append([]report.DependencyReport(nil), deps...)
+func sortDependencies(deps []summaryDependencyView, mode sortMode) []summaryDependencyView {
+	sorted := append([]summaryDependencyView(nil), deps...)
 	switch mode {
 	case sortByName:
 		sort.Slice(sorted, func(i, j int) bool {
@@ -313,9 +309,9 @@ func sortDependencies(deps []report.DependencyReport, mode sortMode) []report.De
 	return sorted
 }
 
-func dependencyWaste(dep report.DependencyReport) (float64, bool) {
-	if score, ok := report.RemovalCandidateScore(dep); ok {
-		return score, true
+func dependencyWaste(dep summaryDependencyView) (float64, bool) {
+	if dep.RemovalCandidate != nil {
+		return dep.RemovalCandidate.Score, true
 	}
 	if dep.TotalExportsCount == 0 {
 		return 0, false
@@ -337,7 +333,7 @@ func pageCount(total, pageSize int) int {
 	return (total + pageSize - 1) / pageSize
 }
 
-func paginateDependencies(deps []report.DependencyReport, page int, pageSize int) []report.DependencyReport {
+func paginateDependencies(deps []summaryDependencyView, page int, pageSize int) []summaryDependencyView {
 	if pageSize <= 0 {
 		return deps
 	}
@@ -361,17 +357,13 @@ func (s *Summary) Snapshot(ctx context.Context, opts Options, outputPath string)
 	}
 	opts = s.applyDefaults(opts)
 
-	reportData, err := s.Analyzer.Analyse(ctx, analysis.Request{
-		RepoPath: opts.RepoPath,
-		TopN:     opts.TopN,
-		Language: opts.Language,
-	})
+	reportView, err := s.analyseSummaryView(ctx, opts)
 	if err != nil {
 		return err
 	}
 
 	state := buildSummaryState(opts)
-	output, err := s.renderSummary(reportData, state)
+	output, err := s.renderSummary(reportView, state)
 	if err != nil {
 		return err
 	}
@@ -396,6 +388,18 @@ func (s *Summary) Snapshot(ctx context.Context, opts Options, outputPath string)
 		}
 	}
 	return nil
+}
+
+func (s *Summary) analyseSummaryView(ctx context.Context, opts Options) (summaryReportView, error) {
+	reportData, err := s.Analyzer.Analyse(ctx, analysis.Request{
+		RepoPath: opts.RepoPath,
+		TopN:     opts.TopN,
+		Language: opts.Language,
+	})
+	if err != nil {
+		return summaryReportView{}, err
+	}
+	return mapSummaryReportView(reportData), nil
 }
 
 func (s *Summary) applyDefaults(opts Options) Options {
@@ -453,8 +457,8 @@ func toggleSortMode(mode sortMode) sortMode {
 	return sortByWaste
 }
 
-func runSummaryDependencyPipeline(reportData report.Report, state summaryState) ([]report.DependencyReport, []report.DependencyReport, summaryState, int) {
-	filtered := filterDependencies(reportData.Dependencies, state.filter)
+func runSummaryDependencyPipeline(reportView summaryReportView, state summaryState) ([]summaryDependencyView, []summaryDependencyView, summaryState, int) {
+	filtered := filterDependencies(reportView.Dependencies, state.filter)
 	sorted := sortDependencies(filtered, state.sortMode)
 	totalPages := pageCount(len(sorted), state.pageSize)
 	state.page = normalizeSummaryPage(state.page, totalPages)
@@ -472,16 +476,8 @@ func normalizeSummaryPage(page, totalPages int) int {
 	return page
 }
 
-func buildSummaryDisplayReport(reportData report.Report, sorted []report.DependencyReport, paged []report.DependencyReport) report.Report {
-	display := reportData
-	display.Dependencies = paged
-	display.Summary = report.ComputeSummary(sorted)
-	display.LanguageBreakdown = report.ComputeLanguageBreakdown(sorted)
-	return display
-}
-
-func (s *Summary) formatSummaryDisplay(display report.Report) (string, error) {
-	return s.Formatter.Format(display, report.FormatTable)
+func (s *Summary) formatSummaryDisplay(display summaryDisplayView) (string, error) {
+	return s.Formatter.FormatSummary(display)
 }
 
 func renderSummaryFrame(formatted string, state summaryState, totalPages int, totalDependencies int) string {
@@ -502,9 +498,9 @@ func renderSummaryFrame(formatted string, state summaryState, totalPages int, to
 	return builder.String()
 }
 
-func (s *Summary) renderSummary(reportData report.Report, state summaryState) (string, error) {
-	sorted, paged, state, totalPages := runSummaryDependencyPipeline(reportData, state)
-	display := buildSummaryDisplayReport(reportData, sorted, paged)
+func (s *Summary) renderSummary(reportView summaryReportView, state summaryState) (string, error) {
+	sorted, paged, state, totalPages := runSummaryDependencyPipeline(reportView, state)
+	display := buildSummaryDisplayView(reportView, sorted, paged)
 	formatted, err := s.formatSummaryDisplay(display)
 	if err != nil {
 		return "", err
