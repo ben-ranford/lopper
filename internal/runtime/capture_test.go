@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -316,6 +318,34 @@ func TestCaptureCommandFailureWithoutOutput(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "\n") {
 		t.Fatalf("expected silent failure without command output, got %v", err)
+	}
+}
+
+func TestCaptureHonorsContextCancellation(t *testing.T) {
+	repo := t.TempDir()
+	markerPath := filepath.Join(repo, "started.txt")
+	t.Setenv("LOPPER_CAPTURE_MARKER", markerPath)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "make", "#!/bin/sh\nsleep 5\nprintf started > \"$LOPPER_CAPTURE_MARKER\"\n"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := Capture(ctx, CaptureRequest{
+		RepoPath: repo,
+		Command:  "make test",
+	})
+	if err == nil {
+		t.Fatalf("expected capture cancellation error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "signal: killed") {
+		t.Fatalf("expected context cancellation error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("expected cancelled command to stop quickly, took %v", elapsed)
+	}
+	if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected cancelled command to stop before creating marker, stat err = %v", statErr)
 	}
 }
 
