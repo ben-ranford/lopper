@@ -3,9 +3,9 @@ package dart
 import (
 	"context"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 var dartAliases = []string{"flutter", "pub"}
@@ -35,15 +35,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 }
 
 func (a *Adapter) newReport(rawRepoPath string) (string, report.Report, error) {
-	repoPath, err := workspace.NormalizeRepoPath(rawRepoPath)
-	if err != nil {
-		return "", report.Report{}, err
-	}
-
-	return repoPath, report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    repoPath,
-	}, nil
+	return shared.NewReport(rawRepoPath, a.Clock)
 }
 
 func (a *Adapter) scanRepo(ctx context.Context, repoPath string, result *report.Report) (scanResult, error) {

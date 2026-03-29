@@ -7,7 +7,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
@@ -35,10 +34,7 @@ func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, 
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int) report.DependencyReport {
@@ -106,23 +102,13 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 			Rationale: "Unused dependencies increase attack and maintenance surface.",
 		})
 	}
-	sort.Slice(dep.RiskCues, func(i, j int) bool { return dep.RiskCues[i].Code < dep.RiskCues[j].Code })
-	sort.Slice(dep.Recommendations, func(i, j int) bool {
-		left := recommendationPriorityRank(dep.Recommendations[i].Priority)
-		right := recommendationPriorityRank(dep.Recommendations[j].Priority)
-		if left == right {
-			return dep.Recommendations[i].Code < dep.Recommendations[j].Code
-		}
-		return left < right
-	})
+	shared.SortRiskCues(dep.RiskCues)
+	shared.SortRecommendations(dep.Recommendations, recommendationPriorityRank)
 	return dep
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
-	if value != nil {
-		return *value
-	}
-	return thresholds.Defaults().MinUsagePercentForRecommendations
+	return shared.ResolveMinUsageRecommendationThreshold(value)
 }
 
 func summarizeUnresolved(unresolved map[string]int) []string {
@@ -154,12 +140,5 @@ func summarizeUnresolved(unresolved map[string]int) []string {
 }
 
 func recommendationPriorityRank(priority string) int {
-	switch priority {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	default:
-		return 2
-	}
+	return shared.RecommendationPriorityRank(priority)
 }
