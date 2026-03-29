@@ -42,23 +42,15 @@ type summaryDisplayView struct {
 	Dependencies        []summaryDependencyView
 }
 
-type summaryFormatter interface {
-	FormatSummary(summaryDisplayView) (string, error)
-}
-
-type reportSummaryFormatter struct {
-	formatter *report.Formatter
-}
+type summaryFormatter func(summaryDisplayView) (string, error)
 
 func newSummaryFormatter(formatter *report.Formatter) summaryFormatter {
 	if formatter == nil {
 		formatter = report.NewFormatter()
 	}
-	return reportSummaryFormatter{formatter: formatter}
-}
-
-func (f reportSummaryFormatter) FormatSummary(view summaryDisplayView) (string, error) {
-	return f.formatter.Format(summaryDisplayViewToReport(view), report.FormatTable)
+	return func(view summaryDisplayView) (string, error) {
+		return formatter.Format(summaryDisplayViewToReport(view), report.FormatTable)
+	}
 }
 
 func mapSummaryReportView(reportData report.Report) summaryReportView {

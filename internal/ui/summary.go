@@ -477,7 +477,7 @@ func normalizeSummaryPage(page, totalPages int) int {
 }
 
 func (s *Summary) formatSummaryDisplay(display summaryDisplayView) (string, error) {
-	return s.Formatter.FormatSummary(display)
+	return s.Formatter(display)
 }
 
 func renderSummaryFrame(formatted string, state summaryState, totalPages int, totalDependencies int) string {

@@ -21,15 +21,6 @@ func (s *stubAnalyzer) Analyse(ctx context.Context, req analysis.Request) (repor
 	return s.report, nil
 }
 
-type captureSummaryFormatter struct {
-	display summaryDisplayView
-}
-
-func (c *captureSummaryFormatter) FormatSummary(display summaryDisplayView) (string, error) {
-	c.display = display
-	return "formatted table\n", nil
-}
-
 func TestSummarySnapshotGolden(t *testing.T) {
 	tmp := t.TempDir()
 	outputPath := filepath.Join(tmp, "summary.txt")
@@ -82,8 +73,11 @@ func TestSummaryRenderBuildsDisplayViewFromBoundary(t *testing.T) {
 	}
 
 	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: reportData}, report.NewFormatter())
-	formatter := &captureSummaryFormatter{}
-	summary.Formatter = formatter
+	var display summaryDisplayView
+	summary.Formatter = func(view summaryDisplayView) (string, error) {
+		display = view
+		return "formatted table\n", nil
+	}
 
 	rendered, err := summary.renderSummary(mapSummaryReportView(reportData), summaryState{
 		sortMode: sortByName,
@@ -94,17 +88,17 @@ func TestSummaryRenderBuildsDisplayViewFromBoundary(t *testing.T) {
 		t.Fatalf("render summary: %v", err)
 	}
 
-	if formatter.display.Summary == nil || formatter.display.Summary.DependencyCount != 2 {
-		t.Fatalf("expected summary metrics for sorted dependency set, got %#v", formatter.display.Summary)
+	if display.Summary == nil || display.Summary.DependencyCount != 2 {
+		t.Fatalf("expected summary metrics for sorted dependency set, got %#v", display.Summary)
 	}
-	if len(formatter.display.LanguageBreakdown) != 2 {
-		t.Fatalf("expected language breakdown for both dependencies, got %#v", formatter.display.LanguageBreakdown)
+	if len(display.LanguageBreakdown) != 2 {
+		t.Fatalf("expected language breakdown for both dependencies, got %#v", display.LanguageBreakdown)
 	}
-	if len(formatter.display.Dependencies) != 1 || formatter.display.Dependencies[0].Name != "alpha" {
-		t.Fatalf("expected paged display dependency to be alpha, got %#v", formatter.display.Dependencies)
+	if len(display.Dependencies) != 1 || display.Dependencies[0].Name != "alpha" {
+		t.Fatalf("expected paged display dependency to be alpha, got %#v", display.Dependencies)
 	}
-	if len(formatter.display.Warnings) != 1 || formatter.display.Warnings[0] != "warning" {
-		t.Fatalf("expected warnings to flow through display view, got %#v", formatter.display.Warnings)
+	if len(display.Warnings) != 1 || display.Warnings[0] != "warning" {
+		t.Fatalf("expected warnings to flow through display view, got %#v", display.Warnings)
 	}
 	if !strings.Contains(rendered, "formatted table") {
 		t.Fatalf("expected rendered frame to include formatter output, got %q", rendered)
