@@ -468,122 +468,91 @@ func containsEnvPrefix(env []string, prefix string) bool {
 	return false
 }
 
-// TestShouldSkipMissingLockfilePyproject verifies that pyproject.toml without
-// [tool.poetry] does not trigger a Poetry lockfile warning, but one with
-// [tool.poetry] still does.
-func TestShouldSkipMissingLockfilePyproject(t *testing.T) {
-	t.Run("non-poetry pyproject.toml does not warn", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "pyproject.toml"), "[build-system]\nrequires = [\"setuptools\"]\n")
+// TestShouldSkipMissingLockfile verifies the per-manifest heuristics that
+// suppress false-positive "missing lockfile" warnings. Each case writes a
+// single manifest to a temp repo and checks whether a warning mentioning the
+// expected lockfile is present or absent.
+func TestShouldSkipMissingLockfile(t *testing.T) {
+	cases := []struct {
+		name         string
+		manifestName string
+		manifestBody string
+		lockfileHint string
+		wantWarning  bool
+	}{
+		{
+			name:         "non-poetry pyproject.toml does not warn",
+			manifestName: "pyproject.toml",
+			manifestBody: "[build-system]\nrequires = [\"setuptools\"]\n",
+			lockfileHint: "poetry.lock",
+			wantWarning:  false,
+		},
+		{
+			name:         "poetry pyproject.toml warns when poetry.lock is missing",
+			manifestName: "pyproject.toml",
+			manifestBody: "[tool.poetry]\nname = \"my-pkg\"\n\n[build-system]\nrequires = [\"poetry-core\"]\n",
+			lockfileHint: "poetry.lock",
+			wantWarning:  true,
+		},
+		{
+			name:         "stdlib-only go.mod does not warn",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n",
+			lockfileHint: "go.sum",
+			wantWarning:  false,
+		},
+		{
+			name:         "go.mod with require warns when go.sum is missing",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n",
+			lockfileHint: "go.sum",
+			wantWarning:  true,
+		},
+		{
+			name:         "library crate does not warn",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-lib\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"my_lib\"\n",
+			lockfileHint: "Cargo.lock",
+			wantWarning:  false,
+		},
+		{
+			name:         "binary crate warns when Cargo.lock is missing",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n",
+			lockfileHint: "Cargo.lock",
+			wantWarning:  true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, tc.manifestName), tc.manifestBody)
 
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		if err != nil {
-			t.Fatalf("detect lockfile drift: %v", err)
-		}
-		for _, w := range warnings {
-			if strings.Contains(w, "poetry.lock") {
-				t.Fatalf("unexpected poetry warning for non-poetry pyproject.toml: %q", w)
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			if err != nil {
+				t.Fatalf("detect lockfile drift: %v", err)
 			}
-		}
-	})
-
-	t.Run("poetry pyproject.toml warns when poetry.lock is missing", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "pyproject.toml"), "[tool.poetry]\nname = \"my-pkg\"\n\n[build-system]\nrequires = [\"poetry-core\"]\n")
-
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		if err != nil {
-			t.Fatalf("detect lockfile drift: %v", err)
-		}
-		found := false
-		for _, w := range warnings {
-			if strings.Contains(w, "poetry.lock") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected poetry lockfile warning, got %#v", warnings)
-		}
-	})
+			assertLockfileWarning(t, warnings, tc.lockfileHint, tc.wantWarning)
+		})
+	}
 }
 
-// TestShouldSkipMissingLockfileGoMod verifies that a stdlib-only go.mod (no
-// require directive) does not trigger a go.sum warning, but one with external
-// dependencies does.
-func TestShouldSkipMissingLockfileGoMod(t *testing.T) {
-	t.Run("stdlib-only go.mod does not warn", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/mymod\n\ngo 1.21\n")
-
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		if err != nil {
-			t.Fatalf("detect lockfile drift: %v", err)
+// assertLockfileWarning checks that warnings contains (or does not contain)
+// an entry mentioning lockfileHint, depending on wantWarning.
+func assertLockfileWarning(t *testing.T, warnings []string, lockfileHint string, wantWarning bool) {
+	t.Helper()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, lockfileHint) {
+			found = true
+			break
 		}
-		for _, w := range warnings {
-			if strings.Contains(w, "go.sum") {
-				t.Fatalf("unexpected go.sum warning for stdlib-only go.mod: %q", w)
-			}
-		}
-	})
-
-	t.Run("go.mod with require warns when go.sum is missing", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n")
-
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		if err != nil {
-			t.Fatalf("detect lockfile drift: %v", err)
-		}
-		found := false
-		for _, w := range warnings {
-			if strings.Contains(w, "go.sum") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected go.sum lockfile warning, got %#v", warnings)
-		}
-	})
-}
-
-// TestShouldSkipMissingLockfileCargoToml verifies that a library-only
-// Cargo.toml (no [[bin]] section) does not trigger a Cargo.lock warning, but
-// one with [[bin]] does.
-func TestShouldSkipMissingLockfileCargoToml(t *testing.T) {
-	t.Run("library crate does not warn", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"my-lib\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"my_lib\"\n")
-
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		if err != nil {
-			t.Fatalf("detect lockfile drift: %v", err)
-		}
-		for _, w := range warnings {
-			if strings.Contains(w, "Cargo.lock") {
-				t.Fatalf("unexpected Cargo.lock warning for library crate: %q", w)
-			}
-		}
-	})
-
-	t.Run("binary crate warns when Cargo.lock is missing", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n")
-
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		if err != nil {
-			t.Fatalf("detect lockfile drift: %v", err)
-		}
-		found := false
-		for _, w := range warnings {
-			if strings.Contains(w, "Cargo.lock") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected Cargo.lock warning for binary crate, got %#v", warnings)
-		}
-	})
+	}
+	if wantWarning && !found {
+		t.Fatalf("expected warning mentioning %q, got %#v", lockfileHint, warnings)
+	}
+	if !wantWarning && found {
+		t.Fatalf("unexpected warning mentioning %q in %#v", lockfileHint, warnings)
+	}
 }
