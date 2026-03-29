@@ -308,15 +308,18 @@ func buildLockfileDriftWarning(finding lockfileDriftFinding) string {
 }
 
 func detectDriftForRule(repoPath, dir string, files map[string]fs.FileInfo, rule lockfileRule, changedFiles map[string]struct{}, hasGitContext bool) []string {
-	finding, ok := evaluateLockfileRule(lockfileDirSnapshot{
+	snapshot := lockfileDirSnapshot{
 		repoPath: repoPath,
 		path:     dir,
 		relDir:   relativeDir(repoPath, dir),
 		files:    files,
-	}, rule, lockfileGitContext{
+	}
+	gitContext := lockfileGitContext{
 		changedFiles:  changedFiles,
 		hasGitContext: hasGitContext,
-	})
+	}
+
+	finding, ok := evaluateLockfileRule(snapshot, rule, gitContext)
 	if !ok {
 		return nil
 	}
