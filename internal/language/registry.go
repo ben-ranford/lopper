@@ -24,6 +24,10 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Register(adapter Adapter) error {
+	if r == nil {
+		return errors.New("language registry is nil")
+	}
+
 	if adapter == nil {
 		return errors.New("adapter is nil")
 	}
