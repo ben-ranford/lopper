@@ -137,6 +137,13 @@ func TestDetectWithConfidenceUmbrellaCustomAppsPath(t *testing.T) {
 	assertDetectionFixture(t, repo, filepath.Join("services", "api"), filepath.Base(repo))
 }
 
+func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+	assertDetectionFixture(t, repo, filepath.Base(repo), "")
+}
+
 func TestParseImportsAliasAsSetsLocalName(t *testing.T) {
 	content := []byte("defmodule Demo do\n  alias Foo.Bar, as: Baz\n  Baz.run()\nend\n")
 	declared := map[string]struct{}{"foo": {}}
@@ -164,6 +171,9 @@ func TestResolveWeights(t *testing.T) {
 func TestDetectUmbrellaAppsPathBranches(t *testing.T) {
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: []\n")); umbrella || appsPath != "" {
 		t.Fatalf("expected non-umbrella config without apps_path, got umbrella=%v appsPath=%q", umbrella, appsPath)
+	}
+	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("# apps_path: \"services\"\ndef project, do: []\n")); umbrella || appsPath != "" {
+		t.Fatalf("expected commented apps_path to be ignored, got umbrella=%v appsPath=%q", umbrella, appsPath)
 	}
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: [apps_path: \"   \"]\n")); !umbrella || appsPath != "apps" {
 		t.Fatalf("expected blank apps_path to fall back to apps, got umbrella=%v appsPath=%q", umbrella, appsPath)
