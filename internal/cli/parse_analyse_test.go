@@ -14,71 +14,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
-const (
-	unexpectedErrFmt            = "unexpected error: %v"
-	unexpectedValidationErrFmt  = "unexpected validation error: %v"
-	modeMismatchFmt             = "expected mode %q, got %q"
-	languageFlagName            = "--language"
-	includeFlagName             = "--include"
-	excludeFlagName             = "--exclude"
-	suggestOnlyFlag             = "--suggest-only"
-	applyCodemodFlag            = "--apply-codemod"
-	applyCodemodConfirmFlag     = "--apply-codemod-confirm"
-	allowDirtyFlag              = "--allow-dirty"
-	failAliasFlag               = "--fail-on-increase"
-	thresholdFailFlag           = "--threshold-fail-on-increase"
-	thresholdLowWarnFlag        = "--threshold-low-confidence-warning"
-	scoreWeightFlag             = "--score-weight-usage"
-	lockfileDriftPolicyFlagName = "--lockfile-drift-policy"
-	scopeGoGlob                 = "src/**/*.go"
-	scopeExcludeTestGlob        = "**/*_test.go"
-	scopeVendorGlob             = "vendor/**"
-	scopeAnalyseGoGlobs         = "src/**/*.go,internal/**/*.go"
-	scopeIncludeCombined        = "src/**/*.go,internal/**/*.go,cmd/**/*.go"
-	parseConfigFileName         = ".lopper.yml"
-	repoFlagName                = "--repo"
-	dashboardReposFlagName      = "--repos"
-	dashboardOutputFlagName     = "--output"
-	formatFlagName              = "--format"
-	dashboardFormatFlagName     = formatFlagName
-	dashboardConfigFlagName     = "--config"
-	dashboardConfigFileName     = "lopper-org.yml"
-	dashboardReportCSVFileName  = "report.csv"
-	notifyOnFlag                = "--notify-on"
-)
-
-func mustParseArgs(t *testing.T, args []string) app.Request {
-	t.Helper()
-
-	req, err := ParseArgs(args)
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	return req
-}
-
-func expectParseArgsError(t *testing.T, args []string, wantMsg string) error {
-	t.Helper()
-
-	_, err := ParseArgs(args)
-	if err == nil {
-		t.Fatal(wantMsg)
-	}
-	return err
-}
-
-func writeFile(t *testing.T, path, contents string) {
-	t.Helper()
-	testutil.MustWriteFile(t, path, contents)
-}
-
-func TestParseArgsDefault(t *testing.T) {
-	req := mustParseArgs(t, nil)
-	if req.Mode != app.ModeTUI {
-		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
-	}
-}
-
 func TestParseArgsAnalyseDependency(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "lodash"})
 	if req.Mode != app.ModeAnalyse {
@@ -271,61 +206,6 @@ func TestParseArgsAnalyseScopeFlagsRepeatable(t *testing.T) {
 	}
 }
 
-func TestPatternListFlagSetMergesAndDedupes(t *testing.T) {
-	flagValue := newPatternListFlag([]string{scopeGoGlob})
-	if err := flagValue.Set("internal/**/*.go," + scopeGoGlob); err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if err := flagValue.Set("cmd/**/*.go"); err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-	if got := strings.Join(flagValue.Values(), ","); got != scopeIncludeCombined {
-		t.Fatalf("unexpected merged pattern list: %q", got)
-	}
-	if flagValue.String() != scopeIncludeCombined {
-		t.Fatalf("unexpected pattern list string form: %q", flagValue.String())
-	}
-}
-
-func TestResolveScopePatternsUsesConfigWhenFlagNotVisited(t *testing.T) {
-	configValues := []string{scopeGoGlob}
-	got := resolveScopePatterns(map[string]bool{}, "include", []string{"ignored/**/*.go"}, configValues)
-	if strings.Join(got, ",") != scopeGoGlob {
-		t.Fatalf("expected config scope values when include flag not visited, got %q", strings.Join(got, ","))
-	}
-}
-
-func TestResolveScopePatternsVisitedWithEmptyCLIValuesReturnsNil(t *testing.T) {
-	got := resolveScopePatterns(map[string]bool{"include": true}, "include", nil, []string{scopeGoGlob})
-	if len(got) != 0 {
-		t.Fatalf("expected nil/empty scope patterns when include flag is visited with no values, got %#v", got)
-	}
-}
-
-func TestMergePatternsWithEmptyNextKeepsExisting(t *testing.T) {
-	existing := []string{scopeGoGlob}
-	merged := mergePatterns(existing, nil)
-	if strings.Join(merged, ",") != scopeGoGlob {
-		t.Fatalf("expected merge with empty next to preserve existing patterns, got %#v", merged)
-	}
-}
-
-func TestMergePatternsSkipsDuplicatesAlreadySeen(t *testing.T) {
-	merged := mergePatterns([]string{scopeGoGlob}, []string{scopeGoGlob, "internal/**/*.go"})
-	if strings.Join(merged, ",") != scopeAnalyseGoGlobs {
-		t.Fatalf("expected duplicates to be skipped, got %#v", merged)
-	}
-}
-
-func TestSplitPatternListSkipsEmptyAndDuplicateEntries(t *testing.T) {
-	if got := splitPatternList(" , " + scopeGoGlob + ", " + scopeGoGlob + " , "); !reflect.DeepEqual(got, []string{scopeGoGlob}) {
-		t.Fatalf("expected split pattern list to keep one trimmed value, got %#v", got)
-	}
-	if got := splitPatternList(" , , "); len(got) != 0 {
-		t.Fatalf("expected nil pattern list when all values are blank, got %#v", got)
-	}
-}
-
 func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "--top", "5", "--runtime-test-command", "npm test"})
 	if req.Analyse.RuntimeTestCommand != "npm test" {
@@ -392,112 +272,6 @@ func TestParseArgsAnalyseApplyCodemodValidation(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.want, err)
 			}
 		})
-	}
-}
-
-func TestParseArgsDashboardRepos(t *testing.T) {
-	req := mustParseArgs(t, []string{
-		"dashboard",
-		dashboardReposFlagName, "./api, ./frontend,./api/,api/..//api",
-		dashboardFormatFlagName, "html",
-		"--top", "25",
-		languageFlagName, "all",
-		dashboardOutputFlagName, "org-report.html",
-	})
-
-	if req.Mode != app.ModeDashboard {
-		t.Fatalf(modeMismatchFmt, app.ModeDashboard, req.Mode)
-	}
-	if len(req.Dashboard.Repos) != 2 {
-		t.Fatalf("expected two repos after dedupe, got %#v", req.Dashboard.Repos)
-	}
-	if req.Dashboard.Repos[0].Path != filepath.Clean("./api") || req.Dashboard.Repos[1].Path != filepath.Clean("./frontend") {
-		t.Fatalf("unexpected dashboard repo paths: %#v", req.Dashboard.Repos)
-	}
-	if req.Dashboard.Format != "html" {
-		t.Fatalf("expected dashboard format html, got %q", req.Dashboard.Format)
-	}
-	if req.Dashboard.TopN != 25 {
-		t.Fatalf("expected dashboard top 25, got %d", req.Dashboard.TopN)
-	}
-	if req.Dashboard.DefaultLanguage != "all" {
-		t.Fatalf("expected dashboard default language all, got %q", req.Dashboard.DefaultLanguage)
-	}
-	if req.Dashboard.OutputPath != "org-report.html" {
-		t.Fatalf("expected dashboard output path, got %q", req.Dashboard.OutputPath)
-	}
-}
-
-func TestParseArgsDashboardRejectsBaselineStore(t *testing.T) {
-	err := expectParseArgsError(t, []string{"dashboard", dashboardReposFlagName, "./api", "--baseline-store", "./baselines"}, "expected dashboard baseline-store rejection")
-	if !strings.Contains(err.Error(), "flag provided but not defined") {
-		t.Fatalf("expected unknown flag error for baseline-store, got %v", err)
-	}
-}
-
-func TestParseArgsDashboardConfig(t *testing.T) {
-	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName})
-	if req.Mode != app.ModeDashboard {
-		t.Fatalf(modeMismatchFmt, app.ModeDashboard, req.Mode)
-	}
-	if req.Dashboard.ConfigPath != dashboardConfigFileName {
-		t.Fatalf("expected dashboard config path, got %q", req.Dashboard.ConfigPath)
-	}
-	if req.Dashboard.TopN != app.DefaultRequest().Dashboard.TopN {
-		t.Fatalf("expected dashboard default top, got %d", req.Dashboard.TopN)
-	}
-}
-
-func TestParseArgsDashboardOutputFlags(t *testing.T) {
-	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, dashboardReportCSVFileName, "-o", dashboardReportCSVFileName})
-	if req.Dashboard.OutputPath != dashboardReportCSVFileName {
-		t.Fatalf("expected output path report.csv, got %q", req.Dashboard.OutputPath)
-	}
-
-	_, err := ParseArgs([]string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, "one.csv", "-o", "two.csv"})
-	if err == nil || !strings.Contains(err.Error(), "must match") {
-		t.Fatalf("expected output mismatch validation error, got %v", err)
-	}
-}
-
-func TestParseArgsDashboardValidation(t *testing.T) {
-	err := expectParseArgsError(t, []string{"dashboard"}, "expected dashboard source validation error")
-	if !strings.Contains(err.Error(), "--repos or --config") {
-		t.Fatalf("unexpected dashboard source validation error: %v", err)
-	}
-
-	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
-	if !strings.Contains(err.Error(), "--top must be > 0") {
-		t.Fatalf("unexpected dashboard top validation error: %v", err)
-	}
-}
-
-func TestParseArgsDashboardRejectsUnexpectedArguments(t *testing.T) {
-	_, err := ParseArgs([]string{"dashboard", dashboardReposFlagName, "./api", "extra"})
-	if err == nil || !strings.Contains(err.Error(), "unexpected arguments for dashboard") {
-		t.Fatalf("expected dashboard positional argument error, got %v", err)
-	}
-}
-
-func TestParseArgsTUIFlags(t *testing.T) {
-	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
-	if req.Mode != app.ModeTUI {
-		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
-	}
-	if req.TUI.TopN != 15 {
-		t.Fatalf("expected top 15, got %d", req.TUI.TopN)
-	}
-	if req.TUI.Filter != "lod" {
-		t.Fatalf("expected filter lod, got %q", req.TUI.Filter)
-	}
-	if req.TUI.Sort != "name" {
-		t.Fatalf("expected sort name, got %q", req.TUI.Sort)
-	}
-	if req.TUI.PageSize != 5 {
-		t.Fatalf("expected page size 5, got %d", req.TUI.PageSize)
-	}
-	if req.TUI.SnapshotPath != "out.txt" {
-		t.Fatalf("expected snapshot out.txt, got %q", req.TUI.SnapshotPath)
 	}
 }
 
@@ -777,40 +551,6 @@ func TestParseArgsAnalyseRejectsInvalidLockfileDriftPolicy(t *testing.T) {
 	}
 }
 
-func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
-	args := normalizeArgs([]string{"lodash", "--top", "5", "--format=json", "--", "--literal"})
-	if len(args) == 0 {
-		t.Fatalf("expected normalized args")
-	}
-	if !flagNeedsValue(thresholdFailFlag) {
-		t.Fatalf("expected threshold flag to require value")
-	}
-	if !flagNeedsValue(scoreWeightFlag) {
-		t.Fatalf("expected score weight flag to require value")
-	}
-	if flagNeedsValue("--format=json") {
-		t.Fatalf("expected equals-form flag not to require separate value")
-	}
-	if flagNeedsValue("--unknown-flag") {
-		t.Fatalf("did not expect unknown flag to be treated as requiring value")
-	}
-}
-
-func TestParseArgsErrorsAndHelp(t *testing.T) {
-	if _, err := ParseArgs([]string{"help"}); !errors.Is(err, ErrHelpRequested) {
-		t.Fatalf("expected top-level help request error, got %v", err)
-	}
-	if _, err := ParseArgs([]string{"analyse", "--help"}); !errors.Is(err, ErrHelpRequested) {
-		t.Fatalf("expected analyse help request error, got %v", err)
-	}
-	if _, err := ParseArgs([]string{"tui", "--help"}); !errors.Is(err, ErrHelpRequested) {
-		t.Fatalf("expected tui help request error, got %v", err)
-	}
-	if _, err := ParseArgs([]string{"unknown"}); err == nil {
-		t.Fatalf("expected unknown command error")
-	}
-}
-
 func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -844,24 +584,6 @@ func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
 	}
 }
 
-func TestParseArgsTUIInvalidInputs(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "negative_top", args: []string{"tui", "--top", "-1"}},
-		{name: "negative_page_size", args: []string{"tui", "--page-size", "-1"}},
-		{name: "unexpected_arg", args: []string{"tui", "extra"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ParseArgs(tc.args); err == nil {
-				t.Fatalf("expected parse error")
-			}
-		})
-	}
-}
-
 func TestParseArgsVisitedFlagThresholdAliasMatch(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"analyse", "--top", "2",
@@ -870,24 +592,5 @@ func TestParseArgsVisitedFlagThresholdAliasMatch(t *testing.T) {
 	})
 	if req.Analyse.Thresholds.FailOnIncreasePercent != 3 {
 		t.Fatalf("expected resolved fail threshold 3, got %d", req.Analyse.Thresholds.FailOnIncreasePercent)
-	}
-}
-
-func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "analyse_top_missing_value", args: []string{"analyse", "--top"}},
-		{name: "analyse_invalid_format", args: []string{"analyse", "dep", formatFlagName, "invalid"}},
-		{name: "analyse_missing_config", args: []string{"analyse", "--top", "1", "--config", "missing-config.yml"}},
-		{name: "tui_top_missing_value", args: []string{"tui", "--top"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ParseArgs(tc.args); err == nil {
-				t.Fatalf("expected parse/config error")
-			}
-		})
 	}
 }
