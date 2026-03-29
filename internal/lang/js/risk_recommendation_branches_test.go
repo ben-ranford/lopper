@@ -116,7 +116,10 @@ func TestDetectNativeModuleIndicatorsNoNativeAndErrors(t *testing.T) {
 func TestDetectDynamicLoaderUsageAndErrors(t *testing.T) {
 	depRoot := t.TempDir()
 	entry := filepath.Join(depRoot, "index.js")
-	if err := os.WriteFile(entry, []byte("const x = require(loader())\n"), 0o600); err != nil {
+	if err := os.WriteFile(entry, []byte(
+		"const target = process.env.DEP_NAME\n"+
+			"const url = \"http://example.com//noop\"; module.exports = require(target)\n",
+	), 0o600); err != nil {
 		t.Fatalf("write entrypoint: %v", err)
 	}
 	count, samples, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "notes.txt"), entry})

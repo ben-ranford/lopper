@@ -34,8 +34,14 @@ func TestRiskHelperFunctions(t *testing.T) {
 	if hasDynamicCall("// require(dep)", dynamicRequireToken) {
 		t.Fatalf("did not expect commented token to be detected")
 	}
+	if !hasDynamicCall(`const url = "http://example.com//noop"; require(dep)`, dynamicRequireToken) {
+		t.Fatalf("expected dynamic require after // inside string literal to be detected")
+	}
 	if !isCommented("abc // trailing") || isCommented("abc") {
 		t.Fatalf("unexpected commented-line detection")
+	}
+	if isCommented(`const url = "http://example.com//noop";`) {
+		t.Fatalf("did not expect // inside string literal to count as comment")
 	}
 	if firstNonSpaceByte("  \t\rX") != 'X' {
 		t.Fatalf("expected first non-space byte detection")

@@ -153,8 +153,44 @@ func hasDynamicCall(line, token string) bool {
 }
 
 func isCommented(prefix string) bool {
-	commentPos := strings.Index(prefix, "//")
-	return commentPos >= 0
+	var (
+		inSingle   bool
+		inDouble   bool
+		inTemplate bool
+		escaped    bool
+	)
+
+	for i := 0; i < len(prefix); i++ {
+		ch := prefix[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '\\':
+			if inSingle || inDouble || inTemplate {
+				escaped = true
+			}
+		case '\'':
+			if !inDouble && !inTemplate {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle && !inTemplate {
+				inDouble = !inDouble
+			}
+		case '`':
+			if !inSingle && !inDouble {
+				inTemplate = !inTemplate
+			}
+		case '/':
+			if !inSingle && !inDouble && !inTemplate && i+1 < len(prefix) && prefix[i+1] == '/' {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func isIdentifierByte(b byte) bool {
