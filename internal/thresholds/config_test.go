@@ -448,6 +448,13 @@ func TestParseConfigInvalidJSONDecodeError(t *testing.T) {
 	}
 }
 
+func TestConfigExtensionSupportsPinnedRemoteURLs(t *testing.T) {
+	got := configExtension("https://example.com/policies/base.JSON#sha256=" + strings.Repeat("a", 64))
+	if got != ".json" {
+		t.Fatalf("expected remote config extension to resolve to .json, got %q", got)
+	}
+}
+
 func TestResolveConfigPathExplicitStatError(t *testing.T) {
 	repo := t.TempDir()
 	fileRepo := filepath.Join(repo, "repo-file")
