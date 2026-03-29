@@ -80,7 +80,7 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 	}
 
 	sanitizedFileName := sanitizeBaselineKey(trimmedKey) + ".json"
-	path = filepath.Join(trimmedDir, sanitizedFileName)
+	snapshotPath := filepath.Join(trimmedDir, sanitizedFileName)
 	root, err := os.OpenRoot(trimmedDir)
 	if err != nil {
 		return "", err
@@ -93,7 +93,7 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 	file, err := root.OpenFile(sanitizedFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("%w: key %q (%s)", ErrBaselineAlreadyExists, trimmedKey, path)
+			return "", fmt.Errorf("%w: key %q (%s)", ErrBaselineAlreadyExists, trimmedKey, snapshotPath)
 		}
 		return "", err
 	}
@@ -102,7 +102,7 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 			err = errors.Join(err, closeErr)
 		}
 		if err != nil {
-			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			if removeErr := os.Remove(snapshotPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				err = errors.Join(err, removeErr)
 			}
 		}
@@ -121,7 +121,7 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 		return "", err
 	}
 
-	return path, nil
+	return snapshotPath, nil
 }
 
 func BaselineSnapshotPath(dir, key string) string {
