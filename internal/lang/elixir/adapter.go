@@ -116,7 +116,7 @@ func detectFromRootFiles(repoPath string, detection *language.Detection, roots m
 }
 
 func detectUmbrellaAppsPath(content []byte) (bool, string) {
-	raw := string(content)
+	raw := stripElixirComments(content)
 	if !strings.Contains(raw, "apps_path:") {
 		return false, ""
 	}
@@ -128,6 +128,55 @@ func detectUmbrellaAppsPath(content []byte) (bool, string) {
 		}
 	}
 	return true, "apps"
+}
+
+func stripElixirComments(content []byte) string {
+	var stripped strings.Builder
+	stripped.Grow(len(content))
+
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if escaped {
+			stripped.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' && (inSingleQuote || inDoubleQuote) {
+			stripped.WriteByte(ch)
+			escaped = true
+			continue
+		}
+		switch ch {
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+			stripped.WriteByte(ch)
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			}
+			stripped.WriteByte(ch)
+		case '#':
+			if inSingleQuote || inDoubleQuote {
+				stripped.WriteByte(ch)
+				continue
+			}
+			for i < len(content) && content[i] != '\n' {
+				i++
+			}
+			if i < len(content) {
+				stripped.WriteByte('\n')
+			}
+		default:
+			stripped.WriteByte(ch)
+		}
+	}
+	return stripped.String()
 }
 
 func addUmbrellaRoots(repoPath string, appsPath string, roots map[string]struct{}) error {
