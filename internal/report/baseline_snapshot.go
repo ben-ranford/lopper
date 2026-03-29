@@ -101,6 +101,11 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 		if closeErr := file.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
+		if err != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, removeErr)
+			}
+		}
 	}()
 
 	snapshot := BaselineSnapshot{
