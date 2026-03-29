@@ -1,7 +1,6 @@
 package report
 
 import (
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,18 +32,6 @@ func TestFormatSARIFValidatesAgainstSchema(t *testing.T) {
 		messages = append(messages, item.String())
 	}
 	t.Fatalf("sarif output failed schema validation: %s", strings.Join(messages, "; "))
-}
-
-func fileURLFromPath(path string) string {
-	slashed := strings.ReplaceAll(path, "\\", "/")
-	slashed = filepath.ToSlash(slashed)
-	if !strings.HasPrefix(slashed, "/") {
-		slashed = "/" + slashed
-	}
-	return (&url.URL{
-		Scheme: "file",
-		Path:   slashed,
-	}).String()
 }
 
 func TestFileURLFromPath(t *testing.T) {
