@@ -2,12 +2,10 @@ package dart
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func buildRequestedDartDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
@@ -146,9 +144,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 		})
 	}
 
-	sort.Slice(dep.RiskCues, func(i, j int) bool {
-		return dep.RiskCues[i].Code < dep.RiskCues[j].Code
-	})
+	shared.SortRiskCues(dep.RiskCues)
 	shared.SortRecommendations(dep.Recommendations, recommendationPriorityRank)
 
 	return dep, warnings
@@ -161,10 +157,7 @@ func dartFileUsages(scan scanResult) []shared.FileUsage {
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
-	if value != nil {
-		return *value
-	}
-	return thresholds.Defaults().MinUsagePercentForRecommendations
+	return shared.ResolveMinUsageRecommendationThreshold(value)
 }
 
 func summarizeUnresolved(unresolved map[string]int) []string {
@@ -177,12 +170,5 @@ func summarizeUnresolved(unresolved map[string]int) []string {
 }
 
 func recommendationPriorityRank(priority string) int {
-	switch priority {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	default:
-		return 2
-	}
+	return shared.RecommendationPriorityRank(priority)
 }

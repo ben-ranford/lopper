@@ -6,7 +6,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func buildRequestedSwiftDependencies(req language.Request, scan scanResult, catalog dependencyCatalog) ([]report.DependencyReport, []string) {
@@ -115,15 +114,9 @@ func buildRecommendations(dep report.DependencyReport, meta dependencyMeta, minU
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
-	if value != nil {
-		return *value
-	}
-	return thresholds.Defaults().MinUsagePercentForRecommendations
+	return shared.ResolveMinUsageRecommendationThreshold(value)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }

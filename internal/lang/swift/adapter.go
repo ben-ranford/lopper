@@ -3,9 +3,9 @@ package swift
 import (
 	"context"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 type Adapter struct {
@@ -19,14 +19,9 @@ func NewAdapter() *Adapter {
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
-	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
+	repoPath, result, err := shared.NewReport(req.RepoPath, a.Clock)
 	if err != nil {
 		return report.Report{}, err
-	}
-
-	result := report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    repoPath,
 	}
 
 	catalog, catalogWarnings, err := buildDependencyCatalog(repoPath)
