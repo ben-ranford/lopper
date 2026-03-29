@@ -330,16 +330,14 @@ func mapDetailRiskCues(cues []report.RiskCue) []detailRiskCueView {
 }
 
 func mapDetailRecommendations(recommendations []report.Recommendation) []detailRecommendationView {
-	views := make([]detailRecommendationView, 0, len(recommendations))
-	for _, recommendation := range recommendations {
-		views = append(views, detailRecommendationView{
+	return mapDetailViews(recommendations, func(recommendation report.Recommendation) detailRecommendationView {
+		return detailRecommendationView{
 			Code:      recommendation.Code,
 			Priority:  recommendation.Priority,
 			Message:   recommendation.Message,
 			Rationale: recommendation.Rationale,
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailCodemod(codemod *report.CodemodReport) *detailCodemodView {
@@ -354,29 +352,25 @@ func mapDetailCodemod(codemod *report.CodemodReport) *detailCodemodView {
 }
 
 func mapDetailCodemodSuggestions(suggestions []report.CodemodSuggestion) []detailCodemodSuggestionView {
-	views := make([]detailCodemodSuggestionView, 0, len(suggestions))
-	for _, suggestion := range suggestions {
-		views = append(views, detailCodemodSuggestionView{
+	return mapDetailViews(suggestions, func(suggestion report.CodemodSuggestion) detailCodemodSuggestionView {
+		return detailCodemodSuggestionView{
 			File:       suggestion.File,
 			Line:       suggestion.Line,
 			FromModule: suggestion.FromModule,
 			ToModule:   suggestion.ToModule,
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailCodemodSkips(skips []report.CodemodSkip) []detailCodemodSkipView {
-	views := make([]detailCodemodSkipView, 0, len(skips))
-	for _, skip := range skips {
-		views = append(views, detailCodemodSkipView{
+	return mapDetailViews(skips, func(skip report.CodemodSkip) detailCodemodSkipView {
+		return detailCodemodSkipView{
 			File:       skip.File,
 			Line:       skip.Line,
 			ReasonCode: skip.ReasonCode,
 			Message:    skip.Message,
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailRuntimeUsage(usage *report.RuntimeUsage) *detailRuntimeUsageView {
@@ -390,6 +384,14 @@ func mapDetailRuntimeUsage(usage *report.RuntimeUsage) *detailRuntimeUsageView {
 		Modules:     mapDetailRuntimeModules(usage.Modules),
 		TopSymbols:  mapDetailRuntimeSymbols(usage.TopSymbols),
 	}
+}
+
+func mapDetailViews[Input any, View any](items []Input, mapItem func(Input) View) []View {
+	views := make([]View, 0, len(items))
+	for _, item := range items {
+		views = append(views, mapItem(item))
+	}
+	return views
 }
 
 func mapDetailRuntimeModules(modules []report.RuntimeModuleUsage) []detailRuntimeModuleView {
