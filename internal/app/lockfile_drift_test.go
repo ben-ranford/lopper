@@ -23,6 +23,7 @@ const (
 	nestedManifestPath       = "nested/package.json"
 	gitBinaryPath            = "/usr/bin/git"
 	gitExecutableNotFoundErr = "git executable not found"
+	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 )
 
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
@@ -35,7 +36,7 @@ func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T)
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
-		t.Fatalf("detect lockfile drift: %v", err)
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected one warning, got %#v", warnings)
@@ -51,7 +52,7 @@ func TestDetectLockfileDriftSkipsLopperCache(t *testing.T) {
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
-		t.Fatalf("detect lockfile drift: %v", err)
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings from .lopper-cache contents, got %#v", warnings)
@@ -168,6 +169,10 @@ func TestGitHelperErrors(t *testing.T) {
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected non-git temp dir to not be worktree")
 	}
+}
+
+func TestGitHelperNilContextErrors(t *testing.T) {
+	repo := t.TempDir()
 	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitTrackedChanges(nil, repo); err == nil {
 		t.Fatalf("expected tracked changes command with nil context to fail outside git repo")
@@ -325,6 +330,18 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 		{name: "manifest-without-lockfile", files: missingLockfile, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "no matching lockfile"},
 		{name: "lockfile-without-manifest", files: missingManifest, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "exists without package.json"},
 	}
+	runDetectDriftCases(t, repo, rule, cases)
+}
+
+func runDetectDriftCases(t *testing.T, repo string, rule lockfileRule, cases []struct {
+	name         string
+	files        map[string]fs.FileInfo
+	changed      map[string]struct{}
+	hasGit       bool
+	wantWarnings int
+	wantSubstr   string
+}) {
+	t.Helper()
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,7 +387,10 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	if len(merged) != 3 || merged[0] != "a" || merged[1] != "b" || merged[2] != "c" {
 		t.Fatalf("unexpected merged git paths: %#v", merged)
 	}
+}
 
+func TestFindRuleLockfiles(t *testing.T) {
+	repo := t.TempDir()
 	manifest := filepath.Join(repo, manifestFileName)
 	lock := filepath.Join(repo, lockfileName)
 	writeFile(t, manifest, demoPackageJSON)
@@ -466,4 +486,93 @@ func containsEnvPrefix(env []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// TestShouldSkipMissingLockfile verifies the per-manifest heuristics that
+// suppress false-positive "missing lockfile" warnings. Each case writes a
+// single manifest to a temp repo and checks whether a warning mentioning the
+// expected lockfile is present or absent.
+func TestShouldSkipMissingLockfile(t *testing.T) {
+	cases := []struct {
+		name         string
+		manifestName string
+		manifestBody string
+		lockfileHint string
+		wantWarning  bool
+	}{
+		{
+			name:         "non-poetry pyproject.toml does not warn",
+			manifestName: "pyproject.toml",
+			manifestBody: "[build-system]\nrequires = [\"setuptools\"]\n",
+			lockfileHint: "poetry.lock",
+			wantWarning:  false,
+		},
+		{
+			name:         "poetry pyproject.toml warns when poetry.lock is missing",
+			manifestName: "pyproject.toml",
+			manifestBody: "[tool.poetry]\nname = \"my-pkg\"\n\n[build-system]\nrequires = [\"poetry-core\"]\n",
+			lockfileHint: "poetry.lock",
+			wantWarning:  true,
+		},
+		{
+			name:         "stdlib-only go.mod does not warn",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n",
+			lockfileHint: "go.sum",
+			wantWarning:  false,
+		},
+		{
+			name:         "go.mod with require warns when go.sum is missing",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n",
+			lockfileHint: "go.sum",
+			wantWarning:  true,
+		},
+		{
+			name:         "library crate does not warn",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-lib\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"my_lib\"\n",
+			lockfileHint: "Cargo.lock",
+			wantWarning:  false,
+		},
+		{
+			name:         "binary crate warns when Cargo.lock is missing",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n",
+			lockfileHint: "Cargo.lock",
+			wantWarning:  true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, tc.manifestName), tc.manifestBody)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			if err != nil {
+				t.Fatalf(detectLockfileDriftFmt, err)
+			}
+			assertLockfileWarning(t, warnings, tc.lockfileHint, tc.wantWarning)
+		})
+	}
+}
+
+// assertLockfileWarning checks that warnings contains (or does not contain)
+// an entry mentioning lockfileHint, depending on wantWarning.
+func assertLockfileWarning(t *testing.T, warnings []string, lockfileHint string, wantWarning bool) {
+	t.Helper()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, lockfileHint) {
+			found = true
+			break
+		}
+	}
+	if wantWarning && !found {
+		t.Fatalf("expected warning mentioning %q, got %#v", lockfileHint, warnings)
+	}
+	if !wantWarning && found {
+		t.Fatalf("unexpected warning mentioning %q in %#v", lockfileHint, warnings)
+	}
 }

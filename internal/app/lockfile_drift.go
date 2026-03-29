@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -143,12 +144,47 @@ func readDirectoryFiles(path string) (map[string]fs.FileInfo, error) {
 	return files, nil
 }
 
+// shouldSkipMissingLockfile returns true when the manifest exists but the
+// absence of a lockfile is valid for the given rule. Each check reads the
+// manifest file content to distinguish tool-specific configurations from
+// generic use of the same file format.
+func shouldSkipMissingLockfile(dir string, rule lockfileRule) bool {
+	content, err := safeio.ReadFileUnder(dir, filepath.Join(dir, rule.manifest))
+	if err != nil {
+		return false
+	}
+	text := string(content)
+	switch rule.manifest {
+	case "pyproject.toml":
+		// pyproject.toml is used by many Python build tools (setuptools, hatch,
+		// flit, uv, pdm). Only Poetry projects need poetry.lock.
+		return !strings.Contains(text, "[tool.poetry]")
+	case "go.mod":
+		// go.sum is only generated when a module has external dependencies.
+		// A stdlib-only module has go.mod but no go.sum and that is valid.
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "require") {
+				return false
+			}
+		}
+		return true
+	case "Cargo.toml":
+		// Library crates conventionally omit Cargo.lock from version control.
+		// Only warn for binary crates (those with a [[bin]] section).
+		return !strings.Contains(text, "[[bin]]")
+	}
+	return false
+}
+
 func detectDriftForRule(repoPath, dir string, files map[string]fs.FileInfo, rule lockfileRule, changedFiles map[string]struct{}, hasGitContext bool) []string {
 	_, hasManifest := files[rule.manifest]
 	lockfiles := findRuleLockfiles(files, rule.lockfiles)
 	relDir := relativeDir(repoPath, dir)
 
 	if hasManifest && len(lockfiles) == 0 {
+		if shouldSkipMissingLockfile(dir, rule) {
+			return nil
+		}
 		return []string{
 			fmt.Sprintf("%s%s in %s: %s exists but no matching lockfile (%s) was found; %s", lockfileDriftWarningPrefix, rule.manager, relDir, rule.manifest, strings.Join(rule.lockfiles, ", "), rule.remedy),
 		}
