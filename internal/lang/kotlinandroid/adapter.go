@@ -3,7 +3,6 @@ package kotlinandroid
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -12,7 +11,7 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 const (
@@ -42,19 +41,9 @@ var androidBuildPluginMarkers = []string{
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "kotlin-android"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"android-kotlin", "gradle-android", "android"}
-}
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("kotlin-android", []string{"android-kotlin", "gradle-android", "android"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {

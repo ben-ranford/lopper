@@ -2,23 +2,18 @@ package dart
 
 import (
 	"context"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
+var dartAliases = []string{"flutter", "pub"}
+
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "dart"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"flutter", "pub"}
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("dart", dartAliases, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {

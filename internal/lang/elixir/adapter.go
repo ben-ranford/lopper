@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -19,7 +18,7 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 const (
@@ -38,23 +37,9 @@ var (
 )
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "elixir"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"ex", "mix"}
-}
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	detection, err := a.DetectWithConfidence(ctx, repoPath)
-	if err != nil {
-		return false, err
-	}
-	return detection.Matched, nil
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("elixir", []string{"ex", "mix"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {

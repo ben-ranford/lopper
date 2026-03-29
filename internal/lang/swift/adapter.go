@@ -2,7 +2,6 @@ package swift
 
 import (
 	"context"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -10,19 +9,13 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return swiftAdapterID
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"swiftpm"}
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle(swiftAdapterID, []string{"swiftpm"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
