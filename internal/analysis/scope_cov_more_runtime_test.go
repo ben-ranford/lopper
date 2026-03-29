@@ -8,17 +8,19 @@ import (
 	"testing"
 )
 
+const scopeKeepJS = "keep.js"
+
 func TestScopeCopyFileAdditionalErrorBranches(t *testing.T) {
 	repo := t.TempDir()
 	scopedRoot := t.TempDir()
-	sourcePath := filepath.Join(repo, "src", "keep.js")
+	sourcePath := filepath.Join(repo, "src", scopeKeepJS)
 	writeScopeFile(t, sourcePath, "export const keep = true\n")
 
-	targetDir := filepath.Join(scopedRoot, "src", "keep.js")
+	targetDir := filepath.Join(scopedRoot, "src", scopeKeepJS)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatalf("mkdir target dir: %v", err)
 	}
-	if err := copyFile(repo, scopedRoot, filepath.Join("src", "keep.js")); err == nil {
+	if err := copyFile(repo, scopedRoot, filepath.Join("src", scopeKeepJS)); err == nil {
 		t.Fatalf("expected copyFile to fail when target path is a directory")
 	}
 
