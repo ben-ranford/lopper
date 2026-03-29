@@ -102,28 +102,9 @@ func TestWriteFileUnderRejectsNonDirectoryRoot(t *testing.T) {
 }
 
 func TestWriteFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf(getwdErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf(restoreWDErrFmt, originalWD, err)
-		}
-	})
+	withRemovedWorkingDir(t, "dead-root")
 
-	deadDir := filepath.Join(t.TempDir(), "dead-root")
-	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf(mkdirDeadDirFmt, err)
-	}
-	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf(chdirDeadDirFmt, err)
-	}
-	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf(removeDeadDirFmt, err)
-	}
-
-	err = WriteFileUnder(".", writeTestFileName, []byte("hello"), 0o600)
+	err := WriteFileUnder(".", writeTestFileName, []byte("hello"), 0o600)
 	if err == nil {
 		t.Fatal("expected root path resolution error")
 	}
@@ -133,29 +114,10 @@ func TestWriteFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 }
 
 func TestWriteFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf(getwdErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf(restoreWDErrFmt, originalWD, err)
-		}
-	})
-
 	rootDir := t.TempDir()
-	deadDir := filepath.Join(t.TempDir(), "dead-target")
-	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf(mkdirDeadDirFmt, err)
-	}
-	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf(chdirDeadDirFmt, err)
-	}
-	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf(removeDeadDirFmt, err)
-	}
+	withRemovedWorkingDir(t, "dead-target")
 
-	err = WriteFileUnder(rootDir, "relative-target.txt", []byte("hello"), 0o600)
+	err := WriteFileUnder(rootDir, "relative-target.txt", []byte("hello"), 0o600)
 	if err == nil {
 		t.Fatal("expected target path resolution error")
 	}
