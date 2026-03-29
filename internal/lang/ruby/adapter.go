@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -19,7 +18,7 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 const (
@@ -54,23 +53,9 @@ type scanResult struct {
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return rubyAdapterID
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"rb"}
-}
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	detection, err := a.DetectWithConfidence(ctx, repoPath)
-	if err != nil {
-		return false, err
-	}
-	return detection.Matched, nil
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle(rubyAdapterID, []string{"rb"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
