@@ -45,11 +45,11 @@ func NewAdapterContract(id string, aliases ...string) AdapterContract {
 	return contract
 }
 
-func (c AdapterContract) ID() string {
+func (c *AdapterContract) ID() string {
 	return c.id
 }
 
-func (c AdapterContract) Aliases() []string {
+func (c *AdapterContract) Aliases() []string {
 	if len(c.aliases) == 0 {
 		return nil
 	}
@@ -70,7 +70,7 @@ func NewAdapterLifecycle(id string, aliases []string, detectWithConfidence Detec
 	}
 }
 
-func (l AdapterLifecycle) Detect(ctx context.Context, repoPath string) (bool, error) {
+func (l *AdapterLifecycle) Detect(ctx context.Context, repoPath string) (bool, error) {
 	return DetectMatched(ctx, repoPath, l.detectWithConfidence)
 }
 
