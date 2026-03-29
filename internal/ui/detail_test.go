@@ -57,7 +57,7 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "js-ts")
+	detail := NewDetail(&out, analyzer, ".", "js-ts")
 	if err := detail.Show(context.Background(), "risky"); err != nil {
 		t.Fatalf(showDetailErrFmt, err)
 	}
@@ -112,7 +112,7 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "all")
+	detail := NewDetail(&out, analyzer, ".", "all")
 	if err := detail.Show(context.Background(), "python:requests"); err != nil {
 		t.Fatalf(showDetailErrFmt, err)
 	}
@@ -126,11 +126,11 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 
 func TestDetailRejectsEmptyDependency(t *testing.T) {
 	var out bytes.Buffer
-	detail := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "")
+	detail := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, ".", "")
 	if detail.Show(context.Background(), "") == nil {
 		t.Fatalf("expected error when dependency is empty")
 	}
-	if !strings.Contains(NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "").Language, "auto") {
+	if !strings.Contains(NewDetail(&out, &stubAnalyzer{report: report.Report{}}, ".", "").Language, "auto") {
 		t.Fatalf("expected default language to be auto")
 	}
 }
@@ -141,10 +141,10 @@ func TestDetailPrintHelpers(t *testing.T) {
 	if err := printImportList(&out, "Used imports", nil); err != nil {
 		t.Fatalf("print empty import list: %v", err)
 	}
-	if err := printImportList(&out, "Used imports", []report.ImportUse{{
+	if err := printImportList(&out, "Used imports", []detailImportView{{
 		Name:       "map",
 		Module:     "lodash",
-		Locations:  []report.Location{{File: indexJSFile, Line: 2}},
+		Locations:  []detailLocationView{{File: indexJSFile, Line: 2}},
 		Provenance: []string{indexJSFile + " -> barrel.js -> lodash#map"},
 	}}); err != nil {
 		t.Fatalf("print populated import list: %v", err)
@@ -152,7 +152,7 @@ func TestDetailPrintHelpers(t *testing.T) {
 	if err := printExportsList(&out, "Unused exports", nil); err != nil {
 		t.Fatalf("print empty exports list: %v", err)
 	}
-	if err := printExportsList(&out, "Unused exports", []report.SymbolRef{{Name: "mystery"}}); err != nil {
+	if err := printExportsList(&out, "Unused exports", []detailSymbolRefView{{Name: "mystery"}}); err != nil {
 		t.Fatalf("print populated exports list: %v", err)
 	}
 	if err := printRiskCues(&out, nil); err != nil {
@@ -211,7 +211,7 @@ func (w *failAfterWriter) Write(p []byte) (int, error) {
 
 func TestDetailShowNoDataAndAnalyzerError(t *testing.T) {
 	var out bytes.Buffer
-	noData := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "js-ts")
+	noData := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, ".", "js-ts")
 	if err := noData.Show(context.Background(), "missing"); err != nil {
 		t.Fatalf("show detail no data: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestDetailShowNoDataAndAnalyzerError(t *testing.T) {
 	}
 
 	expected := errors.New("analyse failed")
-	errDetail := NewDetail(&out, &failingDetailAnalyzer{err: expected}, report.NewFormatter(), ".", "js-ts")
+	errDetail := NewDetail(&out, &failingDetailAnalyzer{err: expected}, ".", "js-ts")
 	if err := errDetail.Show(context.Background(), "dep"); !errors.Is(err, expected) {
 		t.Fatalf("expected analyzer error to propagate, got %v", err)
 	}
@@ -228,7 +228,7 @@ func TestDetailShowNoDataAndAnalyzerError(t *testing.T) {
 
 func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 	var out bytes.Buffer
-	if err := printRecommendations(&out, []report.Recommendation{
+	if err := printRecommendations(&out, []detailRecommendationView{
 		{
 			Code:      "rec",
 			Priority:  "high",
@@ -238,14 +238,14 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("print recommendations: %v", err)
 	}
-	if err := printRuntimeUsage(&out, &report.RuntimeUsage{
+	if err := printRuntimeUsage(&out, &detailRuntimeUsageView{
 		LoadCount:   2,
-		Correlation: report.RuntimeCorrelationRuntimeOnly,
+		Correlation: string(report.RuntimeCorrelationRuntimeOnly),
 		RuntimeOnly: true,
-		Modules: []report.RuntimeModuleUsage{
+		Modules: []detailRuntimeModuleView{
 			{Module: "pkg/index", Count: 2},
 		},
-		TopSymbols: []report.RuntimeSymbolUsage{
+		TopSymbols: []detailRuntimeSymbolView{
 			{Symbol: "index", Count: 2},
 		},
 	}); err != nil {
@@ -273,7 +273,7 @@ func TestDetailShowWarningsAndCommandBranches(t *testing.T) {
 		},
 	}
 	var out bytes.Buffer
-	detail := NewDetail(&out, analyzer, report.NewFormatter(), ".", "js-ts")
+	detail := NewDetail(&out, analyzer, ".", "js-ts")
 	if err := detail.Show(context.Background(), "dep"); err != nil {
 		t.Fatalf(showDetailErrFmt, err)
 	}
@@ -291,7 +291,7 @@ func TestDetailShowWarningsAndCommandBranches(t *testing.T) {
 
 func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
 	var out bytes.Buffer
-	if err := printRemovalCandidate(&out, &report.RemovalCandidate{
+	if err := printRemovalCandidate(&out, &detailRemovalCandidateView{
 		Score:      88.2,
 		Usage:      90.1,
 		Impact:     50.0,
@@ -318,12 +318,12 @@ func TestPrintRemovalCandidateDetailedOutput(t *testing.T) {
 
 func TestPrintReachabilityConfidenceDetailedOutput(t *testing.T) {
 	var out bytes.Buffer
-	if err := printReachabilityConfidence(&out, &report.ReachabilityConfidence{
+	if err := printReachabilityConfidence(&out, &detailReachabilityConfidenceView{
 		Model:          "reachability-v2",
 		Score:          91.4,
 		Summary:        "runtime overlap; export inventory; precise imports",
 		RationaleCodes: []string{"runtime-overlap", "export-inventory-known", "precise-static-imports"},
-		Signals: []report.ReachabilitySignal{
+		Signals: []detailReachabilitySignalView{
 			{Code: "runtime-overlap", Score: 100, Weight: 0.2, Contribution: 20, Rationale: "runtime and static evidence overlap"},
 		},
 	}); err != nil {
@@ -350,7 +350,7 @@ func TestPrintReachabilityConfidenceFallbackOutput(t *testing.T) {
 	if err := printReachabilityConfidence(&out, nil); err != nil {
 		t.Fatalf("print nil reachability confidence: %v", err)
 	}
-	if err := printReachabilityConfidence(&out, &report.ReachabilityConfidence{
+	if err := printReachabilityConfidence(&out, &detailReachabilityConfidenceView{
 		Model: "reachability-v2",
 		Score: 72.5,
 	}); err != nil {
@@ -372,7 +372,7 @@ func TestDetailWriteErrorPropagation(t *testing.T) {
 	writeErr := errors.New("write failed")
 
 	noDataWriter := &failAfterWriter{failAt: 0, err: writeErr}
-	noDataDetail := NewDetail(noDataWriter, &stubAnalyzer{report: report.Report{}}, report.NewFormatter(), ".", "js-ts")
+	noDataDetail := NewDetail(noDataWriter, &stubAnalyzer{report: report.Report{}}, ".", "js-ts")
 	if err := noDataDetail.Show(context.Background(), "missing"); !errors.Is(err, writeErr) {
 		t.Fatalf("expected no-data write failure, got %v", err)
 	}
@@ -431,7 +431,7 @@ func TestDetailWriteErrorPropagation(t *testing.T) {
 	sawSuccess := false
 	for failAt := 0; failAt < 128; failAt++ {
 		writer := &failAfterWriter{failAt: failAt, err: writeErr}
-		detail := NewDetail(writer, &stubAnalyzer{report: reportData}, report.NewFormatter(), ".", "js-ts")
+		detail := NewDetail(writer, &stubAnalyzer{report: reportData}, ".", "js-ts")
 		err := detail.Show(context.Background(), "dep")
 		if err == nil {
 			sawSuccess = true

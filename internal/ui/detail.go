@@ -7,29 +7,26 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
-	"github.com/ben-ranford/lopper/internal/report"
 )
 
 type Detail struct {
-	Analyzer  analysis.Analyser
-	Formatter *report.Formatter
-	Out       io.Writer
-	RepoPath  string
-	Language  string
+	Analyzer analysis.Analyser
+	Out      io.Writer
+	RepoPath string
+	Language string
 }
 
 const noneLabel = "  (none)"
 
-func NewDetail(out io.Writer, analyzer analysis.Analyser, formatter *report.Formatter, repoPath string, language string) *Detail {
+func NewDetail(out io.Writer, analyzer analysis.Analyser, repoPath string, language string) *Detail {
 	if language == "" {
 		language = "auto"
 	}
 	return &Detail{
-		Analyzer:  analyzer,
-		Formatter: formatter,
-		Out:       out,
-		RepoPath:  repoPath,
-		Language:  language,
+		Analyzer: analyzer,
+		Out:      out,
+		RepoPath: repoPath,
+		Language: language,
 	}
 }
 
@@ -52,7 +49,7 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return writef(d.Out, "No data for dependency %q\n", dependency)
 	}
 
-	dep := reportData.Dependencies[0]
+	dep := mapDetailDependencyView(reportData.Dependencies[0])
 	if err := printDependencyHeader(d.Out, dep); err != nil {
 		return err
 	}
@@ -69,7 +66,7 @@ func parseDependencyLanguage(defaultLanguage, dependency string) (string, string
 	return defaultLanguage, dependency
 }
 
-func printDependencyHeader(out io.Writer, dep report.DependencyReport) error {
+func printDependencyHeader(out io.Writer, dep detailDependencyView) error {
 	if err := writef(out, "Dependency detail: %s\n", dep.Name); err != nil {
 		return err
 	}
@@ -87,7 +84,7 @@ func printDependencyHeader(out io.Writer, dep report.DependencyReport) error {
 	return writef(out, "Used percent: %.1f%%\n\n", dep.UsedPercent)
 }
 
-func printDependencySections(out io.Writer, dep report.DependencyReport) error {
+func printDependencySections(out io.Writer, dep detailDependencyView) error {
 	printers := []func(io.Writer) error{
 		func(w io.Writer) error { return printReachabilityConfidence(w, dep.ReachabilityConfidence) },
 		func(w io.Writer) error { return printRemovalCandidate(w, dep.RemovalCandidate) },
@@ -143,8 +140,8 @@ func renderList[T any](out io.Writer, title string, items []T, format func(io.Wr
 	return writeln(out, "")
 }
 
-func printImportList(out io.Writer, title string, imports []report.ImportUse) error {
-	return renderList(out, title, imports, func(w io.Writer, imp report.ImportUse) error {
+func printImportList(out io.Writer, title string, imports []detailImportView) error {
+	return renderList(out, title, imports, func(w io.Writer, imp detailImportView) error {
 		locationHint := ""
 		if len(imp.Locations) > 0 {
 			locationHint = fmt.Sprintf(" (%s:%d)", imp.Locations[0].File, imp.Locations[0].Line)
@@ -161,8 +158,8 @@ func printImportList(out io.Writer, title string, imports []report.ImportUse) er
 	})
 }
 
-func printExportsList(out io.Writer, title string, exports []report.SymbolRef) error {
-	return renderList(out, title, exports, func(w io.Writer, ref report.SymbolRef) error {
+func printExportsList(out io.Writer, title string, exports []detailSymbolRefView) error {
+	return renderList(out, title, exports, func(w io.Writer, ref detailSymbolRefView) error {
 		module := ref.Module
 		if module == "" {
 			module = "(unknown)"
@@ -171,14 +168,14 @@ func printExportsList(out io.Writer, title string, exports []report.SymbolRef) e
 	})
 }
 
-func printRiskCues(out io.Writer, cues []report.RiskCue) error {
-	return renderList(out, "Risk cues", cues, func(w io.Writer, cue report.RiskCue) error {
+func printRiskCues(out io.Writer, cues []detailRiskCueView) error {
+	return renderList(out, "Risk cues", cues, func(w io.Writer, cue detailRiskCueView) error {
 		return writef(w, "  - [%s] %s: %s\n", strings.ToUpper(cue.Severity), cue.Code, cue.Message)
 	})
 }
 
-func printRecommendations(out io.Writer, recommendations []report.Recommendation) error {
-	return renderList(out, "Recommendations", recommendations, func(w io.Writer, rec report.Recommendation) error {
+func printRecommendations(out io.Writer, recommendations []detailRecommendationView) error {
+	return renderList(out, "Recommendations", recommendations, func(w io.Writer, rec detailRecommendationView) error {
 		if err := writef(w, "  - [%s] %s: %s\n", strings.ToUpper(rec.Priority), rec.Code, rec.Message); err != nil {
 			return err
 		}
@@ -189,7 +186,7 @@ func printRecommendations(out io.Writer, recommendations []report.Recommendation
 	})
 }
 
-func printCodemod(out io.Writer, codemod *report.CodemodReport) error {
+func printCodemod(out io.Writer, codemod *detailCodemodView) error {
 	if err := writeln(out, "Codemod preview"); err != nil {
 		return err
 	}
@@ -223,7 +220,7 @@ func printCodemod(out io.Writer, codemod *report.CodemodReport) error {
 	return writeln(out, "")
 }
 
-func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) error {
+func printRuntimeUsage(out io.Writer, usage *detailRuntimeUsageView) error {
 	if err := writeln(out, "Runtime usage"); err != nil {
 		return err
 	}
@@ -251,7 +248,7 @@ func printRuntimeUsage(out io.Writer, usage *report.RuntimeUsage) error {
 	return writeln(out, "")
 }
 
-func printReachabilityConfidence(out io.Writer, confidence *report.ReachabilityConfidence) error {
+func printReachabilityConfidence(out io.Writer, confidence *detailReachabilityConfidenceView) error {
 	if err := writeln(out, "Reachability confidence"); err != nil {
 		return err
 	}
@@ -267,7 +264,7 @@ func printReachabilityConfidence(out io.Writer, confidence *report.ReachabilityC
 	return writeln(out, "")
 }
 
-func reachabilityConfidenceLines(confidence *report.ReachabilityConfidence) []string {
+func reachabilityConfidenceLines(confidence *detailReachabilityConfidenceView) []string {
 	lines := []string{
 		fmt.Sprintf("  - model: %s", confidence.Model),
 		fmt.Sprintf("  - score: %.1f", confidence.Score),
@@ -281,7 +278,7 @@ func reachabilityConfidenceLines(confidence *report.ReachabilityConfidence) []st
 	return lines
 }
 
-func printReachabilitySignals(out io.Writer, signals []report.ReachabilitySignal) error {
+func printReachabilitySignals(out io.Writer, signals []detailReachabilitySignalView) error {
 	if len(signals) == 0 {
 		return nil
 	}
@@ -302,7 +299,7 @@ func printReachabilitySignals(out io.Writer, signals []report.ReachabilitySignal
 	return nil
 }
 
-func printRemovalCandidate(out io.Writer, candidate *report.RemovalCandidate) error {
+func printRemovalCandidate(out io.Writer, candidate *detailRemovalCandidateView) error {
 	if err := writeln(out, "Removal candidate scoring"); err != nil {
 		return err
 	}
@@ -360,7 +357,7 @@ func writeln(out io.Writer, args ...any) error {
 	return err
 }
 
-func formatRuntimeModules(modules []report.RuntimeModuleUsage) string {
+func formatRuntimeModules(modules []detailRuntimeModuleView) string {
 	items := make([]string, 0, len(modules))
 	for _, module := range modules {
 		items = append(items, fmt.Sprintf("%s (%d)", module.Module, module.Count))
@@ -368,7 +365,7 @@ func formatRuntimeModules(modules []report.RuntimeModuleUsage) string {
 	return strings.Join(items, ", ")
 }
 
-func formatRuntimeSymbols(symbols []report.RuntimeSymbolUsage) string {
+func formatRuntimeSymbols(symbols []detailRuntimeSymbolView) string {
 	items := make([]string, 0, len(symbols))
 	for _, symbol := range symbols {
 		if symbol.Module != "" {
