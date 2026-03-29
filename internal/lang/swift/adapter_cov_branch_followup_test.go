@@ -25,7 +25,15 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.WriteFile(ignoredPath, []byte("struct Ignored {}\n"), 0o644); err != nil {
 		t.Fatalf("write ignored swift file: %v", err)
 	}
-	if err := scanner.walk(ctx, ignoredPath, mustFileEntryFromPath(t, ignoredPath), nil); err == nil {
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	entriesByName := make(map[string]os.DirEntry, len(entries))
+	for _, entry := range entries {
+		entriesByName[entry.Name()] = entry
+	}
+	if err := scanner.walk(ctx, ignoredPath, entriesByName["ignored.swift"], nil); err == nil {
 		t.Fatalf("expected canceled context error from scanner walk")
 	}
 
@@ -33,7 +41,15 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.Mkdir(sourceDir, 0o755); err != nil {
 		t.Fatalf("mkdir Sources dir: %v", err)
 	}
-	if err := scanner.walk(context.Background(), sourceDir, mustDirEntry(t, repo, "Sources"), nil); err != nil {
+	entries, err = os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir after creating Sources: %v", err)
+	}
+	entriesByName = make(map[string]os.DirEntry, len(entries))
+	for _, entry := range entries {
+		entriesByName[entry.Name()] = entry
+	}
+	if err := scanner.walk(context.Background(), sourceDir, entriesByName["Sources"], nil); err != nil {
 		t.Fatalf("expected regular directory walk to continue, got %v", err)
 	}
 
@@ -41,7 +57,15 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.WriteFile(readmePath, []byte("# docs\n"), 0o644); err != nil {
 		t.Fatalf("write readme: %v", err)
 	}
-	if err := scanner.walk(context.Background(), readmePath, mustFileEntryFromPath(t, readmePath), nil); err != nil {
+	entries, err = os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir after creating README.md: %v", err)
+	}
+	entriesByName = make(map[string]os.DirEntry, len(entries))
+	for _, entry := range entries {
+		entriesByName[entry.Name()] = entry
+	}
+	if err := scanner.walk(context.Background(), readmePath, entriesByName["README.md"], nil); err != nil {
 		t.Fatalf("expected non-swift file walk to be ignored, got %v", err)
 	}
 
@@ -49,7 +73,15 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.WriteFile(swiftPath, []byte("struct Example {}\n"), 0o644); err != nil {
 		t.Fatalf("write swift file: %v", err)
 	}
-	if err := scanner.walk(context.Background(), swiftPath, mustFileEntryFromPath(t, swiftPath), nil); err != nil {
+	entries, err = os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir after creating main.swift: %v", err)
+	}
+	entriesByName = make(map[string]os.DirEntry, len(entries))
+	for _, entry := range entries {
+		entriesByName[entry.Name()] = entry
+	}
+	if err := scanner.walk(context.Background(), swiftPath, entriesByName["main.swift"], nil); err != nil {
 		t.Fatalf("expected swift file walk to scan successfully, got %v", err)
 	}
 	if len(scanner.scan.Files) != 1 || scanner.scan.Files[0].Path != "main.swift" {
@@ -68,38 +100,23 @@ func TestDetectSwiftEntryReturnsContextError(t *testing.T) {
 		t.Fatalf("write swift file: %v", err)
 	}
 
-	err := detectSwiftEntry(ctx, path, mustFileEntryFromPath(t, path), &detection, map[string]struct{}{}, &visited)
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	var fileEntry os.DirEntry
+	for _, entry := range entries {
+		if entry.Name() == "main.swift" {
+			fileEntry = entry
+			break
+		}
+	}
+	if fileEntry == nil {
+		t.Fatalf("main.swift entry not found")
+	}
+
+	err = detectSwiftEntry(ctx, path, fileEntry, &detection, map[string]struct{}{}, &visited)
 	if err == nil {
 		t.Fatalf("expected detectSwiftEntry to return the canceled context error")
 	}
-}
-
-func mustDirEntry(t *testing.T, root, name string) os.DirEntry {
-	t.Helper()
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("read %s: %v", root, err)
-	}
-	for _, entry := range entries {
-		if entry.Name() == name {
-			return entry
-		}
-	}
-	t.Fatalf("entry %q not found in %s", name, root)
-	return nil
-}
-
-func mustFileEntryFromPath(t *testing.T, path string) os.DirEntry {
-	t.Helper()
-	entries, err := os.ReadDir(filepath.Dir(path))
-	if err != nil {
-		t.Fatalf("read %s: %v", filepath.Dir(path), err)
-	}
-	for _, entry := range entries {
-		if entry.Name() == filepath.Base(path) {
-			return entry
-		}
-	}
-	t.Fatalf("entry %q not found in %s", filepath.Base(path), filepath.Dir(path))
-	return nil
 }
