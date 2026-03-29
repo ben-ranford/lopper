@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -148,8 +149,7 @@ func readDirectoryFiles(path string) (map[string]fs.FileInfo, error) {
 // manifest file content to distinguish tool-specific configurations from
 // generic use of the same file format.
 func shouldSkipMissingLockfile(dir string, rule lockfileRule) bool {
-	manifestPath := filepath.Join(dir, rule.manifest)
-	content, err := os.ReadFile(manifestPath)
+	content, err := safeio.ReadFileUnder(dir, filepath.Join(dir, rule.manifest))
 	if err != nil {
 		return false
 	}
