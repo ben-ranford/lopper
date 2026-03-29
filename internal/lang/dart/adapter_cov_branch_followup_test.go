@@ -8,16 +8,10 @@ import (
 
 func TestScanManifestRootBranches(t *testing.T) {
 	repo := t.TempDir()
+	rootSet := map[string]struct{}{repo: {}}
+	fileCount := new(int)
 
-	stop, err := scanManifestRoot(
-		context.Background(),
-		repo,
-		packageManifest{Root: repo},
-		map[string]struct{}{repo: {}},
-		map[string]struct{}{},
-		new(int),
-		&scanResult{SkippedFilesByBound: true},
-	)
+	stop, err := scanManifestRoot(context.Background(), repo, packageManifest{Root: repo}, rootSet, map[string]struct{}{}, fileCount, &scanResult{SkippedFilesByBound: true})
 	if err != nil {
 		t.Fatalf("scanManifestRoot skipped result: %v", err)
 	}
@@ -25,15 +19,7 @@ func TestScanManifestRootBranches(t *testing.T) {
 		t.Fatalf("expected skipped result to stop scanning")
 	}
 
-	stop, err = scanManifestRoot(
-		context.Background(),
-		repo,
-		packageManifest{Root: filepath.Join(repo, "missing")},
-		map[string]struct{}{},
-		map[string]struct{}{},
-		new(int),
-		&scanResult{},
-	)
+	stop, err = scanManifestRoot(context.Background(), repo, packageManifest{Root: filepath.Join(repo, "missing")}, map[string]struct{}{}, map[string]struct{}{}, new(int), &scanResult{})
 	if err == nil {
 		t.Fatalf("expected scanManifestRoot to return an error for a missing root")
 	}
