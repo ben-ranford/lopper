@@ -52,9 +52,11 @@ jobs:
         run: make ci
 
       - name: Build Linux/Windows release artifacts
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           make release \
-            VERSION=${{ inputs.tag }} \
+            VERSION="$TAG" \
             PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
       - name: Upload Linux/Windows artifacts
@@ -92,10 +94,12 @@ jobs:
         run: make ci
 
       - name: Build Darwin release artifact
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           host_goarch="$(go env GOARCH)"
           make release \
-            VERSION=${{ inputs.tag }} \
+            VERSION="$TAG" \
             PLATFORMS="darwin/${host_goarch}"
 
       - name: Upload Darwin artifacts
@@ -126,13 +130,15 @@ jobs:
       - name: Compute image tags
         id: image_tags
         shell: bash
+        env:
+          IMAGE_TAGS: ${{ inputs.image_tags }}
         run: |
           set -euo pipefail
           while IFS= read -r tag; do
             if [ -n "$tag" ]; then
               echo "${{ steps.image.outputs.name }}:${tag}"
             fi
-          done <<< "${{ inputs.image_tags }}" > image-tags.txt
+          done <<< "$IMAGE_TAGS" > image-tags.txt
           {
             echo 'tags<<EOF'
             cat image-tags.txt
