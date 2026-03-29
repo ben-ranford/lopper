@@ -204,7 +204,9 @@ func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec
 	if !ok {
 		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
-	return exec.CommandContext(ctx, executable), nil
+	cmd := exec.CommandContext(ctx, executable)
+	configureRuntimeCommand(cmd)
+	return cmd, nil
 }
 
 func runtimeSearchDirs() []string {
