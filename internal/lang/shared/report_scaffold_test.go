@@ -41,7 +41,7 @@ func TestWalkContextErrBranches(t *testing.T) {
 		t.Fatalf("expected walk error, got %v", err)
 	}
 
-	if err := WalkContextErr(nil, nil); err != nil {
+	if err := WalkContextErr(context.Background(), nil); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
