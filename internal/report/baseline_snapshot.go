@@ -117,7 +117,7 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(snapshot); err != nil {
+	if err = encoder.Encode(snapshot); err != nil {
 		return "", err
 	}
 
