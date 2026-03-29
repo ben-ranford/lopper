@@ -23,6 +23,7 @@ const (
 	nestedManifestPath       = "nested/package.json"
 	gitBinaryPath            = "/usr/bin/git"
 	gitExecutableNotFoundErr = "git executable not found"
+	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 )
 
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
@@ -35,7 +36,7 @@ func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T)
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
-		t.Fatalf("detect lockfile drift: %v", err)
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected one warning, got %#v", warnings)
@@ -51,7 +52,7 @@ func TestDetectLockfileDriftSkipsLopperCache(t *testing.T) {
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
-		t.Fatalf("detect lockfile drift: %v", err)
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings from .lopper-cache contents, got %#v", warnings)
@@ -168,6 +169,10 @@ func TestGitHelperErrors(t *testing.T) {
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected non-git temp dir to not be worktree")
 	}
+}
+
+func TestGitHelperNilContextErrors(t *testing.T) {
+	repo := t.TempDir()
 	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitTrackedChanges(nil, repo); err == nil {
 		t.Fatalf("expected tracked changes command with nil context to fail outside git repo")
@@ -325,6 +330,18 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 		{name: "manifest-without-lockfile", files: missingLockfile, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "no matching lockfile"},
 		{name: "lockfile-without-manifest", files: missingManifest, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "exists without package.json"},
 	}
+	runDetectDriftCases(t, repo, rule, cases)
+}
+
+func runDetectDriftCases(t *testing.T, repo string, rule lockfileRule, cases []struct {
+	name         string
+	files        map[string]fs.FileInfo
+	changed      map[string]struct{}
+	hasGit       bool
+	wantWarnings int
+	wantSubstr   string
+}) {
+	t.Helper()
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,7 +387,10 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	if len(merged) != 3 || merged[0] != "a" || merged[1] != "b" || merged[2] != "c" {
 		t.Fatalf("unexpected merged git paths: %#v", merged)
 	}
+}
 
+func TestFindRuleLockfiles(t *testing.T) {
+	repo := t.TempDir()
 	manifest := filepath.Join(repo, manifestFileName)
 	lock := filepath.Join(repo, lockfileName)
 	writeFile(t, manifest, demoPackageJSON)
@@ -531,7 +551,7 @@ func TestShouldSkipMissingLockfile(t *testing.T) {
 
 			warnings, err := detectLockfileDrift(context.Background(), repo, false)
 			if err != nil {
-				t.Fatalf("detect lockfile drift: %v", err)
+				t.Fatalf(detectLockfileDriftFmt, err)
 			}
 			assertLockfileWarning(t, warnings, tc.lockfileHint, tc.wantWarning)
 		})
