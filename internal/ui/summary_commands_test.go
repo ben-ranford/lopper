@@ -203,32 +203,39 @@ func TestSummaryHelperFilterDependencies(t *testing.T) {
 }
 
 func TestSummaryHelperParseSortModes(t *testing.T) {
-	t.Run("lenient parser supports aliases and defaults", func(t *testing.T) {
-		if parseSortMode("alpha") != sortByName {
-			t.Fatalf("expected alpha alias to parse as name sort")
-		}
-		if parseSortMode("waste") != sortByWaste {
-			t.Fatalf("expected waste sort to parse")
-		}
-		if parseSortMode("unknown") != sortByWaste {
-			t.Fatalf("expected unknown sort to default to waste")
-		}
-		if parseSortMode(" NAME ") != sortByName {
-			t.Fatalf("expected parser to trim and normalize case")
-		}
-	})
+	t.Run("lenient parser supports aliases and defaults", testSummaryHelperParseSortModeLenient)
+	t.Run("strict parser validates values", testSummaryHelperParseSortModeStrict)
+}
 
-	t.Run("strict parser validates values", func(t *testing.T) {
-		if mode, ok := parseSortModeStrict("waste"); !ok || mode != sortByWaste {
-			t.Fatalf("expected strict parser to accept waste")
-		}
-		if mode, ok := parseSortModeStrict("alpha"); !ok || mode != sortByName {
-			t.Fatalf("expected strict parser to accept alpha alias")
-		}
-		if _, ok := parseSortModeStrict("unknown"); ok {
-			t.Fatalf("expected strict parser to reject unknown sort mode")
-		}
-	})
+func testSummaryHelperParseSortModeLenient(t *testing.T) {
+	t.Helper()
+
+	if parseSortMode("alpha") != sortByName {
+		t.Fatalf("expected alpha alias to parse as name sort")
+	}
+	if parseSortMode("waste") != sortByWaste {
+		t.Fatalf("expected waste sort to parse")
+	}
+	if parseSortMode("unknown") != sortByWaste {
+		t.Fatalf("expected unknown sort to default to waste")
+	}
+	if parseSortMode(" NAME ") != sortByName {
+		t.Fatalf("expected parser to trim and normalize case")
+	}
+}
+
+func testSummaryHelperParseSortModeStrict(t *testing.T) {
+	t.Helper()
+
+	if mode, ok := parseSortModeStrict("waste"); !ok || mode != sortByWaste {
+		t.Fatalf("expected strict parser to accept waste")
+	}
+	if mode, ok := parseSortModeStrict("alpha"); !ok || mode != sortByName {
+		t.Fatalf("expected strict parser to accept alpha alias")
+	}
+	if _, ok := parseSortModeStrict("unknown"); ok {
+		t.Fatalf("expected strict parser to reject unknown sort mode")
+	}
 }
 
 func TestSummaryHelperToggleSortMode(t *testing.T) {
