@@ -473,51 +473,53 @@ func TestWriteFileUnderTempCloseError(t *testing.T) {
 	}
 }
 
-func TestResolveWriteTargetRootAbsFailureViaHook(t *testing.T) {
-	rootDir := t.TempDir()
-	targetPath := filepath.Join(rootDir, writeTestFileName)
+func TestResolveWriteTargetAbsFailuresViaHook(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hookPath func(rootDir, targetPath string) string
+		hookErr  error
+		expected string
+	}{
+		{
+			name: "root",
+			hookPath: func(rootDir, _ string) string {
+				return rootDir
+			},
+			hookErr:  errors.New("root abs failure"),
+			expected: "resolve root path",
+		},
+		{
+			name: "target",
+			hookPath: func(_ string, targetPath string) string {
+				return targetPath
+			},
+			hookErr:  errors.New("target abs failure"),
+			expected: "resolve target path",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rootDir := t.TempDir()
+			targetPath := filepath.Join(rootDir, writeTestFileName)
 
-	originalAbs := absPathFn
-	absPathFn = func(path string) (string, error) {
-		if path == rootDir {
-			return "", errors.New("root abs failure")
-		}
-		return originalAbs(path)
-	}
-	t.Cleanup(func() {
-		absPathFn = originalAbs
-	})
+			originalAbs := absPathFn
+			absPathFn = func(path string) (string, error) {
+				if path == tc.hookPath(rootDir, targetPath) {
+					return "", tc.hookErr
+				}
+				return originalAbs(path)
+			}
+			t.Cleanup(func() {
+				absPathFn = originalAbs
+			})
 
-	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
-	if err == nil {
-		t.Fatal("expected root path absolute resolution error")
-	}
-	if !strings.Contains(err.Error(), "resolve root path") {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
-}
-
-func TestResolveWriteTargetTargetAbsFailureViaHook(t *testing.T) {
-	rootDir := t.TempDir()
-	targetPath := filepath.Join(rootDir, writeTestFileName)
-
-	originalAbs := absPathFn
-	absPathFn = func(path string) (string, error) {
-		if path == targetPath {
-			return "", errors.New("target abs failure")
-		}
-		return originalAbs(path)
-	}
-	t.Cleanup(func() {
-		absPathFn = originalAbs
-	})
-
-	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
-	if err == nil {
-		t.Fatal("expected target absolute resolution error")
-	}
-	if !strings.Contains(err.Error(), "resolve target path") {
-		t.Fatalf(unexpectedErrFmt, err)
+			err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+			if err == nil {
+				t.Fatalf("expected %s error", tc.expected)
+			}
+			if !strings.Contains(err.Error(), tc.expected) {
+				t.Fatalf(unexpectedErrFmt, err)
+			}
+		})
 	}
 }
 
