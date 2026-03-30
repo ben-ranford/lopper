@@ -104,7 +104,7 @@ func TestAdapterIdentityAndDetect(t *testing.T) {
 	}
 	matched, err := adapter.Detect(context.Background(), fixturePath("mix"))
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(elixirDetectErrorFmt, err)
 	}
 	if !matched {
 		t.Fatalf("expected fixture to match elixir adapter")
@@ -147,7 +147,7 @@ func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(elixirDetectErrorFmt, err)
 	}
 	for _, root := range detection.Roots {
 		if strings.Contains(root, filepath.Join("outside", "apps")) {
@@ -162,7 +162,7 @@ func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
 func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
 }
 
