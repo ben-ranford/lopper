@@ -24,7 +24,6 @@ const (
 	nestedManifestPath       = "nested/package.json"
 	gitBinaryPath            = "/usr/bin/git"
 	gitExecutableNotFoundErr = "git executable not found"
-	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 )
 
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
