@@ -106,13 +106,16 @@ export class LopperRunner {
     }
   }
 
-  async resolveBinaryPath(folder: vscode.WorkspaceFolder): Promise<string> {
-    const configuredBinaryPath = await this.resolveConfiguredBinaryPath(folder);
+  async resolveBinaryPath(
+    folder: vscode.WorkspaceFolder,
+    workspaceTrusted = vscode.workspace.isTrusted,
+  ): Promise<string> {
+    const configuredBinaryPath = await this.resolveConfiguredBinaryPath(folder, workspaceTrusted);
     if (configuredBinaryPath) {
       return configuredBinaryPath;
     }
 
-    const localBinaryPath = await this.resolveLocalBinaryPath(folder);
+    const localBinaryPath = await this.resolveLocalBinaryPath(folder, workspaceTrusted);
     if (localBinaryPath) {
       return localBinaryPath;
     }
@@ -120,10 +123,15 @@ export class LopperRunner {
     return this.resolveManagedBinaryPath(folder);
   }
 
-  private async resolveConfiguredBinaryPath(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+  private async resolveConfiguredBinaryPath(
+    folder: vscode.WorkspaceFolder,
+    workspaceTrusted: boolean,
+  ): Promise<string | undefined> {
     const envBinaryPath = process.env.LOPPER_BINARY_PATH?.trim();
     if (envBinaryPath) {
-      return this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
+      const binaryPath = await this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
+      this.ensureWorkspaceTrustedForBinary(binaryPath, folder, "LOPPER_BINARY_PATH", workspaceTrusted);
+      return binaryPath;
     }
 
     const configuredBinaryPath = vscode.workspace
@@ -137,10 +145,15 @@ export class LopperRunner {
     const resolvedPath = path.isAbsolute(configuredBinaryPath)
       ? configuredBinaryPath
       : path.join(folder.uri.fsPath, configuredBinaryPath);
-    return this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
+    const binaryPath = await this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
+    this.ensureWorkspaceTrustedForBinary(binaryPath, folder, "lopper.binaryPath", workspaceTrusted);
+    return binaryPath;
   }
 
-  private async resolveLocalBinaryPath(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+  private async resolveLocalBinaryPath(
+    folder: vscode.WorkspaceFolder,
+    workspaceTrusted: boolean,
+  ): Promise<string | undefined> {
     const localBinary = path.join(folder.uri.fsPath, "bin", lopperBinaryName());
     try {
       const fileStat = await stat(localBinary);
@@ -153,6 +166,10 @@ export class LopperRunner {
       } else {
         // On POSIX, ensure the file is executable.
         await access(localBinary, fsConstants.X_OK);
+      }
+      if (!workspaceTrusted) {
+        this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
+        return findExecutableInPath(lopperBinaryName());
       }
       return localBinary;
     } catch {
@@ -228,6 +245,21 @@ export class LopperRunner {
     }
   }
 
+  private ensureWorkspaceTrustedForBinary(
+    binaryPath: string,
+    folder: vscode.WorkspaceFolder,
+    source: string,
+    workspaceTrusted: boolean,
+  ): void {
+    if (workspaceTrusted || !isPathInsideWorkspace(binaryPath, folder.uri.fsPath)) {
+      return;
+    }
+
+    throw new BinaryResolutionError(
+      `${source} points to a workspace-local binary in an untrusted workspace. Trust this workspace or use a binary outside the workspace.`,
+    );
+  }
+
   private async runReport(binaryPath: string, args: string[], cwd: string): Promise<LopperReport> {
     this.output.appendLine(`running: ${binaryPath} ${args.join(" ")}`);
     try {
@@ -279,4 +311,9 @@ function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguag
 
 function lopperBinaryName(platform = process.platform): string {
   return platform === "win32" ? "lopper.exe" : "lopper";
+}
+
+function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
+  const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }

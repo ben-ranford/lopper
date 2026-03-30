@@ -17,6 +17,12 @@
   "engines": {
     "vscode": "^1.90.0"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Lopper does not execute workspace-local binaries until the workspace is trusted."
+    }
+  },
   "categories": [
     "Linters",
     "Other"
