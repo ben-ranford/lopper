@@ -51,7 +51,7 @@ func testPHPRootSignalsAndHelperBranches(t *testing.T) {
 }
 
 func testPHPResolverAndUseParsingBranches(t *testing.T) {
-	resolver := dependencyResolver{
+	resolver := composerResolver{
 		namespaceToDep: map[string]string{
 			"Vendor":     "vendor/root",
 			`Vendor\Pkg`: helpersVendorPkgDependency,
@@ -66,7 +66,7 @@ func testPHPResolverAndUseParsingBranches(t *testing.T) {
 	if dependency, resolved := resolver.dependencyFromModule(""); dependency != "" || resolved {
 		t.Fatalf("expected blank module to resolve empty/false, got dependency=%q resolved=%v", dependency, resolved)
 	}
-	if _, _, ok, unresolved := parseUsePart("", "", "x.php", 1, dependencyResolver{}); ok || unresolved {
+	if _, _, ok, unresolved := parseUsePart("", "", "x.php", 1, composerResolver{}); ok || unresolved {
 		t.Fatalf("expected blank use-part parse to fail without unresolved attribution")
 	}
 	if _, _, _, ok := parseNamespaceReferenceMetadata("ignored", []int{0}); ok {
@@ -75,7 +75,7 @@ func testPHPResolverAndUseParsingBranches(t *testing.T) {
 	if _, _, _, ok := parseNamespaceReferenceMetadata(`\`, []int{0, 1}); ok {
 		t.Fatalf("expected empty namespace metadata to fail")
 	}
-	if _, _, _, ok := parseGroupedUseStatement(`Vendor\Pkg\Client`, "x.php", 1, dependencyResolver{}); ok {
+	if _, _, _, ok := parseGroupedUseStatement(`Vendor\Pkg\Client`, "x.php", 1, composerResolver{}); ok {
 		t.Fatalf("expected non-grouped use statement parse to fail")
 	}
 }
@@ -103,11 +103,11 @@ func testPHPVendorDirectoryAndDetectionBranches(t *testing.T) {
 }
 
 func testPHPNamespaceReferenceBranches(t *testing.T) {
-	localResolver := dependencyResolver{localNamespace: map[string]struct{}{"App": {}}}
+	localResolver := composerResolver{localNamespace: map[string]struct{}{"App": {}}}
 	if binding, unresolved, ok := parseNamespaceReference(`App\Local`, []int{0, len(`App\Local`)}, phpFixtureFile, localResolver, map[string]struct{}{}); ok || unresolved != 0 || binding != (importBinding{}) {
 		t.Fatalf("expected local namespace reference to be skipped without unresolved count, binding=%#v unresolved=%d ok=%v", binding, unresolved, ok)
 	}
-	if binding, unresolved, ok := parseNamespaceReference("ignored", []int{0}, phpFixtureFile, dependencyResolver{}, map[string]struct{}{}); ok || unresolved != 0 || binding != (importBinding{}) {
+	if binding, unresolved, ok := parseNamespaceReference("ignored", []int{0}, phpFixtureFile, composerResolver{}, map[string]struct{}{}); ok || unresolved != 0 || binding != (importBinding{}) {
 		t.Fatalf("expected malformed namespace reference to be skipped, binding=%#v unresolved=%d ok=%v", binding, unresolved, ok)
 	}
 }
@@ -119,7 +119,7 @@ func testPHPRemovedFileAndImportBindingBranches(t *testing.T) {
 	if err := os.Remove(removedPath); err != nil {
 		t.Fatalf("remove php source: %v", err)
 	}
-	if scanFileEntry(repo, removedPath, dependencyResolver{}, &scanResult{}, &scanState{}) == nil {
+	if scanFileEntry(repo, removedPath, composerResolver{}, &scanResult{}, &scanState{}) == nil {
 		t.Fatalf("expected removed PHP source file to fail scan")
 	}
 
