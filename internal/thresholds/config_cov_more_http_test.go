@@ -44,7 +44,7 @@ func (r *errReadCloser) Close() error {
 
 func TestThresholdConfigAdditionalRemotePolicyBranches(t *testing.T) {
 	t.Run("resolver surfaces canonical location failures", func(t *testing.T) {
-		if _, err := newPackResolver(t.TempDir()).resolveFile("https://example.com/policy.yml#bad-pin", true); err == nil {
+		if _, err := newPackResolver(t.TempDir(), true).resolveFile("https://example.com/policy.yml#bad-pin", true); err == nil {
 			t.Fatalf("expected resolveFile to reject invalid canonical policy locations")
 		}
 	})
