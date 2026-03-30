@@ -77,7 +77,9 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	if !ctx.HasCompileDatabase {
 		t.Fatalf("expected compile database to be recorded")
 	}
-	if !slices.Equal(ctx.IncludeDirs, []string{"/usr/include", filepath.Join(repo, "include")}) {
+	wantIncludeDirs := []string{"/usr/include", filepath.Join(repo, "include")}
+	slices.Sort(wantIncludeDirs)
+	if !slices.Equal(ctx.IncludeDirs, wantIncludeDirs) {
 		t.Fatalf("unexpected include dirs: %#v", ctx.IncludeDirs)
 	}
 	if !slices.Equal(ctx.SourceFiles, []string{filepath.Join(repo, "src", testMainCPPFileName)}) {
