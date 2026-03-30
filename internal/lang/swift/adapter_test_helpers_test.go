@@ -2,10 +2,13 @@ package swift
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -17,6 +20,11 @@ const (
 	expectedOneDependencyReport = "expected one dependency report, got %d"
 	analyseErrorFormat          = "analyse: %v"
 )
+
+type swiftFixturePodDependency struct {
+	name    string
+	version string
+}
 
 func alamofireFixtureDependency() swiftFixtureDependency {
 	return swiftFixtureDependency{
@@ -34,6 +42,13 @@ func swiftNIOFixtureDependency() swiftFixtureDependency {
 		url:          swiftNIORepositoryURL,
 		version:      "2.60.0",
 		productName:  "NIO",
+	}
+}
+
+func alamofirePodFixtureDependency() swiftFixturePodDependency {
+	return swiftFixturePodDependency{
+		name:    "Alamofire",
+		version: "5.8.1",
 	}
 }
 
@@ -55,4 +70,48 @@ func mustSingleSwiftDependencyReport(t *testing.T, req language.Request) report.
 		t.Fatalf(expectedOneDependencyReport, len(reportData.Dependencies))
 	}
 	return reportData.Dependencies[0]
+}
+
+func writeSwiftDemoPackage(t *testing.T, repo string, dependencies []swiftFixtureDependency, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent(dependencies))
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), buildSwiftResolvedContent(dependencies))
+	writeSwiftDemoSourceFile(t, repo, mainContent)
+}
+
+func writeSwiftDemoCocoaPodsProject(t *testing.T, repo string, dependencies []swiftFixturePodDependency, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent(dependencies))
+	testutil.MustWriteFile(t, filepath.Join(repo, podLockName), buildPodLockContent(dependencies))
+	writeSwiftDemoSourceFile(t, repo, mainContent)
+}
+
+func writeSwiftDemoSourceFile(t *testing.T, repo string, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
+}
+
+func buildPodfileContent(dependencies []swiftFixturePodDependency) string {
+	lines := []string{
+		`platform :ios, "16.0"`,
+		`target "Demo" do`,
+	}
+	for _, dependency := range dependencies {
+		lines = append(lines, `  pod "`+dependency.name+`", "`+dependency.version+`"`)
+	}
+	lines = append(lines, "end")
+	return strings.Join(lines, "\n")
+}
+
+func buildPodLockContent(dependencies []swiftFixturePodDependency) string {
+	lines := []string{"PODS:"}
+	for _, dependency := range dependencies {
+		lines = append(lines, "  - "+dependency.name+" ("+dependency.version+")")
+	}
+	lines = append(lines, "DEPENDENCIES:")
+	for _, dependency := range dependencies {
+		lines = append(lines, "  - "+dependency.name+" ("+dependency.version+")")
+	}
+	lines = append(lines, `COCOAPODS: 1.13.0`)
+	return strings.Join(lines, "\n")
 }

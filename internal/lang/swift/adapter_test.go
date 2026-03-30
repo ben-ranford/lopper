@@ -13,6 +13,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const missingSwiftCatalogSuffix = " not found"
+
 func TestSwiftAdapterDetectWithNestedPackageRoots(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// root package\n")
@@ -172,9 +174,29 @@ func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 5})
-	assertWarningContains(t, reportData.Warnings, packageManifestName+" not found")
-	assertWarningContains(t, reportData.Warnings, packageResolvedName+" not found")
-	assertWarningContains(t, reportData.Warnings, "no Swift package dependencies were discovered")
+	assertWarningContains(t, reportData.Warnings, packageManifestName+missingSwiftCatalogSuffix)
+	assertWarningContains(t, reportData.Warnings, packageResolvedName+missingSwiftCatalogSuffix)
+	assertWarningContains(t, reportData.Warnings, "no Swift dependencies were discovered")
+}
+
+func TestSwiftAdapterSwiftPMMissingResolvedRiskCue(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent([]swiftFixtureDependency{alamofireFixtureDependency()}))
+	writeSwiftDemoSourceFile(t, repo, `import Alamofire
+let value = Session.default`)
+
+	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyReport, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if !hasRiskCueCode(dep, "missing-lock-resolution") {
+		t.Fatalf("expected Package.resolved risk cue, got %#v", dep.RiskCues)
+	}
+	if !hasRecommendationCode(dep, "refresh-package-resolved") {
+		t.Fatalf("expected Package.resolved recommendation, got %#v", dep.Recommendations)
+	}
+	assertWarningContains(t, reportData.Warnings, packageResolvedName+missingSwiftCatalogSuffix)
 }
 
 func TestParseSwiftImportsPatterns(t *testing.T) {
@@ -198,13 +220,6 @@ type swiftFixtureDependency struct {
 	url          string
 	version      string
 	productName  string
-}
-
-func writeSwiftDemoPackage(t *testing.T, repo string, dependencies []swiftFixtureDependency, mainContent string) {
-	t.Helper()
-	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent(dependencies))
-	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), buildSwiftResolvedContent(dependencies))
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
 }
 
 func analyseSwiftDependencyUsage(t *testing.T, dependencies []swiftFixtureDependency, mainContent string) report.DependencyReport {

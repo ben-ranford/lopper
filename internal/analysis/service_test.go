@@ -18,6 +18,7 @@ const (
 	indexJSFileName           = "index.js"
 	buildGradleFileName       = "build.gradle"
 	demoPackageJSONContent    = "{\n  \"name\": \"demo\"\n}\n"
+	lodashMapUsageJS          = "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
 	nodeMainPackageJSON       = "{\n  \"main\": \"index.js\"\n}\n"
 	mapExportJSContent        = "export function map() {}\n"
 	leftPadDependencyID       = "left-pad"
@@ -29,7 +30,7 @@ const (
 func TestServiceAnalyseAllLanguages(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
@@ -190,6 +191,62 @@ func TestServiceAnalyseAllLanguagesElixirFixture(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseSwiftCocoaPodsAutoAndAllModes(t *testing.T) {
+	t.Run("auto", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, "Podfile"), "platform :ios, '16.0'\ntarget 'Demo' do\n  pod 'Alamofire', '5.8.1'\nend\n")
+		writeFile(t, filepath.Join(repo, "Podfile.lock"), "PODS:\n  - Alamofire (5.8.1)\nDEPENDENCIES:\n  - Alamofire (5.8.1)\nCOCOAPODS: 1.13.0\n")
+		writeFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Alamofire\nlet value = Session.default\n")
+
+		service := NewService()
+		reportData, err := service.Analyse(context.Background(), Request{
+			RepoPath:   repo,
+			Dependency: "alamofire",
+			Language:   "auto",
+		})
+		if err != nil {
+			t.Fatalf("analyse swift CocoaPods auto: %v", err)
+		}
+		if len(reportData.Dependencies) != 1 {
+			t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+		}
+		if reportData.Dependencies[0].Language != "swift" {
+			t.Fatalf("expected swift dependency in auto mode, got %#v", reportData.Dependencies)
+		}
+	})
+
+	t.Run("all mixed languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+		writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
+		writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+		writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+		writeFile(t, filepath.Join(repo, "Podfile"), "platform :ios, '16.0'\ntarget 'Demo' do\n  pod 'Alamofire', '5.8.1'\nend\n")
+		writeFile(t, filepath.Join(repo, "Podfile.lock"), "PODS:\n  - Alamofire (5.8.1)\nDEPENDENCIES:\n  - Alamofire (5.8.1)\nCOCOAPODS: 1.13.0\n")
+		writeFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import Alamofire\nlet value = Session.default\n")
+
+		service := NewService()
+		reportData, err := service.Analyse(context.Background(), Request{
+			RepoPath: repo,
+			TopN:     10,
+			Language: "all",
+		})
+		if err != nil {
+			t.Fatalf("analyse all mixed Swift CocoaPods repo: %v", err)
+		}
+		languages := make([]string, 0, len(reportData.Dependencies))
+		for _, dep := range reportData.Dependencies {
+			languages = append(languages, dep.Language)
+		}
+		if !slices.Contains(languages, "swift") {
+			t.Fatalf("expected swift results in all-mode report, got %#v", reportData.Dependencies)
+		}
+		if !slices.Contains(languages, "js-ts") {
+			t.Fatalf("expected js-ts results in all-mode report, got %#v", reportData.Dependencies)
+		}
+	})
+}
+
 func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
@@ -237,7 +294,7 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 
