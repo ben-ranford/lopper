@@ -76,6 +76,16 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
           }, 400),
         );
       }),
+      vscode.workspace.onDidGrantWorkspaceTrust(async () => {
+        const folder = this.primaryWorkspaceFolder();
+        if (!folder) {
+          return;
+        }
+        if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
+          return;
+        }
+        await this.refreshWorkspace(folder, false, this.activeDocumentForFolder(folder));
+      }),
     );
   }
 

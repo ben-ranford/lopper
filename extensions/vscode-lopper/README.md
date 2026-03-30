@@ -23,9 +23,10 @@ The extension uses the same adapter IDs as the `lopper` CLI.
 The extension shells out to `lopper`.
 
 - If `lopper` is already on your `PATH`, the extension will use it automatically.
-- If your repo contains `bin/lopper`, the extension will use that first.
+- If your repo contains `bin/lopper`, the extension will use that first after you trust the workspace.
 - If no local binary is available, the extension can download a matching GitHub release into extension-managed storage.
 - You can always override detection with `lopper.binaryPath` or `LOPPER_BINARY_PATH`.
+- Workspace-local binaries, including `bin/lopper` and `lopper.binaryPath` values inside the repo, are blocked until the workspace is trusted.
 
 ## Install
 
