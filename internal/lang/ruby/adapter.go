@@ -25,14 +25,17 @@ const (
 	rubyAdapterID   = "ruby"
 	gemfileName     = "Gemfile"
 	gemfileLockName = "Gemfile.lock"
+	gemspecExt      = ".gemspec"
 	maxDetectFiles  = 1024
 )
 
 var (
-	gemDeclarationPattern = regexp.MustCompile(`^\s*gem\s+["']([^"']+)["']`)
-	gemSpecPattern        = regexp.MustCompile(`^\s{2,}([A-Za-z0-9_.-]+)\s+\(`)
-	requirePattern        = regexp.MustCompile(`^\s*require(_relative)?\s+["']([^"']+)["']`)
-	rubySkippedDirs       = map[string]bool{
+	gemDeclarationPattern       = regexp.MustCompile(`^\s*gem\s+["']([^"']+)["']`)
+	gemSpecPattern              = regexp.MustCompile(`^\s{2,}([A-Za-z0-9_.-]+)\s+\(`)
+	gemspecDependencyPattern    = regexp.MustCompile(`^\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?add(?:_runtime|_development)?_dependency\s*(?:\(\s*)?["']([^"']+)["']`)
+	gemspecDependencyLineSignal = regexp.MustCompile(`\badd(?:_runtime|_development)?_dependency\b`)
+	requirePattern              = regexp.MustCompile(`^\s*require(_relative)?\s+["']([^"']+)["']`)
+	rubySkippedDirs             = map[string]bool{
 		".bundle":  true,
 		"coverage": true,
 	}
@@ -83,6 +86,11 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 			detection.Confidence += 10
 			roots[filepath.Dir(path)] = struct{}{}
 		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), gemspecExt) {
+			detection.Matched = true
+			detection.Confidence += 10
+			roots[filepath.Dir(path)] = struct{}{}
+		}
 		if strings.EqualFold(filepath.Ext(entry.Name()), ".rb") {
 			detection.Matched = true
 			detection.Confidence += 2
@@ -124,15 +132,17 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		ImportedDependencies: make(map[string]struct{}),
 	}
 
-	if err := loadBundlerDependencies(repoPath, scan.DeclaredDependencies); err != nil {
+	declWarnings, err := loadDeclaredDependencies(repoPath, scan.DeclaredDependencies)
+	if err != nil {
 		return scan, err
 	}
+	scan.Warnings = append(scan.Warnings, declWarnings...)
 	if len(scan.DeclaredDependencies) == 0 {
-		scan.Warnings = append(scan.Warnings, "no Bundler gem declarations found in Gemfile or Gemfile.lock")
+		scan.Warnings = append(scan.Warnings, "no gem declarations found in Gemfile, Gemfile.lock, or .gemspec files")
 	}
 
 	foundRuby := false
-	err := walkRubyRepoFiles(ctx, repoPath, func(path string, entry fs.DirEntry) error {
+	err = walkRubyRepoFiles(ctx, repoPath, func(path string, entry fs.DirEntry) error {
 		if !strings.EqualFold(filepath.Ext(entry.Name()), ".rb") {
 			return nil
 		}
@@ -319,6 +329,13 @@ func loadBundlerDependencies(repoPath string, out map[string]struct{}) error {
 	return loadGemfileLockDependencies(repoPath, out)
 }
 
+func loadDeclaredDependencies(repoPath string, out map[string]struct{}) ([]string, error) {
+	if err := loadBundlerDependencies(repoPath, out); err != nil {
+		return nil, err
+	}
+	return loadGemspecDependencies(repoPath, out)
+}
+
 func loadGemfileDependencies(repoPath string, out map[string]struct{}) error {
 	return loadBundlerDependenciesByPattern(repoPath, gemfileName, out, func(line string) []string {
 		return gemDeclarationPattern.FindStringSubmatch(shared.StripLineComment(line, "#"))
@@ -363,6 +380,50 @@ func readBundlerFile(repoPath, filename string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("read %s: %w", filename, err)
 	}
+}
+
+func loadGemspecDependencies(repoPath string, out map[string]struct{}) ([]string, error) {
+	var warnings []string
+	err := walkRubyRepoFiles(context.TODO(), repoPath, func(path string, entry fs.DirEntry) error {
+		if !strings.EqualFold(filepath.Ext(entry.Name()), gemspecExt) {
+			return nil
+		}
+		content, err := safeio.ReadFileUnder(repoPath, path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", entry.Name(), err)
+		}
+		relPath, relErr := filepath.Rel(repoPath, path)
+		if relErr != nil {
+			relPath = entry.Name()
+		}
+		fileWarnings := parseGemspecDependencies(content, filepath.ToSlash(relPath), out)
+		warnings = append(warnings, fileWarnings...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return warnings, nil
+}
+
+func parseGemspecDependencies(content []byte, filePath string, out map[string]struct{}) []string {
+	lines := strings.Split(string(content), "\n")
+	var warnings []string
+	for index, line := range lines {
+		line = shared.StripLineComment(line, "#")
+		if !gemspecDependencyLineSignal.MatchString(line) {
+			continue
+		}
+		matches := gemspecDependencyPattern.FindStringSubmatch(line)
+		if len(matches) != 2 {
+			warnings = append(warnings, fmt.Sprintf("could not confidently parse gemspec dependency declaration in %s:%d", filePath, index+1))
+			continue
+		}
+		if dependency := normalizeDependencyID(matches[1]); dependency != "" {
+			out[dependency] = struct{}{}
+		}
+	}
+	return warnings
 }
 
 func normalizeDependencyID(value string) string {
