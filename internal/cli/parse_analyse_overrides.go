@@ -40,6 +40,7 @@ func resolveAnalyseNotifications(visited map[string]bool, values analyseFlagValu
 	if err != nil {
 		return notify.Config{}, err
 	}
+	configOverrides = configOverrides.WithoutWebhookTargets()
 	resolved = configOverrides.Apply(resolved)
 
 	envOverrides, err := notify.LoadEnvOverrides(os.LookupEnv)

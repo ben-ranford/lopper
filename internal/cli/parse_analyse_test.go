@@ -485,6 +485,58 @@ func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseIgnoresRepoConfiguredNotificationWebhooks(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), `notifications:
+  on: breach
+  slack:
+    webhook: https://hooks.slack.com/services/A/B/CONFIG
+  teams:
+    webhook: https://outlook.office.com/webhook/CONFIG
+    on: improvement
+`)
+
+	req, err := ParseArgs([]string{"analyse", "--top", "10", "--repo", repo})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+
+	if req.Analyse.Notifications.HasTargets() {
+		t.Fatalf("expected repo-configured webhook targets to be ignored, got %#v", req.Analyse.Notifications)
+	}
+	if req.Analyse.Notifications.Slack.Trigger != notify.TriggerBreach {
+		t.Fatalf("expected repo-configured global trigger to remain active, got %q", req.Analyse.Notifications.Slack.Trigger)
+	}
+	if req.Analyse.Notifications.Teams.Trigger != notify.TriggerImprovement {
+		t.Fatalf("expected repo-configured teams trigger to remain active, got %q", req.Analyse.Notifications.Teams.Trigger)
+	}
+}
+
+func TestParseArgsAnalyseAllowsTrustedNotificationTargetsFromEnv(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".lopper.yml"), `notifications:
+  on: breach
+  slack:
+    webhook: https://hooks.slack.com/services/A/B/CONFIG
+`)
+	t.Setenv(notify.EnvSlackWebhook, "https://hooks.slack.com/services/A/B/ENV")
+
+	req, err := ParseArgs([]string{"analyse", "--top", "10", "--repo", repo})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+
+	if !strings.Contains(req.Analyse.Notifications.Slack.WebhookURL, "/ENV") {
+		t.Fatalf("expected env slack webhook to be retained, got %q", req.Analyse.Notifications.Slack.WebhookURL)
+	}
+	if req.Analyse.Notifications.Teams.WebhookURL != "" {
+		t.Fatalf("expected repo-configured teams webhook to stay disabled, got %q", req.Analyse.Notifications.Teams.WebhookURL)
+	}
+	if req.Analyse.Notifications.Slack.Trigger != notify.TriggerBreach {
+		t.Fatalf("expected repo-configured trigger to still apply to trusted env target, got %q", req.Analyse.Notifications.Slack.Trigger)
+	}
+}
+
 func TestParseArgsAnalyseInvalidNotificationInputs(t *testing.T) {
 	if _, err := ParseArgs([]string{"analyse", "--top", "1", notifyOnFlag, "bad"}); err == nil {
 		t.Fatalf("expected invalid notify-on error")

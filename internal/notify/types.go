@@ -49,6 +49,12 @@ type Overrides struct {
 	TeamsTrigger    *Trigger
 }
 
+func (o Overrides) WithoutWebhookTargets() Overrides {
+	o.SlackWebhookURL = nil
+	o.TeamsWebhookURL = nil
+	return o
+}
+
 func (o *Overrides) Apply(base Config) Config {
 	resolved := base
 

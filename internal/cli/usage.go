@@ -43,8 +43,8 @@ Options:
   --license-provenance-registry
                               Opt in to registry provenance heuristics for JS/TS dependencies
   --notify-on MODE            Notify on always|breach|regression|improvement (CLI > env > config > defaults)
-  --notify-slack URL          Slack webhook URL (CLI > env > config)
-  --notify-teams URL          Teams webhook URL (CLI > env > config)
+  --notify-slack URL          Slack webhook URL (trusted CLI or env only; CLI > env)
+  --notify-teams URL          Teams webhook URL (trusted CLI or env only; CLI > env)
   --threshold-fail-on-increase N
                               Fail when waste increase is greater than N (CLI > config > defaults)
   --threshold-low-confidence-warning N

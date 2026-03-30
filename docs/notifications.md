@@ -28,15 +28,16 @@ Available flags:
 
 ## Config file
 
+Repository config can control notification trigger policy, but webhook endpoints from `.lopper.yml` or `lopper.json` are ignored during `lopper analyse`. Actual delivery targets must come from trusted CLI flags or environment variables.
+
 `.lopper.yml`:
 
 ```yaml
 notifications:
   on: breach
   slack:
-    webhook: https://hooks.slack.com/services/T000/B000/SECRET
+    on: regression
   teams:
-    webhook: https://outlook.office.com/webhook/SECRET
     on: improvement
 ```
 
@@ -47,10 +48,9 @@ notifications:
   "notifications": {
     "on": "breach",
     "slack": {
-      "webhook": "https://hooks.slack.com/services/T000/B000/SECRET"
+      "on": "regression"
     },
     "teams": {
-      "webhook": "https://outlook.office.com/webhook/SECRET",
       "on": "improvement"
     }
   }
@@ -67,7 +67,9 @@ notifications:
 
 Notification configuration is resolved in this order:
 
-`CLI > env > config > defaults`
+Webhook targets: `CLI > env`
+
+Trigger policy: `CLI > env > config > defaults`
 
 ## Payload format
 
