@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
@@ -52,24 +50,12 @@ func ReadFileUnder(rootDir, targetPath string) ([]byte, error) {
 // ReadFileUnderLimit reads targetPath only if it resolves under rootDir and
 // does not exceed maxBytes when a positive limit is provided.
 func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, err error) {
-	rootAbs, err := absPathFn(rootDir)
+	target, err := resolveRootedTarget(rootDir, targetPath, allowRootTarget)
 	if err != nil {
-		return nil, fmt.Errorf("resolve root path: %w", err)
-	}
-	targetAbs, err := absPathFn(targetPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve target path: %w", err)
+		return nil, err
 	}
 
-	rel, err := relPathFn(rootAbs, targetAbs)
-	if err != nil {
-		return nil, fmt.Errorf("compute relative path: %w", err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return nil, fmt.Errorf("path escapes root: %s", targetPath)
-	}
-
-	root, err := openRootFn(rootAbs)
+	root, err := openRootFn(target.rootAbs)
 	if err != nil {
 		return nil, fmt.Errorf("open root: %w", err)
 	}
@@ -79,13 +65,9 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 		}
 	}()
 
-	rel = filepath.Clean(rel)
-	file, err := openRootOpenFn(root, rel)
+	file, err := openRootOpenFn(root, filepath.Clean(target.rel))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, &fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}
-		}
-		return nil, err
+		return nil, translateOpenNotExist(err, targetPath)
 	}
 	defer func() {
 		if closeErr := closeFileFn(file); closeErr != nil {
@@ -113,26 +95,19 @@ func ReadFile(targetPath string) (data []byte, err error) {
 
 // OpenFile opens the exact targetPath by opening its parent directory as a root.
 func OpenFile(targetPath string) (io.ReadCloser, error) {
-	targetAbs, err := absPathFn(targetPath)
+	target, err := resolveExactFileTarget(targetPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve target path: %w", err)
+		return nil, err
 	}
-	parentDir := filepath.Dir(targetAbs)
-	fileName := filepath.Base(targetAbs)
 
-	root, err := openRootFn(parentDir)
+	root, err := openRootFn(target.parentDir)
 	if err != nil {
 		return nil, fmt.Errorf("open parent root: %w", err)
 	}
 
-	file, err := openRootOpenFn(root, fileName)
+	file, err := openRootOpenFn(root, target.fileName)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			if closeErr := closeRootFn(root); closeErr != nil {
-				return nil, errors.Join(&fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}, closeErr)
-			}
-			return nil, &fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}
-		}
+		err = translateOpenNotExist(err, targetPath)
 		if closeErr := closeRootFn(root); closeErr != nil {
 			return nil, errors.Join(err, closeErr)
 		}

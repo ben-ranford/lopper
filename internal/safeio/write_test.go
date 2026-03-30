@@ -330,6 +330,14 @@ func TestCleanupAtomicTempFileJoinsCloseAndRemoveErrors(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteSessionCloseTempFileNoopWhenAlreadyClosed(t *testing.T) {
+	session := &atomicWriteSession{}
+
+	if err := session.closeTempFile(); err != nil {
+		t.Fatalf("expected nil closeTempFile error, got %v", err)
+	}
+}
+
 func TestRandomTempName(t *testing.T) {
 	name, err := randomTempName()
 	if err != nil {
