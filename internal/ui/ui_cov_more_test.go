@@ -15,6 +15,7 @@ import (
 const uiWriteFailed = "write failed"
 const runtimeOverlapCode = "runtime-overlap"
 const runtimeOverlapSummary = runtimeOverlapCode + ": score=100.0 weight=0.200 contribution=20.0"
+const reachabilityModel = "reachability-v2"
 
 func TestUIAdditionalOutputBranches(t *testing.T) {
 	var out bytes.Buffer
@@ -87,12 +88,12 @@ func TestUIDetailAdditionalWriteErrorBranches(t *testing.T) {
 		t.Fatalf("expected signals rationale write failure, got %v", err)
 	}
 
-	if err := printReachabilityConfidence(&failAfterWriter{failAt: 1, err: writeErr}, &detailReachabilityConfidenceView{Model: "reachability-v2", Score: 72.5}); !errors.Is(err, writeErr) {
+	if err := printReachabilityConfidence(&failAfterWriter{failAt: 1, err: writeErr}, &detailReachabilityConfidenceView{Model: reachabilityModel, Score: 72.5}); !errors.Is(err, writeErr) {
 		t.Fatalf("expected confidence writeLines failure, got %v", err)
 	}
 
 	if err := printReachabilityConfidence(&failAfterWriter{failAt: 3, err: writeErr}, &detailReachabilityConfidenceView{
-		Model:   "reachability-v2",
+		Model:   reachabilityModel,
 		Score:   72.5,
 		Signals: []detailReachabilitySignalView{{Code: runtimeOverlapCode}},
 	}); !errors.Is(err, writeErr) {
@@ -222,7 +223,7 @@ func testUIReachabilityMapping(t *testing.T) {
 	t.Helper()
 
 	confidence := &report.ReachabilityConfidence{
-		Model:          "reachability-v2",
+		Model:          reachabilityModel,
 		Score:          72.5,
 		Summary:        "runtime evidence found",
 		RationaleCodes: []string{runtimeOverlapCode},
