@@ -43,7 +43,7 @@ func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
 }
 
 func TestResolveByNamespaceHeuristicAndNormalizePackagePart(t *testing.T) {
-	resolver := dependencyResolver{declared: map[string]struct{}{"vendor/my-lib": {}}}
+	resolver := composerResolver{declared: map[string]struct{}{"vendor/my-lib": {}}}
 	if got := resolver.resolveByNamespaceHeuristic(`Vendor\MyLib\Client`); got != "vendor/my-lib" {
 		t.Fatalf("unexpected heuristic dependency: %q", got)
 	}
@@ -147,7 +147,7 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 }
 
 func TestNamespaceAndUseHelpers(t *testing.T) {
-	resolver := dependencyResolver{
+	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Monolog": helpersMonologDependency},
 		declared:       map[string]struct{}{helpersMonologDependency: {}},
 	}
@@ -173,6 +173,26 @@ func TestNamespaceAndUseHelpers(t *testing.T) {
 	}
 	if got := lastNamespaceSegment(helpersMonologLogger); got != "Logger" {
 		t.Fatalf("unexpected last segment: %q", got)
+	}
+}
+
+func TestParsePHPImportsStructuredResult(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Monolog": helpersMonologDependency},
+		declared:       map[string]struct{}{helpersMonologDependency: {}},
+	}
+	content := []byte(helpersPHPHeader + "use Monolog\\{Logger, Handler\\StreamHandler};\n$logger = new \\Monolog\\Logger('x');\n")
+
+	parsed := parsePHPImports(content, "x.php", resolver)
+
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf("unexpected unresolved count: %d", parsed.unresolvedCount)
+	}
+	if parsed.groupedByDep[helpersMonologDependency] != 1 {
+		t.Fatalf("expected grouped import count for dependency, got %#v", parsed.groupedByDep)
+	}
+	if len(parsed.imports) != 3 {
+		t.Fatalf("expected grouped imports plus namespace reference, got %#v", parsed.imports)
 	}
 }
 
@@ -279,7 +299,7 @@ func TestReadPHPFileMissingReturnsError(t *testing.T) {
 }
 
 func TestResolveWithPSR4LongestPrefix(t *testing.T) {
-	resolver := dependencyResolver{namespaceToDep: map[string]string{
+	resolver := composerResolver{namespaceToDep: map[string]string{
 		"Symfony":              "symfony/symfony",
 		"Symfony\\Component\\": "symfony/component",
 	}}
@@ -315,7 +335,7 @@ func TestNormalizeNamespace(t *testing.T) {
 }
 
 func TestParseUseStatementFunctionAndConstImports(t *testing.T) {
-	resolver := dependencyResolver{declared: map[string]struct{}{helpersVendorLibDependency: {}}}
+	resolver := composerResolver{declared: map[string]struct{}{helpersVendorLibDependency: {}}}
 	resolver.namespaceToDep = map[string]string{"Vendor\\Lib": helpersVendorLibDependency}
 	imports, _, unresolved := parseUseStatement("function Vendor\\Lib\\helper, const Vendor\\Lib\\VERSION", "x.php", 1, resolver)
 	if unresolved != 0 {
@@ -327,7 +347,7 @@ func TestParseUseStatementFunctionAndConstImports(t *testing.T) {
 }
 
 func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
-	resolver := dependencyResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
+	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	imports, unresolved := parseNamespaceReferences([]byte(helpersPHPHeader+"use Monolog\\Logger;\n"), "x.php", resolver)
 	if unresolved != 0 {
 		t.Fatalf("unexpected unresolved: %d", unresolved)
@@ -338,7 +358,7 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 }
 
 func TestDependencyFromModuleBranches(t *testing.T) {
-	resolver := dependencyResolver{
+	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Monolog": helpersMonologDependency},
 		localNamespace: map[string]struct{}{"App": {}},
 		declared:       map[string]struct{}{helpersVendorPkgDependency: {}},
@@ -361,7 +381,7 @@ func TestDependencyFromModuleBranches(t *testing.T) {
 }
 
 func TestParseNamespaceReferencesUnresolvedBranch(t *testing.T) {
-	resolver := dependencyResolver{
+	resolver := composerResolver{
 		namespaceToDep: map[string]string{},
 		declared:       map[string]struct{}{},
 	}
@@ -432,7 +452,7 @@ func TestDetectWithConfidenceCanceledContext(t *testing.T) {
 }
 
 func TestParseUseStatementAndPartEdgeBranches(t *testing.T) {
-	resolver := dependencyResolver{declared: map[string]struct{}{}, namespaceToDep: map[string]string{}}
+	resolver := composerResolver{declared: map[string]struct{}{}, namespaceToDep: map[string]string{}}
 
 	imports, grouped, unresolved := parseUseStatement("", "x.php", 1, resolver)
 	if len(imports) != 0 || len(grouped) != 0 || unresolved != 0 {
@@ -487,7 +507,7 @@ func TestReadComposerManifestAndLockMappingsErrorFromFileRoot(t *testing.T) {
 }
 
 func TestResolveByNamespaceHeuristicTooShort(t *testing.T) {
-	resolver := dependencyResolver{declared: map[string]struct{}{helpersVendorPkgDependency: {}}}
+	resolver := composerResolver{declared: map[string]struct{}{helpersVendorPkgDependency: {}}}
 	if got := resolver.resolveByNamespaceHeuristic("Vendor"); got != "" {
 		t.Fatalf("expected empty heuristic for short namespace, got %q", got)
 	}
@@ -536,7 +556,7 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 }
 
 func TestAdditionalBranchCoverageResolverAndUseBranches(t *testing.T) {
-	resolver := dependencyResolver{
+	resolver := composerResolver{
 		localNamespace: map[string]struct{}{"": {}, "App": {}},
 		namespaceToDep: map[string]string{"": "empty/dep", "Monolog": helpersMonologDependency},
 	}
@@ -550,7 +570,7 @@ func TestAdditionalBranchCoverageResolverAndUseBranches(t *testing.T) {
 		t.Fatalf("expected empty heuristic for blank vendor, got %q", got)
 	}
 
-	unknownResolver := dependencyResolver{declared: map[string]struct{}{}, namespaceToDep: map[string]string{}}
+	unknownResolver := composerResolver{declared: map[string]struct{}{}, namespaceToDep: map[string]string{}}
 	imports, _, unresolved := parseUseStatement(`Unknown\Pkg\Thing`, "x.php", 1, unknownResolver)
 	if len(imports) != 0 || unresolved == 0 {
 		t.Fatalf("expected unresolved non-grouped use statement branch, imports=%#v unresolved=%d", imports, unresolved)
@@ -560,7 +580,7 @@ func TestAdditionalBranchCoverageResolverAndUseBranches(t *testing.T) {
 		t.Fatalf("expected unresolved grouped use statement branch, imports=%#v unresolved=%d", imports, unresolved)
 	}
 
-	knownResolver := dependencyResolver{namespaceToDep: map[string]string{"Foo\\Bar": "foo/bar"}}
+	knownResolver := composerResolver{namespaceToDep: map[string]string{"Foo\\Bar": "foo/bar"}}
 	imports, unresolved = parseNamespaceReferences([]byte(helpersPHPHeader+"\\Foo\\Bar; \\Foo\\Bar;\n"), "x.php", knownResolver)
 	if unresolved != 0 || len(imports) != 1 {
 		t.Fatalf("expected duplicate namespace refs to de-dup, imports=%#v unresolved=%d", imports, unresolved)
