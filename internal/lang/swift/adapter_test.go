@@ -174,7 +174,7 @@ func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 5})
 	assertWarningContains(t, reportData.Warnings, packageManifestName+" not found")
 	assertWarningContains(t, reportData.Warnings, packageResolvedName+" not found")
-	assertWarningContains(t, reportData.Warnings, "no Swift package dependencies were discovered")
+	assertWarningContains(t, reportData.Warnings, "no Swift dependencies were discovered")
 }
 
 func TestParseSwiftImportsPatterns(t *testing.T) {

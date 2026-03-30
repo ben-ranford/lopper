@@ -143,7 +143,7 @@ func TestSwiftLookupHelpers(t *testing.T) {
 		t.Fatalf("expected unresolved tracking to disable when no dependencies are known")
 	}
 
-	warning := unresolvedImportWarning(map[string]int{"Gamma": 1, "Alpha": 3, "Beta": 3, "Delta": 1, "Epsilon": 1, "Zeta": 1})
+	warning := unresolvedImportWarning(map[string]int{"Gamma": 1, "Alpha": 3, "Beta": 3, "Delta": 1, "Epsilon": 1, "Zeta": 1}, dependencyCatalog{})
 	if !strings.Contains(warning, "Alpha (3), Beta (3)") || !strings.Contains(warning, "+1 more") {
 		t.Fatalf("unexpected unresolved import warning: %q", warning)
 	}
@@ -285,7 +285,7 @@ let package = Package(
 	}
 	assertWarningContains(t, warnings, "no .package(...) declarations found in Package.swift")
 	assertWarningContains(t, warnings, "no pins found in Package.resolved")
-	assertWarningContains(t, warnings, "no Swift package dependencies were discovered")
+	assertWarningContains(t, warnings, "no Swift dependencies were discovered")
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 3})
 	if err != nil {

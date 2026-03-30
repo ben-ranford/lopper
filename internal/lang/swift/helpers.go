@@ -15,6 +15,7 @@ var (
 	swiftUpperIdentifierPattern = regexp.MustCompile(`\b[A-Z][A-Za-z0-9_]*\b`)
 	swiftTypeDeclarationPattern = regexp.MustCompile(`\b(?:actor|class|enum|protocol|struct|typealias)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	stringFieldPattern          = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"((?:\\.|[^"])*)"`)
+	podDeclarationPattern       = regexp.MustCompile(`^\s*pod\s*(?:\(\s*)?['"]([^'"]+)['"]`)
 
 	swiftSkippedDirs = map[string]bool{
 		".build":      true,
@@ -115,16 +116,22 @@ func shouldSkipDir(name string) bool {
 }
 
 func setLookup(target map[string]string, key string, depID string) {
+	_ = setLookupWithStatus(target, key, depID)
+}
+
+func setLookupWithStatus(target map[string]string, key string, depID string) bool {
 	if key == "" || depID == "" {
-		return
+		return false
 	}
 	if existing, ok := target[key]; ok {
 		if existing != depID {
 			target[key] = ambiguousDependencyKey
+			return true
 		}
-		return
+		return false
 	}
 	target[key] = depID
+	return false
 }
 
 func resolveLookup(target map[string]string, key string) (string, bool) {

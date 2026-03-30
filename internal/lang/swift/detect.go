@@ -22,6 +22,8 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	rootSignals := []shared.RootSignal{
 		{Name: packageManifestName, Confidence: 60},
 		{Name: packageResolvedName, Confidence: 25},
+		{Name: podManifestName, Confidence: 60},
+		{Name: podLockName, Confidence: 25},
 	}
 	if err := shared.ApplyRootSignals(repoPath, rootSignals, &detection, roots); err != nil {
 		return language.Detection{}, err
@@ -63,7 +65,7 @@ func detectSwiftEntry(ctx context.Context, path string, entry fs.DirEntry, detec
 
 func recordSwiftDetection(path string, name string, detection *language.Detection, roots map[string]struct{}) {
 	switch strings.ToLower(name) {
-	case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName):
+	case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName), strings.ToLower(podManifestName), strings.ToLower(podLockName):
 		detection.Matched = true
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
