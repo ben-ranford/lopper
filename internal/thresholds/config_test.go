@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -586,7 +587,48 @@ func TestLoadWithPolicyRejectsRemotePackWithoutPin(t *testing.T) {
 	}
 }
 
-func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
+func TestLoadWithPolicyRepoDiscoveredConfigRejectsRemotePackWithoutFetching(t *testing.T) {
+	repo := t.TempDir()
+	packBody := `thresholds:
+  low_confidence_warning_percent: 19
+  removal_candidate_weight_usage: 0.6
+  removal_candidate_weight_impact: 0.2
+  removal_candidate_weight_confidence: 0.2
+`
+	sum := sha256.Sum256([]byte(packBody))
+	pin := hex.EncodeToString(sum[:])
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if r.URL.Path != "/org.yml" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := w.Write([]byte(packBody)); err != nil {
+			t.Fatalf("write remote pack response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "org.yml"), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, pin))
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - packs/org.yml\n")
+
+	result, err := LoadWithPolicy(repo, "")
+	if err == nil {
+		t.Fatalf("expected repo-discovered config to reject remote pack")
+	}
+	if !strings.Contains(err.Error(), "remote policy packs require an explicit config path") {
+		t.Fatalf("unexpected repo-discovered remote pack error: %v", err)
+	}
+	if result.ConfigPath != "" || len(result.PolicySources) != 0 {
+		t.Fatalf("expected empty result on rejected remote pack, got %#v", result)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("expected no remote fetches for repo-discovered config, got %d", got)
+	}
+}
+
+func TestLoadWithPolicyRemotePackWithPinFromExplicitConfig(t *testing.T) {
 	repo := t.TempDir()
 	packBody := `thresholds:
   low_confidence_warning_percent: 19
@@ -608,10 +650,10 @@ func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
 	defer server.Close()
 
 	policy := fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin)
-	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), policy)
-	result, err := LoadWithPolicy(repo, "")
+	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), policy)
+	result, err := LoadWithPolicy(repo, customConfigName)
 	if err != nil {
-		t.Fatalf("load with pinned remote pack: %v", err)
+		t.Fatalf("load explicit config with pinned remote pack: %v", err)
 	}
 	if result.Resolved.FailOnIncreasePercent != 3 {
 		t.Fatalf("expected repo override, got %d", result.Resolved.FailOnIncreasePercent)
@@ -624,7 +666,7 @@ func TestLoadWithPolicyRemotePackWithPin(t *testing.T) {
 	}
 }
 
-func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
+func TestLoadWithPolicyRemotePackPinMismatchFromExplicitConfig(t *testing.T) {
 	repo := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := w.Write([]byte("thresholds:\n  low_confidence_warning_percent: 12\n")); err != nil {
@@ -632,9 +674,9 @@ func TestLoadWithPolicyRemotePackPinMismatch(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
+	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
 
-	_, err := LoadWithPolicy(repo, "")
+	_, err := LoadWithPolicy(repo, customConfigName)
 	if err == nil {
 		t.Fatalf("expected remote pin mismatch error")
 	}

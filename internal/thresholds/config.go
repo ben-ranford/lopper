@@ -52,7 +52,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 		}, nil
 	}
 
-	resolver := newPackResolver(repoAbs)
+	resolver := newPackResolver(repoAbs, explicitProvided)
 	mergeResult, err := resolver.resolveFile(configPath, explicitProvided)
 	if err != nil {
 		return LoadResult{}, err
