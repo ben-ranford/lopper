@@ -185,6 +185,9 @@ func TestUsageReturnsText(t *testing.T) {
 	if !strings.Contains(Usage(), "lopper analyse") {
 		t.Fatalf("expected usage text to include analyse command")
 	}
+	if !strings.Contains(Usage(), "--format table|csv|json|sarif|pr-comment") {
+		t.Fatalf("expected usage text to include analyse csv format")
+	}
 	if !strings.Contains(Usage(), "Supported IDs: auto, all, js-ts, python, cpp, jvm, kotlin-android") {
 		t.Fatalf("expected usage text to include supported adapter ids")
 	}

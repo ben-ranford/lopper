@@ -72,6 +72,12 @@ Emit JSON:
 lopper analyse --top 20 --repo . --language all --format json
 ```
 
+Emit CSV for spreadsheet or pipeline ingestion:
+
+```bash
+lopper analyse --top 20 --repo . --language all --format csv > lopper.csv
+```
+
 Emit SARIF for code scanning:
 
 ```bash

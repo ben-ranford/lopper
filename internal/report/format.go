@@ -14,6 +14,8 @@ func (f *Formatter) Format(report Report, format Format) (string, error) {
 	switch format {
 	case FormatTable:
 		return formatTable(report)
+	case FormatCSV:
+		return formatCSV(report)
 	case FormatJSON:
 		return formatJSON(report)
 	case FormatSARIF:

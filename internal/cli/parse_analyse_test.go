@@ -55,6 +55,7 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 		format string
 		want   report.Format
 	}{
+		{name: "csv", format: "csv", want: report.FormatCSV},
 		{name: "json", format: "json", want: report.FormatJSON},
 		{name: "sarif", format: "sarif", want: report.FormatSARIF},
 		{name: "pr_comment", format: "pr-comment", want: report.FormatPRComment},
