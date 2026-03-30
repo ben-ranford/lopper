@@ -69,7 +69,10 @@ func TestCPPLoadCompileContextCapAndHelpers(t *testing.T) {
 }
 
 func TestCPPRequestedDependencyMoreBranches(t *testing.T) {
+	catalog := newDependencyCatalog()
+	catalog.add("fmt", "vcpkg manifest")
 	scan := scanResult{
+		Catalog: catalog,
 		Files: []fileScan{{
 			Path: cppMainSourcePath,
 			Includes: []includeRecord{
@@ -148,7 +151,7 @@ func testCPPIncludeMappingFallbackBranches(t *testing.T) {
 		t.Fatalf("expected blank args and missing include values to be ignored, got %#v", dirs)
 	}
 
-	if dep, unresolved := mapIncludeToDependency("/repo", "/repo/main.cpp", parsedInclude{Path: ".", Delimiter: '<'}, nil); dep != "" || !unresolved {
+	if dep, unresolved := mapIncludeToDependency("/repo", "/repo/main.cpp", parsedInclude{Path: ".", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || !unresolved {
 		t.Fatalf("expected dot include to stay unresolved, got dep=%q unresolved=%v", dep, unresolved)
 	}
 	if got := dependencyFromIncludePath("./"); got != "" {

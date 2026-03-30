@@ -66,6 +66,7 @@ type scanResult struct {
 	Warnings          []string
 	UnresolvedCount   int
 	UnresolvedSamples []string
+	Catalog           dependencyCatalog
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
@@ -96,6 +97,10 @@ func updateDetection(path string, detection *language.Detection, roots map[strin
 		markDetection(detection, roots, filepath.Dir(path), 12)
 	case "Makefile", "makefile", "GNUmakefile":
 		markDetection(detection, roots, filepath.Dir(path), 10)
+	case vcpkgManifestFile, conanManifestFile:
+		markDetection(detection, roots, filepath.Dir(path), 12)
+	case vcpkgLockFile, conanLockFile:
+		markDetection(detection, roots, filepath.Dir(path), 8)
 	}
 
 	if isCPPSourceOrHeader(path) {
@@ -128,7 +133,13 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	}
 	result.Warnings = append(result.Warnings, compileInfo.Warnings...)
 
-	scan, err := scanRepo(ctx, repoPath, compileInfo)
+	catalog, catalogWarnings, err := loadDependencyCatalog(repoPath)
+	if err != nil {
+		return report.Report{}, err
+	}
+	result.Warnings = append(result.Warnings, catalogWarnings...)
+
+	scan, err := scanRepo(ctx, repoPath, compileInfo, catalog)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -269,8 +280,8 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 	*items = append(*items, path)
 }
 
-func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) (scanResult, error) {
-	result := scanResult{}
+func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, catalog dependencyCatalog) (scanResult, error) {
+	result := scanResult{Catalog: catalog}
 	files, err := resolveScanFiles(ctx, repoPath, compileInfo)
 	if err != nil {
 		return result, err
@@ -282,7 +293,7 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext) 
 	}
 
 	for _, path := range files {
-		if err := processScanFile(ctx, repoPath, path, compileInfo.IncludeDirs, &result); err != nil {
+		if err := processScanFile(ctx, repoPath, path, compileInfo.IncludeDirs, catalog, &result); err != nil {
 			return result, err
 		}
 	}
@@ -298,11 +309,11 @@ func resolveScanFiles(ctx context.Context, repoPath string, compileInfo compileC
 	return walkCPPFiles(ctx, repoPath)
 }
 
-func processScanFile(ctx context.Context, repoPath string, path string, includeDirs []string, result *scanResult) error {
+func processScanFile(ctx context.Context, repoPath string, path string, includeDirs []string, catalog dependencyCatalog, result *scanResult) error {
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	scanFile, unresolvedSamples, unresolvedCount, err := scanCPPFile(repoPath, path, includeDirs)
+	scanFile, unresolvedSamples, unresolvedCount, err := scanCPPFile(repoPath, path, includeDirs, catalog)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
@@ -353,7 +364,7 @@ func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	return files, nil
 }
 
-func scanCPPFile(repoPath string, path string, includeDirs []string) (fileScan, []string, int, error) {
+func scanCPPFile(repoPath string, path string, includeDirs []string, catalog dependencyCatalog) (fileScan, []string, int, error) {
 	scan := fileScan{}
 	content, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {
@@ -370,7 +381,7 @@ func scanCPPFile(repoPath string, path string, includeDirs []string) (fileScan, 
 	unresolvedSamples := make([]string, 0)
 	unresolvedCount := 0
 	for _, include := range parsed {
-		dependency, unresolved := mapIncludeToDependency(repoPath, path, include, includeDirs)
+		dependency, unresolved := mapIncludeToDependency(repoPath, path, include, includeDirs, catalog)
 		if dependency == "" {
 			if unresolved {
 				unresolvedCount++
@@ -455,7 +466,7 @@ func makeParsedInclude(path string, delimiter byte, line string, lineNo int) par
 	}
 }
 
-func mapIncludeToDependency(repoPath string, sourcePath string, include parsedInclude, includeDirs []string) (string, bool) {
+func mapIncludeToDependency(repoPath string, sourcePath string, include parsedInclude, includeDirs []string, catalog dependencyCatalog) (string, bool) {
 	header := strings.TrimSpace(include.Path)
 	if header == "" {
 		return "", true
@@ -477,7 +488,7 @@ func mapIncludeToDependency(repoPath string, sourcePath string, include parsedIn
 	if dependency == "" {
 		return "", true
 	}
-	return dependency, false
+	return correlateDeclaredDependency(dependency, catalog), false
 }
 
 func includeResolvesWithinRepo(repoPath string, sourcePath string, header string, includeDirs []string) bool {
@@ -551,7 +562,7 @@ func buildRequestedCPPDependencies(req language.Request, scan scanResult) ([]rep
 	switch {
 	case req.Dependency != "":
 		dependency := shared.NormalizeDependencyID(req.Dependency)
-		dep, warnings := buildDependencyReport(dependency, scan)
+		dep, warnings := buildDependencyReport(dependency, scan, true)
 		return []report.DependencyReport{dep}, warnings
 	case req.TopN > 0:
 		return buildTopCPPDependencies(req.TopN, scan, weights)
@@ -562,6 +573,9 @@ func buildRequestedCPPDependencies(req language.Request, scan scanResult) ([]rep
 
 func buildTopCPPDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	dependencySet := make(map[string]struct{})
+	for _, dependency := range scan.Catalog.list() {
+		dependencySet[dependency] = struct{}{}
+	}
 	for _, file := range scan.Files {
 		for _, include := range file.Includes {
 			if include.Dependency != "" {
@@ -570,8 +584,11 @@ func buildTopCPPDependencies(topN int, scan scanResult, weights report.RemovalCa
 		}
 	}
 	dependencies := shared.SortedKeys(dependencySet)
+	if len(dependencies) == 0 {
+		return nil, []string{"no dependency data available for top-N ranking"}
+	}
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
-		return buildDependencyReport(dependency, scan)
+		return buildDependencyReport(dependency, scan, false)
 	}
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
@@ -583,8 +600,9 @@ func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) repor
 	return report.NormalizeRemovalCandidateWeights(*value)
 }
 
-func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
+func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage bool) (report.DependencyReport, []string) {
 	reportData := report.DependencyReport{Name: dependency, Language: "cpp"}
+	declared := scan.Catalog.contains(dependency)
 
 	usedByHeader := make(map[string]int)
 	usedImportsByHeader := make(map[string]*report.ImportUse)
@@ -612,10 +630,34 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 	reportData.TopUsedSymbols = buildTopUsedSymbols(usedByHeader)
 	reportData.UsedImports = flattenImportUses(usedImportsByHeader, headers)
 
-	if reportData.TotalExportsCount == 0 {
-		return reportData, []string{fmt.Sprintf("no mapped include usage found for dependency %s", dependency)}
+	warnings := make([]string, 0)
+	if reportData.TotalExportsCount == 0 && warnOnNoUsage {
+		if declared {
+			sources := scan.Catalog.sources(dependency)
+			if len(sources) > 0 {
+				warnings = append(warnings, fmt.Sprintf("dependency %s is declared in %s but has no mapped include usage", dependency, strings.Join(sources, " + ")))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("no mapped include usage found for dependency %s", dependency))
+			}
+		} else {
+			warnings = append(warnings, fmt.Sprintf("no mapped include usage found for dependency %s", dependency))
+		}
 	}
-	return reportData, nil
+	if !declared && reportData.TotalExportsCount > 0 {
+		reportData.RiskCues = append(reportData.RiskCues, report.RiskCue{
+			Code:     "undeclared-package-usage",
+			Severity: "high",
+			Message:  "include evidence suggests package usage that is not declared in vcpkg or Conan manifests",
+		})
+		reportData.Recommendations = append(reportData.Recommendations, report.Recommendation{
+			Code:      "declare-dependency-explicitly",
+			Priority:  "high",
+			Message:   "Declare this native package explicitly in vcpkg or Conan manifests.",
+			Rationale: "Include evidence was found without a matching package-manager declaration.",
+		})
+		warnings = append(warnings, fmt.Sprintf("dependency %q appears in includes but is not declared in vcpkg or Conan manifests", dependency))
+	}
+	return reportData, warnings
 }
 
 func buildTopUsedSymbols(usage map[string]int) []report.SymbolUsage {
@@ -688,6 +730,10 @@ var cppRootSignals = []shared.RootSignal{
 	{Name: "Makefile", Confidence: 35},
 	{Name: "makefile", Confidence: 35},
 	{Name: "GNUmakefile", Confidence: 35},
+	{Name: vcpkgManifestFile, Confidence: 35},
+	{Name: vcpkgLockFile, Confidence: 20},
+	{Name: conanManifestFile, Confidence: 35},
+	{Name: conanLockFile, Confidence: 20},
 }
 
 var cppStdHeaderSet = map[string]struct{}{
