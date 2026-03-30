@@ -49,7 +49,7 @@ Notes:
 - Relative `path` values are resolved relative to the config file directory.
 - `baseline_store` is reserved for future dashboard support and is not yet applied during dashboard execution.
 - `repoUrl` entries are reserved for future support and are not yet executable by `lopper dashboard`.
-- CLI flags take precedence over config (`--format`, `--language`, `--top`, `--output`).
+- CLI flags take precedence over config for `--format` and `--output`; `--language` only fills missing repo language values, and `--top` is CLI-only.
 
 ## JSON Shape
 

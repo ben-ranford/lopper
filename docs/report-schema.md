@@ -14,6 +14,8 @@ Validate with your JSON Schema tooling against `docs/report-schema.json`.
 ## Key fields
 
 - `summary`: aggregated totals across all dependency rows.
+- `scope`: analysis scope metadata (`mode`, `packages`).
+- `usageUncertainty`: JS/TS usage certainty summary (`confirmedImportUses`, `uncertainImportUses`, `samples`).
 - `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`).
 - `effectiveThresholds`: resolved threshold values applied for this run.
 - `effectivePolicy`: resolved policy object, including precedence sources, scoring weights, and license policy controls (`CLI > repo config > imported policy packs > defaults`).
