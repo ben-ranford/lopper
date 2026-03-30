@@ -106,14 +106,13 @@ func TestRubyAdapterAnalyseDependencyAndTopN(t *testing.T) {
 func TestRubyAdapterAnalyseGemspecProjectAndDeduplicatesDeclaredDependencies(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "source 'https://rubygems.org'\ngem 'httparty'\ngem 'rack'\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), strings.Join([]string{
-		"Gem::Specification.new do |spec|",
-		"  spec.add_dependency 'httparty'",
-		"  spec.add_runtime_dependency 'nokogiri', '~> 1.16'",
-		"  spec.add_development_dependency 'rspec'",
-		"end",
-		"",
-	}, "\n"))
+	gemspecContent := `Gem::Specification.new do |spec|
+  spec.add_dependency 'httparty'
+  spec.add_runtime_dependency 'nokogiri', '~> 1.16'
+  spec.add_development_dependency 'rspec'
+end
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), gemspecContent)
 	testutil.MustWriteFile(t, filepath.Join(repo, rubyAppFile), httpartyRequireLine+"HTTParty.get('https://example.test')\n")
 
 	scan, err := scanRepo(context.Background(), repo)
@@ -135,12 +134,11 @@ func TestRubyAdapterAnalyseGemspecProjectAndDeduplicatesDeclaredDependencies(t *
 
 func TestRubyAdapterWarnsOnUnparseableGemspecDependency(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), strings.Join([]string{
-		"Gem::Specification.new do |spec|",
-		"  spec.add_dependency SOME_CONST",
-		"end",
-		"",
-	}, "\n"))
+	gemspecContent := `Gem::Specification.new do |spec|
+  spec.add_dependency SOME_CONST
+end
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), gemspecContent)
 
 	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {

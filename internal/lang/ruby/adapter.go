@@ -383,8 +383,8 @@ func readBundlerFile(repoPath, filename string) ([]byte, error) {
 }
 
 func loadGemspecDependencies(repoPath string, out map[string]struct{}) ([]string, error) {
-	warnings := []string{}
-	err := walkRubyRepoFiles(nil, repoPath, func(path string, entry fs.DirEntry) error {
+	var warnings []string
+	err := walkRubyRepoFiles(context.TODO(), repoPath, func(path string, entry fs.DirEntry) error {
 		if !strings.EqualFold(filepath.Ext(entry.Name()), gemspecExt) {
 			return nil
 		}
@@ -408,7 +408,7 @@ func loadGemspecDependencies(repoPath string, out map[string]struct{}) ([]string
 
 func parseGemspecDependencies(content []byte, filePath string, out map[string]struct{}) []string {
 	lines := strings.Split(string(content), "\n")
-	warnings := []string{}
+	var warnings []string
 	for index, line := range lines {
 		line = shared.StripLineComment(line, "#")
 		if !gemspecDependencyLineSignal.MatchString(line) {
