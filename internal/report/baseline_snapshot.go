@@ -66,26 +66,15 @@ func LoadWithKey(path string) (Report, string, error) {
 }
 
 func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path string, err error) {
-	trimmedDir := strings.TrimSpace(dir)
-	trimmedKey := strings.TrimSpace(key)
-	if trimmedDir == "" {
-		return "", fmt.Errorf("baseline store directory is required")
+	trimmedDir, trimmedKey, err := validateBaselineSnapshotInputs(dir, key)
+	if err != nil {
+		return "", err
 	}
-	if trimmedKey == "" {
-		return "", fmt.Errorf("baseline key is required")
-	}
-
-	if info, statErr := os.Lstat(trimmedDir); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("baseline store directory must not be a symlink: %s", trimmedDir)
-	}
-
-	if err := os.MkdirAll(trimmedDir, 0o750); err != nil {
+	if err := rejectBaselineStoreDirSymlink(trimmedDir); err != nil {
 		return "", err
 	}
 
-	sanitizedFileName := sanitizeBaselineKey(trimmedKey) + ".json"
-	snapshotPath := filepath.Join(trimmedDir, sanitizedFileName)
-	root, err := os.OpenRoot(trimmedDir)
+	root, file, snapshotPath, err := openBaselineSnapshotWriter(trimmedDir, trimmedKey)
 	if err != nil {
 		return "", err
 	}
@@ -94,13 +83,76 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	file, err := root.OpenFile(sanitizedFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("%w: key %q (%s)", ErrBaselineAlreadyExists, trimmedKey, snapshotPath)
-		}
+
+	if err := encodeBaselineSnapshot(file, snapshotPath, newBaselineSnapshot(trimmedKey, rep, now)); err != nil {
 		return "", err
 	}
+
+	return snapshotPath, nil
+}
+
+func BaselineSnapshotPath(dir, key string) string {
+	return filepath.Join(strings.TrimSpace(dir), sanitizeBaselineKey(strings.TrimSpace(key))+".json")
+}
+
+func validateBaselineSnapshotInputs(dir, key string) (string, string, error) {
+	trimmedDir := strings.TrimSpace(dir)
+	if trimmedDir == "" {
+		return "", "", fmt.Errorf("baseline store directory is required")
+	}
+
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" {
+		return "", "", fmt.Errorf("baseline key is required")
+	}
+
+	return trimmedDir, trimmedKey, nil
+}
+
+func rejectBaselineStoreDirSymlink(dir string) error {
+	if info, err := os.Lstat(dir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("baseline store directory must not be a symlink: %s", dir)
+	}
+	return nil
+}
+
+func openBaselineSnapshotWriter(dir, key string) (root *os.Root, file *os.File, snapshotPath string, err error) {
+	if err = os.MkdirAll(dir, 0o750); err != nil {
+		return nil, nil, "", err
+	}
+
+	sanitizedFileName := sanitizeBaselineKey(key) + ".json"
+	snapshotPath = filepath.Join(dir, sanitizedFileName)
+
+	root, err = os.OpenRoot(dir)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	file, err = root.OpenFile(sanitizedFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		if errors.Is(err, os.ErrExist) {
+			err = fmt.Errorf("%w: key %q (%s)", ErrBaselineAlreadyExists, key, snapshotPath)
+		}
+		return nil, nil, "", err
+	}
+
+	return root, file, snapshotPath, nil
+}
+
+func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot {
+	return BaselineSnapshot{
+		BaselineSchemaVersion: BaselineSnapshotSchemaVersion,
+		Key:                   key,
+		SavedAt:               now.UTC(),
+		Report:                normalizeSnapshotReport(rep),
+	}
+}
+
+func encodeBaselineSnapshot(file *os.File, snapshotPath string, snapshot BaselineSnapshot) (err error) {
 	defer func() {
 		if closeErr := file.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
@@ -112,24 +164,9 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 		}
 	}()
 
-	snapshot := BaselineSnapshot{
-		BaselineSchemaVersion: BaselineSnapshotSchemaVersion,
-		Key:                   trimmedKey,
-		SavedAt:               now.UTC(),
-		Report:                normalizeSnapshotReport(rep),
-	}
-
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
-	if err = encoder.Encode(snapshot); err != nil {
-		return "", err
-	}
-
-	return snapshotPath, nil
-}
-
-func BaselineSnapshotPath(dir, key string) string {
-	return filepath.Join(strings.TrimSpace(dir), sanitizeBaselineKey(strings.TrimSpace(key))+".json")
+	return encoder.Encode(snapshot)
 }
 
 func normalizeSnapshotReport(rep Report) Report {
