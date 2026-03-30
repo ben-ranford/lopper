@@ -205,9 +205,10 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
-	descriptors, parseWarnings := parseBuildFilesWithPathWarnings(repoPath, func(path, content string) ([]dependencyDescriptor, []string) {
+	parseContent := func(path, content string) ([]dependencyDescriptor, []string) {
 		return parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
-	}, buildGradleName, buildGradleKTSName)
+	}
+	descriptors, parseWarnings := parseBuildFilesWithPathWarnings(repoPath, parseContent, buildGradleName, buildGradleKTSName)
 	warnings = append(warnings, parseWarnings...)
 	return descriptors, shared.DedupeWarnings(warnings)
 }

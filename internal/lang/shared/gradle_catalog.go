@@ -69,7 +69,7 @@ type gradleCatalogRegistry struct {
 }
 
 type gradleCatalogReferenceCollector struct {
-	resolver      GradleCatalogResolver
+	resolver      *GradleCatalogResolver
 	buildFilePath string
 	dependencies  []GradleCatalogLibrary
 	warnings      []string
@@ -298,7 +298,10 @@ func IsGradleVersionCatalogFile(name string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(name)), ".versions.toml")
 }
 
-func (r GradleCatalogResolver) ParseDependencyReferences(buildFilePath, content string) ([]GradleCatalogLibrary, []string) {
+func (r *GradleCatalogResolver) ParseDependencyReferences(buildFilePath, content string) ([]GradleCatalogLibrary, []string) {
+	if r == nil {
+		return nil, nil
+	}
 	collector := newGradleCatalogReferenceCollector(r, buildFilePath)
 	collector.collectFinderMatches(content)
 	collector.collectBracketMatches(content)
@@ -306,7 +309,7 @@ func (r GradleCatalogResolver) ParseDependencyReferences(buildFilePath, content 
 	return collector.dependencies, dedupeGradleCatalogWarnings(collector.warnings)
 }
 
-func newGradleCatalogReferenceCollector(resolver GradleCatalogResolver, buildFilePath string) *gradleCatalogReferenceCollector {
+func newGradleCatalogReferenceCollector(resolver *GradleCatalogResolver, buildFilePath string) *gradleCatalogReferenceCollector {
 	return &gradleCatalogReferenceCollector{
 		resolver:      resolver,
 		buildFilePath: buildFilePath,
@@ -414,7 +417,7 @@ func (c *gradleCatalogReferenceCollector) appendWarning(warning string) {
 	c.warnings = append(c.warnings, warning)
 }
 
-func (r GradleCatalogResolver) shouldProcessCatalogReference(name string) bool {
+func (r *GradleCatalogResolver) shouldProcessCatalogReference(name string) bool {
 	if name == "libs" {
 		return true
 	}
@@ -422,7 +425,7 @@ func (r GradleCatalogResolver) shouldProcessCatalogReference(name string) bool {
 	return ok
 }
 
-func (r GradleCatalogResolver) resolveLibraryReference(buildFilePath, catalogName, alias string) (GradleCatalogLibrary, string) {
+func (r *GradleCatalogResolver) resolveLibraryReference(buildFilePath, catalogName, alias string) (GradleCatalogLibrary, string) {
 	if alias == "" {
 		return GradleCatalogLibrary{}, ""
 	}
@@ -438,7 +441,7 @@ func (r GradleCatalogResolver) resolveLibraryReference(buildFilePath, catalogNam
 	return library, ""
 }
 
-func (r GradleCatalogResolver) resolveBundleReference(buildFilePath, catalogName, alias string) ([]GradleCatalogLibrary, string) {
+func (r *GradleCatalogResolver) resolveBundleReference(buildFilePath, catalogName, alias string) ([]GradleCatalogLibrary, string) {
 	if alias == "" {
 		return nil, ""
 	}
@@ -454,7 +457,7 @@ func (r GradleCatalogResolver) resolveBundleReference(buildFilePath, catalogName
 	return append([]GradleCatalogLibrary(nil), bundle...), ""
 }
 
-func (r GradleCatalogResolver) scopeForBuildFile(buildFilePath string) *gradleCatalogScope {
+func (r *GradleCatalogResolver) scopeForBuildFile(buildFilePath string) *gradleCatalogScope {
 	cleanPath := filepath.Clean(buildFilePath)
 	for index := range r.scopes {
 		scope := &r.scopes[index]
