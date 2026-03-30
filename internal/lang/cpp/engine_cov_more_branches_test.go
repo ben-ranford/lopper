@@ -46,7 +46,7 @@ func TestCPPLoadCompileContextCapAndHelpers(t *testing.T) {
 	}
 
 	result := &scanResult{UnresolvedSamples: []string{"a", "b", "c", "d", "e"}}
-	appendSampleWarnings(result, []string{"f"})
+	result.appendSampleWarnings([]string{"f"})
 	if len(result.UnresolvedSamples) != maxWarningSamples {
 		t.Fatalf("expected unresolved sample cap to hold, got %#v", result.UnresolvedSamples)
 	}

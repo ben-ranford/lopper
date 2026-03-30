@@ -55,6 +55,41 @@ func TestLoadCompileContextNoDatabaseWarning(t *testing.T) {
 	}
 }
 
+func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
+	repo := t.TempDir()
+	compileDB := filepath.Join(repo, "build", compileCommandsFile)
+	testutil.MustWriteFile(t, compileDB, `[
+  {"directory":"..","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I","include","-isystem/usr/include","-c","src/`+testMainCPPFileName+`"]}
+]`)
+
+	collector, err := newCompileContextCollector(repo)
+	if err != nil {
+		t.Fatalf("new compile context collector: %v", err)
+	}
+	if err := collector.visit(filepath.Join(repo, "README.md")); err != nil {
+		t.Fatalf("visit non-compile-db: %v", err)
+	}
+	if err := collector.visit(compileDB); err != nil {
+		t.Fatalf("visit compile db: %v", err)
+	}
+
+	ctx := collector.result()
+	if !ctx.HasCompileDatabase {
+		t.Fatalf("expected compile database to be recorded")
+	}
+	wantIncludeDirs := []string{"/usr/include", filepath.Join(repo, "include")}
+	slices.Sort(wantIncludeDirs)
+	if !slices.Equal(ctx.IncludeDirs, wantIncludeDirs) {
+		t.Fatalf("unexpected include dirs: %#v", ctx.IncludeDirs)
+	}
+	if !slices.Equal(ctx.SourceFiles, []string{filepath.Join(repo, "src", testMainCPPFileName)}) {
+		t.Fatalf("unexpected source files: %#v", ctx.SourceFiles)
+	}
+	if len(ctx.Warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", ctx.Warnings)
+	}
+}
+
 func TestDetectWithCompileDatabaseAndCMakeSignals(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "CMakeLists.txt"), "project(demo)\n")
@@ -191,6 +226,30 @@ func TestBuildDependencyReportEmptyAndHelpers(t *testing.T) {
 	flattened := flattenImportUses(map[string]*report.ImportUse{"a": {Name: "a"}, "b": {Name: "b"}}, []string{"b", "a", "c"})
 	if len(flattened) != 2 || flattened[0].Name != "b" || flattened[1].Name != "a" {
 		t.Fatalf("unexpected flattened import ordering: %#v", flattened)
+	}
+}
+
+func TestCollectDependencyUsageSummaryApply(t *testing.T) {
+	summary := collectDependencyUsage("fmt", []fileScan{{
+		Path: testMainCPPFileName,
+		Includes: []includeRecord{
+			{Dependency: "fmt", Header: "fmt/core.h", Location: report.Location{File: testMainCPPFileName, Line: 1, Column: 1}},
+			{Dependency: "FMT", Header: "fmt/core.h", Location: report.Location{File: testMainCPPFileName, Line: 2, Column: 1}},
+			{Dependency: "fmt", Header: "fmt/format.h", Location: report.Location{File: testMainCPPFileName, Line: 3, Column: 1}},
+		},
+	}})
+
+	var dep report.DependencyReport
+	summary.apply(&dep)
+
+	if dep.TotalExportsCount != 2 || dep.UsedExportsCount != 2 || dep.UsedPercent != 100 {
+		t.Fatalf("unexpected dependency usage summary: %#v", dep)
+	}
+	if len(dep.TopUsedSymbols) != 2 || dep.TopUsedSymbols[0].Name != "fmt/core.h" || dep.TopUsedSymbols[0].Count != 2 {
+		t.Fatalf("unexpected top used symbols: %#v", dep.TopUsedSymbols)
+	}
+	if len(dep.UsedImports) != 2 || dep.UsedImports[0].Name != "fmt/core.h" || len(dep.UsedImports[0].Locations) != 2 {
+		t.Fatalf("unexpected flattened usage imports: %#v", dep.UsedImports)
 	}
 }
 
