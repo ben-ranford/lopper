@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	alamofireRepositoryURL      = "https://github.com/Alamofire/Alamofire.git"
 	swiftNIORepositoryURL       = "https://github.com/apple/swift-nio.git"
 	swiftBuildDirName           = ".build"
 	swiftMainFileName           = "main.swift"
@@ -27,10 +28,10 @@ type swiftFixturePodDependency struct {
 
 func alamofireFixtureDependency() swiftFixtureDependency {
 	return swiftFixtureDependency{
-		identity:    alamofireFixtureName,
+		identity:    "alamofire",
 		url:         alamofireRepositoryURL,
-		version:     alamofireVersion,
-		productName: alamofireProductName,
+		version:     "5.8.0",
+		productName: "Alamofire",
 	}
 }
 
@@ -46,8 +47,8 @@ func swiftNIOFixtureDependency() swiftFixtureDependency {
 
 func alamofirePodFixtureDependency() swiftFixturePodDependency {
 	return swiftFixturePodDependency{
-		name:    alamofireProductName,
-		version: alamofirePodVersion,
+		name:    "Alamofire",
+		version: "5.8.1",
 	}
 }
 
@@ -85,10 +86,15 @@ func writeSwiftDemoCocoaPodsProject(t *testing.T, repo string, dependencies []sw
 	writeSwiftDemoSourceFile(t, repo, mainContent)
 }
 
+func writeSwiftDemoSourceFile(t *testing.T, repo string, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
+}
+
 func buildPodfileContent(dependencies []swiftFixturePodDependency) string {
 	lines := []string{
-		`platform :ios, "` + swiftPodfilePlatformVersion + `"`,
-		`target "` + swiftDemoPackageName + `" do`,
+		`platform :ios, "16.0"`,
+		`target "Demo" do`,
 	}
 	for _, dependency := range dependencies {
 		lines = append(lines, `  pod "`+dependency.name+`", "`+dependency.version+`"`)

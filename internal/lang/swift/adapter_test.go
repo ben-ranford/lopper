@@ -18,7 +18,7 @@ const missingSwiftCatalogSuffix = " not found"
 func TestSwiftAdapterDetectWithNestedPackageRoots(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// root package\n")
-	writeSwiftAppSourceFile(t, repo, swiftImportFoundationSource)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "Packages", "Feature", packageManifestName), "// nested package\n")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -81,7 +81,11 @@ func run() {
 
 func TestSwiftAdapterCountsUnqualifiedSingleDependencyUsage(t *testing.T) {
 	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
-	reportData := analyseSwiftDependencyUsage(t, dependencies, swiftAlamofireSessionUsageSource)
+	mainContent := `import Alamofire
+func run() {
+  _ = Session.default
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
 	if reportData.UsedExportsCount < 1 {
 		t.Fatalf("expected unqualified usage to count as used, got %#v", reportData)
 	}
@@ -90,7 +94,7 @@ func TestSwiftAdapterCountsUnqualifiedSingleDependencyUsage(t *testing.T) {
 func TestSwiftAdapterDoesNotAttributeAmbiguousUnqualifiedUsage(t *testing.T) {
 	dependencies := []swiftFixtureDependency{
 		alamofireFixtureDependency(),
-		kingfisherFixtureDependency(),
+		{identity: "kingfisher", url: "https://github.com/onevcat/Kingfisher.git", version: "7.9.0", productName: "Kingfisher"},
 	}
 	mainContent := `import Alamofire
 import Kingfisher
@@ -105,7 +109,15 @@ func run() {
 
 func TestSwiftAdapterDoesNotCountLocalTypeUsageAsDependencyUsage(t *testing.T) {
 	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
-	reportData := analyseSwiftDependencyUsage(t, dependencies, swiftAlamofireLocalThingUsageSource)
+	mainContent := `import Alamofire
+struct LocalThing {
+  let id: String
+}
+func run() {
+  let thing = LocalThing(id: "1")
+  _ = thing.id
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
 	if reportData.UsedExportsCount != 0 {
 		t.Fatalf("expected local-only symbols to not count as dependency usage, got %#v", reportData)
 	}
@@ -119,17 +131,17 @@ func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
     "pins": [
       {
         "package": "Kingfisher",
-        "repositoryURL": "` + kingfisherRepositoryURL + `",
-        "state": {"revision": "` + swiftResolvedRevision + `", "version": "` + kingfisherVersion + `"}
+        "repositoryURL": "https://github.com/onevcat/Kingfisher.git",
+        "state": {"revision": "abc", "version": "7.9.0"}
       }
     ]
   },
   "version": 1
 }`
 		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), resolvedContent)
-		writeSwiftAppSourceFile(t, repo, swiftKingfisherSharedUsageSource)
+		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Kingfisher\n_ = KingfisherManager.shared\n")
 
-		reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: kingfisherFixtureName})
+		reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "kingfisher"})
 		if reportData.TotalExportsCount == 0 {
 			t.Fatalf("expected import mapped from v1 pins, got %#v", reportData)
 		}
@@ -141,14 +153,14 @@ func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
   "pins": [
     {
       "identity": "swift-collections",
-      "location": "` + swiftCollectionsRepositoryURL + `",
-      "state": {"revision": "` + swiftResolvedRevision + `", "version": "` + swiftCollectionsVersion + `"}
+      "location": "https://github.com/apple/swift-collections.git",
+      "state": {"revision": "abc", "version": "1.1.0"}
     }
   ],
   "version": 2
 }`
 		testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), resolvedContent)
-		writeSwiftAppSourceFile(t, repo, swiftImportSwiftCollectionsSource)
+		testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import SwiftCollections\n")
 
 		reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "swift-collections"})
 		if len(reportData.UnusedImports) == 0 && len(reportData.UsedImports) == 0 {
@@ -159,7 +171,7 @@ func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
 
 func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 	repo := t.TempDir()
-	writeSwiftAppSourceFile(t, repo, swiftImportFoundationSource)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 5})
 	assertWarningContains(t, reportData.Warnings, packageManifestName+missingSwiftCatalogSuffix)
@@ -170,7 +182,8 @@ func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 func TestSwiftAdapterSwiftPMMissingResolvedRiskCue(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent([]swiftFixtureDependency{alamofireFixtureDependency()}))
-	writeSwiftDemoSourceFile(t, repo, swiftAlamofireSessionValueSource)
+	writeSwiftDemoSourceFile(t, repo, `import Alamofire
+let value = Session.default`)
 
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
 	if len(reportData.Dependencies) != 1 {
@@ -221,7 +234,7 @@ func buildSwiftManifestContent(dependencies []swiftFixtureDependency) string {
 	lines := []string{
 		"import PackageDescription",
 		"let package = Package(",
-		`  name: "` + swiftDemoPackageName + `",`,
+		`  name: "Demo",`,
 		"  dependencies: [",
 	}
 	for index, dependency := range dependencies {
@@ -264,7 +277,7 @@ func buildSwiftResolvedContent(dependencies []swiftFixtureDependency) string {
 			"    {",
 			fmt.Sprintf(`      "identity": %q,`, dependency.identity),
 			fmt.Sprintf(`      "location": %q,`, dependency.url),
-			fmt.Sprintf(`      "state": {"revision": %q, "version": %q}`, swiftResolvedRevision, dependency.version),
+			fmt.Sprintf(`      "state": {"revision": %q, "version": %q}`, "abc", dependency.version),
 			"    }" + suffix,
 		}
 		lines = append(lines, entryLines...)
