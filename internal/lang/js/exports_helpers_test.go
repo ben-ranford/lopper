@@ -86,6 +86,43 @@ func TestEntrypointAndPathHelpers(t *testing.T) {
 	}
 }
 
+func TestDependencyRootRejectsMalformedNames(t *testing.T) {
+	repo := t.TempDir()
+	valid := map[string]string{
+		"pkg":             filepath.Join(repo, "node_modules", "pkg"),
+		"left-pad":        filepath.Join(repo, "node_modules", "left-pad"),
+		"pkg.name":        filepath.Join(repo, "node_modules", "pkg.name"),
+		"@scope/pkg":      filepath.Join(repo, "node_modules", "@scope", "pkg"),
+		"@scope/pkg.name": filepath.Join(repo, "node_modules", "@scope", "pkg.name"),
+	}
+	for dep, want := range valid {
+		got, err := dependencyRoot(repo, dep)
+		if err != nil {
+			t.Fatalf("expected valid dependency %q, got err=%v", dep, err)
+		}
+		if got != want {
+			t.Fatalf("unexpected root for %q: got %q want %q", dep, got, want)
+		}
+	}
+
+	invalid := []string{
+		".",
+		"..",
+		"../../evil",
+		"pkg/subpath",
+		"@scope",
+		"@scope/pkg/subpath",
+		`pkg\subpath`,
+		`@scope\pkg`,
+		`..\evil`,
+	}
+	for _, dep := range invalid {
+		if _, err := dependencyRoot(repo, dep); err == nil {
+			t.Fatalf("expected invalid dependency %q to fail", dep)
+		}
+	}
+}
+
 func TestCollectExportPathsConditionWarnings(t *testing.T) {
 	dest := make(map[string]struct{})
 	surface := &ExportSurface{}

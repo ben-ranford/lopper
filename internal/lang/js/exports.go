@@ -373,14 +373,42 @@ func dependencyRoot(repoPath, dependency string) (string, error) {
 		return "", errors.New("dependency is empty")
 	}
 
+	if err := validateDependencyName(dependency); err != nil {
+		return "", err
+	}
+
 	if strings.HasPrefix(dependency, "@") {
 		parts := strings.SplitN(dependency, "/", 2)
-		if len(parts) != 2 {
-			return "", fmt.Errorf("invalid scoped dependency: %s", dependency)
-		}
 		return filepath.Join(repoPath, "node_modules", parts[0], parts[1]), nil
 	}
 	return filepath.Join(repoPath, "node_modules", dependency), nil
+}
+
+func validateDependencyName(dependency string) error {
+	if strings.Contains(dependency, `\`) {
+		return fmt.Errorf("invalid dependency: %s", dependency)
+	}
+	if strings.HasPrefix(dependency, "@") {
+		parts := strings.Split(dependency, "/")
+		if len(parts) != 2 || !isValidDependencySegment(parts[0]) || !isValidDependencySegment(parts[1]) {
+			return fmt.Errorf("invalid scoped dependency: %s", dependency)
+		}
+		return nil
+	}
+	if strings.Contains(dependency, "/") {
+		return fmt.Errorf("invalid dependency: %s", dependency)
+	}
+	if !isValidDependencySegment(dependency) {
+		return fmt.Errorf("invalid dependency: %s", dependency)
+	}
+	return nil
+}
+
+func isValidDependencySegment(segment string) bool {
+	if segment == "" || segment == "." || segment == ".." {
+		return false
+	}
+	return true
 }
 
 func collectExportPaths(value any, dest map[string]struct{}, surface *ExportSurface) {

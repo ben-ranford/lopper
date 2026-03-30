@@ -374,3 +374,72 @@ func TestTransitiveDepthSkipsMissingDependencyRoot(t *testing.T) {
 		t.Fatalf("expected depth to remain 1 for missing child dep roots, got %d", depth)
 	}
 }
+
+func TestTransitiveDepthResolvesNormalAndScopedDependencyNames(t *testing.T) {
+	repoRoot := t.TempDir()
+	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
+	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir root package root: %v", err)
+	}
+
+	normalRoot := filepath.Join(repoRoot, "node_modules", "dep")
+	if err := os.MkdirAll(normalRoot, 0o755); err != nil {
+		t.Fatalf("mkdir normal dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(normalRoot, packageJSONFile), []byte(`{"name":"dep"}`), 0o600); err != nil {
+		t.Fatalf("write normal package json: %v", err)
+	}
+
+	scopedRoot := filepath.Join(repoRoot, "node_modules", "@scope", "pkg")
+	if err := os.MkdirAll(scopedRoot, 0o755); err != nil {
+		t.Fatalf("mkdir scoped dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scopedRoot, packageJSONFile), []byte(`{"name":"@scope/pkg"}`), 0o600); err != nil {
+		t.Fatalf("write scoped package json: %v", err)
+	}
+
+	if root, ok := resolveInstalledDependencyRoot(repoRoot, rootPkgRoot, "dep"); !ok || root != normalRoot {
+		t.Fatalf("expected normal dependency root resolution, got root=%q ok=%v", root, ok)
+	}
+	if root, ok := resolveInstalledDependencyRoot(repoRoot, rootPkgRoot, "@scope/pkg"); !ok || root != scopedRoot {
+		t.Fatalf("expected scoped dependency root resolution, got root=%q ok=%v", root, ok)
+	}
+
+	rootPkg := packageJSON{
+		Dependencies: map[string]string{
+			"dep":        "1.0.0",
+			"@scope/pkg": "1.0.0",
+		},
+	}
+	depth := transitiveDepth(repoRoot, rootPkgRoot, rootPkg, map[string]int{}, map[string]struct{}{}, 4)
+	if depth != 2 {
+		t.Fatalf("expected depth 2 for direct normal and scoped dependencies, got %d", depth)
+	}
+}
+
+func TestTransitiveDepthRejectsTraversalDependencyNames(t *testing.T) {
+	repoRoot := t.TempDir()
+	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
+	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir root package root: %v", err)
+	}
+
+	outsideRoot := filepath.Join(filepath.Dir(repoRoot), "out1")
+	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideRoot, packageJSONFile), []byte(`{"name":"out1"}`), 0o600); err != nil {
+		t.Fatalf("write outside package json: %v", err)
+	}
+
+	traversalName := "../../../../out1"
+	if root, ok := resolveInstalledDependencyRoot(repoRoot, rootPkgRoot, traversalName); ok || root != "" {
+		t.Fatalf("expected traversal-shaped dependency name to be rejected, got root=%q ok=%v", root, ok)
+	}
+
+	rootPkg := packageJSON{Dependencies: map[string]string{traversalName: "1.0.0"}}
+	depth := transitiveDepth(repoRoot, rootPkgRoot, rootPkg, map[string]int{}, map[string]struct{}{}, 4)
+	if depth != 1 {
+		t.Fatalf("expected depth 1 when traversal-shaped dependency is rejected, got %d", depth)
+	}
+}
