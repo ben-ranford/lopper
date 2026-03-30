@@ -134,49 +134,91 @@ func stripElixirComments(content []byte) string {
 	var stripped strings.Builder
 	stripped.Grow(len(content))
 
-	inSingleQuote := false
-	inDoubleQuote := false
-	escaped := false
+	state := elixirCommentState{}
 
 	for i := 0; i < len(content); i++ {
 		ch := content[i]
-		if escaped {
-			stripped.WriteByte(ch)
-			escaped = false
+
+		if state.writeEscaped(&stripped, ch) {
 			continue
 		}
-		if ch == '\\' && (inSingleQuote || inDoubleQuote) {
-			stripped.WriteByte(ch)
-			escaped = true
+
+		if state.writeEscape(&stripped, ch) {
 			continue
 		}
-		switch ch {
-		case '"':
-			if !inSingleQuote {
-				inDoubleQuote = !inDoubleQuote
-			}
-			stripped.WriteByte(ch)
-		case '\'':
-			if !inDoubleQuote {
-				inSingleQuote = !inSingleQuote
-			}
-			stripped.WriteByte(ch)
-		case '#':
-			if inSingleQuote || inDoubleQuote {
+
+		if state.writeQuote(&stripped, ch) {
+			continue
+		}
+
+		if ch == '#' {
+			if state.inQuotedString() {
 				stripped.WriteByte(ch)
 				continue
 			}
-			for i < len(content) && content[i] != '\n' {
-				i++
-			}
-			if i < len(content) {
-				stripped.WriteByte('\n')
-			}
-		default:
-			stripped.WriteByte(ch)
+			i = skipElixirComment(content, i, &stripped)
+			continue
 		}
+
+		stripped.WriteByte(ch)
 	}
 	return stripped.String()
+}
+
+type elixirCommentState struct {
+	inSingleQuote bool
+	inDoubleQuote bool
+	escaped       bool
+}
+
+func (s *elixirCommentState) inQuotedString() bool {
+	return s.inSingleQuote || s.inDoubleQuote
+}
+
+func (s *elixirCommentState) writeEscaped(out *strings.Builder, ch byte) bool {
+	if !s.escaped {
+		return false
+	}
+	out.WriteByte(ch)
+	s.escaped = false
+	return true
+}
+
+func (s *elixirCommentState) writeEscape(out *strings.Builder, ch byte) bool {
+	if ch != '\\' || !s.inQuotedString() {
+		return false
+	}
+	out.WriteByte(ch)
+	s.escaped = true
+	return true
+}
+
+func (s *elixirCommentState) writeQuote(out *strings.Builder, ch byte) bool {
+	switch ch {
+	case '"':
+		if !s.inSingleQuote {
+			s.inDoubleQuote = !s.inDoubleQuote
+		}
+	case '\'':
+		if !s.inDoubleQuote {
+			s.inSingleQuote = !s.inSingleQuote
+		}
+	default:
+		return false
+	}
+	out.WriteByte(ch)
+	return true
+}
+
+func skipElixirComment(content []byte, start int, out *strings.Builder) int {
+	i := start
+	for i < len(content) && content[i] != '\n' {
+		i++
+	}
+	if i < len(content) {
+		out.WriteByte('\n')
+	}
+	return i
 }
 
 func addUmbrellaRoots(repoPath string, appsPath string, roots map[string]struct{}) error {
