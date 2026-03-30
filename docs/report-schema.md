@@ -3,6 +3,9 @@
 `lopper analyse --format json` emits the report structure defined in
 `docs/report-schema.json`.
 
+`lopper analyse --format csv` emits a stable dependency-level export with one row
+per dependency.
+
 ## Generate a report
 
 ```bash
@@ -10,6 +13,33 @@ go run ./cmd/lopper analyse --top 20 --repo . --language all --format json > rep
 ```
 
 Validate with your JSON Schema tooling against `docs/report-schema.json`.
+
+## CSV export
+
+Generate CSV:
+
+```bash
+go run ./cmd/lopper analyse --top 20 --repo . --language all --format csv > report.csv
+```
+
+CSV characteristics:
+
+- Header row is fixed and emitted even when there are no dependency rows.
+- Dependency rows are sorted by `language`, then `dependency_name`.
+- Multi-value cells use `|` as the inner delimiter.
+- Numeric columns use decimal strings; optional nested fields are emitted as empty
+  cells when absent.
+
+CSV columns:
+
+- Report context: `generated_at`, `schema_version`, `repo_path`, `scope_mode`, `scope_packages`
+- Dependency identity and waste metrics: `language`, `dependency_name`, `used_exports_count`, `total_exports_count`, `used_percent`, `waste_percent`, `estimated_unused_bytes`
+- Dependency usage rollups: `top_used_symbols`, `used_imports`, `unused_imports`, `unused_exports`
+- Risk and action hints: `risk_cues`, `recommendations`
+- Runtime annotations: `runtime_load_count`, `runtime_correlation`, `runtime_only`, `runtime_modules`, `runtime_top_symbols`
+- Reachability and candidate scoring: `reachability_model`, `reachability_score`, `reachability_summary`, `reachability_rationale_codes`, `removal_candidate_score`, `removal_candidate_usage`, `removal_candidate_impact`, `removal_candidate_confidence`, `removal_candidate_rationale`
+- License metadata: `license_spdx`, `license_raw`, `license_source`, `license_confidence`, `license_unknown`, `license_denied`, `license_evidence`
+- Provenance metadata: `provenance_source`, `provenance_confidence`, `provenance_signals`
 
 ## Key fields
 

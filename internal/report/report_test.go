@@ -6,6 +6,9 @@ func TestParseFormat(t *testing.T) {
 	if _, err := ParseFormat("table"); err != nil {
 		t.Fatalf("parse table format: %v", err)
 	}
+	if _, err := ParseFormat("csv"); err != nil {
+		t.Fatalf("parse csv format: %v", err)
+	}
 	if _, err := ParseFormat("json"); err != nil {
 		t.Fatalf("parse json format: %v", err)
 	}
