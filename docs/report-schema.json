@@ -9,10 +9,12 @@
     "schemaVersion": { "type": "string", "const": "0.1.0" },
     "generatedAt": { "type": "string", "format": "date-time" },
     "repoPath": { "type": "string" },
+    "scope": { "$ref": "#/$defs/scopeMetadata" },
     "dependencies": {
       "type": "array",
       "items": { "$ref": "#/$defs/dependencyReport" }
     },
+    "usageUncertainty": { "$ref": "#/$defs/usageUncertainty" },
     "summary": { "$ref": "#/$defs/summary" },
     "languageBreakdown": {
       "type": "array",
@@ -50,6 +52,31 @@
         "unknownLicenseCount": { "type": "integer", "minimum": 0 },
         "deniedLicenseCount": { "type": "integer", "minimum": 0 },
         "reachability": { "$ref": "#/$defs/reachabilityRollup" }
+      }
+    },
+    "scopeMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string" },
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "usageUncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confirmedImportUses", "uncertainImportUses"],
+      "properties": {
+        "confirmedImportUses": { "type": "integer", "minimum": 0 },
+        "uncertainImportUses": { "type": "integer", "minimum": 0 },
+        "samples": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/location" }
+        }
       }
     },
     "languageSummary": {

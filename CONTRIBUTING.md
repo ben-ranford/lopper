@@ -62,7 +62,7 @@ make mem-profiles
 ## Workflow
 
 1. Create a branch for your change.
-2. Add or update tests for behavior changes.
+2. Add or update tests, docs, and demo assets when behavior, flags, or workflows change.
 3. Keep commits focused and descriptive.
 4. Open a pull request with clear context, scope, and validation steps.
 
@@ -82,10 +82,11 @@ If you add a new language adapter, update the contributor-facing docs and user-f
 - Problem statement and intended behavior
 - What changed and why
 - Test evidence (`make ci`, `make demos-check`, `act pull_request -W .github/workflows/ci.yml --job verify`, manual commands, fixtures)
+- Documentation updates for user-facing behavior, flags, workflow changes, and examples
 - Performance notes when memory benchmark deltas are intentional, including whether `memory-approved` is needed
 - Backward compatibility notes (if any)
 
-If your change impacts CLI behavior shown in docs, refresh demo GIFs with `make demos` and include regenerated assets.
+If your change impacts CLI behavior, flags, workflows, or documented examples, refresh the relevant docs and demo GIFs with `make demos` and include regenerated assets.
 
 Use the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
 

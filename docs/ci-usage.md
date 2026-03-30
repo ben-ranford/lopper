@@ -1,12 +1,13 @@
 # CI and release workflow
 
-This repository includes five GitHub Actions workflows:
+This repository includes six GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests
 - `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs when meaningful changes exist since the previous stable tag or when version alignment needs to promote the stable CLI tag to the VS Code extension version, then runs CI, publishes a GitHub release, and syncs the committed VS Code extension version surfaces back to the published stable version with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
+- `.github/workflows/release-orchestration.yml`: reusable workflow invoked by `release.yml` and `rolling.yml` to build release artifacts and publish GHCR images
 - `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with Linux/Windows/Darwin build artifacts plus source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper-rolling`
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
 - `.github/workflows/memory-profiles.yml`: scheduled/manual alloc-space profiling for the watched hotspot packages (`dotnet`, `rust`, `analysis`, `golang`) with uploaded artifacts and a workflow summary

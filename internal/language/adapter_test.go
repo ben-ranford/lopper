@@ -23,6 +23,16 @@ func TestNewAdapterContractCopiesAliases(t *testing.T) {
 	}
 }
 
+func TestAdapterContractIDAndNilAliases(t *testing.T) {
+	contract := NewAdapterContract("rust")
+	if contract.ID() != "rust" {
+		t.Fatalf("expected adapter id rust, got %q", contract.ID())
+	}
+	if got := contract.Aliases(); len(got) != 0 {
+		t.Fatalf("expected no aliases when none are configured, got %#v", got)
+	}
+}
+
 func TestAdapterLifecycleDetectUsesSharedConfidenceHandler(t *testing.T) {
 	lifecycle := NewAdapterLifecycle("go", []string{"golang"}, func(ctx context.Context, repoPath string) (Detection, error) {
 		if repoPath != "/repo" {
