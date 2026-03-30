@@ -183,18 +183,7 @@ func addVcpkgDependency(value any, out map[string]struct{}) {
 }
 
 func parseVcpkgLock(content []byte) ([]string, []string) {
-	if len(content) == 0 {
-		return nil, nil
-	}
-
-	var payload any
-	if err := json.Unmarshal(content, &payload); err != nil {
-		return nil, []string{fmt.Sprintf(parseWarningFmt, vcpkgLockFile, err)}
-	}
-
-	dependencies := make(map[string]struct{})
-	collectVcpkgLockDependencies(payload, dependencies)
-	return shared.SortedKeys(dependencies), nil
+	return parseJSONDependencyLock(content, vcpkgLockFile, collectVcpkgLockDependencies)
 }
 
 func collectVcpkgLockDependencies(value any, out map[string]struct{}) {
@@ -265,17 +254,21 @@ func parseConanfileTxt(content []byte) ([]string, []string) {
 }
 
 func parseConanLock(content []byte) ([]string, []string) {
+	return parseJSONDependencyLock(content, conanLockFile, collectConanLockDependencies)
+}
+
+func parseJSONDependencyLock(content []byte, filename string, collect func(any, map[string]struct{})) ([]string, []string) {
 	if len(content) == 0 {
 		return nil, nil
 	}
 
 	var payload any
 	if err := json.Unmarshal(content, &payload); err != nil {
-		return nil, []string{fmt.Sprintf(parseWarningFmt, conanLockFile, err)}
+		return nil, []string{fmt.Sprintf(parseWarningFmt, filename, err)}
 	}
 
 	dependencies := make(map[string]struct{})
-	collectConanLockDependencies(payload, dependencies)
+	collect(payload, dependencies)
 	return shared.SortedKeys(dependencies), nil
 }
 
