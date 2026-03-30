@@ -46,6 +46,29 @@ func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T)
 	}
 }
 
+func TestDetectLockfileDriftRubyManifestChangeWithoutLockfileChange(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Gemfile"), "source 'https://rubygems.org'\ngem 'httparty'\n")
+	writeFile(t, filepath.Join(repo, "Gemfile.lock"), "GEM\n  specs:\n    httparty (0.22.0)\n")
+	initGitRepo(t, repo)
+
+	writeFile(t, filepath.Join(repo, "Gemfile"), "source 'https://rubygems.org'\ngem 'httparty'\ngem 'rack'\n")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf("detect lockfile drift: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "Bundler in .: Gemfile changed while no matching lockfile changed") {
+		t.Fatalf("unexpected warning: %q", warnings[0])
+	}
+	if !strings.Contains(warnings[0], "bundle install") {
+		t.Fatalf("expected Bundler remediation text, got %q", warnings[0])
+	}
+}
+
 func TestDetectLockfileDriftSkipsLopperCache(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, ".lopper-cache", "nested", manifestFileName), "{\n  \"name\": \"cache-only\"\n}\n")
