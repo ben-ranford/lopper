@@ -540,9 +540,9 @@ func TestOpenFileOpenErrorCloseRootError(t *testing.T) {
 	}
 
 	originalRootOpen := openRootOpenFn
-	openError := errors.New("open child failure")
+	openErr := errors.New("open child failure")
 	openRootOpenFn = func(_ *os.Root, _ string) (*os.File, error) {
-		return nil, openError
+		return nil, openErr
 	}
 	t.Cleanup(func() {
 		openRootOpenFn = originalRootOpen
@@ -565,7 +565,7 @@ func TestOpenFileOpenErrorCloseRootError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected open error joined with root close error")
 	}
-	if !errors.Is(err, openError) {
+	if !errors.Is(err, openErr) {
 		t.Fatalf("expected original open error, got %v", err)
 	}
 	if !errors.Is(err, expectedErr) {
