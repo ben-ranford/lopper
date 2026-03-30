@@ -22,8 +22,8 @@ const (
 func TestSwiftAdapterDetectWithCocoaPodsRoots(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent([]swiftFixturePodDependency{alamofirePodFixtureDependency()}))
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Alamofire\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "Packages", "Feature", podLockName), buildPodLockContent([]swiftFixturePodDependency{{name: "Kingfisher", version: "7.9.0"}}))
+	writeSwiftAppSourceFile(t, repo, swiftImportAlamofireSource)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Packages", "Feature", podLockName), buildPodLockContent([]swiftFixturePodDependency{kingfisherPodFixtureDependency()}))
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -43,10 +43,7 @@ func TestSwiftAdapterDetectWithCocoaPodsRoots(t *testing.T) {
 
 func TestSwiftAdapterAnalyseCocoaPodsDependency(t *testing.T) {
 	repo := t.TempDir()
-	writeSwiftDemoCocoaPodsProject(t, repo, []swiftFixturePodDependency{alamofirePodFixtureDependency()}, `import Alamofire
-func run() {
-  _ = Session.default
-}`)
+	writeSwiftDemoCocoaPodsProject(t, repo, []swiftFixturePodDependency{alamofirePodFixtureDependency()}, swiftAlamofireSessionUsageSource)
 
 	depReport := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
 	if depReport.Language != swiftAdapterID {
@@ -77,8 +74,8 @@ func run() {
   _ = Session.default
   _ = KingfisherManager.shared
 }`)
-	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent([]swiftFixturePodDependency{{name: "Kingfisher", version: "7.9.0"}}))
-	testutil.MustWriteFile(t, filepath.Join(repo, podLockName), buildPodLockContent([]swiftFixturePodDependency{{name: "Kingfisher", version: "7.9.0"}}))
+	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent([]swiftFixturePodDependency{kingfisherPodFixtureDependency()}))
+	testutil.MustWriteFile(t, filepath.Join(repo, podLockName), buildPodLockContent([]swiftFixturePodDependency{kingfisherPodFixtureDependency()}))
 
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 10})
 	names := make([]string, 0, len(reportData.Dependencies))
@@ -110,8 +107,7 @@ let value = AppDelegateSwizzler.self`)
 func TestSwiftAdapterCocoaPodsMissingLockfileRiskCue(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent([]swiftFixturePodDependency{alamofirePodFixtureDependency()}))
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), `import Alamofire
-let value = Session.default`)
+	writeSwiftDemoSourceFile(t, repo, swiftAlamofireSessionValueSource)
 
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
 	if len(reportData.Dependencies) != 1 {
