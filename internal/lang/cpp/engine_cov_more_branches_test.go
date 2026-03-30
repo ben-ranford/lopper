@@ -54,6 +54,9 @@ func TestCPPLoadCompileContextCapAndHelpers(t *testing.T) {
 	if got := relOrBase(repo, filepath.Join(repo, "src", testMainCPPFileName)); got != filepath.Join("src", testMainCPPFileName) {
 		t.Fatalf("expected relative path from relOrBase, got %q", got)
 	}
+	if got := relOrBase("\x00", filepath.Join(repo, "src", testMainCPPFileName)); got != testMainCPPFileName {
+		t.Fatalf("expected relOrBase to fall back to base name, got %q", got)
+	}
 	if got := dependencyFromIncludePath("."); got != "" {
 		t.Fatalf("expected dot include path to map empty, got %q", got)
 	}
@@ -92,6 +95,7 @@ func TestCPPAdditionalCoverageBranches(t *testing.T) {
 	t.Run("makefile detection and normalize failure", testCPPMakefileDetectionAndNormalizeFailure)
 	t.Run("compile database read errors bubble out", testCPPCompileDatabaseReadErrorsBubbleOut)
 	t.Run("include mapping fallback branches", testCPPIncludeMappingFallbackBranches)
+	t.Run("dependency usage warning branches", testCPPDependencyUsageWarningBranches)
 }
 
 func testCPPMakefileDetectionAndNormalizeFailure(t *testing.T) {
@@ -124,6 +128,29 @@ func testCPPMakefileDetectionAndNormalizeFailure(t *testing.T) {
 	}
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{}); err == nil {
 		t.Fatalf("expected analyse to fail when cwd cannot be resolved")
+	}
+}
+
+func TestCPPUpdateDetectionRecognizesManifestAndSourceSignals(t *testing.T) {
+	repo := t.TempDir()
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+
+	updateDetection(filepath.Join(repo, "native", vcpkgManifestFile), &detection, roots)
+	updateDetection(filepath.Join(repo, "native", vcpkgLockFile), &detection, roots)
+	updateDetection(filepath.Join(repo, "include", "widget.hpp"), &detection, roots)
+
+	if !detection.Matched {
+		t.Fatalf("expected detection to be marked as matched")
+	}
+	if detection.Confidence != 22 {
+		t.Fatalf("expected manifest and header confidence to accumulate, got %d", detection.Confidence)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("expected manifest root to be recorded once, got %#v", roots)
+	}
+	if _, ok := roots[filepath.Join(repo, "native")]; !ok {
+		t.Fatalf("expected manifest directory root to be recorded, got %#v", roots)
 	}
 }
 
@@ -168,5 +195,37 @@ func testCPPIncludeMappingFallbackBranches(t *testing.T) {
 	got := resolveRemovalCandidateWeights(custom)
 	if got == report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected non-nil weights to normalize instead of using defaults")
+	}
+}
+
+func testCPPDependencyUsageWarningBranches(t *testing.T) {
+	catalog := newDependencyCatalog()
+	catalog.add("fmt", "vcpkg manifest")
+	catalog.add("fmt", "conan.lock")
+
+	if got := buildDependencyUsageWarnings("fmt", catalog, true, 1, true); len(got) != 0 {
+		t.Fatalf("expected used dependency to have no warning, got %#v", got)
+	}
+	if got := buildDependencyUsageWarnings("fmt", catalog, true, 0, false); len(got) != 0 {
+		t.Fatalf("expected warn-on-no-usage=false to suppress warnings, got %#v", got)
+	}
+	if got := buildDependencyUsageWarnings("openssl", catalog, false, 0, true); len(got) != 1 || got[0] != "no mapped include usage found for dependency openssl" {
+		t.Fatalf("unexpected undeclared no-usage warning: %#v", got)
+	}
+	if got := buildDependencyUsageWarnings("fmt", newDependencyCatalog(), true, 0, true); len(got) != 1 || got[0] != "no mapped include usage found for dependency fmt" {
+		t.Fatalf("unexpected declared warning without sources: %#v", got)
+	}
+	if got := buildDependencyUsageWarnings("fmt", catalog, true, 0, true); len(got) != 1 || got[0] != "dependency fmt is declared in conan.lock + vcpkg manifest but has no mapped include usage" {
+		t.Fatalf("unexpected declared no-usage warning: %#v", got)
+	}
+}
+
+func TestCPPBuildTopDependenciesWarnsWhenNoDataIsAvailable(t *testing.T) {
+	dependencies, warnings := buildTopCPPDependencies(5, scanResult{}, report.DefaultRemovalCandidateWeights())
+	if len(dependencies) != 0 {
+		t.Fatalf("expected no dependencies without scan data, got %#v", dependencies)
+	}
+	if len(warnings) != 1 || warnings[0] != "no dependency data available for top-N ranking" {
+		t.Fatalf("unexpected no-data warning: %#v", warnings)
 	}
 }

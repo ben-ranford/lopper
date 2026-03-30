@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -166,12 +167,176 @@ func TestBuildDependencyReportFlagsUndeclaredUsage(t *testing.T) {
 	}
 }
 
+func TestCollectVcpkgLockDependenciesTraversesArraysAndContainers(t *testing.T) {
+	out := make(map[string]struct{})
+	payload := []any{
+		map[string]any{"name": "fmt"},
+		map[string]any{
+			"packages": map[string]any{
+				"openssl": map[string]any{
+					"dependencies": []any{
+						map[string]any{"name": "zlib"},
+					},
+				},
+				"libuv": map[string]any{},
+			},
+		},
+	}
+
+	collectVcpkgLockDependencies(payload, out)
+
+	if got := sortedDependencySet(out); !slices.Equal(got, []string{"fmt", "libuv", "openssl", "zlib"}) {
+		t.Fatalf("unexpected vcpkg lock dependencies: %#v", got)
+	}
+}
+
+func TestCollectConanLockDependenciesTraversesArraysAndMaps(t *testing.T) {
+	out := make(map[string]struct{})
+	payload := []any{
+		map[string]any{"ref": "fmt/10.2.1"},
+		map[string]any{
+			"graph_lock": map[string]any{
+				"nodes": []any{
+					map[string]any{"ref": "openssl/3.2.1#revision"},
+					map[string]any{
+						"children": map[string]any{
+							"zlib": map[string]any{"ref": "zlib/1.3.1"},
+						},
+					},
+					map[string]any{"ref": "invalid"},
+				},
+			},
+		},
+	}
+
+	collectConanLockDependencies(payload, out)
+
+	if got := sortedDependencySet(out); !slices.Equal(got, []string{"fmt", "openssl", "zlib"}) {
+		t.Fatalf("unexpected Conan lock dependencies: %#v", got)
+	}
+}
+
+func TestDependencyFromConanReferenceTrimsPrefixesAndComments(t *testing.T) {
+	t.Run("prefix and comment", func(t *testing.T) {
+		if got := dependencyFromConanReference("&:fmt/10.2.1 # root"); got != "fmt" {
+			t.Fatalf("expected normalized dependency from prefixed ref, got %q", got)
+		}
+	})
+
+	t.Run("invalid reference", func(t *testing.T) {
+		if got := dependencyFromConanReference("fmt"); got != "" {
+			t.Fatalf("expected invalid reference to be ignored, got %q", got)
+		}
+	})
+}
+
+func TestParseJSONDependencyLockHandlesEmptyAndInvalidContent(t *testing.T) {
+	if dependencies, warnings := parseVcpkgLock(nil); len(dependencies) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected empty lock content to be ignored, got deps=%#v warnings=%#v", dependencies, warnings)
+	}
+
+	dependencies, warnings := parseConanLock([]byte("{"))
+	if len(dependencies) != 0 {
+		t.Fatalf("expected invalid lock content to produce no dependencies, got %#v", dependencies)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to parse conan.lock") {
+		t.Fatalf("expected invalid lock warning, got %#v", warnings)
+	}
+}
+
+func TestDependencyCatalogAddAndSourcesHandleEdgeCases(t *testing.T) {
+	catalog := newDependencyCatalog()
+	catalog.add("", "vcpkg manifest")
+	catalog.add("fmt", "")
+	catalog.add("fmt", "vcpkg manifest")
+	catalog.add("fmt", "conan.lock")
+
+	if !catalog.contains("fmt") {
+		t.Fatalf("expected fmt dependency to be recorded")
+	}
+	if got := catalog.sources("fmt"); !slices.Equal(got, []string{"conan.lock", "vcpkg manifest"}) {
+		t.Fatalf("unexpected recorded sources: %#v", got)
+	}
+	if got := catalog.sources("missing"); len(got) != 0 {
+		t.Fatalf("expected missing dependency to have no sources, got %#v", got)
+	}
+}
+
+func TestLoadDependencyManifestMissingFileIsIgnored(t *testing.T) {
+	repo := t.TempDir()
+	catalog := newDependencyCatalog()
+
+	warnings, err := loadDependencyManifest(repo, filepath.Join(repo, vcpkgLockFile), &catalog)
+	if err != nil {
+		t.Fatalf("loadDependencyManifest: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for missing manifest, got %#v", warnings)
+	}
+	if got := catalog.list(); len(got) != 0 {
+		t.Fatalf("expected missing manifest to add no dependencies, got %#v", got)
+	}
+}
+
+func TestLoadDependencyManifestUnknownFileIsIgnored(t *testing.T) {
+	repo := t.TempDir()
+	catalog := newDependencyCatalog()
+	path := filepath.Join(repo, "deps.txt")
+	testutil.MustWriteFile(t, path, "fmt")
+
+	warnings, err := loadDependencyManifest(repo, path, &catalog)
+	if err != nil {
+		t.Fatalf("loadDependencyManifest: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for unknown manifest type, got %#v", warnings)
+	}
+	if got := catalog.list(); len(got) != 0 {
+		t.Fatalf("expected unknown manifest to add no dependencies, got %#v", got)
+	}
+}
+
+func TestDedupeCPPWarningsRemovesBlankAndDuplicates(t *testing.T) {
+	got := dedupeCPPWarnings([]string{" first ", "", "first", "second", " second "})
+	if !slices.Equal(got, []string{"first", "second"}) {
+		t.Fatalf("unexpected deduped warnings: %#v", got)
+	}
+}
+
+func TestParseManifestHelpersHandleEmptyContent(t *testing.T) {
+	if dependencies, warnings := parseVcpkgManifest(nil); len(dependencies) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected empty vcpkg manifest to be ignored, got deps=%#v warnings=%#v", dependencies, warnings)
+	}
+	if dependencies, warnings := parseConanfileTxt(nil); len(dependencies) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected empty conanfile to be ignored, got deps=%#v warnings=%#v", dependencies, warnings)
+	}
+}
+
+func TestCorrelateDeclaredDependencyReturnsOriginalWhenMatchIsAmbiguous(t *testing.T) {
+	catalog := newDependencyCatalog()
+	catalog.add("boost-asio", "vcpkg manifest")
+	catalog.add("boost-filesystem", "vcpkg manifest")
+
+	if got := correlateDeclaredDependency("boost", catalog); got != "boost" {
+		t.Fatalf("expected ambiguous prefix to keep original token, got %q", got)
+	}
+}
+
 func dependencyNames(dependencies []report.DependencyReport) []string {
 	names := make([]string, 0, len(dependencies))
 	for _, dependency := range dependencies {
 		names = append(names, dependency.Name)
 	}
 	return names
+}
+
+func sortedDependencySet(values map[string]struct{}) []string {
+	items := make([]string, 0, len(values))
+	for value := range values {
+		items = append(items, value)
+	}
+	slices.Sort(items)
+	return items
 }
 
 func requireDependencyReport(t *testing.T, dependencies []report.DependencyReport, name string) report.DependencyReport {
