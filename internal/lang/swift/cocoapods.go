@@ -33,7 +33,7 @@ func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []s
 		if depID == "" {
 			continue
 		}
-		ensureDependencyForManager(catalog, depID, true, false, "", "", "", cocoaPodsManager)
+		ensureDeclaredDependencyForManager(catalog, depID, cocoaPodsManager)
 		addPodMappings(catalog, depID, declaration, ambiguousModules)
 	}
 	if len(declarations) == 0 {
@@ -74,7 +74,7 @@ func loadPodLockData(repoPath string, catalog *dependencyCatalog) (bool, []strin
 		if source == "" {
 			source = podLockName
 		}
-		ensureDependencyForManager(catalog, depID, false, true, entry.Version, "", source, cocoaPodsManager)
+		ensureResolvedDependencyForManager(catalog, depID, entry.Version, "", source, cocoaPodsManager)
 		addPodMappings(catalog, depID, entry.Name, ambiguousModules)
 	}
 	if warning := cocoaPodsAmbiguityWarning(ambiguousModules); warning != "" {
@@ -110,33 +110,45 @@ func parsePodLockEntries(content []byte) ([]podLockEntry, error) {
 
 	entries := make([]podLockEntry, 0, len(doc.Pods))
 	for _, raw := range doc.Pods {
-		switch value := raw.(type) {
-		case string:
-			entry := podLockEntryFromSpec(value, doc)
-			if entry.Name != "" {
-				entries = append(entries, entry)
-			}
-		case map[string]any:
-			for key := range value {
-				entry := podLockEntryFromSpec(key, doc)
-				if entry.Name != "" {
-					entries = append(entries, entry)
-				}
-			}
-		case map[any]any:
-			for rawKey := range value {
-				key, ok := rawKey.(string)
-				if !ok {
-					continue
-				}
-				entry := podLockEntryFromSpec(key, doc)
-				if entry.Name != "" {
-					entries = append(entries, entry)
-				}
-			}
-		}
+		entries = append(entries, podLockEntriesFromRaw(raw, doc)...)
 	}
 	return dedupePodLockEntries(entries), nil
+}
+
+func podLockEntriesFromRaw(raw any, doc podLockDocument) []podLockEntry {
+	specs := podLockSpecs(raw)
+	entries := make([]podLockEntry, 0, len(specs))
+	for _, spec := range specs {
+		entry := podLockEntryFromSpec(spec, doc)
+		if entry.Name != "" {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func podLockSpecs(raw any) []string {
+	switch value := raw.(type) {
+	case string:
+		return []string{value}
+	case map[string]any:
+		specs := make([]string, 0, len(value))
+		for key := range value {
+			specs = append(specs, key)
+		}
+		return specs
+	case map[any]any:
+		specs := make([]string, 0, len(value))
+		for rawKey := range value {
+			key, ok := rawKey.(string)
+			if ok {
+				specs = append(specs, key)
+			}
+		}
+		return specs
+	default:
+		return nil
+	}
 }
 
 func podLockEntryFromSpec(spec string, doc podLockDocument) podLockEntry {

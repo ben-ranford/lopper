@@ -18,6 +18,7 @@ const (
 	indexJSFileName           = "index.js"
 	buildGradleFileName       = "build.gradle"
 	demoPackageJSONContent    = "{\n  \"name\": \"demo\"\n}\n"
+	lodashMapUsageJS          = "import { map } from \"lodash\"\nmap([1], (x) => x)\n"
 	nodeMainPackageJSON       = "{\n  \"main\": \"index.js\"\n}\n"
 	mapExportJSContent        = "export function map() {}\n"
 	leftPadDependencyID       = "left-pad"
@@ -29,7 +30,7 @@ const (
 func TestServiceAnalyseAllLanguages(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
@@ -217,7 +218,7 @@ func TestServiceAnalyseSwiftCocoaPodsAutoAndAllModes(t *testing.T) {
 	t.Run("all mixed languages", func(t *testing.T) {
 		repo := t.TempDir()
 		writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-		writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+		writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
 		writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
 		writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 		writeFile(t, filepath.Join(repo, "Podfile"), "platform :ios, '16.0'\ntarget 'Demo' do\n  pod 'Alamofire', '5.8.1'\nend\n")
@@ -293,7 +294,7 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
 	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
 
