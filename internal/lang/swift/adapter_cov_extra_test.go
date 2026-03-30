@@ -187,10 +187,16 @@ func TestSwiftThresholdAndNormalizationHelpers(t *testing.T) {
 }
 
 func TestSwiftScanAndRecommendationBranches(t *testing.T) {
+	t.Run("catalog and scan", testSwiftScanAndRecommendationCatalogAndScan)
+	t.Run("report branches", testSwiftScanAndRecommendationReportBranches)
+	t.Run("top dependency ranking", testSwiftScanAndRecommendationTopRanking)
+}
+
+func testSwiftScanAndRecommendationCatalogAndScan(t *testing.T) {
+	t.Helper()
+
 	repo := t.TempDir()
-	dependencies := []swiftFixtureDependency{
-		alamofireFixtureDependency(),
-	}
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
 	mainContent := `import Alamofire
 import MysteryKit
 func run() {
@@ -224,9 +230,14 @@ func run() {
 	if _, err := scanRepo(testutil.CanceledContext(), repo, catalog); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled scan to fail with context.Canceled, got %v", err)
 	}
+}
 
-	meta := dependencyMeta{Declared: true, Source: packageResolvedName}
-	catalog.Dependencies["alamofire"] = meta
+func testSwiftScanAndRecommendationReportBranches(t *testing.T) {
+	t.Helper()
+
+	catalog := dependencyCatalog{
+		Dependencies: map[string]dependencyMeta{"alamofire": {Declared: true, Source: packageResolvedName}},
+	}
 	file := fileScan{
 		Path: filepath.Join("Sources", "Demo", swiftMainFileName),
 		Imports: []importBinding{{
@@ -246,7 +257,7 @@ func run() {
 	if len(reportWarnings) != 0 {
 		t.Fatalf("expected import-backed report to avoid warnings, got %#v", reportWarnings)
 	}
-	if len(buildDependencyRiskCues(meta)) != 1 {
+	if len(buildDependencyRiskCues(catalog.Dependencies["alamofire"])) != 1 {
 		t.Fatalf("expected unresolved dependency risk cue")
 	}
 	if len(reportData.Recommendations) != 3 {
@@ -255,6 +266,10 @@ func run() {
 	if reportData.Provenance == nil || reportData.Provenance.Signals[0] != packageResolvedName {
 		t.Fatalf("expected provenance from lockfile source, got %#v", reportData.Provenance)
 	}
+}
+
+func testSwiftScanAndRecommendationTopRanking(t *testing.T) {
+	t.Helper()
 
 	topReports, topWarnings := buildTopSwiftDependencies(scanResult{}, dependencyCatalog{}, 50)(5, scanResult{}, report.DefaultRemovalCandidateWeights())
 	if len(topReports) != 0 || len(topWarnings) != 1 {
@@ -422,9 +437,22 @@ func testSwiftResolvedPinAndIgnoredSymbolFallbacks(t *testing.T) {
 }
 
 func TestSwiftUsageHeuristicBranches(t *testing.T) {
+	t.Run("empty imports preserve usage", testSwiftUsageHeuristicPreservesExistingUsage)
+	t.Run("multiple dependencies avoid attribution", testSwiftUsageHeuristicAvoidsAttributionWithMultipleDeps)
+	t.Run("single dependency handles usage heuristics", testSwiftUsageHeuristicSingleDependencyBranches)
+	t.Run("symbol collection detects local declarations", testSwiftUsageHeuristicCollectsLocalSymbols)
+}
+
+func testSwiftUsageHeuristicPreservesExistingUsage(t *testing.T) {
+	t.Helper()
+
 	if got := applyUnqualifiedUsageHeuristic(nil, nil, map[string]int{"Session": 2}); got["Session"] != 2 {
 		t.Fatalf("expected empty import heuristic to preserve usage, got %#v", got)
 	}
+}
+
+func testSwiftUsageHeuristicAvoidsAttributionWithMultipleDeps(t *testing.T) {
+	t.Helper()
 
 	multipleDeps := []importBinding{
 		{Dependency: "alamofire", Module: "Alamofire", Local: "Session"},
@@ -433,6 +461,10 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("let value = Session.default"), multipleDeps, map[string]int{}); len(got) != 0 {
 		t.Fatalf("expected multiple dependency heuristic to avoid attribution, got %#v", got)
 	}
+}
+
+func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
+	t.Helper()
 
 	singleDep := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\n_ = Session.default"), singleDep, map[string]int{"Session": 3}); got["Session"] != 3 {
@@ -460,6 +492,10 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	if !hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep) {
 		t.Fatalf("expected non-standard symbol usage to be detected")
 	}
+}
+
+func testSwiftUsageHeuristicCollectsLocalSymbols(t *testing.T) {
+	t.Helper()
 
 	symbols := collectLocalDeclaredSymbols([]byte("struct Demo {}\nprotocol Runner {}\nimport Alamofire\n"))
 	if _, ok := symbols[lookupKey("Demo")]; !ok {
@@ -556,6 +592,20 @@ let package = Package(
 }
 
 func TestSwiftRemainingBranchCoverage(t *testing.T) {
+	t.Run("skip dir and reference resolution", testSwiftRemainingSkipDirAndReferenceResolution)
+	t.Run("dot-call helpers", testSwiftRemainingDotCallHelpers)
+	t.Run("string field parsing", testSwiftRemainingStringFieldParsing)
+	t.Run("detection and scan fallbacks", testSwiftRemainingDetectionAndScanFallbacks)
+}
+
+func TestSwiftFinalHelperBranches(t *testing.T) {
+	t.Run("lookup and unresolved import branches", testSwiftFinalLookupBranches)
+	t.Run("import parsing and skipped dir detection", testSwiftFinalImportParsingAndSkippedDirDetection)
+}
+
+func testSwiftRemainingSkipDirAndReferenceResolution(t *testing.T) {
+	t.Helper()
+
 	if !shouldSkipDir(".git") {
 		t.Fatalf("expected common git dir to be skipped")
 	}
@@ -569,6 +619,10 @@ func TestSwiftRemainingBranchCoverage(t *testing.T) {
 	if got := resolveDependencyReference(aliasOnlyCatalog, "LegacyKit"); got != "legacy" {
 		t.Fatalf("expected alias-based dependency resolution, got %q", got)
 	}
+}
+
+func testSwiftRemainingDotCallHelpers(t *testing.T) {
+	t.Helper()
 
 	if args := extractDotCallArguments(".target name: \"ignored\"", "target", 5); len(args) != 0 {
 		t.Fatalf("expected malformed target call to be ignored, got %#v", args)
@@ -580,11 +634,19 @@ func TestSwiftRemainingBranchCoverage(t *testing.T) {
 	if !ok || next <= 0 || !strings.Contains(inner, `quoted`) {
 		t.Fatalf("expected escaped string paren capture, got inner=%q next=%d ok=%v", inner, next, ok)
 	}
+}
+
+func testSwiftRemainingStringFieldParsing(t *testing.T) {
+	t.Helper()
 
 	rawFields := parseStringFields(`note: "\q"`)
 	if rawFields["note"] != `\q` {
 		t.Fatalf("expected raw field preservation on unquote failure, got %#v", rawFields)
 	}
+}
+
+func testSwiftRemainingDetectionAndScanFallbacks(t *testing.T) {
+	t.Helper()
 
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
@@ -612,7 +674,9 @@ func TestSwiftRemainingBranchCoverage(t *testing.T) {
 	}
 }
 
-func TestSwiftFinalHelperBranches(t *testing.T) {
+func testSwiftFinalLookupBranches(t *testing.T) {
+	t.Helper()
+
 	lookup := map[string]string{}
 	setLookup(lookup, "", "alamofire")
 	setLookup(lookup, lookupKey("Alamofire"), "")
@@ -637,6 +701,10 @@ func TestSwiftFinalHelperBranches(t *testing.T) {
 	if shouldTrackUnresolvedImport("", catalog) {
 		t.Fatalf("expected empty unresolved import to be ignored")
 	}
+}
+
+func testSwiftFinalImportParsingAndSkippedDirDetection(t *testing.T) {
+	t.Helper()
 
 	imports := parseSwiftImports([]byte("// comment only\nimport \n@testable import Alamofire // trailing comment\n"), swiftMainFileName)
 	if len(imports) != 1 || imports[0].Module != "Alamofire" {
@@ -708,35 +776,6 @@ func assertSwiftStringStart(t *testing.T, content []byte, index int, wantHashCou
 	if hashCount != wantHashCount || nextIndex != wantNextIndex || multiline != wantMultiline || ok != wantOK {
 		t.Fatalf("unexpected string start detection: got hashCount=%d nextIndex=%d multiline=%v ok=%v", hashCount, nextIndex, multiline, ok)
 	}
-}
-
-func mustReadSwiftDetectionEntries(t *testing.T) (string, fs.DirEntry, fs.DirEntry) {
-	t.Helper()
-
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, swiftBuildDirName, swiftMainFileName), "import Foundation\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// manifest\n")
-
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
-
-	var buildEntry fs.DirEntry
-	var manifestEntry fs.DirEntry
-	for _, entry := range entries {
-		switch entry.Name() {
-		case swiftBuildDirName:
-			buildEntry = entry
-		case packageManifestName:
-			manifestEntry = entry
-		}
-	}
-	if buildEntry == nil || manifestEntry == nil {
-		t.Fatalf("expected build and manifest entries, got %#v", entries)
-	}
-
-	return repo, buildEntry, manifestEntry
 }
 
 func TestSwiftMissingFileAndNoMatchBranches(t *testing.T) {

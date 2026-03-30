@@ -25,14 +25,7 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.WriteFile(ignoredPath, []byte("struct Ignored {}\n"), 0o644); err != nil {
 		t.Fatalf("write ignored swift file: %v", err)
 	}
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read repo dir: %v", err)
-	}
-	entriesByName := make(map[string]os.DirEntry, len(entries))
-	for _, entry := range entries {
-		entriesByName[entry.Name()] = entry
-	}
+	entriesByName := mustReadDirEntriesByName(t, repo)
 	if err := scanner.walk(ctx, ignoredPath, entriesByName["ignored.swift"], nil); err == nil {
 		t.Fatalf("expected canceled context error from scanner walk")
 	}
@@ -41,14 +34,7 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.Mkdir(sourceDir, 0o755); err != nil {
 		t.Fatalf("mkdir Sources dir: %v", err)
 	}
-	entries, err = os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read repo dir after creating Sources: %v", err)
-	}
-	entriesByName = make(map[string]os.DirEntry, len(entries))
-	for _, entry := range entries {
-		entriesByName[entry.Name()] = entry
-	}
+	entriesByName = mustReadDirEntriesByName(t, repo)
 	if err := scanner.walk(context.Background(), sourceDir, entriesByName["Sources"], nil); err != nil {
 		t.Fatalf("expected regular directory walk to continue, got %v", err)
 	}
@@ -57,14 +43,7 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.WriteFile(readmePath, []byte("# docs\n"), 0o644); err != nil {
 		t.Fatalf("write readme: %v", err)
 	}
-	entries, err = os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read repo dir after creating README.md: %v", err)
-	}
-	entriesByName = make(map[string]os.DirEntry, len(entries))
-	for _, entry := range entries {
-		entriesByName[entry.Name()] = entry
-	}
+	entriesByName = mustReadDirEntriesByName(t, repo)
 	if err := scanner.walk(context.Background(), readmePath, entriesByName["README.md"], nil); err != nil {
 		t.Fatalf("expected non-swift file walk to be ignored, got %v", err)
 	}
@@ -73,14 +52,7 @@ func TestSwiftScannerWalkFollowupBranches(t *testing.T) {
 	if err := os.WriteFile(swiftPath, []byte("struct Example {}\n"), 0o644); err != nil {
 		t.Fatalf("write swift file: %v", err)
 	}
-	entries, err = os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read repo dir after creating main.swift: %v", err)
-	}
-	entriesByName = make(map[string]os.DirEntry, len(entries))
-	for _, entry := range entries {
-		entriesByName[entry.Name()] = entry
-	}
+	entriesByName = mustReadDirEntriesByName(t, repo)
 	if err := scanner.walk(context.Background(), swiftPath, entriesByName["main.swift"], nil); err != nil {
 		t.Fatalf("expected swift file walk to scan successfully, got %v", err)
 	}
