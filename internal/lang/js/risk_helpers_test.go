@@ -11,6 +11,7 @@ import (
 const (
 	dynamicRequireToken = "require("
 	bindingGypFile      = "binding.gyp"
+	nodeBinaryFile      = "addon.node"
 	packageJSONFile     = "package.json"
 )
 
@@ -58,7 +59,7 @@ func TestRiskHelperFunctions(t *testing.T) {
 
 func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "addon.node"), []byte("bin"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, nodeBinaryFile), []byte("bin"), 0o600); err != nil {
 		t.Fatalf("write node binary: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, bindingGypFile), []byte("{}"), 0o600); err != nil {
@@ -69,8 +70,8 @@ func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detect node binary: %v", err)
 	}
-	if binary != "addon.node" {
-		t.Fatalf("expected addon.node detection, got %q", binary)
+	if binary != nodeBinaryFile {
+		t.Fatalf("expected %s detection, got %q", nodeBinaryFile, binary)
 	}
 	binding, err := detectBindingGyp(root)
 	if err != nil {
@@ -246,10 +247,10 @@ func TestIsCommentedBranches(t *testing.T) {
 
 func TestDetectNativeModuleIndicatorsNodeBinaryBranch(t *testing.T) {
 	depRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"name":"pkg"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte(`{"name":"pkg"}`), 0o600); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(depRoot, "addon.node"), []byte(""), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(depRoot, nodeBinaryFile), []byte(""), 0o600); err != nil {
 		t.Fatalf("write node binary: %v", err)
 	}
 
@@ -265,13 +266,13 @@ func TestDetectNativeModuleIndicatorsNodeBinaryBranch(t *testing.T) {
 	}
 	found := false
 	for _, detail := range details {
-		if detail == "addon.node" {
+		if detail == nodeBinaryFile {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected addon.node detail, got %#v", details)
+		t.Fatalf("expected %s detail, got %#v", nodeBinaryFile, details)
 	}
 }
 
@@ -298,12 +299,12 @@ func TestAppendDepthRiskCueSeverityHeuristic(t *testing.T) {
 		if err := os.MkdirAll(depRoot, 0o755); err != nil {
 			t.Fatalf("mkdir dependency root: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(depJSON), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte(depJSON), 0o600); err != nil {
 			t.Fatalf("write dependency package.json for %s: %v", depName, err)
 		}
 	}
 
-	if err := os.WriteFile(filepath.Join(pkgRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"a":"1.0.0"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(pkgRoot, packageJSONFile), []byte(`{"name":"pkg","dependencies":{"a":"1.0.0"}}`), 0o600); err != nil {
 		t.Fatalf("write root package.json: %v", err)
 	}
 
@@ -330,7 +331,7 @@ func TestTransitiveDepthChildWarningBranch(t *testing.T) {
 		t.Fatalf("mkdir root package root: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(rootPkgRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"valid":"1.0.0","invalid":"1.0.0"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(rootPkgRoot, packageJSONFile), []byte(`{"name":"pkg","dependencies":{"valid":"1.0.0","invalid":"1.0.0"}}`), 0o600); err != nil {
 		t.Fatalf("write root package json: %v", err)
 	}
 
@@ -338,7 +339,7 @@ func TestTransitiveDepthChildWarningBranch(t *testing.T) {
 	if err := os.MkdirAll(validRoot, 0o755); err != nil {
 		t.Fatalf("mkdir valid dependency root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(validRoot, "package.json"), []byte(`{"name":"valid"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(validRoot, packageJSONFile), []byte(`{"name":"valid"}`), 0o600); err != nil {
 		t.Fatalf("write valid package json: %v", err)
 	}
 
@@ -346,7 +347,7 @@ func TestTransitiveDepthChildWarningBranch(t *testing.T) {
 	if err := os.MkdirAll(invalidRoot, 0o755); err != nil {
 		t.Fatalf("mkdir invalid dependency root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(invalidRoot, "package.json"), []byte(`{"name":"invalid"`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(invalidRoot, packageJSONFile), []byte(`{"name":"invalid"`), 0o600); err != nil {
 		t.Fatalf("write invalid package json: %v", err)
 	}
 
@@ -363,7 +364,7 @@ func TestTransitiveDepthSkipsMissingDependencyRoot(t *testing.T) {
 	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
 		t.Fatalf("mkdir root package root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(rootPkgRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"missing":"1.0.0"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(rootPkgRoot, packageJSONFile), []byte(`{"name":"pkg","dependencies":{"missing":"1.0.0"}}`), 0o600); err != nil {
 		t.Fatalf("write root package json: %v", err)
 	}
 
