@@ -6,12 +6,17 @@ const (
 	swiftAdapterID          = "swift"
 	packageManifestName     = "Package.swift"
 	packageResolvedName     = "Package.resolved"
+	podManifestName         = "Podfile"
+	podLockName             = "Podfile.lock"
 	maxDetectFiles          = 2048
 	maxScanFiles            = 4096
 	maxScannableSwiftFile   = 2 * 1024 * 1024
 	maxManifestDeclarations = 512
+	maxPodDeclarations      = 512
 	maxWarningSamples       = 5
 	ambiguousDependencyKey  = "\x00"
+	swiftPackageManager     = "swiftpm"
+	cocoaPodsManager        = "cocoapods"
 )
 
 type importBinding = shared.ImportRecord
@@ -23,11 +28,15 @@ type fileScan struct {
 }
 
 type dependencyMeta struct {
-	Declared bool
-	Resolved bool
-	Version  string
-	Revision string
-	Source   string
+	Declared             bool
+	Resolved             bool
+	Version              string
+	Revision             string
+	Source               string
+	DeclaredViaSwiftPM   bool
+	ResolvedViaSwiftPM   bool
+	DeclaredViaCocoaPods bool
+	ResolvedViaCocoaPods bool
 }
 
 type dependencyCatalog struct {
@@ -35,6 +44,8 @@ type dependencyCatalog struct {
 	AliasToDependency  map[string]string
 	ModuleToDependency map[string]string
 	LocalModules       map[string]struct{}
+	HasSwiftPM         bool
+	HasCocoaPods       bool
 }
 
 type scanResult struct {
@@ -78,4 +89,17 @@ type resolvedDocument struct {
 	Object struct {
 		Pins []resolvedPin `json:"pins"`
 	} `json:"object"`
+}
+
+type podLockDocument struct {
+	Pods            []any                     `yaml:"PODS"`
+	Dependencies    []string                  `yaml:"DEPENDENCIES"`
+	ExternalSources map[string]map[string]any `yaml:"EXTERNAL SOURCES"`
+	CheckoutOptions map[string]map[string]any `yaml:"CHECKOUT OPTIONS"`
+}
+
+type podLockEntry struct {
+	Name    string
+	Version string
+	Source  string
 }

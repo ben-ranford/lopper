@@ -135,11 +135,11 @@ func (s *repoScanner) finalize() {
 		s.scan.Warnings = append(s.scan.Warnings, fmt.Sprintf("skipped %d Swift file(s) larger than %d bytes", s.skippedLargeFiles, maxScannableSwiftFile))
 	}
 	if len(s.unresolvedImports) > 0 {
-		s.scan.Warnings = append(s.scan.Warnings, unresolvedImportWarning(s.unresolvedImports))
+		s.scan.Warnings = append(s.scan.Warnings, unresolvedImportWarning(s.unresolvedImports, s.catalog))
 	}
 }
 
-func unresolvedImportWarning(unresolved map[string]int) string {
+func unresolvedImportWarning(unresolved map[string]int, catalog dependencyCatalog) string {
 	type unresolvedEntry struct {
 		Module string
 		Count  int
@@ -164,7 +164,11 @@ func unresolvedImportWarning(unresolved map[string]int) string {
 	if len(entries) > maxWarningSamples {
 		samples = append(samples, fmt.Sprintf("+%d more", len(entries)-maxWarningSamples))
 	}
-	return "could not map some Swift imports to Package.swift/Package.resolved dependencies: " + strings.Join(samples, ", ")
+	message := "could not map some Swift imports to known Swift dependencies"
+	if catalog.HasCocoaPods {
+		message += "; CocoaPods module mapping may be incomplete"
+	}
+	return message + ": " + strings.Join(samples, ", ")
 }
 
 func shouldTrackUnresolvedImport(module string, catalog dependencyCatalog) bool {

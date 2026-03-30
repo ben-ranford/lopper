@@ -87,6 +87,9 @@ func isCacheRelevantFile(path string) bool {
 }
 
 func lockOrConfigFile(base string) bool {
+	if shared.IsGradleVersionCatalogFile(base) {
+		return true
+	}
 	switch base {
 	case "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "package.json", "tsconfig.json", "composer.lock", "composer.json", "cargo.lock", "cargo.toml", "go.mod", "go.sum", "requirements.txt", "requirements-dev.txt", "pipfile", "pipfile.lock", "poetry.lock", "pyproject.toml", "uv.lock", "pom.xml", "build.gradle", "build.gradle.kts", "gradle.lockfile", "settings.gradle", "settings.gradle.kts", "packages.lock.json", ".lopper.yml", ".lopper.yaml", "lopper.json":
 		return true

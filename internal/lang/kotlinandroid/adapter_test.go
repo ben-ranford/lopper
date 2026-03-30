@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -167,6 +168,51 @@ fun run() { OkHttpClient() }
 	}
 	if slices.Contains(reportData.Warnings, "gradle.lockfile not found; dependency versions may be incomplete") {
 		t.Fatalf("did not expect missing-lockfile warning when lockfile exists")
+	}
+}
+
+func TestAdapterAnalyseTopNIncludesVersionCatalogAliasesAndBundles(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoFiles(t, repo, map[string]string{
+		filepath.Join("gradle", "libs.versions.toml"): `
+[libraries]
+androidx-core-ktx = { module = "androidx.core:core-ktx", version = "1.13.1" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version = "4.12.0" }
+
+[bundles]
+networking = ["okhttp"]
+`,
+		buildGradleKTSName: `
+dependencies {
+  implementation(libs.androidx.core.ktx)
+  implementation(libs.bundles.networking)
+}
+`,
+		filepath.Join("src", "main", "AndroidManifest.xml"): testAppManifest,
+		filepath.Join("src", "main", "kotlin", testMainSourceFileName): `
+import androidx.core.content.ContextCompat
+import okhttp3.OkHttpClient
+
+fun run() {
+  ContextCompat.checkSelfPermission(todo(), "x")
+  OkHttpClient()
+}
+`,
+	})
+
+	reportData := mustAnalyse(t, language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	names := make([]string, 0, len(reportData.Dependencies))
+	for _, dependency := range reportData.Dependencies {
+		names = append(names, dependency.Name)
+	}
+	if !slices.Contains(names, "core-ktx") || !slices.Contains(names, "okhttp") {
+		t.Fatalf("expected catalog-backed aliases and bundles in top dependencies, got %#v", names)
+	}
+	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to resolve Gradle version catalog") {
+		t.Fatalf("did not expect unresolved version catalog warning, got %#v", reportData.Warnings)
 	}
 }
 
