@@ -166,6 +166,38 @@ func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
 }
 
+func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "double quoted hash stays",
+			input: "def project, do: [apps_path: \"ser#vices\"]\n# comment\n",
+			want:  "def project, do: [apps_path: \"ser#vices\"]\n\n",
+		},
+		{
+			name:  "escaped quote and hash stay",
+			input: "def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n# comment\n",
+			want:  "def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n\n",
+		},
+		{
+			name:  "single quoted hash stays",
+			input: "value = 'foo#bar'\n# comment\n",
+			want:  "value = 'foo#bar'\n\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripElixirComments([]byte(tc.input)); got != tc.want {
+				t.Fatalf("unexpected stripped output:\nwant: %q\ngot:  %q", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestParseImportsAliasAsSetsLocalName(t *testing.T) {
 	content := []byte("defmodule Demo do\n  alias Foo.Bar, as: Baz\n  Baz.run()\nend\n")
 	declared := map[string]struct{}{"foo": {}}
