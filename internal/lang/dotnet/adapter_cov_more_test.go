@@ -84,12 +84,9 @@ func TestDotNetCollectorAndScannerReturnWalkErrors(t *testing.T) {
 		t.Fatalf("expected collector walkErr to be returned")
 	}
 
-	scanner := newRepoScanner(repo, newDependencyMapper(nil), &scanResult{
-		AmbiguousByDependency:  map[string]int{},
-		UndeclaredByDependency: map[string]int{},
-	})
-	if scanner.walk("", nil, context.Canceled) == nil {
-		t.Fatalf("expected scanner walkErr to be returned")
+	discoverer := newSourceDiscoverer(repo, &sourceDiscovery{})
+	if discoverer.walk("", nil, context.Canceled) == nil {
+		t.Fatalf("expected source discoverer walkErr to be returned")
 	}
 }
 
@@ -101,12 +98,9 @@ func TestDotNetScannerSkipsObjDirAndMissingSource(t *testing.T) {
 	}
 	objEntry := mustReadDirEntry(t, repo, "obj")
 
-	scanner := newRepoScanner(repo, newDependencyMapper(nil), &scanResult{
-		AmbiguousByDependency:  map[string]int{},
-		UndeclaredByDependency: map[string]int{},
-	})
-	if err := scanner.walk(repoEntryPath, objEntry, nil); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected scanner to skip obj dir, got %v", err)
+	discoverer := newSourceDiscoverer(repo, &sourceDiscovery{})
+	if err := discoverer.walk(repoEntryPath, objEntry, nil); !errors.Is(err, filepath.SkipDir) {
+		t.Fatalf("expected source discoverer to skip obj dir, got %v", err)
 	}
 
 	filePath := filepath.Join(repo, dotNetProgramSource)
@@ -116,22 +110,22 @@ func TestDotNetScannerSkipsObjDirAndMissingSource(t *testing.T) {
 	if err := os.Remove(filePath); err != nil {
 		t.Fatalf("remove Program.cs: %v", err)
 	}
-	if scanner.scanFile(filePath) == nil {
-		t.Fatalf("expected removed source file to fail scan")
+	if discoverer.discoverFile(filePath) == nil {
+		t.Fatalf("expected removed source file to fail discovery")
 	}
 }
 
 func TestDotNetAddMappingMetaAccumulates(t *testing.T) {
-	scanner := newRepoScanner(t.TempDir(), newDependencyMapper(nil), &scanResult{
+	result := scanResult{
 		AmbiguousByDependency:  map[string]int{},
 		UndeclaredByDependency: map[string]int{},
-	})
-	scanner.addMappingMeta(mappingMetadata{
+	}
+	addMappingMeta(&result, mappingMetadata{
 		ambiguousByDependency:  map[string]int{"dep": 1},
 		undeclaredByDependency: map[string]int{"dep": 2},
 	})
-	if scanner.result.AmbiguousByDependency["dep"] != 1 || scanner.result.UndeclaredByDependency["dep"] != 2 {
-		t.Fatalf("expected mapping metadata to accumulate, got %#v %#v", scanner.result.AmbiguousByDependency, scanner.result.UndeclaredByDependency)
+	if result.AmbiguousByDependency["dep"] != 1 || result.UndeclaredByDependency["dep"] != 2 {
+		t.Fatalf("expected mapping metadata to accumulate, got %#v %#v", result.AmbiguousByDependency, result.UndeclaredByDependency)
 	}
 }
 
@@ -219,6 +213,41 @@ func TestDotNetBuildTopDependenciesAndHelperGuards(t *testing.T) {
 	}
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00", TopN: 1}); err == nil {
 		t.Fatalf("expected analyse to fail for invalid repo path")
+	}
+}
+
+func TestDotNetDiscoveryAndParsingStagesCompose(t *testing.T) {
+	repo := t.TempDir()
+	manifest := []byte(`
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	if err := os.WriteFile(filepath.Join(repo, "App.csproj"), manifest, 0o644); err != nil {
+		t.Fatalf("write App.csproj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, dotNetProgramSource), []byte("using Newtonsoft.Json;\n"), 0o644); err != nil {
+		t.Fatalf("write Program.cs: %v", err)
+	}
+
+	inputs, err := discoverScanInputs(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("discover scan inputs: %v", err)
+	}
+	if !slices.Equal(inputs.DeclaredDependencies, []string{"newtonsoft.json"}) {
+		t.Fatalf("unexpected declared dependencies: %#v", inputs.DeclaredDependencies)
+	}
+	if len(inputs.SourceFiles) != 1 || inputs.SourceFiles[0].RelativePath != dotNetProgramSource {
+		t.Fatalf("unexpected discovered source files: %#v", inputs.SourceFiles)
+	}
+
+	parsed := parseSourceDocument(inputs.SourceFiles[0], newDependencyMapper(inputs.DeclaredDependencies))
+	if len(parsed.File.Imports) != 1 || parsed.File.Imports[0].Dependency != "newtonsoft.json" {
+		t.Fatalf("unexpected parsed imports: %#v", parsed.File.Imports)
+	}
+	if parsed.File.Path != dotNetProgramSource {
+		t.Fatalf("unexpected parsed file path: %#v", parsed.File)
 	}
 }
 
