@@ -8,8 +8,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+const gradleReadWarningFormat = "unable to read %s: %v"
 
 type dependencyDescriptor struct {
 	Name         string
@@ -201,7 +204,13 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 }
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
-	return parseBuildFilesWithWarnings(repoPath, parseGradleDependencyContent, buildGradleName, buildGradleKTSName)
+	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
+	parseContent := func(path, content string) ([]dependencyDescriptor, []string) {
+		return parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
+	}
+	descriptors, parseWarnings := parseBuildFilesWithPathWarnings(repoPath, parseContent, buildGradleName, buildGradleKTSName)
+	warnings = append(warnings, parseWarnings...)
+	return descriptors, shared.DedupeWarnings(warnings)
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
@@ -209,6 +218,20 @@ func parseGradleDependencyContent(content string) []dependencyDescriptor {
 	descriptors = append(descriptors, parseGradleDependencyMatches(content, gradleCoordinatePattern)...)
 	descriptors = append(descriptors, parseGradleMapDependencies(content)...)
 	return dedupeDescriptors(descriptors)
+}
+
+func parseGradleDependencyContentWithCatalog(path string, content string, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
+	descriptors := parseGradleDependencyContent(content)
+	catalogDescriptors, warnings := catalogResolver.ParseDependencyReferences(path, content)
+	for _, descriptor := range catalogDescriptors {
+		descriptors = append(descriptors, dependencyDescriptor{
+			Name:     descriptor.Artifact,
+			Group:    descriptor.Group,
+			Artifact: descriptor.Artifact,
+			Version:  descriptor.Version,
+		})
+	}
+	return dedupeDescriptors(descriptors), warnings
 }
 
 func parseGradleMapDependencies(content string) []dependencyDescriptor {
@@ -299,11 +322,7 @@ func parseGradleLockfiles(repoPath string) ([]dependencyDescriptor, bool, []stri
 		hasLockfile = true
 		content, readErr := safeio.ReadFileUnder(repoPath, path)
 		if readErr != nil {
-			relPath := path
-			if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
-				relPath = rel
-			}
-			warnings = append(warnings, fmt.Sprintf("unable to read %s: %v", relPath, readErr))
+			warnings = append(warnings, formatGradleReadWarning(repoPath, path, readErr))
 			return nil
 		}
 		descriptors = append(descriptors, parseGradleLockfileContent(string(content))...)
@@ -395,9 +414,32 @@ func parseBuildFilesWithWarnings(repoPath string, parser func(content string) []
 	return collector.descriptors, collector.warnings
 }
 
+func parseBuildFilesWithPathWarnings(repoPath string, parser func(path, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
+	collector := pathAwareBuildFileCollector{
+		repoPath: repoPath,
+		parser:   parser,
+		names:    names,
+		seen:     make(map[string]struct{}),
+	}
+	err := filepath.WalkDir(repoPath, collector.visit)
+	if err != nil {
+		collector.warnings = append(collector.warnings, fmt.Sprintf("unable to scan build files: %v", err))
+	}
+	return collector.descriptors, shared.DedupeWarnings(collector.warnings)
+}
+
 type buildFileCollector struct {
 	repoPath    string
 	parser      func(content string) []dependencyDescriptor
+	names       []string
+	seen        map[string]struct{}
+	descriptors []dependencyDescriptor
+	warnings    []string
+}
+
+type pathAwareBuildFileCollector struct {
+	repoPath    string
+	parser      func(path, content string) ([]dependencyDescriptor, []string)
 	names       []string
 	seen        map[string]struct{}
 	descriptors []dependencyDescriptor
@@ -419,17 +461,49 @@ func (c *buildFileCollector) visit(path string, entry fs.DirEntry, walkErr error
 	}
 	content, err := safeio.ReadFileUnder(c.repoPath, path)
 	if err != nil {
-		relPath := path
-		if rel, relErr := filepath.Rel(c.repoPath, path); relErr == nil {
-			relPath = rel
-		}
-		c.warnings = append(c.warnings, fmt.Sprintf("unable to read %s: %v", relPath, err))
+		c.warnings = append(c.warnings, formatGradleReadWarning(c.repoPath, path, err))
 		return nil
 	}
 	for _, descriptor := range c.parser(string(content)) {
 		c.recordDescriptor(descriptor)
 	}
 	return nil
+}
+
+func (c *pathAwareBuildFileCollector) visit(path string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
+		return nil
+	}
+	content, err := safeio.ReadFileUnder(c.repoPath, path)
+	if err != nil {
+		c.warnings = append(c.warnings, formatGradleReadWarning(c.repoPath, path, err))
+		return nil
+	}
+	items, parseWarnings := c.parser(path, string(content))
+	c.warnings = append(c.warnings, parseWarnings...)
+	for _, descriptor := range items {
+		c.recordDescriptor(descriptor)
+	}
+	return nil
+}
+
+func (c *pathAwareBuildFileCollector) recordDescriptor(descriptor dependencyDescriptor) {
+	key := descriptorKey(descriptor)
+	if _, ok := c.seen[key]; ok {
+		return
+	}
+	c.seen[key] = struct{}{}
+	descriptor.FromManifest = true
+	c.descriptors = append(c.descriptors, descriptor)
 }
 
 func (c *buildFileCollector) recordDescriptor(descriptor dependencyDescriptor) {
@@ -449,4 +523,12 @@ func matchesBuildFile(fileName string, names []string) bool {
 		}
 	}
 	return false
+}
+
+func formatGradleReadWarning(repoPath, path string, err error) string {
+	relPath := path
+	if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
+		relPath = rel
+	}
+	return fmt.Sprintf(gradleReadWarningFormat, filepath.ToSlash(relPath), err)
 }
