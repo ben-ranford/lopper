@@ -14,6 +14,7 @@ import (
 
 const dotNetProgramSource = "Program.cs"
 const dotNetMkdirObjDirErrFmt = "mkdir obj dir: %v"
+const dotNetWriteProgramFileErrFmt = "write " + dotNetProgramSource + ": %v"
 
 func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
@@ -33,7 +34,7 @@ func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 		t.Fatalf(dotNetMkdirObjDirErrFmt, err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, dotNetProgramSource), []byte("using System;\n"), 0o644); err != nil {
-		t.Fatalf("write Program.cs: %v", err)
+		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
 	}
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil || !detection.Matched {
@@ -105,7 +106,7 @@ func TestDotNetScannerSkipsObjDirAndMissingSource(t *testing.T) {
 
 	filePath := filepath.Join(repo, dotNetProgramSource)
 	if err := os.WriteFile(filePath, []byte("using Vendor.Pkg;\n"), 0o644); err != nil {
-		t.Fatalf("write Program.cs: %v", err)
+		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
 	}
 	if err := os.Remove(filePath); err != nil {
 		t.Fatalf("remove Program.cs: %v", err)
@@ -228,7 +229,7 @@ func TestDotNetDiscoveryAndParsingStagesCompose(t *testing.T) {
 		t.Fatalf("write App.csproj: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, dotNetProgramSource), []byte("using Newtonsoft.Json;\n"), 0o644); err != nil {
-		t.Fatalf("write Program.cs: %v", err)
+		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
 	}
 
 	inputs, err := discoverScanInputs(context.Background(), repo)
