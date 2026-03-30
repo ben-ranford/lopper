@@ -110,7 +110,7 @@ For Darwin artifacts, build on a macOS runner with native architecture.
 To build multiple platforms:
 
 ```bash
-make release VERSION=v1.0.2 PLATFORMS="linux/amd64 darwin/arm64 windows/amd64"
+make release VERSION=v1.2.0 PLATFORMS="linux/amd64 darwin/arm64 windows/amd64"
 ```
 
 Install toolchain support with:
