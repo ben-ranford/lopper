@@ -26,10 +26,11 @@ func Current() Info {
 }
 
 func String() string {
-	return Current().String()
+	info := Current()
+	return info.String()
 }
 
-func (i Info) String() string {
+func (i *Info) String() string {
 	base := fmt.Sprintf("lopper %s", i.Version)
 	extras := make([]string, 0, 2)
 	if i.Commit != "" {
