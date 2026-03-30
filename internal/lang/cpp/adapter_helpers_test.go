@@ -117,21 +117,26 @@ func TestMapIncludeToDependencyBranches(t *testing.T) {
 	source := filepath.Join(repo, "src", testMainCPPFileName)
 	testutil.MustWriteFile(t, source, "#include \"header.hpp\"\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "header.hpp"), "// local")
+	catalog := newDependencyCatalog()
+	catalog.add("boost-asio", "vcpkg manifest")
 
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "", Delimiter: '<'}, nil); dep != "" || !unresolved {
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "", Delimiter: '<'}, nil, catalog); dep != "" || !unresolved {
 		t.Fatalf("expected empty header unresolved")
 	}
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "vector", Delimiter: '<'}, nil); dep != "" || unresolved {
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "vector", Delimiter: '<'}, nil, catalog); dep != "" || unresolved {
 		t.Fatalf("expected std header to be ignored")
 	}
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "header.hpp", Delimiter: '"'}, nil); dep != "" || unresolved {
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "header.hpp", Delimiter: '"'}, nil, catalog); dep != "" || unresolved {
 		t.Fatalf("expected local quoted header to be ignored")
 	}
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "missing.hpp", Delimiter: '"'}, nil); dep != "" || !unresolved {
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "missing.hpp", Delimiter: '"'}, nil, catalog); dep != "" || !unresolved {
 		t.Fatalf("expected unresolved quoted include")
 	}
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "openssl/ssl.h", Delimiter: '<'}, nil); dep != "openssl" || unresolved {
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "openssl/ssl.h", Delimiter: '<'}, nil, catalog); dep != "openssl" || unresolved {
 		t.Fatalf("expected mapped dependency openssl, got dep=%q unresolved=%v", dep, unresolved)
+	}
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "boost/asio.hpp", Delimiter: '<'}, nil, catalog); dep != "boost-asio" || unresolved {
+		t.Fatalf("expected declared prefix match boost-asio, got dep=%q unresolved=%v", dep, unresolved)
 	}
 }
 
@@ -170,7 +175,7 @@ func TestBuildRequestedDependenciesNoTarget(t *testing.T) {
 }
 
 func TestBuildDependencyReportEmptyAndHelpers(t *testing.T) {
-	dep, warnings := buildDependencyReport("fmt", scanResult{})
+	dep, warnings := buildDependencyReport("fmt", scanResult{}, true)
 	if dep.Name != "fmt" || dep.TotalExportsCount != 0 {
 		t.Fatalf("unexpected empty dependency report: %#v", dep)
 	}
@@ -212,10 +217,11 @@ func TestAnalyseWithCanceledContext(t *testing.T) {
 
 func TestScanRepoWithOutsideCompileSourceWarning(t *testing.T) {
 	repo := t.TempDir()
-	result, err := scanRepo(context.Background(), repo, compileContext{
+	compileInfo := compileContext{
 		HasCompileDatabase: true,
 		SourceFiles:        []string{"/tmp/not-in-repo.cpp"},
-	})
+	}
+	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
 	if err != nil {
 		t.Fatalf("scan repo: %v", err)
 	}
@@ -228,16 +234,18 @@ func TestScanRepoCanceledAndMissingFileErrors(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine)
 
-	_, err := scanRepo(testutil.CanceledContext(), repo, compileContext{
+	existingSource := compileContext{
 		SourceFiles: []string{filepath.Join(repo, "src", testMainCPPFileName)},
-	})
+	}
+	_, err := scanRepo(testutil.CanceledContext(), repo, existingSource, newDependencyCatalog())
 	if err == nil {
 		t.Fatalf("expected canceled context error from scanRepo")
 	}
 
-	_, err = scanRepo(context.Background(), repo, compileContext{
+	missingSource := compileContext{
 		SourceFiles: []string{filepath.Join(repo, "src", "missing.cpp")},
-	})
+	}
+	_, err = scanRepo(context.Background(), repo, missingSource, newDependencyCatalog())
 	if err == nil {
 		t.Fatalf("expected missing source file error from scanRepo")
 	}
@@ -260,7 +268,7 @@ func TestRelOrBaseFallbackAndHeaderDetectionBranches(t *testing.T) {
 
 func TestScanRepoNoSources(t *testing.T) {
 	repo := t.TempDir()
-	result, err := scanRepo(context.Background(), repo, compileContext{})
+	result, err := scanRepo(context.Background(), repo, compileContext{}, newDependencyCatalog())
 	if err != nil {
 		t.Fatalf("scan repo: %v", err)
 	}
