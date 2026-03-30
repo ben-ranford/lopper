@@ -606,7 +606,16 @@ func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage boo
 
 	usedByHeader := make(map[string]int)
 	usedImportsByHeader := make(map[string]*report.ImportUse)
-	for _, file := range scan.Files {
+	collectDependencyUsage(dependency, scan.Files, usedByHeader, usedImportsByHeader)
+	finalizeDependencyUsage(&reportData, usedByHeader, usedImportsByHeader)
+
+	warnings := buildDependencyUsageWarnings(dependency, scan.Catalog, declared, reportData.TotalExportsCount, warnOnNoUsage)
+	addUndeclaredUsageSignals(&reportData, dependency, declared, &warnings)
+	return reportData, warnings
+}
+
+func collectDependencyUsage(dependency string, files []fileScan, usedByHeader map[string]int, usedImportsByHeader map[string]*report.ImportUse) {
+	for _, file := range files {
 		for _, include := range file.Includes {
 			if shared.NormalizeDependencyID(include.Dependency) != dependency {
 				continue
@@ -620,7 +629,9 @@ func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage boo
 			entry.Locations = append(entry.Locations, include.Location)
 		}
 	}
+}
 
+func finalizeDependencyUsage(reportData *report.DependencyReport, usedByHeader map[string]int, usedImportsByHeader map[string]*report.ImportUse) {
 	headers := sortedCountKeys(usedByHeader)
 	reportData.TotalExportsCount = len(headers)
 	reportData.UsedExportsCount = len(headers)
@@ -629,35 +640,39 @@ func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage boo
 	}
 	reportData.TopUsedSymbols = buildTopUsedSymbols(usedByHeader)
 	reportData.UsedImports = flattenImportUses(usedImportsByHeader, headers)
+}
 
-	warnings := make([]string, 0)
-	if reportData.TotalExportsCount == 0 && warnOnNoUsage {
-		if declared {
-			sources := scan.Catalog.sources(dependency)
-			if len(sources) > 0 {
-				warnings = append(warnings, fmt.Sprintf("dependency %s is declared in %s but has no mapped include usage", dependency, strings.Join(sources, " + ")))
-			} else {
-				warnings = append(warnings, fmt.Sprintf("no mapped include usage found for dependency %s", dependency))
-			}
-		} else {
-			warnings = append(warnings, fmt.Sprintf("no mapped include usage found for dependency %s", dependency))
-		}
+func buildDependencyUsageWarnings(dependency string, catalog dependencyCatalog, declared bool, totalExports int, warnOnNoUsage bool) []string {
+	if totalExports > 0 || !warnOnNoUsage {
+		return nil
 	}
-	if !declared && reportData.TotalExportsCount > 0 {
-		reportData.RiskCues = append(reportData.RiskCues, report.RiskCue{
-			Code:     "undeclared-package-usage",
-			Severity: "high",
-			Message:  "include evidence suggests package usage that is not declared in vcpkg or Conan manifests",
-		})
-		reportData.Recommendations = append(reportData.Recommendations, report.Recommendation{
-			Code:      "declare-dependency-explicitly",
-			Priority:  "high",
-			Message:   "Declare this native package explicitly in vcpkg or Conan manifests.",
-			Rationale: "Include evidence was found without a matching package-manager declaration.",
-		})
-		warnings = append(warnings, fmt.Sprintf("dependency %q appears in includes but is not declared in vcpkg or Conan manifests", dependency))
+	if !declared {
+		return []string{fmt.Sprintf("no mapped include usage found for dependency %s", dependency)}
 	}
-	return reportData, warnings
+
+	sources := catalog.sources(dependency)
+	if len(sources) == 0 {
+		return []string{fmt.Sprintf("no mapped include usage found for dependency %s", dependency)}
+	}
+	return []string{fmt.Sprintf("dependency %s is declared in %s but has no mapped include usage", dependency, strings.Join(sources, " + "))}
+}
+
+func addUndeclaredUsageSignals(reportData *report.DependencyReport, dependency string, declared bool, warnings *[]string) {
+	if declared || reportData.TotalExportsCount == 0 {
+		return
+	}
+	reportData.RiskCues = append(reportData.RiskCues, report.RiskCue{
+		Code:     "undeclared-package-usage",
+		Severity: "high",
+		Message:  "include evidence suggests package usage that is not declared in vcpkg or Conan manifests",
+	})
+	reportData.Recommendations = append(reportData.Recommendations, report.Recommendation{
+		Code:      "declare-dependency-explicitly",
+		Priority:  "high",
+		Message:   "Declare this native package explicitly in vcpkg or Conan manifests.",
+		Rationale: "Include evidence was found without a matching package-manager declaration.",
+	})
+	*warnings = append(*warnings, fmt.Sprintf("dependency %q appears in includes but is not declared in vcpkg or Conan manifests", dependency))
 }
 
 func buildTopUsedSymbols(usage map[string]int) []report.SymbolUsage {

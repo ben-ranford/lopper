@@ -21,6 +21,7 @@ const (
 	conanManifestFile = "conanfile.txt"
 	conanLockFile     = "conan.lock"
 	maxManifestFiles  = 64
+	parseWarningFmt   = "failed to parse %s: %v"
 )
 
 type dependencyCatalog struct {
@@ -156,7 +157,7 @@ func parseVcpkgManifest(content []byte) ([]string, []string) {
 
 	var manifest vcpkgManifest
 	if err := json.Unmarshal(content, &manifest); err != nil {
-		return nil, []string{fmt.Sprintf("failed to parse %s: %v", vcpkgManifestFile, err)}
+		return nil, []string{fmt.Sprintf(parseWarningFmt, vcpkgManifestFile, err)}
 	}
 
 	dependencies := make(map[string]struct{})
@@ -188,7 +189,7 @@ func parseVcpkgLock(content []byte) ([]string, []string) {
 
 	var payload any
 	if err := json.Unmarshal(content, &payload); err != nil {
-		return nil, []string{fmt.Sprintf("failed to parse %s: %v", vcpkgLockFile, err)}
+		return nil, []string{fmt.Sprintf(parseWarningFmt, vcpkgLockFile, err)}
 	}
 
 	dependencies := make(map[string]struct{})
@@ -199,36 +200,41 @@ func parseVcpkgLock(content []byte) ([]string, []string) {
 func collectVcpkgLockDependencies(value any, out map[string]struct{}) {
 	switch current := value.(type) {
 	case []any:
-		for _, item := range current {
-			collectVcpkgLockDependencies(item, out)
-		}
+		collectDependencySlice(current, out, collectVcpkgLockDependencies)
 	case map[string]any:
-		if name, ok := current["name"].(string); ok {
-			if dependency := normalizeCPPDependencyID(name); dependency != "" {
-				out[dependency] = struct{}{}
-			}
+		collectVcpkgLockMap(current, out)
+	}
+}
+
+func collectVcpkgLockMap(values map[string]any, out map[string]struct{}) {
+	addNormalizedDependency(valueAsString(values["name"]), out)
+	for key, item := range values {
+		if isVcpkgContainerKey(key) {
+			collectVcpkgLockContainer(item, out)
+			continue
 		}
-		for key, item := range current {
-			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			switch lowerKey {
-			case "dependencies", "packages", "ports":
-				switch children := item.(type) {
-				case []any:
-					for _, child := range children {
-						collectVcpkgLockDependencies(child, out)
-					}
-				case map[string]any:
-					for name, child := range children {
-						if dependency := normalizeCPPDependencyID(name); dependency != "" {
-							out[dependency] = struct{}{}
-						}
-						collectVcpkgLockDependencies(child, out)
-					}
-				}
-				continue
-			}
-			collectVcpkgLockDependencies(item, out)
+		collectVcpkgLockDependencies(item, out)
+	}
+}
+
+func collectVcpkgLockContainer(value any, out map[string]struct{}) {
+	switch current := value.(type) {
+	case []any:
+		collectDependencySlice(current, out, collectVcpkgLockDependencies)
+	case map[string]any:
+		for name, child := range current {
+			addNormalizedDependency(name, out)
+			collectVcpkgLockDependencies(child, out)
 		}
+	}
+}
+
+func isVcpkgContainerKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "dependencies", "packages", "ports":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -265,7 +271,7 @@ func parseConanLock(content []byte) ([]string, []string) {
 
 	var payload any
 	if err := json.Unmarshal(content, &payload); err != nil {
-		return nil, []string{fmt.Sprintf("failed to parse %s: %v", conanLockFile, err)}
+		return nil, []string{fmt.Sprintf(parseWarningFmt, conanLockFile, err)}
 	}
 
 	dependencies := make(map[string]struct{})
@@ -276,21 +282,19 @@ func parseConanLock(content []byte) ([]string, []string) {
 func collectConanLockDependencies(value any, out map[string]struct{}) {
 	switch current := value.(type) {
 	case []any:
-		for _, item := range current {
-			collectConanLockDependencies(item, out)
-		}
+		collectDependencySlice(current, out, collectConanLockDependencies)
 	case map[string]any:
-		for key, item := range current {
-			if strings.EqualFold(strings.TrimSpace(key), "ref") {
-				if ref, ok := item.(string); ok {
-					if dependency := dependencyFromConanReference(ref); dependency != "" {
-						out[dependency] = struct{}{}
-					}
-				}
-				continue
-			}
-			collectConanLockDependencies(item, out)
+		collectConanLockMap(current, out)
+	}
+}
+
+func collectConanLockMap(values map[string]any, out map[string]struct{}) {
+	addConanReference(valueAsString(values["ref"]), out)
+	for key, item := range values {
+		if isConanRefKey(key) {
+			continue
 		}
+		collectConanLockDependencies(item, out)
 	}
 }
 
@@ -341,6 +345,33 @@ func correlateDeclaredDependency(token string, catalog dependencyCatalog) string
 		return match
 	}
 	return token
+}
+
+func collectDependencySlice(items []any, out map[string]struct{}, visit func(any, map[string]struct{})) {
+	for _, item := range items {
+		visit(item, out)
+	}
+}
+
+func addNormalizedDependency(value string, out map[string]struct{}) {
+	if dependency := normalizeCPPDependencyID(value); dependency != "" {
+		out[dependency] = struct{}{}
+	}
+}
+
+func addConanReference(value string, out map[string]struct{}) {
+	if dependency := dependencyFromConanReference(value); dependency != "" {
+		out[dependency] = struct{}{}
+	}
+}
+
+func valueAsString(value any) string {
+	current, _ := value.(string)
+	return current
+}
+
+func isConanRefKey(key string) bool {
+	return strings.EqualFold(strings.TrimSpace(key), "ref")
 }
 
 func dedupeCPPWarnings(warnings []string) []string {
