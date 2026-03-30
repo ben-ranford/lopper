@@ -42,3 +42,21 @@ func TestStringOmitsUnknownMetadata(t *testing.T) {
 		t.Fatalf("expected compact dev version string, got %q", got)
 	}
 }
+
+func TestInfoStringIncludesMetadata(t *testing.T) {
+	info := Info{
+		Version:   "1.2.2",
+		Commit:    "abc1234",
+		BuildDate: "2026-03-30T08:44:43Z",
+	}
+
+	if got := info.String(); got != "lopper 1.2.2 (commit abc1234, built 2026-03-30T08:44:43Z)" {
+		t.Fatalf("expected formatted metadata string, got %q", got)
+	}
+}
+
+func TestNormalizeVersionDefaultsBlankToDev(t *testing.T) {
+	if got := normalizeVersion("  \t  "); got != "dev" {
+		t.Fatalf("expected blank version to normalize to dev, got %q", got)
+	}
+}
