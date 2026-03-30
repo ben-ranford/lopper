@@ -72,6 +72,10 @@ const (
 	rubyDependencySourceRubygems = "rubygems"
 	rubyDependencySourceGit      = "git"
 	rubyDependencySourcePath     = "path"
+	rubyGemfileSectionGem        = "GEM"
+	rubyGemfileSectionGit        = "GIT"
+	rubyGemfileSectionPath       = "PATH"
+	rubyGemfileSpecsSection      = "specs:"
 )
 
 func NewAdapter() *Adapter {
@@ -424,41 +428,63 @@ func parseGemfileLockSourceAttribution(content []byte, out map[string]struct{}, 
 	if sources == nil || len(content) == 0 {
 		return
 	}
-	currentKind := ""
-	inSpecs := false
+	state := gemfileLockSourceAttributionState{}
 	for _, rawLine := range strings.Split(string(content), "\n") {
-		line := strings.TrimRight(rawLine, "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			inSpecs = false
-			switch trimmed {
-			case "GEM":
-				currentKind = rubyDependencySourceRubygems
-			case "GIT":
-				currentKind = rubyDependencySourceGit
-			case "PATH":
-				currentKind = rubyDependencySourcePath
-			default:
-				currentKind = ""
-			}
-			continue
-		}
-		if trimmed == "specs:" {
-			inSpecs = currentKind != ""
-			continue
-		}
-		if !inSpecs {
-			continue
-		}
-		matches := gemTopLevelSpecPattern.FindStringSubmatch(line)
-		if len(matches) != 2 {
-			continue
-		}
-		addRubyDependency(out, sources, normalizeDependencyID(matches[1]), currentKind, gemfileLockName)
+		applyGemfileLockSourceAttributionLine(rawLine, &state, out, sources)
 	}
+}
+
+type gemfileLockSourceAttributionState struct {
+	currentKind string
+	inSpecs     bool
+}
+
+func applyGemfileLockSourceAttributionLine(rawLine string, state *gemfileLockSourceAttributionState, out map[string]struct{}, sources map[string]rubyDependencySource) {
+	line := strings.TrimRight(rawLine, "\r")
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return
+	}
+	if !isGemfileLockTopLevelLine(line) {
+		applyGemfileLockDependencyEntry(line, state, out, sources)
+		return
+	}
+
+	state.currentKind = parseGemfileLockSection(trimmed)
+	state.inSpecs = false
+}
+
+func isGemfileLockTopLevelLine(line string) bool {
+	return !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")
+}
+
+func parseGemfileLockSection(line string) string {
+	switch line {
+	case rubyGemfileSectionGem:
+		return rubyDependencySourceRubygems
+	case rubyGemfileSectionGit:
+		return rubyDependencySourceGit
+	case rubyGemfileSectionPath:
+		return rubyDependencySourcePath
+	default:
+		return ""
+	}
+}
+
+func applyGemfileLockDependencyEntry(line string, state *gemfileLockSourceAttributionState, out map[string]struct{}, sources map[string]rubyDependencySource) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == rubyGemfileSpecsSection {
+		state.inSpecs = state.currentKind != ""
+		return
+	}
+	if !state.inSpecs {
+		return
+	}
+	matches := gemTopLevelSpecPattern.FindStringSubmatch(trimmed)
+	if len(matches) != 2 {
+		return
+	}
+	addRubyDependency(out, sources, normalizeDependencyID(matches[1]), state.currentKind, gemfileLockName)
 }
 
 func addRubyDependency(out map[string]struct{}, sources map[string]rubyDependencySource, dependency, kind, signal string) {

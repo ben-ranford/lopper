@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	rubyAppFile         = "app.rb"
-	demoGemspecFile     = "demo.gemspec"
-	httpartyRequireLine = "require 'httparty'\n"
+	rubyAppFile          = "app.rb"
+	demoGemspecFile      = "demo.gemspec"
+	httpartyRequireLine  = "require 'httparty'\n"
+	rubyScanRepoErrFmt   = "scan repo: %v"
+	privateGemDependency = "private-gem"
+	localGemDependency   = "local-gem"
 )
 
 func TestRubyAdapterDetectBundlerProject(t *testing.T) {
@@ -141,15 +144,15 @@ require 'local_gem'
 
 	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("scan repo: %v", err)
+		t.Fatalf(rubyScanRepoErrFmt, err)
 	}
 	if got := sortedDependencyUnion(scan.DeclaredDependencies); !slices.Contains(got, "rack") {
 		t.Fatalf("expected lockfile dependency preservation, got %#v", got)
 	}
 
 	assertRubyDependencyProvenance(t, repo, "httparty", rubyDependencySourceRubygems, []string{gemfileName, gemfileLockName})
-	assertRubyDependencyProvenance(t, repo, "private-gem", rubyDependencySourceGit, []string{gemfileName, gemfileLockName})
-	assertRubyDependencyProvenance(t, repo, "local-gem", rubyDependencySourcePath, []string{gemfileName, gemfileLockName})
+	assertRubyDependencyProvenance(t, repo, privateGemDependency, rubyDependencySourceGit, []string{gemfileName, gemfileLockName})
+	assertRubyDependencyProvenance(t, repo, localGemDependency, rubyDependencySourcePath, []string{gemfileName, gemfileLockName})
 }
 
 func TestRubyAdapterAnalyseBundlerGitAndPathProvenanceWithoutLockfile(t *testing.T) {
@@ -163,8 +166,8 @@ require 'local_gem'
 `
 	testutil.MustWriteFile(t, filepath.Join(repo, rubyAppFile), appContent)
 
-	assertRubyDependencyProvenance(t, repo, "private-gem", rubyDependencySourceGit, []string{gemfileName})
-	assertRubyDependencyProvenance(t, repo, "local-gem", rubyDependencySourcePath, []string{gemfileName})
+	assertRubyDependencyProvenance(t, repo, privateGemDependency, rubyDependencySourceGit, []string{gemfileName})
+	assertRubyDependencyProvenance(t, repo, localGemDependency, rubyDependencySourcePath, []string{gemfileName})
 }
 
 func TestRubyAdapterAnalyseGemspecProjectAndDeduplicatesDeclaredDependencies(t *testing.T) {
@@ -181,7 +184,7 @@ end
 
 	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("scan repo: %v", err)
+		t.Fatalf(rubyScanRepoErrFmt, err)
 	}
 	if got := sortedDependencyUnion(scan.DeclaredDependencies); !slices.Equal(got, []string{"httparty", "nokogiri", "rack", "rspec"}) {
 		t.Fatalf("unexpected declared dependency set: %#v", got)
@@ -206,7 +209,7 @@ end
 
 	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("scan repo: %v", err)
+		t.Fatalf(rubyScanRepoErrFmt, err)
 	}
 	joinedWarnings := strings.Join(scan.Warnings, "\n")
 	if !strings.Contains(joinedWarnings, "could not confidently parse gemspec dependency declaration in "+demoGemspecFile+":2") {
@@ -214,91 +217,64 @@ end
 	}
 }
 
-func TestRubyDependencyProvenanceHelpers(t *testing.T) {
+func TestRubyDependencyProvenanceHelpersNone(t *testing.T) {
+	assertRubyDependencyProvenanceSignalData(t, rubyDependencySource{}, "", "", nil)
+}
+
+func TestRubyDependencyProvenanceHelpersRubygemsOnly(t *testing.T) {
+	assertRubyDependencyProvenanceSignalData(
+		t,
+		rubyDependencySource{Rubygems: true},
+		rubyDependencySourceRubygems,
+		"medium",
+		nil,
+	)
+}
+
+func TestRubyDependencyProvenanceHelpersGitFromGemfile(t *testing.T) {
+	assertRubyDependencyProvenanceSignalData(
+		t,
+		rubyDependencySource{Git: true, DeclaredGemfile: true},
+		rubyDependencySourceGit,
+		"high",
+		[]string{gemfileName},
+	)
+}
+
+func TestRubyDependencyProvenanceHelpersBundlerMixed(t *testing.T) {
+	assertRubyDependencyProvenanceSignalData(
+		t,
+		rubyDependencySource{Rubygems: true, Git: true, Path: true, DeclaredGemfile: true, DeclaredLock: true},
+		rubyDependencySourceBundler,
+		"high",
+		[]string{rubyDependencySourceGit, rubyDependencySourcePath, rubyDependencySourceRubygems, gemfileName, gemfileLockName},
+	)
+}
+
+func TestRubyParseGemfileDependencyLine(t *testing.T) {
 	cases := []struct {
-		name           string
-		info           rubyDependencySource
-		wantSource     string
-		wantConfidence string
-		wantSignals    []string
+		line     string
+		wantDep  string
+		wantKind string
+		wantOK   bool
 	}{
-		{name: "none"},
-		{
-			name:           "rubygems only",
-			info:           rubyDependencySource{Rubygems: true},
-			wantSource:     rubyDependencySourceRubygems,
-			wantConfidence: "medium",
-		},
-		{
-			name:           "git from gemfile",
-			info:           rubyDependencySource{Git: true, DeclaredGemfile: true},
-			wantSource:     rubyDependencySourceGit,
-			wantConfidence: "high",
-			wantSignals:    []string{gemfileName},
-		},
-		{
-			name:           "bundler mixed",
-			info:           rubyDependencySource{Rubygems: true, Git: true, Path: true, DeclaredGemfile: true, DeclaredLock: true},
-			wantSource:     rubyDependencySourceBundler,
-			wantConfidence: "high",
-			wantSignals:    []string{rubyDependencySourceGit, rubyDependencySourcePath, rubyDependencySourceRubygems, gemfileName, gemfileLockName},
-		},
+		{line: `gem 'rack'`, wantDep: "rack", wantKind: rubyDependencySourceRubygems, wantOK: true},
+		{line: `gem 'private_gem', git: 'https://example.test/private_gem.git'`, wantDep: privateGemDependency, wantKind: rubyDependencySourceGit, wantOK: true},
+		{line: `gem 'local_gem', :path => 'vendor/local_gem' # comment`, wantDep: localGemDependency, wantKind: rubyDependencySourcePath, wantOK: true},
+		{line: `puts 'hello'`, wantOK: false},
 	}
-
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := rubyDependencyProvenanceSource(tc.info); got != tc.wantSource {
-				t.Fatalf("rubyDependencyProvenanceSource(%#v)=%q want %q", tc.info, got, tc.wantSource)
-			}
-			if got := rubyDependencyProvenanceConfidence(tc.info); got != tc.wantConfidence {
-				t.Fatalf("rubyDependencyProvenanceConfidence(%#v)=%q want %q", tc.info, got, tc.wantConfidence)
-			}
-			if got := rubyDependencyProvenanceSignals(tc.info); !slices.Equal(got, tc.wantSignals) {
-				t.Fatalf("rubyDependencyProvenanceSignals(%#v)=%#v want %#v", tc.info, got, tc.wantSignals)
-			}
-
-			provenance := buildRubyDependencyProvenance(tc.info)
-			if tc.wantSource == "" {
-				if provenance != nil {
-					t.Fatalf("expected nil provenance, got %#v", provenance)
-				}
-				return
-			}
-			if provenance == nil {
-				t.Fatalf("expected provenance for %#v", tc.info)
-			}
-			if provenance.Source != tc.wantSource || provenance.Confidence != tc.wantConfidence || !slices.Equal(provenance.Signals, tc.wantSignals) {
-				t.Fatalf("unexpected provenance: %#v", provenance)
-			}
-		})
+		dependency, kind, ok := parseGemfileDependencyLine(tc.line)
+		if ok != tc.wantOK || dependency != tc.wantDep || kind != tc.wantKind {
+			t.Fatalf("parseGemfileDependencyLine(%q)=(%q,%q,%t) want (%q,%q,%t)", tc.line, dependency, kind, ok, tc.wantDep, tc.wantKind, tc.wantOK)
+		}
 	}
 }
 
-func TestRubyBundlerSourceParsingBranches(t *testing.T) {
-	t.Run("gemfile dependency line parsing", func(t *testing.T) {
-		cases := []struct {
-			line     string
-			wantDep  string
-			wantKind string
-			wantOK   bool
-		}{
-			{line: `gem 'rack'`, wantDep: "rack", wantKind: rubyDependencySourceRubygems, wantOK: true},
-			{line: `gem 'private_gem', git: 'https://example.test/private_gem.git'`, wantDep: "private-gem", wantKind: rubyDependencySourceGit, wantOK: true},
-			{line: `gem 'local_gem', :path => 'vendor/local_gem' # comment`, wantDep: "local-gem", wantKind: rubyDependencySourcePath, wantOK: true},
-			{line: `puts 'hello'`, wantOK: false},
-		}
-		for _, tc := range cases {
-			dependency, kind, ok := parseGemfileDependencyLine(tc.line)
-			if ok != tc.wantOK || dependency != tc.wantDep || kind != tc.wantKind {
-				t.Fatalf("parseGemfileDependencyLine(%q)=(%q,%q,%t) want (%q,%q,%t)", tc.line, dependency, kind, ok, tc.wantDep, tc.wantKind, tc.wantOK)
-			}
-		}
-	})
-
-	t.Run("lockfile source attribution ignores unknown sections and nested specs", func(t *testing.T) {
-		out := map[string]struct{}{}
-		sources := map[string]rubyDependencySource{}
-		content := []byte(`GIT
+func TestRubyParseGemfileLockSourceAttributionIgnoresUnknownSections(t *testing.T) {
+	out := map[string]struct{}{}
+	sources := map[string]rubyDependencySource{}
+	content := []byte(`GIT
   remote: https://example.test/private_gem.git
   specs:
     private_gem (1.0.0)
@@ -309,37 +285,63 @@ UNKNOWN
     ignored_gem (0.1.0)
 `)
 
-		parseGemfileLockSourceAttribution(content, out, nil)
-		parseGemfileLockSourceAttribution(content, out, sources)
+	parseGemfileLockSourceAttribution(content, out, nil)
+	parseGemfileLockSourceAttribution(content, out, sources)
 
-		if _, ok := out["private-gem"]; !ok {
-			t.Fatalf("expected top-level git gem to be tracked, got %#v", out)
-		}
-		if _, ok := out["ignored-gem"]; ok {
-			t.Fatalf("expected unknown section to be ignored, got %#v", out)
-		}
-		if got := rubyDependencyProvenanceSource(sources["private-gem"]); got != rubyDependencySourceGit {
-			t.Fatalf("expected git provenance, got %#v", sources["private-gem"])
-		}
-	})
+	if _, ok := out[privateGemDependency]; !ok {
+		t.Fatalf("expected top-level git gem to be tracked, got %#v", out)
+	}
+	if _, ok := out["ignored-gem"]; ok {
+		t.Fatalf("expected unknown section to be ignored, got %#v", out)
+	}
+	if got := rubyDependencyProvenanceSource(sources[privateGemDependency]); got != rubyDependencySourceGit {
+		t.Fatalf("expected git provenance, got %#v", sources[privateGemDependency])
+	}
+}
 
-	t.Run("loadDeclaredDependencies tolerates nil sources", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "gem 'rack'\n")
-		testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
+func TestLoadDeclaredDependenciesToleratesNilSources(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "gem 'rack'\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
 
-		out := make(map[string]struct{})
-		warnings, err := loadDeclaredDependencies(repo, out, nil)
-		if err != nil {
-			t.Fatalf("loadDeclaredDependencies: %v", err)
+	out := make(map[string]struct{})
+	warnings, err := loadDeclaredDependencies(repo, out, nil)
+	if err != nil {
+		t.Fatalf("loadDeclaredDependencies: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	if got := sortedDependencyUnion(out); !slices.Equal(got, []string{"httparty", "rack"}) {
+		t.Fatalf("unexpected declared dependencies: %#v", got)
+	}
+}
+
+func assertRubyDependencyProvenanceSignalData(t *testing.T, info rubyDependencySource, wantSource, wantConfidence string, wantSignals []string) {
+	t.Helper()
+	if got := rubyDependencyProvenanceSource(info); got != wantSource {
+		t.Fatalf("rubyDependencyProvenanceSource(%#v)=%q want %q", info, got, wantSource)
+	}
+	if got := rubyDependencyProvenanceConfidence(info); got != wantConfidence {
+		t.Fatalf("rubyDependencyProvenanceConfidence(%#v)=%q want %q", info, got, wantConfidence)
+	}
+	if got := rubyDependencyProvenanceSignals(info); !slices.Equal(got, wantSignals) {
+		t.Fatalf("rubyDependencyProvenanceSignals(%#v)=%#v want %#v", info, got, wantSignals)
+	}
+
+	provenance := buildRubyDependencyProvenance(info)
+	if wantSource == "" {
+		if provenance != nil {
+			t.Fatalf("expected nil provenance, got %#v", provenance)
 		}
-		if len(warnings) != 0 {
-			t.Fatalf("expected no warnings, got %#v", warnings)
-		}
-		if got := sortedDependencyUnion(out); !slices.Equal(got, []string{"httparty", "rack"}) {
-			t.Fatalf("unexpected declared dependencies: %#v", got)
-		}
-	})
+		return
+	}
+	if provenance == nil {
+		t.Fatalf("expected provenance for %#v", info)
+	}
+	if provenance.Source != wantSource || provenance.Confidence != wantConfidence || !slices.Equal(provenance.Signals, wantSignals) {
+		t.Fatalf("unexpected provenance: %#v", provenance)
+	}
 }
 
 func TestRubyAdditionalBranches(t *testing.T) {
