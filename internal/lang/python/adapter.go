@@ -75,6 +75,10 @@ func applyPythonRootSignals(repoPath string, detection *language.Detection, root
 		confidence int
 	}{
 		{name: "pyproject.toml", confidence: 50},
+		{name: "Pipfile", confidence: 45},
+		{name: "Pipfile.lock", confidence: 25},
+		{name: "poetry.lock", confidence: 25},
+		{name: "uv.lock", confidence: 25},
 		{name: "requirements.txt", confidence: 35},
 		{name: "setup.py", confidence: 35},
 	}
@@ -93,7 +97,7 @@ func applyPythonRootSignals(repoPath string, detection *language.Detection, root
 
 func updateDetectionFromPythonFile(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
 	switch strings.ToLower(entry.Name()) {
-	case "pyproject.toml", "requirements.txt", "setup.py":
+	case "pyproject.toml", "pipfile", "pipfile.lock", "poetry.lock", "uv.lock", "requirements.txt", "setup.py":
 		detection.Matched = true
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
@@ -134,8 +138,7 @@ func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	fileUsages := pythonFileUsages(scan)
-	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
+	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
@@ -158,17 +161,28 @@ type fileScan struct {
 }
 
 type scanResult struct {
-	Files    []fileScan
-	Warnings []string
+	Files                []fileScan
+	Warnings             []string
+	DeclaredDependencies map[string]struct{}
+	ImportedDependencies map[string]struct{}
 }
 
 func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
-	result := scanResult{}
+	result := scanResult{
+		DeclaredDependencies: make(map[string]struct{}),
+		ImportedDependencies: make(map[string]struct{}),
+	}
 	if repoPath == "" {
 		return result, fmt.Errorf("repo path is empty")
 	}
+	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath)
+	if err != nil {
+		return result, err
+	}
+	result.DeclaredDependencies = declaredDependencies
+	result.Warnings = append(result.Warnings, warnings...)
 
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -205,6 +219,9 @@ func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result
 		return err
 	}
 	imports := parseImports(content, relativePath, repoPath)
+	for _, imported := range imports {
+		result.ImportedDependencies[imported.Dependency] = struct{}{}
+	}
 	result.Files = append(result.Files, fileScan{
 		Path:    relativePath,
 		Imports: imports,
@@ -434,7 +451,8 @@ func isLocalModule(repoPath, root string) bool {
 }
 
 func normalizeDependencyID(value string) string {
-	return strings.ReplaceAll(shared.NormalizeDependencyID(value), "_", "-")
+	replacer := strings.NewReplacer("_", "-", ".", "-")
+	return replacer.Replace(shared.NormalizeDependencyID(value))
 }
 
 func shouldSkipDir(name string) bool {

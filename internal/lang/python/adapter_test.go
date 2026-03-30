@@ -94,10 +94,20 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected detect=true with requirements.txt")
 	}
+
+	pipenvRepo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(pipenvRepo, "Pipfile"), "[packages]\nrequests='*'\n")
+	ok, err = adapter.Detect(context.Background(), pipenvRepo)
+	if err != nil {
+		t.Fatalf("detect Pipfile repo: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected detect=true with Pipfile")
+	}
 }
 
 func TestNormalizeDependencyID(t *testing.T) {
-	if got := normalizeDependencyID(" My_Package "); got != "my-package" {
+	if got := normalizeDependencyID(" My_Package.Name "); got != "my-package-name" {
 		t.Fatalf("unexpected normalized dependency ID: %q", got)
 	}
 }

@@ -16,16 +16,21 @@ import (
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
-const lockfileDriftWarningPrefix = "lockfile drift detected: "
+const (
+	lockfileDriftWarningPrefix = "lockfile drift detected: "
+	pyprojectManifestName      = "pyproject.toml"
+)
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 var execGitCommandContextFn = gitexec.CommandContext
 
 type lockfileRule struct {
-	manager   string
-	manifest  string
-	lockfiles []string
-	remedy    string
+	manager         string
+	manifest        string
+	manifestLabel   string
+	lockfiles       []string
+	remedy          string
+	manifestMatcher func(repoPath, dir string) (bool, error)
 }
 
 type lockfileGitContext struct {
@@ -62,7 +67,8 @@ var lockfileRules = []lockfileRule{
 	{manager: "Cargo", manifest: "Cargo.toml", lockfiles: []string{"Cargo.lock"}, remedy: "run cargo generate-lockfile (or cargo build) and commit the updated files"},
 	{manager: "Go modules", manifest: "go.mod", lockfiles: []string{"go.sum"}, remedy: "run go mod tidy and commit the updated files"},
 	{manager: "Pipenv", manifest: "Pipfile", lockfiles: []string{"Pipfile.lock"}, remedy: "run pipenv lock and commit the updated files"},
-	{manager: "Poetry", manifest: "pyproject.toml", lockfiles: []string{"poetry.lock"}, remedy: "run poetry lock and commit the updated files"},
+	{manager: "Poetry", manifest: pyprojectManifestName, manifestLabel: "Poetry configuration in pyproject.toml", lockfiles: []string{"poetry.lock"}, remedy: "run poetry lock and commit the updated files", manifestMatcher: pyprojectSectionMatcher("tool.poetry")},
+	{manager: "uv", manifest: pyprojectManifestName, manifestLabel: "uv configuration in pyproject.toml", lockfiles: []string{"uv.lock"}, remedy: "run uv lock and commit the updated files", manifestMatcher: pyprojectSectionMatcher("tool.uv")},
 }
 
 func evaluateLockfileDriftPolicy(ctx context.Context, repoPath, policy string) ([]string, error) {
@@ -109,7 +115,10 @@ func scanLockfileDrift(ctx context.Context, repoPath string, gitContext lockfile
 	state := lockfileWalkState{
 		repoPath: repoPath,
 		visit: func(snapshot lockfileDirSnapshot) error {
-			findings := evaluateLockfileDir(snapshot, gitContext)
+			findings, err := evaluateLockfileDir(snapshot, gitContext)
+			if err != nil {
+				return err
+			}
 			if len(findings) == 0 {
 				return nil
 			}
@@ -198,90 +207,115 @@ func readLockfileDirSnapshot(repoPath, dir string) (lockfileDirSnapshot, error) 
 	}, nil
 }
 
-// shouldSkipMissingLockfile returns true when the manifest exists but the
-// absence of a lockfile is valid for the given rule. Each check reads the
-// manifest file content to distinguish tool-specific configurations from
-// generic use of the same file format.
-func shouldSkipMissingLockfile(dir string, rule lockfileRule) bool {
-	content, err := safeio.ReadFileUnder(dir, filepath.Join(dir, rule.manifest))
+func shouldSkipMissingLockfile(snapshot lockfileDirSnapshot, rule lockfileRule) (bool, error) {
+	content, err := safeio.ReadFileUnder(snapshot.repoPath, filepath.Join(snapshot.path, rule.manifest))
 	if err != nil {
-		return false
+		return false, fmt.Errorf("read %s for lockfile drift detection: %w", rule.manifest, err)
+	}
+	if rule.manifestMatcher != nil {
+		matched, matchErr := rule.manifestMatcher(snapshot.repoPath, snapshot.path)
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if !matched {
+			return true, nil
+		}
 	}
 	text := string(content)
 	switch rule.manifest {
-	case "pyproject.toml":
-		// pyproject.toml is used by many Python build tools (setuptools, hatch,
-		// flit, uv, pdm). Only Poetry projects need poetry.lock.
-		return !strings.Contains(text, "[tool.poetry]")
 	case "go.mod":
 		// go.sum is only generated when a module has external dependencies.
 		// A stdlib-only module has go.mod but no go.sum and that is valid.
 		for _, line := range strings.Split(text, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), "require") {
-				return false
+				return false, nil
 			}
 		}
-		return true
+		return true, nil
 	case "Cargo.toml":
 		// Library crates conventionally omit Cargo.lock from version control.
 		// Only warn for binary crates (those with a [[bin]] section).
-		return !strings.Contains(text, "[[bin]]")
+		return !strings.Contains(text, "[[bin]]"), nil
 	}
-	return false
+	return false, nil
 }
 
-func evaluateLockfileDir(snapshot lockfileDirSnapshot, gitContext lockfileGitContext) []lockfileDriftFinding {
+func evaluateLockfileDir(snapshot lockfileDirSnapshot, gitContext lockfileGitContext) ([]lockfileDriftFinding, error) {
 	findings := make([]lockfileDriftFinding, 0, len(lockfileRules))
 	for _, rule := range lockfileRules {
-		finding, ok := evaluateLockfileRule(snapshot, rule, gitContext)
+		finding, ok, err := evaluateLockfileRule(snapshot, rule, gitContext)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			continue
 		}
 		findings = append(findings, finding)
 	}
-	return findings
+	return findings, nil
 }
 
-func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitContext lockfileGitContext) (lockfileDriftFinding, bool) {
+func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitContext lockfileGitContext) (lockfileDriftFinding, bool, error) {
 	_, hasManifest := snapshot.files[rule.manifest]
 	lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
 
 	switch {
 	case hasManifest && len(lockfiles) == 0:
-		if shouldSkipMissingLockfile(snapshot.path, rule) {
-			return lockfileDriftFinding{}, false
+		skip, err := shouldSkipMissingLockfile(snapshot, rule)
+		if err != nil {
+			return lockfileDriftFinding{}, false, err
+		}
+		if skip {
+			return lockfileDriftFinding{}, false, nil
 		}
 		return lockfileDriftFinding{
 			kind:   lockfileDriftMissingLockfile,
 			rule:   rule,
 			relDir: snapshot.relDir,
-		}, true
+		}, true, nil
 	case !hasManifest && len(lockfiles) > 0:
 		return lockfileDriftFinding{
 			kind:      lockfileDriftStaleLockfile,
 			rule:      rule,
 			relDir:    snapshot.relDir,
 			lockfiles: lockfiles,
-		}, true
-	case !hasManifest || len(lockfiles) == 0 || !gitContext.hasGitContext || len(gitContext.changedFiles) == 0:
-		return lockfileDriftFinding{}, false
+		}, true, nil
+	}
+
+	if hasManifest && rule.manifestMatcher != nil {
+		matched, err := rule.manifestMatcher(snapshot.repoPath, snapshot.path)
+		if err != nil {
+			return lockfileDriftFinding{}, false, err
+		}
+		if !matched {
+			return lockfileDriftFinding{
+				kind:      lockfileDriftStaleLockfile,
+				rule:      rule,
+				relDir:    snapshot.relDir,
+				lockfiles: lockfiles,
+			}, true, nil
+		}
+	}
+
+	if !hasManifest || len(lockfiles) == 0 || !gitContext.hasGitContext || len(gitContext.changedFiles) == 0 {
+		return lockfileDriftFinding{}, false, nil
 	}
 
 	manifestPath := relativeFilePath(snapshot.repoPath, snapshot.path, rule.manifest)
 	if !isPathChanged(gitContext.changedFiles, manifestPath) {
-		return lockfileDriftFinding{}, false
+		return lockfileDriftFinding{}, false, nil
 	}
 	for _, lockfile := range lockfiles {
 		lockfilePath := relativeFilePath(snapshot.repoPath, snapshot.path, lockfile.name)
 		if isPathChanged(gitContext.changedFiles, lockfilePath) {
-			return lockfileDriftFinding{}, false
+			return lockfileDriftFinding{}, false, nil
 		}
 	}
 	return lockfileDriftFinding{
 		kind:   lockfileDriftManifestChange,
 		rule:   rule,
 		relDir: snapshot.relDir,
-	}, true
+	}, true, nil
 }
 
 func buildLockfileDriftWarnings(findings []lockfileDriftFinding) []string {
@@ -300,7 +334,7 @@ func buildLockfileDriftWarning(finding lockfileDriftFinding) string {
 	case lockfileDriftMissingLockfile:
 		return fmt.Sprintf("%s%s in %s: %s exists but no matching lockfile (%s) was found; %s", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.rule.manifest, strings.Join(finding.rule.lockfiles, ", "), finding.rule.remedy)
 	case lockfileDriftStaleLockfile:
-		return fmt.Sprintf("%s%s in %s: %s exists without %s; remove stale lockfile or restore the manifest", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.lockfiles[0].name, finding.rule.manifest)
+		return fmt.Sprintf("%s%s in %s: %s exists without %s; remove stale lockfile or restore the manifest", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.lockfiles[0].name, finding.rule.manifestDescription())
 	case lockfileDriftManifestChange:
 		return fmt.Sprintf("%s%s in %s: %s changed while no matching lockfile changed; %s", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.rule.manifest, finding.rule.remedy)
 	default:
@@ -308,7 +342,7 @@ func buildLockfileDriftWarning(finding lockfileDriftFinding) string {
 	}
 }
 
-func detectDriftForRule(repoPath, dir string, files map[string]fs.FileInfo, rule lockfileRule, changedFiles map[string]struct{}, hasGitContext bool) []string {
+func detectDriftForRule(repoPath, dir string, files map[string]fs.FileInfo, rule lockfileRule, changedFiles map[string]struct{}, hasGitContext bool) ([]string, error) {
 	snapshot := lockfileDirSnapshot{
 		repoPath: repoPath,
 		path:     dir,
@@ -320,11 +354,14 @@ func detectDriftForRule(repoPath, dir string, files map[string]fs.FileInfo, rule
 		hasGitContext: hasGitContext,
 	}
 
-	finding, ok := evaluateLockfileRule(snapshot, rule, gitContext)
-	if !ok {
-		return nil
+	finding, ok, err := evaluateLockfileRule(snapshot, rule, gitContext)
+	if err != nil {
+		return nil, err
 	}
-	return []string{buildLockfileDriftWarning(finding)}
+	if !ok {
+		return nil, nil
+	}
+	return []string{buildLockfileDriftWarning(finding)}, nil
 }
 
 type presentLockfile struct {
@@ -342,6 +379,24 @@ func findRuleLockfiles(files map[string]fs.FileInfo, names []string) []presentLo
 		lockfiles = append(lockfiles, presentLockfile{name: name, info: info})
 	}
 	return lockfiles
+}
+
+func (rule lockfileRule) manifestDescription() string {
+	if strings.TrimSpace(rule.manifestLabel) != "" {
+		return rule.manifestLabel
+	}
+	return rule.manifest
+}
+
+func pyprojectSectionMatcher(section string) func(repoPath, dir string) (bool, error) {
+	needle := "[" + strings.ToLower(strings.TrimSpace(section)) + "]"
+	return func(_, dir string) (bool, error) {
+		content, err := os.ReadFile(filepath.Join(dir, pyprojectManifestName))
+		if err != nil {
+			return false, fmt.Errorf("read %s for %s lockfile drift detection: %w", pyprojectManifestName, section, err)
+		}
+		return strings.Contains(strings.ToLower(string(content)), needle), nil
+	}
 }
 
 func relativeDir(repoPath, dir string) string {
