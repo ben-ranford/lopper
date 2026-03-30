@@ -180,7 +180,11 @@ func stripElixirComments(content []byte) string {
 }
 
 func addUmbrellaRoots(repoPath string, appsPath string, roots map[string]struct{}) error {
-	apps, err := filepath.Glob(filepath.Join(repoPath, appsPath, "*"))
+	appsRoot := filepath.Join(repoPath, appsPath)
+	if !shared.IsPathWithin(repoPath, appsRoot) {
+		return nil
+	}
+	apps, err := filepath.Glob(filepath.Join(appsRoot, "*"))
 	if err != nil {
 		return err
 	}

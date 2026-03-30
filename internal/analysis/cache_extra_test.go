@@ -99,6 +99,30 @@ func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
 	}
 }
 
+func TestNewAnalysisCacheRejectsSymlinkedDefaultPathOutsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	symlinkPath := filepath.Join(repo, cacheDirName)
+	if err := os.Symlink(outside, symlinkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	cache := newAnalysisCache(Request{}, repo)
+	if cache.cacheable {
+		t.Fatalf("expected symlinked default cache path to be rejected")
+	}
+	warnings := cache.takeWarnings()
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "cache path escapes repository root") {
+		t.Fatalf("expected symlink escape warning, got %#v", warnings)
+	}
+	if _, err := os.Stat(filepath.Join(outside, cacheKeysDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no keys dir to be created outside repo, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, cacheObjectsDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no objects dir to be created outside repo, stat err=%v", err)
+	}
+}
+
 func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
 	if !lockOrConfigFile("libs.versions.toml") {
 		t.Fatalf("expected Gradle version catalogs to participate in cache invalidation")

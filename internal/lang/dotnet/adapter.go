@@ -378,9 +378,6 @@ func collectDeclaredDependencies(repoPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := addAncestorCentralPackages(repoPath, set); err != nil {
-		return nil, err
-	}
 	return sortedDependencies(set), nil
 }
 
