@@ -13,6 +13,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const missingSwiftCatalogSuffix = " not found"
+
 func TestSwiftAdapterDetectWithNestedPackageRoots(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// root package\n")
@@ -172,8 +174,8 @@ func TestSwiftAdapterWarningsForMissingManifestAndResolved(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import Foundation\n")
 
 	reportData := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 5})
-	assertWarningContains(t, reportData.Warnings, packageManifestName+" not found")
-	assertWarningContains(t, reportData.Warnings, packageResolvedName+" not found")
+	assertWarningContains(t, reportData.Warnings, packageManifestName+missingSwiftCatalogSuffix)
+	assertWarningContains(t, reportData.Warnings, packageResolvedName+missingSwiftCatalogSuffix)
 	assertWarningContains(t, reportData.Warnings, "no Swift dependencies were discovered")
 }
 
@@ -194,7 +196,7 @@ let value = Session.default`)
 	if !hasRecommendationCode(dep, "refresh-package-resolved") {
 		t.Fatalf("expected Package.resolved recommendation, got %#v", dep.Recommendations)
 	}
-	assertWarningContains(t, reportData.Warnings, packageResolvedName+" not found")
+	assertWarningContains(t, reportData.Warnings, packageResolvedName+missingSwiftCatalogSuffix)
 }
 
 func TestParseSwiftImportsPatterns(t *testing.T) {
