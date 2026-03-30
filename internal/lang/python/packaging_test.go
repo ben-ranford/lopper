@@ -12,9 +12,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const expectedDependencyInSetFmt = "expected dependency %q in %#v"
+
 func TestParsePyprojectDependenciesModernSections(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), `
 [project]
 name = "demo"
 dependencies = ["Requests>=2", "zope.interface>=6"]
@@ -29,14 +31,14 @@ dev = ["pytest>=8", "ruff"]
 dev-dependencies = ["mypy>=1.0"]
 `)
 
-	dependencies, warnings, err := parsePyprojectDependencies(repo, filepath.Join(repo, "pyproject.toml"))
+	dependencies, warnings, err := parsePyprojectDependencies(repo, filepath.Join(repo, pythonPyprojectFile))
 	if err != nil {
 		t.Fatalf("parse pyproject dependencies: %v", err)
 	}
 
 	for _, want := range []string{"requests", "zope-interface", "pytest", "ruff", "mypy"} {
 		if _, ok := dependencies[want]; !ok {
-			t.Fatalf("expected dependency %q in %#v", want, dependencies)
+			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
 		}
 	}
 	joinedWarnings := strings.Join(warnings, "\n")
@@ -47,20 +49,20 @@ dev-dependencies = ["mypy>=1.0"]
 
 func TestParsePipfileDependenciesAndLock(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "Pipfile"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPipfileName), `
 [packages]
 Requests = ">=2"
 
 [dev-packages]
 pytest = "*"
 `)
-	testutil.MustWriteFile(t, filepath.Join(repo, "Pipfile.lock"), `{
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPipfileLockName), `{
   "_meta": {"hash": {"sha256": "x"}},
   "default": {"requests": {"version": "==2.32.0"}},
   "develop": {"pytest": {"version": "==8.4.0"}}
 }`)
 
-	dependencies, warnings, err := parsePipfileDependencies(repo, filepath.Join(repo, "Pipfile"))
+	dependencies, warnings, err := parsePipfileDependencies(repo, filepath.Join(repo, pythonPipfileName))
 	if err != nil {
 		t.Fatalf("parse Pipfile dependencies: %v", err)
 	}
@@ -69,11 +71,11 @@ pytest = "*"
 	}
 	for _, want := range []string{"requests", "pytest"} {
 		if _, ok := dependencies[want]; !ok {
-			t.Fatalf("expected dependency %q in %#v", want, dependencies)
+			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
 		}
 	}
 
-	lockDependencies, lockWarnings, err := parsePipfileLockDependencies(repo, filepath.Join(repo, "Pipfile.lock"))
+	lockDependencies, lockWarnings, err := parsePipfileLockDependencies(repo, filepath.Join(repo, pythonPipfileLockName))
 	if err != nil {
 		t.Fatalf("parse Pipfile.lock dependencies: %v", err)
 	}
@@ -82,14 +84,14 @@ pytest = "*"
 	}
 	for _, want := range []string{"requests", "pytest"} {
 		if _, ok := lockDependencies[want]; !ok {
-			t.Fatalf("expected lock dependency %q in %#v", want, lockDependencies)
+			t.Fatalf(expectedDependencyInSetFmt, want, lockDependencies)
 		}
 	}
 }
 
 func TestPythonAnalyseTopNIncludesPoetryDependencies(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), `
 [tool.poetry]
 name = "demo"
 version = "0.1.0"
@@ -121,7 +123,7 @@ mkdocs = "^1.0"
 	names := dependencyNames(reportData)
 	for _, want := range []string{"requests", "pytest"} {
 		if !slices.Contains(names, want) {
-			t.Fatalf("expected dependency %q in %#v", want, names)
+			t.Fatalf(expectedDependencyInSetFmt, want, names)
 		}
 	}
 	for _, unexpected := range []string{"numpy", "mkdocs"} {
@@ -140,7 +142,7 @@ mkdocs = "^1.0"
 
 func TestPythonAnalyseUsesUVLockFallbackWhenManifestDeclarationsMissing(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), `
 [project]
 name = "demo"
 dynamic = ["dependencies"]
@@ -150,7 +152,7 @@ docs = ["mkdocs>=1"]
 
 [tool.uv]
 `)
-	testutil.MustWriteFile(t, filepath.Join(repo, "uv.lock"), `
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonUVLockName), `
 version = 1
 
 [[package]]
@@ -173,7 +175,7 @@ version = "2.2.1"
 	names := dependencyNames(reportData)
 	for _, want := range []string{"requests", "urllib3"} {
 		if !slices.Contains(names, want) {
-			t.Fatalf("expected dependency %q in %#v", want, names)
+			t.Fatalf(expectedDependencyInSetFmt, want, names)
 		}
 	}
 

@@ -17,6 +17,14 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
+const (
+	pythonPyprojectFile   = "pyproject.toml"
+	pythonPipfileName     = "Pipfile"
+	pythonPipfileLockName = "Pipfile.lock"
+	pythonPoetryLockName  = "poetry.lock"
+	pythonUVLockName      = "uv.lock"
+)
+
 var pythonRequirementNamePattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)`)
 
 func collectDeclaredDependencies(ctx context.Context, repoPath string) (map[string]struct{}, []string, error) {
@@ -54,85 +62,28 @@ func collectDeclaredDependencies(ctx context.Context, repoPath string) (map[stri
 }
 
 func collectDirectoryDeclaredDependencies(repoPath, dir string) (map[string]struct{}, []string, error) {
-	entries, err := os.ReadDir(dir)
+	files, err := pythonPackagingFiles(dir)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	files := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		files[entry.Name()] = struct{}{}
-	}
-
-	hasPyproject := hasFile(files, "pyproject.toml")
-	hasPipfile := hasFile(files, "Pipfile")
-	hasPipfileLock := hasFile(files, "Pipfile.lock")
-	hasPoetryLock := hasFile(files, "poetry.lock")
-	hasUVLock := hasFile(files, "uv.lock")
-	if !hasPyproject && !hasPipfile && !hasPipfileLock && !hasPoetryLock && !hasUVLock {
+	if !hasRelevantPythonPackagingFile(files) {
 		return nil, nil, nil
 	}
 
-	dependencies := make(map[string]struct{})
-	lockFallbacks := make([]lockFallback, 0, 3)
-	warnings := make([]string, 0)
-
-	if hasPyproject {
-		path := filepath.Join(dir, "pyproject.toml")
-		pyprojectDependencies, pyprojectWarnings, parseErr := parsePyprojectDependencies(repoPath, path)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		addDependencySet(dependencies, pyprojectDependencies)
-		warnings = append(warnings, pyprojectWarnings...)
-	}
-
-	if hasPipfile {
-		path := filepath.Join(dir, "Pipfile")
-		pipenvDependencies, pipenvWarnings, parseErr := parsePipfileDependencies(repoPath, path)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		addDependencySet(dependencies, pipenvDependencies)
-		warnings = append(warnings, pipenvWarnings...)
-	}
-
-	if hasPoetryLock {
-		path := filepath.Join(dir, "poetry.lock")
-		lockDependencies, lockWarnings, parseErr := parsePackageLockDependencies(repoPath, path)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		lockFallbacks = append(lockFallbacks, lockFallback{name: "poetry.lock", dependencies: lockDependencies})
-		warnings = append(warnings, lockWarnings...)
-	}
-
-	if hasPipfileLock {
-		path := filepath.Join(dir, "Pipfile.lock")
-		lockDependencies, lockWarnings, parseErr := parsePipfileLockDependencies(repoPath, path)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		lockFallbacks = append(lockFallbacks, lockFallback{name: "Pipfile.lock", dependencies: lockDependencies})
-		warnings = append(warnings, lockWarnings...)
-	}
-
-	if hasUVLock {
-		path := filepath.Join(dir, "uv.lock")
-		lockDependencies, lockWarnings, parseErr := parsePackageLockDependencies(repoPath, path)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		lockFallbacks = append(lockFallbacks, lockFallback{name: "uv.lock", dependencies: lockDependencies})
-		warnings = append(warnings, lockWarnings...)
+	dependencies, warnings, err := collectManifestDependencies(repoPath, dir, files)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if len(dependencies) > 0 {
 		return dependencies, warnings, nil
 	}
+
+	lockFallbacks, lockWarnings, err := collectLockFallbacks(repoPath, dir, files)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, lockWarnings...)
 
 	for _, fallback := range lockFallbacks {
 		if len(fallback.dependencies) == 0 {
@@ -148,6 +99,91 @@ func collectDirectoryDeclaredDependencies(repoPath, dir string) (map[string]stru
 type lockFallback struct {
 	name         string
 	dependencies map[string]struct{}
+}
+
+type dependencyParser func(repoPath, path string) (map[string]struct{}, []string, error)
+
+func pythonPackagingFiles(dir string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	files := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		files[entry.Name()] = struct{}{}
+	}
+	return files, nil
+}
+
+func hasRelevantPythonPackagingFile(files map[string]struct{}) bool {
+	for _, name := range []string{pythonPyprojectFile, pythonPipfileName, pythonPipfileLockName, pythonPoetryLockName, pythonUVLockName} {
+		if hasFile(files, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectManifestDependencies(repoPath, dir string, files map[string]struct{}) (map[string]struct{}, []string, error) {
+	dependencies := make(map[string]struct{})
+	warnings := make([]string, 0)
+
+	for _, source := range []struct {
+		name   string
+		parser dependencyParser
+	}{
+		{name: pythonPyprojectFile, parser: parsePyprojectDependencies},
+		{name: pythonPipfileName, parser: parsePipfileDependencies},
+	} {
+		if !hasFile(files, source.name) {
+			continue
+		}
+		if err := appendParsedDependencies(repoPath, filepath.Join(dir, source.name), source.parser, dependencies, &warnings); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return dependencies, warnings, nil
+}
+
+func collectLockFallbacks(repoPath, dir string, files map[string]struct{}) ([]lockFallback, []string, error) {
+	fallbacks := make([]lockFallback, 0, 3)
+	warnings := make([]string, 0)
+
+	for _, source := range []struct {
+		name   string
+		parser dependencyParser
+	}{
+		{name: pythonPoetryLockName, parser: parsePackageLockDependencies},
+		{name: pythonPipfileLockName, parser: parsePipfileLockDependencies},
+		{name: pythonUVLockName, parser: parsePackageLockDependencies},
+	} {
+		if !hasFile(files, source.name) {
+			continue
+		}
+		lockDependencies, lockWarnings, err := source.parser(repoPath, filepath.Join(dir, source.name))
+		if err != nil {
+			return nil, nil, err
+		}
+		fallbacks = append(fallbacks, lockFallback{name: source.name, dependencies: lockDependencies})
+		warnings = append(warnings, lockWarnings...)
+	}
+
+	return fallbacks, warnings, nil
+}
+
+func appendParsedDependencies(repoPath, path string, parser dependencyParser, destination map[string]struct{}, warnings *[]string) error {
+	dependencies, parsedWarnings, err := parser(repoPath, path)
+	if err != nil {
+		return err
+	}
+	addDependencySet(destination, dependencies)
+	*warnings = append(*warnings, parsedWarnings...)
+	return nil
 }
 
 func parsePyprojectDependencies(repoPath, path string) (map[string]struct{}, []string, error) {
@@ -254,7 +290,7 @@ func parsePipfileLockDependencies(repoPath, path string) (map[string]struct{}, [
 
 	document := make(map[string]any)
 	if err := json.Unmarshal(content, &document); err != nil {
-		return make(map[string]struct{}), []string{fmt.Sprintf("%s: skipped Pipfile.lock parsing after JSON decode error: %v", relativePackagingPath(repoPath, path), err)}, nil
+		return make(map[string]struct{}), []string{fmt.Sprintf("%s: skipped %s parsing after JSON decode error: %v", relativePackagingPath(repoPath, path), pythonPipfileLockName, err)}, nil
 	}
 
 	dependencies := make(map[string]struct{})
