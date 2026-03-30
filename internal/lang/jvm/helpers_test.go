@@ -131,7 +131,7 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	if len(poms) == 0 || len(gradle) == 0 {
 		t.Fatalf("expected pom and gradle dependencies, got pom=%#v gradle=%#v", poms, gradle)
 	}
-	all, _, _ := collectDeclaredDependencies(repo)
+	all, _, _, _ := collectDeclaredDependencies(repo)
 	names := make([]string, 0, len(all))
 	for _, dep := range all {
 		names = append(names, dep.Name)

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -201,7 +202,12 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 }
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
-	return parseBuildFilesWithWarnings(repoPath, parseGradleDependencyContent, buildGradleName, buildGradleKTSName)
+	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
+	descriptors, parseWarnings := parseBuildFilesWithPathWarnings(repoPath, func(path string, content string) ([]dependencyDescriptor, []string) {
+		return parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
+	}, buildGradleName, buildGradleKTSName)
+	warnings = append(warnings, parseWarnings...)
+	return descriptors, dedupeWarningStrings(warnings)
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
@@ -209,6 +215,20 @@ func parseGradleDependencyContent(content string) []dependencyDescriptor {
 	descriptors = append(descriptors, parseGradleDependencyMatches(content, gradleCoordinatePattern)...)
 	descriptors = append(descriptors, parseGradleMapDependencies(content)...)
 	return dedupeDescriptors(descriptors)
+}
+
+func parseGradleDependencyContentWithCatalog(path string, content string, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
+	descriptors := parseGradleDependencyContent(content)
+	catalogDescriptors, warnings := catalogResolver.ParseDependencyReferences(path, content)
+	for _, descriptor := range catalogDescriptors {
+		descriptors = append(descriptors, dependencyDescriptor{
+			Name:     descriptor.Artifact,
+			Group:    descriptor.Group,
+			Artifact: descriptor.Artifact,
+			Version:  descriptor.Version,
+		})
+	}
+	return dedupeDescriptors(descriptors), warnings
 }
 
 func parseGradleMapDependencies(content string) []dependencyDescriptor {
@@ -395,6 +415,52 @@ func parseBuildFilesWithWarnings(repoPath string, parser func(content string) []
 	return collector.descriptors, collector.warnings
 }
 
+func parseBuildFilesWithPathWarnings(repoPath string, parser func(path string, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
+	descriptors := make([]dependencyDescriptor, 0)
+	warnings := make([]string, 0)
+	seen := make(map[string]struct{})
+
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if shouldSkipDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !matchesBuildFile(strings.ToLower(entry.Name()), names) {
+			return nil
+		}
+		content, err := safeio.ReadFileUnder(repoPath, path)
+		if err != nil {
+			relPath := path
+			if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
+				relPath = rel
+			}
+			warnings = append(warnings, fmt.Sprintf("unable to read %s: %v", filepath.ToSlash(relPath), err))
+			return nil
+		}
+		items, parseWarnings := parser(path, string(content))
+		warnings = append(warnings, parseWarnings...)
+		for _, descriptor := range items {
+			key := descriptorKey(descriptor)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			descriptor.FromManifest = true
+			descriptors = append(descriptors, descriptor)
+		}
+		return nil
+	})
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("unable to scan build files: %v", err))
+	}
+	return descriptors, dedupeWarningStrings(warnings)
+}
+
 type buildFileCollector struct {
 	repoPath    string
 	parser      func(content string) []dependencyDescriptor
@@ -449,4 +515,25 @@ func matchesBuildFile(fileName string, names []string) bool {
 		}
 	}
 	return false
+}
+
+func dedupeWarningStrings(warnings []string) []string {
+	if len(warnings) == 0 {
+		return nil
+	}
+	unique := make(map[string]struct{})
+	items := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			continue
+		}
+		if _, ok := unique[warning]; ok {
+			continue
+		}
+		unique[warning] = struct{}{}
+		items = append(items, warning)
+	}
+	sort.Strings(items)
+	return items
 }

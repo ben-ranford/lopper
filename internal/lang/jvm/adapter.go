@@ -160,7 +160,8 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 		RepoPath:    repoPath,
 	}
 
-	declaredDependencies, depPrefixes, depAliases := collectDeclaredDependencies(repoPath)
+	declaredDependencies, depPrefixes, depAliases, declarationWarnings := collectDeclaredDependencies(repoPath)
+	result.Warnings = append(result.Warnings, declarationWarnings...)
 	scanResult, err := scanRepo(ctx, repoPath, depPrefixes, depAliases)
 	if err != nil {
 		return report.Report{}, err
@@ -499,16 +500,19 @@ type dependencyDescriptor struct {
 	Artifact string
 }
 
-func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[string]string, map[string]string) {
+func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[string]string, map[string]string, []string) {
 	descriptors := make([]dependencyDescriptor, 0)
+	warnings := make([]string, 0)
 
-	pomDescriptors, gradleDescriptors := parsePomDependencies(repoPath), parseGradleDependencies(repoPath)
+	pomDescriptors := parsePomDependencies(repoPath)
+	gradleDescriptors, gradleWarnings := parseGradleDependenciesWithWarnings(repoPath)
 	descriptors = append(descriptors, pomDescriptors...)
 	descriptors = append(descriptors, gradleDescriptors...)
+	warnings = append(warnings, gradleWarnings...)
 
 	descriptors = dedupeAndSortDescriptors(descriptors)
 	prefixes, aliases := buildDescriptorLookups(descriptors)
-	return descriptors, prefixes, aliases
+	return descriptors, prefixes, aliases, warnings
 }
 
 func dedupeAndSortDescriptors(descriptors []dependencyDescriptor) []dependencyDescriptor {
@@ -602,11 +606,28 @@ func parsePomDependencies(repoPath string) []dependencyDescriptor {
 }
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
+	descriptors, _ := parseGradleDependenciesWithWarnings(repoPath)
+	return descriptors
+}
+
+func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	pattern := regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
-	gradleParser := func(content string) []dependencyDescriptor {
-		return parseGradleMatches(content, pattern)
+	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
+	gradleParser := func(path string, content string) ([]dependencyDescriptor, []string) {
+		descriptors := parseGradleMatches(content, pattern)
+		catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
+		for _, descriptor := range catalogDescriptors {
+			descriptors = append(descriptors, dependencyDescriptor{
+				Name:     descriptor.Artifact,
+				Group:    descriptor.Group,
+				Artifact: descriptor.Artifact,
+			})
+		}
+		return dedupeAndSortDescriptors(descriptors), catalogWarnings
 	}
-	return parseBuildFiles(repoPath, buildGradleName, gradleParser, buildGradleKTSName)
+	descriptors, parseWarnings := parseBuildFilesWithWarnings(repoPath, gradleParser, buildGradleName, buildGradleKTSName)
+	warnings = append(warnings, parseWarnings...)
+	return descriptors, dedupeAndSortWarnings(warnings)
 }
 
 func parseGradleMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
@@ -650,6 +671,48 @@ func parseBuildFiles(repoPath string, primaryName string, parser func(content st
 	return descriptors
 }
 
+func parseBuildFilesWithWarnings(repoPath string, parser func(path string, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
+	descriptors := make([]dependencyDescriptor, 0)
+	warnings := make([]string, 0)
+	seen := make(map[string]struct{})
+
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if shouldSkipDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !matchesBuildFile(strings.ToLower(entry.Name()), names) {
+			return nil
+		}
+
+		content, readErr := safeio.ReadFileUnder(repoPath, path)
+		if readErr != nil {
+			warnings = append(warnings, formatBuildFileReadWarning(repoPath, path, readErr))
+			return nil
+		}
+		items, parseWarnings := parser(path, string(content))
+		warnings = append(warnings, parseWarnings...)
+		for _, descriptor := range items {
+			key := descriptor.Group + ":" + descriptor.Artifact
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			descriptors = append(descriptors, descriptor)
+		}
+		return nil
+	})
+	if err != nil {
+		warnings = append(warnings, err.Error())
+	}
+	return descriptors, dedupeAndSortWarnings(warnings)
+}
+
 func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
@@ -675,6 +738,35 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 		*descriptors = append(*descriptors, descriptor)
 	}
 	return nil
+}
+
+func formatBuildFileReadWarning(repoPath string, path string, err error) string {
+	relPath := path
+	if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
+		relPath = rel
+	}
+	return "unable to read " + filepath.ToSlash(relPath) + ": " + err.Error()
+}
+
+func dedupeAndSortWarnings(warnings []string) []string {
+	if len(warnings) == 0 {
+		return nil
+	}
+	unique := make(map[string]struct{})
+	items := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			continue
+		}
+		if _, ok := unique[warning]; ok {
+			continue
+		}
+		unique[warning] = struct{}{}
+		items = append(items, warning)
+	}
+	sort.Strings(items)
+	return items
 }
 
 func matchesBuildFile(fileName string, names []string) bool {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -113,6 +114,43 @@ fun run() {
 	}
 	if !slices.Contains(names, "okhttp") {
 		t.Fatalf("expected okhttp dependency in %#v", names)
+	}
+}
+
+func TestAdapterAnalyseDependencyWithGradleVersionCatalogAlias(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "gradle", "libs.versions.toml"), `
+[libraries]
+okhttp = { module = "com.squareup.okhttp3:okhttp", version = "4.12.0" }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, testFileBuildGradleKTS), `
+dependencies {
+  implementation(libs.okhttp)
+}
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
+import okhttp3.OkHttpClient
+
+fun run() {
+  OkHttpClient()
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "okhttp",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	if reportData.Dependencies[0].UsedExportsCount == 0 {
+		t.Fatalf("expected catalog-backed dependency usage to be recorded")
+	}
+	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to resolve Gradle version catalog") {
+		t.Fatalf("did not expect unresolved catalog warning, got %#v", reportData.Warnings)
 	}
 }
 
