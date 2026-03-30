@@ -195,25 +195,119 @@ func joinSortedStrings(values []string) string {
 	return strings.Join(items, "|")
 }
 
-func formatCSVTopUsedSymbols(symbols []SymbolUsage) string {
-	if len(symbols) == 0 {
+func formatCSVSorted[T any](items []T, less func(T, T) bool, render func(T) string) string {
+	if len(items) == 0 {
 		return ""
 	}
-	items := append([]SymbolUsage{}, symbols...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			if items[i].Module == items[j].Module {
-				return items[i].Name < items[j].Name
-			}
-			return items[i].Module < items[j].Module
-		}
-		return items[i].Count > items[j].Count
+	sorted := append([]T{}, items...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return less(sorted[i], sorted[j])
 	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		formatted = append(formatted, formatCSVSymbolUsage(item))
+	formatted := make([]string, 0, len(sorted))
+	for _, value := range sorted {
+		formatted = append(formatted, render(value))
 	}
 	return strings.Join(formatted, "|")
+}
+
+func lessCSVQualifiedName(moduleA, nameA, moduleB, nameB string) bool {
+	if moduleA == moduleB {
+		return nameA < nameB
+	}
+	return moduleA < moduleB
+}
+
+func lessCSVQualifiedCount(moduleA, nameA string, countA int, moduleB, nameB string, countB int) bool {
+	if countA == countB {
+		return lessCSVQualifiedName(moduleA, nameA, moduleB, nameB)
+	}
+	return countA > countB
+}
+
+func formatCSVQualifiedValues[T any](items []T, module func(T) string, name func(T) string) string {
+	less := func(a, b T) bool {
+		return lessCSVQualifiedName(module(a), name(a), module(b), name(b))
+	}
+	render := func(item T) string {
+		return formatCSVQualifiedName(module(item), name(item))
+	}
+	return formatCSVSorted(items, less, render)
+}
+
+func formatCSVCodeValues[T any](items []T, code func(T) string, value func(T) string) string {
+	less := func(a, b T) bool {
+		if code(a) == code(b) {
+			return value(a) < value(b)
+		}
+		return code(a) < code(b)
+	}
+	render := func(item T) string {
+		return code(item) + ":" + value(item)
+	}
+	return formatCSVSorted(items, less, render)
+}
+
+func compareCSVSymbolUsage(a, b SymbolUsage) bool {
+	return lessCSVQualifiedCount(a.Module, a.Name, a.Count, b.Module, b.Name, b.Count)
+}
+
+func importUseModule(item ImportUse) string {
+	return item.Module
+}
+
+func importUseName(item ImportUse) string {
+	return item.Name
+}
+
+func symbolRefModule(item SymbolRef) string {
+	return item.Module
+}
+
+func symbolRefName(item SymbolRef) string {
+	return item.Name
+}
+
+func riskCueCode(item RiskCue) string {
+	return item.Code
+}
+
+func riskCueSeverity(item RiskCue) string {
+	return item.Severity
+}
+
+func recommendationCode(item Recommendation) string {
+	return item.Code
+}
+
+func recommendationPriority(item Recommendation) string {
+	return item.Priority
+}
+
+func compareCSVRuntimeModuleUsage(a, b RuntimeModuleUsage) bool {
+	if a.Count == b.Count {
+		return a.Module < b.Module
+	}
+	return a.Count > b.Count
+}
+
+func formatCSVRuntimeModuleUsage(item RuntimeModuleUsage) string {
+	return item.Module + "=" + strconv.Itoa(item.Count)
+}
+
+func compareCSVRuntimeSymbolUsage(a, b RuntimeSymbolUsage) bool {
+	return lessCSVQualifiedCount(a.Module, a.Symbol, a.Count, b.Module, b.Symbol, b.Count)
+}
+
+func formatCSVRuntimeSymbolUsage(item RuntimeSymbolUsage) string {
+	name := item.Symbol
+	if strings.TrimSpace(item.Module) != "" {
+		name = item.Module + ":" + item.Symbol
+	}
+	return name + "=" + strconv.Itoa(item.Count)
+}
+
+func formatCSVTopUsedSymbols(symbols []SymbolUsage) string {
+	return formatCSVSorted(symbols, compareCSVSymbolUsage, formatCSVSymbolUsage)
 }
 
 func formatCSVSymbolUsage(item SymbolUsage) string {
@@ -225,39 +319,11 @@ func formatCSVSymbolUsage(item SymbolUsage) string {
 }
 
 func formatCSVImportUses(imports []ImportUse) string {
-	if len(imports) == 0 {
-		return ""
-	}
-	items := append([]ImportUse{}, imports...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
-	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		formatted = append(formatted, formatCSVQualifiedName(item.Module, item.Name))
-	}
-	return strings.Join(formatted, "|")
+	return formatCSVQualifiedValues(imports, importUseModule, importUseName)
 }
 
 func formatCSVSymbolRefs(refs []SymbolRef) string {
-	if len(refs) == 0 {
-		return ""
-	}
-	items := append([]SymbolRef{}, refs...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
-	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		formatted = append(formatted, formatCSVQualifiedName(item.Module, item.Name))
-	}
-	return strings.Join(formatted, "|")
+	return formatCSVQualifiedValues(refs, symbolRefModule, symbolRefName)
 }
 
 func formatCSVQualifiedName(module, name string) string {
@@ -268,39 +334,11 @@ func formatCSVQualifiedName(module, name string) string {
 }
 
 func formatCSVRiskCues(cues []RiskCue) string {
-	if len(cues) == 0 {
-		return ""
-	}
-	items := append([]RiskCue{}, cues...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Code == items[j].Code {
-			return items[i].Severity < items[j].Severity
-		}
-		return items[i].Code < items[j].Code
-	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		formatted = append(formatted, item.Code+":"+item.Severity)
-	}
-	return strings.Join(formatted, "|")
+	return formatCSVCodeValues(cues, riskCueCode, riskCueSeverity)
 }
 
 func formatCSVRecommendations(recommendations []Recommendation) string {
-	if len(recommendations) == 0 {
-		return ""
-	}
-	items := append([]Recommendation{}, recommendations...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Code == items[j].Code {
-			return items[i].Priority < items[j].Priority
-		}
-		return items[i].Code < items[j].Code
-	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		formatted = append(formatted, item.Code+":"+item.Priority)
-	}
-	return strings.Join(formatted, "|")
+	return formatCSVCodeValues(recommendations, recommendationCode, recommendationPriority)
 }
 
 func runtimeCorrelationValue(usage *RuntimeUsage) string {
@@ -342,43 +380,14 @@ func formatCSVRuntimeModules(usage *RuntimeUsage) string {
 	if usage == nil || len(usage.Modules) == 0 {
 		return ""
 	}
-	items := append([]RuntimeModuleUsage{}, usage.Modules...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			return items[i].Module < items[j].Module
-		}
-		return items[i].Count > items[j].Count
-	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		formatted = append(formatted, item.Module+"="+strconv.Itoa(item.Count))
-	}
-	return strings.Join(formatted, "|")
+	return formatCSVSorted(usage.Modules, compareCSVRuntimeModuleUsage, formatCSVRuntimeModuleUsage)
 }
 
 func formatCSVRuntimeTopSymbols(usage *RuntimeUsage) string {
 	if usage == nil || len(usage.TopSymbols) == 0 {
 		return ""
 	}
-	items := append([]RuntimeSymbolUsage{}, usage.TopSymbols...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			if items[i].Module == items[j].Module {
-				return items[i].Symbol < items[j].Symbol
-			}
-			return items[i].Module < items[j].Module
-		}
-		return items[i].Count > items[j].Count
-	})
-	formatted := make([]string, 0, len(items))
-	for _, item := range items {
-		name := item.Symbol
-		if strings.TrimSpace(item.Module) != "" {
-			name = item.Module + ":" + item.Symbol
-		}
-		formatted = append(formatted, name+"="+strconv.Itoa(item.Count))
-	}
-	return strings.Join(formatted, "|")
+	return formatCSVSorted(usage.TopSymbols, compareCSVRuntimeSymbolUsage, formatCSVRuntimeSymbolUsage)
 }
 
 func formatCSVReachabilityModel(confidence *ReachabilityConfidence) string {
