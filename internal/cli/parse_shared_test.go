@@ -82,13 +82,15 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 }
 
 func TestParseArgsErrorsAndHelp(t *testing.T) {
+	const helpFlag = "--help"
+
 	if _, err := ParseArgs([]string{"help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected top-level help request error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"analyse", "--help"}); !errors.Is(err, ErrHelpRequested) {
+	if _, err := ParseArgs([]string{"analyse", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected analyse help request error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"tui", "--help"}); !errors.Is(err, ErrHelpRequested) {
+	if _, err := ParseArgs([]string{"tui", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected tui help request error, got %v", err)
 	}
 	if _, err := ParseArgs([]string{"unknown"}); err == nil {

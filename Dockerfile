@@ -12,9 +12,11 @@ RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=1 go build -trimpath \
-	-ldflags="-s -w -X github.com/ben-ranford/lopper/internal/version.version=${VERSION} -X github.com/ben-ranford/lopper/internal/version.commit=${GIT_COMMIT} -X github.com/ben-ranford/lopper/internal/version.buildDate=${BUILD_DATE}" \
-	-o /out/lopper ./cmd/lopper
+RUN ldflags="-s -w" \
+	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.version=${VERSION}" \
+	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.commit=${GIT_COMMIT}" \
+	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.buildDate=${BUILD_DATE}" \
+	&& CGO_ENABLED=1 go build -trimpath -ldflags="${ldflags}" -o /out/lopper ./cmd/lopper
 
 FROM alpine:3.23
 RUN apk add --no-cache libstdc++ ca-certificates \

@@ -6,7 +6,10 @@ import sys
 from pathlib import Path
 
 
-SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PACKAGE_JSON_PATH = REPO_ROOT / "extensions" / "vscode-lopper" / "package.json"
+PACKAGE_LOCK_PATH = REPO_ROOT / "extensions" / "vscode-lopper" / "package-lock.json"
 
 
 def normalize_version(raw: str) -> str:
@@ -49,11 +52,8 @@ def main(argv: list[str]) -> int:
         return 1
 
     version = normalize_version(argv[1])
-    repo_root = Path(__file__).resolve().parent.parent
-    extension_dir = repo_root / "extensions" / "vscode-lopper"
-
-    sync_package_json(extension_dir / "package.json", version)
-    sync_package_lock(extension_dir / "package-lock.json", version)
+    sync_package_json(PACKAGE_JSON_PATH, version)
+    sync_package_lock(PACKAGE_LOCK_PATH, version)
     print(version)
     return 0
 
