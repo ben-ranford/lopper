@@ -40,11 +40,11 @@ func testSwiftDetectionHelpers(t *testing.T) {
 }
 
 func testSwiftManifestAndResolvedLoaders(t *testing.T) {
-	testSwiftManifestDirectoryFailure(t)
-	testSwiftResolvedLoaderEmptyPins(t)
-	testSwiftManifestLoaderSkipsIncompleteDeclarations(t)
-	testSwiftResolvedLoaderSkipsBlankPins(t)
-	testSwiftCollectLocalModulesIgnoresBlankNames(t)
+	t.Run("manifest directory failure", testSwiftManifestDirectoryFailure)
+	t.Run("resolved loader empty pins", testSwiftResolvedLoaderEmptyPins)
+	t.Run("manifest loader skips incomplete declarations", testSwiftManifestLoaderSkipsIncompleteDeclarations)
+	t.Run("resolved loader skips blank pins", testSwiftResolvedLoaderSkipsBlankPins)
+	t.Run("collect local modules ignores blank names", testSwiftCollectLocalModulesIgnoresBlankNames)
 }
 
 func testSwiftManifestDirectoryFailure(t *testing.T) {
@@ -358,20 +358,4 @@ func newTestSwiftCatalog() dependencyCatalog {
 		ModuleToDependency: map[string]string{},
 		LocalModules:       map[string]struct{}{},
 	}
-}
-
-func mustReadSwiftDirEntry(t *testing.T, dir, name string) fs.DirEntry {
-	t.Helper()
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read repo dir: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.Name() == name {
-			return entry
-		}
-	}
-	t.Fatalf("expected %s dir entry", name)
-	return nil
 }
