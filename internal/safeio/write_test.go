@@ -490,7 +490,7 @@ func TestResolveWriteTargetAbsFailuresViaHook(t *testing.T) {
 		},
 		{
 			name: "target",
-			hookPath: func(_ string, targetPath string) string {
+			hookPath: func(_, targetPath string) string {
 				return targetPath
 			},
 			hookErr:  errors.New("target abs failure"),
