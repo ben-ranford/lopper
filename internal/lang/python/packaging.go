@@ -471,8 +471,8 @@ func nestedMap(document map[string]any, keys ...string) map[string]any {
 }
 
 func isTrue(value any) bool {
-	boolean, ok := value.(bool)
-	return ok && boolean
+	flag, ok := value.(bool)
+	return ok && flag
 }
 
 func hasFile(files map[string]struct{}, name string) bool {

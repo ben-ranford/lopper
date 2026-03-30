@@ -356,7 +356,7 @@ func buildLockfileDriftWarning(finding lockfileDriftFinding) string {
 	case lockfileDriftMissingLockfile:
 		return fmt.Sprintf("%s%s in %s: %s exists but no matching lockfile (%s) was found; %s", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.rule.manifest, strings.Join(finding.rule.lockfiles, ", "), finding.rule.remedy)
 	case lockfileDriftStaleLockfile:
-		return fmt.Sprintf("%s%s in %s: %s exists without %s; remove stale lockfile or restore the manifest", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.lockfiles[0].name, finding.rule.manifestDescription())
+		return fmt.Sprintf("%s%s in %s: %s exists without %s; remove stale lockfile or restore the manifest", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.lockfiles[0].name, manifestDescription(finding.rule))
 	case lockfileDriftManifestChange:
 		return fmt.Sprintf("%s%s in %s: %s changed while no matching lockfile changed; %s", lockfileDriftWarningPrefix, finding.rule.manager, finding.relDir, finding.rule.manifest, finding.rule.remedy)
 	default:
@@ -403,7 +403,7 @@ func findRuleLockfiles(files map[string]fs.FileInfo, names []string) []presentLo
 	return lockfiles
 }
 
-func (rule lockfileRule) manifestDescription() string {
+func manifestDescription(rule lockfileRule) string {
 	if strings.TrimSpace(rule.manifestLabel) != "" {
 		return rule.manifestLabel
 	}
@@ -412,8 +412,8 @@ func (rule lockfileRule) manifestDescription() string {
 
 func pyprojectSectionMatcher(section string) func(repoPath, dir string) (bool, error) {
 	needle := "[" + strings.ToLower(strings.TrimSpace(section)) + "]"
-	return func(_, dir string) (bool, error) {
-		content, err := os.ReadFile(filepath.Join(dir, pyprojectManifestName))
+	return func(repoPath, dir string) (bool, error) {
+		content, err := safeio.ReadFileUnder(repoPath, filepath.Join(dir, pyprojectManifestName))
 		if err != nil {
 			return false, fmt.Errorf("read %s for %s lockfile drift detection: %w", pyprojectManifestName, section, err)
 		}
