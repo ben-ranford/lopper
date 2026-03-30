@@ -75,6 +75,10 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (path strin
 		return "", fmt.Errorf("baseline key is required")
 	}
 
+	if info, statErr := os.Lstat(trimmedDir); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("baseline store directory must not be a symlink: %s", trimmedDir)
+	}
+
 	if err := os.MkdirAll(trimmedDir, 0o750); err != nil {
 		return "", err
 	}

@@ -137,6 +137,26 @@ func TestDetectWithConfidenceUmbrellaCustomAppsPath(t *testing.T) {
 	assertDetectionFixture(t, repo, filepath.Join("services", "api"), filepath.Base(repo))
 }
 
+func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
+	repo := t.TempDir()
+	outsideApps := filepath.Join(filepath.Dir(repo), "outside", "apps")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [apps_path: \"../outside/apps\"]\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(outsideApps, "api", mixExsName), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	for _, root := range detection.Roots {
+		if strings.Contains(root, filepath.Join("outside", "apps")) {
+			t.Fatalf("did not expect escaped apps_path root, got %#v", detection.Roots)
+		}
+	}
+	if !containsSuffix(detection.Roots, filepath.Base(repo)) {
+		t.Fatalf("expected repo root fallback, got %#v", detection.Roots)
+	}
+}
+
 func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")

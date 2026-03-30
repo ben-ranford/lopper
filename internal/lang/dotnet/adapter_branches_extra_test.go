@@ -83,7 +83,7 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	}
 }
 
-func TestCollectDeclaredDependenciesAncestorFallback(t *testing.T) {
+func TestCollectDeclaredDependenciesIgnoresAncestorCentralPackages(t *testing.T) {
 	parent := t.TempDir()
 	repo := filepath.Join(parent, "src", "service")
 	testutil.MustWriteFile(t, filepath.Join(parent, "Directory.Packages.props"), `
@@ -95,8 +95,11 @@ func TestCollectDeclaredDependenciesAncestorFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect dependencies: %v", err)
 	}
-	if !slices.Contains(deps, "acme.platform") || !slices.Contains(deps, "dapper") {
-		t.Fatalf("expected ancestor and local dependencies, got %#v", deps)
+	if slices.Contains(deps, "acme.platform") {
+		t.Fatalf("expected ancestor central package manifest to be ignored, got %#v", deps)
+	}
+	if !slices.Contains(deps, "dapper") {
+		t.Fatalf("expected local dependency to remain visible, got %#v", deps)
 	}
 }
 
