@@ -30,6 +30,14 @@ Windows (GitHub Releases):
 gh release view --repo ben-ranford/lopper --web
 ```
 
+Generate a local manpage:
+
+```bash
+make manpage
+```
+
+The generated manpage is available as `docs/man/lopper.1` and is installed automatically by the Homebrew formulas.
+
 Run without local install:
 
 ```bash
