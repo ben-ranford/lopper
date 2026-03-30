@@ -456,14 +456,14 @@ func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
     webhook: https://outlook.office.com/webhook/CONFIG
     on: improvement
 `
-	writeFile(t, filepath.Join(repo, ".lopper.yml"), config)
+	writeFile(t, filepath.Join(repo, parseConfigFileName), config)
 
 	t.Setenv(notify.EnvOn, "regression")
 	t.Setenv(notify.EnvSlackWebhook, "https://hooks.slack.com/services/A/B/ENV")
 
 	req, err := ParseArgs([]string{
 		"analyse", "--top", "10",
-		"--repo", repo,
+		repoFlagName, repo,
 		notifyOnFlag, "improvement",
 		"--notify-teams", "https://outlook.office.com/webhook/CLI",
 	})
