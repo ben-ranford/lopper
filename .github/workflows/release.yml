@@ -198,8 +198,6 @@ jobs:
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
 
           {
-            echo "## Weekly semver release"
-            echo
             echo "- Tag: \`${current_tag}\`"
             echo
             echo "## Container image"
