@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,6 +100,13 @@ func TestUIDetailAdditionalWriteErrorBranches(t *testing.T) {
 	}
 }
 
+func TestUIViewModelAdditionalBranches(t *testing.T) {
+	t.Run("default summary formatter", testUIDefaultSummaryFormatter)
+	t.Run("codemod mapping", testUICodemodMapping)
+	t.Run("reachability mapping", testUIReachabilityMapping)
+	t.Run("summary formatter errors propagate", testUISummaryFormatterErrorsPropagate)
+}
+
 func testUIRenderListEmptyPlaceholder(t *testing.T) {
 	t.Helper()
 
@@ -170,5 +178,109 @@ func testUIRemovalCandidateWithoutRationale(t *testing.T) {
 	}
 	if !strings.Contains(text, "confidence: 90.0") {
 		t.Fatalf("expected removal candidate details, got %q", text)
+	}
+}
+
+func testUIDefaultSummaryFormatter(t *testing.T) {
+	t.Helper()
+
+	formatter := newSummaryFormatter(nil)
+	rendered, err := formatter(summaryDisplayView{
+		Dependencies: []summaryDependencyView{{Name: "dep", UsedPercent: 100}},
+	})
+	if err != nil {
+		t.Fatalf("format summary with default formatter: %v", err)
+	}
+	if rendered == "" {
+		t.Fatalf("expected formatted output")
+	}
+}
+
+func testUICodemodMapping(t *testing.T) {
+	t.Helper()
+
+	apply := &report.CodemodApplyReport{
+		AppliedFiles: 1,
+		Results: []report.CodemodApplyResult{{
+			File:       "go.mod",
+			Status:     "applied",
+			PatchCount: 2,
+		}},
+	}
+
+	if got := summaryCodemodApplyView(&report.CodemodReport{Apply: apply}); got != apply {
+		t.Fatalf("expected apply report pointer to flow through, got %#v", got)
+	}
+
+	got := summaryCodemodViewToReport(apply)
+	if got == nil || got.Apply != apply {
+		t.Fatalf("expected codemod report to wrap apply pointer, got %#v", got)
+	}
+}
+
+func testUIReachabilityMapping(t *testing.T) {
+	t.Helper()
+
+	confidence := &report.ReachabilityConfidence{
+		Model:          "reachability-v2",
+		Score:          72.5,
+		Summary:        "runtime evidence found",
+		RationaleCodes: []string{runtimeOverlapCode},
+		Signals: []report.ReachabilitySignal{{
+			Code:         runtimeOverlapCode,
+			Score:        100,
+			Weight:       0.2,
+			Contribution: 20,
+			Rationale:    "runtime trace overlap",
+		}},
+	}
+
+	got := mapDetailReachabilityConfidence(confidence)
+	if got == nil {
+		t.Fatalf("expected mapped reachability confidence")
+	}
+	if got.Model != confidence.Model || got.Score != confidence.Score || got.Summary != confidence.Summary {
+		t.Fatalf("unexpected mapped confidence: %#v", got)
+	}
+	if len(got.RationaleCodes) != 1 || got.RationaleCodes[0] != runtimeOverlapCode {
+		t.Fatalf("unexpected rationale codes: %#v", got.RationaleCodes)
+	}
+	if len(got.Signals) != 1 {
+		t.Fatalf("expected one mapped signal, got %#v", got.Signals)
+	}
+	if got.Signals[0].Code != runtimeOverlapCode || got.Signals[0].Rationale != "runtime trace overlap" {
+		t.Fatalf("unexpected mapped signal: %#v", got.Signals[0])
+	}
+}
+
+func testUISummaryFormatterErrorsPropagate(t *testing.T) {
+	t.Helper()
+
+	rep := report.Report{
+		Dependencies: []report.DependencyReport{{
+			Name:              "dep",
+			UsedExportsCount:  1,
+			TotalExportsCount: 1,
+			UsedPercent:       100,
+		}},
+	}
+
+	formatErr := errors.New("format summary failed")
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
+	summary.Formatter = func(summaryDisplayView) (string, error) {
+		return "", formatErr
+	}
+
+	state := summaryState{sortMode: sortByName, page: 1, pageSize: 10}
+	reportView := mapSummaryReportView(rep)
+
+	if _, err := summary.renderSummary(reportView, state); !errors.Is(err, formatErr) {
+		t.Fatalf("expected renderSummary to return formatter error, got %v", err)
+	}
+	if err := summary.renderSummaryOutput(reportView, state); !errors.Is(err, formatErr) {
+		t.Fatalf("expected renderSummaryOutput to return formatter error, got %v", err)
+	}
+	if err := summary.Snapshot(context.Background(), Options{RepoPath: ".", Sort: "name", PageSize: 10}, filepath.Join(t.TempDir(), "summary.txt")); !errors.Is(err, formatErr) {
+		t.Fatalf("expected snapshot to return formatter error, got %v", err)
 	}
 }
