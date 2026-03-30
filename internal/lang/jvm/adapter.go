@@ -627,7 +627,7 @@ func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescripto
 	}
 	descriptors, parseWarnings := parseBuildFilesWithWarnings(repoPath, gradleParser, buildGradleName, buildGradleKTSName)
 	warnings = append(warnings, parseWarnings...)
-	return descriptors, dedupeAndSortWarnings(warnings)
+	return descriptors, shared.DedupeWarnings(warnings)
 }
 
 func parseGradleMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
@@ -682,7 +682,7 @@ func parseBuildFilesWithWarnings(repoPath string, parser func(path, content stri
 	if err != nil {
 		collector.warnings = append(collector.warnings, err.Error())
 	}
-	return collector.descriptors, dedupeAndSortWarnings(collector.warnings)
+	return collector.descriptors, shared.DedupeWarnings(collector.warnings)
 }
 
 func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
@@ -758,27 +758,6 @@ func formatBuildFileReadWarning(repoPath, path string, err error) string {
 		relPath = rel
 	}
 	return "unable to read " + filepath.ToSlash(relPath) + ": " + err.Error()
-}
-
-func dedupeAndSortWarnings(warnings []string) []string {
-	if len(warnings) == 0 {
-		return nil
-	}
-	unique := make(map[string]struct{})
-	items := make([]string, 0, len(warnings))
-	for _, warning := range warnings {
-		warning = strings.TrimSpace(warning)
-		if warning == "" {
-			continue
-		}
-		if _, ok := unique[warning]; ok {
-			continue
-		}
-		unique[warning] = struct{}{}
-		items = append(items, warning)
-	}
-	sort.Strings(items)
-	return items
 }
 
 func matchesBuildFile(fileName string, names []string) bool {

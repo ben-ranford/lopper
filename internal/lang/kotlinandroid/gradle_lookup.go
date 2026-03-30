@@ -209,7 +209,7 @@ func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescripto
 		return parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
 	}, buildGradleName, buildGradleKTSName)
 	warnings = append(warnings, parseWarnings...)
-	return descriptors, dedupeWarningStrings(warnings)
+	return descriptors, shared.DedupeWarnings(warnings)
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
@@ -424,7 +424,7 @@ func parseBuildFilesWithPathWarnings(repoPath string, parser func(path, content 
 	if err != nil {
 		collector.warnings = append(collector.warnings, fmt.Sprintf("unable to scan build files: %v", err))
 	}
-	return collector.descriptors, dedupeWarningStrings(collector.warnings)
+	return collector.descriptors, shared.DedupeWarnings(collector.warnings)
 }
 
 type buildFileCollector struct {
@@ -530,25 +530,4 @@ func formatGradleReadWarning(repoPath, path string, err error) string {
 		relPath = rel
 	}
 	return fmt.Sprintf(gradleReadWarningFormat, filepath.ToSlash(relPath), err)
-}
-
-func dedupeWarningStrings(warnings []string) []string {
-	if len(warnings) == 0 {
-		return nil
-	}
-	unique := make(map[string]struct{})
-	items := make([]string, 0, len(warnings))
-	for _, warning := range warnings {
-		warning = strings.TrimSpace(warning)
-		if warning == "" {
-			continue
-		}
-		if _, ok := unique[warning]; ok {
-			continue
-		}
-		unique[warning] = struct{}{}
-		items = append(items, warning)
-	}
-	sort.Strings(items)
-	return items
 }

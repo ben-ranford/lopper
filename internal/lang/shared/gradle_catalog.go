@@ -963,7 +963,7 @@ func trimGradleCatalogQuotes(value string) string {
 	return strings.Trim(strings.TrimSpace(value), `"'`)
 }
 
-func dedupeGradleCatalogWarnings(warnings []string) []string {
+func DedupeWarnings(warnings []string) []string {
 	if len(warnings) == 0 {
 		return nil
 	}
@@ -982,4 +982,8 @@ func dedupeGradleCatalogWarnings(warnings []string) []string {
 	}
 	sort.Strings(items)
 	return items
+}
+
+func dedupeGradleCatalogWarnings(warnings []string) []string {
+	return DedupeWarnings(warnings)
 }
