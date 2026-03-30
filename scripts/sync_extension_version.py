@@ -25,25 +25,29 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_json(path: Path, payload: dict) -> None:
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+def write_package_json(payload: dict) -> None:
+    PACKAGE_JSON_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def sync_package_json(path: Path, version: str) -> None:
-    payload = load_json(path)
+def write_package_lock(payload: dict) -> None:
+    PACKAGE_LOCK_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def sync_package_json(version: str) -> None:
+    payload = load_json(PACKAGE_JSON_PATH)
     payload["version"] = version
-    write_json(path, payload)
+    write_package_json(payload)
 
 
-def sync_package_lock(path: Path, version: str) -> None:
-    payload = load_json(path)
+def sync_package_lock(version: str) -> None:
+    payload = load_json(PACKAGE_LOCK_PATH)
     payload["version"] = version
     packages = payload.get("packages")
     if isinstance(packages, dict):
         root = packages.get("")
         if isinstance(root, dict):
             root["version"] = version
-    write_json(path, payload)
+    write_package_lock(payload)
 
 
 def main(argv: list[str]) -> int:
@@ -52,8 +56,8 @@ def main(argv: list[str]) -> int:
         return 1
 
     version = normalize_version(argv[1])
-    sync_package_json(PACKAGE_JSON_PATH, version)
-    sync_package_lock(PACKAGE_LOCK_PATH, version)
+    sync_package_json(version)
+    sync_package_lock(version)
     print(version)
     return 0
 
