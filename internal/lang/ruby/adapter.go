@@ -480,7 +480,7 @@ func applyGemfileLockDependencyEntry(line string, state *gemfileLockSourceAttrib
 	if !state.inSpecs {
 		return
 	}
-	matches := gemTopLevelSpecPattern.FindStringSubmatch(trimmed)
+	matches := gemTopLevelSpecPattern.FindStringSubmatch(line)
 	if len(matches) != 2 {
 		return
 	}

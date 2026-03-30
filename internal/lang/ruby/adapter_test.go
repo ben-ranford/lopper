@@ -222,33 +222,15 @@ func TestRubyDependencyProvenanceHelpersNone(t *testing.T) {
 }
 
 func TestRubyDependencyProvenanceHelpersRubygemsOnly(t *testing.T) {
-	assertRubyDependencyProvenanceSignalData(
-		t,
-		rubyDependencySource{Rubygems: true},
-		rubyDependencySourceRubygems,
-		"medium",
-		nil,
-	)
+	assertRubyDependencyProvenanceSignalData(t, rubyDependencySource{Rubygems: true}, rubyDependencySourceRubygems, "medium", nil)
 }
 
 func TestRubyDependencyProvenanceHelpersGitFromGemfile(t *testing.T) {
-	assertRubyDependencyProvenanceSignalData(
-		t,
-		rubyDependencySource{Git: true, DeclaredGemfile: true},
-		rubyDependencySourceGit,
-		"high",
-		[]string{gemfileName},
-	)
+	assertRubyDependencyProvenanceSignalData(t, rubyDependencySource{Git: true, DeclaredGemfile: true}, rubyDependencySourceGit, "high", []string{gemfileName})
 }
 
 func TestRubyDependencyProvenanceHelpersBundlerMixed(t *testing.T) {
-	assertRubyDependencyProvenanceSignalData(
-		t,
-		rubyDependencySource{Rubygems: true, Git: true, Path: true, DeclaredGemfile: true, DeclaredLock: true},
-		rubyDependencySourceBundler,
-		"high",
-		[]string{rubyDependencySourceGit, rubyDependencySourcePath, rubyDependencySourceRubygems, gemfileName, gemfileLockName},
-	)
+	assertRubyDependencyProvenanceSignalData(t, rubyDependencySource{Rubygems: true, Git: true, Path: true, DeclaredGemfile: true, DeclaredLock: true}, rubyDependencySourceBundler, "high", []string{rubyDependencySourceGit, rubyDependencySourcePath, rubyDependencySourceRubygems, gemfileName, gemfileLockName})
 }
 
 func TestRubyParseGemfileDependencyLine(t *testing.T) {
