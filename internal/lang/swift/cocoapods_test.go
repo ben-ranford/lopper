@@ -216,7 +216,7 @@ func TestSwiftCocoaPodsSourceHelpers(t *testing.T) {
 	}
 }
 
-func TestSwiftCocoaPodsParsingHelpers(t *testing.T) {
+func TestSwiftCocoaPodsSpecHelpers(t *testing.T) {
 	if specs := podLockSpecs("Alamofire (5.8.1)"); !slices.Equal(specs, []string{"Alamofire (5.8.1)"}) {
 		t.Fatalf("unexpected string pod specs: %#v", specs)
 	}
@@ -235,6 +235,9 @@ func TestSwiftCocoaPodsParsingHelpers(t *testing.T) {
 	if name, version := parsePodSpec(" "); name != "" || version != "" {
 		t.Fatalf("expected blank pod spec parsing to stay empty, got %q %q", name, version)
 	}
+}
+
+func TestSwiftCocoaPodsEntryAndDedupeHelpers(t *testing.T) {
 	doc := podLockDocument{ExternalSources: map[string]map[string]any{"LocalPod": {":path": "../LocalPod"}}}
 	entry := podLockEntryFromSpec("LocalPod (1.0.0)", doc)
 	if entry.Name != "LocalPod" || entry.Version != "1.0.0" || entry.Source != "../LocalPod" {
