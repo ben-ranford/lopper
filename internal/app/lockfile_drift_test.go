@@ -576,14 +576,14 @@ func TestShouldSkipMissingLockfile(t *testing.T) {
 			name:         "non-poetry pyproject.toml does not warn",
 			manifestName: "pyproject.toml",
 			manifestBody: "[build-system]\nrequires = [\"setuptools\"]\n",
-			lockfileHint: "poetry.lock",
+			lockfileHint: poetryLockName,
 			wantWarning:  false,
 		},
 		{
-			name:         "poetry pyproject.toml warns when poetry.lock is missing",
+			name:         "poetry pyproject.toml warns when the Poetry lockfile is missing",
 			manifestName: "pyproject.toml",
 			manifestBody: "[tool.poetry]\nname = \"my-pkg\"\n\n[build-system]\nrequires = [\"poetry-core\"]\n",
-			lockfileHint: "poetry.lock",
+			lockfileHint: poetryLockName,
 			wantWarning:  true,
 		},
 		{
