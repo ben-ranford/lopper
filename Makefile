@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -15,6 +15,7 @@ COVERAGE_MIN ?= 98
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.1
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
+MANPAGE_OUT ?= docs/man/lopper.1
 GOLANGCI_LINT_VERSION ?= v2.9.0
 GOSTYLE_VERSION ?= v0.25.3
 GOSEC_VERSION ?= v2.22.11
@@ -231,6 +232,9 @@ build:
 	mkdir -p $(BIN_DIR)
 	GOFLAGS=-buildvcs=false $(GO_CMD) build -ldflags "$(BUILD_GO_LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
+manpage:
+	./scripts/generate-manpage.sh $(MANPAGE_OUT)
+
 ci: format-check mod-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov
 
 smoke: mod-check test-race build
@@ -345,6 +349,8 @@ release:
 			esac; \
 			CC="$(ZIG) cc -target $$target" CXX="$(ZIG) c++ -target $$target" CGO_ENABLED=1 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -ldflags "$(RELEASE_GO_LDFLAGS)" -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
 		fi; \
+		mkdir -p "$$output_dir/share/man/man1"; \
+		./scripts/generate-manpage.sh "$$output_dir/share/man/man1/$(BINARY_NAME).1"; \
 		if [ "$$GOOS" = "windows" ]; then \
 			(cd "$(DIST_DIR)" && zip -qr "$$name.zip" "$$name"); \
 		else \

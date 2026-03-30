@@ -360,6 +360,8 @@ jobs:
                 -X github.com/ben-ranford/lopper/internal/version.version=#{version}
               ]
               system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
+              system "bash", "scripts/generate-manpage.sh", "docs/man/lopper.1"
+              man1.install "docs/man/lopper.1"
             end
 
             test do
