@@ -72,10 +72,22 @@ func mustSingleSwiftDependencyReport(t *testing.T, req language.Request) report.
 	return reportData.Dependencies[0]
 }
 
+func writeSwiftDemoPackage(t *testing.T, repo string, dependencies []swiftFixtureDependency, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), buildSwiftManifestContent(dependencies))
+	testutil.MustWriteFile(t, filepath.Join(repo, packageResolvedName), buildSwiftResolvedContent(dependencies))
+	writeSwiftDemoSourceFile(t, repo, mainContent)
+}
+
 func writeSwiftDemoCocoaPodsProject(t *testing.T, repo string, dependencies []swiftFixturePodDependency, mainContent string) {
 	t.Helper()
 	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent(dependencies))
 	testutil.MustWriteFile(t, filepath.Join(repo, podLockName), buildPodLockContent(dependencies))
+	writeSwiftDemoSourceFile(t, repo, mainContent)
+}
+
+func writeSwiftDemoSourceFile(t *testing.T, repo string, mainContent string) {
+	t.Helper()
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
 }
 

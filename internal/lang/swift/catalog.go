@@ -24,13 +24,13 @@ func buildDependencyCatalog(repoPath string) (dependencyCatalog, []string, error
 	}
 	warnings := make([]string, 0)
 
-	swiftPM, manifestWarnings, err := loadSwiftPMCatalog(repoPath, &catalog)
+	swiftPM, manifestWarnings, err := loadPackageManagerCatalog(repoPath, &catalog, loadManifestData, loadResolvedData)
 	if err != nil {
 		return dependencyCatalog{}, nil, err
 	}
 	warnings = append(warnings, manifestWarnings...)
 
-	cocoaPods, podWarnings, err := loadCocoaPodsCatalog(repoPath, &catalog)
+	cocoaPods, podWarnings, err := loadPackageManagerCatalog(repoPath, &catalog, loadPodManifestData, loadPodLockData)
 	if err != nil {
 		return dependencyCatalog{}, nil, err
 	}
@@ -51,31 +51,21 @@ type packageManagerCatalogState struct {
 	LockFound     bool
 }
 
-func (s packageManagerCatalogState) Active() bool {
+func (s *packageManagerCatalogState) Active() bool {
+	if s == nil {
+		return false
+	}
 	return s.ManifestFound || s.LockFound
 }
 
-func loadSwiftPMCatalog(repoPath string, catalog *dependencyCatalog) (packageManagerCatalogState, []string, error) {
-	manifestFound, manifestWarnings, err := loadManifestData(repoPath, catalog)
-	if err != nil {
-		return packageManagerCatalogState{}, nil, err
-	}
-	resolvedFound, resolvedWarnings, err := loadResolvedData(repoPath, catalog)
-	if err != nil {
-		return packageManagerCatalogState{}, nil, err
-	}
-	return packageManagerCatalogState{
-		ManifestFound: manifestFound,
-		LockFound:     resolvedFound,
-	}, append(manifestWarnings, resolvedWarnings...), nil
-}
+type catalogLoader func(string, *dependencyCatalog) (bool, []string, error)
 
-func loadCocoaPodsCatalog(repoPath string, catalog *dependencyCatalog) (packageManagerCatalogState, []string, error) {
-	manifestFound, manifestWarnings, err := loadPodManifestData(repoPath, catalog)
+func loadPackageManagerCatalog(repoPath string, catalog *dependencyCatalog, manifestLoader catalogLoader, lockLoader catalogLoader) (packageManagerCatalogState, []string, error) {
+	manifestFound, manifestWarnings, err := manifestLoader(repoPath, catalog)
 	if err != nil {
 		return packageManagerCatalogState{}, nil, err
 	}
-	lockFound, lockWarnings, err := loadPodLockData(repoPath, catalog)
+	lockFound, lockWarnings, err := lockLoader(repoPath, catalog)
 	if err != nil {
 		return packageManagerCatalogState{}, nil, err
 	}

@@ -278,18 +278,9 @@ func podBaseName(podName string) string {
 }
 
 func podModuleTokens(podName string) []string {
-	fields := strings.FieldsFunc(strings.TrimSpace(podName), func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r))
+	return strings.FieldsFunc(strings.TrimSpace(podName), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
-	tokens := make([]string, 0, len(fields))
-	for _, field := range fields {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
-		tokens = append(tokens, field)
-	}
-	return tokens
 }
 
 func dedupePodLockEntries(entries []podLockEntry) []podLockEntry {
