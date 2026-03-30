@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const atomicTempPrefix = ".safeio-atomic-"
@@ -31,12 +30,12 @@ var (
 
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.
 func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
-	rootAbs, rel, err := resolveWriteTarget(rootDir, targetPath)
+	target, err := resolveRootedTarget(rootDir, targetPath, rejectRootTarget)
 	if err != nil {
 		return err
 	}
 
-	root, err := openRootFn(rootAbs)
+	root, err := openRootFn(target.rootAbs)
 	if err != nil {
 		return fmt.Errorf("open root: %w", err)
 	}
@@ -46,63 +45,17 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		}
 	}()
 
-	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(rel), perm)
+	session, err := newAtomicWriteSession(root, target.rel, perm)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if cleanupErr := cleanupTempFileFn(root, tempRel, tempFile); cleanupErr != nil && returnErr == nil {
+		if cleanupErr := session.cleanup(); cleanupErr != nil && returnErr == nil {
 			returnErr = cleanupErr
 		}
 	}()
 
-	if _, err := writeFileFn(tempFile, data); err != nil {
-		return err
-	}
-	if err := chmodFileFn(tempFile, perm); err != nil {
-		return err
-	}
-	if err := closeFileFn(tempFile); err != nil {
-		return err
-	}
-	tempFile = nil
-
-	if err := renameFileFn(root, tempRel, rel); err != nil {
-		return err
-	}
-	tempRel = ""
-	return nil
-}
-
-func resolveWriteTarget(rootDir, targetPath string) (string, string, error) {
-	rootAbs, err := absPathFn(rootDir)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve root path: %w", err)
-	}
-	targetAbs, err := absPathFn(targetPath)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve target path: %w", err)
-	}
-	rel, err := relPathFn(rootAbs, targetAbs)
-	if err != nil {
-		return "", "", fmt.Errorf("compute relative path: %w", err)
-	}
-	rel, err = validateRelativeTarget(targetPath, rel)
-	if err != nil {
-		return "", "", err
-	}
-	return rootAbs, rel, nil
-}
-
-func validateRelativeTarget(targetPath, rel string) (string, error) {
-	switch {
-	case rel == ".":
-		return "", fmt.Errorf("target path resolves to root directory: %s", targetPath)
-	case rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)):
-		return "", fmt.Errorf("path escapes root: %s", targetPath)
-	default:
-		return filepath.Clean(rel), nil
-	}
+	return session.writeAndCommit(data, perm)
 }
 
 func cleanupAtomicTempFile(root *os.Root, tempRel string, tempFile *os.File) error {
