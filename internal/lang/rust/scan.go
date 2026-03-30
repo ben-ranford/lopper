@@ -48,19 +48,7 @@ func scanRoots(manifestPaths []string, repoPath string) []string {
 }
 
 func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	return shared.WalkRepoFiles(ctx, root, 0, shouldSkipDir, func(path string, entry fs.DirEntry) error {
 		return scanRepoFileEntry(repoPath, root, path, depLookup, scannedFiles, fileCount, result)
 	})
 }

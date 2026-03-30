@@ -68,10 +68,6 @@ type scanResult struct {
 	UnresolvedSamples []string
 }
 
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
-}
-
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	repoPath = shared.DefaultRepoPath(repoPath)
 	detection := language.Detection{}

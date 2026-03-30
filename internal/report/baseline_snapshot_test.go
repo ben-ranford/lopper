@@ -1,6 +1,7 @@
 package report
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,6 +68,37 @@ func TestSaveSnapshotAndLoadWithKey(t *testing.T) {
 	_, err = SaveSnapshot(dir, snapshotKey, Report{RepoPath: "."}, now)
 	if err == nil || !strings.Contains(err.Error(), ErrBaselineAlreadyExists.Error()) {
 		t.Fatalf("expected immutable snapshot exists error, got %v", err)
+	}
+}
+
+func TestSaveSnapshotRemovesPartialFileOnEncodeError(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	const snapshotKey = "label:nan"
+
+	badReport := Report{
+		RepoPath: ".",
+		Dependencies: []DependencyReport{
+			{Name: "dep", Language: "js-ts", UsedPercent: math.NaN()},
+		},
+	}
+	if _, err := SaveSnapshot(dir, snapshotKey, badReport, now); err == nil || !strings.Contains(err.Error(), "unsupported value: NaN") {
+		t.Fatalf("expected json encoder NaN error, got %v", err)
+	}
+
+	path := BaselineSnapshotPath(dir, snapshotKey)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected no snapshot file after failed encode, stat err=%v", err)
+	}
+
+	goodReport := Report{
+		RepoPath: ".",
+		Dependencies: []DependencyReport{
+			{Name: "dep", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		},
+	}
+	if _, err := SaveSnapshot(dir, snapshotKey, goodReport, now); err != nil {
+		t.Fatalf("expected save to succeed after failed encode cleanup, got %v", err)
 	}
 }
 

@@ -108,19 +108,7 @@ func scanRepo(ctx context.Context, repoPath string, lookups dependencyLookups) (
 		return result, fs.ErrInvalid
 	}
 
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	err := shared.WalkRepoFiles(ctx, repoPath, 0, shouldSkipDir, func(path string, entry fs.DirEntry) error {
 		return scanKotlinAndroidSourceFile(repoPath, path, lookups, &result)
 	})
 	if err != nil {

@@ -850,7 +850,7 @@ func TestExecuteAnalyseLockfileDriftWarnPolicy(t *testing.T) {
 
 func TestExecuteAnalyseLockfileDriftFailPolicy(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n\nrequire github.com/some/dep v1.0.0\n"), 0o600); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	analyzer := &fakeAnalyzer{

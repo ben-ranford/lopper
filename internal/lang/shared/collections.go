@@ -30,6 +30,12 @@ func SortRecommendations(recommendations []report.Recommendation, priorityRank f
 	})
 }
 
+func SortRiskCues(cues []report.RiskCue) {
+	slices.SortFunc(cues, func(left, right report.RiskCue) int {
+		return cmp.Compare(left.Code, right.Code)
+	})
+}
+
 func TopCountKeys(values map[string]int, limit int) []string {
 	if len(values) == 0 {
 		return nil

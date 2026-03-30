@@ -33,16 +33,10 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		maxFiles:              maxFiles,
 		androidSpecificSignal: &androidSpecificSignal,
 	}
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
+	err := shared.WalkRepoFiles(ctx, repoPath, maxFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
 		return walkKotlinAndroidDetectionEntry(path, entry, state)
 	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
+	if err != nil {
 		return language.Detection{}, err
 	}
 

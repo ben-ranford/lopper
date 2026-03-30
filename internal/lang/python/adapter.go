@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -19,24 +18,13 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "python"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"py"}
-}
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	detection, err := a.DetectWithConfidence(ctx, repoPath)
-	return detection.Matched, err
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("python", []string{"py"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
@@ -458,10 +446,14 @@ func pythonFileUsages(scan scanResult) []shared.FileUsage {
 }
 
 var pythonStdlib = map[string]bool{
-	"abc": true, "argparse": true, "asyncio": true, "collections": true, "contextlib": true, "copy": true,
-	"csv": true, "dataclasses": true, "datetime": true, "functools": true, "hashlib": true, "http": true,
-	"importlib": true, "itertools": true, "json": true, "logging": true, "math": true, "os": true,
-	"pathlib": true, "queue": true, "random": true, "re": true, "socket": true, "sqlite3": true,
-	"ssl": true, "statistics": true, "string": true, "subprocess": true, "sys": true, "threading": true,
-	"time": true, "typing": true, "unittest": true, "urllib": true, "uuid": true, "xml": true, "zipfile": true,
+	"abc": true, "argparse": true, "ast": true, "asyncio": true, "codecs": true, "collections": true,
+	"concurrent": true, "contextlib": true, "copy": true, "csv": true, "dataclasses": true, "datetime": true,
+	"decimal": true, "dis": true, "enum": true, "fractions": true, "functools": true, "gc": true,
+	"glob": true, "hashlib": true, "http": true, "importlib": true, "inspect": true, "io": true,
+	"itertools": true, "json": true, "keyword": true, "logging": true, "math": true, "multiprocessing": true,
+	"operator": true, "os": true, "pathlib": true, "platform": true, "pprint": true, "queue": true,
+	"random": true, "re": true, "shutil": true, "signal": true, "socket": true, "sqlite3": true,
+	"ssl": true, "statistics": true, "string": true, "struct": true, "subprocess": true, "sys": true,
+	"tempfile": true, "textwrap": true, "threading": true, "time": true, "traceback": true, "typing": true,
+	"unittest": true, "urllib": true, "uuid": true, "warnings": true, "weakref": true, "xml": true, "zipfile": true,
 }

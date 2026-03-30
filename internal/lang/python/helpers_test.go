@@ -81,6 +81,42 @@ func TestPythonModuleResolutionHelpers(t *testing.T) {
 	}
 }
 
+func TestPythonDependencyFromModuleStdlibCoverage(t *testing.T) {
+	repo := t.TempDir()
+	modules := []string{
+		"io",
+		"enum",
+		"struct",
+		"ast",
+		"inspect",
+		"shutil",
+		"glob",
+		"tempfile",
+		"traceback",
+		"warnings",
+		"weakref",
+		"platform",
+		"signal",
+		"pprint",
+		"decimal",
+		"fractions",
+		"codecs",
+		"textwrap",
+		"operator",
+		"gc",
+		"dis",
+		"keyword",
+		"multiprocessing",
+		"concurrent",
+		"concurrent.futures",
+	}
+	for _, module := range modules {
+		if dependency := dependencyFromModule(repo, module); dependency != "" {
+			t.Fatalf("expected stdlib module %q to be ignored, got dependency %q", module, dependency)
+		}
+	}
+}
+
 func TestPythonDirectoryAndRecommendationsHelpers(t *testing.T) {
 	if !shouldSkipDir(".git") || !shouldSkipDir(".venv") || shouldSkipDir("src") {
 		t.Fatalf("unexpected shouldSkipDir behavior")

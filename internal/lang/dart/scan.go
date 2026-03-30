@@ -129,13 +129,7 @@ func walkPackageEntry(ctx context.Context, scanner packageRootScanner, path stri
 }
 
 func walkContextErr(ctx context.Context, walkErr error) error {
-	if walkErr != nil {
-		return walkErr
-	}
-	if ctx != nil && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return nil
+	return shared.WalkContextErr(ctx, walkErr)
 }
 
 func scanPackageDir(root, path, name string, allRoots map[string]struct{}) error {

@@ -11,7 +11,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -21,7 +20,7 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 const jsPackageFile = "package.json"
@@ -33,19 +32,9 @@ var jsDetectSkippedDirs = map[string]bool{
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "js-ts"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"js", "ts", "javascript", "typescript"}
-}
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("js-ts", []string{"js", "ts", "javascript", "typescript"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {

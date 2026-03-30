@@ -33,7 +33,7 @@ func TestLockfileDriftAdditionalPathAndWalkBranches(t *testing.T) {
 		if entry.Name() != "child" {
 			continue
 		}
-		if processLockfileDir(context.Background(), child, entry, nil, lockfileWalkState{normalizedPath: parent, warnings: &[]string{}}) == nil {
+		if processLockfileDir(context.Background(), child, entry, nil, lockfileWalkState{repoPath: parent}) == nil {
 			t.Fatalf("expected removed directory to fail when scanning lockfile drift")
 		}
 	}

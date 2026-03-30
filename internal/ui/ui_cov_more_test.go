@@ -42,7 +42,7 @@ func TestRenderSummaryOutputSuccess(t *testing.T) {
 
 	var out bytes.Buffer
 	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
-	if err := summary.renderSummaryOutput(rep, summaryState{sortMode: sortByWaste, page: 1, pageSize: 10}); err != nil {
+	if err := summary.renderSummaryOutput(mapSummaryReportView(rep), summaryState{sortMode: sortByWaste, page: 1, pageSize: 10}); err != nil {
 		t.Fatalf("render summary output: %v", err)
 	}
 	if !strings.Contains(out.String(), "Lopper TUI (summary)") {
@@ -74,26 +74,26 @@ func TestUIDetailAdditionalWriteErrorBranches(t *testing.T) {
 		t.Fatalf("expected writeLines error, got %v", err)
 	}
 
-	if err := printReachabilitySignals(&failAfterWriter{failAt: 0, err: writeErr}, []report.ReachabilitySignal{{Code: runtimeOverlapCode}}); !errors.Is(err, writeErr) {
+	if err := printReachabilitySignals(&failAfterWriter{failAt: 0, err: writeErr}, []detailReachabilitySignalView{{Code: runtimeOverlapCode}}); !errors.Is(err, writeErr) {
 		t.Fatalf("expected signals header write failure, got %v", err)
 	}
 
-	if err := printReachabilitySignals(&failAfterWriter{failAt: 1, err: writeErr}, []report.ReachabilitySignal{{Code: runtimeOverlapCode}}); !errors.Is(err, writeErr) {
+	if err := printReachabilitySignals(&failAfterWriter{failAt: 1, err: writeErr}, []detailReachabilitySignalView{{Code: runtimeOverlapCode}}); !errors.Is(err, writeErr) {
 		t.Fatalf("expected signals row write failure, got %v", err)
 	}
 
-	if err := printReachabilitySignals(&failAfterWriter{failAt: 2, err: writeErr}, []report.ReachabilitySignal{{Code: runtimeOverlapCode, Rationale: "because"}}); !errors.Is(err, writeErr) {
+	if err := printReachabilitySignals(&failAfterWriter{failAt: 2, err: writeErr}, []detailReachabilitySignalView{{Code: runtimeOverlapCode, Rationale: "because"}}); !errors.Is(err, writeErr) {
 		t.Fatalf("expected signals rationale write failure, got %v", err)
 	}
 
-	if err := printReachabilityConfidence(&failAfterWriter{failAt: 1, err: writeErr}, &report.ReachabilityConfidence{Model: "reachability-v2", Score: 72.5}); !errors.Is(err, writeErr) {
+	if err := printReachabilityConfidence(&failAfterWriter{failAt: 1, err: writeErr}, &detailReachabilityConfidenceView{Model: "reachability-v2", Score: 72.5}); !errors.Is(err, writeErr) {
 		t.Fatalf("expected confidence writeLines failure, got %v", err)
 	}
 
-	if err := printReachabilityConfidence(&failAfterWriter{failAt: 3, err: writeErr}, &report.ReachabilityConfidence{
+	if err := printReachabilityConfidence(&failAfterWriter{failAt: 3, err: writeErr}, &detailReachabilityConfidenceView{
 		Model:   "reachability-v2",
 		Score:   72.5,
-		Signals: []report.ReachabilitySignal{{Code: runtimeOverlapCode}},
+		Signals: []detailReachabilitySignalView{{Code: runtimeOverlapCode}},
 	}); !errors.Is(err, writeErr) {
 		t.Fatalf("expected confidence signal write failure, got %v", err)
 	}
@@ -128,7 +128,7 @@ func testUIReachabilitySignalsWithoutRationale(t *testing.T) {
 	t.Helper()
 
 	var out bytes.Buffer
-	if err := printReachabilitySignals(&out, []report.ReachabilitySignal{{
+	if err := printReachabilitySignals(&out, []detailReachabilitySignalView{{
 		Code:         runtimeOverlapCode,
 		Score:        100,
 		Weight:       0.2,
@@ -161,7 +161,7 @@ func testUIRemovalCandidateWithoutRationale(t *testing.T) {
 	t.Helper()
 
 	var out bytes.Buffer
-	if err := printRemovalCandidate(&out, &report.RemovalCandidate{Score: 80, Usage: 70, Impact: 60, Confidence: 90}); err != nil {
+	if err := printRemovalCandidate(&out, &detailRemovalCandidateView{Score: 80, Usage: 70, Impact: 60, Confidence: 90}); err != nil {
 		t.Fatalf("print removal candidate without rationale: %v", err)
 	}
 	text := out.String()

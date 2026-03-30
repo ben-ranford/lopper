@@ -89,10 +89,7 @@ var (
 )
 
 func contextError(ctx context.Context) error {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.Err()
+	return shared.WalkContextErr(ctx, nil)
 }
 
 func maybeSkipSwiftDir(name string) error {

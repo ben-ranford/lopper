@@ -184,6 +184,19 @@ func TestToSARIFLocationsDeduplicatesNormalizedPaths(t *testing.T) {
 	}
 }
 
+func TestToSARIFLocationWindowsAbsolutePathUsesFileURI(t *testing.T) {
+	got, ok := toSARIFLocation(Location{File: `C:\tmp\sarif schema.json`, Line: 7, Column: 3})
+	if !ok {
+		t.Fatalf("expected valid sarif location")
+	}
+	if got.PhysicalLocation.ArtifactLocation.URI != "file:///C:/tmp/sarif%20schema.json" {
+		t.Fatalf("unexpected windows sarif uri: %q", got.PhysicalLocation.ArtifactLocation.URI)
+	}
+	if got.PhysicalLocation.Region == nil || got.PhysicalLocation.Region.StartLine != 7 || got.PhysicalLocation.Region.StartColumn != 3 {
+		t.Fatalf("expected region to be preserved, got %#v", got.PhysicalLocation.Region)
+	}
+}
+
 func TestToSARIFLocationsNilAndOnlyInvalid(t *testing.T) {
 	if got := toSARIFLocations(nil); len(got) != 0 {
 		t.Fatalf("expected nil for nil input, got %v", got)

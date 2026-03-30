@@ -2,7 +2,6 @@ package rust
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,10 +10,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 )
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
-}
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	repoPath = shared.DefaultRepoPath(repoPath)
@@ -27,16 +22,10 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 
 	visited := 0
-	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
+	err = shared.WalkRepoFiles(ctx, repoPath, maxDetectionEntries, shouldSkipDir, func(path string, entry fs.DirEntry) error {
 		return walkRustDetectionEntry(path, entry, repoPath, workspaceOnlyRoot, roots, &detection, &visited)
 	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
+	if err != nil {
 		return language.Detection{}, err
 	}
 

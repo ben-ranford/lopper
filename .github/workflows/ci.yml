@@ -511,10 +511,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - &ci_smoke_checkout
+        name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Go
+      - &ci_smoke_setup_go
+        name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -536,13 +538,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - *ci_smoke_checkout
 
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
+      - *ci_smoke_setup_go
 
       - name: Setup Node
         uses: actions/setup-node@v6
