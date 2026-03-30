@@ -86,6 +86,9 @@ func TestRubyAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	if depReport.Dependencies[0].Language != "ruby" {
 		t.Fatalf("expected ruby language, got %q", depReport.Dependencies[0].Language)
 	}
+	if depReport.Dependencies[0].Provenance == nil || depReport.Dependencies[0].Provenance.Source != rubyDependencySourceRubygems {
+		t.Fatalf("expected rubygems provenance, got %#v", depReport.Dependencies[0].Provenance)
+	}
 	if depReport.Dependencies[0].TotalExportsCount == 0 {
 		t.Fatalf("expected require signals to be counted")
 	}
@@ -101,6 +104,67 @@ func TestRubyAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	if !slices.Contains(names, "nokogiri") {
 		t.Fatalf("expected Bundler gem from Gemfile in topN output, got %#v", names)
 	}
+}
+
+func TestRubyAdapterAnalyseBundlerGitAndPathProvenance(t *testing.T) {
+	repo := t.TempDir()
+	gemfileContent := `source 'https://rubygems.org'
+gem 'httparty'
+gem 'private_gem', git: 'https://github.com/example/private_gem.git'
+gem 'local_gem', path: 'vendor/local_gem'
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), gemfileContent)
+	lockfileContent := `GIT
+  remote: https://github.com/example/private_gem.git
+  revision: abcdef1234567890
+  specs:
+    private_gem (1.0.0)
+      rack (>= 2.0)
+
+PATH
+  remote: vendor/local_gem
+  specs:
+    local_gem (0.1.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    httparty (0.22.0)
+    rack (3.1.0)
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, gemfileLockName), lockfileContent)
+	appContent := `require 'httparty'
+require 'private_gem'
+require 'local_gem'
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, rubyAppFile), appContent)
+
+	scan, err := scanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if got := sortedDependencyUnion(scan.DeclaredDependencies); !slices.Contains(got, "rack") {
+		t.Fatalf("expected lockfile dependency preservation, got %#v", got)
+	}
+
+	assertRubyDependencyProvenance(t, repo, "httparty", rubyDependencySourceRubygems, []string{gemfileName, gemfileLockName})
+	assertRubyDependencyProvenance(t, repo, "private-gem", rubyDependencySourceGit, []string{gemfileName, gemfileLockName})
+	assertRubyDependencyProvenance(t, repo, "local-gem", rubyDependencySourcePath, []string{gemfileName, gemfileLockName})
+}
+
+func TestRubyAdapterAnalyseBundlerGitAndPathProvenanceWithoutLockfile(t *testing.T) {
+	repo := t.TempDir()
+	gemfileContent := `gem 'private_gem', :git => 'https://github.com/example/private_gem.git'
+gem 'local_gem', :path => 'vendor/local_gem'
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), gemfileContent)
+	appContent := `require 'private_gem'
+require 'local_gem'
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, rubyAppFile), appContent)
+
+	assertRubyDependencyProvenance(t, repo, "private-gem", rubyDependencySourceGit, []string{gemfileName})
+	assertRubyDependencyProvenance(t, repo, "local-gem", rubyDependencySourcePath, []string{gemfileName})
 }
 
 func TestRubyAdapterAnalyseGemspecProjectAndDeduplicatesDeclaredDependencies(t *testing.T) {
@@ -148,6 +212,134 @@ end
 	if !strings.Contains(joinedWarnings, "could not confidently parse gemspec dependency declaration in "+demoGemspecFile+":2") {
 		t.Fatalf("expected gemspec parse warning, got %#v", scan.Warnings)
 	}
+}
+
+func TestRubyDependencyProvenanceHelpers(t *testing.T) {
+	cases := []struct {
+		name           string
+		info           rubyDependencySource
+		wantSource     string
+		wantConfidence string
+		wantSignals    []string
+	}{
+		{name: "none"},
+		{
+			name:           "rubygems only",
+			info:           rubyDependencySource{Rubygems: true},
+			wantSource:     rubyDependencySourceRubygems,
+			wantConfidence: "medium",
+		},
+		{
+			name:           "git from gemfile",
+			info:           rubyDependencySource{Git: true, DeclaredGemfile: true},
+			wantSource:     rubyDependencySourceGit,
+			wantConfidence: "high",
+			wantSignals:    []string{gemfileName},
+		},
+		{
+			name:           "bundler mixed",
+			info:           rubyDependencySource{Rubygems: true, Git: true, Path: true, DeclaredGemfile: true, DeclaredLock: true},
+			wantSource:     rubyDependencySourceBundler,
+			wantConfidence: "high",
+			wantSignals:    []string{rubyDependencySourceGit, rubyDependencySourcePath, rubyDependencySourceRubygems, gemfileName, gemfileLockName},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rubyDependencyProvenanceSource(tc.info); got != tc.wantSource {
+				t.Fatalf("rubyDependencyProvenanceSource(%#v)=%q want %q", tc.info, got, tc.wantSource)
+			}
+			if got := rubyDependencyProvenanceConfidence(tc.info); got != tc.wantConfidence {
+				t.Fatalf("rubyDependencyProvenanceConfidence(%#v)=%q want %q", tc.info, got, tc.wantConfidence)
+			}
+			if got := rubyDependencyProvenanceSignals(tc.info); !slices.Equal(got, tc.wantSignals) {
+				t.Fatalf("rubyDependencyProvenanceSignals(%#v)=%#v want %#v", tc.info, got, tc.wantSignals)
+			}
+
+			provenance := buildRubyDependencyProvenance(tc.info)
+			if tc.wantSource == "" {
+				if provenance != nil {
+					t.Fatalf("expected nil provenance, got %#v", provenance)
+				}
+				return
+			}
+			if provenance == nil {
+				t.Fatalf("expected provenance for %#v", tc.info)
+			}
+			if provenance.Source != tc.wantSource || provenance.Confidence != tc.wantConfidence || !slices.Equal(provenance.Signals, tc.wantSignals) {
+				t.Fatalf("unexpected provenance: %#v", provenance)
+			}
+		})
+	}
+}
+
+func TestRubyBundlerSourceParsingBranches(t *testing.T) {
+	t.Run("gemfile dependency line parsing", func(t *testing.T) {
+		cases := []struct {
+			line     string
+			wantDep  string
+			wantKind string
+			wantOK   bool
+		}{
+			{line: `gem 'rack'`, wantDep: "rack", wantKind: rubyDependencySourceRubygems, wantOK: true},
+			{line: `gem 'private_gem', git: 'https://example.test/private_gem.git'`, wantDep: "private-gem", wantKind: rubyDependencySourceGit, wantOK: true},
+			{line: `gem 'local_gem', :path => 'vendor/local_gem' # comment`, wantDep: "local-gem", wantKind: rubyDependencySourcePath, wantOK: true},
+			{line: `puts 'hello'`, wantOK: false},
+		}
+		for _, tc := range cases {
+			dependency, kind, ok := parseGemfileDependencyLine(tc.line)
+			if ok != tc.wantOK || dependency != tc.wantDep || kind != tc.wantKind {
+				t.Fatalf("parseGemfileDependencyLine(%q)=(%q,%q,%t) want (%q,%q,%t)", tc.line, dependency, kind, ok, tc.wantDep, tc.wantKind, tc.wantOK)
+			}
+		}
+	})
+
+	t.Run("lockfile source attribution ignores unknown sections and nested specs", func(t *testing.T) {
+		out := map[string]struct{}{}
+		sources := map[string]rubyDependencySource{}
+		content := []byte(`GIT
+  remote: https://example.test/private_gem.git
+  specs:
+    private_gem (1.0.0)
+      rack (>= 2.0)
+
+UNKNOWN
+  specs:
+    ignored_gem (0.1.0)
+`)
+
+		parseGemfileLockSourceAttribution(content, out, nil)
+		parseGemfileLockSourceAttribution(content, out, sources)
+
+		if _, ok := out["private-gem"]; !ok {
+			t.Fatalf("expected top-level git gem to be tracked, got %#v", out)
+		}
+		if _, ok := out["ignored-gem"]; ok {
+			t.Fatalf("expected unknown section to be ignored, got %#v", out)
+		}
+		if got := rubyDependencyProvenanceSource(sources["private-gem"]); got != rubyDependencySourceGit {
+			t.Fatalf("expected git provenance, got %#v", sources["private-gem"])
+		}
+	})
+
+	t.Run("loadDeclaredDependencies tolerates nil sources", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "gem 'rack'\n")
+		testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
+
+		out := make(map[string]struct{})
+		warnings, err := loadDeclaredDependencies(repo, out, nil)
+		if err != nil {
+			t.Fatalf("loadDeclaredDependencies: %v", err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected no warnings, got %#v", warnings)
+		}
+		if got := sortedDependencyUnion(out); !slices.Equal(got, []string{"httparty", "rack"}) {
+			t.Fatalf("unexpected declared dependencies: %#v", got)
+		}
+	})
 }
 
 func TestRubyAdditionalBranches(t *testing.T) {
@@ -255,5 +447,27 @@ func testRubyRequireParsingAndRiskRecommendations(t *testing.T) {
 	}
 	if got := resolveRemovalCandidateWeights(nil); got != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default removal weights, got %#v", got)
+	}
+}
+
+func assertRubyDependencyProvenance(t *testing.T, repo, dependency, wantSource string, wantSignals []string) {
+	t.Helper()
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: dependency})
+	if err != nil {
+		t.Fatalf("analyse %s: %v", dependency, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report for %s, got %#v", dependency, reportData.Dependencies)
+	}
+	provenance := reportData.Dependencies[0].Provenance
+	if provenance == nil {
+		t.Fatalf("expected provenance for %s", dependency)
+	}
+	if provenance.Source != wantSource {
+		t.Fatalf("expected %s provenance source %q, got %#v", dependency, wantSource, provenance)
+	}
+	if !slices.Equal(provenance.Signals, wantSignals) {
+		t.Fatalf("expected %s provenance signals %#v, got %#v", dependency, wantSignals, provenance.Signals)
 	}
 }
