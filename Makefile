@@ -308,7 +308,7 @@ tools-install:
 	$(GO_CMD) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 sync-version:
-	python3 scripts/sync_extension_version.py "$(VERSION)"
+	cd $(VSCODE_EXTENSION_DIR) && npm version "$(VERSION)" --no-git-tag-version --allow-same-version
 
 setup: toolchain-install
 	$(GO_CMD) mod download
