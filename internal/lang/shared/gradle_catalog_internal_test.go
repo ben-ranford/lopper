@@ -13,6 +13,24 @@ type stubGradleCatalogDirEntry struct {
 	name string
 }
 
+const (
+	gradleCatalogName             = "libs"
+	gradleTestCatalogName         = "testlibs"
+	gradleToolsCatalogName        = "tools"
+	gradleDefaultCatalogFileName  = "libs.versions.toml"
+	gradleOverrideCatalogFileName = "override.versions.toml"
+	gradleSettingsFileName        = "settings.gradle.kts"
+	gradleDefaultCatalogPath      = "gradle/" + gradleDefaultCatalogFileName
+	gradleToolsCatalogPath        = "gradle/tools.versions.toml"
+	testRepoRoot                  = "/repo"
+	testAppRoot                   = testRepoRoot + "/app"
+	testBuildFile                 = testAppRoot + "/build.gradle.kts"
+	testOtherBuildFile            = testRepoRoot + "/other/build.gradle.kts"
+	testRepoCatalogPath           = testRepoRoot + "/gradle/" + gradleDefaultCatalogFileName
+	okhttpGroup                   = "com.squareup.okhttp3"
+	okhttpVersion                 = "4.12.0"
+)
+
 func (e *stubGradleCatalogDirEntry) Name() string               { return e.name }
 func (e *stubGradleCatalogDirEntry) IsDir() bool                { return true }
 func (e *stubGradleCatalogDirEntry) Type() fs.FileMode          { return fs.ModeDir }
@@ -44,7 +62,7 @@ networking = ["retrofit", "okhttp", "retrofit", "missing"]
 unsupported = []
 broken-tail = { group = "org.tail"
 `
-	parsed, warnings := parseGradleCatalogFile(content, "libs", "gradle/libs.versions.toml")
+	parsed, warnings := parseGradleCatalogFile(content, gradleCatalogName, gradleDefaultCatalogPath)
 
 	if got := parsed.libraries["compose.bom"]; got.Artifact != "compose-bom" || got.Version != "2024.05.00" {
 		t.Fatalf("expected string dependency to parse, got %#v", got)
@@ -61,43 +79,43 @@ broken-tail = { group = "org.tail"
 	}
 
 	expectedWarnings := []string{
-		`unsupported Gradle version catalog library "broken" in gradle/libs.versions.toml`,
-		`unsupported Gradle version catalog module "bad-module" in gradle/libs.versions.toml`,
-		`unsupported Gradle version catalog library "missing-fields" in gradle/libs.versions.toml`,
-		`unsupported Gradle version catalog bundle "unsupported" in gradle/libs.versions.toml`,
-		`unable to resolve Gradle version catalog bundle member "missing" in gradle/libs.versions.toml`,
-		`unterminated Gradle version catalog entry "broken-tail" in gradle/libs.versions.toml`,
+		`unsupported Gradle version catalog library "broken" in ` + gradleDefaultCatalogPath,
+		`unsupported Gradle version catalog module "bad-module" in ` + gradleDefaultCatalogPath,
+		`unsupported Gradle version catalog library "missing-fields" in ` + gradleDefaultCatalogPath,
+		`unsupported Gradle version catalog bundle "unsupported" in ` + gradleDefaultCatalogPath,
+		`unable to resolve Gradle version catalog bundle member "missing" in ` + gradleDefaultCatalogPath,
+		`unterminated Gradle version catalog entry "broken-tail" in ` + gradleDefaultCatalogPath,
 	}
 	assertGradleCatalogWarningsContain(t, warnings, expectedWarnings...)
 }
 
 func TestGradleCatalogResolverCollectsAllReferenceForms(t *testing.T) {
-	okhttp := GradleCatalogLibrary{Catalog: "libs", Alias: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp", Version: "4.12.0"}
-	retrofit := GradleCatalogLibrary{Catalog: "libs", Alias: "retrofit", Group: "com.squareup.retrofit2", Artifact: "retrofit", Version: "2.11.0"}
-	junit := GradleCatalogLibrary{Catalog: "testlibs", Alias: "junit", Group: "org.junit.jupiter", Artifact: "junit-jupiter-api", Version: "5.10.0"}
+	okhttp := GradleCatalogLibrary{Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: okhttpVersion}
+	retrofit := GradleCatalogLibrary{Catalog: gradleCatalogName, Alias: "retrofit", Group: "com.squareup.retrofit2", Artifact: "retrofit", Version: "2.11.0"}
+	junit := GradleCatalogLibrary{Catalog: gradleTestCatalogName, Alias: "junit", Group: "org.junit.jupiter", Artifact: "junit-jupiter-api", Version: "5.10.0"}
 
 	resolver := GradleCatalogResolver{
 		knownCatalogs: map[string]struct{}{
-			"libs":     {},
-			"testlibs": {},
+			gradleCatalogName:     {},
+			gradleTestCatalogName: {},
 		},
 		scopes: []gradleCatalogScope{
 			{
-				root: filepath.Clean("/repo/app"),
+				root: filepath.Clean(testAppRoot),
 				libraries: map[string]GradleCatalogLibrary{
-					buildGradleCatalogScopeKey("libs", "okhttp"):    okhttp,
-					buildGradleCatalogScopeKey("libs", "retrofit"):  retrofit,
-					buildGradleCatalogScopeKey("testlibs", "junit"): junit,
+					buildGradleCatalogScopeKey(gradleCatalogName, "okhttp"):    okhttp,
+					buildGradleCatalogScopeKey(gradleCatalogName, "retrofit"):  retrofit,
+					buildGradleCatalogScopeKey(gradleTestCatalogName, "junit"): junit,
 				},
 				bundles: map[string][]GradleCatalogLibrary{
-					buildGradleCatalogScopeKey("libs", "networking"): {okhttp, retrofit, okhttp},
-					buildGradleCatalogScopeKey("testlibs", "qa"):     {junit},
+					buildGradleCatalogScopeKey(gradleCatalogName, "networking"): {okhttp, retrofit, okhttp},
+					buildGradleCatalogScopeKey(gradleTestCatalogName, "qa"):     {junit},
 				},
 			},
 		},
 	}
 
-	dependencies, warnings := resolver.ParseDependencyReferences("/repo/app/build.gradle.kts", `
+	dependencies, warnings := resolver.ParseDependencyReferences(testBuildFile, `
 dependencies {
   implementation(libs["okhttp"])
   implementation(libs.bundles.networking)
@@ -116,31 +134,31 @@ dependencies {
 		t.Fatalf("expected unique dependencies from property, bracket, bundle, and finder references, got %#v", dependencies)
 	}
 	expectedWarnings := []string{
-		"unable to resolve Gradle version catalog alias libs.missing in /repo/app/build.gradle.kts",
-		"unable to resolve Gradle version catalog bundle testlibs.bundles.missing in /repo/app/build.gradle.kts",
-		"unsupported Gradle version catalog reference libs.plugins.android in /repo/app/build.gradle.kts",
-		"unsupported Gradle version catalog reference libs.versions.kotlin in /repo/app/build.gradle.kts",
+		"unable to resolve Gradle version catalog alias libs.missing in " + testBuildFile,
+		"unable to resolve Gradle version catalog bundle testlibs.bundles.missing in " + testBuildFile,
+		"unsupported Gradle version catalog reference libs.plugins.android in " + testBuildFile,
+		"unsupported Gradle version catalog reference libs.versions.kotlin in " + testBuildFile,
 	}
 	assertGradleCatalogWarningsContain(t, warnings, expectedWarnings...)
 
-	if resolver.scopeForBuildFile("/repo/other/build.gradle.kts") != nil {
+	if resolver.scopeForBuildFile(testOtherBuildFile) != nil {
 		t.Fatalf("expected unmatched build file to have no catalog scope")
 	}
-	if dependency, warning := resolver.resolveLibraryReference("/repo/other/build.gradle.kts", "libs", "okhttp"); dependency != (GradleCatalogLibrary{}) || warning == "" {
+	if dependency, warning := resolver.resolveLibraryReference(testOtherBuildFile, gradleCatalogName, "okhttp"); dependency != (GradleCatalogLibrary{}) || warning == "" {
 		t.Fatalf("expected unmatched scope to emit unresolved alias warning, got %#v %q", dependency, warning)
 	}
-	if bundle, warning := resolver.resolveBundleReference("/repo/other/build.gradle.kts", "libs", "networking"); len(bundle) != 0 || warning == "" {
+	if bundle, warning := resolver.resolveBundleReference(testOtherBuildFile, gradleCatalogName, "networking"); len(bundle) != 0 || warning == "" {
 		t.Fatalf("expected unmatched scope to emit unresolved bundle warning, got %#v %q", bundle, warning)
 	}
-	if dependency, warning := resolver.resolveLibraryReference("/repo/app/build.gradle.kts", "libs", ""); dependency != (GradleCatalogLibrary{}) || warning != "" {
+	if dependency, warning := resolver.resolveLibraryReference(testBuildFile, gradleCatalogName, ""); dependency != (GradleCatalogLibrary{}) || warning != "" {
 		t.Fatalf("expected empty alias lookup to be ignored, got %#v %q", dependency, warning)
 	}
-	if bundle, warning := resolver.resolveBundleReference("/repo/app/build.gradle.kts", "libs", ""); len(bundle) != 0 || warning != "" {
+	if bundle, warning := resolver.resolveBundleReference(testBuildFile, gradleCatalogName, ""); len(bundle) != 0 || warning != "" {
 		t.Fatalf("expected empty bundle lookup to be ignored, got %#v %q", bundle, warning)
 	}
 
 	var nilResolver *GradleCatalogResolver
-	if dependencies, warnings := nilResolver.ParseDependencyReferences("/repo/app/build.gradle.kts", "implementation(libs.okhttp)"); len(dependencies) != 0 || len(warnings) != 0 {
+	if dependencies, warnings := nilResolver.ParseDependencyReferences(testBuildFile, "implementation(libs.okhttp)"); len(dependencies) != 0 || len(warnings) != 0 {
 		t.Fatalf("expected nil resolver to return nil results, got %#v %#v", dependencies, warnings)
 	}
 }
@@ -148,15 +166,22 @@ dependencies {
 func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	repo := t.TempDir()
 	registry := newGradleCatalogRegistry(repo)
+	missingSettingsPath := filepath.Join(repo, "missing", gradleSettingsFileName)
+	missingCatalogPath := filepath.Join(repo, "gradle", "missing.versions.toml")
+	vendorCatalogPath := filepath.Join(repo, "vendor", gradleDefaultCatalogFileName)
+	defaultCatalogPath := filepath.Join(repo, "gradle", gradleDefaultCatalogFileName)
+	overrideCatalogPath := filepath.Join(repo, "gradle", gradleOverrideCatalogFileName)
+	otherCatalogPath := filepath.Join(repo, "gradle", "other.versions.toml")
+	settingsPath := filepath.Join(repo, gradleSettingsFileName)
 
-	registry.loadSettingsFile(filepath.Join(repo, "missing", "settings.gradle.kts"))
+	registry.loadSettingsFile(missingSettingsPath)
 	registry.loadSource(gradleCatalogSource{
 		root: repo,
-		name: "libs",
-		path: filepath.Join(repo, "gradle", "missing.versions.toml"),
+		name: gradleCatalogName,
+		path: missingCatalogPath,
 	})
 	initialWarnings := []string{
-		"unable to read missing/settings.gradle.kts:",
+		"unable to read missing/" + gradleSettingsFileName + ":",
 		"unable to read gradle/missing.versions.toml:",
 	}
 	assertGradleCatalogWarningsContain(t, registry.warnings, initialWarnings...)
@@ -172,8 +197,8 @@ func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	if want := filepath.Join(repo, "gradle", "test-libs.versions.toml"); relativePath != want {
 		t.Fatalf("expected relative catalog path to resolve under repo, got %q want %q", relativePath, want)
 	}
-	absolutePath := resolveGradleCatalogSourcePath(repo, filepath.Join(repo, "gradle", "libs.versions.toml"))
-	if want := filepath.Join(repo, "gradle", "libs.versions.toml"); absolutePath != want {
+	absolutePath := resolveGradleCatalogSourcePath(repo, defaultCatalogPath)
+	if want := defaultCatalogPath; absolutePath != want {
 		t.Fatalf("expected absolute catalog path to stay absolute, got %q want %q", absolutePath, want)
 	}
 
@@ -184,31 +209,31 @@ func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	registry.trackKnownCatalog("   ")
 	registry.registerSource(repo, "", "")
 
-	registry.registerDefaultCatalog(filepath.Join(repo, "vendor", "libs.versions.toml"))
-	registry.registerDefaultCatalog(filepath.Join(repo, "gradle", "libs.versions.toml"))
-	registry.registerSource(repo, "libs", filepath.Join(repo, "gradle", "override.versions.toml"))
-	registry.registerSource(repo, "libs", filepath.Join(repo, "gradle", "other.versions.toml"))
+	registry.registerDefaultCatalog(vendorCatalogPath)
+	registry.registerDefaultCatalog(defaultCatalogPath)
+	registry.registerSource(repo, gradleCatalogName, overrideCatalogPath)
+	registry.registerSource(repo, gradleCatalogName, otherCatalogPath)
 
 	scope := registry.ensureScope(repo)
-	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: "libs", path: filepath.Join(repo, "gradle", "libs.versions.toml")}, map[string]GradleCatalogLibrary{
-		"okhttp": {Catalog: "libs", Alias: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp", Version: "4.12.0"},
+	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: defaultCatalogPath}, map[string]GradleCatalogLibrary{
+		"okhttp": {Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: okhttpVersion},
 	})
-	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: "libs", path: filepath.Join(repo, "gradle", "override.versions.toml")}, map[string]GradleCatalogLibrary{
-		"okhttp": {Catalog: "libs", Alias: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp", Version: "4.13.0"},
+	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: overrideCatalogPath}, map[string]GradleCatalogLibrary{
+		"okhttp": {Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: "4.13.0"},
 	})
-	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: "libs", path: filepath.Join(repo, "gradle", "libs.versions.toml")}, map[string][]GradleCatalogLibrary{
+	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: defaultCatalogPath}, map[string][]GradleCatalogLibrary{
 		"networking": {
-			{Catalog: "libs", Alias: "okhttp", Group: "com.squareup.okhttp3", Artifact: "okhttp", Version: "4.12.0"},
+			{Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: okhttpVersion},
 		},
 	})
-	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: "libs", path: filepath.Join(repo, "gradle", "override.versions.toml")}, map[string][]GradleCatalogLibrary{
+	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: overrideCatalogPath}, map[string][]GradleCatalogLibrary{
 		"networking": {
-			{Catalog: "libs", Alias: "retrofit", Group: "com.squareup.retrofit2", Artifact: "retrofit", Version: "2.11.0"},
+			{Catalog: gradleCatalogName, Alias: "retrofit", Group: "com.squareup.retrofit2", Artifact: "retrofit", Version: "2.11.0"},
 		},
 	})
 	registryWarnings := []string{
-		fmt.Sprintf("multiple Gradle version catalog sources configured for libs under %s; using %s", filepath.Clean(repo), filepath.Join(repo, "gradle", "libs.versions.toml")),
-		fmt.Sprintf("Gradle version catalog alias libs.%s resolves to multiple coordinates under %s; keeping %s:%s", "okhttp", filepath.Clean(repo), "com.squareup.okhttp3", "okhttp"),
+		fmt.Sprintf("multiple Gradle version catalog sources configured for libs under %s; using %s", filepath.Clean(repo), defaultCatalogPath),
+		fmt.Sprintf("Gradle version catalog alias libs.%s resolves to multiple coordinates under %s; keeping %s:%s", "okhttp", filepath.Clean(repo), okhttpGroup, "okhttp"),
 		fmt.Sprintf("Gradle version catalog bundle libs.%s resolves to multiple dependency sets under %s; keeping the first definition", "networking", filepath.Clean(repo)),
 	}
 	assertGradleCatalogWarningsContain(t, registry.warnings, registryWarnings...)
@@ -228,17 +253,17 @@ dependencyResolutionManagement {
   }
 }
 `
-	refs, warnings := parseGradleSettingsCatalogRefs(settingsContent, "settings.gradle.kts")
-	if len(refs) != 2 || refs[0].Path != "gradle/tools.versions.toml" || refs[1].Path != "" {
+	refs, warnings := parseGradleSettingsCatalogRefs(settingsContent, gradleSettingsFileName)
+	if len(refs) != 2 || refs[0].Path != gradleToolsCatalogPath || refs[1].Path != "" {
 		t.Fatalf("expected settings parser to keep first file and unsupported source, got %#v", refs)
 	}
 	settingsWarnings := []string{
-		"multiple Gradle version catalog files declared for tools in settings.gradle.kts; using gradle/tools.versions.toml",
-		"unsupported Gradle version catalog source for dynamic in settings.gradle.kts",
+		"multiple Gradle version catalog files declared for tools in " + gradleSettingsFileName + "; using " + gradleToolsCatalogPath,
+		"unsupported Gradle version catalog source for dynamic in " + gradleSettingsFileName,
 	}
 	assertGradleCatalogWarningsContain(t, warnings, settingsWarnings...)
 
-	writeGradleCatalogTestFile(t, filepath.Join(repo, "settings.gradle.kts"), `
+	writeGradleCatalogTestFile(t, settingsPath, `
 dependencyResolutionManagement {
   versionCatalogs {
     create("dynamic") {
@@ -248,7 +273,7 @@ dependencyResolutionManagement {
 }
 `)
 	registry = newGradleCatalogRegistry(repo)
-	registry.loadSettingsFile(filepath.Join(repo, "settings.gradle.kts"))
+	registry.loadSettingsFile(settingsPath)
 	if _, ok := registry.knownCatalogs["dynamic"]; !ok {
 		t.Fatalf("expected settings loader to track catalogs without file-backed sources, got %#v", registry.knownCatalogs)
 	}
@@ -280,7 +305,7 @@ dependencyResolutionManagement {
 	}
 }
 
-func TestGradleCatalogHelperFunctions(t *testing.T) {
+func TestGradleCatalogStringAndAssignmentHelpers(t *testing.T) {
 	if got, ok := parseGradleCatalogStringValue(`'1.2.3'`); !ok || got != "1.2.3" {
 		t.Fatalf("expected single-quoted value to parse, got %q %t", got, ok)
 	}
@@ -302,7 +327,9 @@ func TestGradleCatalogHelperFunctions(t *testing.T) {
 	if _, _, ok := parseGradleCatalogAssignment("name = "); ok {
 		t.Fatalf("expected assignment missing a value to be rejected")
 	}
+}
 
+func TestGradleCatalogCommentAndDelimiterHelpers(t *testing.T) {
 	if got := stripGradleCatalogComment(`group = "org.example#demo" # comment`); got != `group = "org.example#demo" ` {
 		t.Fatalf("expected inline comment to be stripped without touching quoted hash, got %q", got)
 	}
@@ -345,33 +372,37 @@ func TestGradleCatalogHelperFunctions(t *testing.T) {
 	if quoteState.toggleQuote('\'') {
 		t.Fatalf("expected single quote inside double-quoted string to be ignored")
 	}
+}
 
-	library, warnings := parseGradleCatalogLibraryEntry("tools", "cli", `"dev.example:cli:1.0.0"`, nil, "gradle/tools.versions.toml")
+func TestGradleCatalogLibraryEntryHelpers(t *testing.T) {
+	library, warnings := parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "cli", `"dev.example:cli:1.0.0"`, nil, gradleToolsCatalogPath)
 	if len(warnings) != 0 || library.Group != "dev.example" || library.Artifact != "cli" || library.Version != "1.0.0" {
 		t.Fatalf("expected string catalog dependency to parse, got %#v %#v", library, warnings)
 	}
 	pluginVersions := map[string]string{"plugin": "2.0.0"}
-	library, warnings = parseGradleCatalogLibraryEntry("tools", "plugin", `{ module = "dev.example:plugin", version = { ref = "PLUGIN" } }`, pluginVersions, "gradle/tools.versions.toml")
+	library, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "plugin", `{ module = "dev.example:plugin", version = { ref = "PLUGIN" } }`, pluginVersions, gradleToolsCatalogPath)
 	if len(warnings) != 0 || library.Version != "2.0.0" {
 		t.Fatalf("expected nested version ref to resolve case-insensitively, got %#v %#v", library, warnings)
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry("tools", "broken", `"not-a-coordinate"`, nil, "gradle/tools.versions.toml"); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "broken", `"not-a-coordinate"`, nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected invalid string library to emit a warning")
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry("tools", "bad-module", `{ module = "bad-module", version = "1.0.0" }`, nil, "gradle/tools.versions.toml"); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "bad-module", `{ module = "bad-module", version = "1.0.0" }`, nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected invalid module field to emit a warning")
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry("tools", "missing-fields", `{ version = "1.0.0" }`, nil, "gradle/tools.versions.toml"); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "missing-fields", `{ version = "1.0.0" }`, nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected missing coordinates to emit a warning")
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry("tools", "invalid", "provider(\"coords\")", nil, "gradle/tools.versions.toml"); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "invalid", "provider(\"coords\")", nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected unsupported library format to emit a warning")
 	}
-	emptyLibrary, warnings := parseGradleCatalogLibraryEntry("tools", "empty", "   ", nil, "gradle/tools.versions.toml")
+	emptyLibrary, warnings := parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "empty", "   ", nil, gradleToolsCatalogPath)
 	if len(warnings) != 0 || emptyLibrary.Group != "" || emptyLibrary.Artifact != "" || emptyLibrary.Alias != "empty" {
 		t.Fatalf("expected blank library value to be ignored, got %#v %#v", emptyLibrary, warnings)
 	}
+}
 
+func TestGradleCatalogVersionAndCoordinateHelpers(t *testing.T) {
 	if version := resolveGradleCatalogVersion(map[string]string{"version": "1.0.0"}, "", nil); version != "1.0.0" {
 		t.Fatalf("expected explicit version field to win, got %q", version)
 	}
@@ -403,7 +434,10 @@ func TestGradleCatalogHelperFunctions(t *testing.T) {
 	if got := parseGradleCatalogNestedVersionRef(`{ version = "1.0.0" }`); got != "" {
 		t.Fatalf("expected missing nested version ref to return empty, got %q", got)
 	}
-	parser := newGradleCatalogFileParser("libs", "gradle/libs.versions.toml")
+}
+
+func TestGradleCatalogParserInputHelpers(t *testing.T) {
+	parser := newGradleCatalogFileParser(gradleCatalogName, gradleDefaultCatalogPath)
 	parser.consumeLine("not an assignment")
 	parser.consumeVersionEntry("bad", "nope")
 	if len(parser.versions) != 0 {
@@ -412,7 +446,9 @@ func TestGradleCatalogHelperFunctions(t *testing.T) {
 	if got, ok := parseGradleCatalogStringValue(`"`); ok || got != "" {
 		t.Fatalf("expected short quoted value to be rejected, got %q %t", got, ok)
 	}
+}
 
+func TestGradleCatalogPathAndWarningHelpers(t *testing.T) {
 	if got := normalizeGradleCatalogAccessor(" libs-network . core "); got != "libs.network.core" {
 		t.Fatalf("expected accessor to normalize separators and spaces, got %q", got)
 	}
@@ -422,22 +458,22 @@ func TestGradleCatalogHelperFunctions(t *testing.T) {
 	if got := normalizeGradleCatalogExpression(" libs . bundles . networking "); got != "libs.bundles.networking" {
 		t.Fatalf("expected expression to normalize, got %q", got)
 	}
-	if !isGradleCatalogSubPath("/repo/app", "/repo/app") {
+	if !isGradleCatalogSubPath(testAppRoot, testAppRoot) {
 		t.Fatalf("expected exact root match to count as a subpath")
 	}
-	if !isGradleCatalogSubPath("/repo/app", "/repo/app/build.gradle.kts") || isGradleCatalogSubPath("/repo/app", "/repo/other/build.gradle.kts") {
+	if !isGradleCatalogSubPath(testAppRoot, testBuildFile) || isGradleCatalogSubPath(testAppRoot, testOtherBuildFile) {
 		t.Fatalf("expected subpath detection to distinguish matching roots")
 	}
-	if got := relativeGradleCatalogPath("/repo", "/repo/gradle/libs.versions.toml"); got != "gradle/libs.versions.toml" {
+	if got := relativeGradleCatalogPath(testRepoRoot, testRepoCatalogPath); got != gradleDefaultCatalogPath {
 		t.Fatalf("expected relative catalog path to be repo-relative, got %q", got)
 	}
-	if got := relativeGradleCatalogPath("/repo", "gradle/libs.versions.toml"); got != "gradle/libs.versions.toml" {
+	if got := relativeGradleCatalogPath(testRepoRoot, gradleDefaultCatalogPath); got != gradleDefaultCatalogPath {
 		t.Fatalf("expected mixed absolute/relative paths to fall back to the original path, got %q", got)
 	}
-	if got := relativeGradleCatalogPathFromFile(filepath.Join("/repo", "app", "..", "gradle", "libs.versions.toml")); got != "/repo/gradle/libs.versions.toml" {
+	if got := relativeGradleCatalogPathFromFile(filepath.Join(testRepoRoot, "app", "..", "gradle", gradleDefaultCatalogFileName)); got != testRepoCatalogPath {
 		t.Fatalf("expected cleaned file path, got %q", got)
 	}
-	if got := formatGradleCatalogReadWarning("/repo", "/repo/gradle/libs.versions.toml", fs.ErrPermission); got != fmt.Sprintf("unable to read gradle/libs.versions.toml: %v", fs.ErrPermission) {
+	if got := formatGradleCatalogReadWarning(testRepoRoot, testRepoCatalogPath, fs.ErrPermission); got != fmt.Sprintf("unable to read %s: %v", gradleDefaultCatalogPath, fs.ErrPermission) {
 		t.Fatalf("expected read warning to be repo-relative, got %q", got)
 	}
 
@@ -447,12 +483,14 @@ func TestGradleCatalogHelperFunctions(t *testing.T) {
 	if got := DedupeWarnings([]string{" second ", "", "first", "second"}); strings.Join(got, ",") != "first,second" {
 		t.Fatalf("expected warnings to be trimmed, deduped, and sorted, got %#v", got)
 	}
+}
 
-	resolver := GradleCatalogResolver{knownCatalogs: map[string]struct{}{"libs": {}}}
-	collector := newGradleCatalogReferenceCollector(&resolver, "/repo/app/build.gradle.kts")
+func TestGradleCatalogReferenceCollectorIgnoresUnknownInputs(t *testing.T) {
+	resolver := GradleCatalogResolver{knownCatalogs: map[string]struct{}{gradleCatalogName: {}}}
+	collector := newGradleCatalogReferenceCollector(&resolver, testBuildFile)
 	collector.collectFinderMatches(`implementation(unknownCatalog.findLibrary("missing").get())`)
 	collector.collectBracketMatches(`implementation(unknownCatalog["missing"])`)
-	collector.handlePropertyExpression("libs")
+	collector.handlePropertyExpression(gradleCatalogName)
 	if len(collector.dependencies) != 0 || len(collector.warnings) != 0 {
 		t.Fatalf("expected unmatched collector inputs to be ignored, got %#v %#v", collector.dependencies, collector.warnings)
 	}
