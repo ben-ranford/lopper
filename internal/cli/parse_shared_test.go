@@ -96,6 +96,18 @@ func TestParseArgsErrorsAndHelp(t *testing.T) {
 	}
 }
 
+func TestIsVersionArg(t *testing.T) {
+	if !isVersionArg([]string{"--version"}) {
+		t.Fatalf("expected --version to be recognized")
+	}
+	if isVersionArg([]string{"version"}) {
+		t.Fatalf("did not expect bare version token to be recognized")
+	}
+	if isVersionArg([]string{"--version", "--help"}) {
+		t.Fatalf("did not expect mixed args to be recognized as a version request")
+	}
+}
+
 func TestParseArgsFlagParseAndConfigLoadErrors(t *testing.T) {
 	cases := []struct {
 		name string

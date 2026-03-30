@@ -38,11 +38,30 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Compute build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="dev"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "version=${version}"
+            echo "commit=$(git rev-parse --short=12 HEAD)"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
+          build-args: |
+            VERSION=${{ steps.build_meta.outputs.version }}
+            GIT_COMMIT=${{ steps.build_meta.outputs.commit }}
+            BUILD_DATE=${{ steps.build_meta.outputs.build_date }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}

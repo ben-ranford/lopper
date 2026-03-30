@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/version"
 )
 
 type Executor interface {
@@ -15,20 +16,29 @@ type Executor interface {
 }
 
 type CommandLine struct {
-	Executor Executor
-	Out      io.Writer
-	Err      io.Writer
+	Executor      Executor
+	Out           io.Writer
+	Err           io.Writer
+	VersionOutput string
 }
 
 func New(executor Executor, out io.Writer, errOut io.Writer) *CommandLine {
 	return &CommandLine{
-		Executor: executor,
-		Out:      out,
-		Err:      errOut,
+		Executor:      executor,
+		Out:           out,
+		Err:           errOut,
+		VersionOutput: version.String(),
 	}
 }
 
 func (c *CommandLine) Run(ctx context.Context, args []string) int {
+	if isVersionArg(args) {
+		if c.writeOutln(c.VersionOutput) != nil {
+			return 1
+		}
+		return 0
+	}
+
 	req, err := ParseArgs(args)
 	if err != nil {
 		return c.handleParseError(err)

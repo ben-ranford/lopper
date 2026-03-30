@@ -62,6 +62,30 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestRunVersion(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	c := New(&fakeRunner{}, &out, &errOut)
+	c.VersionOutput = "lopper 1.2.1"
+	code := c.Run(context.Background(), []string{"--version"})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d", code)
+	}
+	if out.String() != "lopper 1.2.1\n" {
+		t.Fatalf("expected version output, got %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr output for version, got %q", errOut.String())
+	}
+}
+
+func TestRunVersionWriterFailure(t *testing.T) {
+	c := New(&fakeRunner{}, &failWriter{}, &bytes.Buffer{})
+	if code := c.Run(context.Background(), []string{"--version"}); code != 1 {
+		t.Fatalf("expected version writer failure to return code 1, got %d", code)
+	}
+}
+
 func TestRunHelpWriterFailure(t *testing.T) {
 	c := New(&fakeRunner{}, &failWriter{}, &bytes.Buffer{})
 	code := c.Run(context.Background(), []string{"--help"})

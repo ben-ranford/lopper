@@ -25,6 +25,23 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestRunVersion(t *testing.T) {
+	in := strings.NewReader("")
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	code := run([]string{"--version"}, in, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0 for version, got %d", code)
+	}
+	if !strings.Contains(out.String(), "lopper ") {
+		t.Fatalf("expected version output on stdout, got %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr output for version, got %q", errOut.String())
+	}
+}
+
 func TestRunParseError(t *testing.T) {
 	in := strings.NewReader("")
 	var out bytes.Buffer

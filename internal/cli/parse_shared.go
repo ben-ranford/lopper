@@ -137,6 +137,10 @@ func isHelpArg(arg string) bool {
 	}
 }
 
+func isVersionArg(args []string) bool {
+	return len(args) == 1 && strings.TrimSpace(args[0]) == "--version"
+}
+
 func normalizeArgs(args []string) []string {
 	if len(args) == 0 {
 		return args

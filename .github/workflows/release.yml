@@ -41,6 +41,7 @@ jobs:
             exit 1
           fi
           release_floor_tag="v${release_floor}"
+          meaningful_changes="1"
 
           latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1)"
           if [ -z "$latest_tag" ]; then
@@ -67,6 +68,11 @@ jobs:
           commits_since_previous_tag="0"
           if [ -n "${previous_tag}" ]; then
             commits_since_previous_tag="$(git rev-list --count "${previous_tag}..HEAD")"
+            if git diff --quiet "${previous_tag}..HEAD" -- . \
+              ':(exclude)extensions/vscode-lopper/package.json' \
+              ':(exclude)extensions/vscode-lopper/package-lock.json'; then
+              meaningful_changes="0"
+            fi
           fi
 
           should_release="true"
@@ -81,7 +87,7 @@ jobs:
             release_reason="initial_release"
           elif [ "${next_tag}" = "${release_floor_tag}" ] && [ "${previous_tag}" != "${release_floor_tag}" ]; then
             release_reason="version_alignment"
-          elif [ "${commits_since_previous_tag}" = "0" ]; then
+          elif [ "${commits_since_previous_tag}" = "0" ] || [ "${meaningful_changes}" = "0" ]; then
             should_release="false"
             release_reason="no_changes"
           fi
@@ -153,11 +159,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           version="${RELEASE_TAG#v}"
-          current_version="$(python3 scripts/read_package_version.py extensions/vscode-lopper/package.json)"
+          make sync-version VERSION="$version"
           cd extensions/vscode-lopper
-          if [ "$current_version" != "$version" ]; then
-            npm version "$version" --no-git-tag-version
-          fi
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Upload VS Code extension artifact
@@ -242,10 +245,60 @@ jobs:
           test -n "$vsix_path"
           npx --yes @vscode/vsce publish --packagePath "$vsix_path"
 
+  sync-release-version:
+    needs:
+      - prepare
+      - publish
+    if: ${{ needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.is_stable_release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Sync committed extension version
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+
+          make sync-version VERSION="$version"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add extensions/vscode-lopper/package.json extensions/vscode-lopper/package-lock.json
+          if git diff --cached --quiet; then
+            echo "No committed version surfaces changed"
+            exit 0
+          fi
+
+          git commit -m "chore: sync extension version to ${RELEASE_TAG}"
+
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} for synced version surfaces"
+            git fetch origin "${TARGET_BRANCH}"
+            git rebase "origin/${TARGET_BRANCH}"
+            if git push origin HEAD:"${TARGET_BRANCH}"; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Failed to push synced version surfaces after retries" >&2
+          exit 1
+
   update-homebrew-tap:
     needs:
       - prepare
       - publish
+      - sync-release-version
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -303,11 +356,16 @@ jobs:
             conflicts_with "ben-ranford/tap/lopper-rolling", because: "both install the lopper executable"
 
             def install
-              system "go", "build", *std_go_args(output: bin/"lopper"), "./cmd/lopper"
+              ldflags = %W[
+                -s
+                -w
+                -X github.com/ben-ranford/lopper/internal/version.version=#{version}
+              ]
+              system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
             end
 
             test do
-              assert_match "Usage:", shell_output("#{bin}/lopper --help")
+              assert_match version.to_s, shell_output("#{bin}/lopper --version")
             end
           end
           RUBY
@@ -353,4 +411,4 @@ jobs:
     steps:
       - name: No-op when no changes since last semver tag
         run: |
-          echo "Skipping weekly release: no changes detected since previous semver tag."
+          echo "Skipping weekly release: no meaningful changes detected since the previous semver tag."
