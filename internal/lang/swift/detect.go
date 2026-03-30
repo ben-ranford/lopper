@@ -2,7 +2,6 @@ package swift
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -11,10 +10,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 )
 
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
-}
-
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	repoPath = shared.DefaultRepoPath(repoPath)
 	detection := language.Detection{}
@@ -22,13 +17,14 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	rootSignals := []shared.RootSignal{
 		{Name: packageManifestName, Confidence: 60},
 		{Name: packageResolvedName, Confidence: 25},
+		{Name: podManifestName, Confidence: 60},
+		{Name: podLockName, Confidence: 25},
 	}
 	if err := shared.ApplyRootSignals(repoPath, rootSignals, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
 
-	err := walkSwiftDetection(ctx, repoPath, &detection, roots)
-	if err != nil && !errors.Is(err, fs.SkipAll) {
+	if err := walkSwiftDetection(ctx, repoPath, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
 
@@ -36,12 +32,8 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func walkSwiftDetection(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	visited := 0
-	return filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		return detectSwiftEntry(ctx, path, entry, detection, roots, &visited)
+	return shared.WalkRepoFiles(ctx, repoPath, maxDetectFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
+		return recordSwiftDetectionEntry(path, entry.Name(), detection, roots)
 	})
 }
 
@@ -57,13 +49,12 @@ func detectSwiftEntry(ctx context.Context, path string, entry fs.DirEntry, detec
 	if *visited > maxDetectFiles {
 		return fs.SkipAll
 	}
-	recordSwiftDetection(path, entry.Name(), detection, roots)
-	return nil
+	return recordSwiftDetectionEntry(path, entry.Name(), detection, roots)
 }
 
-func recordSwiftDetection(path string, name string, detection *language.Detection, roots map[string]struct{}) {
+func recordSwiftDetectionEntry(path string, name string, detection *language.Detection, roots map[string]struct{}) error {
 	switch strings.ToLower(name) {
-	case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName):
+	case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName), strings.ToLower(podManifestName), strings.ToLower(podLockName):
 		detection.Matched = true
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
@@ -72,4 +63,5 @@ func recordSwiftDetection(path string, name string, detection *language.Detectio
 		detection.Matched = true
 		detection.Confidence += 2
 	}
+	return nil
 }

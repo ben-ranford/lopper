@@ -69,9 +69,9 @@ func testJSTransitiveDepthAndDependencyHelpers(t *testing.T) {
 	repo := t.TempDir()
 	root := filepath.Join(repo, "node_modules", "root")
 	memo := map[string]int{"cached": 4}
-	depth, err := transitiveDepth(repo, "cached", packageJSON{}, memo, map[string]struct{}{}, 5)
-	if err != nil || depth != 4 {
-		t.Fatalf("expected memoized transitive depth, got depth=%d err=%v", depth, err)
+	depth := transitiveDepth(repo, "cached", packageJSON{}, memo, map[string]struct{}{}, 5)
+	if depth != 4 {
+		t.Fatalf("expected memoized transitive depth, got depth=%d", depth)
 	}
 
 	if root, ok := resolveInstalledDependencyRoot(repo, root, "missing"); ok || root != "" {

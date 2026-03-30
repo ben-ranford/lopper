@@ -6,12 +6,16 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func buildRequestedSwiftDependencies(req language.Request, scan scanResult, catalog dependencyCatalog) ([]report.DependencyReport, []string) {
 	minUsagePercent := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
 	buildDependency := func(dependency string, scan scanResult) (report.DependencyReport, []string) {
+		if _, ok := catalog.Dependencies[dependency]; !ok {
+			if resolved := resolveDependencyReference(catalog, dependency); resolved != "" {
+				dependency = resolved
+			}
+		}
 		return buildDependencyReport(dependency, scan, catalog, minUsagePercent)
 	}
 	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, resolveRemovalCandidateWeights, buildTopSwiftDependencies(scan, catalog, minUsagePercent))
@@ -74,19 +78,19 @@ func buildDependencyReport(dependency string, scan scanResult, catalog dependenc
 }
 
 func buildDependencyRiskCues(meta dependencyMeta) []report.RiskCue {
-	cues := make([]report.RiskCue, 0, 1)
-	if meta.Declared && !meta.Resolved {
+	cues := make([]report.RiskCue, 0, 2)
+	for _, issue := range dependencyLockfileIssues(meta) {
 		cues = append(cues, report.RiskCue{
-			Code:     "missing-lock-resolution",
+			Code:     issue.Code,
 			Severity: "medium",
-			Message:  "dependency is declared in Package.swift but missing from Package.resolved",
+			Message:  issue.Message,
 		})
 	}
 	return cues
 }
 
 func buildRecommendations(dep report.DependencyReport, meta dependencyMeta, minUsagePercent int) []report.Recommendation {
-	recommendations := make([]report.Recommendation, 0, 3)
+	recommendations := make([]report.Recommendation, 0, 4)
 	if len(dep.UsedImports) == 0 && len(dep.UnusedImports) > 0 {
 		recommendations = append(recommendations, report.Recommendation{
 			Code:      "remove-unused-dependency",
@@ -103,27 +107,72 @@ func buildRecommendations(dep report.DependencyReport, meta dependencyMeta, minU
 			Rationale: "Low-usage dependencies are good candidates for cleanup or replacement.",
 		})
 	}
-	if meta.Declared && !meta.Resolved {
+	for _, issue := range dependencyLockfileIssues(meta) {
 		recommendations = append(recommendations, report.Recommendation{
-			Code:      "refresh-package-resolved",
+			Code:      issue.RecommendationCode,
 			Priority:  "medium",
-			Message:   fmt.Sprintf("Dependency %q is declared but not pinned in Package.resolved; refresh lockfile.", dep.Name),
-			Rationale: "Keeping lockfile pins aligned improves reproducibility and supply-chain traceability.",
+			Message:   fmt.Sprintf("Dependency %q is declared in %s but missing from %s; refresh lockfile.", dep.Name, issue.Manifest, issue.Lockfile),
+			Rationale: issue.Rationale,
 		})
 	}
 	return recommendations
 }
 
-func resolveMinUsageRecommendationThreshold(value *int) int {
-	if value != nil {
-		return *value
+type dependencyLockfileIssue struct {
+	Code               string
+	RecommendationCode string
+	Manifest           string
+	Lockfile           string
+	Message            string
+	Rationale          string
+}
+
+func dependencyLockfileIssues(meta dependencyMeta) []dependencyLockfileIssue {
+	issues := make([]dependencyLockfileIssue, 0, 2)
+	if meta.DeclaredViaSwiftPM && !meta.ResolvedViaSwiftPM {
+		issues = append(issues, dependencyLockfileIssue{
+			Code:               "missing-lock-resolution",
+			RecommendationCode: "refresh-package-resolved",
+			Manifest:           packageManifestName,
+			Lockfile:           packageResolvedName,
+			Message:            "dependency is declared in Package.swift but missing from Package.resolved",
+			Rationale:          "Keeping Package.resolved aligned improves reproducibility and supply-chain traceability.",
+		})
 	}
-	return thresholds.Defaults().MinUsagePercentForRecommendations
+	if meta.DeclaredViaCocoaPods && !meta.ResolvedViaCocoaPods {
+		issues = append(issues, dependencyLockfileIssue{
+			Code:               "missing-pod-lock-resolution",
+			RecommendationCode: "refresh-podfile-lock",
+			Manifest:           podManifestName,
+			Lockfile:           podLockName,
+			Message:            "dependency is declared in Podfile but missing from Podfile.lock",
+			Rationale:          "Keeping Podfile.lock aligned improves reproducibility and pod-to-module attribution fidelity.",
+		})
+	}
+	if usesManagerSpecificMetadata(meta) {
+		return issues
+	}
+	if meta.Declared && !meta.Resolved {
+		return append(issues, dependencyLockfileIssue{
+			Code:               "missing-lock-resolution",
+			RecommendationCode: "refresh-package-resolved",
+			Manifest:           packageManifestName,
+			Lockfile:           packageResolvedName,
+			Message:            "dependency is declared in Package.swift but missing from Package.resolved",
+			Rationale:          "Keeping Package.resolved aligned improves reproducibility and supply-chain traceability.",
+		})
+	}
+	return issues
+}
+
+func usesManagerSpecificMetadata(meta dependencyMeta) bool {
+	return meta.DeclaredViaSwiftPM || meta.ResolvedViaSwiftPM || meta.DeclaredViaCocoaPods || meta.ResolvedViaCocoaPods
+}
+
+func resolveMinUsageRecommendationThreshold(value *int) int {
+	return shared.ResolveMinUsageRecommendationThreshold(value)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }

@@ -63,6 +63,48 @@ func TestSummarySnapshotGolden(t *testing.T) {
 	}
 }
 
+func TestSummaryRenderBuildsDisplayViewFromBoundary(t *testing.T) {
+	reportData := report.Report{
+		Warnings: []string{"warning"},
+		Dependencies: []report.DependencyReport{
+			{Name: "beta", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10},
+			{Name: "alpha", Language: "python", UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20},
+		},
+	}
+
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: reportData}, report.NewFormatter())
+	var display summaryDisplayView
+	summary.Formatter = func(view summaryDisplayView) (string, error) {
+		display = view
+		return "formatted table\n", nil
+	}
+
+	rendered, err := summary.renderSummary(mapSummaryReportView(reportData), summaryState{
+		sortMode: sortByName,
+		page:     1,
+		pageSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("render summary: %v", err)
+	}
+
+	if display.Summary == nil || display.Summary.DependencyCount != 2 {
+		t.Fatalf("expected summary metrics for sorted dependency set, got %#v", display.Summary)
+	}
+	if len(display.LanguageBreakdown) != 2 {
+		t.Fatalf("expected language breakdown for both dependencies, got %#v", display.LanguageBreakdown)
+	}
+	if len(display.Dependencies) != 1 || display.Dependencies[0].Name != "alpha" {
+		t.Fatalf("expected paged display dependency to be alpha, got %#v", display.Dependencies)
+	}
+	if len(display.Warnings) != 1 || display.Warnings[0] != "warning" {
+		t.Fatalf("expected warnings to flow through display view, got %#v", display.Warnings)
+	}
+	if !strings.Contains(rendered, "formatted table") {
+		t.Fatalf("expected rendered frame to include formatter output, got %q", rendered)
+	}
+}
+
 func mustParseTime(t *testing.T, value string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339, value)

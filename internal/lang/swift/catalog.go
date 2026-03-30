@@ -24,28 +24,83 @@ func buildDependencyCatalog(repoPath string) (dependencyCatalog, []string, error
 	}
 	warnings := make([]string, 0)
 
-	manifestFound, manifestWarnings, err := loadManifestData(repoPath, &catalog)
+	swiftPM, manifestWarnings, err := loadPackageManagerCatalog(repoPath, &catalog, loadManifestData, loadResolvedData)
 	if err != nil {
 		return dependencyCatalog{}, nil, err
 	}
 	warnings = append(warnings, manifestWarnings...)
-	if !manifestFound {
-		warnings = append(warnings, packageManifestName+" not found; dependency declaration mapping may be incomplete")
-	}
 
-	resolvedFound, resolvedWarnings, err := loadResolvedData(repoPath, &catalog)
+	cocoaPods, podWarnings, err := loadPackageManagerCatalog(repoPath, &catalog, loadPodManifestData, loadPodLockData)
 	if err != nil {
 		return dependencyCatalog{}, nil, err
 	}
-	warnings = append(warnings, resolvedWarnings...)
-	if !resolvedFound {
-		warnings = append(warnings, packageResolvedName+" not found; version/resolution mapping may be incomplete")
-	}
+	warnings = append(warnings, podWarnings...)
+
+	catalog.HasSwiftPM = swiftPM.Active()
+	catalog.HasCocoaPods = cocoaPods.Active()
+	warnings = append(warnings, missingCatalogWarnings(swiftPM, cocoaPods)...)
 
 	if len(catalog.Dependencies) == 0 {
-		warnings = append(warnings, "no Swift package dependencies were discovered from Package.swift or Package.resolved")
+		warnings = append(warnings, "no Swift dependencies were discovered from Package.swift, Package.resolved, Podfile, or Podfile.lock")
 	}
 	return catalog, dedupeWarnings(warnings), nil
+}
+
+type packageManagerCatalogState struct {
+	ManifestFound bool
+	LockFound     bool
+}
+
+func (s *packageManagerCatalogState) Active() bool {
+	if s == nil {
+		return false
+	}
+	return s.ManifestFound || s.LockFound
+}
+
+type catalogLoader func(string, *dependencyCatalog) (bool, []string, error)
+
+func loadPackageManagerCatalog(repoPath string, catalog *dependencyCatalog, manifestLoader catalogLoader, lockLoader catalogLoader) (packageManagerCatalogState, []string, error) {
+	manifestFound, manifestWarnings, err := manifestLoader(repoPath, catalog)
+	if err != nil {
+		return packageManagerCatalogState{}, nil, err
+	}
+	lockFound, lockWarnings, err := lockLoader(repoPath, catalog)
+	if err != nil {
+		return packageManagerCatalogState{}, nil, err
+	}
+	return packageManagerCatalogState{
+		ManifestFound: manifestFound,
+		LockFound:     lockFound,
+	}, append(manifestWarnings, lockWarnings...), nil
+}
+
+func missingCatalogWarnings(swiftPM, cocoaPods packageManagerCatalogState) []string {
+	warnings := make([]string, 0, 4)
+	switch {
+	case !swiftPM.Active() && !cocoaPods.Active():
+		warnings = append(warnings, packageManifestName+" not found; dependency declaration mapping may be incomplete")
+		warnings = append(warnings, packageResolvedName+" not found; version/resolution mapping may be incomplete")
+	default:
+		if swiftPM.Active() {
+			warnings = append(warnings, managerMissingWarnings(swiftPM, packageManifestName+" not found; dependency declaration mapping may be incomplete", packageResolvedName+" not found; version/resolution mapping may be incomplete")...)
+		}
+		if cocoaPods.Active() {
+			warnings = append(warnings, managerMissingWarnings(cocoaPods, podManifestName+" not found; CocoaPods declaration mapping may be incomplete", podLockName+" not found; CocoaPods version/resolution mapping may be incomplete")...)
+		}
+	}
+	return warnings
+}
+
+func managerMissingWarnings(state packageManagerCatalogState, manifestWarning string, lockWarning string) []string {
+	warnings := make([]string, 0, 2)
+	if !state.ManifestFound {
+		warnings = append(warnings, manifestWarning)
+	}
+	if !state.LockFound {
+		warnings = append(warnings, lockWarning)
+	}
+	return warnings
 }
 
 func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
@@ -67,7 +122,7 @@ func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 		if depID == "" {
 			continue
 		}
-		ensureDependency(catalog, depID, true, false, "", "", "")
+		ensureDeclaredDependencyForManager(catalog, depID, swiftPackageManager)
 		for _, alias := range aliases {
 			mapAlias(catalog, alias, depID)
 			mapModule(catalog, alias, depID)
@@ -87,7 +142,7 @@ func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 		depID := resolveDependencyReference(*catalog, dependencyRef)
 		if depID == "" {
 			depID = normalizeDependencyID(dependencyRef)
-			ensureDependency(catalog, depID, true, false, "", "", "")
+			ensureDeclaredDependencyForManager(catalog, depID, swiftPackageManager)
 		}
 		mapModule(catalog, productName, depID)
 	}
@@ -125,7 +180,7 @@ func loadResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 		}
 
 		source := resolvedPinSource(pin)
-		ensureDependency(catalog, depID, false, true, pin.State.Version, pin.State.Revision, source)
+		ensureResolvedDependencyForManager(catalog, depID, pin.State.Version, pin.State.Revision, source, swiftPackageManager)
 		addResolvedPinMappings(catalog, depID, pin, source)
 	}
 	return true, warnings, nil
@@ -391,6 +446,40 @@ func ensureDependency(catalog *dependencyCatalog, depID string, declared bool, r
 	}
 	if meta.Source == "" {
 		meta.Source = strings.TrimSpace(source)
+	}
+	catalog.Dependencies[depID] = meta
+}
+
+func ensureDeclaredDependencyForManager(catalog *dependencyCatalog, depID string, manager string) {
+	ensureDependency(catalog, depID, true, false, "", "", "")
+
+	depID = normalizeDependencyID(depID)
+	if depID == "" {
+		return
+	}
+	meta := catalog.Dependencies[depID]
+	switch manager {
+	case swiftPackageManager:
+		meta.DeclaredViaSwiftPM = true
+	case cocoaPodsManager:
+		meta.DeclaredViaCocoaPods = true
+	}
+	catalog.Dependencies[depID] = meta
+}
+
+func ensureResolvedDependencyForManager(catalog *dependencyCatalog, depID string, version string, revision string, source string, manager string) {
+	ensureDependency(catalog, depID, false, true, version, revision, source)
+
+	depID = normalizeDependencyID(depID)
+	if depID == "" {
+		return
+	}
+	meta := catalog.Dependencies[depID]
+	switch manager {
+	case swiftPackageManager:
+		meta.ResolvedViaSwiftPM = true
+	case cocoaPodsManager:
+		meta.ResolvedViaCocoaPods = true
 	}
 	catalog.Dependencies[depID] = meta
 }

@@ -1,0 +1,170 @@
+name: release-orchestration
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      source_sha:
+        required: false
+        type: string
+        default: ''
+      artifact_prefix:
+        required: true
+        type: string
+      image_tags:
+        required: true
+        type: string
+
+jobs:
+  build-linux-windows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate project
+        run: make ci
+
+      - name: Build Linux/Windows release artifacts
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          make release \
+            VERSION="$TAG" \
+            PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
+
+      - name: Upload Linux/Windows artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_prefix }}-linux-windows
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  build-darwin:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate project
+        run: make ci
+
+      - name: Build Darwin release artifact
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          host_goarch="$(go env GOARCH)"
+          make release \
+            VERSION="$TAG" \
+            PLATFORMS="darwin/${host_goarch}"
+
+      - name: Upload Darwin artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_prefix }}-darwin
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish-ghcr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Compute image name
+        id: image
+        run: |
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
+
+      - name: Compute image tags
+        id: image_tags
+        shell: bash
+        env:
+          IMAGE_TAGS: ${{ inputs.image_tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              echo "${{ steps.image.outputs.name }}:${tag}"
+            fi
+          done <<< "$IMAGE_TAGS" > image-tags.txt
+          {
+            echo 'tags<<EOF'
+            cat image-tags.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push release image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.image_tags.outputs.tags }}
+          provenance: false
+          sbom: true

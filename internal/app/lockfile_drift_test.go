@@ -17,6 +17,8 @@ const (
 	manifestFileName         = "package.json"
 	lockfileName             = "package-lock.json"
 	newUntrackedFileName     = "new-untracked.txt"
+	poetryLockName           = "poetry.lock"
+	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 	demoPackageJSON          = "{\n  \"name\": \"demo\"\n}\n"
 	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
@@ -35,7 +37,7 @@ func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T)
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
-		t.Fatalf("detect lockfile drift: %v", err)
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected one warning, got %#v", warnings)
@@ -45,13 +47,36 @@ func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T)
 	}
 }
 
+func TestDetectLockfileDriftRubyManifestChangeWithoutLockfileChange(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Gemfile"), "source 'https://rubygems.org'\ngem 'httparty'\n")
+	writeFile(t, filepath.Join(repo, "Gemfile.lock"), "GEM\n  specs:\n    httparty (0.22.0)\n")
+	initGitRepo(t, repo)
+
+	writeFile(t, filepath.Join(repo, "Gemfile"), "source 'https://rubygems.org'\ngem 'httparty'\ngem 'rack'\n")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf("detect lockfile drift: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "Bundler in .: Gemfile changed while no matching lockfile changed") {
+		t.Fatalf("unexpected warning: %q", warnings[0])
+	}
+	if !strings.Contains(warnings[0], "bundle install") {
+		t.Fatalf("expected Bundler remediation text, got %q", warnings[0])
+	}
+}
+
 func TestDetectLockfileDriftSkipsLopperCache(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, ".lopper-cache", "nested", manifestFileName), "{\n  \"name\": \"cache-only\"\n}\n")
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
-		t.Fatalf("detect lockfile drift: %v", err)
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings from .lopper-cache contents, got %#v", warnings)
@@ -168,6 +193,10 @@ func TestGitHelperErrors(t *testing.T) {
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected non-git temp dir to not be worktree")
 	}
+}
+
+func TestGitHelperNilContextErrors(t *testing.T) {
+	repo := t.TempDir()
 	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitTrackedChanges(nil, repo); err == nil {
 		t.Fatalf("expected tracked changes command with nil context to fail outside git repo")
@@ -325,10 +354,25 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 		{name: "manifest-without-lockfile", files: missingLockfile, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "no matching lockfile"},
 		{name: "lockfile-without-manifest", files: missingManifest, changed: nil, hasGit: false, wantWarnings: 1, wantSubstr: "exists without package.json"},
 	}
+	runDetectDriftCases(t, repo, rule, cases)
+}
+
+func runDetectDriftCases(t *testing.T, repo string, rule lockfileRule, cases []struct {
+	name         string
+	files        map[string]fs.FileInfo
+	changed      map[string]struct{}
+	hasGit       bool
+	wantWarnings int
+	wantSubstr   string
+}) {
+	t.Helper()
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			warnings := detectDriftForRule(repo, repo, tc.files, rule, tc.changed, tc.hasGit)
+			warnings, err := detectDriftForRule(repo, repo, tc.files, rule, tc.changed, tc.hasGit)
+			if err != nil {
+				t.Fatalf("detectDriftForRule: %v", err)
+			}
 			if len(warnings) != tc.wantWarnings {
 				t.Fatalf("expected %d warnings, got %#v", tc.wantWarnings, warnings)
 			}
@@ -337,6 +381,51 @@ func TestDetectDriftForRuleCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDetectLockfileDriftIgnoresGenericPyprojectWithoutManagerSignals(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[project]\nname = \"demo\"\n")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for generic pyproject.toml, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftPythonManagerSignals(t *testing.T) {
+	t.Run("poetry manifest requires poetry lock", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+
+		warnings, err := detectLockfileDrift(context.Background(), repo, false)
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "Poetry") || !strings.Contains(warnings[0], poetryLockName) {
+			t.Fatalf("expected Poetry warning for missing %s, got %#v", poetryLockName, warnings)
+		}
+	})
+
+	t.Run("uv manifest change requires uv lock update", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[project]\nname = \"demo\"\n\n[tool.uv]\n")
+		writeFile(t, filepath.Join(repo, "uv.lock"), "version = 1\n")
+		initGitRepo(t, repo)
+
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[tool.uv]\n")
+
+		warnings, err := detectLockfileDrift(context.Background(), repo, false)
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "uv") || !strings.Contains(warnings[0], "uv lock") {
+			t.Fatalf("expected uv warning for changed pyproject.toml without uv.lock update, got %#v", warnings)
+		}
+	})
 }
 
 func TestLockfileDriftHelpers(t *testing.T) {
@@ -370,7 +459,10 @@ func TestLockfileDriftHelpers(t *testing.T) {
 	if len(merged) != 3 || merged[0] != "a" || merged[1] != "b" || merged[2] != "c" {
 		t.Fatalf("unexpected merged git paths: %#v", merged)
 	}
+}
 
+func TestFindRuleLockfiles(t *testing.T) {
+	repo := t.TempDir()
 	manifest := filepath.Join(repo, manifestFileName)
 	lock := filepath.Join(repo, lockfileName)
 	writeFile(t, manifest, demoPackageJSON)
@@ -466,4 +558,93 @@ func containsEnvPrefix(env []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// TestShouldSkipMissingLockfile verifies the per-manifest heuristics that
+// suppress false-positive "missing lockfile" warnings. Each case writes a
+// single manifest to a temp repo and checks whether a warning mentioning the
+// expected lockfile is present or absent.
+func TestShouldSkipMissingLockfile(t *testing.T) {
+	cases := []struct {
+		name         string
+		manifestName string
+		manifestBody string
+		lockfileHint string
+		wantWarning  bool
+	}{
+		{
+			name:         "non-poetry pyproject.toml does not warn",
+			manifestName: "pyproject.toml",
+			manifestBody: "[build-system]\nrequires = [\"setuptools\"]\n",
+			lockfileHint: poetryLockName,
+			wantWarning:  false,
+		},
+		{
+			name:         "poetry pyproject.toml warns when the Poetry lockfile is missing",
+			manifestName: "pyproject.toml",
+			manifestBody: "[tool.poetry]\nname = \"my-pkg\"\n\n[build-system]\nrequires = [\"poetry-core\"]\n",
+			lockfileHint: poetryLockName,
+			wantWarning:  true,
+		},
+		{
+			name:         "stdlib-only go.mod does not warn",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n",
+			lockfileHint: "go.sum",
+			wantWarning:  false,
+		},
+		{
+			name:         "go.mod with require warns when go.sum is missing",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n",
+			lockfileHint: "go.sum",
+			wantWarning:  true,
+		},
+		{
+			name:         "library crate does not warn",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-lib\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"my_lib\"\n",
+			lockfileHint: "Cargo.lock",
+			wantWarning:  false,
+		},
+		{
+			name:         "binary crate warns when Cargo.lock is missing",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n",
+			lockfileHint: "Cargo.lock",
+			wantWarning:  true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, tc.manifestName), tc.manifestBody)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			if err != nil {
+				t.Fatalf(detectLockfileDriftFmt, err)
+			}
+			assertLockfileWarning(t, warnings, tc.lockfileHint, tc.wantWarning)
+		})
+	}
+}
+
+// assertLockfileWarning checks that warnings contains (or does not contain)
+// an entry mentioning lockfileHint, depending on wantWarning.
+func assertLockfileWarning(t *testing.T, warnings []string, lockfileHint string, wantWarning bool) {
+	t.Helper()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, lockfileHint) {
+			found = true
+			break
+		}
+	}
+	if wantWarning && !found {
+		t.Fatalf("expected warning mentioning %q, got %#v", lockfileHint, warnings)
+	}
+	if !wantWarning && found {
+		t.Fatalf("unexpected warning mentioning %q in %#v", lockfileHint, warnings)
+	}
 }

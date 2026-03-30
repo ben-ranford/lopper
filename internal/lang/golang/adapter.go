@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -25,7 +24,7 @@ import (
 )
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 const (
@@ -41,19 +40,9 @@ var goSkippedDirs = map[string]bool{
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "go"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"golang"}
-}
-
-func (a *Adapter) Detect(ctx context.Context, repoPath string) (bool, error) {
-	return shared.DetectMatched(ctx, repoPath, a.DetectWithConfidence)
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("go", []string{"golang"}, adapter.DetectWithConfidence)
+	return adapter
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {

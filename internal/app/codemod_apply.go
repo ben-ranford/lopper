@@ -45,35 +45,97 @@ type codemodRollbackRecord struct {
 	Content string `json:"content"`
 }
 
+type codemodApplyPhaseContext struct {
+	repoPath   string
+	dependency string
+	codemod    *report.CodemodReport
+}
+
+type codemodApplyPreparationPhase struct {
+	skipResults   []report.CodemodApplyResult
+	preparedFiles []preparedCodemodFile
+	failedResults []report.CodemodApplyResult
+}
+
+type codemodApplyExecutionPhase struct {
+	backupPath     string
+	appliedResults []report.CodemodApplyResult
+	failedResults  []report.CodemodApplyResult
+}
+
 func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
 	if !req.ApplyCodemod {
 		return reportData, nil
 	}
 
-	normalizedRepoPath, err := workspace.NormalizeRepoPath(repoPath)
+	phaseContext, shouldApply, err := beginCodemodApplyPhase(&reportData, repoPath, req.Dependency)
+	if err != nil {
+		return reportData, err
+	}
+	if !shouldApply {
+		return reportData, nil
+	}
+
+	preparation := prepareCodemodApplyPhase(phaseContext)
+	execution, err := executeCodemodApplyPhase(phaseContext, preparation.preparedFiles, preparation.failedResults, now)
 	if err != nil {
 		return reportData, err
 	}
 
-	codemod := findCodemodReport(&reportData, req.Dependency)
+	results := finalizeCodemodApplyPhase(phaseContext.codemod, preparation.skipResults, execution.appliedResults, execution.failedResults, execution.backupPath)
+	if phaseContext.codemod.Apply.FailedFiles > 0 {
+		return reportData, codemodApplyError(results)
+	}
+	return reportData, nil
+}
+
+func beginCodemodApplyPhase(reportData *report.Report, repoPath, dependency string) (codemodApplyPhaseContext, bool, error) {
+	normalizedRepoPath, err := workspace.NormalizeRepoPath(repoPath)
+	if err != nil {
+		return codemodApplyPhaseContext{}, false, err
+	}
+
+	codemod := findCodemodReport(reportData, dependency)
 	if codemod == nil {
-		return reportData, nil
+		return codemodApplyPhaseContext{}, false, nil
 	}
 	codemod.Mode = codemodModeApply
 
-	skipResults := buildCodemodSkipResults(codemod.Skips)
-	prepared, failedResults := prepareCodemodFiles(normalizedRepoPath, codemod.Suggestions)
+	return codemodApplyPhaseContext{
+		repoPath:   normalizedRepoPath,
+		dependency: dependency,
+		codemod:    codemod,
+	}, true, nil
+}
 
-	backupPath := ""
-	appliedResults := make([]report.CodemodApplyResult, 0, len(prepared))
-	if len(prepared) > 0 {
-		backupPath, err = writeCodemodRollbackArtifact(normalizedRepoPath, req.Dependency, prepared, now)
-		if err != nil {
-			return reportData, fmt.Errorf("write codemod rollback artifact: %w", err)
-		}
-		appliedResults, failedResults = applyPreparedCodemodFiles(normalizedRepoPath, prepared, failedResults)
+func prepareCodemodApplyPhase(phaseContext codemodApplyPhaseContext) codemodApplyPreparationPhase {
+	preparedFiles, failedResults := prepareCodemodFiles(phaseContext.repoPath, phaseContext.codemod.Suggestions)
+	return codemodApplyPreparationPhase{
+		skipResults:   buildCodemodSkipResults(phaseContext.codemod.Skips),
+		preparedFiles: preparedFiles,
+		failedResults: failedResults,
+	}
+}
+
+func executeCodemodApplyPhase(phaseContext codemodApplyPhaseContext, preparedFiles []preparedCodemodFile, failedResults []report.CodemodApplyResult, now time.Time) (codemodApplyExecutionPhase, error) {
+	execution := codemodApplyExecutionPhase{
+		failedResults: failedResults,
+	}
+	if len(preparedFiles) == 0 {
+		return execution, nil
 	}
 
+	backupPath, err := writeCodemodRollbackArtifact(phaseContext.repoPath, phaseContext.dependency, preparedFiles, now)
+	if err != nil {
+		return codemodApplyExecutionPhase{}, fmt.Errorf("write codemod rollback artifact: %w", err)
+	}
+
+	execution.backupPath = backupPath
+	execution.appliedResults, execution.failedResults = applyPreparedCodemodFiles(phaseContext.repoPath, preparedFiles, failedResults)
+	return execution, nil
+}
+
+func finalizeCodemodApplyPhase(codemod *report.CodemodReport, skipResults, appliedResults, failedResults []report.CodemodApplyResult, backupPath string) []report.CodemodApplyResult {
 	results := make([]report.CodemodApplyResult, 0, len(skipResults)+len(appliedResults)+len(failedResults))
 	results = append(results, skipResults...)
 	results = append(results, appliedResults...)
@@ -90,10 +152,7 @@ func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPat
 		BackupPath:     backupPath,
 		Results:        results,
 	}
-	if codemod.Apply.FailedFiles > 0 {
-		return reportData, codemodApplyError(results)
-	}
-	return reportData, nil
+	return results
 }
 
 func validateCodemodApplyPreconditions(ctx context.Context, repoPath string, req AnalyseRequest) error {

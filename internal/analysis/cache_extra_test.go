@@ -99,6 +99,15 @@ func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
 	}
 }
 
+func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
+	if !lockOrConfigFile("libs.versions.toml") {
+		t.Fatalf("expected Gradle version catalogs to participate in cache invalidation")
+	}
+	if lockOrConfigFile("README.md") {
+		t.Fatalf("did not expect README.md to be treated as a cache-relevant config file")
+	}
+}
+
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	missingPath := filepath.Join(dir, cacheMissingFileName)

@@ -126,6 +126,9 @@ func TestResolveAutoTieReturnsError(t *testing.T) {
 
 func TestRegisterValidationAndIDs(t *testing.T) {
 	registry := NewRegistry()
+	if (*Registry)(nil).Register(&testAdapter{id: "nil", detection: Detection{Matched: true}}) == nil {
+		t.Fatalf("expected nil registry register error")
+	}
 	if registry.Register(nil) == nil {
 		t.Fatalf("expected nil adapter error")
 	}

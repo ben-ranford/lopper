@@ -1,19 +1,13 @@
 package cpp
 
-import "time"
+import "github.com/ben-ranford/lopper/internal/language"
 
 type Adapter struct {
-	Clock func() time.Time
+	language.AdapterLifecycle
 }
 
 func NewAdapter() *Adapter {
-	return &Adapter{Clock: time.Now}
-}
-
-func (a *Adapter) ID() string {
-	return "cpp"
-}
-
-func (a *Adapter) Aliases() []string {
-	return []string{"c++", "c", "cc", "cxx"}
+	adapter := &Adapter{}
+	adapter.AdapterLifecycle = language.NewAdapterLifecycle("cpp", []string{"c++", "c", "cc", "cxx"}, adapter.DetectWithConfidence)
+	return adapter
 }

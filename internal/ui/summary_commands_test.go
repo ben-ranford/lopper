@@ -127,8 +127,8 @@ func assertSummaryCommands(t *testing.T, state *summaryState, expectations []sum
 	}
 }
 
-func summaryHelperDeps() []report.DependencyReport {
-	return []report.DependencyReport{
+func summaryHelperDeps() []summaryDependencyView {
+	return []summaryDependencyView{
 		{Name: "b", Language: "js-ts", UsedPercent: 20, TotalExportsCount: 10},
 		{Name: "a", Language: "python", UsedPercent: 20, TotalExportsCount: 10},
 		{Name: "unknown", TotalExportsCount: 0},
@@ -273,7 +273,7 @@ func TestRunSummaryDependencyPipeline(t *testing.T) {
 		page:     9,
 		pageSize: 1,
 	}
-	sorted, paged, normalized, totalPages := runSummaryDependencyPipeline(reportData, state)
+	sorted, paged, normalized, totalPages := runSummaryDependencyPipeline(mapSummaryReportView(reportData), state)
 	if totalPages != 1 {
 		t.Fatalf("expected one page after filtering, got %d", totalPages)
 	}
@@ -368,7 +368,7 @@ func TestSummaryRenderAndInputBranches(t *testing.T) {
 		pageSize: 1,
 		showHelp: true,
 	}
-	rendered, err := summary.renderSummary(rep, state)
+	rendered, err := summary.renderSummary(mapSummaryReportView(rep), state)
 	if err != nil {
 		t.Fatalf("render summary: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestSummaryRenderAndInputBranches(t *testing.T) {
 	}
 
 	state.page = -1 // force lower bound branch
-	if _, err := summary.renderSummary(rep, state); err != nil {
+	if _, err := summary.renderSummary(mapSummaryReportView(rep), state); err != nil {
 		t.Fatalf("render summary with negative page: %v", err)
 	}
 
@@ -454,7 +454,7 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 		t.Fatalf("expected pageCount floor for invalid page size")
 	}
 
-	deps := []report.DependencyReport{{Name: "a"}, {Name: "b"}}
+	deps := []summaryDependencyView{{Name: "a"}, {Name: "b"}}
 	if got := paginateDependencies(deps, 0, 1); len(got) != 1 || got[0].Name != "a" {
 		t.Fatalf("expected paginateDependencies to normalize page<1, got %#v", got)
 	}
@@ -462,7 +462,7 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 		t.Fatalf("expected paginateDependencies to return all deps for pageSize<=0, got %#v", paged)
 	}
 
-	waste, ok := dependencyWaste(report.DependencyReport{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 0})
+	waste, ok := dependencyWaste(summaryDependencyView{UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 0})
 	if !ok || waste != 75 {
 		t.Fatalf("expected dependencyWaste fallback calculation, got waste=%f ok=%v", waste, ok)
 	}
@@ -542,7 +542,7 @@ func TestSummaryHelperBranches(t *testing.T) {
 		t.Fatalf("clearSummaryScreen: %v", err)
 	}
 
-	deps := []report.DependencyReport{
+	deps := []summaryDependencyView{
 		{Name: "same", Language: "z"},
 		{Name: "same", Language: "a"},
 	}
@@ -551,10 +551,7 @@ func TestSummaryHelperBranches(t *testing.T) {
 		t.Fatalf("expected language tie-break for name sort, got %#v", sortedByName)
 	}
 
-	waste, ok := dependencyWaste(report.DependencyReport{
-		RemovalCandidate:  &report.RemovalCandidate{Score: 42},
-		TotalExportsCount: 10,
-	})
+	waste, ok := dependencyWaste(summaryDependencyView{RemovalCandidate: &report.RemovalCandidate{Score: 42}, TotalExportsCount: 10})
 	if !ok || waste != 42 {
 		t.Fatalf("expected removal-candidate score branch, got waste=%f ok=%v", waste, ok)
 	}

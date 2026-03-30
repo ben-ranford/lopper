@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 type RootSignal struct {
@@ -34,6 +37,18 @@ func ApplyRootSignals(repoPath string, signals []RootSignal, detection *language
 	return nil
 }
 
+func NewReport(rawRepoPath string, now func() time.Time) (string, report.Report, error) {
+	repoPath, err := workspace.NormalizeRepoPath(rawRepoPath)
+	if err != nil {
+		return "", report.Report{}, err
+	}
+
+	return repoPath, report.Report{
+		GeneratedAt: now(),
+		RepoPath:    repoPath,
+	}, nil
+}
+
 func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) error {
 	if skipDir == nil {
 		skipDir = ShouldSkipCommonDir
@@ -51,6 +66,16 @@ func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir f
 		return err
 	}
 	return nil
+}
+
+func WalkContextErr(ctx context.Context, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
 type repoWalker struct {

@@ -102,28 +102,9 @@ func TestWriteFileUnderRejectsNonDirectoryRoot(t *testing.T) {
 }
 
 func TestWriteFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf(getwdErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf(restoreWDErrFmt, originalWD, err)
-		}
-	})
+	withRemovedWorkingDir(t, "dead-root")
 
-	deadDir := filepath.Join(t.TempDir(), "dead-root")
-	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf(mkdirDeadDirFmt, err)
-	}
-	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf(chdirDeadDirFmt, err)
-	}
-	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf(removeDeadDirFmt, err)
-	}
-
-	err = WriteFileUnder(".", writeTestFileName, []byte("hello"), 0o600)
+	err := WriteFileUnder(".", writeTestFileName, []byte("hello"), 0o600)
 	if err == nil {
 		t.Fatal("expected root path resolution error")
 	}
@@ -133,29 +114,10 @@ func TestWriteFileUnderRootAbsFailureWhenCWDRemoved(t *testing.T) {
 }
 
 func TestWriteFileUnderTargetAbsFailureWhenCWDRemoved(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf(getwdErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf(restoreWDErrFmt, originalWD, err)
-		}
-	})
-
 	rootDir := t.TempDir()
-	deadDir := filepath.Join(t.TempDir(), "dead-target")
-	if err := os.MkdirAll(deadDir, 0o755); err != nil {
-		t.Fatalf(mkdirDeadDirFmt, err)
-	}
-	if err := os.Chdir(deadDir); err != nil {
-		t.Fatalf(chdirDeadDirFmt, err)
-	}
-	if err := os.RemoveAll(deadDir); err != nil {
-		t.Fatalf(removeDeadDirFmt, err)
-	}
+	withRemovedWorkingDir(t, "dead-target")
 
-	err = WriteFileUnder(rootDir, "relative-target.txt", []byte("hello"), 0o600)
+	err := WriteFileUnder(rootDir, "relative-target.txt", []byte("hello"), 0o600)
 	if err == nil {
 		t.Fatal("expected target path resolution error")
 	}
@@ -391,5 +353,193 @@ func TestRandomTempNamePropagatesReadError(t *testing.T) {
 	_, err := randomTempName()
 	if err == nil || !strings.Contains(err.Error(), "generate temp name") {
 		t.Fatalf("expected random read error, got %v", err)
+	}
+}
+
+func TestWriteFileUnderCloseRootError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+
+	expectedErr := errors.New("close root failure")
+	originalCloseRoot := closeRootFn
+	closeRootFn = func(root *os.Root) error {
+		err := originalCloseRoot(root)
+		if err != nil {
+			return err
+		}
+		return expectedErr
+	}
+	t.Cleanup(func() {
+		closeRootFn = originalCloseRoot
+	})
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected root close failure to be returned")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected root close error, got %v", err)
+	}
+}
+
+func TestWriteFileUnderCleanupError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf(openRootErrFmt, err)
+	}
+
+	cleanupErr := errors.New("cleanup failure")
+	originalCleanup := cleanupTempFileFn
+	cleanupTempFileFn = func(*os.Root, string, *os.File) error {
+		return cleanupErr
+	}
+	t.Cleanup(func() {
+		cleanupTempFileFn = originalCleanup
+	})
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected cleanup error")
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error, got %v", err)
+	}
+}
+
+func TestWriteFileUnderWriteError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+
+	writeErr := errors.New("write failure")
+	originalWriteFn := writeFileFn
+	writeFileFn = func(*os.File, []byte) (int, error) {
+		return 0, writeErr
+	}
+	t.Cleanup(func() {
+		writeFileFn = originalWriteFn
+	})
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected write error, got %v", err)
+	}
+}
+
+func TestWriteFileUnderChmodError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+
+	chmodErr := errors.New("chmod failure")
+	originalChmodFn := chmodFileFn
+	chmodFileFn = func(*os.File, os.FileMode) error {
+		return chmodErr
+	}
+	t.Cleanup(func() {
+		chmodFileFn = originalChmodFn
+	})
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected chmod error")
+	}
+	if !errors.Is(err, chmodErr) {
+		t.Fatalf("expected chmod error, got %v", err)
+	}
+}
+
+func TestWriteFileUnderTempCloseError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+
+	closeErr := errors.New("temp close failure")
+	originalCloseFn := closeFileFn
+	closeFileFn = func(*os.File) error {
+		return closeErr
+	}
+	t.Cleanup(func() {
+		closeFileFn = originalCloseFn
+	})
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected temp close error")
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected temp close error, got %v", err)
+	}
+}
+
+func TestResolveWriteTargetAbsFailuresViaHook(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hookPath func(rootDir, targetPath string) string
+		hookErr  error
+		expected string
+	}{
+		{
+			name: "root",
+			hookPath: func(rootDir, _ string) string {
+				return rootDir
+			},
+			hookErr:  errors.New("root abs failure"),
+			expected: "resolve root path",
+		},
+		{
+			name: "target",
+			hookPath: func(_, targetPath string) string {
+				return targetPath
+			},
+			hookErr:  errors.New("target abs failure"),
+			expected: "resolve target path",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rootDir := t.TempDir()
+			targetPath := filepath.Join(rootDir, writeTestFileName)
+
+			originalAbs := absPathFn
+			absPathFn = func(path string) (string, error) {
+				if path == tc.hookPath(rootDir, targetPath) {
+					return "", tc.hookErr
+				}
+				return originalAbs(path)
+			}
+			t.Cleanup(func() {
+				absPathFn = originalAbs
+			})
+
+			err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+			if err == nil {
+				t.Fatalf("expected %s error", tc.expected)
+			}
+			if !strings.Contains(err.Error(), tc.expected) {
+				t.Fatalf(unexpectedErrFmt, err)
+			}
+		})
+	}
+}
+
+func TestResolveWriteTargetRelFailureViaHook(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+
+	originalRel := relPathFn
+	relPathFn = func(_, _ string) (string, error) {
+		return "", errors.New("rel failure")
+	}
+	t.Cleanup(func() {
+		relPathFn = originalRel
+	})
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected relative path computation error")
+	}
+	if !strings.Contains(err.Error(), "compute relative path") {
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
