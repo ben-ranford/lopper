@@ -33,6 +33,23 @@ func TestRubyAdapterDetectBundlerProject(t *testing.T) {
 	}
 }
 
+func TestRubyAdapterDetectGemspecProject(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "pkg", "demo.gemspec"), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "pkg", "lib", "demo.rb"), "require 'httparty'\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !detection.Matched {
+		t.Fatalf("expected ruby detection to match")
+	}
+	if !slices.Contains(detection.Roots, filepath.Join(repo, "pkg")) {
+		t.Fatalf("expected gemspec directory root, got %#v", detection.Roots)
+	}
+}
+
 func TestRubyAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	repo := t.TempDir()
 	gemfileLines := []string{
@@ -79,6 +96,55 @@ func TestRubyAdapterAnalyseDependencyAndTopN(t *testing.T) {
 	}
 	if !slices.Contains(names, "nokogiri") {
 		t.Fatalf("expected Bundler gem from Gemfile in topN output, got %#v", names)
+	}
+}
+
+func TestRubyAdapterAnalyseGemspecProjectAndDeduplicatesDeclaredDependencies(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "source 'https://rubygems.org'\ngem 'httparty'\ngem 'rack'\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "demo.gemspec"), strings.Join([]string{
+		"Gem::Specification.new do |spec|",
+		"  spec.add_dependency 'httparty'",
+		"  spec.add_runtime_dependency 'nokogiri', '~> 1.16'",
+		"  spec.add_development_dependency 'rspec'",
+		"end",
+		"",
+	}, "\n"))
+	testutil.MustWriteFile(t, filepath.Join(repo, rubyAppFile), "require 'httparty'\nHTTParty.get('https://example.test')\n")
+
+	scan, err := scanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if got := sortedDependencyUnion(scan.DeclaredDependencies); !slices.Equal(got, []string{"httparty", "nokogiri", "rack", "rspec"}) {
+		t.Fatalf("unexpected declared dependency set: %#v", got)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "httparty"})
+	if err != nil {
+		t.Fatalf("analyse dependency: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].TotalExportsCount == 0 {
+		t.Fatalf("expected used gemspec dependency report, got %#v", reportData.Dependencies)
+	}
+}
+
+func TestRubyAdapterWarnsOnUnparseableGemspecDependency(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "demo.gemspec"), strings.Join([]string{
+		"Gem::Specification.new do |spec|",
+		"  spec.add_dependency SOME_CONST",
+		"end",
+		"",
+	}, "\n"))
+
+	scan, err := scanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	joinedWarnings := strings.Join(scan.Warnings, "\n")
+	if !strings.Contains(joinedWarnings, "could not confidently parse gemspec dependency declaration in demo.gemspec:2") {
+		t.Fatalf("expected gemspec parse warning, got %#v", scan.Warnings)
 	}
 }
 
