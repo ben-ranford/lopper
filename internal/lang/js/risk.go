@@ -335,6 +335,9 @@ func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[
 }
 
 func resolveInstalledDependencyRoot(repoPath, currentPackageRoot, dependency string) (string, bool) {
+	if !isSafeDependencyName(dependency) {
+		return "", false
+	}
 	candidates := []string{
 		filepath.Join(currentPackageRoot, "node_modules", dependencyPath(dependency)),
 		filepath.Join(repoPath, "node_modules", dependencyPath(dependency)),
@@ -356,6 +359,30 @@ func dependencyPath(dependency string) string {
 		}
 	}
 	return dependency
+}
+
+func isSafeDependencyName(dependency string) bool {
+	if dependency == "" {
+		return false
+	}
+	if strings.HasPrefix(dependency, "@") {
+		parts := strings.Split(dependency, "/")
+		if len(parts) != 2 {
+			return false
+		}
+		return isSafeDependencySegment(strings.TrimPrefix(parts[0], "@")) && isSafeDependencySegment(parts[1])
+	}
+	return isSafeDependencySegment(dependency)
+}
+
+func isSafeDependencySegment(segment string) bool {
+	if segment == "" || segment == "." || segment == ".." {
+		return false
+	}
+	if strings.ContainsAny(segment, `/\`) {
+		return false
+	}
+	return true
 }
 
 func collectDependencyNames(pkg packageJSON) []string {

@@ -13,6 +13,8 @@ import (
 
 const indexJSName = "index.js"
 const testExportPathA = "./a.js"
+const testMalformedDependency = "@scope"
+const testDottedDependency = "pkg.name"
 
 func TestExportParsingHelpers(t *testing.T) {
 	parser := newSourceParser()
@@ -78,11 +80,48 @@ func TestEntrypointAndPathHelpers(t *testing.T) {
 	if _, err := dependencyRoot(repo, ""); err == nil {
 		t.Fatalf("expected dependency validation error")
 	}
-	if _, err := dependencyRoot(repo, "@scope"); err == nil {
+	if _, err := dependencyRoot(repo, testMalformedDependency); err == nil {
 		t.Fatalf("expected scoped dependency validation error")
 	}
-	if got, err := dependencyRoot(repo, "@scope/pkg"); err != nil || got != filepath.Join(repo, "node_modules", "@scope", "pkg") {
+	if got, err := dependencyRoot(repo, testMalformedDependency+"/pkg"); err != nil || got != filepath.Join(repo, "node_modules", testMalformedDependency, "pkg") {
 		t.Fatalf("unexpected scoped root: %q err=%v", got, err)
+	}
+}
+
+func TestDependencyRootRejectsMalformedNames(t *testing.T) {
+	repo := t.TempDir()
+	valid := map[string]string{
+		"pkg":                                 filepath.Join(repo, "node_modules", "pkg"),
+		"left-pad":                            filepath.Join(repo, "node_modules", "left-pad"),
+		testDottedDependency:                  filepath.Join(repo, "node_modules", testDottedDependency),
+		testMalformedDependency + "/pkg":      filepath.Join(repo, "node_modules", testMalformedDependency, "pkg"),
+		testMalformedDependency + "/pkg.name": filepath.Join(repo, "node_modules", testMalformedDependency, testDottedDependency),
+	}
+	for dep, want := range valid {
+		got, err := dependencyRoot(repo, dep)
+		if err != nil {
+			t.Fatalf("expected valid dependency %q, got err=%v", dep, err)
+		}
+		if got != want {
+			t.Fatalf("unexpected root for %q: got %q want %q", dep, got, want)
+		}
+	}
+
+	invalid := []string{
+		".",
+		"..",
+		"../../evil",
+		"pkg/subpath",
+		testMalformedDependency,
+		testMalformedDependency + "/pkg/subpath",
+		`pkg\subpath`,
+		testMalformedDependency + `\pkg`,
+		`..\evil`,
+	}
+	for _, dep := range invalid {
+		if _, err := dependencyRoot(repo, dep); err == nil {
+			t.Fatalf("expected invalid dependency %q to fail", dep)
+		}
 	}
 }
 

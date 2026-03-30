@@ -16,6 +16,8 @@ import (
 const (
 	elixirFooBarDependency = "foo-bar"
 	elixirAliasFooBar      = "alias Foo.Bar"
+	elixirDetectErrorFmt   = "detect: %v"
+	elixirApiMixProject    = "defmodule Api.MixProject do\n  use Mix.Project\nend\n"
 )
 
 func fixturePath(parts ...string) string {
@@ -49,7 +51,7 @@ func assertDetectionFixture(t *testing.T, repoPath string, wantRootPart string, 
 	t.Helper()
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repoPath)
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(elixirDetectErrorFmt, err)
 	}
 	if !detection.Matched || detection.Confidence <= 0 {
 		t.Fatalf("expected detection match with confidence, got %#v", detection)
@@ -102,7 +104,7 @@ func TestAdapterIdentityAndDetect(t *testing.T) {
 	}
 	matched, err := adapter.Detect(context.Background(), fixturePath("mix"))
 	if err != nil {
-		t.Fatalf("detect: %v", err)
+		t.Fatalf(elixirDetectErrorFmt, err)
 	}
 	if !matched {
 		t.Fatalf("expected fixture to match elixir adapter")
@@ -133,14 +135,34 @@ func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 func TestDetectWithConfidenceUmbrellaCustomAppsPath(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [apps_path: \"services\"]\nend\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
 	assertDetectionFixture(t, repo, filepath.Join("services", "api"), filepath.Base(repo))
+}
+
+func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
+	repo := t.TempDir()
+	outsideApps := filepath.Join(filepath.Dir(repo), "outside", "apps")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [apps_path: \"../outside/apps\"]\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(outsideApps, "api", mixExsName), elixirApiMixProject)
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf(elixirDetectErrorFmt, err)
+	}
+	for _, root := range detection.Roots {
+		if strings.Contains(root, filepath.Join("outside", "apps")) {
+			t.Fatalf("did not expect escaped apps_path root, got %#v", detection.Roots)
+		}
+	}
+	if !containsSuffix(detection.Roots, filepath.Base(repo)) {
+		t.Fatalf("expected repo root fallback, got %#v", detection.Roots)
+	}
 }
 
 func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), "defmodule Api.MixProject do\n  use Mix.Project\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
 }
 

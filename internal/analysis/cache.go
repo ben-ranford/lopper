@@ -37,6 +37,13 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		cache.cacheable = false
 		return cache
 	}
+	if req.Cache == nil || strings.TrimSpace(req.Cache.Path) == "" {
+		if cachePathEscapesRepo(options.Path, repoPath) {
+			cache.cacheable = false
+			cache.warn("analysis cache unavailable: cache path escapes repository root")
+			return cache
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(options.Path, "keys"), 0o750); err != nil {
 		cache.cacheable = false
 		cache.warn("analysis cache unavailable: " + err.Error())
@@ -49,6 +56,22 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	}
 	cache.cacheable = true
 	return cache
+}
+
+func cachePathEscapesRepo(cachePath, repoPath string) bool {
+	resolvedCachePath, err := filepath.EvalSymlinks(cachePath)
+	if err != nil {
+		return false
+	}
+	resolvedRepoPath, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		resolvedRepoPath = filepath.Clean(repoPath)
+	}
+	rel, err := filepath.Rel(resolvedRepoPath, resolvedCachePath)
+	if err != nil {
+		return true
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOptions {

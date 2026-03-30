@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const testLabelX = "label:x"
+
 func TestLoad(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "report.json")
@@ -135,7 +137,7 @@ func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
 
 func TestSaveSnapshotValidationErrors(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
-	if _, err := SaveSnapshot("", "label:x", Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline store directory is required") {
+	if _, err := SaveSnapshot("", testLabelX, Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline store directory is required") {
 		t.Fatalf("expected missing directory validation error, got %v", err)
 	}
 	if _, err := SaveSnapshot(t.TempDir(), "  ", Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline key is required") {
@@ -179,8 +181,31 @@ func TestSaveSnapshotMkdirFailure(t *testing.T) {
 	if err := os.WriteFile(blocking, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write blocking file: %v", err)
 	}
-	if _, err := SaveSnapshot(filepath.Join(blocking, "nested"), "label:x", Report{}, now); err == nil {
+	if _, err := SaveSnapshot(filepath.Join(blocking, "nested"), testLabelX, Report{}, now); err == nil {
 		t.Fatalf("expected mkdir failure when parent is a file")
+	}
+}
+
+func TestSaveSnapshotRejectsSymlinkedStoreDir(t *testing.T) {
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	target := filepath.Join(root, "actual-store")
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatalf("create target store: %v", err)
+	}
+	link := filepath.Join(root, "store-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := SaveSnapshot(link, testLabelX, Report{}, now); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+
+	if entries, err := os.ReadDir(target); err != nil {
+		t.Fatalf("read target store: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("expected no snapshot files written via symlinked store dir, got %d entries", len(entries))
 	}
 }
 
