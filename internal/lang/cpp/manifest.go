@@ -53,12 +53,12 @@ func (c *dependencyCatalog) add(dependency, source string) {
 	c.Declarations[dependency] = current
 }
 
-func (c dependencyCatalog) contains(dependency string) bool {
+func (c *dependencyCatalog) contains(dependency string) bool {
 	_, ok := c.Declarations[normalizeCPPDependencyID(dependency)]
 	return ok
 }
 
-func (c dependencyCatalog) list() []string {
+func (c *dependencyCatalog) list() []string {
 	items := make([]string, 0, len(c.Declarations))
 	for dependency := range c.Declarations {
 		items = append(items, dependency)
@@ -67,7 +67,7 @@ func (c dependencyCatalog) list() []string {
 	return items
 }
 
-func (c dependencyCatalog) sources(dependency string) []string {
+func (c *dependencyCatalog) sources(dependency string) []string {
 	current, ok := c.Declarations[normalizeCPPDependencyID(dependency)]
 	if !ok {
 		return nil

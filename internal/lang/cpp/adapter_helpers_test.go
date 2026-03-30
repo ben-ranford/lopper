@@ -217,10 +217,11 @@ func TestAnalyseWithCanceledContext(t *testing.T) {
 
 func TestScanRepoWithOutsideCompileSourceWarning(t *testing.T) {
 	repo := t.TempDir()
-	result, err := scanRepo(context.Background(), repo, compileContext{
+	compileInfo := compileContext{
 		HasCompileDatabase: true,
 		SourceFiles:        []string{"/tmp/not-in-repo.cpp"},
-	}, newDependencyCatalog())
+	}
+	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
 	if err != nil {
 		t.Fatalf("scan repo: %v", err)
 	}
@@ -233,16 +234,18 @@ func TestScanRepoCanceledAndMissingFileErrors(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine)
 
-	_, err := scanRepo(testutil.CanceledContext(), repo, compileContext{
+	existingSource := compileContext{
 		SourceFiles: []string{filepath.Join(repo, "src", testMainCPPFileName)},
-	}, newDependencyCatalog())
+	}
+	_, err := scanRepo(testutil.CanceledContext(), repo, existingSource, newDependencyCatalog())
 	if err == nil {
 		t.Fatalf("expected canceled context error from scanRepo")
 	}
 
-	_, err = scanRepo(context.Background(), repo, compileContext{
+	missingSource := compileContext{
 		SourceFiles: []string{filepath.Join(repo, "src", "missing.cpp")},
-	}, newDependencyCatalog())
+	}
+	_, err = scanRepo(context.Background(), repo, missingSource, newDependencyCatalog())
 	if err == nil {
 		t.Fatalf("expected missing source file error from scanRepo")
 	}
