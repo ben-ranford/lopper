@@ -8,8 +8,9 @@ import (
 )
 
 type packResolver struct {
-	repoPath string
-	stack    []string
+	repoPath    string
+	allowRemote bool
+	stack       []string
 }
 
 type resolveMergeResult struct {
@@ -33,10 +34,11 @@ func (r *resolveMergeResult) policySourcesHighToLow() []string {
 	return sources
 }
 
-func newPackResolver(repoPath string) *packResolver {
+func newPackResolver(repoPath string, allowRemote bool) *packResolver {
 	return &packResolver{
-		repoPath: repoPath,
-		stack:    make([]string, 0, 8),
+		repoPath:    repoPath,
+		allowRemote: allowRemote,
+		stack:       make([]string, 0, 8),
 	}
 }
 
@@ -67,6 +69,9 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 		resolvedRef, err := resolvePackRef(canonical, packRef)
 		if err != nil {
 			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+		}
+		if _, remote := parseRemoteURL(resolvedRef); remote && !r.allowRemote {
+			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs require an explicit config path", canonical, idx)
 		}
 		packResult, err := r.resolveFile(resolvedRef, true)
 		if err != nil {
