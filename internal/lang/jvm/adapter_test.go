@@ -18,6 +18,7 @@ const (
 	testFileBuildGradleKTS = "build.gradle.kts"
 	testFileMainKT         = "Main.kt"
 	errDetectFmt           = "detect: %v"
+	errAnalyseFmt          = "analyse: %v"
 )
 
 func TestAdapterDetectWithGradleAndJava(t *testing.T) {
@@ -67,7 +68,7 @@ class ExampleTest {
 		Dependency: "junit-jupiter-api",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(errAnalyseFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
@@ -103,7 +104,7 @@ fun run() {
 		TopN:     5,
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(errAnalyseFmt, err)
 	}
 	if len(reportData.Dependencies) == 0 {
 		t.Fatalf("expected dependencies in top-N report")
@@ -141,7 +142,7 @@ fun run() {
 		Dependency: "okhttp",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(errAnalyseFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))

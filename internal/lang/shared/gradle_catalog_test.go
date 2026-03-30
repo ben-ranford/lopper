@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const testGradleCatalogFileName = "libs.versions.toml"
+
 func TestGradleCatalogResolverResolvesDefaultAndCustomCatalogs(t *testing.T) {
 	repo := t.TempDir()
 	writeGradleCatalogTestFile(t, filepath.Join(repo, "settings.gradle.kts"), `
@@ -19,7 +21,7 @@ dependencyResolutionManagement {
   }
 }
 `)
-	writeGradleCatalogTestFile(t, filepath.Join(repo, "gradle", "libs.versions.toml"), `
+	writeGradleCatalogTestFile(t, filepath.Join(repo, "gradle", testGradleCatalogFileName), `
 [libraries]
 okhttp = { module = "com.squareup.okhttp3:okhttp", version = "4.12.0" }
 retrofit = { module = "com.squareup.retrofit2:retrofit", version = "2.11.0" }
@@ -61,7 +63,7 @@ dependencies {
 
 func TestGradleCatalogResolverEmitsDeterministicWarnings(t *testing.T) {
 	repo := t.TempDir()
-	writeGradleCatalogTestFile(t, filepath.Join(repo, "gradle", "libs.versions.toml"), `
+	writeGradleCatalogTestFile(t, filepath.Join(repo, "gradle", testGradleCatalogFileName), `
 [libraries]
 okhttp = { module = "com.squareup.okhttp3:okhttp", version = "4.12.0" }
 `)
@@ -95,8 +97,8 @@ dependencies {
 }
 
 func TestIsGradleVersionCatalogFile(t *testing.T) {
-	if !IsGradleVersionCatalogFile("libs.versions.toml") {
-		t.Fatalf("expected libs.versions.toml to be treated as a cache-relevant Gradle catalog")
+	if !IsGradleVersionCatalogFile(testGradleCatalogFileName) {
+		t.Fatalf("expected %s to be treated as a cache-relevant Gradle catalog", testGradleCatalogFileName)
 	}
 	if IsGradleVersionCatalogFile("Cargo.toml") {
 		t.Fatalf("did not expect Cargo.toml to be treated as a Gradle version catalog")

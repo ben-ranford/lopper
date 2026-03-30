@@ -613,7 +613,7 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	pattern := regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
-	gradleParser := func(path string, content string) ([]dependencyDescriptor, []string) {
+	gradleParser := func(path, content string) ([]dependencyDescriptor, []string) {
 		descriptors := parseGradleMatches(content, pattern)
 		catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
 		for _, descriptor := range catalogDescriptors {
@@ -671,46 +671,18 @@ func parseBuildFiles(repoPath string, primaryName string, parser func(content st
 	return descriptors
 }
 
-func parseBuildFilesWithWarnings(repoPath string, parser func(path string, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
-	descriptors := make([]dependencyDescriptor, 0)
-	warnings := make([]string, 0)
-	seen := make(map[string]struct{})
-
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !matchesBuildFile(strings.ToLower(entry.Name()), names) {
-			return nil
-		}
-
-		content, readErr := safeio.ReadFileUnder(repoPath, path)
-		if readErr != nil {
-			warnings = append(warnings, formatBuildFileReadWarning(repoPath, path, readErr))
-			return nil
-		}
-		items, parseWarnings := parser(path, string(content))
-		warnings = append(warnings, parseWarnings...)
-		for _, descriptor := range items {
-			key := descriptor.Group + ":" + descriptor.Artifact
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			descriptors = append(descriptors, descriptor)
-		}
-		return nil
-	})
-	if err != nil {
-		warnings = append(warnings, err.Error())
+func parseBuildFilesWithWarnings(repoPath string, parser func(path, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
+	collector := buildFileWarningCollector{
+		repoPath: repoPath,
+		parser:   parser,
+		names:    names,
+		seen:     make(map[string]struct{}),
 	}
-	return descriptors, dedupeAndSortWarnings(warnings)
+	err := filepath.WalkDir(repoPath, collector.visit)
+	if err != nil {
+		collector.warnings = append(collector.warnings, err.Error())
+	}
+	return collector.descriptors, dedupeAndSortWarnings(collector.warnings)
 }
 
 func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
@@ -740,7 +712,47 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 	return nil
 }
 
-func formatBuildFileReadWarning(repoPath string, path string, err error) string {
+type buildFileWarningCollector struct {
+	repoPath    string
+	parser      func(path, content string) ([]dependencyDescriptor, []string)
+	names       []string
+	seen        map[string]struct{}
+	descriptors []dependencyDescriptor
+	warnings    []string
+}
+
+func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err error) error {
+	if err != nil {
+		return err
+	}
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
+		return nil
+	}
+	content, readErr := safeio.ReadFileUnder(c.repoPath, path)
+	if readErr != nil {
+		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
+		return nil
+	}
+	items, parseWarnings := c.parser(path, string(content))
+	c.warnings = append(c.warnings, parseWarnings...)
+	for _, descriptor := range items {
+		key := descriptor.Group + ":" + descriptor.Artifact
+		if _, ok := c.seen[key]; ok {
+			continue
+		}
+		c.seen[key] = struct{}{}
+		c.descriptors = append(c.descriptors, descriptor)
+	}
+	return nil
+}
+
+func formatBuildFileReadWarning(repoPath, path string, err error) string {
 	relPath := path
 	if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
 		relPath = rel
