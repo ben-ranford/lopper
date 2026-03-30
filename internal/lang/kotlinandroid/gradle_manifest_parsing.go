@@ -137,16 +137,6 @@ func parseBuildFilesWithWarnings(repoPath string, parser func(content string) []
 	return parseDiscoveredBuildFiles(discovery.Files, parser), discovery.Warnings
 }
 
-func parseBuildFilesWithPathWarnings(repoPath string, parser func(path, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
-	discovery, walkErr := discoverBuildFiles(repoPath, names...)
-	descriptors, warnings := parseDiscoveredBuildFilesWithPath(discovery.Files, parser)
-	warnings = append(discovery.Warnings, warnings...)
-	if walkErr != nil {
-		warnings = append(warnings, fmt.Sprintf("unable to scan build files: %v", walkErr))
-	}
-	return descriptors, shared.DedupeWarnings(warnings)
-}
-
 func parseDiscoveredBuildFiles(files []discoveredGradleFile, parser func(content string) []dependencyDescriptor) []dependencyDescriptor {
 	seen := make(map[string]struct{})
 	descriptors := make([]dependencyDescriptor, 0)
