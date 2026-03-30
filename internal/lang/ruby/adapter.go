@@ -31,7 +31,10 @@ const (
 
 var (
 	gemDeclarationPattern       = regexp.MustCompile(`^\s*gem\s+["']([^"']+)["']`)
+	gemGitOptionPattern         = regexp.MustCompile(`(?:^|[,\s])(?::?git\s*=>|git\s*:)`)
+	gemPathOptionPattern        = regexp.MustCompile(`(?:^|[,\s])(?::?path\s*=>|path\s*:)`)
 	gemSpecPattern              = regexp.MustCompile(`^\s{2,}([A-Za-z0-9_.-]+)\s+\(`)
+	gemTopLevelSpecPattern      = regexp.MustCompile(`^\s{4}([A-Za-z0-9_.-]+)\s+\(`)
 	gemspecDependencyPattern    = regexp.MustCompile(`^\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?add(?:_runtime|_development)?_dependency\s*(?:\(\s*)?["']([^"']+)["']`)
 	gemspecDependencyLineSignal = regexp.MustCompile(`\badd(?:_runtime|_development)?_dependency\b`)
 	requirePattern              = regexp.MustCompile(`^\s*require(_relative)?\s+["']([^"']+)["']`)
@@ -52,8 +55,28 @@ type scanResult struct {
 	Files                []fileScan
 	Warnings             []string
 	DeclaredDependencies map[string]struct{}
+	DeclaredSources      map[string]rubyDependencySource
 	ImportedDependencies map[string]struct{}
 }
+
+type rubyDependencySource struct {
+	Rubygems        bool
+	Git             bool
+	Path            bool
+	DeclaredGemfile bool
+	DeclaredLock    bool
+}
+
+const (
+	rubyDependencySourceBundler  = "bundler"
+	rubyDependencySourceRubygems = "rubygems"
+	rubyDependencySourceGit      = "git"
+	rubyDependencySourcePath     = "path"
+	rubyGemfileSectionGem        = "GEM"
+	rubyGemfileSectionGit        = "GIT"
+	rubyGemfileSectionPath       = "PATH"
+	rubyGemfileSpecsSection      = "specs:"
+)
 
 func NewAdapter() *Adapter {
 	adapter := &Adapter{}
@@ -129,10 +152,11 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	scan := scanResult{
 		DeclaredDependencies: make(map[string]struct{}),
+		DeclaredSources:      make(map[string]rubyDependencySource),
 		ImportedDependencies: make(map[string]struct{}),
 	}
 
-	declWarnings, err := loadDeclaredDependencies(repoPath, scan.DeclaredDependencies)
+	declWarnings, err := loadDeclaredDependencies(repoPath, scan.DeclaredDependencies, scan.DeclaredSources)
 	if err != nil {
 		return scan, err
 	}
@@ -269,6 +293,7 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 
 	dependencyReport := shared.BuildDependencyReportFromStats(dependency, "ruby", stats)
+	dependencyReport.Provenance = buildRubyDependencyProvenance(scan.DeclaredSources[dependency])
 	if stats.WildcardImports > 0 {
 		dependencyReport.RiskCues = append(dependencyReport.RiskCues, report.RiskCue{
 			Code:     "dynamic-require",
@@ -323,42 +348,51 @@ func sortedDependencyUnion(values ...map[string]struct{}) []string {
 }
 
 func loadBundlerDependencies(repoPath string, out map[string]struct{}) error {
-	if err := loadGemfileDependencies(repoPath, out); err != nil {
-		return err
-	}
-	return loadGemfileLockDependencies(repoPath, out)
+	return loadBundlerDependenciesWithSources(repoPath, out, nil)
 }
 
-func loadDeclaredDependencies(repoPath string, out map[string]struct{}) ([]string, error) {
-	if err := loadBundlerDependencies(repoPath, out); err != nil {
+func loadBundlerDependenciesWithSources(repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) error {
+	if err := loadGemfileDependencies(repoPath, out, sources); err != nil {
+		return err
+	}
+	return loadGemfileLockDependencies(repoPath, out, sources)
+}
+
+func loadDeclaredDependencies(repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) ([]string, error) {
+	if err := loadBundlerDependenciesWithSources(repoPath, out, sources); err != nil {
 		return nil, err
 	}
 	return loadGemspecDependencies(repoPath, out)
 }
 
-func loadGemfileDependencies(repoPath string, out map[string]struct{}) error {
-	return loadBundlerDependenciesByPattern(repoPath, gemfileName, out, func(line string) []string {
-		return gemDeclarationPattern.FindStringSubmatch(shared.StripLineComment(line, "#"))
-	})
-}
-
-func loadGemfileLockDependencies(repoPath string, out map[string]struct{}) error {
-	return loadBundlerDependenciesByPattern(repoPath, gemfileLockName, out, func(line string) []string {
-		return gemSpecPattern.FindStringSubmatch(line)
-	})
-}
-
-func loadBundlerDependenciesByPattern(repoPath, filename string, out map[string]struct{}, matchLine func(string) []string) error {
-	content, err := readBundlerFile(repoPath, filename)
+func loadGemfileDependencies(repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) error {
+	content, err := readBundlerFile(repoPath, gemfileName)
 	if err != nil {
 		return err
 	}
 	if len(content) == 0 {
 		return nil
 	}
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		matches := matchLine(line)
+	for _, line := range strings.Split(string(content), "\n") {
+		dependency, kind, ok := parseGemfileDependencyLine(line)
+		if !ok {
+			continue
+		}
+		addRubyDependency(out, sources, dependency, kind, gemfileName)
+	}
+	return nil
+}
+
+func loadGemfileLockDependencies(repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) error {
+	content, err := readBundlerFile(repoPath, gemfileLockName)
+	if err != nil {
+		return err
+	}
+	if len(content) == 0 {
+		return nil
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		matches := gemSpecPattern.FindStringSubmatch(line)
 		if len(matches) != 2 {
 			continue
 		}
@@ -366,7 +400,189 @@ func loadBundlerDependenciesByPattern(repoPath, filename string, out map[string]
 			out[dependency] = struct{}{}
 		}
 	}
+	parseGemfileLockSourceAttribution(content, out, sources)
 	return nil
+}
+
+func parseGemfileDependencyLine(line string) (string, string, bool) {
+	line = shared.StripLineComment(line, "#")
+	matches := gemDeclarationPattern.FindStringSubmatch(line)
+	if len(matches) != 2 {
+		return "", "", false
+	}
+	dependency := normalizeDependencyID(matches[1])
+	if dependency == "" {
+		return "", "", false
+	}
+	kind := rubyDependencySourceRubygems
+	switch {
+	case gemPathOptionPattern.MatchString(line):
+		kind = rubyDependencySourcePath
+	case gemGitOptionPattern.MatchString(line):
+		kind = rubyDependencySourceGit
+	}
+	return dependency, kind, true
+}
+
+func parseGemfileLockSourceAttribution(content []byte, out map[string]struct{}, sources map[string]rubyDependencySource) {
+	if sources == nil || len(content) == 0 {
+		return
+	}
+	state := gemfileLockSourceAttributionState{}
+	for _, rawLine := range strings.Split(string(content), "\n") {
+		applyGemfileLockSourceAttributionLine(rawLine, &state, out, sources)
+	}
+}
+
+type gemfileLockSourceAttributionState struct {
+	currentKind string
+	inSpecs     bool
+}
+
+func applyGemfileLockSourceAttributionLine(rawLine string, state *gemfileLockSourceAttributionState, out map[string]struct{}, sources map[string]rubyDependencySource) {
+	line := strings.TrimRight(rawLine, "\r")
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return
+	}
+	if !isGemfileLockTopLevelLine(line) {
+		applyGemfileLockDependencyEntry(line, state, out, sources)
+		return
+	}
+
+	state.currentKind = parseGemfileLockSection(trimmed)
+	state.inSpecs = false
+}
+
+func isGemfileLockTopLevelLine(line string) bool {
+	return !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")
+}
+
+func parseGemfileLockSection(line string) string {
+	switch line {
+	case rubyGemfileSectionGem:
+		return rubyDependencySourceRubygems
+	case rubyGemfileSectionGit:
+		return rubyDependencySourceGit
+	case rubyGemfileSectionPath:
+		return rubyDependencySourcePath
+	default:
+		return ""
+	}
+}
+
+func applyGemfileLockDependencyEntry(line string, state *gemfileLockSourceAttributionState, out map[string]struct{}, sources map[string]rubyDependencySource) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == rubyGemfileSpecsSection {
+		state.inSpecs = state.currentKind != ""
+		return
+	}
+	if !state.inSpecs {
+		return
+	}
+	matches := gemTopLevelSpecPattern.FindStringSubmatch(line)
+	if len(matches) != 2 {
+		return
+	}
+	addRubyDependency(out, sources, normalizeDependencyID(matches[1]), state.currentKind, gemfileLockName)
+}
+
+func addRubyDependency(out map[string]struct{}, sources map[string]rubyDependencySource, dependency, kind, signal string) {
+	if dependency == "" {
+		return
+	}
+	if out != nil {
+		out[dependency] = struct{}{}
+	}
+	if sources == nil {
+		return
+	}
+	info := sources[dependency]
+	switch kind {
+	case rubyDependencySourceRubygems:
+		info.Rubygems = true
+	case rubyDependencySourceGit:
+		info.Git = true
+	case rubyDependencySourcePath:
+		info.Path = true
+	}
+	switch signal {
+	case gemfileName:
+		info.DeclaredGemfile = true
+	case gemfileLockName:
+		info.DeclaredLock = true
+	}
+	sources[dependency] = info
+}
+
+func buildRubyDependencyProvenance(info rubyDependencySource) *report.DependencyProvenance {
+	source := rubyDependencyProvenanceSource(info)
+	if source == "" {
+		return nil
+	}
+	return &report.DependencyProvenance{
+		Source:     source,
+		Confidence: rubyDependencyProvenanceConfidence(info),
+		Signals:    rubyDependencyProvenanceSignals(info),
+	}
+}
+
+func rubyDependencyProvenanceSource(info rubyDependencySource) string {
+	kinds := 0
+	source := ""
+	if info.Rubygems {
+		kinds++
+		source = rubyDependencySourceRubygems
+	}
+	if info.Git {
+		kinds++
+		source = rubyDependencySourceGit
+	}
+	if info.Path {
+		kinds++
+		source = rubyDependencySourcePath
+	}
+	switch kinds {
+	case 0:
+		return ""
+	case 1:
+		return source
+	default:
+		return rubyDependencySourceBundler
+	}
+}
+
+func rubyDependencyProvenanceConfidence(info rubyDependencySource) string {
+	switch {
+	case info.DeclaredLock || info.Git || info.Path:
+		return "high"
+	case info.Rubygems:
+		return "medium"
+	default:
+		return ""
+	}
+}
+
+func rubyDependencyProvenanceSignals(info rubyDependencySource) []string {
+	signals := make([]string, 0, 4)
+	if rubyDependencyProvenanceSource(info) == rubyDependencySourceBundler {
+		if info.Git {
+			signals = append(signals, rubyDependencySourceGit)
+		}
+		if info.Path {
+			signals = append(signals, rubyDependencySourcePath)
+		}
+		if info.Rubygems {
+			signals = append(signals, rubyDependencySourceRubygems)
+		}
+	}
+	if info.DeclaredGemfile {
+		signals = append(signals, gemfileName)
+	}
+	if info.DeclaredLock {
+		signals = append(signals, gemfileLockName)
+	}
+	return signals
 }
 
 func readBundlerFile(repoPath, filename string) ([]byte, error) {
