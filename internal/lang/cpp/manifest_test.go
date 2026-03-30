@@ -12,6 +12,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	testConanLockSource      = "conan.lock"
+	testVcpkgManifestSource  = "vcpkg manifest"
+	testParseConanLockPrefix = "failed to parse conan.lock"
+)
+
 func TestLoadDependencyCatalogParsesManifestsAndLocks(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, vcpkgManifestFile), `{
@@ -59,7 +65,7 @@ gtest/1.14.0
 	if catalog.contains("cmake") {
 		t.Fatalf("did not expect tool_requires package to be treated as dependency")
 	}
-	if got := catalog.sources("fmt"); !slices.Equal(got, []string{"conan.lock", "vcpkg manifest"}) {
+	if got := catalog.sources("fmt"); !slices.Equal(got, []string{testConanLockSource, testVcpkgManifestSource}) {
 		t.Fatalf("unexpected sources for fmt: %#v", got)
 	}
 }
@@ -239,22 +245,22 @@ func TestParseJSONDependencyLockHandlesEmptyAndInvalidContent(t *testing.T) {
 	if len(dependencies) != 0 {
 		t.Fatalf("expected invalid lock content to produce no dependencies, got %#v", dependencies)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to parse conan.lock") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], testParseConanLockPrefix) {
 		t.Fatalf("expected invalid lock warning, got %#v", warnings)
 	}
 }
 
 func TestDependencyCatalogAddAndSourcesHandleEdgeCases(t *testing.T) {
 	catalog := newDependencyCatalog()
-	catalog.add("", "vcpkg manifest")
+	catalog.add("", testVcpkgManifestSource)
 	catalog.add("fmt", "")
-	catalog.add("fmt", "vcpkg manifest")
-	catalog.add("fmt", "conan.lock")
+	catalog.add("fmt", testVcpkgManifestSource)
+	catalog.add("fmt", testConanLockSource)
 
 	if !catalog.contains("fmt") {
 		t.Fatalf("expected fmt dependency to be recorded")
 	}
-	if got := catalog.sources("fmt"); !slices.Equal(got, []string{"conan.lock", "vcpkg manifest"}) {
+	if got := catalog.sources("fmt"); !slices.Equal(got, []string{testConanLockSource, testVcpkgManifestSource}) {
 		t.Fatalf("unexpected recorded sources: %#v", got)
 	}
 	if got := catalog.sources("missing"); len(got) != 0 {
@@ -314,8 +320,8 @@ func TestParseManifestHelpersHandleEmptyContent(t *testing.T) {
 
 func TestCorrelateDeclaredDependencyReturnsOriginalWhenMatchIsAmbiguous(t *testing.T) {
 	catalog := newDependencyCatalog()
-	catalog.add("boost-asio", "vcpkg manifest")
-	catalog.add("boost-filesystem", "vcpkg manifest")
+	catalog.add("boost-asio", testVcpkgManifestSource)
+	catalog.add("boost-filesystem", testVcpkgManifestSource)
 
 	if got := correlateDeclaredDependency("boost", catalog); got != "boost" {
 		t.Fatalf("expected ambiguous prefix to keep original token, got %q", got)
