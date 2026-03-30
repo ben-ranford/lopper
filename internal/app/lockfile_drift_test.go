@@ -17,13 +17,14 @@ const (
 	manifestFileName         = "package.json"
 	lockfileName             = "package-lock.json"
 	newUntrackedFileName     = "new-untracked.txt"
+	poetryLockName           = "poetry.lock"
+	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 	demoPackageJSON          = "{\n  \"name\": \"demo\"\n}\n"
 	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
 	nestedManifestPath       = "nested/package.json"
 	gitBinaryPath            = "/usr/bin/git"
 	gitExecutableNotFoundErr = "git executable not found"
-	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 )
 
 func TestDetectLockfileDriftGitManifestChangeWithoutLockfileChange(t *testing.T) {
@@ -368,7 +369,10 @@ func runDetectDriftCases(t *testing.T, repo string, rule lockfileRule, cases []s
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			warnings := detectDriftForRule(repo, repo, tc.files, rule, tc.changed, tc.hasGit)
+			warnings, err := detectDriftForRule(repo, repo, tc.files, rule, tc.changed, tc.hasGit)
+			if err != nil {
+				t.Fatalf("detectDriftForRule: %v", err)
+			}
 			if len(warnings) != tc.wantWarnings {
 				t.Fatalf("expected %d warnings, got %#v", tc.wantWarnings, warnings)
 			}
@@ -377,6 +381,51 @@ func runDetectDriftCases(t *testing.T, repo string, rule lockfileRule, cases []s
 			}
 		})
 	}
+}
+
+func TestDetectLockfileDriftIgnoresGenericPyprojectWithoutManagerSignals(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[project]\nname = \"demo\"\n")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for generic pyproject.toml, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftPythonManagerSignals(t *testing.T) {
+	t.Run("poetry manifest requires poetry lock", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+
+		warnings, err := detectLockfileDrift(context.Background(), repo, false)
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "Poetry") || !strings.Contains(warnings[0], poetryLockName) {
+			t.Fatalf("expected Poetry warning for missing %s, got %#v", poetryLockName, warnings)
+		}
+	})
+
+	t.Run("uv manifest change requires uv lock update", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[project]\nname = \"demo\"\n\n[tool.uv]\n")
+		writeFile(t, filepath.Join(repo, "uv.lock"), "version = 1\n")
+		initGitRepo(t, repo)
+
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[tool.uv]\n")
+
+		warnings, err := detectLockfileDrift(context.Background(), repo, false)
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "uv") || !strings.Contains(warnings[0], "uv lock") {
+			t.Fatalf("expected uv warning for changed pyproject.toml without uv.lock update, got %#v", warnings)
+		}
+	})
 }
 
 func TestLockfileDriftHelpers(t *testing.T) {
@@ -527,14 +576,14 @@ func TestShouldSkipMissingLockfile(t *testing.T) {
 			name:         "non-poetry pyproject.toml does not warn",
 			manifestName: "pyproject.toml",
 			manifestBody: "[build-system]\nrequires = [\"setuptools\"]\n",
-			lockfileHint: "poetry.lock",
+			lockfileHint: poetryLockName,
 			wantWarning:  false,
 		},
 		{
-			name:         "poetry pyproject.toml warns when poetry.lock is missing",
+			name:         "poetry pyproject.toml warns when the Poetry lockfile is missing",
 			manifestName: "pyproject.toml",
 			manifestBody: "[tool.poetry]\nname = \"my-pkg\"\n\n[build-system]\nrequires = [\"poetry-core\"]\n",
-			lockfileHint: "poetry.lock",
+			lockfileHint: poetryLockName,
 			wantWarning:  true,
 		},
 		{
