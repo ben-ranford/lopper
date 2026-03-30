@@ -26,7 +26,9 @@ if [[ -z "$USAGE_TEXT" ]]; then
 fi
 
 escape_roff() {
-	printf '%s' "$1" | sed 's/\\/\\\\/g'
+	local text="$1"
+	printf '%s' "$text" | sed 's/\\/\\\\/g'
+	return 0
 }
 
 {
