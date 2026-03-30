@@ -2,6 +2,7 @@ package report
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"path/filepath"
 	"sort"
@@ -97,8 +98,7 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 	if file == "" {
 		return sarifLocation{}, false
 	}
-	file = strings.ReplaceAll(file, "\\", "/")
-	file = path.Clean(file)
+	file = toSARIFArtifactURI(file)
 	loc := sarifLocation{
 		PhysicalLocation: sarifPhysicalLocation{
 			ArtifactLocation: sarifArtifactLocation{URI: file},
@@ -115,6 +115,41 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 		loc.PhysicalLocation.Region = region
 	}
 	return loc, true
+}
+
+func toSARIFArtifactURI(file string) string {
+	file = strings.ReplaceAll(file, "\\", "/")
+	file = path.Clean(file)
+	if isWindowsDriveAbsolutePath(file) || filepath.IsAbs(file) {
+		return fileURLFromPath(file)
+	}
+	return file
+}
+
+func fileURLFromPath(pathValue string) string {
+	slashed := strings.ReplaceAll(pathValue, "\\", "/")
+	slashed = filepath.ToSlash(slashed)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{
+		Scheme: "file",
+		Path:   slashed,
+	}).String()
+}
+
+func isWindowsDriveAbsolutePath(pathValue string) bool {
+	if len(pathValue) < 3 {
+		return false
+	}
+	drive := pathValue[0]
+	if (drive < 'A' || drive > 'Z') && (drive < 'a' || drive > 'z') {
+		return false
+	}
+	if pathValue[1] != ':' {
+		return false
+	}
+	return pathValue[2] == '/' || pathValue[2] == '\\'
 }
 
 func resultLocationKey(result sarifResult) string {
