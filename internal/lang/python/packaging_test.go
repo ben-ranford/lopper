@@ -14,7 +14,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-const expectedDependencyInSetFmt = "expected dependency %q in %#v"
+const (
+	expectedDependencyInSetFmt = "expected dependency %q in %#v"
+	expectedNoDependenciesFmt  = "expected no dependencies, got %#v"
+	expectedWarningFmt         = "expected warning containing %q, got %#v"
+	collectDirectoryErrFmt     = "collect directory declared dependencies: %v"
+	packagingTestDirMode       = 0o700
+	packagingBlockedDirMode    = 0o000
+)
 
 func TestParsePyprojectDependenciesModernSections(t *testing.T) {
 	repo := t.TempDir()
@@ -137,7 +144,7 @@ mkdocs = "^1.0"
 	joinedWarnings := strings.Join(reportData.Warnings, "\n")
 	for _, want := range []string{"optional Poetry dependency", "optional Poetry groups"} {
 		if !strings.Contains(joinedWarnings, want) {
-			t.Fatalf("expected warning containing %q, got %#v", want, reportData.Warnings)
+			t.Fatalf(expectedWarningFmt, want, reportData.Warnings)
 		}
 	}
 }
@@ -184,7 +191,7 @@ version = "2.2.1"
 	joinedWarnings := strings.Join(reportData.Warnings, "\n")
 	for _, want := range []string{"project.optional-dependencies", "using uv.lock package entries as a fallback"} {
 		if !strings.Contains(joinedWarnings, want) {
-			t.Fatalf("expected warning containing %q, got %#v", want, reportData.Warnings)
+			t.Fatalf(expectedWarningFmt, want, reportData.Warnings)
 		}
 	}
 }
@@ -205,7 +212,7 @@ version = "2.2.1"
 
 	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
 	if err != nil {
-		t.Fatalf("collect directory declared dependencies: %v", err)
+		t.Fatalf(collectDirectoryErrFmt, err)
 	}
 	if _, ok := dependencies["requests"]; !ok {
 		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
@@ -239,7 +246,7 @@ version = "0.1.0"
 
 	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
 	if err != nil {
-		t.Fatalf("collect directory declared dependencies: %v", err)
+		t.Fatalf(collectDirectoryErrFmt, err)
 	}
 	if _, ok := dependencies["requests"]; !ok {
 		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
@@ -251,156 +258,112 @@ version = "0.1.0"
 		"skipped 2 lockfile package entries with unsupported metadata",
 	} {
 		if !strings.Contains(joinedWarnings, want) {
-			t.Fatalf("expected warning containing %q, got %#v", want, warnings)
+			t.Fatalf(expectedWarningFmt, want, warnings)
 		}
 	}
 }
 
-func TestPackagingParsersHandleUnsupportedInputs(t *testing.T) {
+func TestParsePackageLockDependenciesUnsupportedShape(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonUVLockName), `package = "invalid"`)
+
+	dependencies, warnings, err := parsePackageLockDependencies(repo, filepath.Join(repo, pythonUVLockName))
+	if err != nil {
+		t.Fatalf("parse package lock dependencies: %v", err)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf(expectedNoDependenciesFmt, dependencies)
+	}
+	assertWarningContains(t, warnings, "unsupported lockfile shape")
+}
+
+func TestParsePackageLockDependenciesWithoutEntries(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPoetryLockName)
+	testutil.MustWriteFile(t, path, `version = "1.0"`)
+
+	dependencies, warnings, err := parsePackageLockDependencies(repo, path)
+	if err != nil {
+		t.Fatalf("parse package lock without entries: %v", err)
+	}
+	if len(dependencies) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected empty result without package entries, got deps=%#v warnings=%#v", dependencies, warnings)
+	}
+}
+
+func TestParsePipfileLockDependenciesMissing(t *testing.T) {
+	repo := t.TempDir()
+	assertMissingParseResult(t, repo, filepath.Join(repo, "missing.lock"), "Pipfile.lock", parsePipfileLockDependencies)
+}
+
+func TestParsePipfileDependenciesMissing(t *testing.T) {
+	repo := t.TempDir()
+	assertMissingParseResult(t, repo, filepath.Join(repo, "missing.Pipfile"), "Pipfile", parsePipfileDependencies)
+}
+
+func TestParsePipfileLockDependenciesInvalidJSON(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPipfileLockName)
+	assertInvalidParseWarning(t, repo, path, `{`, "invalid Pipfile.lock", "JSON decode error", parsePipfileLockDependencies)
+}
+
+func TestParsePyprojectDependenciesInvalidTOML(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPyprojectFile)
+	assertInvalidParseWarning(t, repo, path, `[project`, "invalid "+pythonPyprojectFile, "decode error", parsePyprojectDependencies)
+}
+
+func TestParsePackageLockDependenciesMissing(t *testing.T) {
+	repo := t.TempDir()
+	assertMissingParseResult(t, repo, filepath.Join(repo, "missing.lock"), "package lock", parsePackageLockDependencies)
+}
+
+func TestParsePipfileDependenciesInvalidTOML(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPipfileName)
+	assertInvalidParseWarning(t, repo, path, `[packages`, "invalid Pipfile", "decode error", parsePipfileDependencies)
+}
+
+func TestReadOptionalTOMLDocumentOutsideRepoFails(t *testing.T) {
 	repo := t.TempDir()
 
-	t.Run("package lock unsupported shape", func(t *testing.T) {
-		testutil.MustWriteFile(t, filepath.Join(repo, pythonUVLockName), `package = "invalid"`)
+	_, _, err := readOptionalTOMLDocument(repo, filepath.Join(repo, "..", "outside.toml"))
+	if err == nil {
+		t.Fatal("expected repo boundary read error")
+	}
+}
 
-		dependencies, warnings, err := parsePackageLockDependencies(repo, filepath.Join(repo, pythonUVLockName))
-		if err != nil {
-			t.Fatalf("parse package lock dependencies: %v", err)
-		}
-		if len(dependencies) != 0 {
-			t.Fatalf("expected no dependencies, got %#v", dependencies)
-		}
-		if !strings.Contains(strings.Join(warnings, "\n"), "unsupported lockfile shape") {
-			t.Fatalf("expected unsupported shape warning, got %#v", warnings)
-		}
-	})
+func TestReadOptionalTOMLDocumentMissing(t *testing.T) {
+	repo := t.TempDir()
 
-	t.Run("package lock without package entries", func(t *testing.T) {
-		path := filepath.Join(repo, pythonPoetryLockName)
-		testutil.MustWriteFile(t, path, `version = "1.0"`)
+	document, warnings, err := readOptionalTOMLDocument(repo, filepath.Join(repo, "missing.toml"))
+	if err != nil {
+		t.Fatalf("read missing TOML document: %v", err)
+	}
+	if document != nil || len(warnings) != 0 {
+		t.Fatalf("expected nil result for missing TOML document, got document=%#v warnings=%#v", document, warnings)
+	}
+}
 
-		dependencies, warnings, err := parsePackageLockDependencies(repo, path)
-		if err != nil {
-			t.Fatalf("parse package lock without entries: %v", err)
-		}
-		if len(dependencies) != 0 || len(warnings) != 0 {
-			t.Fatalf("expected empty result without package entries, got deps=%#v warnings=%#v", dependencies, warnings)
-		}
-	})
+func TestParsePackageLockDependenciesNonMapEntries(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonUVLockName)
+	testutil.MustWriteFile(t, path, `package = [1]`)
 
-	t.Run("pipfile lock missing", func(t *testing.T) {
-		dependencies, warnings, err := parsePipfileLockDependencies(repo, filepath.Join(repo, "missing.lock"))
-		if err != nil {
-			t.Fatalf("parse missing Pipfile.lock: %v", err)
-		}
-		if len(dependencies) != 0 || len(warnings) != 0 {
-			t.Fatalf("expected empty result for missing Pipfile.lock, got deps=%#v warnings=%#v", dependencies, warnings)
-		}
-	})
+	dependencies, warnings, err := parsePackageLockDependencies(repo, path)
+	if err != nil {
+		t.Fatalf("parse package lock non-map entries: %v", err)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf(expectedNoDependenciesFmt, dependencies)
+	}
+	assertWarningContains(t, warnings, "skipped 1 lockfile package entries with unsupported metadata")
+}
 
-	t.Run("pipfile missing", func(t *testing.T) {
-		dependencies, warnings, err := parsePipfileDependencies(repo, filepath.Join(repo, "missing.Pipfile"))
-		if err != nil {
-			t.Fatalf("parse missing Pipfile: %v", err)
-		}
-		if len(dependencies) != 0 || len(warnings) != 0 {
-			t.Fatalf("expected empty result for missing Pipfile, got deps=%#v warnings=%#v", dependencies, warnings)
-		}
-	})
-
-	t.Run("pipfile lock invalid json", func(t *testing.T) {
-		path := filepath.Join(repo, pythonPipfileLockName)
-		testutil.MustWriteFile(t, path, `{`)
-
-		dependencies, warnings, err := parsePipfileLockDependencies(repo, path)
-		if err != nil {
-			t.Fatalf("parse invalid Pipfile.lock: %v", err)
-		}
-		if len(dependencies) != 0 {
-			t.Fatalf("expected no dependencies, got %#v", dependencies)
-		}
-		if !strings.Contains(strings.Join(warnings, "\n"), "JSON decode error") {
-			t.Fatalf("expected JSON decode warning, got %#v", warnings)
-		}
-	})
-
-	t.Run("pyproject invalid toml", func(t *testing.T) {
-		path := filepath.Join(repo, pythonPyprojectFile)
-		testutil.MustWriteFile(t, path, `[project`)
-
-		dependencies, warnings, err := parsePyprojectDependencies(repo, path)
-		if err != nil {
-			t.Fatalf("parse invalid pyproject.toml: %v", err)
-		}
-		if len(dependencies) != 0 {
-			t.Fatalf("expected no dependencies, got %#v", dependencies)
-		}
-		if !strings.Contains(strings.Join(warnings, "\n"), "decode error") {
-			t.Fatalf("expected TOML decode warning, got %#v", warnings)
-		}
-	})
-
-	t.Run("package lock missing", func(t *testing.T) {
-		dependencies, warnings, err := parsePackageLockDependencies(repo, filepath.Join(repo, "missing.lock"))
-		if err != nil {
-			t.Fatalf("parse missing package lock: %v", err)
-		}
-		if len(dependencies) != 0 || len(warnings) != 0 {
-			t.Fatalf("expected empty result for missing package lock, got deps=%#v warnings=%#v", dependencies, warnings)
-		}
-	})
-
-	t.Run("pipfile invalid toml", func(t *testing.T) {
-		path := filepath.Join(repo, pythonPipfileName)
-		testutil.MustWriteFile(t, path, `[packages`)
-
-		dependencies, warnings, err := parsePipfileDependencies(repo, path)
-		if err != nil {
-			t.Fatalf("parse invalid Pipfile: %v", err)
-		}
-		if len(dependencies) != 0 {
-			t.Fatalf("expected no dependencies, got %#v", dependencies)
-		}
-		if !strings.Contains(strings.Join(warnings, "\n"), "decode error") {
-			t.Fatalf("expected Pipfile decode warning, got %#v", warnings)
-		}
-	})
-
-	t.Run("toml read outside repo fails", func(t *testing.T) {
-		_, _, err := readOptionalTOMLDocument(repo, filepath.Join(repo, "..", "outside.toml"))
-		if err == nil {
-			t.Fatal("expected repo boundary read error")
-		}
-	})
-
-	t.Run("toml read missing file", func(t *testing.T) {
-		document, warnings, err := readOptionalTOMLDocument(repo, filepath.Join(repo, "missing.toml"))
-		if err != nil {
-			t.Fatalf("read missing TOML document: %v", err)
-		}
-		if document != nil || len(warnings) != 0 {
-			t.Fatalf("expected nil result for missing TOML document, got document=%#v warnings=%#v", document, warnings)
-		}
-	})
-
-	t.Run("package lock non map entries", func(t *testing.T) {
-		path := filepath.Join(repo, pythonUVLockName)
-		testutil.MustWriteFile(t, path, `package = [1]`)
-
-		dependencies, warnings, err := parsePackageLockDependencies(repo, path)
-		if err != nil {
-			t.Fatalf("parse package lock non-map entries: %v", err)
-		}
-		if len(dependencies) != 0 {
-			t.Fatalf("expected no dependencies, got %#v", dependencies)
-		}
-		if !strings.Contains(strings.Join(warnings, "\n"), "skipped 1 lockfile package entries with unsupported metadata") {
-			t.Fatalf("expected skipped-entry warning, got %#v", warnings)
-		}
-	})
-
-	t.Run("pyproject warns on poetry extras", func(t *testing.T) {
-		path := filepath.Join(repo, pythonPyprojectFile)
-		testutil.MustWriteFile(t, path, `
+func TestParsePyprojectDependenciesWarnOnPoetryExtras(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPyprojectFile)
+	testutil.MustWriteFile(t, path, `
 [tool.poetry]
 name = "demo"
 
@@ -411,17 +374,14 @@ requests = "^2.0"
 docs = ["mkdocs"]
 `)
 
-		dependencies, warnings, err := parsePyprojectDependencies(repo, path)
-		if err != nil {
-			t.Fatalf("parse pyproject with extras: %v", err)
-		}
-		if _, ok := dependencies["requests"]; !ok {
-			t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
-		}
-		if !strings.Contains(strings.Join(warnings, "\n"), "skipped Poetry extras") {
-			t.Fatalf("expected Poetry extras warning, got %#v", warnings)
-		}
-	})
+	dependencies, warnings, err := parsePyprojectDependencies(repo, path)
+	if err != nil {
+		t.Fatalf("parse pyproject with extras: %v", err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	assertWarningContains(t, warnings, "skipped Poetry extras")
 }
 
 func TestPackagingHelperWarningsAndUtilities(t *testing.T) {
@@ -446,8 +406,8 @@ func TestPackagingHelperWarningsAndUtilities(t *testing.T) {
 
 	addRequirementList(dependencies, []string{"requests>=2", "!bad"}, "requirements", &warnings)
 	addRequirementList(dependencies, 42, "requirements", &warnings)
-	addPoetryGroups(dependencies, poetryGroups, "pyproject.toml", &warnings)
-	addDependencyGroups(dependencies, dependencyGroups, "pyproject.toml", &warnings)
+	addPoetryGroups(dependencies, poetryGroups, pythonPyprojectFile, &warnings)
+	addDependencyGroups(dependencies, dependencyGroups, pythonPyprojectFile, &warnings)
 
 	for _, want := range []string{"requests", "pytest", "ruff"} {
 		if _, ok := dependencies[want]; !ok {
@@ -467,7 +427,7 @@ func TestPackagingHelperWarningsAndUtilities(t *testing.T) {
 		"skipped dependency groups with unsupported metadata",
 	} {
 		if !strings.Contains(joinedWarnings, want) {
-			t.Fatalf("expected warning containing %q, got %#v", want, warnings)
+			t.Fatalf(expectedWarningFmt, want, warnings)
 		}
 	}
 
@@ -481,10 +441,10 @@ func TestPackagingHelperWarningsAndUtilities(t *testing.T) {
 	if got := nestedMap(map[string]any{"tool": "nope"}, "tool", "poetry"); got != nil {
 		t.Fatalf("expected nil nested map, got %#v", got)
 	}
-	addPoetryDependencyTable(dependencies, nil, "pyproject.toml [tool.poetry.dependencies]", &warnings)
-	addPoetryGroups(dependencies, nil, "pyproject.toml", &warnings)
+	addPoetryDependencyTable(dependencies, nil, pythonPyprojectFile+" [tool.poetry.dependencies]", &warnings)
+	addPoetryGroups(dependencies, nil, pythonPyprojectFile, &warnings)
 
-	if got := relativePackagingPath(repo, "pyproject.toml"); got != "pyproject.toml" {
+	if got := relativePackagingPath(repo, pythonPyprojectFile); got != pythonPyprojectFile {
 		t.Fatalf("expected fallback packaging path label, got %q", got)
 	}
 }
@@ -510,7 +470,7 @@ func TestCollectDirectoryDeclaredDependenciesWithoutPackagingFiles(t *testing.T)
 
 	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
 	if err != nil {
-		t.Fatalf("collect directory declared dependencies: %v", err)
+		t.Fatalf(collectDirectoryErrFmt, err)
 	}
 	if dependencies != nil || len(warnings) != 0 {
 		t.Fatalf("expected empty result without packaging files, got deps=%#v warnings=%#v", dependencies, warnings)
@@ -541,15 +501,15 @@ dependencies = ["requests>=2"]
 	t.Run("propagates directory read errors", func(t *testing.T) {
 		repo := t.TempDir()
 		blockedDir := filepath.Join(repo, "blocked")
-		if err := os.Mkdir(blockedDir, 0o755); err != nil {
+		if err := os.Mkdir(blockedDir, packagingTestDirMode); err != nil {
 			t.Fatalf("mkdir blocked dir: %v", err)
 		}
 		defer func() {
-			if err := os.Chmod(blockedDir, 0o755); err != nil {
+			if err := os.Chmod(blockedDir, packagingTestDirMode); err != nil {
 				t.Errorf("restore blocked dir permissions: %v", err)
 			}
 		}()
-		if err := os.Chmod(blockedDir, 0o000); err != nil {
+		if err := os.Chmod(blockedDir, packagingBlockedDirMode); err != nil {
 			t.Fatalf("chmod blocked dir: %v", err)
 		}
 
@@ -559,64 +519,50 @@ dependencies = ["requests>=2"]
 	})
 }
 
-func TestCollectDirectoryDeclaredDependenciesAdditionalBranches(t *testing.T) {
-	t.Run("manifest errors propagate", func(t *testing.T) {
-		repo := t.TempDir()
-		outsideDir := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(outsideDir, pythonPyprojectFile), `
+func TestCollectDirectoryDeclaredDependenciesManifestErrorsPropagate(t *testing.T) {
+	assertCollectDirectoryReadError(t, pythonPyprojectFile, `
 [project]
 dependencies = ["requests>=2"]
 `)
+}
 
-		if _, _, err := collectDirectoryDeclaredDependencies(repo, outsideDir); err == nil {
-			t.Fatal("expected manifest read error")
-		}
-	})
+func TestCollectDirectoryDeclaredDependenciesLockFallbackErrorsPropagate(t *testing.T) {
+	assertCollectDirectoryReadError(t, pythonPipfileLockName, `{"default":{"requests":{"version":"==2.32.0"}}}`)
+}
 
-	t.Run("lock fallback errors propagate", func(t *testing.T) {
-		repo := t.TempDir()
-		outsideDir := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(outsideDir, pythonPipfileLockName), `{"default":{"requests":{"version":"==2.32.0"}}}`)
+func TestCollectDirectoryDeclaredDependenciesEmptyFallbackSkipsWarning(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPoetryLockName), `version = "1.0"`)
 
-		if _, _, err := collectDirectoryDeclaredDependencies(repo, outsideDir); err == nil {
-			t.Fatal("expected lock fallback read error")
-		}
-	})
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	if err != nil {
+		t.Fatalf(collectDirectoryErrFmt, err)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf(expectedNoDependenciesFmt, dependencies)
+	}
+	if strings.Contains(strings.Join(warnings, "\n"), "fallback") {
+		t.Fatalf("did not expect fallback warning, got %#v", warnings)
+	}
+}
 
-	t.Run("empty fallback dependencies do not emit fallback warning", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, pythonPoetryLockName), `version = "1.0"`)
+func TestPythonPackagingFilesIgnoreChildDirectories(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), "[project]\nname='demo'\n")
+	if err := os.Mkdir(filepath.Join(repo, "nested"), packagingTestDirMode); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
 
-		dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
-		if err != nil {
-			t.Fatalf("collect directory declared dependencies: %v", err)
-		}
-		if len(dependencies) != 0 {
-			t.Fatalf("expected no dependencies, got %#v", dependencies)
-		}
-		if strings.Contains(strings.Join(warnings, "\n"), "fallback") {
-			t.Fatalf("did not expect fallback warning, got %#v", warnings)
-		}
-	})
-
-	t.Run("packaging file listing ignores child directories", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), "[project]\nname='demo'\n")
-		if err := os.Mkdir(filepath.Join(repo, "nested"), 0o755); err != nil {
-			t.Fatalf("mkdir nested dir: %v", err)
-		}
-
-		files, err := pythonPackagingFiles(repo)
-		if err != nil {
-			t.Fatalf("pythonPackagingFiles: %v", err)
-		}
-		if _, ok := files[pythonPyprojectFile]; !ok {
-			t.Fatalf("expected %s in %#v", pythonPyprojectFile, files)
-		}
-		if _, ok := files["nested"]; ok {
-			t.Fatalf("did not expect child directory in %#v", files)
-		}
-	})
+	files, err := pythonPackagingFiles(repo)
+	if err != nil {
+		t.Fatalf("pythonPackagingFiles: %v", err)
+	}
+	if _, ok := files[pythonPyprojectFile]; !ok {
+		t.Fatalf("expected %s in %#v", pythonPyprojectFile, files)
+	}
+	if _, ok := files["nested"]; ok {
+		t.Fatalf("did not expect child directory in %#v", files)
+	}
 }
 
 func TestPackagingCollectionPropagatesReadErrors(t *testing.T) {
@@ -636,6 +582,49 @@ func TestPackagingCollectionPropagatesReadErrors(t *testing.T) {
 	lockFiles := map[string]struct{}{pythonPipfileLockName: {}}
 	if _, _, err := collectLockFallbacks(repo, filepath.Join(repo, ".."), lockFiles); err == nil {
 		t.Fatal("expected collectLockFallbacks to propagate read error")
+	}
+}
+
+func assertWarningContains(t *testing.T, warnings []string, want string) {
+	t.Helper()
+	if !strings.Contains(strings.Join(warnings, "\n"), want) {
+		t.Fatalf(expectedWarningFmt, want, warnings)
+	}
+}
+
+func assertMissingParseResult(t *testing.T, repoPath, path, description string, parser dependencyParser) {
+	t.Helper()
+	dependencies, warnings, err := parser(repoPath, path)
+	if err != nil {
+		t.Fatalf("parse missing %s: %v", description, err)
+	}
+	if len(dependencies) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected empty result for missing %s, got deps=%#v warnings=%#v", description, dependencies, warnings)
+	}
+}
+
+func assertInvalidParseWarning(t *testing.T, repoPath, path, content, description, warning string, parser dependencyParser) {
+	t.Helper()
+	testutil.MustWriteFile(t, path, content)
+
+	dependencies, warnings, err := parser(repoPath, path)
+	if err != nil {
+		t.Fatalf("parse %s: %v", description, err)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf(expectedNoDependenciesFmt, dependencies)
+	}
+	assertWarningContains(t, warnings, warning)
+}
+
+func assertCollectDirectoryReadError(t *testing.T, fileName, content string) {
+	t.Helper()
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outsideDir, fileName), content)
+
+	if _, _, err := collectDirectoryDeclaredDependencies(repo, outsideDir); err == nil {
+		t.Fatal("expected collect directory read error")
 	}
 }
 

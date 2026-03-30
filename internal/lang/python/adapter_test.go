@@ -13,7 +13,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-const testMainPy = "main.py"
+const (
+	testMainPy           = "main.py"
+	testDirOwnerOnlyMode = 0o700
+	testDirBlockedMode   = 0o000
+)
 
 func TestAdapterDetectWithPythonSource(t *testing.T) {
 	repo := t.TempDir()
@@ -115,119 +119,117 @@ func TestNormalizeDependencyID(t *testing.T) {
 	}
 }
 
-func TestScanRepoWarningsAndParsingBranches(t *testing.T) {
-	t.Run("analyse rejects invalid repo path", func(t *testing.T) {
-		_, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00"})
-		if err == nil {
-			t.Fatal("expected invalid repo path error")
-		}
-	})
+func TestAnalyseRejectsInvalidRepoPath(t *testing.T) {
+	_, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00"})
+	if err == nil {
+		t.Fatal("expected invalid repo path error")
+	}
+}
 
-	t.Run("empty repo path", func(t *testing.T) {
-		if _, err := scanRepo(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "repo path is empty") {
-			t.Fatalf("expected empty repo path error, got %v", err)
-		}
-	})
+func TestScanRepoRejectsEmptyPath(t *testing.T) {
+	if _, err := scanRepo(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "repo path is empty") {
+		t.Fatalf("expected empty repo path error, got %v", err)
+	}
+}
 
-	t.Run("repo without python files warns", func(t *testing.T) {
-		result, err := scanRepo(context.Background(), t.TempDir())
-		if err != nil {
-			t.Fatalf("scan repo: %v", err)
-		}
-		if !slices.Contains(result.Warnings, "no Python files found for analysis") {
-			t.Fatalf("expected no-python-files warning, got %#v", result.Warnings)
-		}
-	})
+func TestScanRepoWarnsWithoutPythonFiles(t *testing.T) {
+	result, err := scanRepo(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if !slices.Contains(result.Warnings, "no Python files found for analysis") {
+		t.Fatalf("expected no-python-files warning, got %#v", result.Warnings)
+	}
+}
 
-	t.Run("parsers skip local and stdlib imports", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, "localmod.py"), "")
+func TestImportParsersSkipLocalAndStdlibImports(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "localmod.py"), "")
 
-		imports := parseImportLine(" , requests as rq, localmod, os", testMainPy, repo, 0, "import requests as rq, localmod, os")
-		if len(imports) != 1 {
-			t.Fatalf("expected only external import binding, got %#v", imports)
-		}
-		if imports[0].Dependency != "requests" || imports[0].Local != "rq" {
-			t.Fatalf("unexpected import binding %#v", imports[0])
-		}
+	imports := parseImportLine(" , requests as rq, localmod, os", testMainPy, repo, 0, "import requests as rq, localmod, os")
+	if len(imports) != 1 {
+		t.Fatalf("expected only external import binding, got %#v", imports)
+	}
+	if imports[0].Dependency != "requests" || imports[0].Local != "rq" {
+		t.Fatalf("unexpected import binding %#v", imports[0])
+	}
 
-		defaultLocal := parseImportLine("requests", testMainPy, repo, 0, "import requests")
-		if len(defaultLocal) != 1 || defaultLocal[0].Local != "requests" {
-			t.Fatalf("expected default local binding, got %#v", defaultLocal)
-		}
+	defaultLocal := parseImportLine("requests", testMainPy, repo, 0, "import requests")
+	if len(defaultLocal) != 1 || defaultLocal[0].Local != "requests" {
+		t.Fatalf("expected default local binding, got %#v", defaultLocal)
+	}
 
-		fromImports := parseFromImportLine("requests", ", Session as Sess, Session, *", testMainPy, repo, 0, "from requests import Session as Sess, Session, *")
-		if len(fromImports) != 3 {
-			t.Fatalf("expected three from-import bindings, got %#v", fromImports)
-		}
-		if fromImports[0].Local != "Sess" || fromImports[1].Local != "Session" || fromImports[1].Wildcard || !fromImports[2].Wildcard {
-			t.Fatalf("unexpected from-import bindings %#v", fromImports)
-		}
+	fromImports := parseFromImportLine("requests", ", Session as Sess, Session, *", testMainPy, repo, 0, "from requests import Session as Sess, Session, *")
+	if len(fromImports) != 3 {
+		t.Fatalf("expected three from-import bindings, got %#v", fromImports)
+	}
+	if fromImports[0].Local != "Sess" || fromImports[1].Local != "Session" || fromImports[1].Wildcard || !fromImports[2].Wildcard {
+		t.Fatalf("unexpected from-import bindings %#v", fromImports)
+	}
 
-		if bindings := parseFromImportLine(".localmod", "Thing", testMainPy, repo, 0, "from .localmod import Thing"); len(bindings) != 0 {
-			t.Fatalf("expected no bindings for relative import, got %#v", bindings)
-		}
-		if bindings := parseFromImportLine("localmod", "Thing", testMainPy, repo, 0, "from localmod import Thing"); len(bindings) != 0 {
-			t.Fatalf("expected no bindings for local module import, got %#v", bindings)
-		}
+	if bindings := parseFromImportLine(".localmod", "Thing", testMainPy, repo, 0, "from .localmod import Thing"); len(bindings) != 0 {
+		t.Fatalf("expected no bindings for relative import, got %#v", bindings)
+	}
+	if bindings := parseFromImportLine("localmod", "Thing", testMainPy, repo, 0, "from localmod import Thing"); len(bindings) != 0 {
+		t.Fatalf("expected no bindings for local module import, got %#v", bindings)
+	}
 
-		if _, _, err := readPythonFile(repo, filepath.Join(repo, "missing.py")); err == nil {
-			t.Fatal("expected read error for missing python file")
-		}
-	})
+	if _, _, err := readPythonFile(repo, filepath.Join(repo, "missing.py")); err == nil {
+		t.Fatal("expected read error for missing python file")
+	}
+}
 
-	t.Run("read python file falls back when relative path computation fails", func(t *testing.T) {
-		repoPath, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("getwd: %v", err)
-		}
+func TestReadPythonFileFallsBackWhenRelativePathComputationFails(t *testing.T) {
+	repoPath, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
 
-		content, relativePath, err := readPythonFile(repoPath, "adapter.go")
-		if err != nil {
-			t.Fatalf("read python file: %v", err)
-		}
-		if len(content) == 0 {
-			t.Fatal("expected adapter.go content")
-		}
-		if relativePath != "adapter.go" {
-			t.Fatalf("expected fallback relative path, got %q", relativePath)
-		}
-	})
+	content, relativePath, err := readPythonFile(repoPath, "adapter.go")
+	if err != nil {
+		t.Fatalf("read python file: %v", err)
+	}
+	if len(content) == 0 {
+		t.Fatal("expected adapter.go content")
+	}
+	if relativePath != "adapter.go" {
+		t.Fatalf("expected fallback relative path, got %q", relativePath)
+	}
+}
 
-	t.Run("scan repo cancels during python walk", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
+func TestScanRepoCancelsDuringPythonWalk(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
 
-		if _, err := scanRepo(&countingContext{errAt: 3, err: context.Canceled}, repo); !strings.Contains(err.Error(), context.Canceled.Error()) {
-			t.Fatalf("expected scanRepo to stop on cancellation, got %v", err)
-		}
-	})
+	if _, err := scanRepo(&countingContext{errAt: 3, err: context.Canceled}, repo); !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("expected scanRepo to stop on cancellation, got %v", err)
+	}
+}
 
-	t.Run("scan repo propagates walk callback errors", func(t *testing.T) {
-		repo := t.TempDir()
-		blockedDir := filepath.Join(repo, "zz_noaccess")
-		if err := os.Mkdir(blockedDir, 0o755); err != nil {
-			t.Fatalf("mkdir blocked dir: %v", err)
+func TestScanRepoPropagatesWalkCallbackErrors(t *testing.T) {
+	repo := t.TempDir()
+	blockedDir := filepath.Join(repo, "zz_noaccess")
+	if err := os.Mkdir(blockedDir, testDirOwnerOnlyMode); err != nil {
+		t.Fatalf("mkdir blocked dir: %v", err)
+	}
+	defer func() {
+		if err := os.Chmod(blockedDir, testDirOwnerOnlyMode); err != nil {
+			t.Errorf("restore blocked dir permissions: %v", err)
 		}
-		defer func() {
-			if err := os.Chmod(blockedDir, 0o755); err != nil {
-				t.Errorf("restore blocked dir permissions: %v", err)
+	}()
+
+	ctx := &countingContext{
+		errAt:  0,
+		hookAt: 3,
+		hook: func() {
+			if err := os.Chmod(blockedDir, testDirBlockedMode); err != nil {
+				t.Errorf("chmod blocked dir: %v", err)
 			}
-		}()
-
-		ctx := &countingContext{
-			errAt:  0,
-			hookAt: 3,
-			hook: func() {
-				if err := os.Chmod(blockedDir, 0o000); err != nil {
-					t.Errorf("chmod blocked dir: %v", err)
-				}
-			},
-		}
-		if _, err := scanRepo(ctx, repo); err == nil {
-			t.Fatal("expected walk callback error")
-		}
-	})
+		},
+	}
+	if _, err := scanRepo(ctx, repo); err == nil {
+		t.Fatal("expected walk callback error")
+	}
 }
 
 type countingContext struct {
