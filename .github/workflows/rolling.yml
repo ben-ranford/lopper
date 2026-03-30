@@ -192,11 +192,16 @@ jobs:
             conflicts_with "ben-ranford/tap/lopper", because: "both install the lopper executable"
 
             def install
-              system "go", "build", *std_go_args(output: bin/"lopper"), "./cmd/lopper"
+              ldflags = %W[
+                -s
+                -w
+                -X github.com/ben-ranford/lopper/internal/version.version=#{version}
+              ]
+              system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
             end
 
             test do
-              assert_match "Usage:", shell_output("#{bin}/lopper --help")
+              assert_match version.to_s, shell_output("#{bin}/lopper --version")
             end
           end
           RUBY

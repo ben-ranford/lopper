@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -7,6 +7,9 @@ DIST_DIR ?= dist
 VSCODE_EXTENSION_DIR ?= extensions/vscode-lopper
 VSCODE_EXTENSION_PACKAGE_PATH ?= $(DIST_DIR)/vscode-lopper.vsix
 VERSION ?= dev
+VERSION_PKG ?= github.com/ben-ranford/lopper/internal/version
+GIT_COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_MIN ?= 98
 GO ?= go
@@ -42,6 +45,9 @@ HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
 ZIG ?= zig
+GO_VERSION_LDFLAGS = -X $(VERSION_PKG).version=$(VERSION) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).buildDate=$(BUILD_DATE)
+BUILD_GO_LDFLAGS ?= $(GO_VERSION_LDFLAGS)
+RELEASE_GO_LDFLAGS ?= -s -w $(GO_VERSION_LDFLAGS)
 
 format:
 	gofmt -w .
@@ -223,7 +229,7 @@ cov:
 
 build:
 	mkdir -p $(BIN_DIR)
-	GOFLAGS=-buildvcs=false $(GO_CMD) build -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	GOFLAGS=-buildvcs=false $(GO_CMD) build -ldflags "$(BUILD_GO_LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 ci: format-check mod-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov
 
@@ -301,6 +307,9 @@ tools-install:
 	$(GO_CMD) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 	$(GO_CMD) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
+sync-version:
+	cd $(VSCODE_EXTENSION_DIR) && npm version "$(VERSION)" --no-git-tag-version --allow-same-version
+
 setup: toolchain-install
 	$(GO_CMD) mod download
 	$(MAKE) toolchain-check
@@ -319,7 +328,7 @@ release:
 		if [ "$$GOOS" = "windows" ]; then ext=".exe"; fi; \
 		echo "Building $$name"; \
 		if [ "$$GOOS" = "$(HOST_GOOS)" ] && [ "$$GOARCH" = "$(HOST_GOARCH)" ]; then \
-			GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
+			GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -ldflags "$(RELEASE_GO_LDFLAGS)" -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
 		else \
 			if [ "$$GOOS" = "darwin" ]; then \
 				echo "Cross-compiling to $$GOOS/$$GOARCH is not supported in this setup."; \
@@ -334,7 +343,7 @@ release:
 				windows/arm64) target="aarch64-windows-gnu" ;; \
 				*) echo "Unsupported cross target $$GOOS/$$GOARCH"; exit 1 ;; \
 			esac; \
-			CC="$(ZIG) cc -target $$target" CXX="$(ZIG) c++ -target $$target" CGO_ENABLED=1 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
+			CC="$(ZIG) cc -target $$target" CXX="$(ZIG) c++ -target $$target" CGO_ENABLED=1 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -ldflags "$(RELEASE_GO_LDFLAGS)" -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
 		fi; \
 		if [ "$$GOOS" = "windows" ]; then \
 			(cd "$(DIST_DIR)" && zip -qr "$$name.zip" "$$name"); \

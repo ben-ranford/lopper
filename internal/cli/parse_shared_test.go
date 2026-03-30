@@ -82,17 +82,31 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 }
 
 func TestParseArgsErrorsAndHelp(t *testing.T) {
+	const helpFlag = "--help"
+
 	if _, err := ParseArgs([]string{"help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected top-level help request error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"analyse", "--help"}); !errors.Is(err, ErrHelpRequested) {
+	if _, err := ParseArgs([]string{"analyse", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected analyse help request error, got %v", err)
 	}
-	if _, err := ParseArgs([]string{"tui", "--help"}); !errors.Is(err, ErrHelpRequested) {
+	if _, err := ParseArgs([]string{"tui", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected tui help request error, got %v", err)
 	}
 	if _, err := ParseArgs([]string{"unknown"}); err == nil {
 		t.Fatalf("expected unknown command error")
+	}
+}
+
+func TestIsVersionArg(t *testing.T) {
+	if !isVersionArg([]string{"--version"}) {
+		t.Fatalf("expected --version to be recognized")
+	}
+	if isVersionArg([]string{"version"}) {
+		t.Fatalf("did not expect bare version token to be recognized")
+	}
+	if isVersionArg([]string{"--version", "--help"}) {
+		t.Fatalf("did not expect mixed args to be recognized as a version request")
 	}
 }
 

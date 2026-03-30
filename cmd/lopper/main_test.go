@@ -8,20 +8,35 @@ import (
 	"testing"
 )
 
-func TestRunHelp(t *testing.T) {
-	in := strings.NewReader("")
-	var out bytes.Buffer
-	var errOut bytes.Buffer
+func TestRunTopLevelFlags(t *testing.T) {
+	t.Parallel()
 
-	code := run([]string{"--help"}, in, &out, &errOut)
-	if code != 0 {
-		t.Fatalf("expected exit code 0 for help, got %d", code)
+	cases := []struct {
+		name       string
+		arg        string
+		wantStdout string
+	}{
+		{name: "help", arg: "--help", wantStdout: "Usage:"},
+		{name: "version", arg: "--version", wantStdout: "lopper "},
 	}
-	if !strings.Contains(out.String(), "Usage:") {
-		t.Fatalf("expected usage output on stdout, got %q", out.String())
-	}
-	if errOut.Len() != 0 {
-		t.Fatalf("expected no stderr output for help, got %q", errOut.String())
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := strings.NewReader("")
+			var out bytes.Buffer
+			var errOut bytes.Buffer
+
+			code := run([]string{tc.arg}, in, &out, &errOut)
+			if code != 0 {
+				t.Fatalf("expected exit code 0 for %s, got %d", tc.name, code)
+			}
+			if !strings.Contains(out.String(), tc.wantStdout) {
+				t.Fatalf("expected %s output on stdout, got %q", tc.name, out.String())
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("expected no stderr output for %s, got %q", tc.name, errOut.String())
+			}
+		})
 	}
 }
 
