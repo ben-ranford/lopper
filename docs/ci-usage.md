@@ -2,7 +2,7 @@
 
 This repository includes five GitHub Actions workflows:
 
-- `.github/workflows/ci.yml`: runs checks on pull requests and pushes to `main`
+- `.github/workflows/ci.yml`: runs checks on pull requests
 - `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs when changes exist since the previous stable tag or when version alignment needs to promote the stable CLI tag to the VS Code extension version, then runs CI and publishes a GitHub release with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
