@@ -12,8 +12,21 @@ import (
 const atomicTempPrefix = ".safeio-atomic-"
 
 var (
-	randomTempNameFn = randomTempName
-	randReadFn       = rand.Read
+	randomTempNameFn  = randomTempName
+	randReadFn        = rand.Read
+	cleanupTempFileFn = cleanupAtomicTempFile
+	chmodFileFn       = func(file *os.File, perm os.FileMode) error {
+		return file.Chmod(perm)
+	}
+	openFileFn = func(root *os.Root, rel string, perm os.FileMode) (*os.File, error) {
+		return root.OpenFile(rel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+	}
+	renameFileFn = func(root *os.Root, oldName, newName string) error {
+		return root.Rename(oldName, newName)
+	}
+	writeFileFn = func(file *os.File, data []byte) (int, error) {
+		return file.Write(data)
+	}
 )
 
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.
@@ -23,12 +36,12 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		return err
 	}
 
-	root, err := os.OpenRoot(rootAbs)
+	root, err := openRootFn(rootAbs)
 	if err != nil {
 		return fmt.Errorf("open root: %w", err)
 	}
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
+		if closeErr := closeRootFn(root); closeErr != nil {
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
@@ -38,23 +51,23 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		return err
 	}
 	defer func() {
-		if cleanupErr := cleanupAtomicTempFile(root, tempRel, tempFile); cleanupErr != nil && returnErr == nil {
+		if cleanupErr := cleanupTempFileFn(root, tempRel, tempFile); cleanupErr != nil && returnErr == nil {
 			returnErr = cleanupErr
 		}
 	}()
 
-	if _, err := tempFile.Write(data); err != nil {
+	if _, err := writeFileFn(tempFile, data); err != nil {
 		return err
 	}
-	if err := tempFile.Chmod(perm); err != nil {
+	if err := chmodFileFn(tempFile, perm); err != nil {
 		return err
 	}
-	if err := tempFile.Close(); err != nil {
+	if err := closeFileFn(tempFile); err != nil {
 		return err
 	}
 	tempFile = nil
 
-	if err := root.Rename(tempRel, rel); err != nil {
+	if err := renameFileFn(root, tempRel, rel); err != nil {
 		return err
 	}
 	tempRel = ""
@@ -62,15 +75,15 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 }
 
 func resolveWriteTarget(rootDir, targetPath string) (string, string, error) {
-	rootAbs, err := filepath.Abs(rootDir)
+	rootAbs, err := absPathFn(rootDir)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve root path: %w", err)
 	}
-	targetAbs, err := filepath.Abs(targetPath)
+	targetAbs, err := absPathFn(targetPath)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve target path: %w", err)
 	}
-	rel, err := filepath.Rel(rootAbs, targetAbs)
+	rel, err := relPathFn(rootAbs, targetAbs)
 	if err != nil {
 		return "", "", fmt.Errorf("compute relative path: %w", err)
 	}
@@ -122,7 +135,7 @@ func createAtomicTempFile(root *os.Root, dir string, perm os.FileMode) (string, 
 			return "", nil, err
 		}
 		tempRel := filepath.Join(tempDir, name)
-		file, err := root.OpenFile(tempRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		file, err := openFileFn(root, tempRel, perm)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}

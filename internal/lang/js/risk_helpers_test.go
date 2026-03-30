@@ -151,10 +151,7 @@ func TestNativeMetadataAndDepthHelpers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(childRoot, packageJSONFile), []byte(`{"name":"a"}`), 0o600); err != nil {
 		t.Fatalf("write child package.json: %v", err)
 	}
-	depth, err := estimateTransitiveDepth(repo, depRoot, packageJSON{Dependencies: map[string]string{"a": "1.0.0"}})
-	if err != nil {
-		t.Fatalf("estimate transitive depth: %v", err)
-	}
+	depth := estimateTransitiveDepth(repo, depRoot, packageJSON{Dependencies: map[string]string{"a": "1.0.0"}})
 	if depth < 2 {
 		t.Fatalf("expected depth >= 2, got %d", depth)
 	}
@@ -166,19 +163,13 @@ func TestTransitiveDepthBudgetAndCycleBranches(t *testing.T) {
 
 	memo := map[string]int{}
 	visiting := map[string]struct{}{}
-	depth, err := transitiveDepth(repo, filepath.Join(repo, "node_modules", "pkg"), pkg, memo, visiting, 0)
-	if err != nil {
-		t.Fatalf("transitive depth budget branch: %v", err)
-	}
+	depth := transitiveDepth(repo, filepath.Join(repo, "node_modules", "pkg"), pkg, memo, visiting, 0)
 	if depth != 1 {
 		t.Fatalf("expected depth 1 when budget is exhausted, got %d", depth)
 	}
 
 	visiting = map[string]struct{}{filepath.Join(repo, "node_modules", "pkg"): {}}
-	depth, err = transitiveDepth(repo, filepath.Join(repo, "node_modules", "pkg"), pkg, memo, visiting, 10)
-	if err != nil {
-		t.Fatalf("transitive depth cycle branch: %v", err)
-	}
+	depth = transitiveDepth(repo, filepath.Join(repo, "node_modules", "pkg"), pkg, memo, visiting, 10)
 	if depth != 1 {
 		t.Fatalf("expected depth 1 for cycle detection branch, got %d", depth)
 	}
@@ -231,5 +222,154 @@ func TestRiskHelperErrorBranches(t *testing.T) {
 
 	if _, err := detectNodeBinary(filepath.Join(t.TempDir(), "missing-root")); err == nil {
 		t.Fatalf("expected detectNodeBinary error for missing root")
+	}
+}
+
+func TestIsCommentedBranches(t *testing.T) {
+	if isCommented(`"not-a-comment"`) {
+		// empty input without comment marker should not be flagged by this specific helper.
+		t.Fatalf("expected no inline comment when no delimiter exists")
+	}
+
+	if isCommented("a"+"b`c // ignored` // comment") != true {
+		t.Fatalf("expected comment after template literal to be detected")
+	}
+
+	if isCommented("'single-quoted // ignored'") {
+		t.Fatalf("did not expect comment inside single-quoted string")
+	}
+
+	if isCommented("\"double-quoted \\\" // ignored\"") {
+		t.Fatalf("did not expect comment after escaped quote in double-quoted string")
+	}
+}
+
+func TestDetectNativeModuleIndicatorsNodeBinaryBranch(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"name":"pkg"}`), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "addon.node"), []byte(""), 0o600); err != nil {
+		t.Fatalf("write node binary: %v", err)
+	}
+
+	isNative, details, err := detectNativeModuleIndicators(depRoot, packageJSON{})
+	if err != nil {
+		t.Fatalf("detect native indicators with node binary: %v", err)
+	}
+	if !isNative {
+		t.Fatal("expected package to be native due to .node binary")
+	}
+	if len(details) == 0 {
+		t.Fatal("expected metadata detail for detected .node binary")
+	}
+	found := false
+	for _, detail := range details {
+		if detail == "addon.node" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected addon.node detail, got %#v", details)
+	}
+}
+
+func TestAppendDepthRiskCueSeverityHeuristic(t *testing.T) {
+	repoRoot := t.TempDir()
+	pkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
+	if err := os.MkdirAll(pkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir pkg root: %v", err)
+	}
+
+	chain := []string{"a", "b", "c", "d", "e", "f", "g"}
+	for i, depName := range chain {
+		next := ""
+		if i+1 < len(chain) {
+			next = chain[i+1]
+		}
+
+		depJSON := `{"name":"` + depName + `"}`
+		if next != "" {
+			depJSON = `{"name":"` + depName + `","dependencies":{"` + next + `":"1.0.0"}}`
+		}
+
+		depRoot := filepath.Join(repoRoot, "node_modules", depName)
+		if err := os.MkdirAll(depRoot, 0o755); err != nil {
+			t.Fatalf("mkdir dependency root: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(depJSON), 0o600); err != nil {
+			t.Fatalf("write dependency package.json for %s: %v", depName, err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(pkgRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"a":"1.0.0"}}`), 0o600); err != nil {
+		t.Fatalf("write root package.json: %v", err)
+	}
+
+	rootPkg := packageJSON{Dependencies: map[string]string{"a": "1.0.0"}}
+	cues, warnings := appendDepthRiskCue(nil, nil, "pkg", repoRoot, pkgRoot, rootPkg)
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect warnings: %#v", warnings)
+	}
+	if len(cues) != 1 {
+		t.Fatalf("expected one deep graph cue, got %#v", cues)
+	}
+	if cues[0].Code != riskCodeDeepGraph {
+		t.Fatalf("unexpected risk code: %q", cues[0].Code)
+	}
+	if cues[0].Severity != "high" {
+		t.Fatalf("expected high severity for deep graph, got %q", cues[0].Severity)
+	}
+}
+
+func TestTransitiveDepthChildWarningBranch(t *testing.T) {
+	repoRoot := t.TempDir()
+	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
+	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir root package root: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(rootPkgRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"valid":"1.0.0","invalid":"1.0.0"}}`), 0o600); err != nil {
+		t.Fatalf("write root package json: %v", err)
+	}
+
+	validRoot := filepath.Join(repoRoot, "node_modules", "valid")
+	if err := os.MkdirAll(validRoot, 0o755); err != nil {
+		t.Fatalf("mkdir valid dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(validRoot, "package.json"), []byte(`{"name":"valid"}`), 0o600); err != nil {
+		t.Fatalf("write valid package json: %v", err)
+	}
+
+	invalidRoot := filepath.Join(repoRoot, "node_modules", "invalid")
+	if err := os.MkdirAll(invalidRoot, 0o755); err != nil {
+		t.Fatalf("mkdir invalid dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(invalidRoot, "package.json"), []byte(`{"name":"invalid"`), 0o600); err != nil {
+		t.Fatalf("write invalid package json: %v", err)
+	}
+
+	rootPkg := packageJSON{Dependencies: map[string]string{"valid": "1.0.0", "invalid": "1.0.0"}}
+	depth := transitiveDepth(repoRoot, rootPkgRoot, rootPkg, map[string]int{}, map[string]struct{}{}, 4)
+	if depth == 0 {
+		t.Fatalf("expected positive depth for dependency graph")
+	}
+}
+
+func TestTransitiveDepthSkipsMissingDependencyRoot(t *testing.T) {
+	repoRoot := t.TempDir()
+	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
+	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir root package root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPkgRoot, "package.json"), []byte(`{"name":"pkg","dependencies":{"missing":"1.0.0"}}`), 0o600); err != nil {
+		t.Fatalf("write root package json: %v", err)
+	}
+
+	rootPkg := packageJSON{Dependencies: map[string]string{"missing": "1.0.0"}}
+	depth := transitiveDepth(repoRoot, rootPkgRoot, rootPkg, map[string]int{}, map[string]struct{}{}, 4)
+	if depth != 1 {
+		t.Fatalf("expected depth to remain 1 for missing child dep roots, got %d", depth)
 	}
 }

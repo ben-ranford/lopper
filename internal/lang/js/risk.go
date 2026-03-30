@@ -84,11 +84,7 @@ func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency st
 }
 
 func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
-	depth, err := estimateTransitiveDepth(repoPath, depRoot, pkg)
-	if err != nil {
-		warnings = append(warnings, fmt.Sprintf("transitive depth check failed for %q: %v", dependency, err))
-		return cues, warnings
-	}
+	depth := estimateTransitiveDepth(repoPath, depRoot, pkg)
 	if depth < 4 {
 		return cues, warnings
 	}
@@ -153,44 +149,50 @@ func hasDynamicCall(line, token string) bool {
 }
 
 func isCommented(prefix string) bool {
-	var (
-		inSingle   bool
-		inDouble   bool
-		inTemplate bool
-		escaped    bool
-	)
-
+	var state commentScanState
 	for i := 0; i < len(prefix); i++ {
-		ch := prefix[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		switch ch {
-		case '\\':
-			if inSingle || inDouble || inTemplate {
-				escaped = true
-			}
-		case '\'':
-			if !inDouble && !inTemplate {
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle && !inTemplate {
-				inDouble = !inDouble
-			}
-		case '`':
-			if !inSingle && !inDouble {
-				inTemplate = !inTemplate
-			}
-		case '/':
-			if !inSingle && !inDouble && !inTemplate && i+1 < len(prefix) && prefix[i+1] == '/' {
-				return true
-			}
+		if state.step(prefix, i) {
+			return true
 		}
 	}
 
 	return false
+}
+
+type commentScanState struct {
+	delimiter byte
+	escaped   bool
+}
+
+func (s *commentScanState) step(value string, index int) bool {
+	ch := value[index]
+	if s.escaped {
+		s.escaped = false
+		return false
+	}
+	if s.delimiter != 0 {
+		s.stepQuoted(ch)
+		return false
+	}
+	if isStringDelimiter(ch) {
+		s.delimiter = ch
+		return false
+	}
+	return ch == '/' && index+1 < len(value) && value[index+1] == '/'
+}
+
+func (s *commentScanState) stepQuoted(ch byte) {
+	if ch == '\\' {
+		s.escaped = true
+		return
+	}
+	if ch == s.delimiter {
+		s.delimiter = 0
+	}
+}
+
+func isStringDelimiter(ch byte) bool {
+	return ch == '\'' || ch == '"' || ch == '`'
 }
 
 func isIdentifierByte(b byte) bool {
@@ -286,21 +288,21 @@ func (s *nodeBinaryScanner) walk(path string, entry fs.DirEntry, err error) erro
 	return nil
 }
 
-func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) (int, error) {
+func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) int {
 	memo := make(map[string]int)
 	visiting := make(map[string]struct{})
 	return transitiveDepth(repoPath, depRoot, pkg, memo, visiting, 512)
 }
 
-func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]int, visiting map[string]struct{}, budget int) (int, error) {
+func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]int, visiting map[string]struct{}, budget int) int {
 	if cached, ok := memo[pkgRoot]; ok {
-		return cached, nil
+		return cached
 	}
 	if budget <= 0 {
-		return 1, nil
+		return 1
 	}
 	if _, ok := visiting[pkgRoot]; ok {
-		return 1, nil
+		return 1
 	}
 	visiting[pkgRoot] = struct{}{}
 	defer delete(visiting, pkgRoot)
@@ -308,7 +310,7 @@ func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[
 	deps := collectDependencyNames(pkg)
 	if len(deps) == 0 {
 		memo[pkgRoot] = 1
-		return 1, nil
+		return 1
 	}
 
 	maxChild := 0
@@ -321,10 +323,7 @@ func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[
 		if len(childWarnings) > 0 {
 			continue
 		}
-		childDepth, err := transitiveDepth(repoPath, childRoot, childPkg, memo, visiting, budget-1)
-		if err != nil {
-			return 0, err
-		}
+		childDepth := transitiveDepth(repoPath, childRoot, childPkg, memo, visiting, budget-1)
 		if childDepth > maxChild {
 			maxChild = childDepth
 		}
@@ -332,7 +331,7 @@ func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[
 
 	total := 1 + maxChild
 	memo[pkgRoot] = total
-	return total, nil
+	return total
 }
 
 func resolveInstalledDependencyRoot(repoPath, currentPackageRoot, dependency string) (string, bool) {
