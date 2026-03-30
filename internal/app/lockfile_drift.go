@@ -259,6 +259,32 @@ func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitCo
 	_, hasManifest := snapshot.files[rule.manifest]
 	lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
 
+	finding, handled, err := evaluateMissingOrStaleLockfile(snapshot, rule, hasManifest, lockfiles)
+	if handled || err != nil {
+		return finding, handled, err
+	}
+	if !hasManifest && len(lockfiles) == 0 {
+		return lockfileDriftFinding{}, false, nil
+	}
+
+	matchesManifest, err := manifestMatchesRule(snapshot, rule)
+	if err != nil {
+		return lockfileDriftFinding{}, false, err
+	}
+	if !matchesManifest && len(lockfiles) > 0 {
+		return staleLockfileFinding(snapshot, rule, lockfiles), true, nil
+	}
+
+	if !hasManifest || len(lockfiles) == 0 || !matchesManifest {
+		return lockfileDriftFinding{}, false, nil
+	}
+	if !gitContext.hasGitContext || len(gitContext.changedFiles) == 0 {
+		return lockfileDriftFinding{}, false, nil
+	}
+	return evaluateManifestChangeFinding(snapshot, rule, gitContext, lockfiles)
+}
+
+func evaluateMissingOrStaleLockfile(snapshot lockfileDirSnapshot, rule lockfileRule, hasManifest bool, lockfiles []presentLockfile) (lockfileDriftFinding, bool, error) {
 	switch {
 	case hasManifest && len(lockfiles) == 0:
 		skip, err := shouldSkipMissingLockfile(snapshot, rule)
@@ -274,33 +300,29 @@ func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitCo
 			relDir: snapshot.relDir,
 		}, true, nil
 	case !hasManifest && len(lockfiles) > 0:
-		return lockfileDriftFinding{
-			kind:      lockfileDriftStaleLockfile,
-			rule:      rule,
-			relDir:    snapshot.relDir,
-			lockfiles: lockfiles,
-		}, true, nil
-	}
-
-	if hasManifest && rule.manifestMatcher != nil {
-		matched, err := rule.manifestMatcher(snapshot.repoPath, snapshot.path)
-		if err != nil {
-			return lockfileDriftFinding{}, false, err
-		}
-		if !matched {
-			return lockfileDriftFinding{
-				kind:      lockfileDriftStaleLockfile,
-				rule:      rule,
-				relDir:    snapshot.relDir,
-				lockfiles: lockfiles,
-			}, true, nil
-		}
-	}
-
-	if !hasManifest || len(lockfiles) == 0 || !gitContext.hasGitContext || len(gitContext.changedFiles) == 0 {
+		return staleLockfileFinding(snapshot, rule, lockfiles), true, nil
+	default:
 		return lockfileDriftFinding{}, false, nil
 	}
+}
 
+func manifestMatchesRule(snapshot lockfileDirSnapshot, rule lockfileRule) (bool, error) {
+	if rule.manifestMatcher == nil {
+		return true, nil
+	}
+	return rule.manifestMatcher(snapshot.repoPath, snapshot.path)
+}
+
+func staleLockfileFinding(snapshot lockfileDirSnapshot, rule lockfileRule, lockfiles []presentLockfile) lockfileDriftFinding {
+	return lockfileDriftFinding{
+		kind:      lockfileDriftStaleLockfile,
+		rule:      rule,
+		relDir:    snapshot.relDir,
+		lockfiles: lockfiles,
+	}
+}
+
+func evaluateManifestChangeFinding(snapshot lockfileDirSnapshot, rule lockfileRule, gitContext lockfileGitContext, lockfiles []presentLockfile) (lockfileDriftFinding, bool, error) {
 	manifestPath := relativeFilePath(snapshot.repoPath, snapshot.path, rule.manifest)
 	if !isPathChanged(gitContext.changedFiles, manifestPath) {
 		return lockfileDriftFinding{}, false, nil

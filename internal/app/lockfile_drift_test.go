@@ -17,6 +17,7 @@ const (
 	manifestFileName         = "package.json"
 	lockfileName             = "package-lock.json"
 	newUntrackedFileName     = "new-untracked.txt"
+	poetryLockName           = "poetry.lock"
 	detectLockfileDriftFmt   = "detect lockfile drift: %v"
 	demoPackageJSON          = "{\n  \"name\": \"demo\"\n}\n"
 	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
@@ -404,8 +405,8 @@ func TestDetectLockfileDriftPythonManagerSignals(t *testing.T) {
 		if err != nil {
 			t.Fatalf(detectLockfileDriftFmt, err)
 		}
-		if len(warnings) != 1 || !strings.Contains(warnings[0], "Poetry") || !strings.Contains(warnings[0], "poetry.lock") {
-			t.Fatalf("expected Poetry warning for missing poetry.lock, got %#v", warnings)
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "Poetry") || !strings.Contains(warnings[0], poetryLockName) {
+			t.Fatalf("expected Poetry warning for missing %s, got %#v", poetryLockName, warnings)
 		}
 	})
 
