@@ -51,6 +51,8 @@ const (
 	defaultRuntimeProfile        = runtimeProfileNodeImport
 )
 
+const invalidDependencyFormat = "invalid dependency: %s"
+
 type dependencyExportRequest struct {
 	repoPath           string
 	dependency         string
@@ -386,7 +388,7 @@ func dependencyRoot(repoPath, dependency string) (string, error) {
 
 func validateDependencyName(dependency string) error {
 	if strings.Contains(dependency, `\`) {
-		return fmt.Errorf("invalid dependency: %s", dependency)
+		return fmt.Errorf(invalidDependencyFormat, dependency)
 	}
 	if strings.HasPrefix(dependency, "@") {
 		parts := strings.Split(dependency, "/")
@@ -396,10 +398,10 @@ func validateDependencyName(dependency string) error {
 		return nil
 	}
 	if strings.Contains(dependency, "/") {
-		return fmt.Errorf("invalid dependency: %s", dependency)
+		return fmt.Errorf(invalidDependencyFormat, dependency)
 	}
 	if !isValidDependencySegment(dependency) {
-		return fmt.Errorf("invalid dependency: %s", dependency)
+		return fmt.Errorf(invalidDependencyFormat, dependency)
 	}
 	return nil
 }

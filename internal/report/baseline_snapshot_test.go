@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const testLabelX = "label:x"
+
 func TestLoad(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "report.json")
@@ -135,7 +137,7 @@ func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
 
 func TestSaveSnapshotValidationErrors(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
-	if _, err := SaveSnapshot("", "label:x", Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline store directory is required") {
+	if _, err := SaveSnapshot("", testLabelX, Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline store directory is required") {
 		t.Fatalf("expected missing directory validation error, got %v", err)
 	}
 	if _, err := SaveSnapshot(t.TempDir(), "  ", Report{}, now); err == nil || !strings.Contains(err.Error(), "baseline key is required") {
@@ -179,7 +181,7 @@ func TestSaveSnapshotMkdirFailure(t *testing.T) {
 	if err := os.WriteFile(blocking, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write blocking file: %v", err)
 	}
-	if _, err := SaveSnapshot(filepath.Join(blocking, "nested"), "label:x", Report{}, now); err == nil {
+	if _, err := SaveSnapshot(filepath.Join(blocking, "nested"), testLabelX, Report{}, now); err == nil {
 		t.Fatalf("expected mkdir failure when parent is a file")
 	}
 }
@@ -196,7 +198,7 @@ func TestSaveSnapshotRejectsSymlinkedStoreDir(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	if _, err := SaveSnapshot(link, "label:x", Report{}, now); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+	if _, err := SaveSnapshot(link, testLabelX, Report{}, now); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("expected symlink rejection, got %v", err)
 	}
 

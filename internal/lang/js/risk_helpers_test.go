@@ -13,10 +13,12 @@ const (
 	bindingGypFile      = "binding.gyp"
 	nodeBinaryFile      = "addon.node"
 	packageJSONFile     = "package.json"
+	scopedDependency    = "@scope/pkg"
+	rootPackageMkdirErr = "mkdir root package root: %v"
 )
 
 func TestRiskHelperFunctions(t *testing.T) {
-	if dependencyPath("@scope/pkg") != filepath.Join("@scope", "pkg") {
+	if dependencyPath(scopedDependency) != filepath.Join("@scope", "pkg") {
 		t.Fatalf("expected scoped dependency path")
 	}
 	if dependencyPath("lodash") != "lodash" {
@@ -328,7 +330,7 @@ func TestTransitiveDepthChildWarningBranch(t *testing.T) {
 	repoRoot := t.TempDir()
 	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
 	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
-		t.Fatalf("mkdir root package root: %v", err)
+		t.Fatalf(rootPackageMkdirErr, err)
 	}
 
 	if err := os.WriteFile(filepath.Join(rootPkgRoot, packageJSONFile), []byte(`{"name":"pkg","dependencies":{"valid":"1.0.0","invalid":"1.0.0"}}`), 0o600); err != nil {
@@ -362,7 +364,7 @@ func TestTransitiveDepthSkipsMissingDependencyRoot(t *testing.T) {
 	repoRoot := t.TempDir()
 	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
 	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
-		t.Fatalf("mkdir root package root: %v", err)
+		t.Fatalf(rootPackageMkdirErr, err)
 	}
 	if err := os.WriteFile(filepath.Join(rootPkgRoot, packageJSONFile), []byte(`{"name":"pkg","dependencies":{"missing":"1.0.0"}}`), 0o600); err != nil {
 		t.Fatalf("write root package json: %v", err)
@@ -379,7 +381,7 @@ func TestTransitiveDepthResolvesNormalAndScopedDependencyNames(t *testing.T) {
 	repoRoot := t.TempDir()
 	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
 	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
-		t.Fatalf("mkdir root package root: %v", err)
+		t.Fatalf(rootPackageMkdirErr, err)
 	}
 
 	normalRoot := filepath.Join(repoRoot, "node_modules", "dep")
@@ -394,21 +396,21 @@ func TestTransitiveDepthResolvesNormalAndScopedDependencyNames(t *testing.T) {
 	if err := os.MkdirAll(scopedRoot, 0o755); err != nil {
 		t.Fatalf("mkdir scoped dependency root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(scopedRoot, packageJSONFile), []byte(`{"name":"@scope/pkg"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(scopedRoot, packageJSONFile), []byte(`{"name":"`+scopedDependency+`"}`), 0o600); err != nil {
 		t.Fatalf("write scoped package json: %v", err)
 	}
 
 	if root, ok := resolveInstalledDependencyRoot(repoRoot, rootPkgRoot, "dep"); !ok || root != normalRoot {
 		t.Fatalf("expected normal dependency root resolution, got root=%q ok=%v", root, ok)
 	}
-	if root, ok := resolveInstalledDependencyRoot(repoRoot, rootPkgRoot, "@scope/pkg"); !ok || root != scopedRoot {
+	if root, ok := resolveInstalledDependencyRoot(repoRoot, rootPkgRoot, scopedDependency); !ok || root != scopedRoot {
 		t.Fatalf("expected scoped dependency root resolution, got root=%q ok=%v", root, ok)
 	}
 
 	rootPkg := packageJSON{
 		Dependencies: map[string]string{
-			"dep":        "1.0.0",
-			"@scope/pkg": "1.0.0",
+			"dep":            "1.0.0",
+			scopedDependency: "1.0.0",
 		},
 	}
 	depth := transitiveDepth(repoRoot, rootPkgRoot, rootPkg, map[string]int{}, map[string]struct{}{}, 4)
@@ -421,7 +423,7 @@ func TestTransitiveDepthRejectsTraversalDependencyNames(t *testing.T) {
 	repoRoot := t.TempDir()
 	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
 	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
-		t.Fatalf("mkdir root package root: %v", err)
+		t.Fatalf(rootPackageMkdirErr, err)
 	}
 
 	outsideRoot := filepath.Join(filepath.Dir(repoRoot), "out1")
