@@ -8,7 +8,10 @@ import (
 
 func TestRuntimeAdditionalHelperBranches(t *testing.T) {
 	tracePath := "/tmp/runtime.ndjson"
-	env := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, tracePath)
+	env, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, tracePath)
+	if err != nil {
+		t.Fatalf("with runtime trace env: %v", err)
+	}
 	if readEnvValue(env, "NODE_OPTIONS") == "" {
 		t.Fatalf("expected NODE_OPTIONS to be injected when absent")
 	}
