@@ -66,10 +66,11 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, 
 		result: scanResult{Catalog: catalog},
 	}
 
-	files, err := resolveScanFiles(ctx, repoPath, compileInfo)
+	files, warnings, err := resolveScanFiles(ctx, repoPath, compileInfo)
 	if err != nil {
 		return stage.result, err
 	}
+	stage.result.Warnings = append(stage.result.Warnings, warnings...)
 	if len(files) == 0 {
 		stage.result.Warnings = append(stage.result.Warnings, "no C/C++ source files found for analysis")
 		return stage.result, nil
@@ -84,11 +85,56 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, 
 	return stage.result, nil
 }
 
-func resolveScanFiles(ctx context.Context, repoPath string, compileInfo compileContext) ([]string, error) {
+func resolveScanFiles(ctx context.Context, repoPath string, compileInfo compileContext) ([]string, []string, error) {
 	if len(compileInfo.SourceFiles) > 0 {
-		return compileInfo.SourceFiles, nil
+		files, warnings, err := filterCompileSourceHints(repoPath, compileInfo.SourceFiles)
+		if err != nil {
+			return nil, warnings, err
+		}
+		if len(files) > 0 {
+			return files, warnings, nil
+		}
+		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
+		files, err = walkCPPFiles(ctx, repoPath)
+		return files, warnings, err
 	}
-	return walkCPPFiles(ctx, repoPath)
+	files, err := walkCPPFiles(ctx, repoPath)
+	return files, nil, err
+}
+
+func filterCompileSourceHints(repoPath string, sourceFiles []string) ([]string, []string, error) {
+	files := make([]string, 0, len(sourceFiles))
+	warnings := make([]string, 0)
+	seen := make(map[string]struct{}, len(sourceFiles))
+
+	for _, sourcePath := range sourceFiles {
+		sourcePath = filepath.Clean(sourcePath)
+		if !shared.IsPathWithin(repoPath, sourcePath) {
+			warnings = append(warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", sourcePath))
+			continue
+		}
+
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				warnings = append(warnings, fmt.Sprintf("skipping compile database file missing from repo: %s", relOrBase(repoPath, sourcePath)))
+				continue
+			}
+			return nil, warnings, err
+		}
+		if info.IsDir() {
+			warnings = append(warnings, fmt.Sprintf("skipping compile database path that is not a file: %s", relOrBase(repoPath, sourcePath)))
+			continue
+		}
+		if _, ok := seen[sourcePath]; ok {
+			continue
+		}
+		seen[sourcePath] = struct{}{}
+		files = append(files, sourcePath)
+	}
+
+	sort.Strings(files)
+	return files, warnings, nil
 }
 
 func (s *scanStage) process(ctx context.Context, path string) error {
