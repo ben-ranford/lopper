@@ -92,14 +92,16 @@ func TestGradleLockfileDiscoveryAndParsingStages(t *testing.T) {
 }
 
 func TestBuildDependencyLookupIndexStage(t *testing.T) {
+	const alphaCore = "alpha-core"
+
 	lookups := buildDependencyLookupIndex([]dependencyDescriptor{
-		{Name: "alpha-core", Group: "com.example.alpha", Artifact: "alpha-core"},
+		{Name: alphaCore, Group: "com.example.alpha", Artifact: alphaCore},
 		{Name: "alpha-runtime", Group: "org.sample.alpha", Artifact: "alpha-runtime"},
 	})
-	if got := lookups.Prefixes["com.example.alpha"]; got != "alpha-core" {
+	if got := lookups.Prefixes["com.example.alpha"]; got != alphaCore {
 		t.Fatalf("expected group prefix lookup for alpha-core, got %q", got)
 	}
-	if got := lookups.Aliases["alpha.core"]; got != "alpha-core" {
+	if got := lookups.Aliases["alpha.core"]; got != alphaCore {
 		t.Fatalf("expected artifact alias lookup for alpha-core, got %q", got)
 	}
 	if _, ok := lookups.Ambiguous["alpha"]; !ok {
