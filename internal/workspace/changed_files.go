@@ -15,7 +15,7 @@ func ChangedFiles(repoPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--name-only", "--diff-filter=ACMR", "HEAD~1..HEAD")
+	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--name-only", "--diff-filter=ACMRD", "HEAD~1..HEAD")
 	if diffErr == nil {
 		return parseChangedFileLines(diffOutput), nil
 	}
@@ -27,8 +27,8 @@ func ChangedFiles(repoPath string) ([]string, error) {
 }
 
 func parseChangedFileLines(output []byte) []string {
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	return collectUniquePaths(lines, strings.TrimSpace)
+	lines := strings.Split(strings.TrimRight(string(output), "\r\n"), "\n")
+	return collectUniquePaths(lines, func(line string) string { return line })
 }
 
 func collectUniquePaths(lines []string, extractor func(string) string) []string {
@@ -50,15 +50,14 @@ func collectUniquePaths(lines []string, extractor func(string) string) []string 
 }
 
 func parsePorcelainChangedFiles(output []byte) []string {
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	lines := strings.Split(strings.TrimRight(string(output), "\r\n"), "\n")
 	return collectUniquePaths(lines, func(line string) string {
-		line = strings.TrimSpace(line)
 		if len(line) < 4 {
 			return ""
 		}
-		path := strings.TrimSpace(line[3:])
+		path := line[3:]
 		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
-			path = strings.TrimSpace(path[idx+4:])
+			path = path[idx+4:]
 		}
 		return path
 	})
