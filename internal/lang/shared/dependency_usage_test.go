@@ -610,3 +610,20 @@ func TestIsPathWithin(t *testing.T) {
 		t.Fatalf("expected invalid candidate to return false")
 	}
 }
+
+func TestIsPathWithinRejectsSymlinkEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	escape := filepath.Join(repo, "escape")
+
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if IsPathWithin(repo, escape) {
+		t.Fatalf("expected symlink that resolves outside repo to be rejected")
+	}
+	if IsPathWithin(repo, filepath.Join(escape, "nested.txt")) {
+		t.Fatalf("expected path through escaping symlink to be rejected")
+	}
+}

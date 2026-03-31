@@ -114,9 +114,50 @@ func IsPathWithin(root, candidate string) bool {
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(absRoot, absCandidate)
+	if !pathWithin(absRoot, absCandidate) {
+		return false
+	}
+
+	resolvedRoot, err := resolvePathWithMissingLeaf(absRoot)
+	if err != nil {
+		return false
+	}
+	resolvedCandidate, err := resolvePathWithMissingLeaf(absCandidate)
+	if err != nil {
+		return false
+	}
+
+	return pathWithin(resolvedRoot, resolvedCandidate)
+}
+
+func pathWithin(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
 	if err != nil {
 		return false
 	}
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")
+}
+
+func resolvePathWithMissingLeaf(path string) (string, error) {
+	cleanPath := filepath.Clean(path)
+
+	_, err := os.Lstat(cleanPath)
+	if err == nil {
+		return filepath.EvalSymlinks(cleanPath)
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	parent := filepath.Dir(cleanPath)
+	if parent == cleanPath {
+		return cleanPath, nil
+	}
+
+	resolvedParent, err := resolvePathWithMissingLeaf(parent)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(resolvedParent, filepath.Base(cleanPath)), nil
 }
