@@ -38,14 +38,17 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 	tests := []struct {
 		name   string
 		script string
+		want   []string
 	}{
 		{
 			name:   "diff_success",
-			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"pkg/a.go\"\n  echo \"pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  case \"$*\" in\n    *\"--diff-filter=ACMRD\"*) ;;\n    *)\n      echo \"missing deleted-files diff filter\" >&2\n      exit 4\n      ;;\n  esac\n  printf '%s\\n' \"  pkg/spaced.go\" \"pkg/deleted.go\"\n  exit 0\nfi\nexit 1\n",
+			want:   []string{"  pkg/spaced.go", "pkg/deleted.go"},
 		},
 		{
 			name:   "status_fallback",
 			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff fail\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  pkg/a.go\"\n  echo \"R  old.go -> pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
+			want:   []string{"pkg/a.go", "pkg/b.go"},
 		},
 	}
 
@@ -57,8 +60,13 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 			if err != nil {
 				t.Fatalf("changed files lookup failed: %v", err)
 			}
-			if len(changed) != 2 || changed[0] != "pkg/a.go" || changed[1] != "pkg/b.go" {
-				t.Fatalf("expected parsed changed names, got %#v", changed)
+			if len(changed) != len(tc.want) {
+				t.Fatalf("expected %d changed names, got %#v", len(tc.want), changed)
+			}
+			for i := range tc.want {
+				if changed[i] != tc.want[i] {
+					t.Fatalf("expected parsed changed names %#v, got %#v", tc.want, changed)
+				}
 			}
 		})
 	}
@@ -77,13 +85,13 @@ func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
 }
 
 func TestParseChangedFileHelpers(t *testing.T) {
-	changed := parseChangedFileLines([]byte("packages/a/file.ts\npackages/a/file.ts\n"))
-	if len(changed) != 1 || changed[0] != "packages/a/file.ts" {
+	changed := parseChangedFileLines([]byte("  packages/a/file.ts\n  packages/a/file.ts\n"))
+	if len(changed) != 1 || changed[0] != "  packages/a/file.ts" {
 		t.Fatalf("expected deduped changed lines, got %#v", changed)
 	}
 
-	porcelain := parsePorcelainChangedFiles([]byte("M  packages/a/file.ts\nR  old.ts -> packages/b/new.ts\n"))
-	if len(porcelain) != 2 || porcelain[0] != "packages/a/file.ts" || porcelain[1] != "packages/b/new.ts" {
+	porcelain := parsePorcelainChangedFiles([]byte("M   packages/a/file.ts\nR  old.ts ->  packages/b/new.ts\n"))
+	if len(porcelain) != 2 || porcelain[0] != " packages/a/file.ts" || porcelain[1] != " packages/b/new.ts" {
 		t.Fatalf("expected parsed porcelain paths, got %#v", porcelain)
 	}
 
