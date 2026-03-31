@@ -14,7 +14,9 @@ import (
 
 const (
 	testMainCPPFileName = "main.cpp"
-	fmtCoreIncludeLine  = "#include <fmt/core.h>\n"
+	systemIncludeDir    = "/usr/include"
+	fmtCoreHeader       = "fmt/core.h"
+	fmtCoreIncludeLine  = "#include <" + fmtCoreHeader + ">\n"
 )
 
 func TestDetectCanceledContext(t *testing.T) {
@@ -77,7 +79,7 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	if !ctx.HasCompileDatabase {
 		t.Fatalf("expected compile database to be recorded")
 	}
-	wantIncludeDirs := []string{"/usr/include", filepath.Join(repo, "include")}
+	wantIncludeDirs := []string{systemIncludeDir, filepath.Join(repo, "include")}
 	slices.Sort(wantIncludeDirs)
 	if !slices.Equal(ctx.IncludeDirs, wantIncludeDirs) {
 		t.Fatalf("unexpected include dirs: %#v", ctx.IncludeDirs)
@@ -121,14 +123,14 @@ func TestResolveCompilePathAndDirectory(t *testing.T) {
 }
 
 func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
-	dirs := extractIncludeDirs([]string{"-I", "include", "-Ivendor/include", "-isystem", "/usr/include", "-iquote", "headers", "-isystem/opt/include", "-iquotequoted", "-Ivendor/include", "-I", ""}, "/repo")
+	dirs := extractIncludeDirs([]string{"-I", "include", "-Ivendor/include", "-isystem", systemIncludeDir, "-iquote", "headers", "-isystem/opt/include", "-iquotequoted", "-Ivendor/include", "-I", ""}, "/repo")
 	want := []string{
 		"/opt/include",
 		"/repo/headers",
 		"/repo/include",
 		"/repo/quoted",
 		"/repo/vendor/include",
-		"/usr/include",
+		systemIncludeDir,
 	}
 	if !slices.Equal(dirs, want) {
 		t.Fatalf("unexpected include dirs: got %#v want %#v", dirs, want)
@@ -136,7 +138,7 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 }
 
 func TestParseIncludesBranches(t *testing.T) {
-	content := []byte(`#include <fmt/core.h>
+	content := []byte(`#include <` + fmtCoreHeader + `>
 #include "local/header.hpp"
 #include SOME_MACRO_HEADER
 #include <broken
@@ -233,8 +235,8 @@ func TestCollectDependencyUsageSummaryApply(t *testing.T) {
 	summary := collectDependencyUsage("fmt", []fileScan{{
 		Path: testMainCPPFileName,
 		Includes: []includeRecord{
-			{Dependency: "fmt", Header: "fmt/core.h", Location: report.Location{File: testMainCPPFileName, Line: 1, Column: 1}},
-			{Dependency: "FMT", Header: "fmt/core.h", Location: report.Location{File: testMainCPPFileName, Line: 2, Column: 1}},
+			{Dependency: "fmt", Header: fmtCoreHeader, Location: report.Location{File: testMainCPPFileName, Line: 1, Column: 1}},
+			{Dependency: "FMT", Header: fmtCoreHeader, Location: report.Location{File: testMainCPPFileName, Line: 2, Column: 1}},
 			{Dependency: "fmt", Header: "fmt/format.h", Location: report.Location{File: testMainCPPFileName, Line: 3, Column: 1}},
 		},
 	}})
@@ -245,10 +247,10 @@ func TestCollectDependencyUsageSummaryApply(t *testing.T) {
 	if dep.TotalExportsCount != 2 || dep.UsedExportsCount != 2 || dep.UsedPercent != 100 {
 		t.Fatalf("unexpected dependency usage summary: %#v", dep)
 	}
-	if len(dep.TopUsedSymbols) != 2 || dep.TopUsedSymbols[0].Name != "fmt/core.h" || dep.TopUsedSymbols[0].Count != 2 {
+	if len(dep.TopUsedSymbols) != 2 || dep.TopUsedSymbols[0].Name != fmtCoreHeader || dep.TopUsedSymbols[0].Count != 2 {
 		t.Fatalf("unexpected top used symbols: %#v", dep.TopUsedSymbols)
 	}
-	if len(dep.UsedImports) != 2 || dep.UsedImports[0].Name != "fmt/core.h" || len(dep.UsedImports[0].Locations) != 2 {
+	if len(dep.UsedImports) != 2 || dep.UsedImports[0].Name != fmtCoreHeader || len(dep.UsedImports[0].Locations) != 2 {
 		t.Fatalf("unexpected flattened usage imports: %#v", dep.UsedImports)
 	}
 }
@@ -287,6 +289,26 @@ func TestScanRepoWithOutsideCompileSourceWarning(t *testing.T) {
 	if !hasWarning(result.Warnings, "outside repo boundary") {
 		t.Fatalf("expected outside repo warning, got %#v", result.Warnings)
 	}
+	if !hasWarning(result.Warnings, "falling back to repo scan") {
+		t.Fatalf("expected fallback warning, got %#v", result.Warnings)
+	}
+}
+
+func TestScanRepoFallsBackWhenCompileSourcesEscapeRepo(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine+"int main() { return 0; }\n")
+	compileInfo := compileContext{
+		HasCompileDatabase: true,
+		SourceFiles:        []string{"/tmp/not-in-repo.cpp"},
+	}
+
+	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != filepath.Join("src", testMainCPPFileName) {
+		t.Fatalf("expected repo source fallback to scan in-repo file, got %#v", result.Files)
+	}
 }
 
 func TestScanRepoCanceledAndMissingFileErrors(t *testing.T) {
@@ -304,9 +326,15 @@ func TestScanRepoCanceledAndMissingFileErrors(t *testing.T) {
 	missingSource := compileContext{
 		SourceFiles: []string{filepath.Join(repo, "src", "missing.cpp")},
 	}
-	_, err = scanRepo(context.Background(), repo, missingSource, newDependencyCatalog())
-	if err == nil {
-		t.Fatalf("expected missing source file error from scanRepo")
+	result, err := scanRepo(context.Background(), repo, missingSource, newDependencyCatalog())
+	if err != nil {
+		t.Fatalf("expected missing compile-db source to fall back, got err=%v", err)
+	}
+	if !hasWarning(result.Warnings, "missing from repo") {
+		t.Fatalf("expected missing compile-db warning, got %#v", result.Warnings)
+	}
+	if !hasWarning(result.Warnings, "falling back to repo scan") {
+		t.Fatalf("expected fallback warning, got %#v", result.Warnings)
 	}
 }
 
