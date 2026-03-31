@@ -33,6 +33,41 @@ func TestCapture(t *testing.T) {
 	}
 }
 
+func TestCaptureUsesAbsoluteNodeHookPaths(t *testing.T) {
+	repo := t.TempDir()
+	nodeOptionsPath := filepath.Join(repo, "node-options.txt")
+	t.Setenv("LOPPER_CAPTURE_NODE_OPTIONS", nodeOptionsPath)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\nprintf '%s' \"$NODE_OPTIONS\" > \"$LOPPER_CAPTURE_NODE_OPTIONS\"\n"))
+
+	err := Capture(context.Background(), CaptureRequest{
+		RepoPath: repo,
+		Command:  npmTestCommand,
+	})
+	if err != nil {
+		t.Fatalf("capture runtime trace: %v", err)
+	}
+
+	gotBytes, err := os.ReadFile(nodeOptionsPath)
+	if err != nil {
+		t.Fatalf("read node options: %v", err)
+	}
+	got := string(gotBytes)
+	if strings.Contains(got, "./scripts/runtime/") {
+		t.Fatalf("expected node hook paths to resolve from lopper, got %q", got)
+	}
+
+	requirePath, loaderPath, err := runtimeHookPaths()
+	if err != nil {
+		t.Fatalf("runtime hook paths: %v", err)
+	}
+	if !strings.Contains(got, "--require="+requirePath) {
+		t.Fatalf("expected absolute require hook path, got %q", got)
+	}
+	if !strings.Contains(got, "--loader="+loaderPath) {
+		t.Fatalf("expected absolute loader hook path, got %q", got)
+	}
+}
+
 func TestCaptureCommandFailure(t *testing.T) {
 	repo := t.TempDir()
 	assertCaptureErrorContains(t, CaptureRequest{RepoPath: repo, Command: "make __missing_target__"}, "runtime test command failed")

@@ -214,9 +214,12 @@ Capture a runtime trace:
 
 ```bash
 export LOPPER_RUNTIME_TRACE=.artifacts/lopper-runtime.ndjson
-export NODE_OPTIONS="--require ./scripts/runtime/require-hook.cjs --loader ./scripts/runtime/loader.mjs"
+export LOPPER_ROOT=/path/to/lopper
+export NODE_OPTIONS="--require ${LOPPER_ROOT}/scripts/runtime/require-hook.cjs --loader ${LOPPER_ROOT}/scripts/runtime/loader.mjs"
 npm test
 ```
+
+Use the hook files from the lopper checkout or install tree. Relative hook paths resolve from the repo running `npm test`, not from lopper itself.
 
 Or let Lopper run the test command and capture the trace automatically:
 

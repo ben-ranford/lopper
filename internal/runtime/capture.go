@@ -6,13 +6,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
+	"sync"
 	"unicode"
 )
 
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
 const runtimeBinDirsEnvKey = "LOPPER_RUNTIME_BIN_DIRS"
 const defaultTrustedRuntimeBinDirs = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+const runtimeRequireHookRelPath = "scripts/runtime/require-hook.cjs"
+const runtimeLoaderHookRelPath = "scripts/runtime/loader.mjs"
 
 var runtimeExecutableAllowlist = map[string]struct{}{
 	"npm":    {},
@@ -28,6 +32,13 @@ var runtimeExecutableAllowlist = map[string]struct{}{
 	"deno":   {},
 	"make":   {},
 }
+
+var (
+	runtimeHookPathsOnce   sync.Once
+	runtimeRequireHookPath string
+	runtimeLoaderHookPath  string
+	runtimeHookPathsErr    error
+)
 
 type CaptureRequest struct {
 	RepoPath  string
@@ -65,7 +76,10 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 		return err
 	}
 	cmd.Dir = repoPath
-	cmd.Env = withRuntimeTraceEnv(os.Environ(), tracePath)
+	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), tracePath)
+	if err != nil {
+		return err
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		trimmed := strings.TrimSpace(string(output))
@@ -244,19 +258,23 @@ func trustedSearchDirs(dirListValue string) []string {
 	return dirs
 }
 
-func withRuntimeTraceEnv(base []string, tracePath string) []string {
+func withRuntimeTraceEnv(base []string, tracePath string) ([]string, error) {
+	required, err := runtimeNodeHookOptions()
+	if err != nil {
+		return nil, fmt.Errorf("resolve runtime node hooks: %w", err)
+	}
+
 	existing := readEnvValue(base, "NODE_OPTIONS")
 	updates := map[string]string{
 		"LOPPER_RUNTIME_TRACE": tracePath,
 	}
 	nodeOptions := strings.TrimSpace(existing)
-	required := "--require=./scripts/runtime/require-hook.cjs --loader=./scripts/runtime/loader.mjs"
 	if nodeOptions == "" {
 		updates["NODE_OPTIONS"] = required
 	} else {
 		updates["NODE_OPTIONS"] = nodeOptions + " " + required
 	}
-	return mergeEnv(base, updates)
+	return mergeEnv(base, updates), nil
 }
 
 func mergeEnv(base []string, updates map[string]string) []string {
@@ -289,4 +307,74 @@ func readEnvValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func runtimeNodeHookOptions() (string, error) {
+	requirePath, loaderPath, err := runtimeHookPaths()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("--require=%s --loader=%s", requirePath, loaderPath), nil
+}
+
+func runtimeHookPaths() (string, string, error) {
+	runtimeHookPathsOnce.Do(func() {
+		runtimeRequireHookPath, runtimeLoaderHookPath, runtimeHookPathsErr = locateRuntimeHookPaths()
+	})
+	return runtimeRequireHookPath, runtimeLoaderHookPath, runtimeHookPathsErr
+}
+
+func locateRuntimeHookPaths() (string, string, error) {
+	for _, root := range runtimeHookSearchRoots() {
+		requirePath := filepath.Join(root, runtimeRequireHookRelPath)
+		loaderPath := filepath.Join(root, runtimeLoaderHookRelPath)
+		if !isRegularFile(requirePath) || !isRegularFile(loaderPath) {
+			continue
+		}
+		return requirePath, loaderPath, nil
+	}
+
+	return "", "", fmt.Errorf("could not locate runtime hooks %q and %q", runtimeRequireHookRelPath, runtimeLoaderHookRelPath)
+}
+
+func runtimeHookSearchRoots() []string {
+	seen := make(map[string]struct{})
+	roots := make([]string, 0)
+	addSearchPath := func(path string) {
+		if path == "" {
+			return
+		}
+		for dir := filepath.Clean(path); ; dir = filepath.Dir(dir) {
+			if !filepath.IsAbs(dir) {
+				break
+			}
+			if _, ok := seen[dir]; !ok {
+				seen[dir] = struct{}{}
+				roots = append(roots, dir)
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+		}
+	}
+
+	if executablePath, err := os.Executable(); err == nil {
+		executableDir := filepath.Dir(executablePath)
+		addSearchPath(executableDir)
+		addSearchPath(filepath.Join(executableDir, "..", "share", "lopper"))
+	}
+	if _, filename, _, ok := goruntime.Caller(0); ok {
+		addSearchPath(filepath.Dir(filename))
+	}
+
+	return roots
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }

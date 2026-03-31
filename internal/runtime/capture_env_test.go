@@ -9,7 +9,15 @@ import (
 
 func TestWithRuntimeTraceEnv(t *testing.T) {
 	tracePath := "/tmp/runtime.ndjson"
-	env := withRuntimeTraceEnv([]string{"NODE_OPTIONS=--max-old-space-size=4096", "PATH=/usr/bin"}, tracePath)
+	requirePath, loaderPath, err := runtimeHookPaths()
+	if err != nil {
+		t.Fatalf("runtime hook paths: %v", err)
+	}
+
+	env, err := withRuntimeTraceEnv([]string{"NODE_OPTIONS=--max-old-space-size=4096", "PATH=/usr/bin"}, tracePath)
+	if err != nil {
+		t.Fatalf("with runtime trace env: %v", err)
+	}
 
 	var hasTrace bool
 	var hasNodeOptions bool
@@ -22,7 +30,13 @@ func TestWithRuntimeTraceEnv(t *testing.T) {
 			if !strings.Contains(entry, "--max-old-space-size=4096") {
 				t.Fatalf("expected existing NODE_OPTIONS to be preserved: %q", entry)
 			}
-			if !strings.Contains(entry, "--loader=./scripts/runtime/loader.mjs") {
+			if strings.Contains(entry, "./scripts/runtime/") {
+				t.Fatalf("expected absolute runtime hook paths, got %q", entry)
+			}
+			if !strings.Contains(entry, "--require="+requirePath) {
+				t.Fatalf("expected require hook to be included: %q", entry)
+			}
+			if !strings.Contains(entry, "--loader="+loaderPath) {
 				t.Fatalf("expected loader hook to be included: %q", entry)
 			}
 		}
