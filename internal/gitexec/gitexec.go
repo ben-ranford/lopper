@@ -13,11 +13,15 @@ const ExecutablePrimary = "/usr/bin/git"
 const ExecutableFallback = "/bin/git"
 
 func ResolveBinaryPath() (string, error) {
+	return resolveBinaryPath(ExecutablePrimary, ExecutableFallback, ExecutableAvailable)
+}
+
+func resolveBinaryPath(primary, fallback string, available func(string) bool) (string, error) {
 	switch {
-	case ExecutableAvailable(ExecutablePrimary):
-		return ExecutablePrimary, nil
-	case ExecutableAvailable(ExecutableFallback):
-		return ExecutableFallback, nil
+	case available(primary):
+		return primary, nil
+	case available(fallback):
+		return fallback, nil
 	default:
 		return "", fmt.Errorf("git executable not found")
 	}

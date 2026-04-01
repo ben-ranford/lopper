@@ -414,12 +414,13 @@ jobs:
         continue-on-error: true
         env:
           COVERAGE_MIN: 98
+          COVERAGE_PACKAGE_MIN: 98
         run: |
           set +e
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}"
+            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
           else
-            make cov COVERAGE_MIN="${COVERAGE_MIN}"
+            make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
           fi
           status=$?
           if [ -f .artifacts/coverage-total.txt ]; then
@@ -427,6 +428,11 @@ jobs:
           else
             total=""
           fi
+          echo "package_failures<<EOF" >> "$GITHUB_OUTPUT"
+          if [ -f .artifacts/coverage-package-failures.txt ]; then
+            cat .artifacts/coverage-package-failures.txt >> "$GITHUB_OUTPUT"
+          fi
+          echo "EOF" >> "$GITHUB_OUTPUT"
           echo "total=$total" >> "$GITHUB_OUTPUT"
           exit $status
 
@@ -435,18 +441,26 @@ jobs:
         uses: actions/github-script@v8
         env:
           COVERAGE_MIN: 98
+          COVERAGE_PACKAGE_MIN: 98
           COVERAGE_TOTAL: ${{ steps.cov.outputs.total }}
+          COVERAGE_PACKAGE_FAILURES: ${{ steps.cov.outputs.package_failures }}
         with:
           script: |
             const marker = '<!-- lopper-coverage-failure -->';
             const total = process.env.COVERAGE_TOTAL || 'unavailable';
+            const packageFailures = (process.env.COVERAGE_PACKAGE_FAILURES || '').trim();
+            const packageFailureSection = packageFailures
+              ? `Packages below minimum:\n${packageFailures}\n\n`
+              : '';
             const body = `${marker}
             ❌ Coverage gate failed.
 
-            Required: >= ${process.env.COVERAGE_MIN}%
-            Actual: ${total === 'unavailable' ? total : `${total}%`}
+            Required total: >= ${process.env.COVERAGE_MIN}%
+            Actual total: ${total === 'unavailable' ? total : `${total}%`}
 
-            Run \`make cov\` locally for details.`;
+            Required per-package: >= ${process.env.COVERAGE_PACKAGE_MIN}%
+
+            ${packageFailureSection}Run \`make cov\` locally for details.`;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,

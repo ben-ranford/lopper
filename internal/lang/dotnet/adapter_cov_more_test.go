@@ -217,6 +217,49 @@ func TestDotNetBuildTopDependenciesAndHelperGuards(t *testing.T) {
 	}
 }
 
+func TestDotNetAdditionalZeroHitBranches(t *testing.T) {
+	t.Run("ancestor central packages success and no-op", func(t *testing.T) {
+		parent := t.TempDir()
+		repo := filepath.Join(parent, "src", "service")
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatalf("mkdir repo: %v", err)
+		}
+		centralPackagesXML := `
+<Project>
+  <ItemGroup>
+    <PackageVersion Include="Serilog.AspNetCore" Version="8.0.0" />
+  </ItemGroup>
+</Project>`
+		if err := os.WriteFile(filepath.Join(parent, centralPackagesFile), []byte(centralPackagesXML), 0o644); err != nil {
+			t.Fatalf("write central packages file: %v", err)
+		}
+
+		set := map[string]struct{}{}
+		if err := addAncestorCentralPackages(repo, set); err != nil {
+			t.Fatalf("add ancestor central packages: %v", err)
+		}
+		if _, ok := set["serilog.aspnetcore"]; !ok {
+			t.Fatalf("expected central package to be added, got %#v", set)
+		}
+
+		set = map[string]struct{}{}
+		if err := addAncestorCentralPackages(t.TempDir(), set); err != nil {
+			t.Fatalf("expected missing ancestor central packages to return nil, got %v", err)
+		}
+		if len(set) != 0 {
+			t.Fatalf("expected no dependencies when no ancestor file exists, got %#v", set)
+		}
+	})
+
+	t.Run("mapper resolves ambiguous ties deterministically", func(t *testing.T) {
+		mapper := newDependencyMapper([]string{"acme.foo", "acme.bar"})
+		dependency, ambiguous, undeclared := mapper.resolve("Acme.Baz")
+		if dependency != "acme.bar" || !ambiguous || undeclared {
+			t.Fatalf("expected lexicographically smaller dependency on tie, got dependency=%q ambiguous=%v undeclared=%v", dependency, ambiguous, undeclared)
+		}
+	})
+}
+
 func TestDotNetDiscoveryAndParsingStagesCompose(t *testing.T) {
 	repo := t.TempDir()
 	manifest := []byte(`

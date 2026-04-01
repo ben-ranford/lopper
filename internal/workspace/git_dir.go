@@ -34,13 +34,7 @@ func inspectGitDir(searchDir string) (_ string, _ bool, returnErr error) {
 		return "", false, err
 	}
 	defer func() {
-		if closeErr := repoRoot.Close(); closeErr != nil {
-			if returnErr == nil {
-				returnErr = closeErr
-				return
-			}
-			returnErr = errors.Join(returnErr, closeErr)
-		}
+		joinCloseError(&returnErr, repoRoot.Close())
 	}()
 
 	info, err := repoRoot.Stat(".git")
@@ -93,9 +87,7 @@ func readGitPath(gitDir, name string) (data string, err error) {
 		return "", err
 	}
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
+		joinCloseError(&err, root.Close())
 	}()
 
 	bytes, err := root.ReadFile(filepath.Clean(name))
@@ -103,4 +95,15 @@ func readGitPath(gitDir, name string) (data string, err error) {
 		return "", err
 	}
 	return string(bytes), nil
+}
+
+func joinCloseError(target *error, closeErr error) {
+	if closeErr == nil {
+		return
+	}
+	if *target == nil {
+		*target = closeErr
+		return
+	}
+	*target = errors.Join(*target, closeErr)
 }
