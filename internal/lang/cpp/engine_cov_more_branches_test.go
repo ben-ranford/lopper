@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -227,5 +228,43 @@ func TestCPPBuildTopDependenciesWarnsWhenNoDataIsAvailable(t *testing.T) {
 	}
 	if len(warnings) != 1 || warnings[0] != "no dependency data available for top-N ranking" {
 		t.Fatalf("unexpected no-data warning: %#v", warnings)
+	}
+}
+
+func TestCPPAdditionalZeroHitBranches(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), "int main() { return 0; }\n")
+
+	if args := (&compileCommandEntry{}).compileArgs(); len(args) != 0 {
+		t.Fatalf("expected empty compile command entry to yield no args, got %#v", args)
+	}
+
+	sourceSet := map[string]struct{}{}
+	recordCompileSource(sourceSet, "")
+	recordCompileSource(sourceSet, "README.md")
+	recordCompileSource(sourceSet, filepath.Join(repo, "src", testMainCPPFileName))
+	if len(sourceSet) != 1 {
+		t.Fatalf("expected only cpp source files to be recorded, got %#v", sourceSet)
+	}
+
+	if warnings, err := loadDependencyManifest(repo, filepath.Join(repo, "missing", vcpkgManifestFile), &dependencyCatalog{}); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected missing dependency manifest to be ignored, warnings=%#v err=%v", warnings, err)
+	}
+
+	for i := 0; i <= maxManifestFiles; i++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, fmt.Sprintf("pkg-%03d", i), vcpkgManifestFile), `{"dependencies":["fmt"]}`)
+	}
+	if _, _, err := loadDependencyCatalog(repo); err != nil {
+		t.Fatalf("expected manifest discovery cap to stop cleanly, got %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.cpp")
+	testutil.MustWriteFile(t, outside, "#include <fmt/core.h>\n")
+	stage := scanStage{scanner: includeResolver{repoPath: repo}}
+	if err := stage.process(context.Background(), outside); err != nil {
+		t.Fatalf("expected escaped-path scan errors to be downgraded into warnings, got %v", err)
+	}
+	if len(stage.result.Warnings) != 1 || !strings.Contains(stage.result.Warnings[0], "outside repo boundary") {
+		t.Fatalf("expected escaped-path warning, got %#v", stage.result.Warnings)
 	}
 }

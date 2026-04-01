@@ -75,7 +75,7 @@ When running locally with `act`, target the Linux-backed jobs explicitly (for ex
 - `make test-race`: run `go test -race ./...`
 - `make bench-mem`: run the curated memory benchmark suite with `-benchmem`
 - `make bench-gate`: compare curated memory benchmark deltas against a base ref (defaults: `MEMORY_BENCH_BASE=origin/main`, `MEMORY_BENCH_MAX_BYTES_PCT=15`, `MEMORY_BENCH_MAX_ALLOCS_PCT=10`)
-- `make cov`: run tests with coverage profile and enforce minimum total coverage (default `COVERAGE_MIN=98`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
+- `make cov`: run tests with coverage profile and enforce both minimum total coverage (`COVERAGE_MIN`, default `98`) and minimum per-package coverage (`COVERAGE_PACKAGE_MIN`, default `98`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
 - `make smoke`: run cross-OS smoke checks (`mod-check + test-race + build`)
 - `make ci`: `format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
 - `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
@@ -89,6 +89,8 @@ Coverage artifacts:
 
 - `.artifacts/coverage.out`: `go test` coverage profile
 - `.artifacts/coverage-total.txt`: total percentage used by CI gating
+- `.artifacts/coverage-packages.txt`: per-package coverage percentages emitted by the coverage gate
+- `.artifacts/coverage-package-failures.txt`: packages that fell below the per-package minimum, formatted for CI comments
 - `.artifacts/bench-base.out`: benchmark output captured from the base ref
 - `.artifacts/bench-head.out`: benchmark output captured from the current ref
 - `.artifacts/memory-bench-summary.md`: markdown summary posted to PRs
@@ -101,8 +103,8 @@ Memory benchmark approval:
 - Regressions are still blocked unless a maintainer applies the `memory-approved` label.
 - Newly added benchmarks are reported but not gated until the same benchmark name exists on both the base and head refs, which keeps first-rollout noise manageable.
 
-On pull requests, if the coverage gate fails, CI posts/updates a PR comment with required vs. actual coverage.
-The 98% minimum is intentionally enforced in both `Makefile` and CI workflow config to keep local and CI behavior aligned.
+On pull requests, if the coverage gate fails, CI posts/updates a PR comment with total coverage and any packages that fell below the per-package minimum.
+The 98% minimum is intentionally enforced in both `Makefile` and CI workflow config for the combined gate and the per-package gate to keep local and CI behavior aligned.
 
 Cross-compilation uses `zig cc` for CGO targets.
 Current cross-CGO release targets are Linux and Windows.

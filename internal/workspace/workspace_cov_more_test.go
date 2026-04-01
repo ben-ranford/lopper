@@ -36,11 +36,19 @@ func testWorkspaceChangedFilesReturnsGitResolutionError(t *testing.T) {
 func testWorkspaceNormalizeRepoPathErrorsBubbleThroughHelpers(t *testing.T) {
 	t.Helper()
 
-	if _, err := CurrentCommitSHA("\x00"); err == nil {
-		t.Fatalf("expected invalid repo path to fail commit lookup")
+	original := normalizeRepoPath
+	normalizeRepoPath = func(string) (string, error) {
+		return "", errors.New("normalize failed")
 	}
-	if _, err := ChangedFiles("\x00"); err == nil {
-		t.Fatalf("expected invalid repo path to fail changed-files lookup")
+	t.Cleanup(func() {
+		normalizeRepoPath = original
+	})
+
+	if _, err := CurrentCommitSHA("."); err == nil || err.Error() != "normalize failed" {
+		t.Fatalf("expected normalization failure to fail commit lookup, got %v", err)
+	}
+	if _, err := ChangedFiles("."); err == nil || err.Error() != "normalize failed" {
+		t.Fatalf("expected normalization failure to fail changed-files lookup, got %v", err)
 	}
 }
 

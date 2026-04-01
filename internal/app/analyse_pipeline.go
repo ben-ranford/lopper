@@ -201,11 +201,11 @@ func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
 	}
 
 	warnings := make([]string, 0, 1)
-	repoPath, normalizeErr := workspace.NormalizeRepoPath(req.RepoPath)
+	repoPath, normalizeErr := normalizeRepoPathForRuntimeTrace(req.RepoPath)
 	if normalizeErr != nil {
 		repoPath = strings.TrimSpace(req.RepoPath)
 		if repoPath == "" {
-			repoPath = req.RepoPath
+			repoPath = "."
 		}
 		warnings = append(warnings, "runtime trace setup: using raw repo path due to normalization error: "+normalizeErr.Error())
 	}
@@ -224,6 +224,13 @@ func prepareRuntimeTrace(ctx context.Context, req Request) ([]string, string) {
 	}
 
 	return warnings, runtimeTracePath
+}
+
+func normalizeRepoPathForRuntimeTrace(repoPath string) (string, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		return "", fmt.Errorf("repo path is required")
+	}
+	return workspace.NormalizeRepoPath(repoPath)
 }
 
 func (a *App) applyBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest) (report.Report, error) {
