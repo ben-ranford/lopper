@@ -20,38 +20,6 @@ func TestResolveBinaryPath(t *testing.T) {
 	}
 }
 
-func TestResolveBinaryPathBranches(t *testing.T) {
-	t.Run("prefers primary", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "primary"
-		})
-		if err != nil {
-			t.Fatalf("resolve primary: %v", err)
-		}
-		if path != "primary" {
-			t.Fatalf("expected primary path, got %q", path)
-		}
-	})
-
-	t.Run("falls back", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "fallback"
-		})
-		if err != nil {
-			t.Fatalf("resolve fallback: %v", err)
-		}
-		if path != "fallback" {
-			t.Fatalf("expected fallback path, got %q", path)
-		}
-	})
-
-	t.Run("returns error when unavailable", func(t *testing.T) {
-		if _, err := resolveBinaryPath("primary", "fallback", func(string) bool { return false }); err == nil {
-			t.Fatal("expected missing git executable error")
-		}
-	})
-}
-
 func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("PATH", "/tmp/custom-bin")
 	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")

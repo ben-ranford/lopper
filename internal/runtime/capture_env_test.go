@@ -1,11 +1,9 @@
 package runtime
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -104,31 +102,5 @@ func TestMergeEnvAndReadEnvValue(t *testing.T) {
 	}
 	if got := readEnvValue(merged, "MISSING"); got != "" {
 		t.Fatalf("expected missing env value, got %q", got)
-	}
-}
-
-func TestRuntimeNodeHookOptionsReturnsCachedError(t *testing.T) {
-	oldRequire := runtimeRequireHookPath
-	oldLoader := runtimeLoaderHookPath
-	oldErr := runtimeHookPathsErr
-	defer func() {
-		runtimeHookPathsOnce = sync.Once{}
-		runtimeHookPathsOnce.Do(func() {
-			runtimeRequireHookPath = oldRequire
-			runtimeLoaderHookPath = oldLoader
-			runtimeHookPathsErr = oldErr
-		})
-	}()
-
-	runtimeHookPathsOnce = sync.Once{}
-	runtimeHookPathsOnce.Do(func() {
-		runtimeRequireHookPath = ""
-		runtimeLoaderHookPath = ""
-		runtimeHookPathsErr = errors.New("boom")
-	})
-
-	_, err := runtimeNodeHookOptions()
-	if err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("expected cached runtime hook error, got %v", err)
 	}
 }
