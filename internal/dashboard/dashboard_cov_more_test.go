@@ -24,7 +24,7 @@ func TestDashboardAdditionalHelperBranches(t *testing.T) {
 
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
-	if err := writeDashboardCrossRepoRowsCSV(writer, nil); err != nil {
+	if err := writeDashboardCrossRepoRowsCSV(writer.Write, nil); err != nil {
 		t.Fatalf("expected empty cross-repo dependency set to be ignored, got %v", err)
 	}
 	writer.Flush()
