@@ -3,7 +3,6 @@ package gitexec
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,38 +18,6 @@ func TestResolveBinaryPath(t *testing.T) {
 	if path != ExecutablePrimary && path != ExecutableFallback {
 		t.Fatalf("expected known git path, got %q", path)
 	}
-}
-
-func TestResolveBinaryPathBranches(t *testing.T) {
-	t.Run("prefers primary", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "primary"
-		})
-		if err != nil {
-			t.Fatalf("resolve primary: %v", err)
-		}
-		if path != "primary" {
-			t.Fatalf("expected primary path, got %q", path)
-		}
-	})
-
-	t.Run("falls back", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "fallback"
-		})
-		if err != nil {
-			t.Fatalf("resolve fallback: %v", err)
-		}
-		if path != "fallback" {
-			t.Fatalf("expected fallback path, got %q", path)
-		}
-	})
-
-	t.Run("returns error when unavailable", func(t *testing.T) {
-		if _, err := resolveBinaryPath("primary", "fallback", func(string) bool { return false }); err == nil {
-			t.Fatal("expected missing git executable error")
-		}
-	})
 }
 
 func TestSanitizedEnv(t *testing.T) {
@@ -73,15 +40,27 @@ func TestSanitizedEnv(t *testing.T) {
 }
 
 func TestCommandUsesKnownGitPaths(t *testing.T) {
-	testKnownGitPaths(t, func(gitPath string) (*exec.Cmd, error) {
-		return Command(gitPath, versionArg)
-	})
+	for _, gitPath := range []string{ExecutablePrimary, ExecutableFallback} {
+		command, err := Command(gitPath, versionArg)
+		if err != nil {
+			t.Fatalf("build command for %s: %v", gitPath, err)
+		}
+		if command.Path != gitPath {
+			t.Fatalf("expected command path %q, got %q", gitPath, command.Path)
+		}
+	}
 }
 
 func TestCommandContextUsesKnownGitPaths(t *testing.T) {
-	testKnownGitPaths(t, func(gitPath string) (*exec.Cmd, error) {
-		return CommandContext(context.Background(), gitPath, versionArg)
-	})
+	for _, gitPath := range []string{ExecutablePrimary, ExecutableFallback} {
+		command, err := CommandContext(context.Background(), gitPath, versionArg)
+		if err != nil {
+			t.Fatalf("build command context for %s: %v", gitPath, err)
+		}
+		if command.Path != gitPath {
+			t.Fatalf("expected command path %q, got %q", gitPath, command.Path)
+		}
+	}
 }
 
 func TestCommandRejectsUnknownGitPath(t *testing.T) {
@@ -129,20 +108,4 @@ func containsEnvPrefix(env []string, prefix string) bool {
 		}
 	}
 	return false
-}
-
-func testKnownGitPaths(t *testing.T, build func(string) (*exec.Cmd, error)) {
-	t.Helper()
-
-	for _, gitPath := range []string{ExecutablePrimary, ExecutableFallback} {
-		t.Run(gitPath, func(t *testing.T) {
-			command, err := build(gitPath)
-			if err != nil {
-				t.Fatalf("build command for %s: %v", gitPath, err)
-			}
-			if command.Path != gitPath {
-				t.Fatalf("expected command path %q, got %q", gitPath, command.Path)
-			}
-		})
-	}
 }

@@ -7,7 +7,7 @@ import (
 )
 
 func ChangedFiles(repoPath string) ([]string, error) {
-	normalized, err := normalizeRepoPath(repoPath)
+	normalized, err := NormalizeRepoPath(repoPath)
 	if err != nil {
 		return nil, err
 	}
