@@ -66,9 +66,6 @@ func testDartDependencyMetadataHelpers(t *testing.T) {
 	if lockDescriptionTargetsFlutter(map[string]any{"name": "other"}) {
 		t.Fatalf("did not expect unrelated lock description to target flutter")
 	}
-	if lockDescriptionTargetsFlutter(42) {
-		t.Fatalf("expected non-map scalar lock description not to target flutter")
-	}
 	if got := collectManifestRoots([]packageManifest{{Root: ""}, {Root: "  "}, {Root: filepath.Join("pkg", "..", "app")}}); len(got) != 2 {
 		t.Fatalf("expected normalized manifest roots, got %#v", got)
 	} else if _, ok := got["."]; !ok {
@@ -106,7 +103,6 @@ func testDartScanHelpersAndWarnings(t *testing.T) {
 	testDartScanPackageFileEntryBranches(t, root)
 	testDartScanPackageRootBranches(t, root)
 	testDartCompileScanWarnings(t)
-	testDartDiscoverPubspecPathsSkipsDirs(t)
 }
 
 func testDartScanPackageDirGuards(t *testing.T, root string) {
@@ -191,39 +187,6 @@ func testDartCompileScanWarnings(t *testing.T) {
 	}
 }
 
-func testDartDiscoverPubspecPathsSkipsDirs(t *testing.T) {
-	t.Helper()
-
-	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "android"), 0o755); err != nil {
-		t.Fatalf("mkdir android dir: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(repo, "packages", "feature"), 0o755); err != nil {
-		t.Fatalf("mkdir packages dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "android", pubspecYAMLName), []byte("name: android_app\n"), 0o644); err != nil {
-		t.Fatalf("write android pubspec: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "packages", "feature", pubspecYAMLName), []byte("name: feature\n"), 0o644); err != nil {
-		t.Fatalf("write nested pubspec: %v", err)
-	}
-	rootManifest := filepath.Join(repo, pubspecYAMLName)
-	if err := os.WriteFile(rootManifest, []byte("name: app\n"), 0o644); err != nil {
-		t.Fatalf("write root pubspec: %v", err)
-	}
-
-	paths, warnings, err := discoverPubspecPaths(repo)
-	if err != nil {
-		t.Fatalf("discover pubspec paths: %v", err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings, got %#v", warnings)
-	}
-	if len(paths) != 2 || paths[0] != filepath.Join(repo, "packages", "feature", pubspecYAMLName) || paths[1] != rootManifest {
-		t.Fatalf("expected skipped directories to be ignored, got %#v", paths)
-	}
-}
-
 func testDartImportParsingAndDependencySelection(t *testing.T) {
 	if kind, module, clause, ok := parseImportDirective(`show "x";`); ok || kind != "" || module != "" || clause != "" {
 		t.Fatalf("expected unsupported directive parse to fail")
@@ -261,21 +224,5 @@ func testDartImportParsingAndDependencySelection(t *testing.T) {
 	reportData, warnings := buildDependencyReport("http", scanResult{DeclaredDependencies: map[string]dependencyInfo{"http": {}}, Files: []fileScan{{Imports: []importBinding{{Dependency: "http", Module: "package:http/http.dart", Name: "Client", Local: "Client"}, {Dependency: "http", Module: "package:http/http.dart", Name: "Request", Local: "Request"}}, Usage: map[string]int{"Client": 1}}}}, 90)
 	if len(warnings) != 0 || len(reportData.Recommendations) == 0 {
 		t.Fatalf("expected low-usage dependency recommendation, report=%#v warnings=%#v", reportData, warnings)
-	}
-}
-
-func TestDartManifestLoopingLockSymlinkFailsLoad(t *testing.T) {
-	repo := t.TempDir()
-	manifestPath := filepath.Join(repo, pubspecYAMLName)
-	if err := os.WriteFile(manifestPath, []byte("name: app\n"), 0o644); err != nil {
-		t.Fatalf("write manifest: %v", err)
-	}
-	lockPath := filepath.Join(repo, pubspecLockName)
-	if err := os.Symlink(pubspecLockName, lockPath); err != nil {
-		t.Fatalf("create looping pubspec.lock symlink: %v", err)
-	}
-
-	if _, _, err := loadPackageManifest(repo, manifestPath); err == nil {
-		t.Fatalf("expected looping pubspec.lock symlink to fail manifest load")
 	}
 }

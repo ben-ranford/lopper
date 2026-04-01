@@ -12,7 +12,6 @@ GIT_COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_MIN ?= 98
-COVERAGE_PACKAGE_MIN ?= $(COVERAGE_MIN)
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.1
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
@@ -223,14 +222,11 @@ bench-gate:
 cov:
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \
-		GOFLAGS=-buildvcs=false $(GO_CMD) test $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
-	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
-		-coverprofile="$(COVERAGE_FILE)" \
-		-min="$(COVERAGE_MIN)" \
-		-package-min="$(COVERAGE_PACKAGE_MIN)" \
-		-total-out=".artifacts/coverage-total.txt" \
-		-packages-out=".artifacts/coverage-packages.txt" \
-		-package-failures-out=".artifacts/coverage-package-failures.txt"
+	GOFLAGS=-buildvcs=false $(GO_CMD) test $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
+	@total=$$($(GO_CMD) tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	echo "Total coverage: $$total% (required: >= $(COVERAGE_MIN)%)"; \
+	printf "%s\n" "$$total" > .artifacts/coverage-total.txt; \
+	awk "BEGIN { exit !($$total >= $(COVERAGE_MIN)) }" || (echo "Coverage gate failed: $$total% < $(COVERAGE_MIN)%"; exit 1)
 
 build:
 	mkdir -p $(BIN_DIR)

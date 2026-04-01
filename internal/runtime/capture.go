@@ -325,11 +325,7 @@ func runtimeHookPaths() (string, string, error) {
 }
 
 func locateRuntimeHookPaths() (string, string, error) {
-	return locateRuntimeHookPathsInRoots(runtimeHookSearchRoots())
-}
-
-func locateRuntimeHookPathsInRoots(roots []string) (string, string, error) {
-	for _, root := range roots {
+	for _, root := range runtimeHookSearchRoots() {
 		requirePath := filepath.Join(root, runtimeRequireHookRelPath)
 		loaderPath := filepath.Join(root, runtimeLoaderHookRelPath)
 		if !isRegularFile(requirePath) || !isRegularFile(loaderPath) {
