@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const normalizeFailedErr = "normalize failed"
+
 func TestWorkspaceAdditionalBranchCoverage(t *testing.T) {
 	testWorkspaceChangedFilesReturnsGitResolutionError(t)
 	testWorkspaceNormalizeRepoPathErrorsBubbleThroughHelpers(t)
@@ -36,11 +38,19 @@ func testWorkspaceChangedFilesReturnsGitResolutionError(t *testing.T) {
 func testWorkspaceNormalizeRepoPathErrorsBubbleThroughHelpers(t *testing.T) {
 	t.Helper()
 
-	if _, err := CurrentCommitSHA("\x00"); err == nil {
-		t.Fatalf("expected invalid repo path to fail commit lookup")
+	original := normalizeRepoPath
+	normalizeRepoPath = func(string) (string, error) {
+		return "", errors.New(normalizeFailedErr)
 	}
-	if _, err := ChangedFiles("\x00"); err == nil {
-		t.Fatalf("expected invalid repo path to fail changed-files lookup")
+	t.Cleanup(func() {
+		normalizeRepoPath = original
+	})
+
+	if _, err := CurrentCommitSHA("."); err == nil || err.Error() != normalizeFailedErr {
+		t.Fatalf("expected normalization failure to fail commit lookup, got %v", err)
+	}
+	if _, err := ChangedFiles("."); err == nil || err.Error() != normalizeFailedErr {
+		t.Fatalf("expected normalization failure to fail changed-files lookup, got %v", err)
 	}
 }
 

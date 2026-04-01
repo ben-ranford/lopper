@@ -90,7 +90,7 @@ func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPat
 }
 
 func beginCodemodApplyPhase(reportData *report.Report, repoPath, dependency string) (codemodApplyPhaseContext, bool, error) {
-	normalizedRepoPath, err := workspace.NormalizeRepoPath(repoPath)
+	normalizedRepoPath, err := normalizeRepoPathForCodemod(repoPath)
 	if err != nil {
 		return codemodApplyPhaseContext{}, false, err
 	}
@@ -159,11 +159,18 @@ func validateCodemodApplyPreconditions(ctx context.Context, repoPath string, req
 	if !req.ApplyCodemod {
 		return nil
 	}
-	normalizedRepoPath, err := workspace.NormalizeRepoPath(repoPath)
+	normalizedRepoPath, err := normalizeRepoPathForCodemod(repoPath)
 	if err != nil {
 		return err
 	}
 	return ensureCleanWorktreeForCodemod(ctx, normalizedRepoPath, req.AllowDirty)
+}
+
+func normalizeRepoPathForCodemod(repoPath string) (string, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		return "", fmt.Errorf("repo path is required")
+	}
+	return workspace.NormalizeRepoPath(repoPath)
 }
 
 func ensureCleanWorktreeForCodemod(ctx context.Context, repoPath string, allowDirty bool) error {

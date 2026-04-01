@@ -30,12 +30,12 @@ func TestDashboardAdditionalBranchCoverage(t *testing.T) {
 	}
 
 	repoWriter := csv.NewWriter(&failingWriter{})
-	if writeDashboardRepoRowsCSV(repoWriter, []RepoResult{{Name: strings.Repeat("x", 5000)}}) == nil {
+	if writeDashboardRepoRowsCSV(repoWriter.Write, []RepoResult{{Name: strings.Repeat("x", 5000)}}) == nil {
 		t.Fatalf("expected repo row csv write to fail")
 	}
 
 	crossRepoWriter := csv.NewWriter(&failingWriter{})
-	if writeDashboardCrossRepoRowsCSV(crossRepoWriter, []CrossRepoDependency{{Name: strings.Repeat("x", 5000), Count: 3}}) == nil {
+	if writeDashboardCrossRepoRowsCSV(crossRepoWriter.Write, []CrossRepoDependency{{Name: strings.Repeat("x", 5000), Count: 3}}) == nil {
 		t.Fatalf("expected cross-repo csv write to fail")
 	}
 
