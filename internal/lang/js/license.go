@@ -55,16 +55,16 @@ func detectLicenseFromPackageJSON(pkg packageJSON) *report.DependencyLicense {
 }
 
 func packageJSONLicenseRaw(pkg packageJSON) string {
-	raw := parsePackageJSONLicense(pkg.License)
+	raw := strings.TrimSpace(parsePackageJSONLicense(pkg.License))
 	if raw == "" {
 		for _, item := range pkg.Licenses {
-			raw = parsePackageJSONLicense(item)
+			raw = strings.TrimSpace(parsePackageJSONLicense(item))
 			if raw != "" {
 				break
 			}
 		}
 	}
-	return strings.TrimSpace(raw)
+	return raw
 }
 
 func synthesizePackageJSONLicense(raw string) *report.DependencyLicense {
@@ -267,7 +267,7 @@ func buildProvenance(pkg packageJSON, includeRegistryProvenance bool) *report.De
 	source := "local-manifest"
 	confidence := "medium"
 
-	registrySignals := []string{}
+	var registrySignals []string
 	if includeRegistryProvenance {
 		registrySignals = collectRegistryProvenanceSignals(pkg)
 	}

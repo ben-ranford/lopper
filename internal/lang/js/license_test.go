@@ -80,16 +80,16 @@ func TestParsePackageJSONLicenseVariants(t *testing.T) {
 	}
 }
 
-func TestPackageJSONLicenseRawWhitespacePrimarySkipsLicensesFallback(t *testing.T) {
+func TestPackageJSONLicenseRawWhitespacePrimaryFallsBackToLicenses(t *testing.T) {
 	pkg := packageJSON{
 		License:  "   ",
 		Licenses: []any{"MIT"},
 	}
-	if got := packageJSONLicenseRaw(pkg); got != "" {
-		t.Fatalf("expected empty raw license from whitespace primary field, got %q", got)
+	if got := packageJSONLicenseRaw(pkg); got != "MIT" {
+		t.Fatalf("expected licenses fallback when primary field is whitespace, got %q", got)
 	}
-	if got := detectLicenseFromPackageJSON(pkg); got != nil {
-		t.Fatalf("expected nil license when primary field is whitespace, got %#v", got)
+	if got := detectLicenseFromPackageJSON(pkg); got == nil || got.SPDX != "MIT" {
+		t.Fatalf("expected MIT license from licenses fallback, got %#v", got)
 	}
 }
 
