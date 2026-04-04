@@ -13,6 +13,7 @@ import (
 const (
 	licenseTestPackageJSONFileName = "package.json"
 	licenseTestMPL20               = "MPL-2.0"
+	licenseTestRepositoryURL       = "https://github.com/example/repo"
 )
 
 func TestDetectLicenseAndProvenanceFromPackageJSON(t *testing.T) {
@@ -114,10 +115,10 @@ func TestDetectSPDXFromLicenseContentCases(t *testing.T) {
 }
 
 func TestHasRepositorySignal(t *testing.T) {
-	if !hasRepositorySignal("https://github.com/example/repo") {
+	if !hasRepositorySignal(licenseTestRepositoryURL) {
 		t.Fatalf("expected repository signal for non-empty string")
 	}
-	if !hasRepositorySignal(map[string]any{"url": "https://github.com/example/repo"}) {
+	if !hasRepositorySignal(map[string]any{"url": licenseTestRepositoryURL}) {
 		t.Fatalf("expected repository signal for url object")
 	}
 	if hasRepositorySignal(map[string]any{"url": ""}) {
@@ -261,7 +262,7 @@ func TestCollectRegistryProvenanceSignals(t *testing.T) {
 	pkg := packageJSON{
 		Resolved:   "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
 		Integrity:  "sha512-abc",
-		Repository: map[string]any{"url": "https://github.com/example/repo"},
+		Repository: map[string]any{"url": licenseTestRepositoryURL},
 	}
 	pkg.PublishConfig.Registry = " https://registry.npmjs.org/ "
 
