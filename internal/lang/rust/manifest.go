@@ -12,17 +12,38 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+type manifestDiscoveryResult struct {
+	ManifestPaths      []string
+	Warnings           []string
+	ParsedDependencies map[string]map[string]dependencyInfo
+}
+
 func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, map[string][]string, []string, error) {
-	manifestPaths, warnings, err := discoverManifestPaths(repoPath)
+	discovery, err := discoverManifestData(repoPath)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+
+	lookup, renamedByDep, warnings, err := extractManifestDependencies(repoPath, discovery)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return discovery.ManifestPaths, lookup, renamedByDep, warnings, nil
+}
+
+func extractManifestDependencies(repoPath string, discovery manifestDiscoveryResult) (map[string]dependencyInfo, map[string][]string, []string, error) {
 	lookup := make(map[string]dependencyInfo)
 	renamed := make(map[string]map[string]struct{})
-	for _, manifestPath := range manifestPaths {
-		_, deps, parseErr := parseCargoManifest(manifestPath, repoPath)
-		if parseErr != nil {
-			return nil, nil, nil, nil, parseErr
+
+	warnings := append([]string(nil), discovery.Warnings...)
+	for _, manifestPath := range discovery.ManifestPaths {
+		deps, ok := discovery.ParsedDependencies[manifestPath]
+		if !ok {
+			_, parsedDeps, parseErr := parseCargoManifest(manifestPath, repoPath)
+			if parseErr != nil {
+				return nil, nil, nil, parseErr
+			}
+			deps = parsedDeps
 		}
 		warnings = mergeDependencyLookup(lookup, renamed, deps, warnings)
 	}
@@ -31,7 +52,7 @@ func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, 
 	for dependency, aliases := range renamed {
 		renamedByDep[dependency] = shared.SortedKeys(aliases)
 	}
-	return manifestPaths, lookup, renamedByDep, dedupeWarnings(warnings), nil
+	return lookup, renamedByDep, dedupeWarnings(warnings), nil
 }
 
 func mergeDependencyLookup(lookup map[string]dependencyInfo, renamed map[string]map[string]struct{}, deps map[string]dependencyInfo, warnings []string) []string {
@@ -67,19 +88,36 @@ func trackRenamedDependencyAlias(renamed map[string]map[string]struct{}, alias s
 }
 
 func discoverManifestPaths(repoPath string) ([]string, []string, error) {
-	rootManifest := filepath.Join(repoPath, cargoTomlName)
-	if _, err := os.Stat(rootManifest); err == nil {
-		return discoverFromRootManifest(repoPath, rootManifest)
-	} else if !os.IsNotExist(err) {
+	discovery, err := discoverManifestData(repoPath)
+	if err != nil {
 		return nil, nil, err
 	}
-	return discoverManifestsByWalk(repoPath)
+	return discovery.ManifestPaths, discovery.Warnings, nil
 }
 
-func discoverFromRootManifest(repoPath, rootManifest string) ([]string, []string, error) {
-	meta, _, parseErr := parseCargoManifest(rootManifest, repoPath)
+func discoverManifestData(repoPath string) (manifestDiscoveryResult, error) {
+	rootManifest := filepath.Join(repoPath, cargoTomlName)
+	if _, err := os.Stat(rootManifest); err == nil {
+		return discoverFromRootManifestData(repoPath, rootManifest)
+	} else if !os.IsNotExist(err) {
+		return manifestDiscoveryResult{}, err
+	}
+
+	paths, warnings, err := discoverManifestsByWalk(repoPath)
+	if err != nil {
+		return manifestDiscoveryResult{}, err
+	}
+	return manifestDiscoveryResult{
+		ManifestPaths:      paths,
+		Warnings:           warnings,
+		ParsedDependencies: make(map[string]map[string]dependencyInfo),
+	}, nil
+}
+
+func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscoveryResult, error) {
+	meta, deps, parseErr := parseCargoManifest(rootManifest, repoPath)
 	if parseErr != nil {
-		return nil, nil, parseErr
+		return manifestDiscoveryResult{}, parseErr
 	}
 	paths := make([]string, 0, 1+len(meta.WorkspaceMembers))
 	warnings := make([]string, 0)
@@ -93,7 +131,19 @@ func discoverFromRootManifest(repoPath, rootManifest string) ([]string, []string
 		}
 		paths = append(paths, memberManifests...)
 	}
-	return uniquePaths(paths), dedupeWarnings(warnings), nil
+
+	discovery := manifestDiscoveryResult{
+		ManifestPaths:      uniquePaths(paths),
+		Warnings:           dedupeWarnings(warnings),
+		ParsedDependencies: make(map[string]map[string]dependencyInfo),
+	}
+	for _, manifestPath := range discovery.ManifestPaths {
+		if manifestPath == rootManifest {
+			discovery.ParsedDependencies[manifestPath] = deps
+			break
+		}
+	}
+	return discovery, nil
 }
 
 func resolveWorkspaceMemberManifestPaths(repoPath, member string) ([]string, string) {

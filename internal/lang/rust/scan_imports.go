@@ -63,19 +63,171 @@ func collectRustImports(content []byte, filePath, crateRoot string, depLookup ma
 }
 
 func scanRustImportStatements(content []byte, includeUse bool, visit func(rustImportKind, rustImportStatement)) {
+	state := rustImportLexState{rawHashCount: -1}
 	for lineStart, line := 0, 1; lineStart < len(content); line++ {
 		lineEnd := lineStart
 		for lineEnd < len(content) && content[lineEnd] != '\n' {
 			lineEnd++
 		}
-		if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line, includeUse); ok {
-			visit(kind, stmt)
+		if !state.insideRawString() {
+			if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line, includeUse); ok {
+				visit(kind, stmt)
+			}
 		}
+		state.consumeLine(content[lineStart:lineEnd])
 		if lineEnd == len(content) {
 			break
 		}
 		lineStart = lineEnd + 1
 	}
+}
+
+type rustImportLexState struct {
+	rawHashCount      int
+	inString          bool
+	stringEscaped     bool
+	blockCommentDepth int
+}
+
+func (s *rustImportLexState) insideRawString() bool {
+	return s.rawHashCount >= 0
+}
+
+func (s *rustImportLexState) consumeLine(line []byte) {
+	for index := 0; index < len(line); index++ {
+		if nextIndex, handled := s.consumeLineRawString(line, index); handled {
+			index = nextIndex
+			continue
+		}
+
+		if nextIndex, handled := s.consumeLineBlockComment(line, index); handled {
+			index = nextIndex
+			continue
+		}
+
+		if s.consumeLineQuotedString(line[index]) {
+			continue
+		}
+
+		if hasRustBytePair(line, index, '/', '/') {
+			break
+		}
+		if hasRustBytePair(line, index, '/', '*') {
+			s.blockCommentDepth++
+			index++
+			continue
+		}
+		if nextIndex, handled := s.consumeLineRawStringStart(line, index); handled {
+			index = nextIndex
+			continue
+		}
+		if line[index] == '"' {
+			s.inString = true
+			s.stringEscaped = false
+		}
+	}
+}
+
+func (s *rustImportLexState) consumeLineRawString(line []byte, index int) (int, bool) {
+	if !s.insideRawString() {
+		return index, false
+	}
+	hashCount := s.rawHashCount
+	if hasRustRawStringTerminator(line, index, hashCount) {
+		s.rawHashCount = -1
+		return index + hashCount, true
+	}
+	return index, true
+}
+
+func (s *rustImportLexState) consumeLineBlockComment(line []byte, index int) (int, bool) {
+	if s.blockCommentDepth == 0 {
+		return index, false
+	}
+	if hasRustBytePair(line, index, '/', '*') {
+		s.blockCommentDepth++
+		return index + 1, true
+	}
+	if hasRustBytePair(line, index, '*', '/') {
+		s.blockCommentDepth--
+		return index + 1, true
+	}
+	return index, true
+}
+
+func (s *rustImportLexState) consumeLineQuotedString(ch byte) bool {
+	if !s.inString {
+		return false
+	}
+	if s.stringEscaped {
+		s.stringEscaped = false
+		return true
+	}
+	if ch == '\\' {
+		s.stringEscaped = true
+		return true
+	}
+	if ch == '"' {
+		s.inString = false
+	}
+	return true
+}
+
+func (s *rustImportLexState) consumeLineRawStringStart(line []byte, index int) (int, bool) {
+	hashCount, consumed, ok := parseRustRawStringStart(line, index)
+	if !ok {
+		return index, false
+	}
+	s.rawHashCount = hashCount
+	return index + consumed - 1, true
+}
+
+func hasRustBytePair(line []byte, index int, first, second byte) bool {
+	return index+1 < len(line) && line[index] == first && line[index+1] == second
+}
+
+func parseRustRawStringStart(line []byte, index int) (int, int, bool) {
+	if index >= len(line) {
+		return 0, 0, false
+	}
+
+	start := index
+	if line[index] == 'b' {
+		if index+1 >= len(line) || line[index+1] != 'r' {
+			return 0, 0, false
+		}
+		index++
+	} else if line[index] != 'r' {
+		return 0, 0, false
+	}
+
+	if start > 0 && isRustIdentifierContinue(line[start-1]) {
+		return 0, 0, false
+	}
+
+	hashCount := 0
+	index++
+	for index < len(line) && line[index] == '#' {
+		hashCount++
+		index++
+	}
+	if index >= len(line) || line[index] != '"' {
+		return 0, 0, false
+	}
+
+	return hashCount, index - start + 1, true
+}
+
+func hasRustRawStringTerminator(line []byte, index, hashCount int) bool {
+	if index >= len(line) || line[index] != '"' || index+hashCount >= len(line) {
+		return false
+	}
+	for offset := 1; offset <= hashCount; offset++ {
+		if line[index+offset] != '#' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseRustImportStatement(content []byte, lineStart, lineEnd, line int, includeUse bool) (rustImportKind, rustImportStatement, bool) {
