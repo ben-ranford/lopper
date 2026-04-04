@@ -131,83 +131,19 @@ func detectUmbrellaAppsPath(content []byte) (bool, string) {
 }
 
 func stripElixirComments(content []byte) string {
+	masked := maskElixirImportSource(content)
+
 	var stripped strings.Builder
 	stripped.Grow(len(content))
 
-	state := elixirCommentState{}
-
 	for i := 0; i < len(content); i++ {
-		ch := content[i]
-
-		if state.writeEscaped(&stripped, ch) {
-			continue
-		}
-
-		if state.writeEscape(&stripped, ch) {
-			continue
-		}
-
-		if state.writeQuote(&stripped, ch) {
-			continue
-		}
-
-		if ch == '#' {
-			if state.inQuotedString() {
-				stripped.WriteByte(ch)
-				continue
-			}
+		if content[i] == '#' && masked[i] == '#' {
 			i = skipElixirComment(content, i, &stripped)
 			continue
 		}
-
-		stripped.WriteByte(ch)
+		stripped.WriteByte(content[i])
 	}
 	return stripped.String()
-}
-
-type elixirCommentState struct {
-	inSingleQuote bool
-	inDoubleQuote bool
-	escaped       bool
-}
-
-func (s *elixirCommentState) inQuotedString() bool {
-	return s.inSingleQuote || s.inDoubleQuote
-}
-
-func (s *elixirCommentState) writeEscaped(out *strings.Builder, ch byte) bool {
-	if !s.escaped {
-		return false
-	}
-	out.WriteByte(ch)
-	s.escaped = false
-	return true
-}
-
-func (s *elixirCommentState) writeEscape(out *strings.Builder, ch byte) bool {
-	if ch != '\\' || !s.inQuotedString() {
-		return false
-	}
-	out.WriteByte(ch)
-	s.escaped = true
-	return true
-}
-
-func (s *elixirCommentState) writeQuote(out *strings.Builder, ch byte) bool {
-	switch ch {
-	case '"':
-		if !s.inSingleQuote {
-			s.inDoubleQuote = !s.inDoubleQuote
-		}
-	case '\'':
-		if !s.inDoubleQuote {
-			s.inSingleQuote = !s.inSingleQuote
-		}
-	default:
-		return false
-	}
-	out.WriteByte(ch)
-	return true
 }
 
 func skipElixirComment(content []byte, start int, out *strings.Builder) int {
@@ -343,89 +279,87 @@ func maskElixirImportSource(content []byte) []byte {
 	state := elixirImportMaskState{}
 
 	for i := 0; i < len(content); i++ {
-		ch := content[i]
-
-		if state.inDoubleHeredoc {
-			maskElixirSourceByte(sanitized, i)
-			if isElixirTripleQuote(content, i, '"') {
-				maskElixirSourceByte(sanitized, i+1)
-				maskElixirSourceByte(sanitized, i+2)
-				state.inDoubleHeredoc = false
-				i += 2
-			}
-			continue
-		}
-
-		if state.inSingleHeredoc {
-			maskElixirSourceByte(sanitized, i)
-			if isElixirTripleQuote(content, i, '\'') {
-				maskElixirSourceByte(sanitized, i+1)
-				maskElixirSourceByte(sanitized, i+2)
-				state.inSingleHeredoc = false
-				i += 2
-			}
-			continue
-		}
-
-		if state.inDoubleQuote {
-			maskElixirSourceByte(sanitized, i)
-			if state.escaped {
-				state.escaped = false
-				continue
-			}
-			switch ch {
-			case '\\':
-				state.escaped = true
-			case '"':
-				state.inDoubleQuote = false
-			}
-			continue
-		}
-
-		if state.inSingleQuote {
-			maskElixirSourceByte(sanitized, i)
-			if state.escaped {
-				state.escaped = false
-				continue
-			}
-			switch ch {
-			case '\\':
-				state.escaped = true
-			case '\'':
-				state.inSingleQuote = false
-			}
-			continue
-		}
-
-		if isElixirTripleQuote(content, i, '"') {
-			maskElixirSourceByte(sanitized, i)
-			maskElixirSourceByte(sanitized, i+1)
-			maskElixirSourceByte(sanitized, i+2)
-			state.inDoubleHeredoc = true
-			i += 2
-			continue
-		}
-
-		if isElixirTripleQuote(content, i, '\'') {
-			maskElixirSourceByte(sanitized, i)
-			maskElixirSourceByte(sanitized, i+1)
-			maskElixirSourceByte(sanitized, i+2)
-			state.inSingleHeredoc = true
-			i += 2
-			continue
-		}
-
-		switch ch {
-		case '"':
-			maskElixirSourceByte(sanitized, i)
-			state.inDoubleQuote = true
-		case '\'':
-			maskElixirSourceByte(sanitized, i)
-			state.inSingleQuote = true
-		}
+		i += maskElixirSourceAt(content, sanitized, i, &state)
 	}
 
 	return sanitized
+}
+
+func maskElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirImportMaskState) int {
+	switch {
+	case state.inDoubleHeredoc:
+		return maskElixirHeredocByte(content, sanitized, index, state, '"')
+	case state.inSingleHeredoc:
+		return maskElixirHeredocByte(content, sanitized, index, state, '\'')
+	case state.inDoubleQuote:
+		return maskElixirQuotedByte(content, sanitized, index, state, '"')
+	case state.inSingleQuote:
+		return maskElixirQuotedByte(content, sanitized, index, state, '\'')
+	default:
+		return startElixirMaskedRegion(content, sanitized, index, state)
+	}
+}
+
+func maskElixirHeredocByte(content []byte, sanitized []byte, index int, state *elixirImportMaskState, quote byte) int {
+	maskElixirSourceByte(sanitized, index)
+	if !isElixirTripleQuote(content, index, quote) {
+		return 0
+	}
+	maskElixirSourceByte(sanitized, index+1)
+	maskElixirSourceByte(sanitized, index+2)
+	if quote == '"' {
+		state.inDoubleHeredoc = false
+	} else {
+		state.inSingleHeredoc = false
+	}
+	return 2
+}
+
+func maskElixirQuotedByte(content []byte, sanitized []byte, index int, state *elixirImportMaskState, quote byte) int {
+	maskElixirSourceByte(sanitized, index)
+	if state.escaped {
+		state.escaped = false
+		return 0
+	}
+
+	switch content[index] {
+	case '\\':
+		state.escaped = true
+	case quote:
+		if quote == '"' {
+			state.inDoubleQuote = false
+		} else {
+			state.inSingleQuote = false
+		}
+	}
+	return 0
+}
+
+func startElixirMaskedRegion(content []byte, sanitized []byte, index int, state *elixirImportMaskState) int {
+	if isElixirTripleQuote(content, index, '"') {
+		maskElixirSourceByte(sanitized, index)
+		maskElixirSourceByte(sanitized, index+1)
+		maskElixirSourceByte(sanitized, index+2)
+		state.inDoubleHeredoc = true
+		return 2
+	}
+	if isElixirTripleQuote(content, index, '\'') {
+		maskElixirSourceByte(sanitized, index)
+		maskElixirSourceByte(sanitized, index+1)
+		maskElixirSourceByte(sanitized, index+2)
+		state.inSingleHeredoc = true
+		return 2
+	}
+
+	switch content[index] {
+	case '"':
+		maskElixirSourceByte(sanitized, index)
+		state.inDoubleQuote = true
+	case '\'':
+		maskElixirSourceByte(sanitized, index)
+		state.inSingleQuote = true
+	}
+	return 0
 }
 
 func isElixirTripleQuote(content []byte, index int, quote byte) bool {

@@ -188,9 +188,9 @@ func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
 			want:  "value = 'foo#bar'\n\n",
 		},
 		{
-			name:  "multiline double quoted hash stays",
-			input: "doc = \"\"\"\n# not a comment\n\"\"\"\n# comment\n",
-			want:  "doc = \"\"\"\n# not a comment\n\"\"\"\n\n",
+			name:  "multiline double quoted hash stays with embedded quote",
+			input: "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n# comment\n",
+			want:  "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n\n",
 		},
 	}
 
