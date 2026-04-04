@@ -60,6 +60,7 @@ func TestMergeUsageUncertaintyCombinesAndCapsSamples(t *testing.T) {
 	got := mergeUsageUncertainty(left, right)
 	if got == nil {
 		t.Fatalf("expected merge result")
+		return
 	}
 	if got.ConfirmedImportUses != 7 || got.UncertainImportUses != 7 {
 		t.Fatalf("unexpected aggregate counts: %#v", got)

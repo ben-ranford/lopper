@@ -320,6 +320,7 @@ func assertRubyDependencyProvenanceSignalData(t *testing.T, info rubyDependencyS
 	}
 	if provenance == nil {
 		t.Fatalf("expected provenance for %#v", info)
+		return
 	}
 	if provenance.Source != wantSource || provenance.Confidence != wantConfidence || !slices.Equal(provenance.Signals, wantSignals) {
 		t.Fatalf("unexpected provenance: %#v", provenance)
@@ -447,6 +448,7 @@ func assertRubyDependencyProvenance(t *testing.T, repo, dependency, wantSource s
 	provenance := reportData.Dependencies[0].Provenance
 	if provenance == nil {
 		t.Fatalf("expected provenance for %s", dependency)
+		return
 	}
 	if provenance.Source != wantSource {
 		t.Fatalf("expected %s provenance source %q, got %#v", dependency, wantSource, provenance)

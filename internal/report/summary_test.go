@@ -51,6 +51,7 @@ func TestComputeSummaryCountsUnknownDeniedLicense(t *testing.T) {
 
 	if summary == nil {
 		t.Fatal("expected summary")
+		return
 	}
 	if summary.UnknownLicenseCount != 1 {
 		t.Fatalf("expected one unknown license, got %#v", summary)

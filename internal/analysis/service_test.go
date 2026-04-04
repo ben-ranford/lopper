@@ -365,6 +365,7 @@ func TestMergeCodemodReport(t *testing.T) {
 	merged := mergeCodemodReport(left, right)
 	if merged == nil {
 		t.Fatalf("expected merged codemod report")
+		return
 	}
 	if merged.Mode != "suggest-only" {
 		t.Fatalf("expected mode suggest-only, got %q", merged.Mode)
