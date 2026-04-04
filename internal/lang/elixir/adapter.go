@@ -29,7 +29,7 @@ const (
 )
 
 var (
-	importPattern  = regexp.MustCompile(`(?m)^\s*(alias|import|use|require)\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)`)
+	importPattern  = regexp.MustCompile(`(?m)^[ \t]*(alias|import|use|require)[ \t]+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)`)
 	aliasAsPattern = regexp.MustCompile(`\bas:\s*([A-Z][A-Za-z0-9_]*)\b`)
 	appsPathRegex  = regexp.MustCompile(`apps_path:\s*["']([^"']+)["']`)
 	quotedDepKey   = regexp.MustCompile(`"([a-z0-9_-]+)"\s*:`)
@@ -297,22 +297,24 @@ func scanElixirRepo(ctx context.Context, repoPath string, declared map[string]st
 }
 
 func parseImports(content []byte, filePath string, declared map[string]struct{}) []shared.ImportRecord {
-	matches := importPattern.FindAllSubmatchIndex(content, -1)
+	sanitized := maskElixirImportSource(content)
+	matches := importPattern.FindAllSubmatchIndex(sanitized, -1)
 	records := make([]shared.ImportRecord, 0, len(matches))
 	for _, idx := range matches {
+		keywordStart := idx[2]
 		keyword := strings.TrimSpace(string(content[idx[2]:idx[3]]))
 		module := strings.TrimSpace(string(content[idx[4]:idx[5]]))
 		dependency := dependencyFromModule(module, declared)
 		if dependency == "" {
 			continue
 		}
-		line := 1 + strings.Count(string(content[:idx[0]]), "\n")
+		line := 1 + strings.Count(string(content[:keywordStart]), "\n")
 		local := module
 		if parts := strings.Split(module, "."); len(parts) > 0 {
 			local = parts[len(parts)-1]
 		}
 		if keyword == "alias" {
-			if aliasLocal := parseAliasLocal(lineBytes(content, idx[0])); aliasLocal != "" {
+			if aliasLocal := parseAliasLocal(lineBytes(content, keywordStart)); aliasLocal != "" {
 				local = aliasLocal
 			}
 		}
@@ -325,6 +327,118 @@ func parseImports(content []byte, filePath string, declared map[string]struct{})
 		})
 	}
 	return records
+}
+
+type elixirImportMaskState struct {
+	inSingleQuote   bool
+	inDoubleQuote   bool
+	inSingleHeredoc bool
+	inDoubleHeredoc bool
+	escaped         bool
+}
+
+func maskElixirImportSource(content []byte) []byte {
+	sanitized := make([]byte, len(content))
+	copy(sanitized, content)
+	state := elixirImportMaskState{}
+
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+
+		if state.inDoubleHeredoc {
+			maskElixirSourceByte(sanitized, i)
+			if isElixirTripleQuote(content, i, '"') {
+				maskElixirSourceByte(sanitized, i+1)
+				maskElixirSourceByte(sanitized, i+2)
+				state.inDoubleHeredoc = false
+				i += 2
+			}
+			continue
+		}
+
+		if state.inSingleHeredoc {
+			maskElixirSourceByte(sanitized, i)
+			if isElixirTripleQuote(content, i, '\'') {
+				maskElixirSourceByte(sanitized, i+1)
+				maskElixirSourceByte(sanitized, i+2)
+				state.inSingleHeredoc = false
+				i += 2
+			}
+			continue
+		}
+
+		if state.inDoubleQuote {
+			maskElixirSourceByte(sanitized, i)
+			if state.escaped {
+				state.escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				state.escaped = true
+			case '"':
+				state.inDoubleQuote = false
+			}
+			continue
+		}
+
+		if state.inSingleQuote {
+			maskElixirSourceByte(sanitized, i)
+			if state.escaped {
+				state.escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				state.escaped = true
+			case '\'':
+				state.inSingleQuote = false
+			}
+			continue
+		}
+
+		if isElixirTripleQuote(content, i, '"') {
+			maskElixirSourceByte(sanitized, i)
+			maskElixirSourceByte(sanitized, i+1)
+			maskElixirSourceByte(sanitized, i+2)
+			state.inDoubleHeredoc = true
+			i += 2
+			continue
+		}
+
+		if isElixirTripleQuote(content, i, '\'') {
+			maskElixirSourceByte(sanitized, i)
+			maskElixirSourceByte(sanitized, i+1)
+			maskElixirSourceByte(sanitized, i+2)
+			state.inSingleHeredoc = true
+			i += 2
+			continue
+		}
+
+		switch ch {
+		case '"':
+			maskElixirSourceByte(sanitized, i)
+			state.inDoubleQuote = true
+		case '\'':
+			maskElixirSourceByte(sanitized, i)
+			state.inSingleQuote = true
+		}
+	}
+
+	return sanitized
+}
+
+func isElixirTripleQuote(content []byte, index int, quote byte) bool {
+	return index+2 < len(content) && content[index] == quote && content[index+1] == quote && content[index+2] == quote
+}
+
+func maskElixirSourceByte(content []byte, index int) {
+	if index < 0 || index >= len(content) {
+		return
+	}
+	if content[index] != '\n' {
+		content[index] = ' '
+	}
 }
 
 func lineBytes(content []byte, start int) []byte {
