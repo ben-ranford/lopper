@@ -43,6 +43,7 @@ func TestAnnotateRemovalCandidateScoresConfidenceRationale(t *testing.T) {
 	candidate := deps[0].RemovalCandidate
 	if candidate == nil {
 		t.Fatalf("expected candidate score")
+		return
 	}
 	if candidate.Confidence >= 50 {
 		t.Fatalf("expected confidence reduction for wildcard/risk/runtime-only cues, got %f", candidate.Confidence)
@@ -72,6 +73,7 @@ func TestAnnotateReachabilityConfidenceAddsPerDependencyArtifact(t *testing.T) {
 	confidence := reportData.Dependencies[0].ReachabilityConfidence
 	if confidence == nil {
 		t.Fatalf("expected reachability confidence artifact")
+		return
 	}
 	if confidence.Model != reachabilityConfidenceModelV2 {
 		t.Fatalf("expected reachability confidence model %q, got %q", reachabilityConfidenceModelV2, confidence.Model)

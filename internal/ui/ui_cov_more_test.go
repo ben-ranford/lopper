@@ -239,6 +239,7 @@ func testUIReachabilityMapping(t *testing.T) {
 	got := mapDetailReachabilityConfidence(confidence)
 	if got == nil {
 		t.Fatalf("expected mapped reachability confidence")
+		return
 	}
 	if got.Model != confidence.Model || got.Score != confidence.Score || got.Summary != confidence.Summary {
 		t.Fatalf("unexpected mapped confidence: %#v", got)

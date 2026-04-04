@@ -216,6 +216,7 @@ func TestSummarizeUsageUncertainty(t *testing.T) {
 	})
 	if summary == nil {
 		t.Fatalf("expected usage uncertainty summary")
+		return
 	}
 	if summary.ConfirmedImportUses != 1 || summary.UncertainImportUses != 1 {
 		t.Fatalf("unexpected uncertainty summary counts: %#v", summary)

@@ -320,6 +320,7 @@ func TestDependencyAnchorLocationBranches(t *testing.T) {
 	anchor := dependencyAnchorLocation(dep)
 	if anchor == nil {
 		t.Fatalf("expected non-nil anchor")
+		return
 	}
 	if anchor.PhysicalLocation.ArtifactLocation.URI != testAFileGo {
 		t.Fatalf("expected sorted anchor path, got %#v", anchor)

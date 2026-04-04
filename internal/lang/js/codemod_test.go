@@ -30,6 +30,7 @@ func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
 	codemod := reportData.Dependencies[0].Codemod
 	if codemod == nil {
 		t.Fatalf("expected codemod report")
+		return
 	}
 	if codemod.Mode != codemodModeSuggestOnly {
 		t.Fatalf("expected codemod mode %q, got %q", codemodModeSuggestOnly, codemod.Mode)
@@ -67,6 +68,7 @@ func TestAdapterAnalyseSuggestOnlySkipsUnsafeTransforms(t *testing.T) {
 	codemod := reportData.Dependencies[0].Codemod
 	if codemod == nil {
 		t.Fatalf("expected codemod report")
+		return
 	}
 	if len(codemod.Suggestions) != 0 {
 		t.Fatalf("expected no safe suggestions, got %#v", codemod.Suggestions)

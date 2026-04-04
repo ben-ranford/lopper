@@ -19,6 +19,12 @@ func configureRuntimeCommand(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 			if errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone
