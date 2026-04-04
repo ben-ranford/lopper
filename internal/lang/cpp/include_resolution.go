@@ -253,10 +253,11 @@ func parseIncludeLine(line string, lineNo int) (parsedInclude, bool) {
 		return parsedInclude{}, false
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
-	if !strings.HasPrefix(rest, "include") {
+	directive, payload := splitPreprocessorDirective(rest)
+	if directive != "include" {
 		return parsedInclude{}, false
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(rest, "include"))
+	payload = strings.TrimSpace(payload)
 	if payload == "" {
 		return parsedInclude{}, false
 	}
@@ -272,6 +273,19 @@ func parseIncludeLine(line string, lineNo int) (parsedInclude, bool) {
 		return parsedInclude{}, false
 	}
 	return makeParsedInclude(filepath.ToSlash(header), delimiter, line, lineNo), true
+}
+
+func splitPreprocessorDirective(value string) (string, string) {
+	end := 0
+	for end < len(value) {
+		ch := value[end]
+		if ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			end++
+			continue
+		}
+		break
+	}
+	return value[:end], value[end:]
 }
 
 func extractDelimitedHeader(payload string, delimiter byte) (string, bool) {
@@ -295,7 +309,7 @@ func makeParsedInclude(path string, delimiter byte, line string, lineNo int) par
 	}
 }
 
-func mapIncludeToDependency(repoPath string, sourcePath string, include parsedInclude, includeDirs []string, catalog dependencyCatalog) (string, bool) {
+func mapIncludeToDependency(repoPath, sourcePath string, include parsedInclude, includeDirs []string, catalog dependencyCatalog) (string, bool) {
 	resolver := &includeResolver{
 		repoPath:    repoPath,
 		includeDirs: includeDirs,
