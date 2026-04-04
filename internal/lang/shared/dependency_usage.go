@@ -201,19 +201,9 @@ func maskProfileForFile(filePath string) maskProfile {
 			doubleQuote: true,
 		}
 	case ".rs":
-		return maskProfile{
-			lineSlashSlash: true,
-			blockSlashStar: true,
-			singleQuote:    true,
-			doubleQuote:    true,
-		}
+		return slashCommentStringProfile()
 	case ".swift", ".kt", ".kts", ".fs", ".fsx":
-		return maskProfile{
-			lineSlashSlash: true,
-			blockSlashStar: true,
-			singleQuote:    true,
-			doubleQuote:    true,
-		}
+		return slashCommentStringProfile()
 	case ".rb":
 		return maskProfile{
 			lineHash:      true,
@@ -223,6 +213,15 @@ func maskProfileForFile(filePath string) maskProfile {
 		}
 	default:
 		return defaultMaskProfile
+	}
+}
+
+func slashCommentStringProfile() maskProfile {
+	return maskProfile{
+		lineSlashSlash: true,
+		blockSlashStar: true,
+		singleQuote:    true,
+		doubleQuote:    true,
 	}
 }
 
