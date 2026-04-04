@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -75,6 +76,19 @@ func TestParsePackageJSONLicenseVariants(t *testing.T) {
 	}
 	if got := parsePackageJSONLicense(json.RawMessage(`{"bad":`)); got != "" {
 		t.Fatalf("expected empty license for invalid raw json, got %q", got)
+	}
+}
+
+func TestPackageJSONLicenseRawWhitespacePrimarySkipsLicensesFallback(t *testing.T) {
+	pkg := packageJSON{
+		License:  "   ",
+		Licenses: []any{"MIT"},
+	}
+	if got := packageJSONLicenseRaw(pkg); got != "" {
+		t.Fatalf("expected empty raw license from whitespace primary field, got %q", got)
+	}
+	if got := detectLicenseFromPackageJSON(pkg); got != nil {
+		t.Fatalf("expected nil license when primary field is whitespace, got %#v", got)
 	}
 }
 
@@ -224,6 +238,42 @@ func TestDetectLicenseFromFilesNoMatch(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "custom internal license text")
 	if got := detectLicenseFromFiles(root); got != nil {
 		t.Fatalf("expected nil fallback for unknown license text, got %#v", got)
+	}
+}
+
+func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
+	root := t.TempDir()
+	unknown := filepath.Join(root, "LICENSE")
+	known := filepath.Join(root, "COPYING")
+	testutil.MustWriteFile(t, unknown, "custom internal license text")
+	testutil.MustWriteFile(t, known, "MIT License\nPermission is hereby granted...")
+
+	probe := probeLicenseCandidates(root, []string{unknown, known})
+	if probe == nil {
+		t.Fatalf("expected probe result for known license candidate")
+	}
+	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
+		t.Fatalf("unexpected probe result: %#v", probe)
+	}
+}
+
+func TestCollectRegistryProvenanceSignals(t *testing.T) {
+	pkg := packageJSON{
+		Resolved:   "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
+		Integrity:  "sha512-abc",
+		Repository: map[string]any{"url": "https://github.com/example/repo"},
+	}
+	pkg.PublishConfig.Registry = " https://registry.npmjs.org/ "
+
+	signals := collectRegistryProvenanceSignals(pkg)
+	want := []string{
+		"registry:https://registry.npmjs.org/",
+		"resolved",
+		"integrity",
+		"repository",
+	}
+	if !slices.Equal(signals, want) {
+		t.Fatalf("unexpected registry signals: got %#v want %#v", signals, want)
 	}
 }
 
