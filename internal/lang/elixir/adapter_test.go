@@ -187,6 +187,11 @@ func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
 			input: "value = 'foo#bar'\n# comment\n",
 			want:  "value = 'foo#bar'\n\n",
 		},
+		{
+			name:  "multiline double quoted hash stays with embedded quote",
+			input: "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n# comment\n",
+			want:  "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n\n",
+		},
 	}
 
 	for _, tc := range tests {
@@ -207,6 +212,24 @@ func TestParseImportsAliasAsSetsLocalName(t *testing.T) {
 	}
 	if imports[0].Local != "Baz" {
 		t.Fatalf("expected alias local name Baz, got %q", imports[0].Local)
+	}
+}
+
+func TestParseImportsIgnoresAliasLikeTextInMultilineStrings(t *testing.T) {
+	content := []byte("defmodule Demo do\n  message = \"\"\"\n  alias Foo.Bar\n  import Foo.Bar\n  \"\"\"\n  notes = '''\n  use Foo.Bar\n  require Foo.Bar\n  '''\n  alias Foo.Bar, as: Baz\n  import Foo.Bar\nend\n")
+	declared := map[string]struct{}{"foo": {}}
+
+	imports := parseImports(content, "lib/demo.ex", declared)
+	if len(imports) != 2 {
+		t.Fatalf("expected only real imports outside multiline strings, got %#v", imports)
+	}
+
+	lineToLocal := map[int]string{}
+	for _, imp := range imports {
+		lineToLocal[imp.Location.Line] = imp.Local
+	}
+	if lineToLocal[10] != "Baz" || lineToLocal[11] != "Bar" {
+		t.Fatalf("expected imports at lines 10 and 11 with locals Baz/Bar, got %#v", imports)
 	}
 }
 
