@@ -87,6 +87,20 @@ func walkGoDetectionEntry(path string, entry fs.DirEntry, roots map[string]struc
 	return nil
 }
 
+func manifestPathExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.IsDir() {
+		return false, nil
+	}
+	return true, nil
+}
+
 func applyGoRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
 	rootSignals := []struct {
 		name       string
@@ -97,7 +111,11 @@ func applyGoRootSignals(repoPath string, detection *language.Detection, roots ma
 	}
 	for _, signal := range rootSignals {
 		candidate := filepath.Join(repoPath, signal.name)
-		if _, err := os.Stat(candidate); err == nil {
+		exists, err := manifestPathExists(candidate)
+		if err != nil {
+			return err
+		}
+		if exists {
 			detection.Matched = true
 			detection.Confidence += signal.confidence
 			roots[repoPath] = struct{}{}
@@ -106,8 +124,6 @@ func applyGoRootSignals(repoPath string, detection *language.Detection, roots ma
 					return err
 				}
 			}
-		} else if !os.IsNotExist(err) {
-			return err
 		}
 	}
 	return nil
@@ -375,11 +391,13 @@ func nestedModuleDirs(repoPath string) (map[string]struct{}, error) {
 		if path == repoPath {
 			return nil
 		}
-		if _, err := os.Stat(filepath.Join(path, goModName)); err == nil {
+		exists, err := manifestPathExists(filepath.Join(path, goModName))
+		if err != nil {
+			return err
+		}
+		if exists {
 			dirs[path] = struct{}{}
 			return filepath.SkipDir
-		} else if !os.IsNotExist(err) {
-			return err
 		}
 		return nil
 	})
@@ -1086,11 +1104,15 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 
 func readGoWorkUseEntries(repoPath string) ([]string, error) {
 	workPath := filepath.Join(repoPath, goWorkName)
+	exists, err := manifestPathExists(workPath)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
 	content, err := safeio.ReadFileUnder(repoPath, workPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return parseGoWorkUseEntries(content), nil
