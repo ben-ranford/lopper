@@ -188,14 +188,14 @@ bench-gate:
 	base_tree="$$bench_dir/base"; \
 	base_output_tmp=$$(mktemp); \
 	head_output_tmp=$$(mktemp); \
-	cleanup() { env -u GIT_INDEX_FILE git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true; rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
+	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
 	trap cleanup EXIT INT TERM; \
 	if [ "$$used_fallback" -eq 1 ]; then \
 		echo "Running memory benchmark delta against fallback base $$base_ref (requested $$requested_base_ref)."; \
 	else \
 		echo "Running memory benchmark delta against $$base_ref."; \
 	fi; \
-	env -u GIT_INDEX_FILE git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null; \
+	(unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); \
 	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
 		cat "$$base_output_tmp"; \
 		exit 1; \
