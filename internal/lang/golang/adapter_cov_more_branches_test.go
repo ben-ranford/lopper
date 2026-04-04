@@ -78,8 +78,8 @@ func testGoModuleLoadingErrorBranches(t *testing.T) {
 	if err := os.Mkdir(goWorkDir, 0o755); err != nil {
 		t.Fatalf("mkdir go.work dir: %v", err)
 	}
-	if _, err := loadGoModuleInfo(repo); err == nil {
-		t.Fatalf("expected go.work directory to fail workspace module loading")
+	if _, err := loadGoModuleInfo(repo); err != nil {
+		t.Fatalf("expected go.work directory to be ignored, got: %v", err)
 	}
 	if err := os.RemoveAll(goWorkDir); err != nil {
 		t.Fatalf("remove go.work dir: %v", err)

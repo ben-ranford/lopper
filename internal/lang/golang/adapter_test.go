@@ -105,15 +105,23 @@ func TestDetectWithConfidenceRepoIsFileErrors(t *testing.T) {
 	}
 }
 
-func TestApplyGoRootSignalsGoWorkError(t *testing.T) {
+func TestApplyGoRootSignalsIgnoresManifestDirectories(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoGoMod(t, repo, moduleDemoLine+"\n")
+	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
+		t.Fatalf("mkdir go.mod dir: %v", err)
+	}
 	mkdirGoWorkDir(t, repo)
 
 	detection := language.Detection{}
 	roots := map[string]struct{}{}
-	if applyGoRootSignals(repo, &detection, roots) == nil {
-		t.Fatalf("expected applyGoRootSignals error when go.work is unreadable")
+	if err := applyGoRootSignals(repo, &detection, roots); err != nil {
+		t.Fatalf("applyGoRootSignals: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 {
+		t.Fatalf("expected no root match for directory manifests, got %#v", detection)
+	}
+	if len(roots) != 0 {
+		t.Fatalf("expected no roots for directory manifests, got %#v", roots)
 	}
 }
 
@@ -143,13 +151,14 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 	repo := t.TempDir()
 	adapter := NewAdapter()
 
-	// loadGoModuleInfo failure path via unreadable go.mod (directory)
+	// directory manifests should be ignored by module/workspace loading
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
 		t.Fatalf("mkdir go.mod dir: %v", err)
 	}
+	mkdirGoWorkDir(t, repo)
 	_, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo})
-	if err == nil {
-		t.Fatalf("expected analyse error for unreadable go.mod")
+	if err != nil {
+		t.Fatalf("analyse with directory manifests: %v", err)
 	}
 
 	// scanRepo failure path via canceled context
@@ -236,6 +245,25 @@ func TestAdapterDetectWithNoSignals(t *testing.T) {
 	}
 	if detection.Confidence != 0 {
 		t.Fatalf("expected zero confidence, got %d", detection.Confidence)
+	}
+}
+
+func TestAdapterDetectIgnoresManifestDirectories(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
+		t.Fatalf("mkdir go.mod dir: %v", err)
+	}
+	mkdirGoWorkDir(t, repo)
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf(errDetectFmt, err)
+	}
+	if detection.Matched || detection.Confidence != 0 {
+		t.Fatalf("expected no detection for directory manifests, got %#v", detection)
+	}
+	if len(detection.Roots) != 0 {
+		t.Fatalf("expected no roots for directory manifests, got %#v", detection.Roots)
 	}
 }
 
@@ -593,14 +621,20 @@ func TestModuleLoadingHelpersNilModuleInfo(t *testing.T) {
 	}
 }
 
-func TestLoadGoModuleInfoReadError(t *testing.T) {
+func TestLoadGoModuleInfoIgnoresGoModDirectory(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
 		t.Fatalf("mkdir go.mod dir: %v", err)
 	}
-	_, err := loadGoModuleInfo(repo)
-	if err == nil {
-		t.Fatalf("expected read error when go.mod is a directory")
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if info.ModulePath != "" {
+		t.Fatalf("expected empty module path for directory go.mod, got %q", info.ModulePath)
+	}
+	if len(info.LocalModulePaths) != 0 || len(info.DeclaredDependencies) != 0 || len(info.ReplacementImports) != 0 {
+		t.Fatalf("expected empty module info for directory go.mod, got %#v", info)
 	}
 }
 
@@ -622,12 +656,15 @@ func TestLoadGoWorkLocalModulesNoFile(t *testing.T) {
 	}
 }
 
-func TestLoadGoWorkLocalModulesReadError(t *testing.T) {
+func TestLoadGoWorkLocalModulesIgnoresDirectory(t *testing.T) {
 	repo := t.TempDir()
 	mkdirGoWorkDir(t, repo)
-	_, err := loadGoWorkLocalModules(repo)
-	if err == nil {
-		t.Fatalf("expected read error when go.work is a directory")
+	mods, err := loadGoWorkLocalModules(repo)
+	if err != nil {
+		t.Fatalf("load go.work modules: %v", err)
+	}
+	if len(mods) != 0 {
+		t.Fatalf("expected no modules for directory go.work, got %#v", mods)
 	}
 }
 
@@ -923,11 +960,15 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 		t.Fatalf("unexpected addGoWorkRoots no-file error: %v", err)
 	}
 
-	// go.work as directory should error
+	// go.work as directory should be ignored
 	repoErr := t.TempDir()
 	mkdirGoWorkDir(t, repoErr)
-	if addGoWorkRoots(repoErr, map[string]struct{}{}) == nil {
-		t.Fatalf("expected addGoWorkRoots read error")
+	ignoredRoots := map[string]struct{}{}
+	if err := addGoWorkRoots(repoErr, ignoredRoots); err != nil {
+		t.Fatalf("addGoWorkRoots with directory go.work: %v", err)
+	}
+	if len(ignoredRoots) != 0 {
+		t.Fatalf("expected no roots when go.work is a directory, got %#v", ignoredRoots)
 	}
 
 	update := language.Detection{}
@@ -1193,7 +1234,7 @@ func TestScanGoSourceFileErrorAndSkipCounters(t *testing.T) {
 	}
 }
 
-func TestDiscoverNestedModulesContinueOnUnreadableGoMod(t *testing.T) {
+func TestDiscoverNestedModulesIgnoresGoModDirectory(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoMod), "module example.com/root\n")
 	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
@@ -1201,6 +1242,14 @@ func TestDiscoverNestedModulesContinueOnUnreadableGoMod(t *testing.T) {
 	}
 	if err := os.Mkdir(filepath.Join(repo, "sub", fileGoMod), 0o755); err != nil {
 		t.Fatalf("mkdir sub/go.mod dir: %v", err)
+	}
+
+	nested, err := nestedModuleDirs(repo)
+	if err != nil {
+		t.Fatalf("nested module dirs: %v", err)
+	}
+	if len(nested) != 0 {
+		t.Fatalf("expected go.mod directory to be ignored, got %#v", nested)
 	}
 
 	mods, deps, replacements, err := discoverNestedModules(repo)
