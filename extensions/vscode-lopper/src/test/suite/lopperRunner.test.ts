@@ -107,6 +107,7 @@ suite("lopper runner", () => {
   test("orchestrates analysis through binary lifecycle and command executor seams", async () => {
     const folder = workspaceFolder();
     const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const managedBinaryPath = path.join(folder.uri.fsPath, ".lopper-managed", "lopper");
     const calls: Array<{ binaryPath: string; args: string[]; cwd: string }> = [];
     let resolvedRequest: BinaryResolutionRequest | undefined;
 
@@ -160,7 +161,7 @@ suite("lopper runner", () => {
         binaryLifecycle: {
           resolveBinaryPath: async (request) => {
             resolvedRequest = request;
-            return "/tmp/lopper";
+            return managedBinaryPath;
           },
         },
         reportExecutor,
@@ -168,7 +169,7 @@ suite("lopper runner", () => {
     );
 
     const analysis = await runner.analyseWorkspace(folder);
-    assert.equal(analysis.binaryPath, "/tmp/lopper");
+    assert.equal(analysis.binaryPath, managedBinaryPath);
     assert.equal(calls.length, 2);
     const [firstCall, secondCall] = calls;
     assert.ok(firstCall, "expected primary analysis command");
