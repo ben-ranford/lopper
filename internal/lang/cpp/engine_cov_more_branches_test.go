@@ -67,6 +67,12 @@ func TestCPPLoadCompileContextCapAndHelpers(t *testing.T) {
 	if _, ok := parseIncludeLine("#include <>", 1); ok {
 		t.Fatalf("expected empty delimited include to be ignored")
 	}
+	if _, ok := parseIncludeLine("#include_next <fmt/core.h>", 1); ok {
+		t.Fatalf("expected include_next directive to be ignored")
+	}
+	if _, ok := parseIncludeLine("#include2 <fmt/core.h>", 1); ok {
+		t.Fatalf("expected include2 directive to be ignored")
+	}
 	if _, ok := parseIncludeLine("#define VALUE 1", 1); ok {
 		t.Fatalf("expected non-include preprocessor line to be ignored")
 	}
