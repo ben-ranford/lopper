@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 
@@ -8,11 +9,13 @@ ARG BUILD_DATE=unknown
 RUN apk add --no-cache build-base
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
-RUN ldflags="-s -w" \
+RUN --mount=type=cache,target=/go/pkg/mod \
+	--mount=type=cache,target=/root/.cache/go-build \
+	ldflags="-s -w" \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.version=${VERSION}" \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.commit=${GIT_COMMIT}" \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.buildDate=${BUILD_DATE}" \
