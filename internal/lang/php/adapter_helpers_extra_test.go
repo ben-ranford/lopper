@@ -357,6 +357,29 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	}
 }
 
+func TestParseNamespaceReferencesIgnoresCommentAndStringMentions(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
+	content := helpersPHPHeader +
+		"$class = \"\\\\Monolog\\\\Logger\";\n" +
+		"// \\Monolog\\Logger\n" +
+		"# \\Monolog\\Logger\n" +
+		"/* \\Monolog\\Logger */\n" +
+		"$logger = new \\Monolog\\Logger(\"app\");\n"
+	imports, unresolved := parseNamespaceReferences([]byte(content), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf("unexpected unresolved: %d", unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected exactly one code namespace import, got %#v", imports)
+	}
+	if imports[0].Module != helpersMonologLogger {
+		t.Fatalf("expected module %q, got %#v", helpersMonologLogger, imports[0])
+	}
+	if imports[0].Location.Line != 6 {
+		t.Fatalf("expected code namespace import on line 6, got %d", imports[0].Location.Line)
+	}
+}
+
 func TestDependencyFromModuleBranches(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Monolog": helpersMonologDependency},

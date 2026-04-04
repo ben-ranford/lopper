@@ -232,6 +232,46 @@ $logger = new \Monolog\Logger("app");
 	}
 }
 
+func TestPHPAdapterIgnoresNamespaceMentionsInCommentsAndStrings(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))
+	lockTemplate := `{
+  "packages": [
+    {
+      "name": %q,
+      "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
+    }
+  ]
+}
+`
+	lockContent := fmt.Sprintf(lockTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerLock), lockContent)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+$className = "\\Monolog\\Logger";
+// \Monolog\Logger should not count as usage
+# \Monolog\Logger should not count as usage
+/* \Monolog\Logger should not count as usage */
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: testMonologDependency,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
+		t.Fatalf("expected no namespace imports to be counted from comments/strings, report=%#v", dep)
+	}
+	if !containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("expected no-import warning when only comments/strings mention namespaces, got %#v", reportData.Warnings)
+	}
+}
+
 func hasRiskCueCode(dep report.DependencyReport, code string) bool {
 	for _, cue := range dep.RiskCues {
 		if cue.Code == code {

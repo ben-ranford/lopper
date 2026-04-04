@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -24,7 +25,8 @@ func parseImports(content []byte, filePath string, resolver composerResolver) ([
 }
 
 func parsePHPImports(content []byte, filePath string, resolver composerResolver) importParseResult {
-	text := string(content)
+	sanitized := shared.MaskCommentsAndStrings(content)
+	text := string(sanitized)
 	matches := useStmtPattern.FindAllStringSubmatchIndex(text, -1)
 	result := importParseResult{
 		imports:      make([]importBinding, 0),
@@ -42,14 +44,18 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		result.unresolvedCount += unresolvedCount
 	}
 
-	namespaceImports, unresolvedNamespaces := parseNamespaceReferences(content, filePath, resolver)
+	namespaceImports, unresolvedNamespaces := parseNamespaceReferencesText(text, filePath, resolver)
 	result.imports = append(result.imports, namespaceImports...)
 	result.unresolvedCount += unresolvedNamespaces
 	return result
 }
 
 func parseNamespaceReferences(content []byte, filePath string, resolver composerResolver) ([]importBinding, int) {
-	text := string(content)
+	sanitized := shared.MaskCommentsAndStrings(content)
+	return parseNamespaceReferencesText(string(sanitized), filePath, resolver)
+}
+
+func parseNamespaceReferencesText(text string, filePath string, resolver composerResolver) ([]importBinding, int) {
 	matches := namespaceRefPattern.FindAllStringIndex(text, -1)
 	imports := make([]importBinding, 0)
 	unresolved := 0

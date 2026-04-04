@@ -70,16 +70,17 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	}
 
 	usage := make(map[string]int, len(importCount))
-	for i := 0; i < len(content); {
-		if !isWordByte(content[i]) {
+	scannable := MaskCommentsAndStrings(content)
+	for i := 0; i < len(scannable); {
+		if !isWordByte(scannable[i]) {
 			i++
 			continue
 		}
 		start := i
-		for i < len(content) && isWordByte(content[i]) {
+		for i < len(scannable) && isWordByte(scannable[i]) {
 			i++
 		}
-		token := string(content[start:i])
+		token := string(scannable[start:i])
 		if _, ok := importCount[token]; ok {
 			usage[token]++
 		}
@@ -92,6 +93,116 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 		usage[local] = occurrences
 	}
 	return usage
+}
+
+// MaskCommentsAndStrings blanks comment and string literal content while
+// preserving newlines and byte offsets for line/column calculations.
+func MaskCommentsAndStrings(content []byte) []byte {
+	masked := make([]byte, len(content))
+	copy(masked, content)
+
+	state := scannerStateCode
+	for i := 0; i < len(masked); {
+		ch := masked[i]
+		switch state {
+		case scannerStateCode:
+			switch {
+			case ch == '/' && i+1 < len(masked) && masked[i+1] == '/':
+				maskNonNewline(masked, i)
+				maskNonNewline(masked, i+1)
+				i += 2
+				state = scannerStateLineComment
+			case ch == '/' && i+1 < len(masked) && masked[i+1] == '*':
+				maskNonNewline(masked, i)
+				maskNonNewline(masked, i+1)
+				i += 2
+				state = scannerStateBlockComment
+			case ch == '#':
+				maskNonNewline(masked, i)
+				i++
+				state = scannerStateLineComment
+			case ch == '\'':
+				maskNonNewline(masked, i)
+				i++
+				state = scannerStateSingleQuote
+			case ch == '"':
+				maskNonNewline(masked, i)
+				i++
+				state = scannerStateDoubleQuote
+			case ch == '`':
+				maskNonNewline(masked, i)
+				i++
+				state = scannerStateBacktick
+			default:
+				i++
+			}
+		case scannerStateLineComment:
+			if ch == '\n' || ch == '\r' {
+				i++
+				state = scannerStateCode
+				continue
+			}
+			maskNonNewline(masked, i)
+			i++
+		case scannerStateBlockComment:
+			if ch == '*' && i+1 < len(masked) && masked[i+1] == '/' {
+				maskNonNewline(masked, i)
+				maskNonNewline(masked, i+1)
+				i += 2
+				state = scannerStateCode
+				continue
+			}
+			maskNonNewline(masked, i)
+			i++
+		case scannerStateSingleQuote:
+			maskNonNewline(masked, i)
+			if ch == '\\' && i+1 < len(masked) {
+				i++
+				maskNonNewline(masked, i)
+			} else if ch == '\'' {
+				state = scannerStateCode
+			}
+			i++
+		case scannerStateDoubleQuote:
+			maskNonNewline(masked, i)
+			if ch == '\\' && i+1 < len(masked) {
+				i++
+				maskNonNewline(masked, i)
+			} else if ch == '"' {
+				state = scannerStateCode
+			}
+			i++
+		case scannerStateBacktick:
+			maskNonNewline(masked, i)
+			if ch == '\\' && i+1 < len(masked) {
+				i++
+				maskNonNewline(masked, i)
+			} else if ch == '`' {
+				state = scannerStateCode
+			}
+			i++
+		}
+	}
+
+	return masked
+}
+
+type scannerState uint8
+
+const (
+	scannerStateCode scannerState = iota
+	scannerStateLineComment
+	scannerStateBlockComment
+	scannerStateSingleQuote
+	scannerStateDoubleQuote
+	scannerStateBacktick
+)
+
+func maskNonNewline(content []byte, index int) {
+	if content[index] == '\n' || content[index] == '\r' {
+		return
+	}
+	content[index] = ' '
 }
 
 // isWordByte implements an ASCII-only token scanner for import local names.

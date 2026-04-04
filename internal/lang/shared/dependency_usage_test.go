@@ -69,6 +69,18 @@ func TestCountUsage(t *testing.T) {
 	}
 }
 
+func TestCountUsageIgnoresCommentsAndStrings(t *testing.T) {
+	imports := []ImportRecord{{Local: testLocalFoo}, {Local: "bar"}}
+	content := []byte("import foo\nimport bar\nfoo()\n\"foo bar\"\n'foo'\n`foo`\n// foo bar\n# foo bar\n/* foo\nbar\n*/\n")
+	usage := CountUsage(content, imports)
+	if usage[testLocalFoo] != 1 {
+		t.Fatalf("expected foo usage 1 from code-only references, got %d", usage[testLocalFoo])
+	}
+	if usage["bar"] != 0 {
+		t.Fatalf("expected bar usage 0 with comment/string mentions ignored, got %d", usage["bar"])
+	}
+}
+
 func TestCountUsageHonorsWordBoundaries(t *testing.T) {
 	imports := []ImportRecord{
 		{Local: testLocalFoo},
