@@ -174,7 +174,7 @@ suite("lopper runner", () => {
     assert.ok(firstCall, "expected primary analysis command");
     assert.ok(secondCall, "expected follow-up codemod command");
     assert.equal(firstCall.args[0], "analyse");
-    assert.equal(secondCall.args[secondCall.args.length - 1], "--suggest-only");
+    assert.equal(secondCall.args.at(-1), "--suggest-only");
     assert.equal(analysis.codemodsByDependency.get("scope-lib")?.suggestions?.[0]?.toModule, "scope-lib/chunk");
     assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
   });

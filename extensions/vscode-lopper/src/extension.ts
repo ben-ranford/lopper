@@ -62,8 +62,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   private missingBinaryWarningShown = false;
   private readonly disposable: vscode.Disposable;
 
-  constructor(context: vscode.ExtensionContext, runner: WorkspaceAnalysisRunner = new LopperRunner(this.output, context)) {
-    this.runner = runner;
+  constructor(context: vscode.ExtensionContext, runner?: WorkspaceAnalysisRunner) {
+    this.runner = runner ?? new LopperRunner(this.output, context);
     this.statusBar.command = "lopper.refreshWorkspace";
     this.statusBar.text = this.latestSummary;
     this.statusBar.tooltip = "Refresh Lopper diagnostics";
@@ -455,10 +455,18 @@ class LopperExtensionBootstrap implements vscode.Disposable {
   constructor(private readonly factory: LopperControllerFactory = new DefaultLopperControllerFactory()) {}
 
   async activate(context: vscode.ExtensionContext): Promise<ExtensionApi> {
+    this.controller?.dispose();
+    this.controller = undefined;
+
     const controller = this.factory.create(context);
-    this.controller = controller;
-    await controller.initialize();
-    return this.extensionApi();
+    try {
+      await controller.initialize();
+      this.controller = controller;
+      return this.extensionApi();
+    } catch (error) {
+      controller.dispose();
+      throw error;
+    }
   }
 
   dispose(): void {

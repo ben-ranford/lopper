@@ -10,6 +10,7 @@ import {
   type BinaryLifecycleManager,
   type BinaryResolutionRequest,
 } from "./managedBinary";
+export { BinaryResolutionError } from "./managedBinary";
 import type {
   LopperCodemodReport,
   LopperDependencyReport,
@@ -17,8 +18,6 @@ import type {
 } from "./types";
 
 const execFileAsync = promisify(execFile);
-
-export { BinaryResolutionError };
 
 export interface WorkspaceAnalysis {
   folder: vscode.WorkspaceFolder;
