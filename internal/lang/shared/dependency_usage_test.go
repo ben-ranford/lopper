@@ -81,39 +81,27 @@ func TestCountUsageIgnoresCommentsAndStrings(t *testing.T) {
 	}
 }
 
-func TestCountUsageGoImportPathWithSingleCodeUsage(t *testing.T) {
-	imports := []ImportRecord{{Local: "uuid", Location: report.Location{File: "main.go", Line: 1, Column: 1}}}
-	content := []byte("import \"github.com/google/uuid\"\nfunc main() { _ = uuid.NewString() }\n")
-	usage := CountUsage(content, imports)
-	if usage["uuid"] != 1 {
-		t.Fatalf("expected uuid usage 1 after declaration subtraction, got %d", usage["uuid"])
+func TestCountUsageLanguageAwareMasking(t *testing.T) {
+	cases := []struct {
+		name    string
+		local   string
+		file    string
+		content string
+	}{
+		{"go import path still subtracts declaration once", "uuid", "main.go", "import \"github.com/google/uuid\"\nfunc main() { _ = uuid.NewString() }\n"},
+		{"python floor division does not look like a comment", "mathlib", "main.py", "import mathlib\nvalue = 10 // mathlib\n"},
+		{"swift backticks remain tokenizable", "foo", "main.swift", "import foo\nlet escaped = `foo`\n"},
+		{"rust attributes are not masked as hash comments", "Serialize", "main.rs", "use serde::Serialize;\n#[derive(Serialize)]\nstruct Person;\n"},
 	}
-}
 
-func TestCountUsagePythonFloorDivisionDoesNotTriggerCommentMasking(t *testing.T) {
-	imports := []ImportRecord{{Local: "mathlib", Location: report.Location{File: "main.py", Line: 1, Column: 1}}}
-	content := []byte("import mathlib\nvalue = 10 // mathlib\n")
-	usage := CountUsage(content, imports)
-	if usage["mathlib"] != 1 {
-		t.Fatalf("expected mathlib usage 1 with python floor division, got %d", usage["mathlib"])
-	}
-}
-
-func TestCountUsageSwiftBackticksRemainTokenizable(t *testing.T) {
-	imports := []ImportRecord{{Local: "foo", Location: report.Location{File: "main.swift", Line: 1, Column: 1}}}
-	content := []byte("import foo\nlet escaped = `foo`\n")
-	usage := CountUsage(content, imports)
-	if usage["foo"] != 1 {
-		t.Fatalf("expected foo usage 1 with swift backtick identifier, got %d", usage["foo"])
-	}
-}
-
-func TestCountUsageRustAttributesAreNotMaskedAsComments(t *testing.T) {
-	imports := []ImportRecord{{Local: "Serialize", Location: report.Location{File: "main.rs", Line: 1, Column: 1}}}
-	content := []byte("use serde::Serialize;\n#[derive(Serialize)]\nstruct Person;\n")
-	usage := CountUsage(content, imports)
-	if usage["Serialize"] != 1 {
-		t.Fatalf("expected Serialize usage 1 with rust attributes preserved, got %d", usage["Serialize"])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			imports := []ImportRecord{{Local: tc.local, Location: report.Location{File: tc.file, Line: 1, Column: 1}}}
+			usage := CountUsage([]byte(tc.content), imports)
+			if usage[tc.local] != 1 {
+				t.Fatalf("expected %s usage 1, got %d", tc.local, usage[tc.local])
+			}
+		})
 	}
 }
 
