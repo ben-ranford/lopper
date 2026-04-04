@@ -116,7 +116,7 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 	}
 }
 
-func clampUsageCounts(importCount map[string]int, usage map[string]int) {
+func clampUsageCounts(importCount, usage map[string]int) {
 	for local := range importCount {
 		if usage[local] < 0 {
 			usage[local] = 0
