@@ -18,6 +18,8 @@ const testComposerLock = "composer.lock"
 const testIndexPHP = "index.php"
 const testMonologDependency = "monolog/monolog"
 const testPHPHeader = "<?php\n"
+const testExpectedOneDependencyReportFmt = "expected one dependency report, got %d"
+const testAnalyseErrFmt = "analyse: %v"
 
 func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
@@ -114,7 +116,7 @@ $yaml = Yaml::parse("foo: bar");
 		t.Fatalf("analyse dependency: %v", err)
 	}
 	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(depReport.Dependencies))
 	}
 	dep := depReport.Dependencies[0]
 	if dep.Language != "php" {
@@ -182,7 +184,7 @@ Yaml::parse("foo: bar");
 		Dependency: "symfony/yaml",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected one dependency, got %d", len(reportData.Dependencies))
@@ -218,10 +220,10 @@ $logger = new \Monolog\Logger("app");
 		Dependency: testMonologDependency,
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
 	if dep.UsedExportsCount == 0 {
@@ -229,6 +231,46 @@ $logger = new \Monolog\Logger("app");
 	}
 	if containsWarning(reportData.Warnings, "no imports found") {
 		t.Fatalf("did not expect no-import warning for namespace reference usage: %#v", reportData.Warnings)
+	}
+}
+
+func TestPHPAdapterIgnoresNamespaceMentionsInCommentsAndStrings(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))
+	lockTemplate := `{
+  "packages": [
+    {
+      "name": %q,
+      "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
+    }
+  ]
+}
+`
+	lockContent := fmt.Sprintf(lockTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerLock), lockContent)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+$className = "\\Monolog\\Logger";
+// \Monolog\Logger should not count as usage
+# \Monolog\Logger should not count as usage
+/* \Monolog\Logger should not count as usage */
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: testMonologDependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
+		t.Fatalf("expected no namespace imports to be counted from comments/strings, report=%#v", dep)
+	}
+	if !containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("expected no-import warning when only comments/strings mention namespaces, got %#v", reportData.Warnings)
 	}
 }
 
