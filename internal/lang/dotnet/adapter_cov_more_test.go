@@ -13,6 +13,7 @@ import (
 )
 
 const dotNetProgramSource = "Program.cs"
+const dotNetReadmeFile = "README.md"
 const dotNetMkdirObjDirErrFmt = "mkdir obj dir: %v"
 const dotNetWriteProgramFileErrFmt = "write " + dotNetProgramSource + ": %v"
 
@@ -199,7 +200,7 @@ func TestDotNetImportResolutionHelpers(t *testing.T) {
 	if dependency, resolved := resolveImportDependency("System.Text", mapper, meta); resolved || dependency != "" {
 		t.Fatalf("expected system import to be ignored, got dependency=%q resolved=%v", dependency, resolved)
 	}
-	if deps, err := parseManifestDependenciesForEntry(t.TempDir(), filepath.Join(t.TempDir(), "README.md"), "README.md"); err != nil || len(deps) != 0 {
+	if deps, err := parseManifestDependenciesForEntry(t.TempDir(), filepath.Join(t.TempDir(), dotNetReadmeFile), dotNetReadmeFile); err != nil || len(deps) != 0 {
 		t.Fatalf("expected non-manifest entry to be ignored, got deps=%#v err=%v", deps, err)
 	}
 	if module, alias, ok := parseCSharpUsing("using ;"); ok || module != "" || alias != "" {
@@ -233,7 +234,7 @@ func TestDotNetBuildTopDependenciesAndHelperGuards(t *testing.T) {
 }
 
 func TestDotNetSignalForNameDefaultBranch(t *testing.T) {
-	if signalForName("README.md") != fileSignalNone {
+	if signalForName(dotNetReadmeFile) != fileSignalNone {
 		t.Fatalf("expected non-.NET filename to produce no detection signal")
 	}
 }
