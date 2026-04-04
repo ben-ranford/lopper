@@ -252,11 +252,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Validate sync token
+        env:
+          MAIN_SYNC_PAT: ${{ secrets.MAIN_SYNC_PAT }}
+        run: |
+          if [ -z "${MAIN_SYNC_PAT}" ]; then
+            echo "::error::MAIN_SYNC_PAT is required for sync-release-version direct pushes to protected main."
+            exit 1
+          fi
+
       - name: Checkout release branch
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.ref_name }}
+          token: ${{ secrets.MAIN_SYNC_PAT }}
 
       - name: Sync committed extension version
         env:
