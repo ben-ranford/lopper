@@ -7,8 +7,10 @@ import { suite, test } from "mocha";
 import * as tar from "tar";
 
 import {
+  BinaryResolutionError,
   archiveDestinationPath,
   assetNameForRelease,
+  LopperBinaryLifecycleManager,
   ManagedBinaryInstaller,
   type GitHubRelease,
 } from "../../managedBinary";
@@ -70,6 +72,86 @@ suite("managed binary installer", () => {
       () => archiveDestinationPath(path.join(process.cwd(), "extract-root"), "lopper_1.2.1_linux_amd64/../../lopper"),
       /escapes the extraction directory/,
     );
+  });
+
+  test("falls back to managed install when configured/local binaries are unavailable", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-test-"));
+    const previousPath = process.env.PATH;
+    const progressTags: string[] = [];
+    let installerCallCount = 0;
+
+    try {
+      process.env.PATH = "";
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async (releaseTag) => {
+            installerCallCount += 1;
+            return {
+              binaryPath: path.join(tempRoot, "managed", "lopper"),
+              tag: releaseTag ?? "latest",
+              downloaded: true,
+            };
+          },
+        },
+        { appendLine: () => undefined },
+        {
+          install: async (releaseTag, install) => {
+            progressTags.push(releaseTag ?? "latest");
+            return install();
+          },
+        },
+        "linux",
+      );
+
+      const binaryPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot: tempRoot,
+        workspaceTrusted: true,
+        autoDownloadBinary: true,
+        managedBinaryTag: "v2.3.4",
+      });
+
+      assert.equal(binaryPath, path.join(tempRoot, "managed", "lopper"));
+      assert.equal(installerCallCount, 1);
+      assert.deepEqual(progressTags, ["v2.3.4"]);
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("fails when auto-download is disabled and no binaries resolve", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-test-"));
+    const previousPath = process.env.PATH;
+
+    try {
+      process.env.PATH = "";
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async () => {
+            throw new Error("should not install when auto-download is disabled");
+          },
+        },
+        { appendLine: () => undefined },
+        undefined,
+        "linux",
+      );
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot: tempRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: false,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError &&
+          error.message.includes("enable lopper.autoDownloadBinary"),
+      );
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -135,4 +217,12 @@ async function createZipFixture(
   const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
   zip.writeZip(archivePath);
   return archivePath;
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
 }

@@ -2,7 +2,12 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { configuredLopperLanguage, shouldAutoRefreshForDocument, supportedDocumentSelectors } from "./languageConfiguration";
-import { BinaryResolutionError, LopperRunner, type WorkspaceAnalysis } from "./lopperRunner";
+import {
+  BinaryResolutionError,
+  LopperRunner,
+  type WorkspaceAnalysis,
+  type WorkspaceAnalysisRunner,
+} from "./lopperRunner";
 import type {
   LopperCodemodSuggestion,
   LopperDependencyReport,
@@ -25,11 +30,31 @@ interface ExtensionApi {
   getLatestSummary(): string;
 }
 
-class LopperController implements vscode.Disposable, vscode.HoverProvider, vscode.CodeActionProvider {
+interface LopperControllerContract extends vscode.Disposable {
+  initialize(): Promise<void>;
+  refreshWorkspace(
+    folder?: vscode.WorkspaceFolder,
+    revealErrors?: boolean,
+    document?: vscode.TextDocument,
+  ): Promise<void>;
+  getLatestSummary(): string;
+}
+
+interface LopperControllerFactory {
+  create(context: vscode.ExtensionContext): LopperControllerContract;
+}
+
+class DefaultLopperControllerFactory implements LopperControllerFactory {
+  create(context: vscode.ExtensionContext): LopperControllerContract {
+    return new LopperController(context);
+  }
+}
+
+class LopperController implements LopperControllerContract, vscode.HoverProvider, vscode.CodeActionProvider {
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("lopper");
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   private readonly output = vscode.window.createOutputChannel("Lopper");
-  private readonly runner: LopperRunner;
+  private readonly runner: WorkspaceAnalysisRunner;
   private readonly metadataByDocument = new Map<string, Map<string, DiagnosticMetadata>>();
   private readonly documentUrisByWorkspace = new Map<string, Set<string>>();
   private readonly refreshTimers = new Map<string, NodeJS.Timeout>();
@@ -37,8 +62,8 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
   private missingBinaryWarningShown = false;
   private readonly disposable: vscode.Disposable;
 
-  constructor(context: vscode.ExtensionContext) {
-    this.runner = new LopperRunner(this.output, context);
+  constructor(context: vscode.ExtensionContext, runner?: WorkspaceAnalysisRunner) {
+    this.runner = runner ?? new LopperRunner(this.output, context);
     this.statusBar.command = "lopper.refreshWorkspace";
     this.statusBar.text = this.latestSummary;
     this.statusBar.tooltip = "Refresh Lopper diagnostics";
@@ -424,20 +449,47 @@ class LopperController implements vscode.Disposable, vscode.HoverProvider, vscod
   }
 }
 
-let controller: LopperController | undefined;
+class LopperExtensionBootstrap implements vscode.Disposable {
+  private controller: LopperControllerContract | undefined;
+
+  constructor(private readonly factory: LopperControllerFactory = new DefaultLopperControllerFactory()) {}
+
+  async activate(context: vscode.ExtensionContext): Promise<ExtensionApi> {
+    this.controller?.dispose();
+    this.controller = undefined;
+
+    const controller = this.factory.create(context);
+    try {
+      await controller.initialize();
+      this.controller = controller;
+      return this.extensionApi();
+    } catch (error) {
+      controller.dispose();
+      throw error;
+    }
+  }
+
+  dispose(): void {
+    this.controller?.dispose();
+    this.controller = undefined;
+  }
+
+  private extensionApi(): ExtensionApi {
+    return {
+      refreshWorkspace: async () => {
+        await this.controller?.refreshWorkspace();
+      },
+      getLatestSummary: () => this.controller?.getLatestSummary() ?? "Lopper: idle",
+    };
+  }
+}
+
+const bootstrap = new LopperExtensionBootstrap();
 
 export async function activate(context: vscode.ExtensionContext): Promise<ExtensionApi> {
-  controller = new LopperController(context);
-  await controller.initialize();
-  return {
-    refreshWorkspace: async () => {
-      await controller?.refreshWorkspace();
-    },
-    getLatestSummary: () => controller?.getLatestSummary() ?? "Lopper: idle",
-  };
+  return bootstrap.activate(context);
 }
 
 export function deactivate(): void {
-  controller?.dispose();
-  controller = undefined;
+  bootstrap.dispose();
 }
