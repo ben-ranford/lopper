@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -14,6 +15,7 @@ func TestGoAdditionalBranchCoverage(t *testing.T) {
 	t.Run("helper guard branches", testGoHelperGuardBranches)
 	t.Run("repo bounded path guards", testGoRepoBoundedPathGuards)
 	t.Run("module loading error branches", testGoModuleLoadingErrorBranches)
+	t.Run("go work escape errors bubble up", testGoWorkEscapeErrorsBubbleUp)
 	t.Run("nested replacements populate missing entries", testGoNestedReplacementImports)
 }
 
@@ -103,6 +105,28 @@ func testGoModuleLoadingErrorBranches(t *testing.T) {
 	})
 	if _, err := loadGoModuleInfo(repo); err == nil {
 		t.Fatalf("expected unreadable nested directory to fail nested module discovery")
+	}
+}
+
+func testGoWorkEscapeErrorsBubbleUp(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	outside := t.TempDir()
+	outsideWork := filepath.Join(outside, goWorkName)
+	writeFile(t, outsideWork, go125Line+"\n\nuse ./\n")
+	if err := os.Symlink(outsideWork, filepath.Join(repo, goWorkName)); err != nil {
+		t.Skipf(errSymlinkFmt, err)
+	}
+
+	if _, err := loadGoModuleInfo(repo); err == nil {
+		t.Fatalf("expected escaping go.work symlink to fail module loading")
+	}
+
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	if err := applyGoRootSignals(repo, &detection, roots); err == nil {
+		t.Fatalf("expected escaping go.work symlink to fail root signal loading")
 	}
 }
 
