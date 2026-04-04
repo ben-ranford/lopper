@@ -13,50 +13,61 @@ import (
 
 func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) (*report.DependencyLicense, *report.DependencyProvenance, []string) {
 	if strings.TrimSpace(depRoot) == "" {
-		return &report.DependencyLicense{
-				Source:     "unknown",
-				Confidence: "low",
-				Unknown:    true,
-			}, &report.DependencyProvenance{
-				Source:     "unknown",
-				Confidence: "low",
-			}, []string{"unable to resolve dependency root for license/provenance detection"}
+		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{"unable to resolve dependency root for license/provenance detection"}
 	}
 	pkg, warnings := loadDependencyPackageJSON(depRoot)
-	license := detectLicenseFromPackageJSON(pkg)
-	if license == nil {
-		fallback := detectLicenseFromFiles(depRoot)
-		if fallback != nil {
-			license = fallback
-		}
-	}
-	if license == nil {
-		license = &report.DependencyLicense{
-			Source:     "unknown",
-			Confidence: "low",
-			Unknown:    true,
-		}
-	}
-
+	license := detectLicenseFromMetadataOrFiles(pkg, depRoot)
 	provenance := buildProvenance(pkg, includeRegistryProvenance)
 	return license, provenance, warnings
 }
 
+func detectLicenseFromMetadataOrFiles(pkg packageJSON, depRoot string) *report.DependencyLicense {
+	if license := detectLicenseFromPackageJSON(pkg); license != nil {
+		return license
+	}
+	if license := detectLicenseFromFiles(depRoot); license != nil {
+		return license
+	}
+	return unknownDependencyLicense()
+}
+
+func unknownDependencyLicense() *report.DependencyLicense {
+	return &report.DependencyLicense{
+		Source:     "unknown",
+		Confidence: "low",
+		Unknown:    true,
+	}
+}
+
+func unknownDependencyProvenance() *report.DependencyProvenance {
+	return &report.DependencyProvenance{
+		Source:     "unknown",
+		Confidence: "low",
+	}
+}
+
 func detectLicenseFromPackageJSON(pkg packageJSON) *report.DependencyLicense {
-	raw := parsePackageJSONLicense(pkg.License)
+	raw := packageJSONLicenseRaw(pkg)
+	if raw == "" {
+		return nil
+	}
+	return synthesizePackageJSONLicense(raw)
+}
+
+func packageJSONLicenseRaw(pkg packageJSON) string {
+	raw := strings.TrimSpace(parsePackageJSONLicense(pkg.License))
 	if raw == "" {
 		for _, item := range pkg.Licenses {
-			raw = parsePackageJSONLicense(item)
+			raw = strings.TrimSpace(parsePackageJSONLicense(item))
 			if raw != "" {
 				break
 			}
 		}
 	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
+	return raw
+}
 
+func synthesizePackageJSONLicense(raw string) *report.DependencyLicense {
 	spdx := normalizeSPDXExpression(raw)
 	unknown := strings.TrimSpace(spdx) == ""
 	if unknown {
@@ -143,25 +154,56 @@ func normalizeSPDXToken(value string) string {
 	return b.String()
 }
 
+type licenseFileProbe struct {
+	path       string
+	spdx       string
+	confidence string
+}
+
 func detectLicenseFromFiles(depRoot string) *report.DependencyLicense {
-	candidates := findLicenseFiles(depRoot)
+	probe := probeLicenseFiles(depRoot)
+	if probe == nil {
+		return nil
+	}
+	return synthesizeLicenseFromFileProbe(*probe)
+}
+
+func probeLicenseFiles(depRoot string) *licenseFileProbe {
+	return probeLicenseCandidates(depRoot, findLicenseFiles(depRoot))
+}
+
+func probeLicenseCandidates(depRoot string, candidates []string) *licenseFileProbe {
 	for _, candidate := range candidates {
-		content, err := safeio.ReadFileUnder(depRoot, candidate)
-		if err != nil {
-			continue
-		}
-		spdx, confidence := detectSPDXFromLicenseContent(string(content))
-		if spdx == "" {
-			continue
-		}
-		return &report.DependencyLicense{
-			SPDX:       spdx,
-			Source:     "license-file",
-			Confidence: confidence,
-			Evidence:   []string{filepath.Base(candidate)},
+		if probe := probeLicenseCandidate(depRoot, candidate); probe != nil {
+			return probe
 		}
 	}
 	return nil
+}
+
+func probeLicenseCandidate(depRoot, candidate string) *licenseFileProbe {
+	content, err := safeio.ReadFileUnder(depRoot, candidate)
+	if err != nil {
+		return nil
+	}
+	spdx, confidence := detectSPDXFromLicenseContent(string(content))
+	if spdx == "" {
+		return nil
+	}
+	return &licenseFileProbe{
+		path:       candidate,
+		spdx:       spdx,
+		confidence: confidence,
+	}
+}
+
+func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLicense {
+	return &report.DependencyLicense{
+		SPDX:       probe.spdx,
+		Source:     "license-file",
+		Confidence: probe.confidence,
+		Evidence:   []string{filepath.Base(probe.path)},
+	}
 }
 
 func findLicenseFiles(depRoot string) []string {
@@ -221,39 +263,18 @@ func detectSPDXFromLicenseContent(content string) (string, string) {
 }
 
 func buildProvenance(pkg packageJSON, includeRegistryProvenance bool) *report.DependencyProvenance {
-	signals := []string{"manifest:package.json"}
+	signals := collectManifestProvenanceSignals(pkg)
 	source := "local-manifest"
 	confidence := "medium"
 
-	if strings.TrimSpace(pkg.Name) != "" {
-		signals = append(signals, "name:"+pkg.Name)
-	}
-	if strings.TrimSpace(pkg.Version) != "" {
-		signals = append(signals, "version:"+pkg.Version)
-	}
-
+	var registrySignals []string
 	if includeRegistryProvenance {
-		registrySignalCount := 0
-		if strings.TrimSpace(pkg.PublishConfig.Registry) != "" {
-			signals = append(signals, "registry:"+strings.TrimSpace(pkg.PublishConfig.Registry))
-			registrySignalCount++
-		}
-		if strings.TrimSpace(pkg.Resolved) != "" {
-			signals = append(signals, "resolved")
-			registrySignalCount++
-		}
-		if strings.TrimSpace(pkg.Integrity) != "" {
-			signals = append(signals, "integrity")
-			registrySignalCount++
-		}
-		if hasRepositorySignal(pkg.Repository) {
-			signals = append(signals, "repository")
-			registrySignalCount++
-		}
-		if registrySignalCount > 0 {
-			source = "local+registry-heuristics"
-			confidence = "high"
-		}
+		registrySignals = collectRegistryProvenanceSignals(pkg)
+	}
+	if len(registrySignals) > 0 {
+		signals = append(signals, registrySignals...)
+		source = "local+registry-heuristics"
+		confidence = "high"
 	}
 
 	return &report.DependencyProvenance{
@@ -261,6 +282,34 @@ func buildProvenance(pkg packageJSON, includeRegistryProvenance bool) *report.De
 		Confidence: confidence,
 		Signals:    signals,
 	}
+}
+
+func collectManifestProvenanceSignals(pkg packageJSON) []string {
+	signals := []string{"manifest:package.json"}
+	if strings.TrimSpace(pkg.Name) != "" {
+		signals = append(signals, "name:"+pkg.Name)
+	}
+	if strings.TrimSpace(pkg.Version) != "" {
+		signals = append(signals, "version:"+pkg.Version)
+	}
+	return signals
+}
+
+func collectRegistryProvenanceSignals(pkg packageJSON) []string {
+	signals := make([]string, 0, 4)
+	if strings.TrimSpace(pkg.PublishConfig.Registry) != "" {
+		signals = append(signals, "registry:"+strings.TrimSpace(pkg.PublishConfig.Registry))
+	}
+	if strings.TrimSpace(pkg.Resolved) != "" {
+		signals = append(signals, "resolved")
+	}
+	if strings.TrimSpace(pkg.Integrity) != "" {
+		signals = append(signals, "integrity")
+	}
+	if hasRepositorySignal(pkg.Repository) {
+		signals = append(signals, "repository")
+	}
+	return signals
 }
 
 func hasRepositorySignal(value any) bool {

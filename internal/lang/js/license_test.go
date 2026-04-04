@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -12,6 +13,7 @@ import (
 const (
 	licenseTestPackageJSONFileName = "package.json"
 	licenseTestMPL20               = "MPL-2.0"
+	licenseTestRepositoryURL       = "https://github.com/example/repo"
 )
 
 func TestDetectLicenseAndProvenanceFromPackageJSON(t *testing.T) {
@@ -78,6 +80,19 @@ func TestParsePackageJSONLicenseVariants(t *testing.T) {
 	}
 }
 
+func TestPackageJSONLicenseRawWhitespacePrimaryFallsBackToLicenses(t *testing.T) {
+	pkg := packageJSON{
+		License:  "   ",
+		Licenses: []any{"MIT"},
+	}
+	if got := packageJSONLicenseRaw(pkg); got != "MIT" {
+		t.Fatalf("expected licenses fallback when primary field is whitespace, got %q", got)
+	}
+	if got := detectLicenseFromPackageJSON(pkg); got == nil || got.SPDX != "MIT" {
+		t.Fatalf("expected MIT license from licenses fallback, got %#v", got)
+	}
+}
+
 func TestDetectSPDXFromLicenseContentCases(t *testing.T) {
 	cases := []struct {
 		input string
@@ -100,10 +115,10 @@ func TestDetectSPDXFromLicenseContentCases(t *testing.T) {
 }
 
 func TestHasRepositorySignal(t *testing.T) {
-	if !hasRepositorySignal("https://github.com/example/repo") {
+	if !hasRepositorySignal(licenseTestRepositoryURL) {
 		t.Fatalf("expected repository signal for non-empty string")
 	}
-	if !hasRepositorySignal(map[string]any{"url": "https://github.com/example/repo"}) {
+	if !hasRepositorySignal(map[string]any{"url": licenseTestRepositoryURL}) {
 		t.Fatalf("expected repository signal for url object")
 	}
 	if hasRepositorySignal(map[string]any{"url": ""}) {
@@ -224,6 +239,42 @@ func TestDetectLicenseFromFilesNoMatch(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "custom internal license text")
 	if got := detectLicenseFromFiles(root); got != nil {
 		t.Fatalf("expected nil fallback for unknown license text, got %#v", got)
+	}
+}
+
+func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
+	root := t.TempDir()
+	unknown := filepath.Join(root, "LICENSE")
+	known := filepath.Join(root, "COPYING")
+	testutil.MustWriteFile(t, unknown, "custom internal license text")
+	testutil.MustWriteFile(t, known, "MIT License\nPermission is hereby granted...")
+
+	probe := probeLicenseCandidates(root, []string{unknown, known})
+	if probe == nil {
+		t.Fatalf("expected probe result for known license candidate")
+	}
+	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
+		t.Fatalf("unexpected probe result: %#v", probe)
+	}
+}
+
+func TestCollectRegistryProvenanceSignals(t *testing.T) {
+	pkg := packageJSON{
+		Resolved:   "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
+		Integrity:  "sha512-abc",
+		Repository: map[string]any{"url": licenseTestRepositoryURL},
+	}
+	pkg.PublishConfig.Registry = " https://registry.npmjs.org/ "
+
+	signals := collectRegistryProvenanceSignals(pkg)
+	want := []string{
+		"registry:https://registry.npmjs.org/",
+		"resolved",
+		"integrity",
+		"repository",
+	}
+	if !slices.Equal(signals, want) {
+		t.Fatalf("unexpected registry signals: got %#v want %#v", signals, want)
 	}
 }
 
