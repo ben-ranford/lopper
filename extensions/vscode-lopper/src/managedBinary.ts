@@ -37,6 +37,38 @@ export interface ManagedBinaryInstallResult {
   downloaded: boolean;
 }
 
+export class BinaryResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BinaryResolutionError";
+  }
+}
+
+export interface BinaryResolutionRequest {
+  workspaceRoot: string;
+  workspaceTrusted: boolean;
+  autoDownloadBinary: boolean;
+  envBinaryPath?: string;
+  configuredBinaryPath?: string;
+  managedBinaryTag?: string;
+}
+
+export interface BinaryLifecycleManager {
+  resolveBinaryPath(request: BinaryResolutionRequest): Promise<string>;
+}
+
+export interface ManagedBinaryInstallerClient {
+  findInstalledBinary(releaseTag?: string): Promise<string | undefined>;
+  ensureInstalled(releaseTag?: string): Promise<ManagedBinaryInstallResult>;
+}
+
+export interface ManagedBinaryInstallProgress {
+  install(
+    releaseTag: string | undefined,
+    install: () => Promise<ManagedBinaryInstallResult>,
+  ): Promise<ManagedBinaryInstallResult>;
+}
+
 interface ManagedBinaryMetadata {
   binaryPath: string;
   tag: string;
@@ -51,6 +83,10 @@ interface ManagedBinaryDeps {
 const metadataFileName = "managed-binary.json";
 const releaseOwner = "ben-ranford";
 const releaseRepo = "lopper";
+
+const passthroughManagedInstallProgress: ManagedBinaryInstallProgress = {
+  install: async (_releaseTag, install) => install(),
+};
 
 export class ManagedBinaryInstaller {
   private readonly deps: Required<ManagedBinaryDeps>;
@@ -151,6 +187,136 @@ export class ManagedBinaryInstaller {
   private async writeMetadata(metadata: ManagedBinaryMetadata): Promise<void> {
     await mkdir(this.storageRoot, { recursive: true });
     await writeFile(this.metadataPath(), JSON.stringify(metadata, null, 2));
+  }
+}
+
+export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
+  constructor(
+    private readonly installer: ManagedBinaryInstallerClient,
+    private readonly output: { appendLine(value: string): void },
+    private readonly progress: ManagedBinaryInstallProgress = passthroughManagedInstallProgress,
+    private readonly platform: NodeJS.Platform = process.platform,
+  ) {}
+
+  async resolveBinaryPath(request: BinaryResolutionRequest): Promise<string> {
+    const configuredBinaryPath = await this.resolveConfiguredBinaryPath(request);
+    if (configuredBinaryPath) {
+      return configuredBinaryPath;
+    }
+
+    const localBinaryPath = await this.resolveLocalBinaryPath(request);
+    if (localBinaryPath) {
+      return localBinaryPath;
+    }
+
+    return this.resolveManagedBinaryPath(request);
+  }
+
+  private async resolveConfiguredBinaryPath(request: BinaryResolutionRequest): Promise<string | undefined> {
+    const envBinaryPath = request.envBinaryPath?.trim();
+    if (envBinaryPath) {
+      const binaryPath = await this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
+      this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "LOPPER_BINARY_PATH", request.workspaceTrusted);
+      return binaryPath;
+    }
+
+    const configuredBinaryPath = request.configuredBinaryPath?.trim();
+    if (!configuredBinaryPath) {
+      return undefined;
+    }
+
+    const resolvedPath = path.isAbsolute(configuredBinaryPath)
+      ? configuredBinaryPath
+      : path.join(request.workspaceRoot, configuredBinaryPath);
+    const binaryPath = await this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
+    this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "lopper.binaryPath", request.workspaceTrusted);
+    return binaryPath;
+  }
+
+  private async resolveLocalBinaryPath(request: BinaryResolutionRequest): Promise<string | undefined> {
+    const localBinary = path.join(request.workspaceRoot, "bin", binaryFileName(this.platform));
+    try {
+      const fileStat = await stat(localBinary);
+      if (!fileStat.isFile()) {
+        throw new Error("Local lopper binary is not a regular file");
+      }
+      if (this.platform === "win32") {
+        // On Windows, executability is inferred from .exe and file accessibility.
+        await access(localBinary);
+      } else {
+        // On POSIX, require execute permission.
+        await access(localBinary, fsConstants.X_OK);
+      }
+      if (!request.workspaceTrusted) {
+        this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
+        return findExecutableInPath(binaryFileName(this.platform), this.platform);
+      }
+      return localBinary;
+    } catch {
+      return findExecutableInPath(binaryFileName(this.platform), this.platform);
+    }
+  }
+
+  private async resolveManagedBinaryPath(request: BinaryResolutionRequest): Promise<string> {
+    if (!request.autoDownloadBinary) {
+      throw new BinaryResolutionError(
+        "Lopper binary not found. Install it manually, set lopper.binaryPath or LOPPER_BINARY_PATH, or enable lopper.autoDownloadBinary.",
+      );
+    }
+
+    const releaseTag = normalizeReleaseTag(request.managedBinaryTag);
+    const cachedBinary = await this.installer.findInstalledBinary(releaseTag);
+    if (cachedBinary) {
+      return cachedBinary;
+    }
+
+    const installResult = await this.progress.install(releaseTag, async () => this.installer.ensureInstalled(releaseTag));
+    if (installResult.downloaded) {
+      this.output.appendLine(`managed lopper binary installed: ${installResult.binaryPath} (${installResult.tag})`);
+    }
+    return installResult.binaryPath;
+  }
+
+  private async ensureConfiguredBinaryExists(binaryPath: string, source: string): Promise<string> {
+    const fileStats = await this.configuredBinaryStats(binaryPath, source);
+    if (!fileStats.isFile()) {
+      throw new BinaryResolutionError(`${source} must point to a file: ${binaryPath}`);
+    }
+    if (this.platform !== "win32") {
+      await this.ensureConfiguredBinaryExecutable(binaryPath, source);
+    }
+    return binaryPath;
+  }
+
+  private async configuredBinaryStats(binaryPath: string, source: string) {
+    try {
+      return await stat(binaryPath);
+    } catch {
+      throw new BinaryResolutionError(`${source} points to a missing binary: ${binaryPath}`);
+    }
+  }
+
+  private async ensureConfiguredBinaryExecutable(binaryPath: string, source: string): Promise<void> {
+    try {
+      await access(binaryPath, fsConstants.X_OK);
+    } catch {
+      throw new BinaryResolutionError(`${source} points to a non-executable file: ${binaryPath}`);
+    }
+  }
+
+  private ensureWorkspaceTrustedForBinary(
+    binaryPath: string,
+    workspaceRoot: string,
+    source: string,
+    workspaceTrusted: boolean,
+  ): void {
+    if (workspaceTrusted || !isPathInsideWorkspace(binaryPath, workspaceRoot)) {
+      return;
+    }
+
+    throw new BinaryResolutionError(
+      `${source} points to a workspace-local binary in an untrusted workspace. Trust this workspace or use a binary outside the workspace.`,
+    );
   }
 }
 
@@ -372,4 +538,9 @@ function archSegment(arch: string): string {
     default:
       throw new Error(`managed downloads are not supported on architecture ${arch}`);
   }
+}
+
+function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
+  const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }

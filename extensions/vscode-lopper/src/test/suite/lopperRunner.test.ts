@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { suite, test } from "mocha";
 import * as vscode from "vscode";
 
-import { BinaryResolutionError, LopperRunner } from "../../lopperRunner";
+import type { BinaryResolutionRequest } from "../../managedBinary";
+import { BinaryResolutionError, LopperRunner, type ReportCommandExecutor } from "../../lopperRunner";
+import type { LopperReport } from "../../types";
 
 suite("lopper runner", () => {
   test("rejects configured directory paths before execution", async () => {
@@ -100,6 +102,81 @@ suite("lopper runner", () => {
       await rm(workspaceBinary, { force: true });
       await rm(pathRoot, { recursive: true, force: true });
     }
+  });
+
+  test("orchestrates analysis through binary lifecycle and command executor seams", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const calls: Array<{ binaryPath: string; args: string[]; cwd: string }> = [];
+    let resolvedRequest: BinaryResolutionRequest | undefined;
+
+    const reportExecutor: ReportCommandExecutor = {
+      runReport: async (binaryPath, args, cwd): Promise<LopperReport> => {
+        calls.push({ binaryPath, args, cwd });
+        if (args.includes("--suggest-only")) {
+          return {
+            dependencies: [
+              {
+                name: "scope-lib",
+                usedExportsCount: 1,
+                totalExportsCount: 2,
+                usedPercent: 50,
+                codemod: {
+                  mode: "suggest-only",
+                  suggestions: [
+                    {
+                      file: "src/index.ts",
+                      line: 1,
+                      importName: "chunk",
+                      fromModule: "scope-lib",
+                      toModule: "scope-lib/chunk",
+                      original: "import chunk from \"scope-lib\";",
+                      replacement: "import chunk from \"scope-lib/chunk\";",
+                    },
+                  ],
+                },
+              },
+            ],
+          };
+        }
+        return {
+          dependencies: [
+            {
+              name: "scope-lib",
+              language: "js-ts",
+              usedExportsCount: 1,
+              totalExportsCount: 2,
+              usedPercent: 50,
+            },
+          ],
+        };
+      },
+    };
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async (request) => {
+            resolvedRequest = request;
+            return "/tmp/lopper";
+          },
+        },
+        reportExecutor,
+      },
+    );
+
+    const analysis = await runner.analyseWorkspace(folder);
+    assert.equal(analysis.binaryPath, "/tmp/lopper");
+    assert.equal(calls.length, 2);
+    const [firstCall, secondCall] = calls;
+    assert.ok(firstCall, "expected primary analysis command");
+    assert.ok(secondCall, "expected follow-up codemod command");
+    assert.equal(firstCall.args[0], "analyse");
+    assert.equal(secondCall.args[secondCall.args.length - 1], "--suggest-only");
+    assert.equal(analysis.codemodsByDependency.get("scope-lib")?.suggestions?.[0]?.toModule, "scope-lib/chunk");
+    assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
   });
 });
 
