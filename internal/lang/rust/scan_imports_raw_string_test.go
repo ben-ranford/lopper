@@ -12,7 +12,7 @@ const (
 
 func TestParseRustImportsIgnoresUseInsideRawStringLiterals(t *testing.T) {
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
-	imports := parseRustImports(strings.Join([]string{
+	lines := []string{
 		"const DOC: &str = r#\"",
 		"use fake_dep::OnlyInLiteral;",
 		"\"#;",
@@ -21,7 +21,9 @@ func TestParseRustImportsIgnoresUseInsideRawStringLiterals(t *testing.T) {
 		"\"##;",
 		rawStringTestUseStmt,
 		"",
-	}, "\n"), rawStringTestFile, "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
+	}
+	content := strings.Join(lines, "\n")
+	imports := parseRustImports(content, rawStringTestFile, "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
 
 	if len(imports) != 1 {
 		t.Fatalf("expected one import outside raw string literals, got %#v", imports)

@@ -89,7 +89,7 @@ type rustImportLexState struct {
 	blockCommentDepth int
 }
 
-func (s rustImportLexState) insideRawString() bool {
+func (s *rustImportLexState) insideRawString() bool {
 	return s.rawHashCount >= 0
 }
 
