@@ -18,6 +18,8 @@ import (
 
 const (
 	errDetectFmt        = "detect: %v"
+	errMkdirGoModDirFmt = "mkdir go.mod dir: %v"
+	errLoadGoWorkFmt    = "load go.work modules: %v"
 	depUUID             = "github.com/google/uuid"
 	depLo               = "github.com/samber/lo"
 	fileGoMod           = "go.mod"
@@ -108,7 +110,7 @@ func TestDetectWithConfidenceRepoIsFileErrors(t *testing.T) {
 func TestApplyGoRootSignalsIgnoresManifestDirectories(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
-		t.Fatalf("mkdir go.mod dir: %v", err)
+		t.Fatalf(errMkdirGoModDirFmt, err)
 	}
 	mkdirGoWorkDir(t, repo)
 
@@ -153,7 +155,7 @@ func TestAdapterAnalyseErrorPathsAndDefaultRequest(t *testing.T) {
 
 	// directory manifests should be ignored by module/workspace loading
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
-		t.Fatalf("mkdir go.mod dir: %v", err)
+		t.Fatalf(errMkdirGoModDirFmt, err)
 	}
 	mkdirGoWorkDir(t, repo)
 	_, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo})
@@ -251,7 +253,7 @@ func TestAdapterDetectWithNoSignals(t *testing.T) {
 func TestAdapterDetectIgnoresManifestDirectories(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
-		t.Fatalf("mkdir go.mod dir: %v", err)
+		t.Fatalf(errMkdirGoModDirFmt, err)
 	}
 	mkdirGoWorkDir(t, repo)
 
@@ -624,7 +626,7 @@ func TestModuleLoadingHelpersNilModuleInfo(t *testing.T) {
 func TestLoadGoModuleInfoIgnoresGoModDirectory(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, fileGoMod), 0o755); err != nil {
-		t.Fatalf("mkdir go.mod dir: %v", err)
+		t.Fatalf(errMkdirGoModDirFmt, err)
 	}
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {
@@ -649,7 +651,7 @@ func TestLoadGoWorkLocalModulesNoFile(t *testing.T) {
 	repo := t.TempDir()
 	mods, err := loadGoWorkLocalModules(repo)
 	if err != nil {
-		t.Fatalf("load go.work modules: %v", err)
+		t.Fatalf(errLoadGoWorkFmt, err)
 	}
 	if len(mods) != 0 {
 		t.Fatalf("expected no modules, got %#v", mods)
@@ -661,7 +663,7 @@ func TestLoadGoWorkLocalModulesIgnoresDirectory(t *testing.T) {
 	mkdirGoWorkDir(t, repo)
 	mods, err := loadGoWorkLocalModules(repo)
 	if err != nil {
-		t.Fatalf("load go.work modules: %v", err)
+		t.Fatalf(errLoadGoWorkFmt, err)
 	}
 	if len(mods) != 0 {
 		t.Fatalf("expected no modules for directory go.work, got %#v", mods)
@@ -686,7 +688,7 @@ func TestLoadGoWorkLocalModulesHappyPathAndInvalidEntries(t *testing.T) {
 
 	mods, err := loadGoWorkLocalModules(repo)
 	if err != nil {
-		t.Fatalf("load go.work modules: %v", err)
+		t.Fatalf(errLoadGoWorkFmt, err)
 	}
 	if !slices.Contains(mods, exampleModuleA) || !slices.Contains(mods, "example.com/b") {
 		t.Fatalf("expected workspace modules in %#v", mods)
