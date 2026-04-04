@@ -73,14 +73,8 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	usage := make(map[string]int, len(importCount))
 	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
 	scanTokenUsage(scannable, importCount, usage)
-	declarationTokenHits := countDeclarationTokenHits(scannable, imports)
-	for local := range importCount {
-		occurrences := usage[local] - declarationTokenHits[local]
-		if occurrences < 0 {
-			occurrences = 0
-		}
-		usage[local] = occurrences
-	}
+	subtractDeclarationTokenHits(scannable, imports, usage)
+	clampUsageCounts(importCount, usage)
 	return usage
 }
 
@@ -101,24 +95,33 @@ func scanTokenUsage(content []byte, importCount map[string]int, usage map[string
 	}
 }
 
-func countDeclarationTokenHits(content []byte, imports []ImportRecord) map[string]int {
-	lineStarts := lineStartOffsets(content)
-	tokenHits := make(map[string]int)
+func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage map[string]int) {
+	var lineStarts []int
+	haveLineStarts := false
 	for _, imported := range imports {
 		if imported.Wildcard || imported.Local == "" {
 			continue
 		}
 		if imported.Location.Line <= 0 {
-			// Preserve the legacy "subtract the import declaration once" behavior
-			// when callers do not provide precise source locations.
-			tokenHits[imported.Local]++
+			usage[imported.Local]--
 			continue
 		}
+		if !haveLineStarts {
+			lineStarts = lineStartOffsets(content)
+			haveLineStarts = true
+		}
 		if declarationLineContainsToken(content, lineStarts, imported.Location.Line, imported.Local) {
-			tokenHits[imported.Local]++
+			usage[imported.Local]--
 		}
 	}
-	return tokenHits
+}
+
+func clampUsageCounts(importCount map[string]int, usage map[string]int) {
+	for local := range importCount {
+		if usage[local] < 0 {
+			usage[local] = 0
+		}
+	}
 }
 
 func declarationLineContainsToken(content []byte, lineStarts []int, line int, token string) bool {
