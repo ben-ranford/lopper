@@ -5,6 +5,11 @@ import (
 	"testing"
 )
 
+const (
+	rawStringTestUseStmt = "use serde::de::DeserializeOwned;"
+	rawStringTestFile    = "src/lib.rs"
+)
+
 func TestParseRustImportsIgnoresUseInsideRawStringLiterals(t *testing.T) {
 	scan := &scanResult{UnresolvedImports: map[string]int{}}
 	imports := parseRustImports(strings.Join([]string{
@@ -14,9 +19,9 @@ func TestParseRustImportsIgnoresUseInsideRawStringLiterals(t *testing.T) {
 		"const BYTES: &[u8] = br##\"",
 		"use fake_dep::StillLiteral;",
 		"\"##;",
-		serdeDeserializeStmt,
+		rawStringTestUseStmt,
 		"",
-	}, "\n"), srcLibRS, "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
+	}, "\n"), rawStringTestFile, "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan)
 
 	if len(imports) != 1 {
 		t.Fatalf("expected one import outside raw string literals, got %#v", imports)

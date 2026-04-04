@@ -7,7 +7,7 @@ import (
 
 func TestDiscoverManifestDataPreloadsRootManifestDependencies(t *testing.T) {
 	repo := t.TempDir()
-	rootManifest := filepath.Join(repo, cargoManifestFile)
+	rootManifest := filepath.Join(repo, cargoTomlName)
 	writeFile(t, rootManifest, "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n")
 
 	discovery, err := discoverManifestData(repo)
@@ -28,7 +28,7 @@ func TestDiscoverManifestDataPreloadsRootManifestDependencies(t *testing.T) {
 
 func TestExtractManifestDependenciesUsesPreParsedManifestData(t *testing.T) {
 	repo := t.TempDir()
-	missingManifest := filepath.Join(repo, cargoManifestFile)
+	missingManifest := filepath.Join(repo, cargoTomlName)
 
 	discovery := manifestDiscoveryResult{
 		ManifestPaths: []string{missingManifest},

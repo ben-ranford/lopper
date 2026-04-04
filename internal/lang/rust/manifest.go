@@ -114,14 +114,6 @@ func discoverManifestData(repoPath string) (manifestDiscoveryResult, error) {
 	}, nil
 }
 
-func discoverFromRootManifest(repoPath, rootManifest string) ([]string, []string, error) {
-	discovery, err := discoverFromRootManifestData(repoPath, rootManifest)
-	if err != nil {
-		return nil, nil, err
-	}
-	return discovery.ManifestPaths, discovery.Warnings, nil
-}
-
 func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscoveryResult, error) {
 	meta, deps, parseErr := parseCargoManifest(rootManifest, repoPath)
 	if parseErr != nil {
