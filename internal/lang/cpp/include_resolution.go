@@ -279,7 +279,8 @@ func splitPreprocessorDirective(value string) (string, string) {
 	end := 0
 	for end < len(value) {
 		ch := value[end]
-		if ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+		isAlphaOrUnderscore := ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+		if isAlphaOrUnderscore || (end > 0 && ch >= '0' && ch <= '9') {
 			end++
 			continue
 		}
