@@ -13,6 +13,7 @@ import (
 )
 
 const dotNetProgramSource = "Program.cs"
+const dotNetReadmeFile = "README.md"
 const dotNetMkdirObjDirErrFmt = "mkdir obj dir: %v"
 const dotNetWriteProgramFileErrFmt = "write " + dotNetProgramSource + ": %v"
 
@@ -25,8 +26,23 @@ func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(repo, "app.sln"), 0o755); err != nil {
 		t.Fatalf("mkdir solution dir: %v", err)
 	}
-	if applyRootSignals(repo, &language.Detection{}, map[string]struct{}{}) == nil {
-		t.Fatalf("expected unreadable solution entry to fail root signal application")
+	if err := os.Mkdir(filepath.Join(repo, "App.csproj"), 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	if err := applyRootSignals(repo, &detection, roots); err != nil {
+		t.Fatalf("expected directory-shaped manifest entries to be ignored, got %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 || len(roots) != 0 {
+		t.Fatalf("expected directory-shaped manifest entries to contribute no root signals, got detection=%#v roots=%#v", detection, roots)
+	}
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect with only directory-shaped manifests: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 || len(detection.Roots) != 0 {
+		t.Fatalf("expected directory-shaped manifests to be ignored by detection, got %#v", detection)
 	}
 
 	repo = t.TempDir()
@@ -36,7 +52,7 @@ func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, dotNetProgramSource), []byte("using System;\n"), 0o644); err != nil {
 		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
 	}
-	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	detection, err = NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil || !detection.Matched {
 		t.Fatalf("expected detection success with skipped obj dir, detection=%#v err=%v", detection, err)
 	}
@@ -184,7 +200,7 @@ func TestDotNetImportResolutionHelpers(t *testing.T) {
 	if dependency, resolved := resolveImportDependency("System.Text", mapper, meta); resolved || dependency != "" {
 		t.Fatalf("expected system import to be ignored, got dependency=%q resolved=%v", dependency, resolved)
 	}
-	if deps, err := parseManifestDependenciesForEntry(t.TempDir(), filepath.Join(t.TempDir(), "README.md"), "README.md"); err != nil || len(deps) != 0 {
+	if deps, err := parseManifestDependenciesForEntry(t.TempDir(), filepath.Join(t.TempDir(), dotNetReadmeFile), dotNetReadmeFile); err != nil || len(deps) != 0 {
 		t.Fatalf("expected non-manifest entry to be ignored, got deps=%#v err=%v", deps, err)
 	}
 	if module, alias, ok := parseCSharpUsing("using ;"); ok || module != "" || alias != "" {
@@ -214,6 +230,12 @@ func TestDotNetBuildTopDependenciesAndHelperGuards(t *testing.T) {
 	}
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00", TopN: 1}); err == nil {
 		t.Fatalf("expected analyse to fail for invalid repo path")
+	}
+}
+
+func TestDotNetSignalForNameDefaultBranch(t *testing.T) {
+	if signalForName(dotNetReadmeFile) != fileSignalNone {
+		t.Fatalf("expected non-.NET filename to produce no detection signal")
 	}
 }
 
