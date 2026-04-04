@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -70,23 +71,11 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	}
 
 	usage := make(map[string]int, len(importCount))
-	scannable := MaskCommentsAndStrings(content)
-	for i := 0; i < len(scannable); {
-		if !isWordByte(scannable[i]) {
-			i++
-			continue
-		}
-		start := i
-		for i < len(scannable) && isWordByte(scannable[i]) {
-			i++
-		}
-		token := string(scannable[start:i])
-		if _, ok := importCount[token]; ok {
-			usage[token]++
-		}
-	}
-	for local, count := range importCount {
-		occurrences := usage[local] - count
+	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
+	scanTokenUsage(scannable, importCount, usage)
+	declarationTokenHits := countDeclarationTokenHits(scannable, imports)
+	for local := range importCount {
+		occurrences := usage[local] - declarationTokenHits[local]
 		if occurrences < 0 {
 			occurrences = 0
 		}
@@ -95,96 +84,276 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	return usage
 }
 
+func scanTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
+	for i := 0; i < len(content); {
+		if !isWordByte(content[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(content) && isWordByte(content[i]) {
+			i++
+		}
+		token := string(content[start:i])
+		if _, ok := importCount[token]; ok {
+			usage[token]++
+		}
+	}
+}
+
+func countDeclarationTokenHits(content []byte, imports []ImportRecord) map[string]int {
+	lineStarts := lineStartOffsets(content)
+	tokenHits := make(map[string]int)
+	for _, imported := range imports {
+		if imported.Wildcard || imported.Local == "" {
+			continue
+		}
+		if imported.Location.Line <= 0 {
+			// Preserve the legacy "subtract the import declaration once" behavior
+			// when callers do not provide precise source locations.
+			tokenHits[imported.Local]++
+			continue
+		}
+		if declarationLineContainsToken(content, lineStarts, imported.Location.Line, imported.Local) {
+			tokenHits[imported.Local]++
+		}
+	}
+	return tokenHits
+}
+
+func declarationLineContainsToken(content []byte, lineStarts []int, line int, token string) bool {
+	if line <= 0 || line > len(lineStarts) {
+		return false
+	}
+	lineStart := lineStarts[line-1]
+	lineEnd := len(content)
+	if line < len(lineStarts) {
+		lineEnd = lineStarts[line] - 1
+	}
+	if lineStart < 0 || lineStart >= lineEnd || lineEnd > len(content) {
+		return false
+	}
+	return containsWordToken(content[lineStart:lineEnd], token)
+}
+
+func lineStartOffsets(content []byte) []int {
+	starts := make([]int, 0, 64)
+	starts = append(starts, 0)
+	for i := 0; i < len(content); i++ {
+		if content[i] == '\n' && i+1 < len(content) {
+			starts = append(starts, i+1)
+		}
+	}
+	return starts
+}
+
+func containsWordToken(content []byte, token string) bool {
+	for i := 0; i < len(content); {
+		if !isWordByte(content[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(content) && isWordByte(content[i]) {
+			i++
+		}
+		if string(content[start:i]) == token {
+			return true
+		}
+	}
+	return false
+}
+
+type maskProfile struct {
+	lineSlashSlash bool
+	lineHash       bool
+	blockSlashStar bool
+	singleQuote    bool
+	doubleQuote    bool
+	backtickQuote  bool
+}
+
+var defaultMaskProfile = maskProfile{
+	lineSlashSlash: true,
+	lineHash:       true,
+	blockSlashStar: true,
+	singleQuote:    true,
+	doubleQuote:    true,
+	backtickQuote:  true,
+}
+
+func inferMaskProfile(imports []ImportRecord) maskProfile {
+	for _, imported := range imports {
+		if imported.Location.File == "" {
+			continue
+		}
+		return maskProfileForFile(imported.Location.File)
+	}
+	return defaultMaskProfile
+}
+
+func maskProfileForFile(filePath string) maskProfile {
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".py", ".pyi":
+		return maskProfile{
+			lineHash:    true,
+			singleQuote: true,
+			doubleQuote: true,
+		}
+	case ".rs":
+		return maskProfile{
+			lineSlashSlash: true,
+			blockSlashStar: true,
+			singleQuote:    true,
+			doubleQuote:    true,
+		}
+	case ".swift", ".kt", ".kts", ".fs", ".fsx":
+		return maskProfile{
+			lineSlashSlash: true,
+			blockSlashStar: true,
+			singleQuote:    true,
+			doubleQuote:    true,
+		}
+	case ".rb":
+		return maskProfile{
+			lineHash:      true,
+			singleQuote:   true,
+			doubleQuote:   true,
+			backtickQuote: true,
+		}
+	default:
+		return defaultMaskProfile
+	}
+}
+
 // MaskCommentsAndStrings blanks comment and string literal content while
 // preserving newlines and byte offsets for line/column calculations.
 func MaskCommentsAndStrings(content []byte) []byte {
+	return MaskCommentsAndStringsWithProfile(content, defaultMaskProfile)
+}
+
+func MaskCommentsAndStringsForFile(content []byte, filePath string) []byte {
+	return MaskCommentsAndStringsWithProfile(content, maskProfileForFile(filePath))
+}
+
+func MaskCommentsAndStringsWithProfile(content []byte, profile maskProfile) []byte {
+	if !containsMaskableSyntax(content, profile) {
+		return content
+	}
+
 	masked := make([]byte, len(content))
 	copy(masked, content)
 
 	state := scannerStateCode
 	for i := 0; i < len(masked); {
-		ch := masked[i]
-		switch state {
-		case scannerStateCode:
-			switch {
-			case ch == '/' && i+1 < len(masked) && masked[i+1] == '/':
-				maskNonNewline(masked, i)
-				maskNonNewline(masked, i+1)
-				i += 2
-				state = scannerStateLineComment
-			case ch == '/' && i+1 < len(masked) && masked[i+1] == '*':
-				maskNonNewline(masked, i)
-				maskNonNewline(masked, i+1)
-				i += 2
-				state = scannerStateBlockComment
-			case ch == '#':
-				maskNonNewline(masked, i)
-				i++
-				state = scannerStateLineComment
-			case ch == '\'':
-				maskNonNewline(masked, i)
-				i++
-				state = scannerStateSingleQuote
-			case ch == '"':
-				maskNonNewline(masked, i)
-				i++
-				state = scannerStateDoubleQuote
-			case ch == '`':
-				maskNonNewline(masked, i)
-				i++
-				state = scannerStateBacktick
-			default:
-				i++
-			}
-		case scannerStateLineComment:
-			if ch == '\n' || ch == '\r' {
-				i++
-				state = scannerStateCode
-				continue
-			}
-			maskNonNewline(masked, i)
-			i++
-		case scannerStateBlockComment:
-			if ch == '*' && i+1 < len(masked) && masked[i+1] == '/' {
-				maskNonNewline(masked, i)
-				maskNonNewline(masked, i+1)
-				i += 2
-				state = scannerStateCode
-				continue
-			}
-			maskNonNewline(masked, i)
-			i++
-		case scannerStateSingleQuote:
-			maskNonNewline(masked, i)
-			if ch == '\\' && i+1 < len(masked) {
-				i++
-				maskNonNewline(masked, i)
-			} else if ch == '\'' {
-				state = scannerStateCode
-			}
-			i++
-		case scannerStateDoubleQuote:
-			maskNonNewline(masked, i)
-			if ch == '\\' && i+1 < len(masked) {
-				i++
-				maskNonNewline(masked, i)
-			} else if ch == '"' {
-				state = scannerStateCode
-			}
-			i++
-		case scannerStateBacktick:
-			maskNonNewline(masked, i)
-			if ch == '\\' && i+1 < len(masked) {
-				i++
-				maskNonNewline(masked, i)
-			} else if ch == '`' {
-				state = scannerStateCode
-			}
-			i++
+		i, state = advanceMasking(masked, i, state, profile)
+	}
+	return masked
+}
+
+func containsMaskableSyntax(content []byte, profile maskProfile) bool {
+	for i := 0; i < len(content); i++ {
+		switch {
+		case profile.singleQuote && content[i] == '\'':
+			return true
+		case profile.doubleQuote && content[i] == '"':
+			return true
+		case profile.backtickQuote && content[i] == '`':
+			return true
+		case profile.lineHash && content[i] == '#':
+			return true
+		case profile.lineSlashSlash && hasBytePrefix(content, i, '/', '/'):
+			return true
+		case profile.blockSlashStar && hasBytePrefix(content, i, '/', '*'):
+			return true
 		}
 	}
+	return false
+}
 
-	return masked
+func advanceMasking(content []byte, index int, state scannerState, profile maskProfile) (int, scannerState) {
+	switch state {
+	case scannerStateCode:
+		return scanCode(content, index, profile)
+	case scannerStateLineComment:
+		return scanLineComment(content, index)
+	case scannerStateBlockComment:
+		return scanBlockComment(content, index)
+	case scannerStateSingleQuote:
+		return scanQuoted(content, index, '\'', scannerStateSingleQuote)
+	case scannerStateDoubleQuote:
+		return scanQuoted(content, index, '"', scannerStateDoubleQuote)
+	case scannerStateBacktick:
+		return scanQuoted(content, index, '`', scannerStateBacktick)
+	default:
+		return index + 1, scannerStateCode
+	}
+}
+
+func scanCode(content []byte, index int, profile maskProfile) (int, scannerState) {
+	if profile.lineSlashSlash && hasBytePrefix(content, index, '/', '/') {
+		maskNonNewline(content, index)
+		maskNonNewline(content, index+1)
+		return index + 2, scannerStateLineComment
+	}
+	if profile.blockSlashStar && hasBytePrefix(content, index, '/', '*') {
+		maskNonNewline(content, index)
+		maskNonNewline(content, index+1)
+		return index + 2, scannerStateBlockComment
+	}
+	ch := content[index]
+	if profile.lineHash && ch == '#' {
+		maskNonNewline(content, index)
+		return index + 1, scannerStateLineComment
+	}
+	if profile.singleQuote && ch == '\'' {
+		maskNonNewline(content, index)
+		return index + 1, scannerStateSingleQuote
+	}
+	if profile.doubleQuote && ch == '"' {
+		maskNonNewline(content, index)
+		return index + 1, scannerStateDoubleQuote
+	}
+	if profile.backtickQuote && ch == '`' {
+		maskNonNewline(content, index)
+		return index + 1, scannerStateBacktick
+	}
+	return index + 1, scannerStateCode
+}
+
+func scanLineComment(content []byte, index int) (int, scannerState) {
+	if content[index] == '\n' || content[index] == '\r' {
+		return index + 1, scannerStateCode
+	}
+	maskNonNewline(content, index)
+	return index + 1, scannerStateLineComment
+}
+
+func scanBlockComment(content []byte, index int) (int, scannerState) {
+	if hasBytePrefix(content, index, '*', '/') {
+		maskNonNewline(content, index)
+		maskNonNewline(content, index+1)
+		return index + 2, scannerStateCode
+	}
+	maskNonNewline(content, index)
+	return index + 1, scannerStateBlockComment
+}
+
+func scanQuoted(content []byte, index int, delimiter byte, state scannerState) (int, scannerState) {
+	ch := content[index]
+	maskNonNewline(content, index)
+	if ch == '\\' && index+1 < len(content) {
+		maskNonNewline(content, index+1)
+		return index + 2, state
+	}
+	if ch == delimiter {
+		return index + 1, scannerStateCode
+	}
+	return index + 1, state
+}
+
+func hasBytePrefix(content []byte, index int, first, second byte) bool {
+	return index+1 < len(content) && content[index] == first && content[index+1] == second
 }
 
 type scannerState uint8

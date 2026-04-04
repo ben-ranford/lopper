@@ -81,6 +81,42 @@ func TestCountUsageIgnoresCommentsAndStrings(t *testing.T) {
 	}
 }
 
+func TestCountUsageGoImportPathWithSingleCodeUsage(t *testing.T) {
+	imports := []ImportRecord{{Local: "uuid", Location: report.Location{File: "main.go", Line: 1, Column: 1}}}
+	content := []byte("import \"github.com/google/uuid\"\nfunc main() { _ = uuid.NewString() }\n")
+	usage := CountUsage(content, imports)
+	if usage["uuid"] != 1 {
+		t.Fatalf("expected uuid usage 1 after declaration subtraction, got %d", usage["uuid"])
+	}
+}
+
+func TestCountUsagePythonFloorDivisionDoesNotTriggerCommentMasking(t *testing.T) {
+	imports := []ImportRecord{{Local: "mathlib", Location: report.Location{File: "main.py", Line: 1, Column: 1}}}
+	content := []byte("import mathlib\nvalue = 10 // mathlib\n")
+	usage := CountUsage(content, imports)
+	if usage["mathlib"] != 1 {
+		t.Fatalf("expected mathlib usage 1 with python floor division, got %d", usage["mathlib"])
+	}
+}
+
+func TestCountUsageSwiftBackticksRemainTokenizable(t *testing.T) {
+	imports := []ImportRecord{{Local: "foo", Location: report.Location{File: "main.swift", Line: 1, Column: 1}}}
+	content := []byte("import foo\nlet escaped = `foo`\n")
+	usage := CountUsage(content, imports)
+	if usage["foo"] != 1 {
+		t.Fatalf("expected foo usage 1 with swift backtick identifier, got %d", usage["foo"])
+	}
+}
+
+func TestCountUsageRustAttributesAreNotMaskedAsComments(t *testing.T) {
+	imports := []ImportRecord{{Local: "Serialize", Location: report.Location{File: "main.rs", Line: 1, Column: 1}}}
+	content := []byte("use serde::Serialize;\n#[derive(Serialize)]\nstruct Person;\n")
+	usage := CountUsage(content, imports)
+	if usage["Serialize"] != 1 {
+		t.Fatalf("expected Serialize usage 1 with rust attributes preserved, got %d", usage["Serialize"])
+	}
+}
+
 func TestCountUsageHonorsWordBoundaries(t *testing.T) {
 	imports := []ImportRecord{
 		{Local: testLocalFoo},

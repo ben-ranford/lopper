@@ -18,6 +18,8 @@ const testComposerLock = "composer.lock"
 const testIndexPHP = "index.php"
 const testMonologDependency = "monolog/monolog"
 const testPHPHeader = "<?php\n"
+const testExpectedOneDependencyReportFmt = "expected one dependency report, got %d"
+const testAnalyseErrFmt = "analyse: %v"
 
 func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
@@ -114,7 +116,7 @@ $yaml = Yaml::parse("foo: bar");
 		t.Fatalf("analyse dependency: %v", err)
 	}
 	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(depReport.Dependencies))
 	}
 	dep := depReport.Dependencies[0]
 	if dep.Language != "php" {
@@ -182,7 +184,7 @@ Yaml::parse("foo: bar");
 		Dependency: "symfony/yaml",
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected one dependency, got %d", len(reportData.Dependencies))
@@ -218,10 +220,10 @@ $logger = new \Monolog\Logger("app");
 		Dependency: testMonologDependency,
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
 	if dep.UsedExportsCount == 0 {
@@ -258,10 +260,10 @@ $className = "\\Monolog\\Logger";
 		Dependency: testMonologDependency,
 	})
 	if err != nil {
-		t.Fatalf("analyse: %v", err)
+		t.Fatalf(testAnalyseErrFmt, err)
 	}
 	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
 	}
 	dep := reportData.Dependencies[0]
 	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {

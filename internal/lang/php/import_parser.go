@@ -25,7 +25,7 @@ func parseImports(content []byte, filePath string, resolver composerResolver) ([
 }
 
 func parsePHPImports(content []byte, filePath string, resolver composerResolver) importParseResult {
-	sanitized := shared.MaskCommentsAndStrings(content)
+	sanitized := shared.MaskCommentsAndStringsForFile(content, filePath)
 	text := string(sanitized)
 	matches := useStmtPattern.FindAllStringSubmatchIndex(text, -1)
 	result := importParseResult{
@@ -51,7 +51,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 }
 
 func parseNamespaceReferences(content []byte, filePath string, resolver composerResolver) ([]importBinding, int) {
-	sanitized := shared.MaskCommentsAndStrings(content)
+	sanitized := shared.MaskCommentsAndStringsForFile(content, filePath)
 	return parseNamespaceReferencesText(string(sanitized), filePath, resolver)
 }
 

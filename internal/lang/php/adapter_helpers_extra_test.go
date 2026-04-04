@@ -20,6 +20,7 @@ const helpersVendorPkgDependency = "vendor/pkg"
 const helpersABLines = "a\nb\n"
 const helpersMonologLogger = "Monolog\\Logger"
 const helpersScanRepoErr = "scanRepo: %v"
+const helpersUnexpectedUnresolvedFmt = "unexpected unresolved: %d"
 const helpersPHPHeader = "<?php\n"
 
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
@@ -339,7 +340,7 @@ func TestParseUseStatementFunctionAndConstImports(t *testing.T) {
 	resolver.namespaceToDep = map[string]string{"Vendor\\Lib": helpersVendorLibDependency}
 	imports, _, unresolved := parseUseStatement("function Vendor\\Lib\\helper, const Vendor\\Lib\\VERSION", "x.php", 1, resolver)
 	if unresolved != 0 {
-		t.Fatalf("unexpected unresolved: %d", unresolved)
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
 	}
 	if len(imports) != 2 {
 		t.Fatalf("expected 2 imports, got %d", len(imports))
@@ -350,7 +351,7 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	imports, unresolved := parseNamespaceReferences([]byte(helpersPHPHeader+"use Monolog\\Logger;\n"), "x.php", resolver)
 	if unresolved != 0 {
-		t.Fatalf("unexpected unresolved: %d", unresolved)
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
 	}
 	if len(imports) != 0 {
 		t.Fatalf("expected no namespace imports from use-line, got %#v", imports)
@@ -367,7 +368,7 @@ func TestParseNamespaceReferencesIgnoresCommentAndStringMentions(t *testing.T) {
 		"$logger = new \\Monolog\\Logger(\"app\");\n"
 	imports, unresolved := parseNamespaceReferences([]byte(content), "x.php", resolver)
 	if unresolved != 0 {
-		t.Fatalf("unexpected unresolved: %d", unresolved)
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
 	}
 	if len(imports) != 1 {
 		t.Fatalf("expected exactly one code namespace import, got %#v", imports)
