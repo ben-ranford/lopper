@@ -2,7 +2,6 @@ package golang
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"sort"
 
@@ -38,11 +37,15 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	}
 
 	goModPath := filepath.Join(repoPath, goModName)
+	exists, err := manifestPathExists(goModPath)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
 	content, err := safeio.ReadFileUnder(repoPath, goModPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
 
