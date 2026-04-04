@@ -100,7 +100,7 @@ func (c *compileContextCollector) result() compileContext {
 	return result
 }
 
-func collectCompileDatabase(path string, repoPath string, includeDirSet map[string]struct{}, sourceFileSet map[string]struct{}) ([]string, error) {
+func collectCompileDatabase(path, repoPath string, includeDirSet, sourceFileSet map[string]struct{}) ([]string, error) {
 	entries, warnings, err := readCompileDatabase(path, repoPath)
 	if err != nil || len(entries) == 0 {
 		return warnings, err
@@ -114,7 +114,7 @@ func collectCompileDatabase(path string, repoPath string, includeDirSet map[stri
 	return warnings, nil
 }
 
-func readCompileDatabase(path string, repoPath string) ([]compileCommandEntry, []string, error) {
+func readCompileDatabase(path, repoPath string) ([]compileCommandEntry, []string, error) {
 	content, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {
 		return nil, nil, err
