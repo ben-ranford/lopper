@@ -76,6 +76,9 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 		return err
 	}
 	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
 		name := entry.Name()
 		path := filepath.Join(repoPath, name)
 		if err := applyDetectionSignal(repoPath, path, name, repoPath, detection, roots, rootDetectionWeights); err != nil {
