@@ -140,12 +140,18 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 func TestParseIncludesBranches(t *testing.T) {
 	content := []byte(`#include <` + fmtCoreHeader + `>
 #include "local/header.hpp"
+#include_next <` + fmtCoreHeader + `>
 #include SOME_MACRO_HEADER
 #include <broken
 `)
 	includes := parseIncludes(content)
 	if len(includes) != 4 {
 		t.Fatalf("expected four includes, got %d", len(includes))
+	}
+	if slices.ContainsFunc(includes, func(include parsedInclude) bool {
+		return strings.Contains(include.Path, "include_next")
+	}) {
+		t.Fatalf("expected #include_next to be ignored, got %#v", includes)
 	}
 }
 

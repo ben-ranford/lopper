@@ -69,6 +69,42 @@ func TestCountUsage(t *testing.T) {
 	}
 }
 
+func TestCountUsageIgnoresCommentsAndStrings(t *testing.T) {
+	imports := []ImportRecord{{Local: testLocalFoo}, {Local: "bar"}}
+	content := []byte("import foo\nimport bar\nfoo()\n\"foo bar\"\n'foo'\n`foo`\n// foo bar\n# foo bar\n/* foo\nbar\n*/\n")
+	usage := CountUsage(content, imports)
+	if usage[testLocalFoo] != 1 {
+		t.Fatalf("expected foo usage 1 from code-only references, got %d", usage[testLocalFoo])
+	}
+	if usage["bar"] != 0 {
+		t.Fatalf("expected bar usage 0 with comment/string mentions ignored, got %d", usage["bar"])
+	}
+}
+
+func TestCountUsageLanguageAwareMasking(t *testing.T) {
+	cases := []struct {
+		name    string
+		local   string
+		file    string
+		content string
+	}{
+		{"go import path still subtracts declaration once", "uuid", "main.go", "import \"github.com/google/uuid\"\nfunc main() { _ = uuid.NewString() }\n"},
+		{"python floor division does not look like a comment", "mathlib", "main.py", "import mathlib\nvalue = 10 // mathlib\n"},
+		{"swift backticks remain tokenizable", "foo", "main.swift", "import foo\nlet escaped = `foo`\n"},
+		{"rust attributes are not masked as hash comments", "Serialize", "main.rs", "use serde::Serialize;\n#[derive(Serialize)]\nstruct Person;\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			imports := []ImportRecord{{Local: tc.local, Location: report.Location{File: tc.file, Line: 1, Column: 1}}}
+			usage := CountUsage([]byte(tc.content), imports)
+			if usage[tc.local] != 1 {
+				t.Fatalf("expected %s usage 1, got %d", tc.local, usage[tc.local])
+			}
+		})
+	}
+}
+
 func TestCountUsageHonorsWordBoundaries(t *testing.T) {
 	imports := []ImportRecord{
 		{Local: testLocalFoo},
@@ -114,6 +150,86 @@ func TestCountUsageUnicodeIdentifierPositionsAreIgnored(t *testing.T) {
 		if usage[testLocalUnicode] != 0 {
 			t.Fatalf("%s: expected unicode identifier usage 0 with ASCII scanner, got %d", tc.name, usage[testLocalUnicode])
 		}
+	}
+}
+
+func TestContainsMaskableSyntax(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		profile maskProfile
+		want    bool
+	}{
+		{name: "single quote", content: "'dep'", profile: maskProfile{singleQuote: true}, want: true},
+		{name: "double quote", content: "\"dep\"", profile: maskProfile{doubleQuote: true}, want: true},
+		{name: "backtick", content: "`dep`", profile: maskProfile{backtickQuote: true}, want: true},
+		{name: "hash comment", content: "# dep", profile: maskProfile{lineHash: true}, want: true},
+		{name: "slash comment", content: "// dep", profile: maskProfile{lineSlashSlash: true}, want: true},
+		{name: "block comment", content: "/* dep */", profile: maskProfile{blockSlashStar: true}, want: true},
+		{name: "plain code", content: "call(dep)", profile: defaultMaskProfile, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsMaskableSyntax([]byte(tc.content), tc.profile); got != tc.want {
+				t.Fatalf("expected containsMaskableSyntax=%v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestMaskCommentsAndStringsWrappers(t *testing.T) {
+	defaultMasked := MaskCommentsAndStrings([]byte("\"dep\"\n'dep'\n`dep`\n// dep\n# dep\n/* dep */\ncall(dep)\n"))
+	if got := strings.Count(string(defaultMasked), "dep"); got != 1 {
+		t.Fatalf("expected only code token to remain after default masking, got %d matches in %q", got, defaultMasked)
+	}
+
+	pythonMasked := MaskCommentsAndStringsForFile([]byte("value = 10 // dep\n# dep\n"), "main.py")
+	if !containsWordToken(pythonMasked, "dep") {
+		t.Fatalf("expected python floor-division token to remain visible after masking")
+	}
+
+	swiftMasked := MaskCommentsAndStringsForFile([]byte("let escaped = `dep`\n"), "main.swift")
+	if !containsWordToken(swiftMasked, "dep") {
+		t.Fatalf("expected swift backticks to remain tokenizable")
+	}
+
+	rubyMasked := MaskCommentsAndStringsForFile([]byte("`dep`\n# dep\n"), "main.rb")
+	if containsWordToken(rubyMasked, "dep") {
+		t.Fatalf("expected ruby backticks and hash comments to be masked")
+	}
+}
+
+func TestDeclarationAndMaskingHelpers(t *testing.T) {
+	content := []byte("import foo\ncall(foo)\n")
+	lineStarts := lineStartOffsets(content)
+	if !declarationLineContainsToken(content, lineStarts, 1, "foo") {
+		t.Fatalf("expected declaration line to contain foo token")
+	}
+	if declarationLineContainsToken(content, lineStarts, 0, "foo") {
+		t.Fatalf("expected line zero to be rejected")
+	}
+	if declarationLineContainsToken(content, lineStarts, 3, "foo") {
+		t.Fatalf("expected out-of-range line to be rejected")
+	}
+	if declarationLineContainsToken(content, lineStarts, 1, "bar") {
+		t.Fatalf("expected missing token to return false")
+	}
+
+	escaped := []byte("\\\"")
+	next, state := scanQuoted(escaped, 0, '"', scannerStateDoubleQuote)
+	if next != 2 || state != scannerStateDoubleQuote {
+		t.Fatalf("expected escaped quote to stay inside string, got next=%d state=%v", next, state)
+	}
+
+	next, state = scanQuoted([]byte{'"'}, 0, '"', scannerStateDoubleQuote)
+	if next != 1 || state != scannerStateCode {
+		t.Fatalf("expected delimiter to exit quoted state, got next=%d state=%v", next, state)
+	}
+
+	next, state = advanceMasking([]byte("x"), 0, scannerState(255), defaultMaskProfile)
+	if next != 1 || state != scannerStateCode {
+		t.Fatalf("expected unknown scanner state to reset to code, got next=%d state=%v", next, state)
 	}
 }
 
