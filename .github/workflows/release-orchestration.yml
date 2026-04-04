@@ -20,7 +20,98 @@ on:
 jobs:
   # Full project validation lives in ci.yml on PRs and main. This workflow
   # promotes already-validated commits into release artifacts and images.
+  confirm-validated-source:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Wait for required CI checks on the source commit
+        uses: actions/github-script@v8
+        env:
+          REQUIRED_CHECKS: verify,homebrew-tap-verify,SonarCloud Code Analysis
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        with:
+          script: |
+            const requiredChecks = process.env.REQUIRED_CHECKS
+              .split(',')
+              .map((name) => name.trim())
+              .filter(Boolean);
+            const sourceSha = process.env.SOURCE_SHA;
+            const timeoutMs = 45 * 60 * 1000;
+            const intervalMs = 30 * 1000;
+            const startedAt = Date.now();
+
+            function summarizeState(label, values) {
+              return values.length ? `${label}: ${values.join(', ')}` : '';
+            }
+
+            while (true) {
+              const runsByName = new Map();
+              for (let page = 1; ; page += 1) {
+                const response = await github.rest.checks.listForRef({
+                  ...context.repo,
+                  ref: sourceSha,
+                  per_page: 100,
+                  page,
+                });
+                for (const run of response.data.check_runs) {
+                  if (!runsByName.has(run.name)) {
+                    runsByName.set(run.name, run);
+                  }
+                }
+                if (response.data.check_runs.length < 100) {
+                  break;
+                }
+              }
+
+              const missing = [];
+              const pending = [];
+              const failing = [];
+              for (const name of requiredChecks) {
+                const run = runsByName.get(name);
+                if (!run) {
+                  missing.push(name);
+                  continue;
+                }
+                if (run.status !== 'completed') {
+                  pending.push(`${name} (${run.status})`);
+                  continue;
+                }
+                if (run.conclusion !== 'success') {
+                  failing.push(`${name} (${run.conclusion})`);
+                }
+              }
+
+              if (!missing.length && !pending.length && !failing.length) {
+                core.info(`Required CI checks succeeded for ${sourceSha}.`);
+                return;
+              }
+
+              if (failing.length) {
+                core.setFailed(`Source commit ${sourceSha} is not releasable. ${summarizeState('Failing', failing)}`);
+                return;
+              }
+
+              if (Date.now() - startedAt >= timeoutMs) {
+                const details = [
+                  summarizeState('Missing', missing),
+                  summarizeState('Pending', pending),
+                ].filter(Boolean).join('; ');
+                core.setFailed(`Timed out waiting for required CI checks on ${sourceSha}. ${details}`);
+                return;
+              }
+
+              const details = [
+                summarizeState('Missing', missing),
+                summarizeState('Pending', pending),
+              ].filter(Boolean).join('; ');
+              core.info(`Waiting for required CI checks on ${sourceSha}. ${details}`);
+              await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            }
+
   build-linux-windows:
+    needs: confirm-validated-source
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,6 +168,7 @@ jobs:
             dist/*.zip
 
   build-darwin:
+    needs: confirm-validated-source
     runs-on: macos-latest
     permissions:
       contents: read
@@ -127,6 +219,7 @@ jobs:
             dist/*.zip
 
   publish-ghcr-amd64:
+    needs: confirm-validated-source
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -197,6 +290,7 @@ jobs:
           sbom: true
 
   publish-ghcr-arm64:
+    needs: confirm-validated-source
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
