@@ -11,6 +11,20 @@ import (
 const SafeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
 const ExecutablePrimary = "/usr/bin/git"
 const ExecutableFallback = "/bin/git"
+const safeGitNoSystemConfig = "GIT_CONFIG_NOSYSTEM=1"
+const safeGitGlobalConfig = "GIT_CONFIG_GLOBAL=/dev/null"
+
+type gitConfigOverride struct {
+	key   string
+	value string
+}
+
+var forcedGitConfigOverrides = []gitConfigOverride{
+	{key: "core.fsmonitor", value: "false"},
+	{key: "diff.external", value: ""},
+	{key: "interactive.diffFilter", value: ""},
+	{key: "core.pager", value: "cat"},
+}
 
 func ResolveBinaryPath() (string, error) {
 	return resolveBinaryPath(ExecutablePrimary, ExecutableFallback, ExecutableAvailable)
@@ -50,19 +64,46 @@ func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd
 }
 
 func SanitizedEnv() []string {
-	env := os.Environ()
-	filtered := make([]string, 0, len(env)+1)
+	return sanitizedEnvEntries(os.Environ())
+}
+
+func sanitizedEnvEntries(env []string) []string {
+	filtered := make([]string, 0, len(env)+3+1+len(forcedGitConfigOverrides)*2)
 	for _, entry := range env {
-		if strings.HasPrefix(entry, "GIT_DIR=") ||
-			strings.HasPrefix(entry, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(entry, "GIT_INDEX_FILE=") ||
-			strings.HasPrefix(entry, "PATH=") {
+		key, _, hasKey := strings.Cut(entry, "=")
+		if !hasKey {
+			filtered = append(filtered, entry)
+			continue
+		}
+		if shouldStripGitEnvKey(key) {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
-	filtered = append(filtered, SafeSystemPath)
+	filtered = append(filtered, SafeSystemPath, safeGitNoSystemConfig, safeGitGlobalConfig)
+	filtered = append(filtered, safeGitConfigEnvEntries()...)
 	return filtered
+}
+
+func shouldStripGitEnvKey(key string) bool {
+	if strings.HasPrefix(key, "GIT_") {
+		return true
+	}
+	switch key {
+	case "PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "PAGER", "EDITOR", "VISUAL":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeGitConfigEnvEntries() []string {
+	entries := make([]string, 0, 1+len(forcedGitConfigOverrides)*2)
+	entries = append(entries, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(forcedGitConfigOverrides)))
+	for index, override := range forcedGitConfigOverrides {
+		entries = append(entries, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", index, override.key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, override.value))
+	}
+	return entries
 }
 
 func ExecutableAvailable(path string) bool {
