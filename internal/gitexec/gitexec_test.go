@@ -95,6 +95,25 @@ func TestSanitizedEnv(t *testing.T) {
 	}
 }
 
+func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
+	env := sanitizedEnvEntries([]string{
+		"BROKEN",
+		"KEEP_ME=1",
+		"PATH=/tmp/custom-bin",
+		"GIT_CONFIG_GLOBAL=/tmp/attacker-global",
+	})
+
+	if !containsEnv(env, "BROKEN") {
+		t.Fatalf("expected malformed env entry to be preserved, got %#v", env)
+	}
+	if containsEnv(env, "PATH=/tmp/custom-bin") || containsEnv(env, "GIT_CONFIG_GLOBAL=/tmp/attacker-global") {
+		t.Fatalf("expected sanitized env entries to strip caller overrides, got %#v", env)
+	}
+	if !containsEnv(env, "KEEP_ME=1") {
+		t.Fatalf("expected unrelated env entry to be preserved, got %#v", env)
+	}
+}
+
 func TestCommandUsesKnownGitPaths(t *testing.T) {
 	testKnownGitPaths(t, func(gitPath string) (*exec.Cmd, error) {
 		return Command(gitPath, versionArg)

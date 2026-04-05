@@ -64,8 +64,11 @@ func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd
 }
 
 func SanitizedEnv() []string {
-	env := os.Environ()
-	filtered := make([]string, 0, len(env)+2+1+len(forcedGitConfigOverrides)*2)
+	return sanitizedEnvEntries(os.Environ())
+}
+
+func sanitizedEnvEntries(env []string) []string {
+	filtered := make([]string, 0, len(env)+3+1+len(forcedGitConfigOverrides)*2)
 	for _, entry := range env {
 		key, _, hasKey := strings.Cut(entry, "=")
 		if !hasKey {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestChangedFilesErrorsForNonRepoPath(t *testing.T) {
@@ -86,19 +87,19 @@ func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
 }
 
 func TestChangedFilesIgnoresCallerGitConfigEnvironment(t *testing.T) {
-	gitPath, err := gitexec.ResolveBinaryPath()
+	_, err := gitexec.ResolveBinaryPath()
 	if err != nil {
 		t.Skip("git binary not available")
 	}
 
 	repo := t.TempDir()
-	runGitCommand(t, gitPath, repo, "init")
-	runGitCommand(t, gitPath, repo, "config", "user.name", "Workspace Test")
-	runGitCommand(t, gitPath, repo, "config", "user.email", "workspace-test@example.com")
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.name", "Workspace Test")
+	testutil.RunGit(t, repo, "config", "user.email", "workspace-test@example.com")
 
 	mustWrite(t, filepath.Join(repo, "tracked.txt"), "tracked\n")
-	runGitCommand(t, gitPath, repo, "add", "tracked.txt")
-	runGitCommand(t, gitPath, repo, "commit", "-m", "initial")
+	testutil.RunGit(t, repo, "add", "tracked.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "initial")
 	mustWrite(t, filepath.Join(repo, "untracked.txt"), "untracked\n")
 
 	attackDir := t.TempDir()
@@ -258,18 +259,4 @@ func containsEnvEntry(env []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func runGitCommand(t *testing.T, gitPath, repo string, args ...string) {
-	t.Helper()
-
-	command, err := gitexec.Command(gitPath, append([]string{"-C", repo}, args...)...)
-	if err != nil {
-		t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
-	}
-	command.Env = gitexec.SanitizedEnv()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
-	}
 }
