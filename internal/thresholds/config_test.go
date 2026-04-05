@@ -595,19 +595,7 @@ func TestLoadWithPolicyRepoDiscoveredConfigRejectsRemotePackWithoutFetching(t *t
   removal_candidate_weight_impact: 0.2
   removal_candidate_weight_confidence: 0.2
 `
-	sum := sha256.Sum256([]byte(packBody))
-	pin := hex.EncodeToString(sum[:])
-	var requests int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requests, 1)
-		if r.URL.Path != "/org.yml" {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := w.Write([]byte(packBody)); err != nil {
-			t.Fatalf("write remote pack response: %v", err)
-		}
-	}))
+	server, pin, requests := newPinnedRemotePolicyServer(t, packBody)
 	defer server.Close()
 
 	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "org.yml"), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, pin))
@@ -617,14 +605,40 @@ func TestLoadWithPolicyRepoDiscoveredConfigRejectsRemotePackWithoutFetching(t *t
 	if err == nil {
 		t.Fatalf("expected repo-discovered config to reject remote pack")
 	}
-	if !strings.Contains(err.Error(), "remote policy packs require an explicit config path") {
-		t.Fatalf("unexpected repo-discovered remote pack error: %v", err)
-	}
-	if result.ConfigPath != "" || len(result.PolicySources) != 0 {
-		t.Fatalf("expected empty result on rejected remote pack, got %#v", result)
-	}
-	if got := atomic.LoadInt32(&requests); got != 0 {
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs require an explicit config path")
+	if got := atomic.LoadInt32(requests); got != 0 {
 		t.Fatalf("expected no remote fetches for repo-discovered config, got %d", got)
+	}
+}
+
+func TestLoadWithPolicyRepoDiscoveredConfigRejectsOutOfRepoLocalPack(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	testutil.MustWriteFile(t, filepath.Join(root, "outside.yml"), "thresholds:\n  low_confidence_warning_percent: 31\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - ../outside.yml\n")
+
+	result, err := LoadWithPolicy(repo, "")
+	if err == nil {
+		t.Fatalf("expected repo-discovered config to reject out-of-repo local pack")
+	}
+	assertRejectedPolicyLoadResult(t, result, err, "local policy packs must remain under")
+}
+
+func TestLoadWithPolicyExplicitConfigTreatsRepoOverlayAsUntrustedForRemotePack(t *testing.T) {
+	repo := t.TempDir()
+	server, pin, requests := newPinnedRemotePolicyServer(t, "thresholds:\n  low_confidence_warning_percent: 19\n")
+	defer server.Close()
+
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, pin))
+	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), "policy:\n  packs:\n    - packs/overlay.yml\n")
+
+	result, err := LoadWithPolicy(repo, customConfigName)
+	if err == nil {
+		t.Fatalf("expected explicit config to reject remote packs introduced by repo overlay")
+	}
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs require an explicit config path")
+	if got := atomic.LoadInt32(requests); got != 0 {
+		t.Fatalf("expected no remote fetches for rejected overlay remote pack, got %d", got)
 	}
 }
 
@@ -663,6 +677,37 @@ func TestLoadWithPolicyRemotePackWithPinFromExplicitConfig(t *testing.T) {
 	}
 	if len(result.PolicySources) < 3 || !strings.Contains(result.PolicySources[1], server.URL+"/org.yml#sha256="+pin) {
 		t.Fatalf("expected remote policy source in precedence output, got %#v", result.PolicySources)
+	}
+}
+
+func newPinnedRemotePolicyServer(t *testing.T, packBody string) (*httptest.Server, string, *int32) {
+	t.Helper()
+
+	sum := sha256.Sum256([]byte(packBody))
+	pin := hex.EncodeToString(sum[:])
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if r.URL.Path != "/org.yml" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := w.Write([]byte(packBody)); err != nil {
+			t.Fatalf("write remote pack response: %v", err)
+		}
+	}))
+
+	return server, pin, &requests
+}
+
+func assertRejectedPolicyLoadResult(t *testing.T, result LoadResult, err error, expectedText string) {
+	t.Helper()
+
+	if !strings.Contains(err.Error(), expectedText) {
+		t.Fatalf("expected error containing %q, got %v", expectedText, err)
+	}
+	if result.ConfigPath != "" || len(result.PolicySources) != 0 {
+		t.Fatalf("expected empty result on rejected policy load, got %#v", result)
 	}
 }
 
