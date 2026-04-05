@@ -5,12 +5,18 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type packResolver struct {
-	repoPath    string
-	allowRemote bool
-	stack       []string
+	repoPath string
+	stack    []string
+}
+
+type packTrust struct {
+	explicit  bool
+	localRoot string
 }
 
 type resolveMergeResult struct {
@@ -34,15 +40,31 @@ func (r *resolveMergeResult) policySourcesHighToLow() []string {
 	return sources
 }
 
-func newPackResolver(repoPath string, allowRemote bool) *packResolver {
+func newPackResolver(repoPath string) *packResolver {
 	return &packResolver{
-		repoPath:    repoPath,
-		allowRemote: allowRemote,
-		stack:       make([]string, 0, 8),
+		repoPath: repoPath,
+		stack:    make([]string, 0, 8),
 	}
 }
 
-func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveMergeResult, error) {
+func initialPackTrust(repoPath string, explicitProvided bool) packTrust {
+	if explicitProvided {
+		return packTrust{explicit: true}
+	}
+	return packTrust{localRoot: repoPath}
+}
+
+func (r *packResolver) nestedPackTrust(path string, remote bool) packTrust {
+	if remote {
+		return packTrust{}
+	}
+	if isPathUnderRoot(r.repoPath, path) {
+		return packTrust{localRoot: r.repoPath}
+	}
+	return packTrust{}
+}
+
+func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeResult, error) {
 	canonical, remote, err := canonicalPolicyLocation(path)
 	if err != nil {
 		return resolveMergeResult{}, err
@@ -52,7 +74,7 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 	}
 	defer r.pop(canonical)
 
-	data, err := readPolicyLocation(r.repoPath, canonical, explicitProvided, remote)
+	data, err := readPolicyLocation(canonical, trust, remote)
 	if err != nil {
 		return resolveMergeResult{}, err
 	}
@@ -70,10 +92,17 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 		if err != nil {
 			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
 		}
-		if _, remote := parseRemoteURL(resolvedRef); remote && !r.allowRemote {
+		childCanonical, childRemote, err := canonicalPolicyLocation(resolvedRef)
+		if err != nil {
+			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+		}
+		if childRemote && !trust.explicit {
 			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs require an explicit config path", canonical, idx)
 		}
-		packResult, err := r.resolveFile(resolvedRef, true)
+		if err := validatePackBoundary(childCanonical, childRemote, trust); err != nil {
+			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+		}
+		packResult, err := r.resolveFile(childCanonical, r.nestedPackTrust(childCanonical, childRemote))
 		if err != nil {
 			return resolveMergeResult{}, err
 		}
@@ -95,6 +124,16 @@ func (r *packResolver) resolveFile(path string, explicitProvided bool) (resolveM
 		scope:             mergedScope,
 		appliedSourcesLow: dedupeStable(sources),
 	}, nil
+}
+
+func validatePackBoundary(path string, remote bool, trust packTrust) error {
+	if remote || trust.localRoot == "" {
+		return nil
+	}
+	if isPathUnderRoot(trust.localRoot, path) {
+		return nil
+	}
+	return fmt.Errorf("local policy packs must remain under %q", trust.localRoot)
 }
 
 func resolvePackRef(currentPath, ref string) (string, error) {
@@ -142,7 +181,7 @@ func canonicalPolicyLocation(path string) (string, bool, error) {
 	return canonical, false, nil
 }
 
-func readPolicyLocation(repoPath, location string, explicitProvided, remote bool) ([]byte, error) {
+func readPolicyLocation(location string, trust packTrust, remote bool) ([]byte, error) {
 	if remote {
 		data, err := readRemotePolicyFile(location)
 		if err != nil {
@@ -151,7 +190,15 @@ func readPolicyLocation(repoPath, location string, explicitProvided, remote bool
 		return data, nil
 	}
 
-	data, err := readConfigFile(repoPath, location, explicitProvided)
+	var (
+		data []byte
+		err  error
+	)
+	if trust.localRoot == "" {
+		data, err = safeio.ReadFile(location)
+	} else {
+		data, err = safeio.ReadFileUnder(trust.localRoot, location)
+	}
 	if err != nil {
 		return nil, fmt.Errorf(readConfigFileErrFmt, location, err)
 	}

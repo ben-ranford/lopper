@@ -628,6 +628,60 @@ func TestLoadWithPolicyRepoDiscoveredConfigRejectsRemotePackWithoutFetching(t *t
 	}
 }
 
+func TestLoadWithPolicyRepoDiscoveredConfigRejectsOutOfRepoLocalPack(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	testutil.MustWriteFile(t, filepath.Join(root, "outside.yml"), "thresholds:\n  low_confidence_warning_percent: 31\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - ../outside.yml\n")
+
+	result, err := LoadWithPolicy(repo, "")
+	if err == nil {
+		t.Fatalf("expected repo-discovered config to reject out-of-repo local pack")
+	}
+	if !strings.Contains(err.Error(), "local policy packs must remain under") {
+		t.Fatalf("unexpected out-of-repo local pack error: %v", err)
+	}
+	if result.ConfigPath != "" || len(result.PolicySources) != 0 {
+		t.Fatalf("expected empty result on rejected out-of-repo local pack, got %#v", result)
+	}
+}
+
+func TestLoadWithPolicyExplicitConfigTreatsRepoOverlayAsUntrustedForRemotePack(t *testing.T) {
+	repo := t.TempDir()
+	packBody := "thresholds:\n  low_confidence_warning_percent: 19\n"
+	sum := sha256.Sum256([]byte(packBody))
+	pin := hex.EncodeToString(sum[:])
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if r.URL.Path != "/org.yml" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := w.Write([]byte(packBody)); err != nil {
+			t.Fatalf("write remote pack response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", "overlay.yml"), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, pin))
+	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), "policy:\n  packs:\n    - packs/overlay.yml\n")
+
+	result, err := LoadWithPolicy(repo, customConfigName)
+	if err == nil {
+		t.Fatalf("expected explicit config to reject remote packs introduced by repo overlay")
+	}
+	if !strings.Contains(err.Error(), "remote policy packs require an explicit config path") {
+		t.Fatalf("unexpected explicit-overlay remote pack error: %v", err)
+	}
+	if result.ConfigPath != "" || len(result.PolicySources) != 0 {
+		t.Fatalf("expected empty result on rejected explicit-overlay remote pack, got %#v", result)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("expected no remote fetches for rejected overlay remote pack, got %d", got)
+	}
+}
+
 func TestLoadWithPolicyRemotePackWithPinFromExplicitConfig(t *testing.T) {
 	repo := t.TempDir()
 	packBody := `thresholds:
