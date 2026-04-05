@@ -5,9 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 requested_base_ref="${SUPPRESSION_BASE:-origin/main}"
-marker_prefix="no"
+marker_no_prefix="no"
+marker_ts_prefix="ts"
+marker_eslint_prefix="eslint"
+marker_coverage_prefix="coverage"
 # Build marker names from pieces so this gate does not match its own source.
-marker_pattern="(^|[^[:alnum:]_])(${marker_prefix}sec|${marker_prefix}sonar)([^[:alnum:]_]|$)"
+marker_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
+source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
 diff_scope=""
 
 create_temp_file() {
@@ -27,7 +31,13 @@ create_temp_file() {
 	return 1
 }
 
-if git diff --cached --quiet --exit-code -- .; then
+if ! git diff --cached --quiet --exit-code -- .; then
+	diff_scope="staged changes"
+	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AM --relative --)
+elif ! git diff --quiet --exit-code -- .; then
+	diff_scope="working tree changes"
+	diff_args=(git diff --unified=0 --no-color --diff-filter=AM --relative --)
+else
 	base_ref="$requested_base_ref"
 	used_fallback=0
 	if ! git rev-parse --verify -q "$base_ref^{commit}" >/dev/null; then
@@ -49,24 +59,23 @@ if git diff --cached --quiet --exit-code -- .; then
 		diff_scope="branch changes vs $base_ref"
 	fi
 	diff_args=(git diff --unified=0 --no-color --diff-filter=AM --relative "$base_commit..HEAD" --)
-else
-	diff_scope="staged changes"
-	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AM --relative --)
 fi
 
 tmp_matches="$(create_temp_file)"
 trap 'rm -f "$tmp_matches"' EXIT INT TERM
 
 set +e
-"${diff_args[@]}" | awk -v pattern="$marker_pattern" '
+"${diff_args[@]}" | awk -v pattern="$marker_pattern" -v file_pattern="$source_file_pattern" '
 BEGIN {
 	IGNORECASE = 1
 	file = ""
 	line = 0
 	found = 0
+	check_file = 0
 }
 /^\+\+\+ b\// {
 	file = substr($0, 7)
+	check_file = (file ~ file_pattern)
 	next
 }
 /^@@ / {
@@ -79,7 +88,7 @@ BEGIN {
 }
 /^\+/ && $0 !~ /^\+\+\+/ {
 	content = substr($0, 2)
-	if (content ~ pattern) {
+	if (check_file && content ~ pattern) {
 		printf "%s:%d:%s\n", file, line, content
 		found = 1
 	}
