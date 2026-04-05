@@ -10,6 +10,8 @@ import (
 )
 
 const versionArg = "--version"
+const attackerGlobalConfigEnvEntry = "GIT_CONFIG_GLOBAL=/tmp/attacker-global"
+const keepMeEnvEntry = "KEEP_ME=1"
 
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
@@ -74,7 +76,7 @@ func TestSanitizedEnv(t *testing.T) {
 	if containsEnvPrefix(env, "GIT_DIR=") || containsEnvPrefix(env, "GIT_WORK_TREE=") || containsEnvPrefix(env, "GIT_INDEX_FILE=") {
 		t.Fatalf("expected git override vars to be stripped, got %#v", env)
 	}
-	if containsEnv(env, "GIT_CONFIG_GLOBAL=/tmp/attacker-global") ||
+	if containsEnv(env, attackerGlobalConfigEnvEntry) ||
 		containsEnv(env, "GIT_CONFIG_COUNT=1") ||
 		containsEnv(env, "GIT_CONFIG_VALUE_0=/tmp/attacker-helper") ||
 		containsEnv(env, "HOME=/tmp/attacker-home") ||
@@ -90,7 +92,7 @@ func TestSanitizedEnv(t *testing.T) {
 			t.Fatalf("expected forced git config entry %q in env, got %#v", expected, env)
 		}
 	}
-	if !containsEnv(env, "KEEP_ME=1") {
+	if !containsEnv(env, keepMeEnvEntry) {
 		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)
 	}
 }
@@ -98,18 +100,18 @@ func TestSanitizedEnv(t *testing.T) {
 func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
 	env := sanitizedEnvEntries([]string{
 		"BROKEN",
-		"KEEP_ME=1",
+		keepMeEnvEntry,
 		"PATH=/tmp/custom-bin",
-		"GIT_CONFIG_GLOBAL=/tmp/attacker-global",
+		attackerGlobalConfigEnvEntry,
 	})
 
 	if !containsEnv(env, "BROKEN") {
 		t.Fatalf("expected malformed env entry to be preserved, got %#v", env)
 	}
-	if containsEnv(env, "PATH=/tmp/custom-bin") || containsEnv(env, "GIT_CONFIG_GLOBAL=/tmp/attacker-global") {
+	if containsEnv(env, "PATH=/tmp/custom-bin") || containsEnv(env, attackerGlobalConfigEnvEntry) {
 		t.Fatalf("expected sanitized env entries to strip caller overrides, got %#v", env)
 	}
-	if !containsEnv(env, "KEEP_ME=1") {
+	if !containsEnv(env, keepMeEnvEntry) {
 		t.Fatalf("expected unrelated env entry to be preserved, got %#v", env)
 	}
 }
