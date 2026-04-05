@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const mainGoPath = "main.go"
+
 func TestInlineSuppressionCheckRejectsStagedMarkers(t *testing.T) {
 	t.Parallel()
 
@@ -19,14 +21,14 @@ func TestInlineSuppressionCheckRejectsStagedMarkers(t *testing.T) {
 	}{
 		{
 			name:    "nosec",
-			path:    "main.go",
-			content: "package main\n\nfunc main() {\n\t_ = 1 //" + "nosec G404\n}\n",
+			path:    mainGoPath,
+			content: mainGoWithComment("nosec G404"),
 			want:    "//" + "nosec",
 		},
 		{
 			name:    "nolint",
-			path:    "main.go",
-			content: "package main\n\nfunc main() {\n\t_ = 1 //" + "nolint:staticcheck\n}\n",
+			path:    mainGoPath,
+			content: mainGoWithComment("nolint:staticcheck"),
 			want:    "//" + "nolint",
 		},
 		{
@@ -64,11 +66,11 @@ func TestInlineSuppressionCheckRejectsWorkingTreeMarkers(t *testing.T) {
 	t.Parallel()
 
 	repoDir := newInlineSuppressionRepo(t)
-	writeFile(t, filepath.Join(repoDir, "main.go"), "package main\n\nfunc main() {\n\t_ = 1\n}\n")
-	runCommand(t, repoDir, "git", "add", "main.go")
+	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithoutComment())
+	runCommand(t, repoDir, "git", "add", mainGoPath)
 	runCommand(t, repoDir, "git", "commit", "-m", "add source file")
 
-	writeFile(t, filepath.Join(repoDir, "main.go"), "package main\n\nfunc main() {\n\t_ = 1 //"+"nolint:staticcheck\n}\n")
+	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithComment("nolint:staticcheck"))
 
 	output, err := runSuppressionCheck(repoDir)
 	if err == nil {
@@ -101,8 +103,8 @@ func TestInlineSuppressionCheckIgnoresQuotedMarkersInSource(t *testing.T) {
 
 	repoDir := newInlineSuppressionRepo(t)
 	source := "package main\n\nconst marker = \"" + "//" + "nosec" + "\"\n"
-	writeFile(t, filepath.Join(repoDir, "main.go"), source)
-	runCommand(t, repoDir, "git", "add", "main.go")
+	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
 
 	output, err := runSuppressionCheck(repoDir)
 	if err != nil {
@@ -111,6 +113,14 @@ func TestInlineSuppressionCheckIgnoresQuotedMarkersInSource(t *testing.T) {
 	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
 		t.Fatalf("expected pass message, got:\n%s", output)
 	}
+}
+
+func mainGoWithoutComment() string {
+	return "package main\n\nfunc main() {\n\t_ = 1\n}\n"
+}
+
+func mainGoWithComment(comment string) string {
+	return "package main\n\nfunc main() {\n\t_ = 1 //" + comment + "\n}\n"
 }
 
 func newInlineSuppressionRepo(t *testing.T) string {
