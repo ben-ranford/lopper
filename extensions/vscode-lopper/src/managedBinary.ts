@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -216,7 +217,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
     const envBinaryPath = request.envBinaryPath?.trim();
     if (envBinaryPath) {
       const binaryPath = await this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
-      this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "LOPPER_BINARY_PATH", request.workspaceTrusted);
+      await this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "LOPPER_BINARY_PATH", request.workspaceTrusted);
       return binaryPath;
     }
 
@@ -229,7 +230,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       ? configuredBinaryPath
       : path.join(request.workspaceRoot, configuredBinaryPath);
     const binaryPath = await this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
-    this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "lopper.binaryPath", request.workspaceTrusted);
+    await this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "lopper.binaryPath", request.workspaceTrusted);
     return binaryPath;
   }
 
@@ -249,12 +250,27 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       }
       if (!request.workspaceTrusted) {
         this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
-        return findExecutableInPath(binaryFileName(this.platform), this.platform);
+        return this.resolvePathBinary(request);
       }
       return localBinary;
     } catch {
+      return this.resolvePathBinary(request);
+    }
+  }
+
+  private async resolvePathBinary(request: BinaryResolutionRequest): Promise<string | undefined> {
+    if (request.workspaceTrusted) {
       return findExecutableInPath(binaryFileName(this.platform), this.platform);
     }
+
+    return findExecutableInPath(binaryFileName(this.platform), this.platform, async (candidatePath) => {
+      if (!(await this.isWorkspaceLocalBinary(candidatePath, request.workspaceRoot))) {
+        return true;
+      }
+
+      this.output.appendLine(`skipping workspace-local lopper binary from PATH in untrusted workspace: ${candidatePath}`);
+      return false;
+    });
   }
 
   private async resolveManagedBinaryPath(request: BinaryResolutionRequest): Promise<string> {
@@ -304,13 +320,13 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
     }
   }
 
-  private ensureWorkspaceTrustedForBinary(
+  private async ensureWorkspaceTrustedForBinary(
     binaryPath: string,
     workspaceRoot: string,
     source: string,
     workspaceTrusted: boolean,
-  ): void {
-    if (workspaceTrusted || !isPathInsideWorkspace(binaryPath, workspaceRoot)) {
+  ): Promise<void> {
+    if (workspaceTrusted || !(await this.isWorkspaceLocalBinary(binaryPath, workspaceRoot))) {
       return;
     }
 
@@ -318,13 +334,29 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       `${source} points to a workspace-local binary in an untrusted workspace. Trust this workspace or use a binary outside the workspace.`,
     );
   }
+
+  private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoot: string): Promise<boolean> {
+    const [canonicalBinaryPath, canonicalWorkspaceRoot] = await Promise.all([
+      canonicalPath(binaryPath),
+      canonicalPath(workspaceRoot),
+    ]);
+    return isPathInsideWorkspace(canonicalBinaryPath, canonicalWorkspaceRoot);
+  }
 }
 
-export async function findExecutableInPath(command: string, platform = process.platform): Promise<string | undefined> {
+export async function findExecutableInPath(
+  command: string,
+  platform = process.platform,
+  candidateAllowed?: (candidatePath: string) => Promise<boolean>,
+): Promise<string | undefined> {
   for (const candidate of executableCandidates(command, platform)) {
-    if (await fileExists(candidate, true)) {
-      return candidate;
+    if (!(await fileExists(candidate, true))) {
+      continue;
     }
+    if (candidateAllowed && !(await candidateAllowed(candidate))) {
+      continue;
+    }
+    return candidate;
   }
 
   return undefined;
@@ -543,4 +575,12 @@ function archSegment(arch: string): string {
 function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
   const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+async function canonicalPath(targetPath: string): Promise<string> {
+  try {
+    return await realpath(targetPath);
+  } catch {
+    return path.resolve(targetPath);
+  }
 }

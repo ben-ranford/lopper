@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { suite, test } from "mocha";
@@ -76,6 +76,63 @@ suite("lopper runner", () => {
     } finally {
       restoreEnv("LOPPER_BINARY_PATH", previousPath);
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects configured symlinks that resolve to workspace-local binaries in untrusted workspaces", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const folder = workspaceFolder();
+    const workspaceRoot = await mkdtemp(path.join(folder.uri.fsPath, ".lopper-untrusted-symlink-target-"));
+    const workspaceBinary = path.join(workspaceRoot, platformBinaryName());
+    const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-untrusted-symlink-source-"));
+    const outsideSymlink = path.join(outsideRoot, platformBinaryName());
+    const previousPath = process.env.LOPPER_BINARY_PATH;
+
+    try {
+      await writeExecutable(workspaceBinary);
+      await symlink(workspaceBinary, outsideSymlink);
+      process.env.LOPPER_BINARY_PATH = outsideSymlink;
+
+      const runner = createRunner(outsideRoot);
+      await assert.rejects(
+        runner.resolveBinaryPath(folder, false),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError &&
+          error.message.includes("workspace-local binary in an untrusted workspace"),
+      );
+    } finally {
+      restoreEnv("LOPPER_BINARY_PATH", previousPath);
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("skips workspace-local PATH binaries in untrusted workspaces", async () => {
+    const folder = workspaceFolder();
+    const workspacePathRoot = await mkdtemp(path.join(folder.uri.fsPath, ".lopper-runner-path-workspace-"));
+    const workspacePathBinary = path.join(workspacePathRoot, platformBinaryName());
+    const outsidePathRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-runner-path-outside-"));
+    const outsideBinary = path.join(outsidePathRoot, platformBinaryName());
+    const previousBinaryPath = process.env.LOPPER_BINARY_PATH;
+    const previousPathEnv = process.env.PATH;
+
+    try {
+      delete process.env.LOPPER_BINARY_PATH;
+      await writeExecutable(workspacePathBinary);
+      await writeExecutable(outsideBinary);
+      process.env.PATH = joinPathEntries([workspacePathRoot, outsidePathRoot, previousPathEnv]);
+
+      const runner = createRunner(outsidePathRoot);
+      const resolvedPath = await runner.resolveBinaryPath(folder, false);
+      assert.equal(resolvedPath, outsideBinary);
+    } finally {
+      restoreEnv("LOPPER_BINARY_PATH", previousBinaryPath);
+      restoreEnv("PATH", previousPathEnv);
+      await rm(workspacePathRoot, { recursive: true, force: true });
+      await rm(outsidePathRoot, { recursive: true, force: true });
     }
   });
 
