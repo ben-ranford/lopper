@@ -197,6 +197,10 @@ suite("managed binary installer", () => {
         outputLines.some((value) => value.includes("path canonicalization failed")),
         "expected canonicalization failure to be logged",
       );
+      assert.ok(
+        outputLines.some((value) => value.includes(binaryPath) && value.includes(workspaceRoot)),
+        "expected canonicalization failure log to mention both paths",
+      );
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
       await rm(binaryRoot, { recursive: true, force: true });

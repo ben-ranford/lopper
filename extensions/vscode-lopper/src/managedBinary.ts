@@ -354,7 +354,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
     } catch (error) {
       const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
       this.output.appendLine(
-        `treating lopper binary as workspace-local because path canonicalization failed for ${binaryPath}${detail}`,
+        `treating lopper binary as workspace-local because path canonicalization failed while checking ${binaryPath} against workspace ${workspaceRoot}${detail}`,
       );
       return true;
     }
