@@ -19,6 +19,60 @@ Homebrew tap automation:
 - The tap update step validates with `brew audit --strict --online`, `brew install --build-from-source`, and `brew test lopper` before push.
 - Set repository secret `HOMEBREW_TAP_TOKEN` (with write access to `ben-ranford/homebrew-tap`) to enable automatic tap updates.
 
+## PR checks
+
+Every pull request against `main` must pass the following checks before it is eligible to merge.
+
+### `verify` (Ubuntu)
+
+Runs `make ci` and then additional PR-specific steps.
+
+`make ci` is composed of, in order:
+
+| Step | Tool / command | What it enforces |
+| --- | --- | --- |
+| Format check | `gofmt -l .` | All Go files must be `gofmt`-formatted. |
+| Module check | `go mod tidy -diff` + `go mod verify` | `go.mod`/`go.sum` must be tidy and module graph integrity must be intact. |
+| Lint | `golangci-lint` + `gostyle` | Enabled linters: `govet`, `unused`, `ineffassign`, `staticcheck`, `errcheck`, `gocritic` (`boolExprSimplify`, `builtinShadow`, `emptyFallthrough`, `equalFold`), `errorlint`, `revive` (13 rules), plus `gostyle` style rules. |
+| Actions lint | `actionlint` | GitHub Actions workflow YAML must be syntactically valid. |
+| Shell check | `shellcheck` | Tracked shell scripts and git hooks must pass `shellcheck`. |
+| Duplication check | `dupl` | New or changed Go lines must not exceed **3%** duplication (token threshold: 55, base: `origin/main`). |
+| Suppression check | `scripts/check-inline-suppressions.sh` | Branch-added lines must not introduce inline linter/security suppression markers. |
+| Security scan | `gosec` | Go source must pass `gosec` static security analysis. |
+| Vulnerability scan | `govulncheck` | Go module dependencies must have no known vulnerabilities. |
+| Tests | `go test ./...` | All unit tests must pass. |
+| Leak tests | `GOLEAK=1 go test ./...` | Tests must not leak goroutines (detected via `goleak`). |
+| Race tests | `go test -race ./...` | Tests must pass under the Go race detector. |
+| Memory benchmark gate | `bench-gate` via `benchdelta` | Memory benchmark deltas versus `origin/main` must not exceed **15%** bytes or **10%** allocations per benchmark. Regressions are blocked unless the PR carries the `memory-approved` label. |
+| Build | `go build ./cmd/lopper` | The binary must compile cleanly. |
+| Coverage gate | `coveragegate` tool | Total coverage and per-package coverage must both be at or above **98%**. |
+
+After `make ci`, the `verify` job also runs:
+
+| Step | What it enforces |
+| --- | --- |
+| Demo assets check (`make demos-check`) | Committed demo GIF assets must match the current CLI output (no stale demos). |
+| Lopper self-analysis delta | Informational only — posts a dependency delta comment to the PR; does not block merge. |
+| SonarCloud analysis | Informational only when `SONAR_TOKEN` is configured — posts open Sonar issues and duplication metrics to the PR; does not block merge on its own. |
+
+### `os-smoke` (Ubuntu + macOS)
+
+Runs `make smoke` (`mod-check + test-race + build`) on both `ubuntu-latest` and `macos-latest` to confirm the module, race tests, and binary build are clean on both operating systems.
+
+### `vscode-smoke` (Ubuntu + macOS, conditional)
+
+Runs only when `extensions/vscode-lopper/**` files are changed in the PR. Builds the local `lopper` binary, installs the extension, and runs VS Code E2E tests via `@vscode/test-electron` on both `ubuntu-latest` (with `xvfb-run`) and `macos-latest`.
+
+### `homebrew-tap-verify` (Ubuntu)
+
+Verifies the current Homebrew tap formula against the existing published tap when `ben-ranford/homebrew-tap` exists. Runs `brew audit --strict --online`, `brew install --build-from-source`, and `brew test lopper`. Skipped harmlessly when the tap repository has not yet been created.
+
+### Memory regression approval
+
+If the memory benchmark gate in `verify` detects a regression (exit status `1`), the `verify` job fails unless the PR carries the `memory-approved` label. Add that label when a memory increase is intentional and acknowledged.
+
+---
+
 ## Example pipeline
 
 Equivalent minimal job:
