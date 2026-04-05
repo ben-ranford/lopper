@@ -98,11 +98,9 @@ func safeGitConfigEnvEntries() []string {
 	entries := make([]string, 0, 1+len(forcedGitConfigOverrides)*2)
 	entries = append(entries, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(forcedGitConfigOverrides)))
 	for index, override := range forcedGitConfigOverrides {
-		entries = append(
-			entries,
+		entries = append(entries,
 			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", index, override.key),
-			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, override.value),
-		)
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, override.value))
 	}
 	return entries
 }
