@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func resolveConfigPath(repoPath, explicitPath string) (string, bool, error) {
@@ -35,13 +33,6 @@ func resolveConfigPath(repoPath, explicitPath string) (string, bool, error) {
 	}
 
 	return "", false, nil
-}
-
-func readConfigFile(repoPath, path string, explicitProvided bool) ([]byte, error) {
-	if !explicitProvided || isPathUnderRoot(repoPath, path) {
-		return safeio.ReadFileUnder(repoPath, path)
-	}
-	return safeio.ReadFile(path)
 }
 
 func isPathUnderRoot(rootPath, targetPath string) bool {
