@@ -1,6 +1,6 @@
 import AdmZip from "adm-zip";
 import * as assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { suite, test } from "mocha";
@@ -153,6 +153,116 @@ suite("managed binary installer", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("rejects configured binaries when canonicalization fails in untrusted workspaces", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-workspace-"));
+    const binaryRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-configured-"));
+    const binaryPath = path.join(binaryRoot, platformBinaryName());
+    const outputLines: string[] = [];
+
+    try {
+      await writeExecutable(binaryPath);
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async () => {
+            throw new Error("should not install when configured binary is provided");
+          },
+        },
+        { appendLine: (value) => outputLines.push(value) },
+        undefined,
+        process.platform,
+        {
+          canonicalizePath: async (targetPath) => {
+            if (targetPath === binaryPath) {
+              throw new Error("boom");
+            }
+            return path.resolve(targetPath);
+          },
+        },
+      );
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot,
+          workspaceTrusted: false,
+          autoDownloadBinary: false,
+          envBinaryPath: binaryPath,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError &&
+          error.message.includes("workspace-local binary in an untrusted workspace"),
+      );
+      assert.ok(
+        outputLines.some((value) => value.includes("path canonicalization failed")),
+        "expected canonicalization failure to be logged",
+      );
+      assert.ok(
+        outputLines.some((value) => value.includes(binaryPath) && value.includes(workspaceRoot)),
+        "expected canonicalization failure log to mention both paths",
+      );
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(binaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("skips PATH candidates when canonicalization fails in untrusted workspaces", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-workspace-"));
+    const blockedRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-path-blocked-"));
+    const fallbackRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-path-fallback-"));
+    const blockedBinary = path.join(blockedRoot, platformBinaryName());
+    const fallbackBinary = path.join(fallbackRoot, platformBinaryName());
+    const previousPath = process.env.PATH;
+    const outputLines: string[] = [];
+
+    try {
+      await writeExecutable(blockedBinary);
+      await writeExecutable(fallbackBinary);
+      process.env.PATH = joinPathEntries([blockedRoot, fallbackRoot, previousPath]);
+
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async () => {
+            throw new Error("should not install when PATH fallback resolves");
+          },
+        },
+        { appendLine: (value) => outputLines.push(value) },
+        undefined,
+        process.platform,
+        {
+          canonicalizePath: async (targetPath) => {
+            if (targetPath === blockedBinary) {
+              throw new Error("boom");
+            }
+            return path.resolve(targetPath);
+          },
+        },
+      );
+
+      const resolvedPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot,
+        workspaceTrusted: false,
+        autoDownloadBinary: false,
+      });
+
+      assert.equal(resolvedPath, fallbackBinary);
+      assert.ok(
+        outputLines.some((value) => value.includes("path canonicalization failed")),
+        "expected canonicalization failure to be logged",
+      );
+      assert.ok(
+        outputLines.some((value) => value.includes("skipping workspace-local lopper binary from PATH")),
+        "expected failed canonicalization candidate to be skipped from PATH",
+      );
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(blockedRoot, { recursive: true, force: true });
+      await rm(fallbackRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 function createInstaller(
@@ -225,4 +335,20 @@ function restoreEnv(name: string, value: string | undefined): void {
     return;
   }
   process.env[name] = value;
+}
+
+async function writeExecutable(binaryPath: string): Promise<void> {
+  await mkdir(path.dirname(binaryPath), { recursive: true });
+  await writeFile(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
+  if (process.platform !== "win32") {
+    await chmod(binaryPath, 0o755);
+  }
+}
+
+function joinPathEntries(entries: Array<string | undefined>): string {
+  return entries.filter((entry): entry is string => Boolean(entry && entry.length > 0)).join(path.delimiter);
+}
+
+function platformBinaryName(): string {
+  return process.platform === "win32" ? "lopper.exe" : "lopper";
 }
