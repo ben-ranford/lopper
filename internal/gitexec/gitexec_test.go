@@ -58,6 +58,13 @@ func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")
 	t.Setenv("GIT_WORK_TREE", "/tmp/fake-worktree")
 	t.Setenv("GIT_INDEX_FILE", "/tmp/fake-index")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/attacker-global")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+	t.Setenv("GIT_CONFIG_VALUE_0", "/tmp/attacker-helper")
+	t.Setenv("HOME", "/tmp/attacker-home")
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/attacker-xdg")
+	t.Setenv("PAGER", "/tmp/attacker-pager")
 	t.Setenv("KEEP_ME", "1")
 
 	env := SanitizedEnv()
@@ -66,6 +73,22 @@ func TestSanitizedEnv(t *testing.T) {
 	}
 	if containsEnvPrefix(env, "GIT_DIR=") || containsEnvPrefix(env, "GIT_WORK_TREE=") || containsEnvPrefix(env, "GIT_INDEX_FILE=") {
 		t.Fatalf("expected git override vars to be stripped, got %#v", env)
+	}
+	if containsEnv(env, "GIT_CONFIG_GLOBAL=/tmp/attacker-global") ||
+		containsEnv(env, "GIT_CONFIG_COUNT=1") ||
+		containsEnv(env, "GIT_CONFIG_VALUE_0=/tmp/attacker-helper") ||
+		containsEnv(env, "HOME=/tmp/attacker-home") ||
+		containsEnv(env, "XDG_CONFIG_HOME=/tmp/attacker-xdg") ||
+		containsEnv(env, "PAGER=/tmp/attacker-pager") {
+		t.Fatalf("expected caller-controlled git config env vars to be stripped, got %#v", env)
+	}
+	if !containsEnv(env, safeGitNoSystemConfig) || !containsEnv(env, safeGitGlobalConfig) {
+		t.Fatalf("expected hardened git config env entries, got %#v", env)
+	}
+	for _, expected := range safeGitConfigEnvEntries() {
+		if !containsEnv(env, expected) {
+			t.Fatalf("expected forced git config entry %q in env, got %#v", expected, env)
+		}
 	}
 	if !containsEnv(env, "KEEP_ME=1") {
 		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)

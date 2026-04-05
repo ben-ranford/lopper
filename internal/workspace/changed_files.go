@@ -15,7 +15,7 @@ func ChangedFiles(repoPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--name-only", "--diff-filter=ACMRD", "HEAD~1..HEAD")
+	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--diff-filter=ACMRD", "HEAD~1..HEAD")
 	if diffErr == nil {
 		return parseChangedFileLines(diffOutput), nil
 	}

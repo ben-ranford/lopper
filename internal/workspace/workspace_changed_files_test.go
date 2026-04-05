@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,51 @@ func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
 	}
 }
 
+func TestChangedFilesIgnoresCallerGitConfigEnvironment(t *testing.T) {
+	gitPath, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	runGitCommand(t, gitPath, repo, "init")
+	runGitCommand(t, gitPath, repo, "config", "user.name", "Workspace Test")
+	runGitCommand(t, gitPath, repo, "config", "user.email", "workspace-test@example.com")
+
+	mustWrite(t, filepath.Join(repo, "tracked.txt"), "tracked\n")
+	runGitCommand(t, gitPath, repo, "add", "tracked.txt")
+	runGitCommand(t, gitPath, repo, "commit", "-m", "initial")
+	mustWrite(t, filepath.Join(repo, "untracked.txt"), "untracked\n")
+
+	attackDir := t.TempDir()
+	markerPath := filepath.Join(attackDir, "fsmonitor.marker")
+	helperPath := filepath.Join(attackDir, "fsmonitor.sh")
+	mustWrite(t, helperPath, fmt.Sprintf("#!/bin/sh\necho fsmonitor-ran >> %q\nprintf \"version 2\\n\\n\"\nexit 0\n", markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod helper executable: %v", err)
+	}
+
+	globalConfigPath := filepath.Join(attackDir, "attacker.gitconfig")
+	mustWrite(t, globalConfigPath, "[core]\n\tfsmonitor = "+helperPath+"\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfigPath)
+	t.Setenv("HOME", attackDir)
+	t.Setenv("XDG_CONFIG_HOME", attackDir)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+	t.Setenv("GIT_CONFIG_VALUE_0", helperPath)
+
+	changed, err := ChangedFiles(repo)
+	if err != nil {
+		t.Fatalf("changed files lookup failed: %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "untracked.txt" {
+		t.Fatalf("expected untracked file discovery without config influence, got %#v", changed)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected fsmonitor helper to never execute, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
 func TestParseChangedFileHelpers(t *testing.T) {
 	changed := parseChangedFileLines([]byte("  packages/a/file.ts\n  packages/a/file.ts\n"))
 	if len(changed) != 1 || changed[0] != "  packages/a/file.ts" {
@@ -156,6 +202,13 @@ func TestSanitizedGitEnvStripsGitOverrides(t *testing.T) {
 	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")
 	t.Setenv("GIT_WORK_TREE", "/tmp/fake-worktree")
 	t.Setenv("GIT_INDEX_FILE", "/tmp/fake-index")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/attacker-global")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+	t.Setenv("GIT_CONFIG_VALUE_0", "/tmp/attacker-helper")
+	t.Setenv("HOME", "/tmp/attacker-home")
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/attacker-xdg")
+	t.Setenv("PAGER", "/tmp/attacker-pager")
 	t.Setenv("PATH", "/tmp/fake-path")
 
 	env := sanitizedGitEnv()
@@ -164,8 +217,19 @@ func TestSanitizedGitEnvStripsGitOverrides(t *testing.T) {
 			t.Fatalf("expected git override env vars to be removed, found %q", entry)
 		}
 	}
+	if containsEnvEntry(env, "GIT_CONFIG_GLOBAL=/tmp/attacker-global") ||
+		containsEnvEntry(env, "GIT_CONFIG_COUNT=1") ||
+		containsEnvEntry(env, "GIT_CONFIG_VALUE_0=/tmp/attacker-helper") ||
+		containsEnvEntry(env, "HOME=/tmp/attacker-home") ||
+		containsEnvEntry(env, "XDG_CONFIG_HOME=/tmp/attacker-xdg") ||
+		containsEnvEntry(env, "PAGER=/tmp/attacker-pager") {
+		t.Fatalf("expected caller-provided git config env vars to be removed, got %#v", env)
+	}
 	if !containsEnvEntry(env, gitexec.SafeSystemPath) {
 		t.Fatalf("expected safe PATH entry in sanitized env, got %#v", env)
+	}
+	if !containsEnvEntry(env, "GIT_CONFIG_GLOBAL=/dev/null") || !containsEnvEntry(env, "GIT_CONFIG_NOSYSTEM=1") {
+		t.Fatalf("expected sanitized env to pin global/system git config, got %#v", env)
 	}
 }
 
@@ -194,4 +258,18 @@ func containsEnvEntry(env []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func runGitCommand(t *testing.T, gitPath, repo string, args ...string) {
+	t.Helper()
+
+	command, err := gitexec.Command(gitPath, append([]string{"-C", repo}, args...)...)
+	if err != nil {
+		t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
+	}
+	command.Env = gitexec.SanitizedEnv()
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
 }
