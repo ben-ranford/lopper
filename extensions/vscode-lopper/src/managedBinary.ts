@@ -45,6 +45,10 @@ export class BinaryResolutionError extends Error {
   }
 }
 
+interface LopperBinaryLifecycleDeps {
+  canonicalizePath?: (targetPath: string) => Promise<string>;
+}
+
 export interface BinaryResolutionRequest {
   workspaceRoot: string;
   workspaceTrusted: boolean;
@@ -192,12 +196,17 @@ export class ManagedBinaryInstaller {
 }
 
 export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
+  private readonly canonicalizePath: (targetPath: string) => Promise<string>;
+
   constructor(
     private readonly installer: ManagedBinaryInstallerClient,
     private readonly output: { appendLine(value: string): void },
     private readonly progress: ManagedBinaryInstallProgress = passthroughManagedInstallProgress,
     private readonly platform: NodeJS.Platform = process.platform,
-  ) {}
+    deps: LopperBinaryLifecycleDeps = {},
+  ) {
+    this.canonicalizePath = deps.canonicalizePath ?? canonicalPath;
+  }
 
   async resolveBinaryPath(request: BinaryResolutionRequest): Promise<string> {
     const configuredBinaryPath = await this.resolveConfiguredBinaryPath(request);
@@ -336,11 +345,19 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
   }
 
   private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoot: string): Promise<boolean> {
-    const [canonicalBinaryPath, canonicalWorkspaceRoot] = await Promise.all([
-      canonicalPath(binaryPath),
-      canonicalPath(workspaceRoot),
-    ]);
-    return isPathInsideWorkspace(canonicalBinaryPath, canonicalWorkspaceRoot);
+    try {
+      const [canonicalBinaryPath, canonicalWorkspaceRoot] = await Promise.all([
+        this.canonicalizePath(binaryPath),
+        this.canonicalizePath(workspaceRoot),
+      ]);
+      return isPathInsideWorkspace(canonicalBinaryPath, canonicalWorkspaceRoot);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+      this.output.appendLine(
+        `treating lopper binary as workspace-local because path canonicalization failed for ${binaryPath}${detail}`,
+      );
+      return true;
+    }
   }
 }
 
@@ -578,9 +595,5 @@ function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): bo
 }
 
 async function canonicalPath(targetPath: string): Promise<string> {
-  try {
-    return await realpath(targetPath);
-  } catch {
-    return path.resolve(targetPath);
-  }
+  return realpath(targetPath);
 }
