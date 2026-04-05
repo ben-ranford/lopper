@@ -153,7 +153,7 @@ func newInlineSuppressionRepo(t *testing.T) string {
 }
 
 func runSuppressionCheck(repoDir string) (string, error) {
-	cmd := exec.Command("bash", "scripts/check-inline-suppressions.sh")
+	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-inline-suppressions.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	return string(output), err
