@@ -98,6 +98,51 @@ pytest = "*"
 	}
 }
 
+func TestParseRequirementsDependencies(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	testutil.MustWriteFile(t, path, `
+# comment
+requests==2.32.0
+urllib3>=2.2.3
+
+`)
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf("parse requirements dependencies: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no requirements warnings, got %#v", warnings)
+	}
+	for _, want := range []string{"requests", "urllib3"} {
+		if _, ok := dependencies[want]; !ok {
+			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
+		}
+	}
+}
+
+func TestCollectDirectoryDeclaredDependenciesFromRequirementsTxt(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), `
+requests==2.32.0
+urllib3>=2.2.3
+`)
+
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	if err != nil {
+		t.Fatalf(collectDirectoryErrFmt, err)
+	}
+	for _, want := range []string{"requests", "urllib3"} {
+		if _, ok := dependencies[want]; !ok {
+			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
+		}
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+}
+
 func TestPythonAnalyseTopNIncludesPoetryDependencies(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), `

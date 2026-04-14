@@ -1,6 +1,7 @@
 package python
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ const (
 	pythonPipfileLockName = "Pipfile.lock"
 	pythonPoetryLockName  = "poetry.lock"
 	pythonUVLockName      = "uv.lock"
+	pythonRequirementsTxt = "requirements.txt"
 )
 
 var pythonRequirementNamePattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)`)
@@ -120,7 +122,7 @@ func pythonPackagingFiles(dir string) (map[string]struct{}, error) {
 }
 
 func hasRelevantPythonPackagingFile(files map[string]struct{}) bool {
-	for _, name := range []string{pythonPyprojectFile, pythonPipfileName, pythonPipfileLockName, pythonPoetryLockName, pythonUVLockName} {
+	for _, name := range []string{pythonPyprojectFile, pythonPipfileName, pythonPipfileLockName, pythonPoetryLockName, pythonUVLockName, pythonRequirementsTxt} {
 		if hasFile(files, name) {
 			return true
 		}
@@ -138,6 +140,7 @@ func collectManifestDependencies(repoPath, dir string, files map[string]struct{}
 	}{
 		{name: pythonPyprojectFile, parser: parsePyprojectDependencies},
 		{name: pythonPipfileName, parser: parsePipfileDependencies},
+		{name: pythonRequirementsTxt, parser: parseRequirementsDependencies},
 	} {
 		if !hasFile(files, source.name) {
 			continue
@@ -231,6 +234,44 @@ func parsePipfileDependencies(repoPath, path string) (map[string]struct{}, []str
 	addDependencyKeys(dependencies, nestedMap(document, "packages"), pathLabel+" [packages]")
 	addDependencyKeys(dependencies, nestedMap(document, "dev-packages"), pathLabel+" [dev-packages]")
 
+	return dependencies, warnings, nil
+}
+
+func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, []string, error) {
+	content, err := safeio.ReadFileUnder(repoPath, path)
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrNotExist):
+		return make(map[string]struct{}), nil, nil
+	default:
+		return nil, nil, fmt.Errorf("read %s: %w", relativePackagingPath(repoPath, path), err)
+	}
+
+	dependencies := make(map[string]struct{})
+	warnings := make([]string, 0)
+	skipped := 0
+	pathLabel := relativePackagingPath(repoPath, path)
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case line == "" || strings.HasPrefix(line, "#"):
+			continue
+		case strings.HasPrefix(line, "-"):
+			continue
+		}
+		if dependency := dependencyNameFromRequirement(line); dependency != "" {
+			dependencies[dependency] = struct{}{}
+			continue
+		}
+		skipped++
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, fmt.Errorf("scan %s: %w", pathLabel, err)
+	}
+	if skipped > 0 {
+		warnings = append(warnings, fmt.Sprintf("%s: skipped %d requirements entries with unsupported format", pathLabel, skipped))
+	}
 	return dependencies, warnings, nil
 }
 
