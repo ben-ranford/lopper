@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/csv"
+	"github.com/ben-ranford/lopper/internal/csvsanitize"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,7 +63,7 @@ func formatCSV(reportData Report) (string, error) {
 		return "", err
 	}
 	for _, dep := range sortedDependenciesForCSV(reportData.Dependencies) {
-		if err := writer.Write(formatDependencyCSVRow(reportData, dep)); err != nil {
+		if err := writer.Write(csvsanitize.EscapeLeadingFormulaRow(formatDependencyCSVRow(reportData, dep))); err != nil {
 			return "", err
 		}
 	}

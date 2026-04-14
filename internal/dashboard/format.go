@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"github.com/ben-ranford/lopper/internal/csvsanitize"
 	"html"
 	"strings"
 )
@@ -57,7 +58,7 @@ func writeDashboardSummaryCSV(write func([]string) error, reportData Report) err
 		{"critical_cves", fmt.Sprintf("%d", reportData.Summary.CriticalCVEs)},
 	}
 	for _, row := range summaryRows {
-		if err := write(row); err != nil {
+		if err := write(csvsanitize.EscapeLeadingFormulaRow(row)); err != nil {
 			return err
 		}
 	}
@@ -65,7 +66,7 @@ func writeDashboardSummaryCSV(write func([]string) error, reportData Report) err
 }
 
 func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) error {
-	if err := write([]string{
+	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
 		"repo_name",
 		"repo_path",
 		"language",
@@ -76,12 +77,12 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 		"critical_cves",
 		"denied_license_count",
 		"error",
-	}); err != nil {
+	})); err != nil {
 		return err
 	}
 
 	for _, repoResult := range repos {
-		if err := write([]string{
+		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
 			repoResult.Name,
 			repoResult.Path,
 			repoResult.Language,
@@ -92,7 +93,7 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 			fmt.Sprintf("%d", repoResult.CriticalCVEs),
 			fmt.Sprintf("%d", repoResult.DeniedLicenseCount),
 			repoResult.Error,
-		}); err != nil {
+		})); err != nil {
 			return err
 		}
 	}
@@ -106,15 +107,19 @@ func writeDashboardCrossRepoRowsCSV(write func([]string) error, dependencies []C
 	if err := write(nil); err != nil {
 		return err
 	}
-	if err := write([]string{"dependency_name", "repo_count", "repositories"}); err != nil {
+	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{"dependency_name", "repo_count", "repositories"})); err != nil {
 		return err
 	}
 	for _, dependency := range dependencies {
-		if err := write([]string{
+		repositories := make([]string, len(dependency.Repositories))
+		for i, repo := range dependency.Repositories {
+			repositories[i] = csvsanitize.EscapeLeadingFormula(repo)
+		}
+		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
 			dependency.Name,
 			fmt.Sprintf("%d", dependency.Count),
-			strings.Join(dependency.Repositories, "|"),
-		}); err != nil {
+			strings.Join(repositories, "|"),
+		})); err != nil {
 			return err
 		}
 	}
