@@ -113,5 +113,5 @@ func signedBytes(value int64) string {
 }
 
 func escapeMarkdownTable(value string) string {
-	return strings.NewReplacer("|", "\\|", "`", "'").Replace(value)
+	return strings.NewReplacer("|", "\\|", "`", "'", "\n", "\\n", "\r", "\\r").Replace(value)
 }
