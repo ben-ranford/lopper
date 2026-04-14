@@ -9,6 +9,8 @@ import {
   type WorkspaceAnalysisRunner,
 } from "./lopperRunner";
 import type {
+  LopperDependencyLicense,
+  LopperDependencyProvenance,
   LopperCodemodSuggestion,
   LopperDependencyReport,
   LopperImportUse,
@@ -200,6 +202,16 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       if (recommendation) {
         markdown.appendMarkdown(`\n\nRecommendation: `);
         markdown.appendText(recommendation.message);
+      }
+      const licenseSummary = formatDependencyLicense(item.dependency.license);
+      if (licenseSummary) {
+        markdown.appendMarkdown(`\n\nLicense: `);
+        markdown.appendText(licenseSummary);
+      }
+      const provenanceSummary = formatDependencyProvenance(item.dependency.provenance);
+      if (provenanceSummary) {
+        markdown.appendMarkdown(`\n\nProvenance: `);
+        markdown.appendText(provenanceSummary);
       }
       return markdown;
     });
@@ -447,6 +459,64 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     this.statusBar.text = text;
     this.statusBar.tooltip = tooltip;
   }
+}
+
+function formatDependencyLicense(license?: LopperDependencyLicense): string | undefined {
+  if (!license) {
+    return undefined;
+  }
+
+  const segments: string[] = [];
+  if (license.denied) {
+    segments.push("DENIED");
+  } else if (license.unknown) {
+    segments.push("Unknown");
+  }
+
+  if (license.spdx) {
+    segments.push(license.spdx);
+  } else if (license.raw) {
+    segments.push(license.raw);
+  } else if (license.unknown || license.denied) {
+    segments.push("unresolved");
+  } else {
+    segments.push("missing");
+  }
+
+  if (license.source) {
+    segments.push(`source: ${license.source}`);
+  }
+  if (license.confidence) {
+    segments.push(`confidence: ${license.confidence}`);
+  }
+  const evidence = license.evidence ?? [];
+  if (evidence.length > 0) {
+    segments.push(`evidence: ${evidence.join(", ")}`);
+  }
+
+  return segments.join(" • ");
+}
+
+function formatDependencyProvenance(provenance?: LopperDependencyProvenance): string | undefined {
+  if (!provenance) {
+    return undefined;
+  }
+
+  const segments: string[] = [];
+  if (provenance.source) {
+    segments.push(`source: ${provenance.source}`);
+  }
+  if (provenance.confidence) {
+    segments.push(`confidence: ${provenance.confidence}`);
+  }
+  const signals = provenance.signals ?? [];
+  if (signals.length > 0) {
+    segments.push(`signals: ${signals.join(", ")}`);
+  }
+  if (segments.length === 0) {
+    return "unresolved";
+  }
+  return segments.join(" • ");
 }
 
 class LopperExtensionBootstrap implements vscode.Disposable {
