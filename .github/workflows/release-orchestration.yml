@@ -18,6 +18,8 @@ on:
         type: string
 
 jobs:
+  # Release promotion assumes the selected source commit has already passed
+  # the checks required to merge into main.
   build-linux-windows:
     runs-on: ubuntu-latest
     permissions:
