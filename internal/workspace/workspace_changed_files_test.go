@@ -52,6 +52,11 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff fail\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  pkg/a.go\"\n  echo \"R  old.go -> pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
 			want:   []string{"pkg/a.go", "pkg/b.go"},
 		},
+		{
+			name:   "diff_and_status_union",
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  printf '%s\\n' \"packages/a/committed.go\" \"packages/a/kept.go\"\n  exit 0\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  packages/a/committed.go\"\n  echo \"?? packages/b/new.go\"\n  exit 0\nfi\nexit 1\n",
+			want:   []string{"packages/a/committed.go", "packages/a/kept.go", "packages/b/new.go"},
+		},
 	}
 
 	for _, tc := range tests {
