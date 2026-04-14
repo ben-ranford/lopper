@@ -13,17 +13,77 @@ import {
   LopperBinaryLifecycleManager,
   ManagedBinaryInstaller,
   type GitHubRelease,
+  selectReleaseAsset,
 } from "../../managedBinary";
 
 suite("managed binary installer", () => {
   test("builds expected release asset names", () => {
     assert.equal(
       assetNameForRelease("v1.2.3", { platform: "linux", arch: "x64" }),
+      "lopper_v1.2.3_linux_amd64.tar.gz",
+    );
+    assert.equal(
+      assetNameForRelease("1.2.3", { platform: "linux", arch: "x64" }),
       "lopper_1.2.3_linux_amd64.tar.gz",
     );
     assert.equal(
       assetNameForRelease("v1.2.3", { platform: "win32", arch: "arm64" }),
+      "lopper_v1.2.3_windows_arm64.zip",
+    );
+    assert.equal(
+      assetNameForRelease("1.2.3", { platform: "win32", arch: "arm64" }),
       "lopper_1.2.3_windows_arm64.zip",
+    );
+  });
+
+  test("selects tagged release asset names produced by release builds", () => {
+    const host = { platform: "linux" as const, arch: "x64" };
+    const release: GitHubRelease = {
+      tag_name: "v9.8.7",
+      assets: [
+        {
+          name: "other.zip",
+          browser_download_url: "file://other",
+        },
+        {
+          name: assetNameForRelease("v9.8.7", host),
+          browser_download_url: "file://release-asset",
+        },
+      ],
+    };
+
+    const asset = selectReleaseAsset(release, host);
+    assert.equal(asset.name, assetNameForRelease("v9.8.7", host));
+  });
+
+  test("falls back to legacy non-prefixed assets for compatibility", () => {
+    const host = { platform: "linux" as const, arch: "x64" };
+    const release: GitHubRelease = {
+      tag_name: "v9.8.7",
+      assets: [
+        {
+          name: assetNameForRelease("9.8.7", host),
+          browser_download_url: "file://legacy-asset",
+        },
+      ],
+    };
+
+    const asset = selectReleaseAsset(release, host);
+    assert.equal(asset.name, assetNameForRelease("9.8.7", host));
+  });
+
+  test("fails when release assets do not include expected candidates", () => {
+    const host = { platform: "linux" as const, arch: "x64" };
+    const release: GitHubRelease = {
+      tag_name: "v9.8.7",
+      assets: [{ name: "lopper_9.8.7_other_linux_amd64.tar.gz", browser_download_url: "file://not-matching" }],
+    };
+
+    assert.throws(
+      () => selectReleaseAsset(release, host),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("release v9.8.7 does not contain expected asset"),
     );
   });
 
@@ -303,7 +363,7 @@ async function createTarballFixture(
   const archiveDir = path.join(tempRoot, "tar-source");
   const rootDir = path.join(
     archiveDir,
-    `lopper_${releaseTag.replace(/^v/, "")}_${host.platform}_${host.arch === "x64" ? "amd64" : "arm64"}`,
+    `lopper_${releaseTag}_${host.platform}_${host.arch === "x64" ? "amd64" : "arm64"}`,
   );
   await mkdir(rootDir, { recursive: true });
   await writeFile(path.join(rootDir, "lopper"), contents);
@@ -321,7 +381,7 @@ async function createZipFixture(
   binaryRelativePath = "lopper.exe",
 ): Promise<string> {
   const zip = new AdmZip();
-  const rootDir = `lopper_${releaseTag.replace(/^v/, "")}_windows_${host.arch === "x64" ? "amd64" : "arm64"}`;
+  const rootDir = `lopper_${releaseTag}_windows_${host.arch === "x64" ? "amd64" : "arm64"}`;
   zip.addFile(`${rootDir}/${binaryRelativePath}`, Buffer.from(contents, "utf8"));
 
   const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
