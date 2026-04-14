@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -26,6 +27,11 @@ func parseConfig(path string, data []byte) (rawConfig, error) {
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&cfg); err != nil {
+			return rawConfig{}, fmt.Errorf("invalid YAML config: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err == nil {
+			return rawConfig{}, fmt.Errorf("invalid YAML config: multiple YAML documents")
+		} else if err != io.EOF {
 			return rawConfig{}, fmt.Errorf("invalid YAML config: %w", err)
 		}
 	}

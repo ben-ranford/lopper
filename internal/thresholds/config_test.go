@@ -449,6 +449,13 @@ func TestParseConfigInvalidJSONDecodeError(t *testing.T) {
 	}
 }
 
+func TestParseConfigInvalidYAMLMultipleDocuments(t *testing.T) {
+	_, err := parseConfig(lopperYAMLName, []byte("thresholds:\n  fail_on_increase_percent: 1\n---\nthresholds:\n  fail_on_increase_percent: 2\n"))
+	if err == nil {
+		t.Fatalf("expected invalid YAML multiple document error")
+	}
+}
+
 func TestConfigExtensionSupportsPinnedRemoteURLs(t *testing.T) {
 	got := configExtension("https://example.com/policies/base.JSON#sha256=" + strings.Repeat("a", 64))
 	if got != ".json" {
