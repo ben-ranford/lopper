@@ -348,13 +348,51 @@ func writeLines(out io.Writer, lines []string) error {
 }
 
 func writef(out io.Writer, format string, args ...any) error {
-	_, err := fmt.Fprintf(out, format, args...)
+	_, err := fmt.Fprintf(out, format, sanitizeOutputArgs(args)...)
 	return err
 }
 
 func writeln(out io.Writer, args ...any) error {
-	_, err := fmt.Fprintln(out, args...)
+	_, err := fmt.Fprintln(out, sanitizeOutputArgs(args)...)
 	return err
+}
+
+func sanitizeOutputArgs(args []any) []any {
+	sanitizedArgs := make([]any, len(args))
+	for i, arg := range args {
+		switch value := arg.(type) {
+		case string:
+			sanitizedArgs[i] = sanitizeTerminalString(value)
+		default:
+			sanitizedArgs[i] = arg
+		}
+	}
+	return sanitizedArgs
+}
+
+func sanitizeTerminalString(value string) string {
+	if value == "" {
+		return value
+	}
+	isControlByte := func(b byte) bool {
+		return b < 0x20 || b == 0x7f || (b >= 0x80 && b <= 0x9f)
+	}
+
+	const hex = "0123456789abcdef"
+	var output strings.Builder
+	output.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if !isControlByte(b) {
+			output.WriteByte(b)
+			continue
+		}
+		output.WriteByte('\\')
+		output.WriteByte('x')
+		output.WriteByte(hex[b>>4])
+		output.WriteByte(hex[b&0x0f])
+	}
+	return output.String()
 }
 
 func formatRuntimeModules(modules []detailRuntimeModuleView) string {

@@ -15,6 +15,7 @@ const (
 	showDetailErrFmt = "show detail: %v"
 	indexJSFile      = "index.js"
 	depMapModule     = "dep/map"
+	maliciousPath    = "src/\x1b[]0;PWN\x07.js"
 )
 
 func TestDetailShowsRiskCues(t *testing.T) {
@@ -443,5 +444,65 @@ func TestDetailWriteErrorPropagation(t *testing.T) {
 	}
 	if !sawSuccess {
 		t.Fatalf("expected one successful render when failAt exceeds write count")
+	}
+}
+
+func TestSanitizeTerminalStringEscapesControlBytes(t *testing.T) {
+	t.Parallel()
+	normalized := sanitizeTerminalString(maliciousPath)
+	if normalized != "src/\\x1b[]0;PWN\\x07.js" {
+		t.Fatalf("expected control bytes to be hex-escaped, got %q", normalized)
+	}
+	if got := sanitizeTerminalString("safe/path.js"); got != "safe/path.js" {
+		t.Fatalf("expected normal text to remain unchanged, got %q", got)
+	}
+	if got := sanitizeTerminalString("line1\nline2"); got != "line1\\x0aline2" {
+		t.Fatalf("expected newline to be escaped, got %q", got)
+	}
+}
+
+func TestPrintImportListSanitizesPathOutput(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := printImportList(&out, "Used imports", []detailImportView{{
+		Name:       "map",
+		Module:     "dep",
+		Locations:  []detailLocationView{{File: maliciousPath, Line: 1}},
+		Provenance: []string{maliciousPath + " -> dep#map"},
+	}}); err != nil {
+		t.Fatalf("print import list: %v", err)
+	}
+
+	output := out.String()
+	sanitizedPath := sanitizeTerminalString(maliciousPath)
+	if strings.Contains(output, maliciousPath) {
+		t.Fatalf("expected raw control bytes to be sanitized, got %q", output)
+	}
+	if !strings.Contains(output, sanitizedPath) {
+		t.Fatalf("expected sanitized import path in output, got %q", output)
+	}
+	if !strings.Contains(output, "provenance: "+sanitizedPath+" -> dep#map") {
+		t.Fatalf("expected provenance path to be sanitized, got %q", output)
+	}
+}
+
+func TestPrintCodemodSanitizesPathOutput(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := printCodemod(&out, &detailCodemodView{
+		Mode:        "suggest-only",
+		Suggestions: []detailCodemodSuggestionView{{File: maliciousPath, Line: 1, FromModule: "dep", ToModule: "dep/map"}},
+		Skips:       []detailCodemodSkipView{{File: maliciousPath, Line: 2, ReasonCode: "namespace-import", Message: "unsafe"}},
+	}); err != nil {
+		t.Fatalf("print codemod: %v", err)
+	}
+
+	output := out.String()
+	sanitizedPath := sanitizeTerminalString(maliciousPath)
+	if strings.Contains(output, maliciousPath) {
+		t.Fatalf("expected raw control bytes to be sanitized, got %q", output)
+	}
+	if !strings.Contains(output, sanitizedPath) {
+		t.Fatalf("expected sanitized codemod paths in output, got %q", output)
 	}
 }
