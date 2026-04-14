@@ -413,6 +413,26 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseWorkspaceGoWorkScansMembers(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
+	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if !slices.Contains(dependencyNames(reportData.Dependencies), depUUID) {
+		t.Fatalf("expected workspace dependency %s in %#v", depUUID, dependencyNames(reportData.Dependencies))
+	}
+
+	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
+	if strings.Contains(warningsText, "nested module directories") || strings.Contains(warningsText, "no go source files found") {
+		t.Fatalf("did not expect workspace member skip warnings, got %#v", reportData.Warnings)
+	}
+}
+
 func TestBuildRequestedGoDependenciesNoInputWarning(t *testing.T) {
 	deps, warnings := buildRequestedGoDependencies(language.Request{}, scanResult{})
 	if len(deps) != 0 {
@@ -885,7 +905,7 @@ func TestNestedModuleDiscoveryAndSkipDir(t *testing.T) {
 	writeFile(t, filepath.Join(repo, fileGoMod), modulePrefix+"example.com/root"+go125Block)
 	writeFile(t, filepath.Join(repo, "sub", fileGoMod), "module example.com/sub\n\nrequire "+depUUID+" v1.6.0\n")
 
-	dirs, err := nestedModuleDirs(repo)
+	dirs, err := nestedModuleDirs(repo, nil)
 	if err != nil {
 		t.Fatalf("nested module dirs: %v", err)
 	}
@@ -1246,7 +1266,7 @@ func TestDiscoverNestedModulesIgnoresGoModDirectory(t *testing.T) {
 		t.Fatalf("mkdir sub/go.mod dir: %v", err)
 	}
 
-	nested, err := nestedModuleDirs(repo)
+	nested, err := nestedModuleDirs(repo, nil)
 	if err != nil {
 		t.Fatalf("nested module dirs: %v", err)
 	}
