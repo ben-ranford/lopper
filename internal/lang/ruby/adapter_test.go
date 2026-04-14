@@ -276,8 +276,8 @@ UNKNOWN
 	if _, ok := out["ignored-gem"]; ok {
 		t.Fatalf("expected unknown section to be ignored, got %#v", out)
 	}
-	if got := rubyDependencyProvenanceSource(sources[privateGemDependency]); got != rubyDependencySourceGit {
-		t.Fatalf("expected git provenance, got %#v", sources[privateGemDependency])
+	if rubyDependencyProvenanceSource(sources[privateGemDependency]) != rubyDependencySourceGit {
+		t.Fatalf("expected git provenance, got %#v", rubyDependencyProvenanceSource(sources[privateGemDependency]))
 	}
 }
 
