@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,6 +84,9 @@ func (s *Summary) renderSummaryOutput(reportView summaryReportView, state summar
 func readSummaryInput(reader *bufio.Reader) (string, error) {
 	input, err := reader.ReadString('\n')
 	if err != nil {
+		if errors.Is(err, io.EOF) && input != "" {
+			return strings.TrimSpace(input), nil
+		}
 		return "", err
 	}
 	return strings.TrimSpace(input), nil

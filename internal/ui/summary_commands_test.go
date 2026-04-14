@@ -323,6 +323,26 @@ func TestReadSummaryInputError(t *testing.T) {
 	}
 }
 
+func TestReadSummaryInputEOFWithoutNewline(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("q"))
+	input, err := readSummaryInput(reader)
+	if err != nil {
+		t.Fatalf("expected readSummaryInput to treat EOF with partial input as command, got %v", err)
+	}
+	if input != "q" {
+		t.Fatalf("expected input q, got %q", input)
+	}
+
+	reader = bufio.NewReader(strings.NewReader("open dep"))
+	input, err = readSummaryInput(reader)
+	if err != nil {
+		t.Fatalf("expected readSummaryInput to treat EOF with partial command as command, got %v", err)
+	}
+	if input != "open dep" {
+		t.Fatalf("expected multi-word input, got %q", input)
+	}
+}
+
 type errorAnalyzer struct {
 	err error
 }
@@ -515,6 +535,14 @@ func TestSummaryStartErrorBranches(t *testing.T) {
 	summary = NewSummary(io.Discard, strings.NewReader("open dep\n"), seqAnalyzer, report.NewFormatter())
 	if summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}) == nil {
 		t.Fatalf("expected detail-open error from handleSummaryInput")
+	}
+}
+
+func TestSummaryStartEOFWithoutNewline(t *testing.T) {
+	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}}}
+	summary := NewSummary(io.Discard, strings.NewReader("q"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	if err := summary.Start(context.Background(), Options{RepoPath: "."}); err != nil {
+		t.Fatalf("expected EOF-terminated command to be processed as quit, got %v", err)
 	}
 }
 
