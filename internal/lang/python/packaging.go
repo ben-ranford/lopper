@@ -25,6 +25,7 @@ const (
 	pythonPoetryLockName  = "poetry.lock"
 	pythonUVLockName      = "uv.lock"
 	pythonRequirementsTxt = "requirements.txt"
+	readPackagingErrFmt   = "read %s: %w"
 )
 
 var pythonRequirementNamePattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)`)
@@ -244,7 +245,7 @@ func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, 
 	case errors.Is(err, os.ErrNotExist):
 		return make(map[string]struct{}), nil, nil
 	default:
-		return nil, nil, fmt.Errorf("read %s: %w", relativePackagingPath(repoPath, path), err)
+		return nil, nil, fmt.Errorf(readPackagingErrFmt, relativePackagingPath(repoPath, path), err)
 	}
 
 	dependencies := make(map[string]struct{})
@@ -252,12 +253,14 @@ func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, 
 	skipped := 0
 	pathLabel := relativePackagingPath(repoPath, path)
 	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		switch {
 		case line == "" || strings.HasPrefix(line, "#"):
 			continue
 		case strings.HasPrefix(line, "-"):
+			skipped++
 			continue
 		}
 		if dependency := dependencyNameFromRequirement(line); dependency != "" {
@@ -326,7 +329,7 @@ func parsePipfileLockDependencies(repoPath, path string) (map[string]struct{}, [
 	case errors.Is(err, os.ErrNotExist):
 		return make(map[string]struct{}), nil, nil
 	default:
-		return nil, nil, fmt.Errorf("read %s: %w", relativePackagingPath(repoPath, path), err)
+		return nil, nil, fmt.Errorf(readPackagingErrFmt, relativePackagingPath(repoPath, path), err)
 	}
 
 	document := make(map[string]any)
@@ -349,7 +352,7 @@ func readOptionalTOMLDocument(repoPath, path string) (map[string]any, []string, 
 	case errors.Is(err, os.ErrNotExist):
 		return nil, nil, nil
 	default:
-		return nil, nil, fmt.Errorf("read %s: %w", relativePackagingPath(repoPath, path), err)
+		return nil, nil, fmt.Errorf(readPackagingErrFmt, relativePackagingPath(repoPath, path), err)
 	}
 
 	document := make(map[string]any)
