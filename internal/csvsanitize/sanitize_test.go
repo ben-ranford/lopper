@@ -40,6 +40,6 @@ func TestEscapeLeadingFormulaRow(t *testing.T) {
 	want := []string{"dependency", "'=sum(A1:A2)", "'@cmd"}
 
 	if got := EscapeLeadingFormulaRow(values); !reflect.DeepEqual(got, want) {
-		t.Fatalf("EscapeLeadingFormulaRow(%q) = %q, want %q", values, got, want)
+		t.Fatalf("EscapeLeadingFormulaRow(%v) = %v, want %v", values, got, want)
 	}
 }
