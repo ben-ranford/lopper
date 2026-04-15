@@ -5,9 +5,10 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"github.com/ben-ranford/lopper/internal/csvsanitize"
 	"html"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/csvsanitize"
 )
 
 func FormatReport(reportData Report, format Format) (string, error) {
