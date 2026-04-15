@@ -384,18 +384,35 @@ export function assetNameForRelease(releaseTag: string, host: HostPlatform): str
   if (!normalizedTag) {
     throw new Error("release tag is required");
   }
-  const version = normalizedTag.replace(/^v/, "");
   const extension = host.platform === "win32" ? "zip" : "tar.gz";
-  return `lopper_${version}_${platformSegment(host.platform)}_${archSegment(host.arch)}.${extension}`;
+  return `lopper_${normalizedTag}_${platformSegment(host.platform)}_${archSegment(host.arch)}.${extension}`;
 }
 
 export function selectReleaseAsset(release: GitHubRelease, host: HostPlatform): GitHubReleaseAsset {
-  const expectedName = assetNameForRelease(release.tag_name, host);
-  const asset = release.assets.find((item) => item.name === expectedName);
-  if (!asset) {
-    throw new Error(`release ${release.tag_name} does not contain asset ${expectedName}`);
+  const expectedNames = Array.from(new Set(assetNameCandidates(release.tag_name, host)));
+  for (const expectedName of expectedNames) {
+    const asset = release.assets.find((item) => item.name === expectedName);
+    if (asset) {
+      return asset;
+    }
   }
-  return asset;
+
+  const rendered = expectedNames.length === 1 ? expectedNames[0] : `${expectedNames.join(" or ")}`;
+  throw new Error(`release ${release.tag_name} does not contain expected asset ${rendered}`);
+}
+
+function assetNameCandidates(releaseTag: string, host: HostPlatform): string[] {
+	const normalizedTag = normalizeReleaseTag(releaseTag);
+	if (!normalizedTag) {
+		throw new Error("release tag is required");
+	}
+	const expectedName = assetNameForRelease(normalizedTag, host);
+
+	if (!normalizedTag.startsWith("v")) {
+		return [expectedName];
+	}
+
+  return [expectedName, assetNameForRelease(normalizedTag.substring(1), host)];
 }
 
 function normalizeReleaseTag(releaseTag?: string): string | undefined {
