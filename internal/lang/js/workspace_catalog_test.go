@@ -93,6 +93,48 @@ catalogs:
 	}
 }
 
+func TestListDependenciesDoesNotTreatNestedPackageJSONAsWorkspaceWithoutPatterns(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, jsYarnRCFile), `
+catalog:
+  eslint: ^9.5.0
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, testPackageJSONName), `{
+  "name": "root",
+  "private": true,
+  "packageManager": "yarn@4.10.0"
+}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "examples", "demo", testPackageJSONName), `{
+  "name": "demo",
+  "dependencies": {
+    "react": "^18.3.1"
+  }
+}`)
+	if err := writeDependency(repo, "eslint", testModuleExportsStub); err != nil {
+		t.Fatalf("write eslint dependency: %v", err)
+	}
+	if err := writeDependency(repo, "react", testModuleExportsStub); err != nil {
+		t.Fatalf("write react dependency: %v", err)
+	}
+
+	deps, roots, warnings := listDependencies(repo, ScanResult{})
+	if !slices.Contains(deps, "eslint") {
+		t.Fatalf("expected root catalog dependency in list, got %#v", deps)
+	}
+	if slices.Contains(deps, "react") {
+		t.Fatalf("did not expect nested package dependency without workspace patterns, got %#v", deps)
+	}
+	if got := roots["eslint"]; got != filepath.Join(repo, "node_modules", "eslint") {
+		t.Fatalf("unexpected dependency root for eslint: %q", got)
+	}
+	if _, ok := roots["react"]; ok {
+		t.Fatalf("did not expect dependency root for react, got %#v", roots)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect warnings, got %#v", warnings)
+	}
+}
+
 func TestListDependenciesIgnoresRootManifestWhenNoWorkspaceSignals(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testPackageJSONName), `{
