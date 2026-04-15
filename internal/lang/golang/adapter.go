@@ -130,16 +130,12 @@ func applyGoRootSignals(repoPath string, detection *language.Detection, roots ma
 }
 
 func addGoWorkRoots(repoPath string, roots map[string]struct{}) error {
-	useEntries, err := readGoWorkUseEntries(repoPath)
+	moduleDirs, err := goWorkModuleDirs(repoPath)
 	if err != nil {
 		return err
 	}
-	for _, rel := range useEntries {
-		resolved, ok := resolveRepoBoundedPath(repoPath, rel)
-		if !ok {
-			continue
-		}
-		roots[resolved] = struct{}{}
+	for dir := range moduleDirs {
+		roots[dir] = struct{}{}
 	}
 	return nil
 }
@@ -244,7 +240,11 @@ func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scan
 	if repoPath == "" {
 		return result, fs.ErrInvalid
 	}
-	nestedModules, err := nestedModuleDirs(repoPath)
+	workspaceMemberDirs, err := workspaceRootModuleDirs(repoPath, moduleInfo)
+	if err != nil {
+		return result, err
+	}
+	nestedModules, err := nestedModuleDirs(repoPath, workspaceMemberDirs)
 	if err != nil {
 		return result, err
 	}
@@ -376,7 +376,35 @@ func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scan
 	return nil
 }
 
-func nestedModuleDirs(repoPath string) (map[string]struct{}, error) {
+func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
+	if moduleInfo.ModulePath != "" {
+		return nil, nil
+	}
+
+	return goWorkModuleDirs(repoPath)
+}
+
+func goWorkModuleDirs(repoPath string) (map[string]struct{}, error) {
+	useEntries, err := readGoWorkUseEntries(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(useEntries) == 0 {
+		return nil, nil
+	}
+
+	workspaceRoots := make(map[string]struct{}, len(useEntries))
+	for _, rel := range useEntries {
+		resolved, ok := resolveRepoBoundedPath(repoPath, rel)
+		if !ok {
+			continue
+		}
+		workspaceRoots[resolved] = struct{}{}
+	}
+	return workspaceRoots, nil
+}
+
+func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) (map[string]struct{}, error) {
 	dirs := make(map[string]struct{})
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -395,11 +423,14 @@ func nestedModuleDirs(repoPath string) (map[string]struct{}, error) {
 		if err != nil {
 			return err
 		}
-		if exists {
-			dirs[path] = struct{}{}
-			return filepath.SkipDir
+		if !exists {
+			return nil
 		}
-		return nil
+		if _, ok := workspaceModuleDirs[path]; ok {
+			return nil
+		}
+		dirs[path] = struct{}{}
+		return filepath.SkipDir
 	})
 	if err != nil {
 		return nil, err
@@ -408,7 +439,7 @@ func nestedModuleDirs(repoPath string) (map[string]struct{}, error) {
 }
 
 func discoverNestedModules(repoPath string) ([]string, []string, map[string]string, error) {
-	nestedDirs, err := nestedModuleDirs(repoPath)
+	nestedDirs, err := nestedModuleDirs(repoPath, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}

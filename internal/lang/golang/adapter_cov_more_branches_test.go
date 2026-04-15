@@ -49,7 +49,7 @@ func testGoHelperGuardBranches(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir .git dir: %v", err)
 	}
-	nested, err := nestedModuleDirs(repo)
+	nested, err := nestedModuleDirs(repo, nil)
 	if err != nil {
 		t.Fatalf("nestedModuleDirs: %v", err)
 	}
