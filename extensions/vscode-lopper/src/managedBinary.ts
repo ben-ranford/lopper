@@ -402,15 +402,15 @@ export function selectReleaseAsset(release: GitHubRelease, host: HostPlatform): 
 }
 
 function assetNameCandidates(releaseTag: string, host: HostPlatform): string[] {
-  const expectedName = assetNameForRelease(releaseTag, host);
-  const normalizedTag = normalizeReleaseTag(releaseTag);
-  if (!normalizedTag) {
-    return [expectedName];
-  }
+	const normalizedTag = normalizeReleaseTag(releaseTag);
+	if (!normalizedTag) {
+		throw new Error("release tag is required");
+	}
+	const expectedName = assetNameForRelease(normalizedTag, host);
 
-  if (!normalizedTag.startsWith("v")) {
-    return [expectedName];
-  }
+	if (!normalizedTag.startsWith("v")) {
+		return [expectedName];
+	}
 
   return [expectedName, assetNameForRelease(normalizedTag.substring(1), host)];
 }

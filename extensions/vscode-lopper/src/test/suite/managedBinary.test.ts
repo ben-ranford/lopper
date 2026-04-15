@@ -87,6 +87,19 @@ suite("managed binary installer", () => {
     );
   });
 
+  test("fails when the release tag is blank", () => {
+    const host = { platform: "linux" as const, arch: "x64" };
+    const release: GitHubRelease = {
+      tag_name: "   ",
+      assets: [],
+    };
+
+    assert.throws(
+      () => selectReleaseAsset(release, host),
+      (error: unknown) => error instanceof Error && error.message.includes("release tag is required"),
+    );
+  });
+
   test("installs tar.gz managed binaries into cache", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
     try {
