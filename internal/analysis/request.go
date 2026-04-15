@@ -24,6 +24,8 @@ type Request struct {
 	ConfigPath                        string
 	RuntimeProfile                    string
 	RuntimeTracePath                  string
+	RuntimeTracePathExplicit          bool
+	RuntimeTestCommand                string
 	IncludePatterns                   []string
 	ExcludePatterns                   []string
 	LowConfidenceWarningPercent       *int
