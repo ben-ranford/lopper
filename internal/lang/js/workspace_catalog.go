@@ -89,6 +89,11 @@ func loadWorkspaceDependencyCatalog(repoPath string) workspaceDependencyCatalog 
 	addCatalogEntries(&catalog, repoPath, pnpmManifest.Catalog, pnpmManifest.Catalogs)
 	addCatalogEntries(&catalog, repoPath, yarnManifest.Catalog, yarnManifest.Catalogs)
 
+	if len(workspacePatterns) == 0 {
+		catalog.warnings = dedupeWorkspaceWarnings(catalog.warnings)
+		return catalog
+	}
+
 	workspacePackageDirs, discoveryWarnings := discoverWorkspacePackageDirs(repoPath, workspacePatterns)
 	catalog.warnings = append(catalog.warnings, discoveryWarnings...)
 	for _, dir := range workspacePackageDirs {
