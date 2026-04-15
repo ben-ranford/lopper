@@ -44,6 +44,9 @@ suite("vscode-lopper smoke", () => {
       .replaceAll("&nbsp;", " ");
     assert.match(normalizedHoverText, /scope-lib/);
     assert.match(normalizedHoverText, /Used exports:/);
+    assert.match(normalizedHoverText, /License:/);
+    assert.match(normalizedHoverText, /Provenance:/);
+    assert.match(normalizedHoverText, /unknown/i);
 
     const quickFixes = await vscode.commands.executeCommand<
       (vscode.CodeAction | vscode.Command)[]

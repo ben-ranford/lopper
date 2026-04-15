@@ -6,7 +6,7 @@ Lopper brings dependency-surface analysis into VS Code with inline diagnostics a
 ## What it does
 
 - Flags unused dependency imports directly in editors covered by supported Lopper adapters.
-- Shows dependency usage, risk cues, and recommendation context in hovers.
+- Shows dependency usage, license, provenance, risk cues, and recommendation context in hovers.
 - Offers deterministic quick fixes for safe `--suggest-only` JS/TS subpath rewrites.
 - Keeps a status-bar summary and a manual `Lopper: Refresh Diagnostics` command.
 

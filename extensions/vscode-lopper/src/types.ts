@@ -20,6 +20,24 @@ export interface LopperDependencyReport {
   usedImports?: LopperImportUse[];
   unusedImports?: LopperImportUse[];
   codemod?: LopperCodemodReport;
+  license?: LopperDependencyLicense;
+  provenance?: LopperDependencyProvenance;
+}
+
+export interface LopperDependencyLicense {
+  spdx?: string;
+  raw?: string;
+  source?: string;
+  confidence?: string;
+  unknown?: boolean;
+  denied?: boolean;
+  evidence?: string[];
+}
+
+export interface LopperDependencyProvenance {
+  source?: string;
+  confidence?: string;
+  signals?: string[];
 }
 
 export interface LopperRiskCue {
