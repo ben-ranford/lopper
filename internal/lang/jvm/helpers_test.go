@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -124,7 +125,16 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit</groupId>
+      <artifactId>junit</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+`)
 	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
 	poms := parsePomDependencies(repo)
 	gradle := parseGradleDependencies(repo)
@@ -138,6 +148,86 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 	if !slices.Contains(names, "junit") || !slices.Contains(names, "okhttp") {
 		t.Fatalf("expected declared dependencies from build files, got %#v", names)
+	}
+}
+
+func TestJVMParsePomDependenciesIncludesManagedAndBOMEntries(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `
+<project>
+  <properties>
+    <junit.version>5.10.2</junit.version>
+    <spring.boot.version>3.4.5</spring.boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
+        <version>${junit.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+`)
+	descriptors, warnings := parsePomDependenciesWithWarnings(repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for resolvable managed dependencies, got %#v", warnings)
+	}
+
+	names := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		names = append(names, descriptor.Name)
+	}
+	for _, name := range []string{"junit-jupiter-api", "spring-boot-dependencies"} {
+		if !slices.Contains(names, name) {
+			t.Fatalf("expected managed Maven dependency %q in %#v", name, descriptors)
+		}
+	}
+}
+
+func TestJVMParsePomDependenciesWarnsForUnresolvedManagedVersions(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `
+<project>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
+        <version>${missing.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+`)
+
+	descriptors, warnings := parsePomDependenciesWithWarnings(repo)
+	if len(descriptors) != 2 {
+		t.Fatalf("expected managed dependencies to remain surfaced, got %#v", descriptors)
+	}
+
+	joined := strings.Join(warnings, "\n")
+	for _, expected := range []string{
+		"unable to resolve managed Maven version for org.junit.jupiter:junit-jupiter-api in pom.xml",
+		"unable to resolve imported Maven BOM version for org.springframework.boot:spring-boot-dependencies in pom.xml",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected warning %q in %q", expected, joined)
+		}
 	}
 }
 

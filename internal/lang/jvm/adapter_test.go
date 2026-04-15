@@ -82,6 +82,58 @@ class ExampleTest {
 	}
 }
 
+func TestAdapterAnalyseDependencyFromMavenDependencyManagement(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testFilePomXML), `
+<project>
+  <properties>
+    <junit.version>5.10.2</junit.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
+        <version>${junit.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>3.4.5</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "test", "java", "ManagedExampleTest.java"), `
+import org.junit.jupiter.api.Test;
+
+class ManagedExampleTest {
+  @Test
+  void runs() {}
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "junit-jupiter-api",
+	})
+	if err != nil {
+		t.Fatalf(errAnalyseFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	if reportData.Dependencies[0].UsedExportsCount == 0 {
+		t.Fatalf("expected managed Maven dependency usage to be recorded")
+	}
+	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to resolve managed Maven version") {
+		t.Fatalf("did not expect managed-version warning, got %#v", reportData.Warnings)
+	}
+}
+
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testFileBuildGradleKTS), `
