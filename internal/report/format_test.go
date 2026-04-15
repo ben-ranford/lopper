@@ -282,6 +282,21 @@ func TestFormatEmptyAndWarnings(t *testing.T) {
 	assertOutputContains(t, output, "No dependencies to report.", "Scope:", "mode: repo", "Warnings:", "fail_on_increase_percent", "Effective policy:")
 }
 
+func TestFormatTableEscapesMultilineWarnings(t *testing.T) {
+	reportData := Report{
+		Warnings: []string{"warning-line-1\nwarning-line-2", "warning-line-3\r\nwarning-line-4", "warning\twith\ttab"},
+	}
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	assertOutputContains(t, output,
+		"- warning-line-1\\nwarning-line-2",
+		"- warning-line-3\\nwarning-line-4",
+		"- warning\\twith\\ttab",
+	)
+}
+
 func TestFormattingHelpersBytesAndSymbols(t *testing.T) {
 	if got := formatBytes(0); got != "0 B" {
 		t.Fatalf("unexpected 0-byte format: %q", got)

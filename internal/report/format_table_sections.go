@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+var tableWarningReplacer = strings.NewReplacer("\r\n", "\\n", "\r", "\\n", "\n", "\\n", "\t", "\\t")
+
 func appendSummary(buffer *bytes.Buffer, summary *Summary) {
 	if summary == nil {
 		return
@@ -198,9 +200,13 @@ func appendWarnings(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString("\nWarnings:\n")
 	for _, warning := range report.Warnings {
 		buffer.WriteString("- ")
-		buffer.WriteString(warning)
+		buffer.WriteString(escapeTableWarning(warning))
 		buffer.WriteString("\n")
 	}
+}
+
+func escapeTableWarning(warning string) string {
+	return tableWarningReplacer.Replace(warning)
 }
 
 func topWasteDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
