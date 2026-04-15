@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -186,4 +187,55 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 	if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected cancelled command to stop before creating marker, stat err = %v", statErr)
 	}
+}
+
+func TestCaptureReuseIfUnchangedSkipsRepeatedCommand(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	counterPath := filepath.Join(repo, "counter.txt")
+	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"))
+
+	first := CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   npmTestCommand,
+	}
+	if err := Capture(context.Background(), first); err != nil {
+		t.Fatalf("capture first run: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 1 {
+		t.Fatalf("expected first capture execution count 1, got %d", got)
+	}
+
+	second := first
+	second.ReuseIfUnchanged = true
+	if err := Capture(context.Background(), second); err != nil {
+		t.Fatalf("capture second run: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 1 {
+		t.Fatalf("expected second capture reuse without rerun, got %d", got)
+	}
+
+	third := second
+	third.Command = "npm run test"
+	if err := Capture(context.Background(), third); err != nil {
+		t.Fatalf("capture third run command change: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 2 {
+		t.Fatalf("expected changed command to rerun capture, got %d", got)
+	}
+}
+
+func readCaptureCounter(t *testing.T, counterPath string) int {
+	t.Helper()
+	content, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read capture counter: %v", err)
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(content)))
+	if err != nil {
+		t.Fatalf("parse capture counter: %v", err)
+	}
+	return value
 }

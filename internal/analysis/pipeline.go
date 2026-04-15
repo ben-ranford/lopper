@@ -69,9 +69,12 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	runtimeWarnings, runtimeTracePath := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.cache)
 	p.reports = reports
+	warnings = append(warnings, runtimeWarnings...)
 	p.warnings = warnings
 	p.analyzedRoots = analyzedRoots
+	p.request.RuntimeTracePath = runtimeTracePath
 	return nil
 }
 

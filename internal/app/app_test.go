@@ -25,7 +25,6 @@ const (
 	baselineStorePath       = ".artifacts/baselines"
 	executeAnalyseErrFmt    = "execute analyse: %v"
 	deniedLicenseSPDX       = "GPL-3.0-ONLY"
-	runtimeTraceCommandErr  = "runtime trace command failed"
 	testRuntimeTracePath    = "trace.ndjson"
 )
 
@@ -685,13 +684,10 @@ func TestPrepareRuntimeTraceWithRuntimeCommand(t *testing.T) {
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
 	if len(warnings) != 0 {
-		t.Fatalf("did not expect warnings from runtime capture: %#v", warnings)
+		t.Fatalf("did not expect warnings from runtime planning: %#v", warnings)
 	}
-	if tracePath != filepath.Join(repo, ".artifacts", "lopper-runtime.ndjson") {
-		t.Fatalf("unexpected trace path: %q", tracePath)
-	}
-	if _, err := os.Stat(filepath.Dir(tracePath)); err != nil {
-		t.Fatalf("expected runtime trace directory to exist: %v", err)
+	if tracePath != "" {
+		t.Fatalf("expected runtime planning to defer default trace path resolution, got %q", tracePath)
 	}
 }
 
@@ -701,25 +697,7 @@ func testTime() time.Time {
 
 const missingRuntimeMakeTarget = "make __missing_target__"
 
-func TestPrepareRuntimeTraceFailureReturnsWarning(t *testing.T) {
-	repo := t.TempDir()
-	req := DefaultRequest()
-	req.RepoPath = repo
-	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
-
-	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
-	if len(warnings) != 1 {
-		t.Fatalf("expected one runtime warning, got %#v", warnings)
-	}
-	if !strings.Contains(warnings[0], runtimeTraceCommandErr) {
-		t.Fatalf("unexpected warning: %q", warnings[0])
-	}
-	if tracePath != "" {
-		t.Fatalf("expected trace path to be cleared on capture failure when path was auto-generated, got %q", tracePath)
-	}
-}
-
-func TestPrepareRuntimeTraceFailureKeepsExplicitTracePath(t *testing.T) {
+func TestPrepareRuntimeTraceKeepsExplicitTracePath(t *testing.T) {
 	repo := t.TempDir()
 	explicitPath := filepath.Join(repo, ".artifacts", "explicit.ndjson")
 	req := DefaultRequest()
@@ -728,18 +706,15 @@ func TestPrepareRuntimeTraceFailureKeepsExplicitTracePath(t *testing.T) {
 	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
-	if len(warnings) != 1 {
-		t.Fatalf("expected one runtime warning, got %#v", warnings)
+	if len(warnings) != 0 {
+		t.Fatalf("expected runtime planning with explicit path to avoid warnings, got %#v", warnings)
 	}
-	if !strings.Contains(warnings[0], runtimeTraceCommandErr) {
-		t.Fatalf("unexpected warning: %q", warnings[0])
-	}
-	if tracePath != explicitPath {
-		t.Fatalf("expected explicit trace path to be retained on capture failure, got %q", tracePath)
+	if tracePath != req.Analyse.RuntimeTracePath {
+		t.Fatalf("expected explicit trace path to be retained, got %q", tracePath)
 	}
 }
 
-func TestPrepareRuntimeTraceMissingWorkingDirectoryWarning(t *testing.T) {
+func TestPrepareRuntimeTraceMissingWorkingDirectoryStillReturnsConfiguredPath(t *testing.T) {
 	orphanedCWD := t.TempDir()
 	t.Chdir(orphanedCWD)
 	if err := os.RemoveAll(orphanedCWD); err != nil {
@@ -753,14 +728,8 @@ func TestPrepareRuntimeTraceMissingWorkingDirectoryWarning(t *testing.T) {
 	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
 	warnings, tracePath := prepareRuntimeTrace(context.Background(), req)
-	if len(warnings) == 0 || len(warnings) > 2 {
-		t.Fatalf("expected one or two warnings, got %#v", warnings)
-	}
-	if len(warnings) == 2 && !strings.Contains(warnings[0], "runtime trace setup: using raw repo path due to normalization error:") {
-		t.Fatalf("expected normalization warning first when two warnings are returned, got %#v", warnings)
-	}
-	if !strings.Contains(warnings[len(warnings)-1], runtimeTraceCommandErr) {
-		t.Fatalf("expected runtime warning last, got %#v", warnings)
+	if len(warnings) != 0 {
+		t.Fatalf("expected runtime planning to avoid capture warnings, got %#v", warnings)
 	}
 	if tracePath != explicitPath {
 		t.Fatalf("expected explicit trace path to be retained, got %q", tracePath)
@@ -790,7 +759,7 @@ func TestPrepareRuntimeTraceWithoutCommandUsesProvidedTracePath(t *testing.T) {
 	}
 }
 
-func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
+func TestExecuteAnalyseForwardsRuntimeCaptureInputs(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
 			RepoPath: ".",
@@ -806,14 +775,21 @@ func TestExecuteAnalyseIncludesRuntimeCaptureWarnings(t *testing.T) {
 	req.RepoPath = t.TempDir()
 	req.Analyse.TopN = 1
 	req.Analyse.Format = report.FormatJSON
+	req.Analyse.RuntimeTracePath = filepath.Join(req.RepoPath, ".artifacts", "explicit.ndjson")
 	req.Analyse.RuntimeTestCommand = missingRuntimeMakeTarget
 
-	output, err := application.Execute(context.Background(), req)
+	_, err := application.Execute(context.Background(), req)
 	if err != nil {
-		t.Fatalf("execute analyse with runtime warning: %v", err)
+		t.Fatalf("execute analyse forwarding runtime inputs: %v", err)
 	}
-	if !strings.Contains(output, runtimeTraceCommandErr+"; continuing with static analysis") {
-		t.Fatalf("expected runtime warning in output, got %q", output)
+	if analyzer.lastReq.RuntimeTestCommand != req.Analyse.RuntimeTestCommand {
+		t.Fatalf("expected runtime test command to be forwarded, got %q", analyzer.lastReq.RuntimeTestCommand)
+	}
+	if analyzer.lastReq.RuntimeTracePath != req.Analyse.RuntimeTracePath {
+		t.Fatalf("expected runtime trace path to be forwarded, got %q", analyzer.lastReq.RuntimeTracePath)
+	}
+	if !analyzer.lastReq.RuntimeTracePathExplicit {
+		t.Fatalf("expected explicit runtime trace path marker to be forwarded")
 	}
 }
 
