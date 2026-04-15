@@ -19,6 +19,7 @@ const (
 	expectedNoDependenciesFmt  = "expected no dependencies, got %#v"
 	expectedWarningFmt         = "expected warning containing %q, got %#v"
 	collectDirectoryErrFmt     = "collect directory declared dependencies: %v"
+	parseRequirementsErrFmt    = "parse requirements dependencies: %v"
 	packagingTestDirMode       = 0o700
 	packagingBlockedDirMode    = 0o000
 )
@@ -95,6 +96,94 @@ pytest = "*"
 		if _, ok := lockDependencies[want]; !ok {
 			t.Fatalf(expectedDependencyInSetFmt, want, lockDependencies)
 		}
+	}
+}
+
+func TestParseRequirementsDependencies(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	testutil.MustWriteFile(t, path, `
+# comment
+requests==2.32.0
+urllib3>=2.2.3
+
+`)
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no requirements warnings, got %#v", warnings)
+	}
+	for _, want := range []string{"requests", "urllib3"} {
+		if _, ok := dependencies[want]; !ok {
+			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
+		}
+	}
+}
+
+func TestParseRequirementsDependenciesWarnsForUnsupportedOptionLines(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	testutil.MustWriteFile(t, path, `
+-r base.txt
+-c constraints.txt
+-e git+https://example.test/demo.git#egg=demo
+requests==2.32.0
+`)
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one unsupported-format warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "skipped 3 requirements entries with unsupported format") {
+		t.Fatalf(expectedWarningFmt, "skipped 3 requirements entries with unsupported format", warnings)
+	}
+}
+
+func TestParseRequirementsDependenciesAcceptsLongLines(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	longRequirement := "requests==2.32.0" + strings.Repeat(" --hash=sha256:abcdef0123456789", 3000)
+	testutil.MustWriteFile(t, path, longRequirement+"\n")
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+}
+
+func TestCollectDirectoryDeclaredDependenciesFromRequirementsTxt(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), `
+requests==2.32.0
+urllib3>=2.2.3
+`)
+
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	if err != nil {
+		t.Fatalf(collectDirectoryErrFmt, err)
+	}
+	for _, want := range []string{"requests", "urllib3"} {
+		if _, ok := dependencies[want]; !ok {
+			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
+		}
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
 	}
 }
 

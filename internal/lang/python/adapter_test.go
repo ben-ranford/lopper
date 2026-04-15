@@ -60,6 +60,35 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseTopNRequiresRequirementsDependencies(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     5,
+	})
+	if err != nil {
+		t.Fatalf("analyse requirements.txt repo: %v", err)
+	}
+
+	found := false
+	for _, dep := range reportData.Dependencies {
+		if dep.Name == "requests" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected declared dependency from requirements.txt in topN report, got %#v", dependencyNames(reportData))
+	}
+	for _, warning := range reportData.Warnings {
+		if warning == "no dependency data available for top-N ranking" {
+			t.Fatalf("unexpected top-N ranking warning: %#v", reportData.Warnings)
+		}
+	}
+}
+
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	source := "import requests\nimport numpy as np\nnp.array([1])\n"
