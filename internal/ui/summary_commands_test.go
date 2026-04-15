@@ -15,6 +15,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const openDepCommand = "open dep"
+
 func newSummaryCommandState() *summaryState {
 	return &summaryState{page: 2, pageSize: 10, sortMode: sortByWaste}
 }
@@ -323,6 +325,26 @@ func TestReadSummaryInputError(t *testing.T) {
 	}
 }
 
+func TestReadSummaryInputEOFWithoutNewline(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("q"))
+	input, err := readSummaryInput(reader)
+	if err != nil {
+		t.Fatalf("expected readSummaryInput to treat EOF with partial input as command, got %v", err)
+	}
+	if input != "q" {
+		t.Fatalf("expected input q, got %q", input)
+	}
+
+	reader = bufio.NewReader(strings.NewReader(openDepCommand))
+	input, err = readSummaryInput(reader)
+	if err != nil {
+		t.Fatalf("expected readSummaryInput to treat EOF with partial command as command, got %v", err)
+	}
+	if input != openDepCommand {
+		t.Fatalf("expected multi-word input, got %q", input)
+	}
+}
+
 type errorAnalyzer struct {
 	err error
 }
@@ -471,7 +493,7 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 func TestSummaryHandleDetailErrorBranch(t *testing.T) {
 	summary := NewSummary(io.Discard, strings.NewReader(""), &errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
 	state := summaryState{}
-	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, &state, "open dep")
+	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, &state, openDepCommand)
 	if err == nil {
 		t.Fatalf("expected detail error to propagate")
 	}
@@ -512,9 +534,17 @@ func TestSummaryStartErrorBranches(t *testing.T) {
 
 	// handleSummaryInput failure path via open detail command.
 	seqAnalyzer := &sequenceErrorAnalyzer{}
-	summary = NewSummary(io.Discard, strings.NewReader("open dep\n"), seqAnalyzer, report.NewFormatter())
+	summary = NewSummary(io.Discard, strings.NewReader(openDepCommand+"\n"), seqAnalyzer, report.NewFormatter())
 	if summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}) == nil {
 		t.Fatalf("expected detail-open error from handleSummaryInput")
+	}
+}
+
+func TestSummaryStartEOFWithoutNewline(t *testing.T) {
+	rep := report.Report{Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}}}
+	summary := NewSummary(io.Discard, strings.NewReader("q"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	if err := summary.Start(context.Background(), Options{RepoPath: "."}); err != nil {
+		t.Fatalf("expected EOF-terminated command to be processed as quit, got %v", err)
 	}
 }
 
