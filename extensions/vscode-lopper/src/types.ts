@@ -1,3 +1,6 @@
+export const lopperScopeModeValues = ["package", "repo", "changed-packages"] as const;
+export type LopperScopeMode = typeof lopperScopeModeValues[number];
+
 export interface LopperReport {
   summary?: LopperSummary;
   dependencies: LopperDependencyReport[];

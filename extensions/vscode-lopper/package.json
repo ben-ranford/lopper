@@ -41,7 +41,11 @@
   },
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:lopper.refreshWorkspace"
+    "onCommand:lopper.refreshWorkspace",
+    "onCommand:lopper.refreshWorkspace.force",
+    "onCommand:lopper.refreshWorkspace.package",
+    "onCommand:lopper.refreshWorkspace.repo",
+    "onCommand:lopper.refreshWorkspace.changedPackages"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -49,6 +53,22 @@
       {
         "command": "lopper.refreshWorkspace",
         "title": "Lopper: Refresh Diagnostics"
+      },
+      {
+        "command": "lopper.refreshWorkspace.force",
+        "title": "Lopper: Refresh Diagnostics (Force Fresh)"
+      },
+      {
+        "command": "lopper.refreshWorkspace.package",
+        "title": "Lopper: Refresh Diagnostics (Scope: package)"
+      },
+      {
+        "command": "lopper.refreshWorkspace.repo",
+        "title": "Lopper: Refresh Diagnostics (Scope: repo)"
+      },
+      {
+        "command": "lopper.refreshWorkspace.changedPackages",
+        "title": "Lopper: Refresh Diagnostics (Scope: changed-packages)"
       }
     ],
     "configuration": {
@@ -92,6 +112,21 @@
             "Use the Swift adapter."
           ],
           "markdownDescription": "Language adapter mode for workspace analysis. `auto` is the default and is editor-aware, including Android Gradle Kotlin/Java modules; `all` merges every matching adapter."
+        },
+        "lopper.scopeMode": {
+          "type": "string",
+          "default": "package",
+          "enum": [
+            "package",
+            "repo",
+            "changed-packages"
+          ],
+          "enumDescriptions": [
+            "Analyze the package or module context currently active in the workspace.",
+            "Analyze the full repository surface.",
+            "Analyze only packages changed in the current branch or workspace diff."
+          ],
+          "markdownDescription": "Analysis scope mode passed to the lopper CLI with `--scope-mode`."
         },
         "lopper.binaryPath": {
           "type": "string",

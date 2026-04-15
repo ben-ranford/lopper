@@ -232,9 +232,67 @@ suite("lopper runner", () => {
     assert.ok(firstCall, "expected primary analysis command");
     assert.ok(secondCall, "expected follow-up codemod command");
     assert.equal(firstCall.args[0], "analyse");
+    assert.ok(firstCall.args.includes("--scope-mode"), "expected scope mode arg in primary command");
+    assert.equal(firstCall.args[firstCall.args.indexOf("--scope-mode") + 1], "package");
+    assert.ok(secondCall.args.includes("--scope-mode"), "expected scope mode arg in codemod command");
+    assert.equal(secondCall.args[secondCall.args.indexOf("--scope-mode") + 1], "package");
     assert.equal(secondCall.args.at(-1), "--suggest-only");
+    assert.equal(analysis.scopeMode, "package");
     assert.equal(analysis.codemodsByDependency.get("scope-lib")?.suggestions?.[0]?.toModule, "scope-lib/chunk");
     assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
+  });
+
+  test("passes explicit scope mode to primary and codemod analysis commands", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const calls: Array<{ args: string[] }> = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            calls.push({ args });
+            if (args.includes("--suggest-only")) {
+              return {
+                dependencies: [
+                  {
+                    name: "scope-lib",
+                    usedExportsCount: 1,
+                    totalExportsCount: 2,
+                    usedPercent: 50,
+                    codemod: { mode: "suggest-only", suggestions: [] },
+                  },
+                ],
+              };
+            }
+            return {
+              dependencies: [
+                {
+                  name: "scope-lib",
+                  language: "js-ts",
+                  usedExportsCount: 1,
+                  totalExportsCount: 2,
+                  usedPercent: 50,
+                },
+              ],
+            };
+          },
+        },
+      },
+    );
+
+    const analysis = await runner.analyseWorkspace(folder, { scopeMode: "repo" });
+    assert.equal(analysis.scopeMode, "repo");
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.ok(call.args.includes("--scope-mode"), "expected --scope-mode for every analysis call");
+      assert.equal(call.args[call.args.indexOf("--scope-mode") + 1], "repo");
+    }
   });
 });
 

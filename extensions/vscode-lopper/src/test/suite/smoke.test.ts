@@ -11,16 +11,21 @@ suite("vscode-lopper smoke", () => {
   );
   const fixtureUri = vscode.Uri.file(fixturePath);
 
-  test("refreshes diagnostics, hover details, and quick fixes", async () => {
+  test("refreshes diagnostics, hover details, and quick fixes", async function () {
+    this.timeout(60_000);
     const extension = vscode.extensions.getExtension("BenRanford.vscode-lopper");
     assert.ok(extension, "expected vscode-lopper extension");
-    await extension.activate();
+    const api = await extension.activate();
     assert.equal(vscode.workspace.getConfiguration("lopper").get("language"), "auto");
+    assert.equal(vscode.workspace.getConfiguration("lopper").get("scopeMode"), "package");
 
     const document = await vscode.workspace.openTextDocument(fixtureUri);
     await vscode.window.showTextDocument(document);
 
     await vscode.commands.executeCommand("lopper.refreshWorkspace");
+    assert.match(api.getLatestSummary(), /package/);
+    const commands = await vscode.commands.getCommands(true);
+    assert.ok(commands.includes("lopper.refreshWorkspace.repo"), "expected repo-scope refresh command");
 
     const diagnostics = await waitForDiagnostics(fixtureUri, 2);
     const unusedImportDiagnostic = diagnostics.find((item) => item.message.includes("unused"));

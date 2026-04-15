@@ -8,7 +8,8 @@ Lopper brings dependency-surface analysis into VS Code with inline diagnostics a
 - Flags unused dependency imports directly in editors covered by supported Lopper adapters.
 - Shows dependency usage, risk cues, and recommendation context in hovers.
 - Offers deterministic quick fixes for safe `--suggest-only` JS/TS subpath rewrites.
-- Keeps a status-bar summary and a manual `Lopper: Refresh Diagnostics` command.
+- Supports `package`, `repo`, and `changed-packages` analysis scope modes directly in VS Code.
+- Keeps a status-bar summary and manual refresh commands, including a force-fresh option.
 
 ## Adapter mode
 
@@ -45,11 +46,20 @@ code --install-extension lopper-vscode-<version>.vsix
 ## Settings
 
 - `lopper.language`: adapter mode, defaulting to `auto`
+- `lopper.scopeMode`: analysis scope mode (`package`, `repo`, `changed-packages`)
 - `lopper.binaryPath`: explicit path to the `lopper` binary
 - `lopper.topN`: max dependencies to analyse on each refresh
 - `lopper.autoRefresh`: refresh on saves that match the selected adapter mode
 - `lopper.autoDownloadBinary`: enable or disable managed binary downloads
 - `lopper.managedBinaryTag`: optional release tag override for managed installs
+
+## Commands
+
+- `Lopper: Refresh Diagnostics`: refresh using the configured scope and session cache.
+- `Lopper: Refresh Diagnostics (Force Fresh)`: bypass cache and re-run analysis.
+- `Lopper: Refresh Diagnostics (Scope: package|repo|changed-packages)`: run using an explicit scope mode.
+
+The extension deduplicates in-flight refreshes per folder/language/scope, prevents stale runs from overwriting newer diagnostics, and logs refresh lifecycle states to the `Lopper` output channel.
 
 ## Development
 
