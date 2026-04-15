@@ -94,7 +94,7 @@ jobs:
 
       - name: Comment memory benchmark report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() }}
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('node:fs');
@@ -187,7 +187,7 @@ jobs:
 
       - name: Comment lopper report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
           LOPPER_DELTA_OUTCOME: ${{ steps.lopper_delta.outcome }}
@@ -258,7 +258,7 @@ jobs:
           SONAR_HOST_URL: https://sonarcloud.io
         if: ${{ github.event_name == 'pull_request' && !env.ACT && env.SONAR_TOKEN != '' }}
         continue-on-error: true
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const marker = '<!-- lopper-sonar-review -->';
@@ -438,7 +438,7 @@ jobs:
 
       - name: Comment on coverage failure
         if: ${{ github.event_name == 'pull_request' && steps.cov.outcome == 'failure' && !env.ACT }}
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           COVERAGE_MIN: 98
           COVERAGE_PACKAGE_MIN: 98
