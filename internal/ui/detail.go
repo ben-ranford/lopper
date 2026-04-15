@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 )
@@ -374,25 +375,43 @@ func sanitizeTerminalString(value string) string {
 	if value == "" {
 		return value
 	}
-	isControlByte := func(b byte) bool {
-		return b < 0x20 || b == 0x7f || (b >= 0x80 && b <= 0x9f)
-	}
 
 	const hex = "0123456789abcdef"
 	var output strings.Builder
 	output.Grow(len(value))
-	for i := 0; i < len(value); i++ {
-		b := value[i]
-		if !isControlByte(b) {
-			output.WriteByte(b)
+	for i := 0; i < len(value); {
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if r == utf8.RuneError && size == 1 {
+			b := value[i]
+			if !isTerminalControlRune(rune(b)) {
+				output.WriteByte(b)
+				i++
+				continue
+			}
+			writeEscapedByte(&output, b, hex)
+			i++
 			continue
 		}
-		output.WriteByte('\\')
-		output.WriteByte('x')
-		output.WriteByte(hex[b>>4])
-		output.WriteByte(hex[b&0x0f])
+		if !isTerminalControlRune(r) {
+			output.WriteRune(r)
+			i += size
+			continue
+		}
+		writeEscapedByte(&output, byte(r), hex)
+		i += size
 	}
 	return output.String()
+}
+
+func isTerminalControlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+func writeEscapedByte(output *strings.Builder, b byte, hex string) {
+	output.WriteByte('\\')
+	output.WriteByte('x')
+	output.WriteByte(hex[b>>4])
+	output.WriteByte(hex[b&0x0f])
 }
 
 func formatRuntimeModules(modules []detailRuntimeModuleView) string {

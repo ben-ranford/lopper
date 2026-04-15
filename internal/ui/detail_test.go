@@ -15,7 +15,12 @@ const (
 	showDetailErrFmt = "show detail: %v"
 	indexJSFile      = "index.js"
 	depMapModule     = "dep/map"
+	depMapProvenance = " -> dep#map"
 	maliciousPath    = "src/\x1b[]0;PWN\x07.js"
+	unicodePath      = "src/Ā.js"
+	namespaceImport  = "namespace-import"
+	suggestOnlyMode  = "suggest-only"
+	usedImportsLabel = "Used imports"
 )
 
 func TestDetailShowsRiskCues(t *testing.T) {
@@ -44,12 +49,12 @@ func TestDetailShowsRiskCues(t *testing.T) {
 						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
 					},
 					Codemod: &report.CodemodReport{
-						Mode: "suggest-only",
+						Mode: suggestOnlyMode,
 						Suggestions: []report.CodemodSuggestion{
 							{File: indexJSFile, Line: 1, FromModule: "risky", ToModule: "risky/map"},
 						},
 						Skips: []report.CodemodSkip{
-							{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "namespace imports are not safe to rewrite automatically"},
+							{File: indexJSFile, Line: 2, ReasonCode: namespaceImport, Message: "namespace imports are not safe to rewrite automatically"},
 						},
 					},
 				},
@@ -85,10 +90,10 @@ func TestDetailShowsRiskCues(t *testing.T) {
 	if !strings.Contains(output, "[MEDIUM] prefer-subpath-imports") {
 		t.Fatalf("expected recommendation entry, got: %s", output)
 	}
-	if !strings.Contains(output, "Codemod preview") || !strings.Contains(output, "mode: suggest-only") {
+	if !strings.Contains(output, "Codemod preview") || !strings.Contains(output, "mode: "+suggestOnlyMode) {
 		t.Fatalf("expected codemod section, got: %s", output)
 	}
-	if !strings.Contains(output, "[namespace-import]") {
+	if !strings.Contains(output, "["+namespaceImport+"]") {
 		t.Fatalf("expected codemod skip reason code in output, got: %s", output)
 	}
 }
@@ -139,10 +144,10 @@ func TestDetailRejectsEmptyDependency(t *testing.T) {
 func TestDetailPrintHelpers(t *testing.T) {
 	var out bytes.Buffer
 	out.Reset()
-	if err := printImportList(&out, "Used imports", nil); err != nil {
+	if err := printImportList(&out, usedImportsLabel, nil); err != nil {
 		t.Fatalf("print empty import list: %v", err)
 	}
-	if err := printImportList(&out, "Used imports", []detailImportView{{
+	if err := printImportList(&out, usedImportsLabel, []detailImportView{{
 		Name:       "map",
 		Module:     "lodash",
 		Locations:  []detailLocationView{{File: indexJSFile, Line: 2}},
@@ -408,16 +413,16 @@ func TestDetailWriteErrorPropagation(t *testing.T) {
 					{Code: "prefer-subpath-imports", Priority: "medium", Message: "prefer map", Rationale: "smaller bundle"},
 				},
 				Codemod: &report.CodemodReport{
-					Mode: "suggest-only",
+					Mode: suggestOnlyMode,
 					Suggestions: []report.CodemodSuggestion{
 						{File: indexJSFile, Line: 1, FromModule: "dep", ToModule: depMapModule},
 					},
 					Skips: []report.CodemodSkip{
-						{File: indexJSFile, Line: 2, ReasonCode: "namespace-import", Message: "unsafe"},
+						{File: indexJSFile, Line: 2, ReasonCode: namespaceImport, Message: "unsafe"},
 					},
 				},
 				UsedImports: []report.ImportUse{
-					{Name: "map", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 1}}, Provenance: []string{indexJSFile + " -> dep#map"}},
+					{Name: "map", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 1}}, Provenance: []string{indexJSFile + depMapProvenance}},
 				},
 				UnusedImports: []report.ImportUse{
 					{Name: "filter", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 2}}},
@@ -456,6 +461,9 @@ func TestSanitizeTerminalStringEscapesControlBytes(t *testing.T) {
 	if got := sanitizeTerminalString("safe/path.js"); got != "safe/path.js" {
 		t.Fatalf("expected normal text to remain unchanged, got %q", got)
 	}
+	if got := sanitizeTerminalString(unicodePath); got != unicodePath {
+		t.Fatalf("expected unicode text to remain unchanged, got %q", got)
+	}
 	if got := sanitizeTerminalString("line1\nline2"); got != "line1\\x0aline2" {
 		t.Fatalf("expected newline to be escaped, got %q", got)
 	}
@@ -464,11 +472,11 @@ func TestSanitizeTerminalStringEscapesControlBytes(t *testing.T) {
 func TestPrintImportListSanitizesPathOutput(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	if err := printImportList(&out, "Used imports", []detailImportView{{
+	if err := printImportList(&out, usedImportsLabel, []detailImportView{{
 		Name:       "map",
 		Module:     "dep",
 		Locations:  []detailLocationView{{File: maliciousPath, Line: 1}},
-		Provenance: []string{maliciousPath + " -> dep#map"},
+		Provenance: []string{maliciousPath + depMapProvenance},
 	}}); err != nil {
 		t.Fatalf("print import list: %v", err)
 	}
@@ -481,7 +489,7 @@ func TestPrintImportListSanitizesPathOutput(t *testing.T) {
 	if !strings.Contains(output, sanitizedPath) {
 		t.Fatalf("expected sanitized import path in output, got %q", output)
 	}
-	if !strings.Contains(output, "provenance: "+sanitizedPath+" -> dep#map") {
+	if !strings.Contains(output, "provenance: "+sanitizedPath+depMapProvenance) {
 		t.Fatalf("expected provenance path to be sanitized, got %q", output)
 	}
 }
@@ -490,9 +498,9 @@ func TestPrintCodemodSanitizesPathOutput(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	if err := printCodemod(&out, &detailCodemodView{
-		Mode:        "suggest-only",
+		Mode:        suggestOnlyMode,
 		Suggestions: []detailCodemodSuggestionView{{File: maliciousPath, Line: 1, FromModule: "dep", ToModule: "dep/map"}},
-		Skips:       []detailCodemodSkipView{{File: maliciousPath, Line: 2, ReasonCode: "namespace-import", Message: "unsafe"}},
+		Skips:       []detailCodemodSkipView{{File: maliciousPath, Line: 2, ReasonCode: namespaceImport, Message: "unsafe"}},
 	}); err != nil {
 		t.Fatalf("print codemod: %v", err)
 	}
