@@ -19,6 +19,7 @@ const (
 	expectedNoDependenciesFmt  = "expected no dependencies, got %#v"
 	expectedWarningFmt         = "expected warning containing %q, got %#v"
 	collectDirectoryErrFmt     = "collect directory declared dependencies: %v"
+	parseRequirementsErrFmt    = "parse requirements dependencies: %v"
 	packagingTestDirMode       = 0o700
 	packagingBlockedDirMode    = 0o000
 )
@@ -110,7 +111,7 @@ urllib3>=2.2.3
 
 	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
 	if err != nil {
-		t.Fatalf("parse requirements dependencies: %v", err)
+		t.Fatalf(parseRequirementsErrFmt, err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no requirements warnings, got %#v", warnings)
@@ -134,7 +135,7 @@ requests==2.32.0
 
 	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
 	if err != nil {
-		t.Fatalf("parse requirements dependencies: %v", err)
+		t.Fatalf(parseRequirementsErrFmt, err)
 	}
 	if _, ok := dependencies["requests"]; !ok {
 		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
@@ -155,7 +156,7 @@ func TestParseRequirementsDependenciesAcceptsLongLines(t *testing.T) {
 
 	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
 	if err != nil {
-		t.Fatalf("parse requirements dependencies: %v", err)
+		t.Fatalf(parseRequirementsErrFmt, err)
 	}
 	if _, ok := dependencies["requests"]; !ok {
 		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
