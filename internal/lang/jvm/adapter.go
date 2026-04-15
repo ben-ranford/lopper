@@ -2,7 +2,9 @@ package jvm
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -287,8 +289,9 @@ func isSourceFile(path string) bool {
 }
 
 var (
-	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
+	packagePattern          = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
+	importPattern           = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
+	pomPropertyTokenPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
 const importPatternMatchGroups = 4
@@ -500,14 +503,56 @@ type dependencyDescriptor struct {
 	Artifact string
 }
 
+type pomProjectModel struct {
+	GroupID              string               `xml:"groupId"`
+	ArtifactID           string               `xml:"artifactId"`
+	Version              string               `xml:"version"`
+	Parent               pomParentModel       `xml:"parent"`
+	Properties           pomPropertiesModel   `xml:"properties"`
+	Dependencies         []pomDependencyModel `xml:"dependencies>dependency"`
+	DependencyManagement struct {
+		Dependencies []pomDependencyModel `xml:"dependencies>dependency"`
+	} `xml:"dependencyManagement"`
+}
+
+type pomParentModel struct {
+	GroupID string `xml:"groupId"`
+	Version string `xml:"version"`
+}
+
+type pomPropertiesModel struct {
+	Properties []pomPropertyModel `xml:",any"`
+}
+
+type pomPropertyModel struct {
+	XMLName xml.Name
+	Value   string `xml:",chardata"`
+}
+
+type pomDependencyModel struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Type       string `xml:"type"`
+	Scope      string `xml:"scope"`
+}
+
+type pomDependencyKind int
+
+const (
+	pomDependencyDirect pomDependencyKind = iota
+	pomDependencyManaged
+)
+
 func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[string]string, map[string]string, []string) {
 	descriptors := make([]dependencyDescriptor, 0)
 	warnings := make([]string, 0)
 
-	pomDescriptors := parsePomDependencies(repoPath)
+	pomDescriptors, pomWarnings := parsePomDependenciesWithWarnings(repoPath)
 	gradleDescriptors, gradleWarnings := parseGradleDependenciesWithWarnings(repoPath)
 	descriptors = append(descriptors, pomDescriptors...)
 	descriptors = append(descriptors, gradleDescriptors...)
+	warnings = append(warnings, pomWarnings...)
 	warnings = append(warnings, gradleWarnings...)
 
 	descriptors = dedupeAndSortDescriptors(descriptors)
@@ -599,10 +644,171 @@ func artifactLookupStrategy(group, artifact string) ([]string, []string) {
 }
 
 func parsePomDependencies(repoPath string) []dependencyDescriptor {
-	pattern := regexp.MustCompile(`(?s)<dependency>\s*.*?<groupId>\s*([^<\s]+)\s*</groupId>\s*.*?<artifactId>\s*([^<\s]+)\s*</artifactId>.*?</dependency>`)
-	return parseBuildFiles(repoPath, pomXMLName, func(content string) []dependencyDescriptor {
-		return parseDependencyDescriptorsFromMatches(pattern.FindAllStringSubmatch(content, -1))
-	})
+	descriptors, _ := parsePomDependenciesWithWarnings(repoPath)
+	return descriptors
+}
+
+func parsePomDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
+	pomParser := func(path, content string) ([]dependencyDescriptor, []string) {
+		return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
+	}
+	return parseBuildFilesWithWarnings(repoPath, pomParser, pomXMLName)
+}
+
+func parsePomDependencyContent(relativePath, content string) ([]dependencyDescriptor, []string) {
+	var project pomProjectModel
+	if err := xml.Unmarshal([]byte(content), &project); err != nil {
+		return nil, []string{fmt.Sprintf("unable to parse Maven pom.xml %s: %v", relativePath, err)}
+	}
+
+	propertyMap := buildPomPropertyMap(project)
+	directDescriptors, directWarnings := parsePomDependencyList(project.Dependencies, propertyMap, pomDependencyDirect, relativePath)
+	managedDescriptors, managedWarnings := parsePomDependencyList(project.DependencyManagement.Dependencies, propertyMap, pomDependencyManaged, relativePath)
+
+	descriptors := make([]dependencyDescriptor, 0, len(directDescriptors)+len(managedDescriptors))
+	descriptors = append(descriptors, directDescriptors...)
+	descriptors = append(descriptors, managedDescriptors...)
+
+	warnings := make([]string, 0, len(directWarnings)+len(managedWarnings))
+	warnings = append(warnings, directWarnings...)
+	warnings = append(warnings, managedWarnings...)
+
+	return dedupeAndSortDescriptors(descriptors), shared.DedupeWarnings(warnings)
+}
+
+func parsePomDependencyList(dependencies []pomDependencyModel, propertyMap map[string]string, kind pomDependencyKind, relativePath string) ([]dependencyDescriptor, []string) {
+	descriptors := make([]dependencyDescriptor, 0, len(dependencies))
+	warnings := make([]string, 0)
+	for _, dependency := range dependencies {
+		descriptor, warning := parsePomDependency(dependency, propertyMap, kind, relativePath)
+		if descriptor.Group != "" && descriptor.Artifact != "" {
+			descriptors = append(descriptors, descriptor)
+		}
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+	}
+	return descriptors, warnings
+}
+
+func parsePomDependency(dependency pomDependencyModel, propertyMap map[string]string, kind pomDependencyKind, relativePath string) (dependencyDescriptor, string) {
+	group, unresolvedGroup := resolvePomPropertyValue(dependency.GroupID, propertyMap)
+	artifact, unresolvedArtifact := resolvePomPropertyValue(dependency.ArtifactID, propertyMap)
+	if unresolvedGroup || unresolvedArtifact || group == "" || artifact == "" {
+		return dependencyDescriptor{}, ""
+	}
+
+	descriptor := dependencyDescriptor{
+		Name:     artifact,
+		Group:    group,
+		Artifact: artifact,
+	}
+	if kind != pomDependencyManaged {
+		return descriptor, ""
+	}
+
+	version, unresolvedVersion := resolvePomPropertyValue(dependency.Version, propertyMap)
+	if !isPomImportedBOM(dependency) {
+		if version == "" || unresolvedVersion {
+			return descriptor, fmt.Sprintf("unable to resolve managed Maven version for %s:%s in %s", group, artifact, relativePath)
+		}
+		return descriptor, ""
+	}
+
+	if version == "" || unresolvedVersion {
+		return descriptor, fmt.Sprintf("unable to resolve imported Maven BOM version for %s:%s in %s", group, artifact, relativePath)
+	}
+	return descriptor, ""
+}
+
+func isPomImportedBOM(dependency pomDependencyModel) bool {
+	return strings.EqualFold(strings.TrimSpace(dependency.Type), "pom") &&
+		strings.EqualFold(strings.TrimSpace(dependency.Scope), "import")
+}
+
+func buildPomPropertyMap(project pomProjectModel) map[string]string {
+	properties := make(map[string]string)
+	for _, property := range project.Properties.Properties {
+		key := strings.TrimSpace(property.XMLName.Local)
+		value := strings.TrimSpace(property.Value)
+		if key == "" || value == "" {
+			continue
+		}
+		properties[key] = value
+	}
+
+	groupID := strings.TrimSpace(project.GroupID)
+	if groupID == "" {
+		groupID = strings.TrimSpace(project.Parent.GroupID)
+	}
+	version := strings.TrimSpace(project.Version)
+	if version == "" {
+		version = strings.TrimSpace(project.Parent.Version)
+	}
+	artifactID := strings.TrimSpace(project.ArtifactID)
+
+	setPomPropertyValue(properties, "project.groupId", groupID)
+	setPomPropertyValue(properties, "pom.groupId", groupID)
+	setPomPropertyValue(properties, "groupId", groupID)
+
+	setPomPropertyValue(properties, "project.version", version)
+	setPomPropertyValue(properties, "pom.version", version)
+	setPomPropertyValue(properties, "version", version)
+
+	setPomPropertyValue(properties, "project.artifactId", artifactID)
+	setPomPropertyValue(properties, "pom.artifactId", artifactID)
+	setPomPropertyValue(properties, "artifactId", artifactID)
+
+	setPomPropertyValue(properties, "project.parent.groupId", strings.TrimSpace(project.Parent.GroupID))
+	setPomPropertyValue(properties, "project.parent.version", strings.TrimSpace(project.Parent.Version))
+	return properties
+}
+
+func setPomPropertyValue(properties map[string]string, key, value string) {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return
+	}
+	properties[key] = value
+}
+
+func resolvePomPropertyValue(value string, properties map[string]string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	unresolved := false
+	for iteration := 0; iteration < 8; iteration++ {
+		matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, -1)
+		if len(matches) == 0 {
+			break
+		}
+		updated := value
+		replaced := false
+		for _, match := range matches {
+			if len(match) != 2 {
+				continue
+			}
+			token := match[0]
+			key := strings.TrimSpace(match[1])
+			replacement, ok := properties[key]
+			if !ok || strings.TrimSpace(replacement) == "" {
+				unresolved = true
+				continue
+			}
+			updated = strings.ReplaceAll(updated, token, strings.TrimSpace(replacement))
+			replaced = true
+		}
+		value = updated
+		if !replaced {
+			break
+		}
+	}
+	if pomPropertyTokenPattern.MatchString(value) {
+		unresolved = true
+	}
+	return strings.TrimSpace(value), unresolved
 }
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
@@ -753,11 +959,15 @@ func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err er
 }
 
 func formatBuildFileReadWarning(repoPath, path string, err error) string {
+	return "unable to read " + relativeBuildFilePath(repoPath, path) + ": " + err.Error()
+}
+
+func relativeBuildFilePath(repoPath, path string) string {
 	relPath := path
 	if rel, relErr := filepath.Rel(repoPath, path); relErr == nil {
 		relPath = rel
 	}
-	return "unable to read " + filepath.ToSlash(relPath) + ": " + err.Error()
+	return filepath.ToSlash(relPath)
 }
 
 func matchesBuildFile(fileName string, names []string) bool {
