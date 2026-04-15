@@ -148,6 +148,43 @@ func TestFormatCSV(t *testing.T) {
 	})
 }
 
+func TestFormatCSVDependencyNamesSanitizeFormulaPrefixes(t *testing.T) {
+	reportData := Report{
+		SchemaVersion: SchemaVersion,
+		GeneratedAt:   time.Date(2026, time.March, 30, 12, 34, 56, 0, time.UTC),
+		Dependencies: []DependencyReport{
+			{Name: "=2+3", Language: "go"},
+			{Name: "+cmd", Language: "go"},
+			{Name: "-cmd", Language: "go"},
+			{Name: "@cmd", Language: "go"},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatCSV)
+	if err != nil {
+		t.Fatalf("format csv: %v", err)
+	}
+
+	rows := readCSVRows(t, output)
+	if len(rows) != 5 {
+		t.Fatalf("expected header and four dependency rows, got %d rows", len(rows))
+	}
+
+	rowByName := map[string]map[string]string{}
+	for _, row := range rows[1:] {
+		decoded := csvRowMap(rows[0], row)
+		rowByName[decoded["dependency_name"]] = decoded
+	}
+
+	for _, name := range []string{"=2+3", "+cmd", "-cmd", "@cmd"} {
+		if got, ok := rowByName["'"+name]; !ok {
+			t.Fatalf("expected sanitized dependency name %q in csv rows, got %#v", "'"+name, rowByName)
+		} else if got["dependency_name"] != "'"+name {
+			t.Fatalf("expected dependency_name %q, got %q", "'"+name, got["dependency_name"])
+		}
+	}
+}
+
 func TestFormatCSVEmptyReport(t *testing.T) {
 	output, err := NewFormatter().Format(Report{}, FormatCSV)
 	if err != nil {

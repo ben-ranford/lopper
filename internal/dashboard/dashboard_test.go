@@ -196,6 +196,65 @@ func TestFormatReportCSVIncludesCrossRepoRows(t *testing.T) {
 	}
 }
 
+func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
+	reportData := Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		Repos: []RepoResult{
+			{
+				Name:                  "+repo",
+				Path:                  "@path",
+				Language:              "go",
+				DependencyCount:       1,
+				WasteCandidateCount:   0,
+				WasteCandidatePercent: 0,
+			},
+		},
+		Summary: Summary{
+			TotalRepos:           1,
+			TotalDeps:            1,
+			TotalWasteCandidates: 0,
+			CrossRepoDuplicates:  1,
+			CriticalCVEs:         0,
+		},
+		CrossRepoDeps: []CrossRepoDependency{
+			{
+				Name:         "-shared",
+				Count:        3,
+				Repositories: []string{"repo-a", "-repo-b", "@repo-c"},
+			},
+		},
+	}
+
+	csvOutput, err := FormatReport(reportData, FormatCSV)
+	if err != nil {
+		t.Fatalf("format csv with formula-like values: %v", err)
+	}
+
+	reader := csv.NewReader(strings.NewReader(csvOutput))
+	reader.FieldsPerRecord = -1
+	rows, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("read csv output: %v", err)
+	}
+
+	var repoRow, crossRepoRow []string
+	for i, row := range rows {
+		if len(row) > 0 && row[0] == "repo_name" && i+1 < len(rows) {
+			repoRow = rows[i+1]
+		}
+		if len(row) > 0 && row[0] == "dependency_name" && i+1 < len(rows) {
+			crossRepoRow = rows[i+1]
+		}
+	}
+
+	if len(repoRow) != 10 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" {
+		t.Fatalf("expected sanitized repo csv row, got %#v", repoRow)
+	}
+	if len(crossRepoRow) != 3 || crossRepoRow[0] != "'-shared" || crossRepoRow[2] != "repo-a|'-repo-b|'@repo-c" {
+		t.Fatalf("expected sanitized cross-repo csv row, got %#v", crossRepoRow)
+	}
+}
+
 func TestFormatReportUnknownFormat(t *testing.T) {
 	_, err := FormatReport(Report{}, Format("xml"))
 	if err == nil || !errors.Is(err, ErrUnknownFormat) {
