@@ -192,6 +192,35 @@ func TestFormatPRComment(t *testing.T) {
 	assertOutputContains(t, output, "## Lopper (Delta)", "| Dependency count | +2 |", "| Estimated unused bytes | +1.0 KB |", "### Dependency deltas", "`lodash`", "+512.0 B")
 }
 
+func TestFormatPRCommentEscapesDependencyNameNewlines(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{
+				DependencyCountDelta: 1,
+				UsedPercentDelta:     0,
+			},
+			Dependencies: []DependencyDelta{
+				{
+					Kind:                  DependencyDeltaAdded,
+					Name:                  "safe`name\nwith`new-line",
+					Language:              "js-ts",
+					UsedPercentDelta:      0.1,
+					UsedExportsCountDelta: 0,
+				},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment escapes newlines: %v", err)
+	}
+
+	assertOutputContains(t, output, "`safe'name\\nwith'new-line`")
+	if strings.Contains(output, "`safe'name\nwith'new-line`") {
+		t.Fatalf("expected dependency name newline to be escaped as literal")
+	}
+}
+
 func TestFormatPRCommentNoBaseline(t *testing.T) {
 	output, err := NewFormatter().Format(Report{}, FormatPRComment)
 	if err != nil {
