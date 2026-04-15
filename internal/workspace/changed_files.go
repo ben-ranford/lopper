@@ -15,15 +15,26 @@ func ChangedFiles(repoPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	diffOutput, diffErr := runGit(gitPath, normalized, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--diff-filter=ACMRD", "HEAD~1..HEAD")
-	if diffErr == nil {
-		return parseChangedFileLines(diffOutput), nil
-	}
 	statusOutput, statusErr := runGit(gitPath, normalized, "status", "--porcelain")
-	if statusErr != nil {
+
+	if statusErr != nil && diffErr != nil {
 		return nil, errors.Join(diffErr, statusErr)
 	}
-	return parsePorcelainChangedFiles(statusOutput), nil
+	if diffErr != nil {
+		return parsePorcelainChangedFiles(statusOutput), nil
+	}
+	if statusErr != nil {
+		return parseChangedFileLines(diffOutput), nil
+	}
+
+	diffFiles := parseChangedFileLines(diffOutput)
+	statusFiles := parsePorcelainChangedFiles(statusOutput)
+	changed := make([]string, 0, len(diffFiles)+len(statusFiles))
+	changed = append(changed, diffFiles...)
+	changed = append(changed, statusFiles...)
+	return collectUniquePaths(changed, func(v string) string { return v }), nil
 }
 
 func parseChangedFileLines(output []byte) []string {

@@ -37,12 +37,13 @@ func TestScopedCandidateRootsChangedPackagesSuccessBranch(t *testing.T) {
 	writeFile(t, filepath.Join(rootA, "a.txt"), "a2\n")
 	testutil.RunGit(t, repoRoot, "add", ".")
 	testutil.RunGit(t, repoRoot, "commit", "-m", "change package a")
+	writeFile(t, filepath.Join(rootB, "b-dirty.txt"), "dirty\n")
 
 	roots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, []string{rootA, rootB}, repoRoot)
 	if len(warnings) != 0 {
 		t.Fatalf("expected changed-packages resolution without warnings, got %#v", warnings)
 	}
-	if len(roots) != 1 || roots[0] != rootA {
-		t.Fatalf("expected changed-packages scope to keep the changed package root, got %#v", roots)
+	if len(roots) != 2 || roots[0] != rootA || roots[1] != rootB {
+		t.Fatalf("expected changed-packages scope to include changed and dirty package roots, got %#v", roots)
 	}
 }
