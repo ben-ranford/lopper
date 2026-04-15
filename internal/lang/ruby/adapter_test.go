@@ -277,7 +277,7 @@ UNKNOWN
 		t.Fatalf("expected unknown section to be ignored, got %#v", out)
 	}
 	if got := rubyDependencyProvenanceSource(sources[privateGemDependency]); got != rubyDependencySourceGit {
-		t.Fatalf("expected git provenance, got %#v", sources[privateGemDependency])
+		t.Fatalf("expected git provenance, got %q", got)
 	}
 }
 
