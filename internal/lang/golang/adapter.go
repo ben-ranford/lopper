@@ -423,14 +423,14 @@ func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) 
 		if err != nil {
 			return err
 		}
-		if exists {
-			if _, ok := workspaceModuleDirs[path]; ok {
-				return nil
-			}
-			dirs[path] = struct{}{}
-			return filepath.SkipDir
+		if !exists {
+			return nil
 		}
-		return nil
+		if _, ok := workspaceModuleDirs[path]; ok {
+			return nil
+		}
+		dirs[path] = struct{}{}
+		return filepath.SkipDir
 	})
 	if err != nil {
 		return nil, err
