@@ -286,6 +286,20 @@ func TestLoadConfigInvalidJSONMultipleValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfigInvalidYAMLMultipleDocuments(t *testing.T) {
+	repo := t.TempDir()
+	cfg := "thresholds:\n  fail_on_increase_percent: 1\n---\nthresholds:\n  fail_on_increase_percent: 2\n"
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYAMLName), cfg)
+
+	_, _, err := Load(repo, "")
+	if err == nil {
+		t.Fatalf("expected invalid YAML multiple document error")
+	}
+	if !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
 func TestLoadConfigInvalidYAML(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYAMLName), "thresholds: [\n")
@@ -446,6 +460,16 @@ func TestRawConfigToOverridesDuplicateNestedScoreWeights(t *testing.T) {
 func TestParseConfigInvalidJSONDecodeError(t *testing.T) {
 	if _, err := parseConfig(lopperJSONName, []byte("{")); err == nil {
 		t.Fatalf("expected invalid JSON decode error")
+	}
+}
+
+func TestParseConfigInvalidYAMLMultipleDocuments(t *testing.T) {
+	_, err := parseConfig(lopperYAMLName, []byte("thresholds:\n  fail_on_increase_percent: 1\n---\nthresholds:\n  fail_on_increase_percent: 2\n"))
+	if err == nil {
+		t.Fatalf("expected invalid YAML multiple document error")
+	}
+	if !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
 
