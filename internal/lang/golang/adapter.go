@@ -130,16 +130,12 @@ func applyGoRootSignals(repoPath string, detection *language.Detection, roots ma
 }
 
 func addGoWorkRoots(repoPath string, roots map[string]struct{}) error {
-	useEntries, err := readGoWorkUseEntries(repoPath)
+	moduleDirs, err := goWorkModuleDirs(repoPath)
 	if err != nil {
 		return err
 	}
-	for _, rel := range useEntries {
-		resolved, ok := resolveRepoBoundedPath(repoPath, rel)
-		if !ok {
-			continue
-		}
-		roots[resolved] = struct{}{}
+	for dir := range moduleDirs {
+		roots[dir] = struct{}{}
 	}
 	return nil
 }
@@ -385,6 +381,10 @@ func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string
 		return nil, nil
 	}
 
+	return goWorkModuleDirs(repoPath)
+}
+
+func goWorkModuleDirs(repoPath string) (map[string]struct{}, error) {
 	useEntries, err := readGoWorkUseEntries(repoPath)
 	if err != nil {
 		return nil, err
