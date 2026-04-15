@@ -29,9 +29,11 @@ func ChangedFiles(repoPath string) ([]string, error) {
 		return parseChangedFileLines(diffOutput), nil
 	}
 
-	changed := make([]string, 0, len(diffOutput)+len(statusOutput))
-	changed = append(changed, parseChangedFileLines(diffOutput)...)
-	changed = append(changed, parsePorcelainChangedFiles(statusOutput)...)
+	diffFiles := parseChangedFileLines(diffOutput)
+	statusFiles := parsePorcelainChangedFiles(statusOutput)
+	changed := make([]string, 0, len(diffFiles)+len(statusFiles))
+	changed = append(changed, diffFiles...)
+	changed = append(changed, statusFiles...)
 	return collectUniquePaths(changed, func(v string) string { return v }), nil
 }
 
