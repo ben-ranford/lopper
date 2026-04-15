@@ -155,6 +155,7 @@ func newInlineSuppressionRepo(t *testing.T) string {
 func runSuppressionCheck(repoDir string) (string, error) {
 	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-inline-suppressions.sh"))
 	cmd.Dir = repoDir
+	cmd.Env = withoutGitEnv()
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -164,11 +165,24 @@ func runCommand(t *testing.T, dir string, name string, args ...string) string {
 
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	cmd.Env = withoutGitEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+func withoutGitEnv() []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GIT_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func writeFile(t *testing.T, path string, content string) {
