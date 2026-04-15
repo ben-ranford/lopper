@@ -15,6 +15,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const openDepCommand = "open dep"
+
 func newSummaryCommandState() *summaryState {
 	return &summaryState{page: 2, pageSize: 10, sortMode: sortByWaste}
 }
@@ -333,12 +335,12 @@ func TestReadSummaryInputEOFWithoutNewline(t *testing.T) {
 		t.Fatalf("expected input q, got %q", input)
 	}
 
-	reader = bufio.NewReader(strings.NewReader("open dep"))
+	reader = bufio.NewReader(strings.NewReader(openDepCommand))
 	input, err = readSummaryInput(reader)
 	if err != nil {
 		t.Fatalf("expected readSummaryInput to treat EOF with partial command as command, got %v", err)
 	}
-	if input != "open dep" {
+	if input != openDepCommand {
 		t.Fatalf("expected multi-word input, got %q", input)
 	}
 }
@@ -491,7 +493,7 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 func TestSummaryHandleDetailErrorBranch(t *testing.T) {
 	summary := NewSummary(io.Discard, strings.NewReader(""), &errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
 	state := summaryState{}
-	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, &state, "open dep")
+	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, &state, openDepCommand)
 	if err == nil {
 		t.Fatalf("expected detail error to propagate")
 	}
@@ -532,7 +534,7 @@ func TestSummaryStartErrorBranches(t *testing.T) {
 
 	// handleSummaryInput failure path via open detail command.
 	seqAnalyzer := &sequenceErrorAnalyzer{}
-	summary = NewSummary(io.Discard, strings.NewReader("open dep\n"), seqAnalyzer, report.NewFormatter())
+	summary = NewSummary(io.Discard, strings.NewReader(openDepCommand+"\n"), seqAnalyzer, report.NewFormatter())
 	if summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}) == nil {
 		t.Fatalf("expected detail-open error from handleSummaryInput")
 	}
