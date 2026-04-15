@@ -3,6 +3,7 @@ package thresholds
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -32,7 +33,7 @@ func parseConfig(path string, data []byte) (rawConfig, error) {
 		var extra any
 		if err := decoder.Decode(&extra); err == nil {
 			return rawConfig{}, fmt.Errorf("invalid YAML config: multiple YAML documents")
-		} else if err != io.EOF {
+		} else if !errors.Is(err, io.EOF) {
 			return rawConfig{}, fmt.Errorf("invalid YAML config: %w", err)
 		}
 	}
