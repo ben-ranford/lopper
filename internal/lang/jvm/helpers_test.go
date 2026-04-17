@@ -238,7 +238,7 @@ func TestJVMParsePomDependenciesWarnsForUnresolvedManagedVersions(t *testing.T) 
 	}
 }
 
-func TestJVMPomAndBuildHelperGuardBranches(t *testing.T) {
+func TestParsePomDependencyContentReturnsInvalidXMLWarning(t *testing.T) {
 	descriptors, warnings := parsePomDependencyContent("pom.xml", "<project>")
 	if len(descriptors) != 0 {
 		t.Fatalf("expected invalid pom content to produce no descriptors, got %#v", descriptors)
@@ -246,7 +246,9 @@ func TestJVMPomAndBuildHelperGuardBranches(t *testing.T) {
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to parse Maven pom.xml pom.xml") {
 		t.Fatalf("expected invalid pom warning, got %#v", warnings)
 	}
+}
 
+func TestParsePomDependencyDropsUnresolvedManagedCoordinates(t *testing.T) {
 	dependency := pomDependencyModel{
 		GroupID:    "${missing.group}",
 		ArtifactID: "demo-artifact",
@@ -256,7 +258,9 @@ func TestJVMPomAndBuildHelperGuardBranches(t *testing.T) {
 	if descriptor != (dependencyDescriptor{}) || warning != "" {
 		t.Fatalf("expected unresolved managed coordinates to be dropped without warnings, got descriptor=%#v warning=%q", descriptor, warning)
 	}
+}
 
+func TestBuildPomPropertyMapUsesParentFallbacksAndIgnoresBlankValues(t *testing.T) {
 	propertyMap := buildPomPropertyMap(pomProjectModel{
 		ArtifactID: "demo-artifact",
 		Parent: pomParentModel{
@@ -280,12 +284,18 @@ func TestJVMPomAndBuildHelperGuardBranches(t *testing.T) {
 	if _, ok := propertyMap["blankValue"]; ok {
 		t.Fatalf("expected blank-value property to be ignored, got %#v", propertyMap)
 	}
+}
+
+func TestSetPomPropertyValueIgnoresBlankInputs(t *testing.T) {
+	propertyMap := map[string]string{}
 	setPomPropertyValue(propertyMap, "", "ignored")
 	setPomPropertyValue(propertyMap, "ignored", "")
 	if _, ok := propertyMap["ignored"]; ok {
 		t.Fatalf("expected blank setter inputs to be ignored, got %#v", propertyMap)
 	}
+}
 
+func TestParseBuildFilesSkipsNonBuildEntries(t *testing.T) {
 	repo := t.TempDir()
 	writeJVMPomFile(t, repo, `<project/>`)
 	testutil.MustWriteFile(t, filepath.Join(repo, "README.md"), "no build files here")

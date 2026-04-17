@@ -780,35 +780,56 @@ func resolvePomPropertyValue(value string, properties map[string]string) (string
 	}
 	unresolved := false
 	for iteration := 0; iteration < 8; iteration++ {
-		matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, -1)
-		if len(matches) == 0 {
-			break
-		}
-		updated := value
-		replaced := false
-		for _, match := range matches {
-			if len(match) != 2 {
-				continue
-			}
-			token := match[0]
-			key := strings.TrimSpace(match[1])
-			replacement, ok := properties[key]
-			if !ok || strings.TrimSpace(replacement) == "" {
-				unresolved = true
-				continue
-			}
-			updated = strings.ReplaceAll(updated, token, strings.TrimSpace(replacement))
-			replaced = true
-		}
-		value = updated
+		updated, replaced, missing := replacePomPropertyTokens(value, properties)
+		unresolved = unresolved || missing
 		if !replaced {
 			break
 		}
+		value = updated
 	}
 	if pomPropertyTokenPattern.MatchString(value) {
 		unresolved = true
 	}
 	return strings.TrimSpace(value), unresolved
+}
+
+func replacePomPropertyTokens(value string, properties map[string]string) (string, bool, bool) {
+	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, -1)
+	if len(matches) == 0 {
+		return value, false, false
+	}
+
+	updated := value
+	replaced := false
+	unresolved := false
+	for _, match := range matches {
+		token, replacement, ok := pomPropertyReplacement(match, properties)
+		if !ok {
+			unresolved = unresolved || len(match) == 2
+			continue
+		}
+		updated = strings.ReplaceAll(updated, token, replacement)
+		replaced = true
+	}
+	return updated, replaced, unresolved
+}
+
+func pomPropertyReplacement(match []string, properties map[string]string) (string, string, bool) {
+	if len(match) != 2 {
+		return "", "", false
+	}
+
+	key := strings.TrimSpace(match[1])
+	replacement, ok := properties[key]
+	if !ok {
+		return match[0], "", false
+	}
+
+	replacement = strings.TrimSpace(replacement)
+	if replacement == "" {
+		return match[0], "", false
+	}
+	return match[0], replacement, true
 }
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
