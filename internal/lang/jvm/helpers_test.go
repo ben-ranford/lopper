@@ -41,7 +41,7 @@ func managedDependencyManagementPOM(properties, junitVersion, springVersion stri
 		springVersionBlock = fmt.Sprintf("\n        <version>%s</version>", springVersion)
 	}
 
-	return fmt.Sprintf(`
+	template := `
 <project>%s
   <dependencyManagement>
     <dependencies>
@@ -59,7 +59,9 @@ func managedDependencyManagementPOM(properties, junitVersion, springVersion stri
     </dependencies>
   </dependencyManagement>
 </project>
-`, propertiesBlock, junitVersion, springVersionBlock)
+`
+
+	return fmt.Sprintf(template, propertiesBlock, junitVersion, springVersionBlock)
 }
 
 func TestJVMParsePackageAndImports(t *testing.T) {
@@ -194,10 +196,12 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 
 func TestJVMParsePomDependenciesIncludesManagedAndBOMEntries(t *testing.T) {
 	repo := t.TempDir()
-	writeJVMPomFile(t, repo, managedDependencyManagementPOM(`
+	properties := `
     <junit.version>5.10.2</junit.version>
     <spring.boot.version>3.4.5</spring.boot.version>
-`, "${junit.version}", "${spring.boot.version}"))
+`
+	pomContent := managedDependencyManagementPOM(properties, "${junit.version}", "${spring.boot.version}")
+	writeJVMPomFile(t, repo, pomContent)
 	descriptors, warnings := parsePomDependenciesWithWarnings(repo)
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for resolvable managed dependencies, got %#v", warnings)
@@ -243,11 +247,12 @@ func TestJVMPomAndBuildHelperGuardBranches(t *testing.T) {
 		t.Fatalf("expected invalid pom warning, got %#v", warnings)
 	}
 
-	descriptor, warning := parsePomDependency(pomDependencyModel{
+	dependency := pomDependencyModel{
 		GroupID:    "${missing.group}",
 		ArtifactID: "demo-artifact",
 		Version:    "1.0.0",
-	}, map[string]string{}, pomDependencyManaged, "pom.xml")
+	}
+	descriptor, warning := parsePomDependency(dependency, map[string]string{}, pomDependencyManaged, "pom.xml")
 	if descriptor != (dependencyDescriptor{}) || warning != "" {
 		t.Fatalf("expected unresolved managed coordinates to be dropped without warnings, got descriptor=%#v warning=%q", descriptor, warning)
 	}

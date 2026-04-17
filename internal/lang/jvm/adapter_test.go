@@ -84,9 +84,11 @@ class ExampleTest {
 
 func TestAdapterAnalyseDependencyFromMavenDependencyManagement(t *testing.T) {
 	repo := t.TempDir()
-	writeJVMPomFile(t, repo, managedDependencyManagementPOM(`
+	properties := `
     <junit.version>5.10.2</junit.version>
-`, "${junit.version}", "3.4.5"))
+`
+	pomContent := managedDependencyManagementPOM(properties, "${junit.version}", "3.4.5")
+	writeJVMPomFile(t, repo, pomContent)
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "test", "java", "ManagedExampleTest.java"), `
 import org.junit.jupiter.api.Test;
 
