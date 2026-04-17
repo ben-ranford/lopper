@@ -390,34 +390,11 @@ func workspaceDisplayPath(repoPath, targetPath string) string {
 }
 
 func dedupeWorkspaceWarnings(warnings []string) []string {
-	set := make(map[string]struct{}, len(warnings))
-	for _, warning := range warnings {
-		if strings.TrimSpace(warning) == "" {
-			continue
-		}
-		set[warning] = struct{}{}
-	}
-	deduped := make([]string, 0, len(set))
-	for warning := range set {
-		deduped = append(deduped, warning)
-	}
+	deduped := shared.UniqueTrimmedStrings(warnings)
 	sort.Strings(deduped)
 	return deduped
 }
 
 func dedupeWorkspacePatterns(patterns []string) []string {
-	seen := make(map[string]struct{}, len(patterns))
-	out := make([]string, 0, len(patterns))
-	for _, pattern := range patterns {
-		trimmed := strings.TrimSpace(pattern)
-		if trimmed == "" {
-			continue
-		}
-		if _, exists := seen[trimmed]; exists {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
+	return shared.UniqueTrimmedStrings(patterns)
 }

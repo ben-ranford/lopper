@@ -180,37 +180,22 @@ func TestReadWorkspacePackageJSONWarnings(t *testing.T) {
 func TestWorkspaceManifestReaders(t *testing.T) {
 	t.Parallel()
 
-	t.Run("pnpm parse warning", func(t *testing.T) {
-		t.Parallel()
+	manifestWarningCases := []workspaceManifestWarningCase{
+		invalidWorkspaceManifestWarningCase("pnpm parse warning", jsPnpmWorkspaceFile, "packages: [\n", "expected invalid pnpm manifest to be ignored", "expected pnpm parse warning", readPnpmWorkspaceManifestWarning),
+		directoryWorkspaceManifestWarningCase("pnpm directory warning", jsPnpmWorkspaceFile, "mkdir pnpm workspace dir", "expected pnpm directory manifest to be ignored", "expected pnpm directory warning", readPnpmWorkspaceManifestWarning),
+		invalidWorkspaceManifestWarningCase("yarn parse warning", jsYarnRCFile, "catalog: [\n", "expected invalid yarn config to be ignored", "expected yarn parse warning", readYarnCatalogManifestWarning),
+		directoryWorkspaceManifestWarningCase("yarn directory warning", jsYarnRCFile, "mkdir yarn rc dir", "expected yarn directory manifest to be ignored", "expected yarn directory warning", readYarnCatalogManifestWarning),
+	}
+	for _, testCase := range manifestWarningCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, jsPnpmWorkspaceFile), "packages: [\n")
-
-		_, found, warning := readPnpmWorkspaceManifest(repo)
-		if found {
-			t.Fatalf("expected invalid pnpm manifest to be ignored")
-		}
-		if !strings.Contains(warning, "failed to parse "+jsPnpmWorkspaceFile) {
-			t.Fatalf("expected pnpm parse warning, got %q", warning)
-		}
-	})
-
-	t.Run("pnpm directory warning", func(t *testing.T) {
-		t.Parallel()
-
-		repo := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(repo, jsPnpmWorkspaceFile), 0o755); err != nil {
-			t.Fatalf("mkdir pnpm workspace dir: %v", err)
-		}
-
-		_, found, warning := readPnpmWorkspaceManifest(repo)
-		if found {
-			t.Fatalf("expected pnpm directory manifest to be ignored")
-		}
-		if !strings.Contains(warning, "failed to parse "+jsPnpmWorkspaceFile) {
-			t.Fatalf("expected pnpm directory warning, got %q", warning)
-		}
-	})
+			repo := t.TempDir()
+			testCase.writeManifest(t, repo)
+			assertWorkspaceManifestReaderWarning(t, repo, testCase)
+		})
+	}
 
 	t.Run("yarn reader ignores non-catalog files", func(t *testing.T) {
 		t.Parallel()
@@ -227,37 +212,6 @@ func TestWorkspaceManifestReaders(t *testing.T) {
 		}
 	})
 
-	t.Run("yarn parse warning", func(t *testing.T) {
-		t.Parallel()
-
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, jsYarnRCFile), "catalog: [\n")
-
-		_, found, warning := readYarnCatalogManifest(repo)
-		if found {
-			t.Fatalf("expected invalid yarn config to be ignored")
-		}
-		if !strings.Contains(warning, "failed to parse "+jsYarnRCFile) {
-			t.Fatalf("expected yarn parse warning, got %q", warning)
-		}
-	})
-
-	t.Run("yarn directory warning", func(t *testing.T) {
-		t.Parallel()
-
-		repo := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(repo, jsYarnRCFile), 0o755); err != nil {
-			t.Fatalf("mkdir yarn rc dir: %v", err)
-		}
-
-		_, found, warning := readYarnCatalogManifest(repo)
-		if found {
-			t.Fatalf("expected yarn directory manifest to be ignored")
-		}
-		if !strings.Contains(warning, "failed to parse "+jsYarnRCFile) {
-			t.Fatalf("expected yarn directory warning, got %q", warning)
-		}
-	})
 }
 
 func TestWorkspacePatternHelpers(t *testing.T) {
@@ -727,5 +681,66 @@ func assertWorkspaceCatalogDeclarationKeys(t *testing.T, declarations map[string
 	slices.Sort(expected)
 	if !slices.Equal(keys, expected) {
 		t.Fatalf("unexpected declaration keys: got %#v want %#v", keys, expected)
+	}
+}
+
+func readPnpmWorkspaceManifestWarning(repo string) (bool, string) {
+	_, found, warning := readPnpmWorkspaceManifest(repo)
+	return found, warning
+}
+
+func readYarnCatalogManifestWarning(repo string) (bool, string) {
+	_, found, warning := readYarnCatalogManifest(repo)
+	return found, warning
+}
+
+type workspaceManifestWarningCase struct {
+	name           string
+	fileName       string
+	writeManifest  func(t *testing.T, repo string)
+	readManifest   func(string) (bool, string)
+	wantMissingMsg string
+	wantWarningMsg string
+}
+
+func invalidWorkspaceManifestWarningCase(name, fileName, content, wantMissingMsg, wantWarningMsg string, readManifest func(string) (bool, string)) workspaceManifestWarningCase {
+	return workspaceManifestWarningCase{
+		name:     name,
+		fileName: fileName,
+		writeManifest: func(t *testing.T, repo string) {
+			t.Helper()
+			testutil.MustWriteFile(t, filepath.Join(repo, fileName), content)
+		},
+		readManifest:   readManifest,
+		wantMissingMsg: wantMissingMsg,
+		wantWarningMsg: wantWarningMsg,
+	}
+}
+
+func directoryWorkspaceManifestWarningCase(name, fileName, mkdirErrorMsg, wantMissingMsg, wantWarningMsg string, readManifest func(string) (bool, string)) workspaceManifestWarningCase {
+	return workspaceManifestWarningCase{
+		name:     name,
+		fileName: fileName,
+		writeManifest: func(t *testing.T, repo string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Join(repo, fileName), 0o755); err != nil {
+				t.Fatalf("%s: %v", mkdirErrorMsg, err)
+			}
+		},
+		readManifest:   readManifest,
+		wantMissingMsg: wantMissingMsg,
+		wantWarningMsg: wantWarningMsg,
+	}
+}
+
+func assertWorkspaceManifestReaderWarning(t *testing.T, repo string, testCase workspaceManifestWarningCase) {
+	t.Helper()
+
+	found, warning := testCase.readManifest(repo)
+	if found {
+		t.Fatal(testCase.wantMissingMsg)
+	}
+	if !strings.Contains(warning, "failed to parse "+testCase.fileName) {
+		t.Fatalf("%s, got %q", testCase.wantWarningMsg, warning)
 	}
 }
