@@ -626,6 +626,8 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 			collector.recordImport(repoPath, importerPath, imp)
 		}
 	}
+	workspaceCatalog := loadWorkspaceDependencyCatalog(repoPath)
+	collector.mergeWorkspaceDeclarations(repoPath, workspaceCatalog.declarations)
 
 	deps := make([]string, 0, len(collector.found))
 	for dep := range collector.found {
@@ -633,12 +635,20 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 	}
 	sort.Strings(deps)
 
-	warnings := make([]string, 0, len(collector.missing))
+	warningSet := make(map[string]struct{}, len(collector.missing)+len(collector.multiRoot)+len(workspaceCatalog.warnings))
 	for dep := range collector.missing {
-		warnings = append(warnings, fmt.Sprintf("dependency not found in node_modules: %s", dep))
+		warningSet[fmt.Sprintf("dependency not found in node_modules: %s", dep)] = struct{}{}
 	}
 	for dep := range collector.multiRoot {
-		warnings = append(warnings, fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", dep))
+		warningSet[fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", dep)] = struct{}{}
+	}
+	for _, warning := range workspaceCatalog.warnings {
+		warningSet[warning] = struct{}{}
+	}
+
+	warnings := make([]string, 0, len(warningSet))
+	for warning := range warningSet {
+		warnings = append(warnings, warning)
 	}
 	sort.Strings(warnings)
 
@@ -680,14 +690,8 @@ func (c *dependencyCollector) recordImport(repoPath string, importerPath string,
 		c.missing[dep] = struct{}{}
 		return
 	}
-	c.found[dep] = struct{}{}
-	if c.roots[dep] == "" {
-		c.roots[dep] = resolvedRoot
-		return
-	}
-	if c.roots[dep] != resolvedRoot {
-		c.multiRoot[dep] = struct{}{}
-	}
+	c.markFound(dep)
+	c.recordResolvedRoot(dep, resolvedRoot)
 }
 
 func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionRequest) string {
@@ -698,6 +702,41 @@ func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionReque
 	resolvedRoot := resolveDependencyRootFromImporter(req)
 	c.cache[cacheKey] = resolvedRoot
 	return resolvedRoot
+}
+
+func (c *dependencyCollector) markFound(dep string) {
+	c.found[dep] = struct{}{}
+	delete(c.missing, dep)
+}
+
+func (c *dependencyCollector) recordResolvedRoot(dep, resolvedRoot string) {
+	if strings.TrimSpace(dep) == "" || strings.TrimSpace(resolvedRoot) == "" {
+		return
+	}
+	if c.roots[dep] == "" {
+		c.roots[dep] = resolvedRoot
+		return
+	}
+	if c.roots[dep] != resolvedRoot {
+		c.multiRoot[dep] = struct{}{}
+	}
+}
+
+func (c *dependencyCollector) mergeWorkspaceDeclarations(repoPath string, declarations map[string]workspaceDependencyDeclaration) {
+	for dep, declaration := range declarations {
+		resolvedAnyRoot := false
+		for _, root := range resolveDependencyRootsFromDeclarationDirs(repoPath, dep, declaration.declarationDirs) {
+			resolvedAnyRoot = true
+			c.recordResolvedRoot(dep, root)
+		}
+		if resolvedAnyRoot {
+			c.markFound(dep)
+			continue
+		}
+		if _, alreadyFound := c.found[dep]; !alreadyFound {
+			c.missing[dep] = struct{}{}
+		}
+	}
 }
 
 func dependencyFromModule(module string) string {
@@ -754,23 +793,27 @@ func resolveDependencyRootFromImporter(req dependencyResolutionRequest) string {
 	if req.RepoPath == "" || req.ImporterPath == "" || req.Dependency == "" {
 		return ""
 	}
+	return resolveDependencyRootFromDir(req.RepoPath, filepath.Dir(req.ImporterPath), req.Dependency)
+}
 
-	absRepo, err := filepath.Abs(req.RepoPath)
+func resolveDependencyRootFromDir(repoPath, startDir, dependency string) string {
+	if repoPath == "" || startDir == "" || dependency == "" {
+		return ""
+	}
+	absRepo, err := filepath.Abs(repoPath)
 	if err != nil {
 		return ""
 	}
-	absImporter, err := filepath.Abs(req.ImporterPath)
+	absStart, err := filepath.Abs(startDir)
 	if err != nil {
 		return ""
 	}
-	if !isPathWithin(absImporter, absRepo) {
+	if !isPathWithin(absStart, absRepo) {
 		return ""
 	}
-
-	absStart := filepath.Dir(absImporter)
 
 	for {
-		root, ok := resolveDependencyRootAtDir(absStart, req.Dependency)
+		root, ok := resolveDependencyRootAtDir(absStart, dependency)
 		if ok {
 			return root
 		}
@@ -784,6 +827,22 @@ func resolveDependencyRootFromImporter(req dependencyResolutionRequest) string {
 		absStart = parent
 	}
 	return ""
+}
+
+func resolveDependencyRootsFromDeclarationDirs(repoPath string, dependency string, declarationDirs map[string]struct{}) []string {
+	rootsSet := make(map[string]struct{})
+	for dir := range declarationDirs {
+		if resolved := resolveDependencyRootFromDir(repoPath, dir, dependency); resolved != "" {
+			rootsSet[resolved] = struct{}{}
+		}
+	}
+
+	roots := make([]string, 0, len(rootsSet))
+	for root := range rootsSet {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	return roots
 }
 
 func resolveDependencyRootsFromScan(repoPath string, dependency string, scanResult ScanResult) []string {

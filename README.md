@@ -157,6 +157,7 @@ lopper dashboard --config lopper-org.yml --format json
 ## Languages
 
 - Supported adapters: `js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`
+- `js-ts` merges workspace-level declarations from `pnpm-workspace.yaml`, `package.json#workspaces`, and Yarn `.yarnrc.yml` catalogs.
 - Source of truth for adapter IDs: `lopper --help`
 - Language modes:
   - `auto`: choose highest-confidence adapter

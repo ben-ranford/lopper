@@ -36,12 +36,19 @@ type GradleCatalogLibrary struct {
 type GradleCatalogResolver struct {
 	knownCatalogs map[string]struct{}
 	scopes        []gradleCatalogScope
+	lookup        gradleCatalogLookupIndex
 }
 
 type gradleCatalogScope struct {
 	root      string
 	libraries map[string]GradleCatalogLibrary
 	bundles   map[string][]GradleCatalogLibrary
+}
+
+type gradleCatalogLookupIndex struct {
+	scopesByRoot    map[string]*gradleCatalogScope
+	cachedScopes    map[string]*gradleCatalogScope
+	cachedUnmatched map[string]struct{}
 }
 
 type gradleCatalogSource struct {
@@ -222,23 +229,34 @@ func (r *gradleCatalogRegistry) trackKnownCatalog(name string) {
 }
 
 func (r *gradleCatalogRegistry) buildResolver() GradleCatalogResolver {
+	r.parseSources()
+	scopes := r.sortedScopes()
+	resolver := GradleCatalogResolver{
+		knownCatalogs: r.knownCatalogs,
+		scopes:        scopes,
+	}
+	resolver.lookup = newGradleCatalogLookupIndex(resolver.scopes)
+	return resolver
+}
+
+func (r *gradleCatalogRegistry) parseSources() {
 	for _, source := range r.sources {
 		r.loadSource(source)
 	}
-	resolver := GradleCatalogResolver{
-		knownCatalogs: r.knownCatalogs,
-		scopes:        make([]gradleCatalogScope, 0, len(r.scopesByRoot)),
-	}
+}
+
+func (r *gradleCatalogRegistry) sortedScopes() []gradleCatalogScope {
+	scopes := make([]gradleCatalogScope, 0, len(r.scopesByRoot))
 	for _, scope := range r.scopesByRoot {
-		resolver.scopes = append(resolver.scopes, *scope)
+		scopes = append(scopes, *scope)
 	}
-	sort.Slice(resolver.scopes, func(i, j int) bool {
-		if len(resolver.scopes[i].root) == len(resolver.scopes[j].root) {
-			return resolver.scopes[i].root < resolver.scopes[j].root
+	sort.Slice(scopes, func(i, j int) bool {
+		if len(scopes[i].root) == len(scopes[j].root) {
+			return scopes[i].root < scopes[j].root
 		}
-		return len(resolver.scopes[i].root) > len(resolver.scopes[j].root)
+		return len(scopes[i].root) > len(scopes[j].root)
 	})
-	return resolver
+	return scopes
 }
 
 func (r *gradleCatalogRegistry) loadSource(source gradleCatalogSource) {
@@ -458,13 +476,55 @@ func (r *GradleCatalogResolver) resolveBundleReference(buildFilePath, catalogNam
 }
 
 func (r *GradleCatalogResolver) scopeForBuildFile(buildFilePath string) *gradleCatalogScope {
+	r.ensureLookupIndex()
+	return r.lookup.resolve(buildFilePath)
+}
+
+func (r *GradleCatalogResolver) ensureLookupIndex() {
+	if r.lookup.scopesByRoot != nil {
+		return
+	}
+	r.lookup = newGradleCatalogLookupIndex(r.scopes)
+}
+
+func newGradleCatalogLookupIndex(scopes []gradleCatalogScope) gradleCatalogLookupIndex {
+	index := gradleCatalogLookupIndex{
+		scopesByRoot:    make(map[string]*gradleCatalogScope, len(scopes)),
+		cachedScopes:    make(map[string]*gradleCatalogScope),
+		cachedUnmatched: make(map[string]struct{}),
+	}
+	for i := range scopes {
+		scope := &scopes[i]
+		index.scopesByRoot[filepath.Clean(scope.root)] = scope
+	}
+	return index
+}
+
+func (i *gradleCatalogLookupIndex) resolve(buildFilePath string) *gradleCatalogScope {
+	if i == nil || len(i.scopesByRoot) == 0 {
+		return nil
+	}
 	cleanPath := filepath.Clean(buildFilePath)
-	for index := range r.scopes {
-		scope := &r.scopes[index]
-		if isGradleCatalogSubPath(scope.root, cleanPath) {
+	if scope, ok := i.cachedScopes[cleanPath]; ok {
+		return scope
+	}
+	if _, ok := i.cachedUnmatched[cleanPath]; ok {
+		return nil
+	}
+
+	candidate := cleanPath
+	for {
+		if scope, ok := i.scopesByRoot[candidate]; ok {
+			i.cachedScopes[cleanPath] = scope
 			return scope
 		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+		candidate = parent
 	}
+	i.cachedUnmatched[cleanPath] = struct{}{}
 	return nil
 }
 
