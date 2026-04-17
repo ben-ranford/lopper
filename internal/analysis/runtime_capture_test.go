@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -50,6 +51,53 @@ func TestServiceRuntimeCaptureReusesTraceOnCacheHit(t *testing.T) {
 	}
 	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
 		t.Fatalf("expected second run cache hit metadata, got %#v", second.Cache)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
+	repo := t.TempDir()
+	explicitTrace := filepath.Join(repo, "custom-trace.ndjson")
+
+	explicitReq := Request{
+		RuntimeTestCommand:       "foobar test",
+		RuntimeTracePath:         explicitTrace,
+		RuntimeTracePathExplicit: true,
+	}
+	warnings, tracePath := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected explicit runtime capture warning, got %#v", warnings)
+	}
+	if tracePath != explicitTrace {
+		t.Fatalf("expected explicit trace path to be preserved, got %q", tracePath)
+	}
+
+	implicitReq := Request{RuntimeTestCommand: "foobar test"}
+	warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected implicit runtime capture warning, got %#v", warnings)
+	}
+	if tracePath != "" {
+		t.Fatalf("expected implicit trace path to be cleared after failure, got %q", tracePath)
+	}
+
+	if warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil); len(warnings) != 0 || tracePath != "" {
+		t.Fatalf("expected empty runtime command to skip capture, got warnings=%#v tracePath=%q", warnings, tracePath)
+	}
+
+	reuseCases := []struct {
+		name  string
+		cache *analysisCache
+		want  bool
+	}{
+		{name: "nil cache", cache: nil, want: false},
+		{name: "disabled cache", cache: &analysisCache{metadata: report.CacheMetadata{}}, want: false},
+		{name: "cache miss", cache: &analysisCache{metadata: report.CacheMetadata{Enabled: true, Misses: 1}}, want: false},
+		{name: "cache hit", cache: &analysisCache{metadata: report.CacheMetadata{Enabled: true, Hits: 1}}, want: true},
+	}
+	for _, testCase := range reuseCases {
+		if got := shouldReuseRuntimeTrace(testCase.cache); got != testCase.want {
+			t.Fatalf("%s: expected shouldReuseRuntimeTrace=%v, got %v", testCase.name, testCase.want, got)
+		}
 	}
 }
 
