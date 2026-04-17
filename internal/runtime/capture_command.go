@@ -275,8 +275,8 @@ func trustedSearchDirs(dirListValue string) []string {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		// Reject group/other-writable runtime search entries.
-		if info.Mode().Perm()&0o022 != 0 {
+		// Reject group/other-writable runtime search entries on Unix-like systems.
+		if !isWindowsRuntime() && info.Mode().Perm()&0o022 != 0 {
 			continue
 		}
 

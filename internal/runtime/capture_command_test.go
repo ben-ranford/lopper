@@ -230,6 +230,42 @@ func TestDefaultTrustedRuntimeBinDirEntriesOnWindowsIncludesProgramFiles(t *test
 	}
 }
 
+func TestTrustedSearchDirsOnWindowsDoesNotApplyUnixPermissionFilter(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	trustedDir := t.TempDir()
+	if err := os.Chmod(trustedDir, 0o777); err != nil {
+		t.Fatalf("chmod trusted dir: %v", err)
+	}
+
+	got := trustedSearchDirs(trustedDir)
+	want := []string{trustedDir}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected trusted dirs %v, got %v", want, got)
+	}
+}
+
+func TestRuntimeSearchDirsDefaultOnWindowsKeepsProgramFilesNodejsDir(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+	t.Setenv(runtimeBinDirsEnvKey, "")
+
+	programFiles := t.TempDir()
+	programFilesNodejs := filepath.Join(programFiles, "nodejs")
+	if err := os.MkdirAll(programFilesNodejs, 0o777); err != nil {
+		t.Fatalf("mkdir ProgramFiles nodejs: %v", err)
+	}
+	if err := os.Chmod(programFilesNodejs, 0o777); err != nil {
+		t.Fatalf("chmod ProgramFiles nodejs: %v", err)
+	}
+	t.Setenv("ProgramFiles", programFiles)
+	t.Setenv("ProgramFiles(x86)", "")
+
+	got := runtimeSearchDirs()
+	if !slices.Contains(got, programFilesNodejs) {
+		t.Fatalf("expected ProgramFiles nodejs directory in runtime search dirs, got %v", got)
+	}
+}
+
 func TestNewAllowlistedRuntimeCommandRejectsUnsupportedExecutable(t *testing.T) {
 	if _, err := newAllowlistedRuntimeCommand(context.Background(), "python"); err == nil {
 		t.Fatalf("expected unsupported executable error")
