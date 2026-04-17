@@ -658,7 +658,7 @@ func parsePomDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, 
 func parsePomDependencyContent(relativePath, content string) ([]dependencyDescriptor, []string) {
 	var project pomProjectModel
 	if err := xml.Unmarshal([]byte(content), &project); err != nil {
-		return nil, []string{fmt.Sprintf("unable to parse Maven pom.xml %s: %v", relativePath, err)}
+		return nil, []string{fmt.Sprintf("unable to parse Maven POM %s: %v", relativePath, err)}
 	}
 
 	propertyMap := buildPomPropertyMap(project)

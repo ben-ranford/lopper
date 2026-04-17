@@ -243,7 +243,7 @@ func TestParsePomDependencyContentReturnsInvalidXMLWarning(t *testing.T) {
 	if len(descriptors) != 0 {
 		t.Fatalf("expected invalid pom content to produce no descriptors, got %#v", descriptors)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to parse Maven pom.xml pom.xml") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to parse Maven POM pom.xml") {
 		t.Fatalf("expected invalid pom warning, got %#v", warnings)
 	}
 }
