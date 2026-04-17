@@ -258,31 +258,46 @@ func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot s
 	dirs := make(map[string]struct{})
 	warnings := make([]string, 0)
 
-	info, err := os.Stat(searchRoot)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			warnings = append(warnings, fmt.Sprintf("unable to access workspace search root %q: %v", searchRoot, err))
+	if warning, skip := validateWorkspaceSearchRoot(searchRoot); skip {
+		if warning != "" {
+			warnings = append(warnings, warning)
 		}
-		return dirs, warnings
-	}
-	if !info.IsDir() {
 		return dirs, warnings
 	}
 
-	walkErr := filepath.WalkDir(searchRoot, func(path string, entry fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(searchRoot, workspacePackageDirWalker(repoPath, rootManifestPath, compiledPatterns, dirs))
+	if walkErr != nil {
+		warnings = append(warnings, fmt.Sprintf("unable to scan workspace package manifests under %q: %v", searchRoot, walkErr))
+	}
+	return dirs, warnings
+}
+
+func validateWorkspaceSearchRoot(searchRoot string) (string, bool) {
+	info, err := os.Stat(searchRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", true
+		}
+		return fmt.Sprintf("unable to access workspace search root %q: %v", searchRoot, err), true
+	}
+	if !info.IsDir() {
+		return "", true
+	}
+	return "", false
+}
+
+func workspacePackageDirWalker(repoPath, rootManifestPath string, compiledPatterns []workspacePattern, dirs map[string]struct{}) fs.WalkDirFunc {
+	return func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		if shouldSkipWorkspaceWalkDir(entry) {
+			return filepath.SkipDir
+		}
 		if entry.IsDir() {
-			if shared.ShouldSkipDir(entry.Name(), skipDirectories) {
-				return filepath.SkipDir
-			}
 			return nil
 		}
-		if entry.Name() != jsPackageFile {
-			return nil
-		}
-		if filepath.Clean(path) == filepath.Clean(rootManifestPath) {
+		if !isWorkspacePackageManifestEntry(path, entry, rootManifestPath) {
 			return nil
 		}
 		dir := filepath.Dir(path)
@@ -291,11 +306,18 @@ func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot s
 		}
 		dirs[dir] = struct{}{}
 		return nil
-	})
-	if walkErr != nil {
-		warnings = append(warnings, fmt.Sprintf("unable to scan workspace package manifests under %q: %v", searchRoot, walkErr))
 	}
-	return dirs, warnings
+}
+
+func shouldSkipWorkspaceWalkDir(entry fs.DirEntry) bool {
+	return entry.IsDir() && shared.ShouldSkipDir(entry.Name(), skipDirectories)
+}
+
+func isWorkspacePackageManifestEntry(path string, entry fs.DirEntry, rootManifestPath string) bool {
+	if entry.Name() != jsPackageFile {
+		return false
+	}
+	return filepath.Clean(path) != filepath.Clean(rootManifestPath)
 }
 
 func workspacePackageDirMatches(repoPath, dir string, patterns []workspacePattern) bool {
