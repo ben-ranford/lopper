@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
@@ -11,24 +12,27 @@ import {
   type BinaryResolutionRequest,
 } from "./managedBinary";
 export { BinaryResolutionError } from "./managedBinary";
-import type {
-  LopperCodemodReport,
-  LopperDependencyReport,
-  LopperReport,
-} from "./types";
+import { lopperScopeModeValues, type LopperCodemodReport, type LopperDependencyReport, type LopperScopeMode, type LopperReport } from "./types";
 
 const execFileAsync = promisify(execFile);
 
 export interface WorkspaceAnalysis {
   folder: vscode.WorkspaceFolder;
   binaryPath: string;
+  binarySignature: string;
   requestedLanguage: LopperLanguage;
+  scopeMode: LopperScopeMode;
   report: LopperReport;
   codemodsByDependency: Map<string, LopperCodemodReport>;
 }
 
 export interface WorkspaceAnalysisRunner {
-  analyseWorkspace(folder: vscode.WorkspaceFolder, document?: vscode.TextDocument): Promise<WorkspaceAnalysis>;
+  analyseWorkspace(folder: vscode.WorkspaceFolder, options?: WorkspaceAnalysisRequest): Promise<WorkspaceAnalysis>;
+}
+
+export interface WorkspaceAnalysisRequest {
+  document?: vscode.TextDocument;
+  scopeMode?: LopperScopeMode;
 }
 
 export interface ReportCommandExecutor {
@@ -120,10 +124,13 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
 
   async analyseWorkspace(
     folder: vscode.WorkspaceFolder,
-    document?: vscode.TextDocument,
+    options: WorkspaceAnalysisRequest = {},
   ): Promise<WorkspaceAnalysis> {
+    const { document, scopeMode: scopeModeOption } = options;
     const binaryPath = await this.resolveBinaryPath(folder);
+    const binarySignature = await this.binarySignature(binaryPath);
     const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
+    const scopeMode = normalizeScopeMode(scopeModeOption);
     const topN = this.topN(folder);
     const report = await this.reportExecutor.runReport(binaryPath, [
       "analyse",
@@ -133,6 +140,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       folder.uri.fsPath,
       "--language",
       requestedLanguage,
+      "--scope-mode",
+      scopeMode,
       "--format",
       "json",
     ], folder.uri.fsPath);
@@ -142,13 +151,13 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       if (!shouldFetchCodemod(dependency, requestedLanguage)) {
         continue;
       }
-      const codemod = await this.fetchCodemod(binaryPath, folder, dependency);
+      const codemod = await this.fetchCodemod(binaryPath, folder, dependency, scopeMode);
       if (codemod) {
         codemodsByDependency.set(dependency.name, codemod);
       }
     }
 
-    return { folder, binaryPath, requestedLanguage, report, codemodsByDependency };
+    return { folder, binaryPath, binarySignature, requestedLanguage, scopeMode, report, codemodsByDependency };
   }
 
   async resolveBinaryPath(
@@ -176,6 +185,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     binaryPath: string,
     folder: vscode.WorkspaceFolder,
     dependency: LopperDependencyReport,
+    scopeMode: LopperScopeMode,
   ): Promise<LopperCodemodReport | undefined> {
     if (!dependency.name) {
       return undefined;
@@ -188,6 +198,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
         folder.uri.fsPath,
         "--language",
         "js-ts",
+        "--scope-mode",
+        scopeMode,
         "--format",
         "json",
         "--suggest-only",
@@ -199,6 +211,16 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       return undefined;
     }
   }
+
+  private async binarySignature(binaryPath: string): Promise<string> {
+    try {
+      const resolvedPath = await realpath(binaryPath);
+      const details = await stat(resolvedPath);
+      return `${resolvedPath}:${Math.floor(details.mtimeMs)}`;
+    } catch {
+      return `${binaryPath}:unknown`;
+    }
+  }
 }
 
 function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguage: LopperLanguage): boolean {
@@ -207,4 +229,11 @@ function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguag
     return dependencyLanguage === "js-ts";
   }
   return requestedLanguage === "js-ts";
+}
+
+function normalizeScopeMode(scopeMode: LopperScopeMode | undefined): LopperScopeMode {
+  if (scopeMode && (lopperScopeModeValues as readonly string[]).includes(scopeMode)) {
+    return scopeMode;
+  }
+  return "package";
 }

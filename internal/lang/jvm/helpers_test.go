@@ -2,11 +2,15 @@ package jvm
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -19,6 +23,46 @@ const (
 	acmeLibName         = "acme-lib"
 	jvmGradleDirName    = ".gradle"
 )
+
+func writeJVMPomFile(t *testing.T, repo, content string) {
+	t.Helper()
+
+	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), content)
+}
+
+func managedDependencyManagementPOM(properties, junitVersion, springVersion string) string {
+	propertiesBlock := ""
+	if strings.TrimSpace(properties) != "" {
+		propertiesBlock = fmt.Sprintf("\n  <properties>\n%s\n  </properties>", properties)
+	}
+
+	springVersionBlock := ""
+	if strings.TrimSpace(springVersion) != "" {
+		springVersionBlock = fmt.Sprintf("\n        <version>%s</version>", springVersion)
+	}
+
+	template := `
+<project>%s
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
+        <version>%s</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>%s
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+`
+
+	return fmt.Sprintf(template, propertiesBlock, junitVersion, springVersionBlock)
+}
 
 func TestJVMParsePackageAndImports(t *testing.T) {
 	content := []byte("package com.example.app;\nimport java.util.List;\nimport org.junit.jupiter.api.Test;\nimport com.acme.lib.Widget;\n")
@@ -124,7 +168,16 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), `<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId></dependency>`)
+	writeJVMPomFile(t, repo, `
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit</groupId>
+      <artifactId>junit</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+`)
 	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), `implementation 'com.squareup.okhttp3:okhttp:4.12.0'`)
 	poms := parsePomDependencies(repo)
 	gradle := parseGradleDependencies(repo)
@@ -138,6 +191,153 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 	if !slices.Contains(names, "junit") || !slices.Contains(names, "okhttp") {
 		t.Fatalf("expected declared dependencies from build files, got %#v", names)
+	}
+}
+
+func TestJVMParsePomDependenciesIncludesManagedAndBOMEntries(t *testing.T) {
+	repo := t.TempDir()
+	properties := `
+    <junit.version>5.10.2</junit.version>
+    <spring.boot.version>3.4.5</spring.boot.version>
+`
+	pomContent := managedDependencyManagementPOM(properties, "${junit.version}", "${spring.boot.version}")
+	writeJVMPomFile(t, repo, pomContent)
+	descriptors, warnings := parsePomDependenciesWithWarnings(repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for resolvable managed dependencies, got %#v", warnings)
+	}
+
+	names := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		names = append(names, descriptor.Name)
+	}
+	for _, name := range []string{"junit-jupiter-api", "spring-boot-dependencies"} {
+		if !slices.Contains(names, name) {
+			t.Fatalf("expected managed Maven dependency %q in %#v", name, descriptors)
+		}
+	}
+}
+
+func TestJVMParsePomDependenciesWarnsForUnresolvedManagedVersions(t *testing.T) {
+	repo := t.TempDir()
+	writeJVMPomFile(t, repo, managedDependencyManagementPOM("", "${missing.version}", ""))
+
+	descriptors, warnings := parsePomDependenciesWithWarnings(repo)
+	if len(descriptors) != 2 {
+		t.Fatalf("expected managed dependencies to remain surfaced, got %#v", descriptors)
+	}
+
+	joined := strings.Join(warnings, "\n")
+	for _, expected := range []string{
+		"unable to resolve managed Maven version for org.junit.jupiter:junit-jupiter-api in pom.xml",
+		"unable to resolve imported Maven BOM version for org.springframework.boot:spring-boot-dependencies in pom.xml",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected warning %q in %q", expected, joined)
+		}
+	}
+}
+
+func TestParsePomDependencyContentReturnsInvalidXMLWarning(t *testing.T) {
+	descriptors, warnings := parsePomDependencyContent("pom.xml", "<project>")
+	if len(descriptors) != 0 {
+		t.Fatalf("expected invalid pom content to produce no descriptors, got %#v", descriptors)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to parse Maven POM pom.xml") {
+		t.Fatalf("expected invalid pom warning, got %#v", warnings)
+	}
+}
+
+func TestParsePomDependencyDropsUnresolvedManagedCoordinates(t *testing.T) {
+	dependency := pomDependencyModel{
+		GroupID:    "${missing.group}",
+		ArtifactID: "demo-artifact",
+		Version:    "1.0.0",
+	}
+	descriptor, warning := parsePomDependency(dependency, map[string]string{}, pomDependencyManaged, "pom.xml")
+	if descriptor != (dependencyDescriptor{}) || warning != "" {
+		t.Fatalf("expected unresolved managed coordinates to be dropped without warnings, got descriptor=%#v warning=%q", descriptor, warning)
+	}
+}
+
+func TestBuildPomPropertyMapUsesParentFallbacksAndIgnoresBlankValues(t *testing.T) {
+	propertyMap := buildPomPropertyMap(pomProjectModel{
+		ArtifactID: "demo-artifact",
+		Parent: pomParentModel{
+			GroupID: "com.example.parent",
+			Version: "1.2.3",
+		},
+		Properties: pomPropertiesModel{
+			Properties: []pomPropertyModel{
+				{XMLName: xml.Name{Local: "ok"}, Value: " value "},
+				{XMLName: xml.Name{Local: ""}, Value: "ignored"},
+				{XMLName: xml.Name{Local: "blankValue"}, Value: " "},
+			},
+		},
+	})
+	if propertyMap["ok"] != "value" {
+		t.Fatalf("expected trimmed explicit property, got %#v", propertyMap)
+	}
+	if propertyMap["project.groupId"] != "com.example.parent" || propertyMap["project.version"] != "1.2.3" {
+		t.Fatalf("expected parent fallback properties, got %#v", propertyMap)
+	}
+	if _, ok := propertyMap["blankValue"]; ok {
+		t.Fatalf("expected blank-value property to be ignored, got %#v", propertyMap)
+	}
+}
+
+func TestSetPomPropertyValueIgnoresBlankInputs(t *testing.T) {
+	propertyMap := map[string]string{}
+	setPomPropertyValue(propertyMap, "", "ignored")
+	setPomPropertyValue(propertyMap, "ignored", "")
+	if _, ok := propertyMap["ignored"]; ok {
+		t.Fatalf("expected blank setter inputs to be ignored, got %#v", propertyMap)
+	}
+}
+
+func TestParseBuildFilesSkipsNonBuildEntries(t *testing.T) {
+	repo := t.TempDir()
+	writeJVMPomFile(t, repo, `<project/>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "README.md"), "no build files here")
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+
+	buildDescriptors := parseBuildFiles(repo, pomXMLName, func(string) []dependencyDescriptor {
+		return []dependencyDescriptor{{Name: "demo", Group: "org.example", Artifact: "demo"}}
+	})
+	if len(buildDescriptors) != 1 {
+		t.Fatalf("expected build file walk to collect one descriptor, got %#v", buildDescriptors)
+	}
+
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	var readmeEntry fs.DirEntry
+	var srcEntry fs.DirEntry
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "README.md":
+			readmeEntry = entry
+		case "src":
+			srcEntry = entry
+		}
+	}
+	if readmeEntry == nil || srcEntry == nil {
+		t.Fatalf("expected README and src entries, got %#v", entries)
+	}
+
+	collected := []dependencyDescriptor{{Name: "existing", Group: "org.example", Artifact: "existing"}}
+	seen := map[string]struct{}{}
+	if err := parseBuildFileEntry(repo, filepath.Join(repo, "src"), srcEntry, []string{pomXMLName}, func(string) []dependencyDescriptor { return nil }, seen, &collected); err != nil {
+		t.Fatalf("expected non-skipped directory to be ignored, got %v", err)
+	}
+	if err := parseBuildFileEntry(repo, filepath.Join(repo, "README.md"), readmeEntry, []string{pomXMLName}, func(string) []dependencyDescriptor { return nil }, seen, &collected); err != nil {
+		t.Fatalf("expected non-build file to be ignored, got %v", err)
+	}
+	if len(collected) != 1 || collected[0].Name != "existing" {
+		t.Fatalf("expected non-build entries to leave descriptors unchanged, got %#v", collected)
 	}
 }
 

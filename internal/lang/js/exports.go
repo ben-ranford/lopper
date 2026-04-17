@@ -15,6 +15,8 @@ type ExportSurface struct {
 type packageJSON struct {
 	Name                 string            `json:"name"`
 	Version              string            `json:"version"`
+	PackageManager       string            `json:"packageManager"`
+	Workspaces           any               `json:"workspaces"`
 	Main                 string            `json:"main"`
 	Module               string            `json:"module"`
 	Types                string            `json:"types"`
@@ -25,6 +27,8 @@ type packageJSON struct {
 	Gypfile              bool              `json:"gypfile"`
 	Scripts              map[string]string `json:"scripts"`
 	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
 	Resolved             string            `json:"_resolved"`
 	Integrity            string            `json:"_integrity"`
