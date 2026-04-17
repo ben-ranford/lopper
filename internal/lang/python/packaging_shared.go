@@ -31,10 +31,14 @@ func readOptionalTOMLDocument(repoPath, path string) (map[string]any, []string, 
 }
 
 func readOptionalTOMLContent(repoPath, path string) ([]byte, error) {
-	return safeio.ReadFileUnder(repoPath, path)
+	return readOptionalFileContent(repoPath, path)
 }
 
 func readOptionalJSONContent(repoPath, path string) ([]byte, error) {
+	return readOptionalFileContent(repoPath, path)
+}
+
+func readOptionalFileContent(repoPath, path string) ([]byte, error) {
 	return safeio.ReadFileUnder(repoPath, path)
 }
 

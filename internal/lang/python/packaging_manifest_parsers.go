@@ -2,6 +2,7 @@ package python
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -91,7 +92,7 @@ func parsePipfileDependencies(repoPath, path string) (map[string]struct{}, []str
 }
 
 func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, []string, error) {
-	content, err := readOptionalTOMLContent(repoPath, path)
+	content, err := readOptionalFileContent(repoPath, path)
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
@@ -104,7 +105,7 @@ func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, 
 	warnings := make([]string, 0)
 	skipped := 0
 	pathLabel := relativePackagingPath(repoPath, path)
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	scanner := bufio.NewScanner(bytes.NewReader(content))
 	scanner.Buffer(make([]byte, 0, 64*1024), len(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
