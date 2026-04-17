@@ -24,11 +24,11 @@ func loadBundlerDependenciesWithSources(repoPath string, out map[string]struct{}
 	return loadGemfileLockDependencies(repoPath, out, sources)
 }
 
-func loadDeclaredDependencies(repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) ([]string, error) {
+func loadDeclaredDependencies(ctx context.Context, repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) ([]string, error) {
 	if err := loadBundlerDependenciesWithSources(repoPath, out, sources); err != nil {
 		return nil, err
 	}
-	return loadGemspecDependencies(repoPath, out)
+	return loadGemspecDependencies(ctx, repoPath, out)
 }
 
 func loadGemfileDependencies(repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) error {
@@ -194,9 +194,9 @@ func readBundlerFile(repoPath, filename string) ([]byte, error) {
 	}
 }
 
-func loadGemspecDependencies(repoPath string, out map[string]struct{}) ([]string, error) {
+func loadGemspecDependencies(ctx context.Context, repoPath string, out map[string]struct{}) ([]string, error) {
 	var warnings []string
-	err := walkRubyRepoFiles(context.TODO(), repoPath, func(path string, entry fs.DirEntry) error {
+	err := walkRubyRepoFiles(ctx, repoPath, func(path string, entry fs.DirEntry) error {
 		if !strings.EqualFold(filepath.Ext(entry.Name()), gemspecExt) {
 			return nil
 		}

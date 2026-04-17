@@ -17,7 +17,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		ImportedDependencies: make(map[string]struct{}),
 	}
 
-	declWarnings, err := loadDeclaredDependencies(repoPath, scan.DeclaredDependencies, scan.DeclaredSources)
+	declWarnings, err := loadDeclaredDependencies(ctx, repoPath, scan.DeclaredDependencies, scan.DeclaredSources)
 	if err != nil {
 		return scan, err
 	}
