@@ -21,7 +21,10 @@ func TestJVMBuildFileWarningCollectorBranches(t *testing.T) {
 	collector := buildFileWarningCollector{
 		repoPath: repo,
 		parser: func(path, content string) ([]dependencyDescriptor, []string) {
-			return []dependencyDescriptor{{Name: "demo", Group: "org.example", Artifact: "demo"}}, []string{"parse warning"}
+			return []dependencyDescriptor{
+				{Name: "demo", Group: "org.example", Artifact: "demo"},
+				{Name: "demo", Group: "org.example", Artifact: "demo"},
+			}, []string{"parse warning"}
 		},
 		names: []string{buildGradleName},
 		seen:  make(map[string]struct{}),
@@ -42,13 +45,39 @@ func TestJVMBuildFileWarningCollectorBranches(t *testing.T) {
 		t.Fatalf("expected read warning for outside build file, got %#v", collector.warnings)
 	}
 
+	skipDir := filepath.Join(repo, ".gradle")
+	if err := os.MkdirAll(skipDir, 0o755); err != nil {
+		t.Fatalf("mkdir skip dir: %v", err)
+	}
+	repoEntries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir for skip branch: %v", err)
+	}
+	for _, entry := range repoEntries {
+		if entry.Name() == ".gradle" {
+			if err := collector.visit(skipDir, entry, nil); !errors.Is(err, filepath.SkipDir) {
+				t.Fatalf("expected .gradle visit to skip dir, got %v", err)
+			}
+		}
+	}
+
 	insideBuild := filepath.Join(repo, buildGradleName)
 	testutil.MustWriteFile(t, insideBuild, `implementation "org.example:demo:1.0.0"`)
-	repoEntries, err := os.ReadDir(repo)
+	repoEntries, err = os.ReadDir(repo)
 	if err != nil {
 		t.Fatalf("read repo dir: %v", err)
 	}
-	if err := collector.visit(insideBuild, repoEntries[0], nil); err != nil {
+	var buildEntry os.DirEntry
+	for _, entry := range repoEntries {
+		if entry.Name() == buildGradleName {
+			buildEntry = entry
+			break
+		}
+	}
+	if buildEntry == nil {
+		t.Fatalf("expected %s entry in repo", buildGradleName)
+	}
+	if err := collector.visit(insideBuild, buildEntry, nil); err != nil {
 		t.Fatalf("unexpected collector visit error for repo build file: %v", err)
 	}
 	if len(collector.descriptors) != 1 || collector.descriptors[0].Name != "demo" {
