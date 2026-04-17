@@ -448,18 +448,18 @@ func TestDependencyCollectorRecordResolvedRootTracksMultipleRoots(t *testing.T) 
 		t.Fatalf("expected blank root writes to be ignored, got %#v", collector.roots)
 	}
 
-	firstRoot := filepath.Join("node_modules", "react")
-	secondRoot := filepath.Join("packages", "web", "node_modules", "react")
-	collector.recordResolvedRoot("react", firstRoot)
-	collector.recordResolvedRoot("react", firstRoot)
-	if got := collector.roots["react"]; got != firstRoot {
+	root := filepath.Join("node_modules", "react")
+	otherRoot := filepath.Join("packages", "web", "node_modules", "react")
+	collector.recordResolvedRoot("react", root)
+	collector.recordResolvedRoot("react", root)
+	if got := collector.roots["react"]; got != root {
 		t.Fatalf("unexpected first dependency root: %q", got)
 	}
 	if _, ok := collector.multiRoot["react"]; ok {
 		t.Fatalf("did not expect duplicate root to mark multi-root")
 	}
 
-	collector.recordResolvedRoot("react", secondRoot)
+	collector.recordResolvedRoot("react", otherRoot)
 	if _, ok := collector.multiRoot["react"]; !ok {
 		t.Fatalf("expected differing roots to mark react as multi-root")
 	}
