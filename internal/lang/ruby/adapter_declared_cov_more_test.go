@@ -1,9 +1,13 @@
 package ruby
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestRubyDeclaredDependencyAdditionalBranches(t *testing.T) {
@@ -28,7 +32,7 @@ func testRubyLoadDeclaredDependenciesReturnsBundlerError(t *testing.T) {
 		t.Fatalf("mkdir Gemfile dir: %v", err)
 	}
 
-	if warnings, err := loadDeclaredDependencies(repo, map[string]struct{}{}, map[string]rubyDependencySource{}); err == nil || len(warnings) != 0 {
+	if warnings, err := loadDeclaredDependencies(context.Background(), repo, map[string]struct{}{}, map[string]rubyDependencySource{}); err == nil || len(warnings) != 0 {
 		t.Fatalf("expected loadDeclaredDependencies error for Gemfile directory, warnings=%#v err=%v", warnings, err)
 	}
 }
@@ -42,8 +46,22 @@ func testRubyLoadGemspecDependenciesReturnsReadError(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	if warnings, err := loadGemspecDependencies(repo, map[string]struct{}{}); err == nil || len(warnings) != 0 {
+	if warnings, err := loadGemspecDependencies(context.Background(), repo, map[string]struct{}{}); err == nil || len(warnings) != 0 {
 		t.Fatalf("expected loadGemspecDependencies read error, warnings=%#v err=%v", warnings, err)
+	}
+}
+
+func TestRubyLoadGemspecDependenciesRespectsContextCancellation(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "demo.gemspec"), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if warnings, err := loadGemspecDependencies(ctx, repo, map[string]struct{}{}); !errors.Is(err, context.Canceled) || len(warnings) != 0 {
+		t.Fatalf("expected canceled context from loadGemspecDependencies, warnings=%#v err=%v", warnings, err)
 	}
 }
 
