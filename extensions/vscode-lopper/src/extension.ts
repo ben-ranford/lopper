@@ -541,9 +541,10 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     const usedPercent = analysis.report.summary?.usedPercent ?? 0;
     const warningCount = analysis.report.warnings?.length ?? 0;
     const sourceSummary = source === "cache" ? "cached" : "fresh";
+    const warningSummary = warningCount > 0 ? ` | Warnings: ${warningCount}` : "";
     this.updateStatus(
       `Lopper: ${dependencyCount} deps | ${usedPercent.toFixed(1)}% used | ${analysis.scopeMode}${source === "cache" ? " | cached" : ""}`,
-      `Scope: ${analysis.scopeMode} | Adapter: ${analysis.requestedLanguage} | Source: ${sourceSummary} | Binary: ${path.basename(analysis.binaryPath)}${warningCount > 0 ? ` | Warnings: ${warningCount}` : ""}`,
+      `Scope: ${analysis.scopeMode} | Adapter: ${analysis.requestedLanguage} | Source: ${sourceSummary} | Binary: ${path.basename(analysis.binaryPath)}${warningSummary}`,
     );
     for (const warning of analysis.report.warnings ?? []) {
       this.output.appendLine(`[refresh:warning] ${analysis.folder.name} (${analysis.scopeMode}): ${warning}`);

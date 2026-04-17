@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runTests } from "@vscode/test-electron";
 
 async function main() {
+  const vscodeVersion = process.env.LOPPER_VSCODE_TEST_VERSION ?? "1.90.0";
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const extensionDevelopmentPath = path.resolve(currentDir, "..", "..");
   const extensionTestsPath = path.resolve(extensionDevelopmentPath, "out", "test", "suite", "index");
@@ -34,6 +35,7 @@ async function main() {
     );
 
     await runTests({
+      version: vscodeVersion,
       extensionDevelopmentPath,
       extensionTestsPath,
       launchArgs: [
