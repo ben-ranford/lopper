@@ -20,7 +20,7 @@ const (
 	poetryManifestName = "Poetry configuration in pyproject.toml"
 )
 
-func TestPrepareRuntimeTraceFallsBackWhenRepoNormalizationFails(t *testing.T) {
+func TestPrepareRuntimeTraceUsesProvidedPathWithoutCapture(t *testing.T) {
 	req := DefaultRequest()
 	req.RepoPath = ""
 	req.Analyse.RuntimeTracePath = filepath.Join(t.TempDir(), testRuntimeTracePath)
@@ -35,14 +35,8 @@ func TestPrepareRuntimeTraceFallsBackWhenRepoNormalizationFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRuntimeTrace setup: %v", err)
 	}
-	if len(warnings) != 2 {
-		t.Fatalf("expected normalization and runtime warnings, got %#v", warnings)
-	}
-	if !strings.Contains(warnings[0], "runtime trace setup: using raw repo path due to normalization error:") {
-		t.Fatalf("expected normalization warning first, got %#v", warnings)
-	}
-	if !strings.Contains(warnings[1], "runtime trace command failed; continuing with static analysis:") {
-		t.Fatalf("expected runtime warning second, got %#v", warnings)
+	if len(warnings) != 0 {
+		t.Fatalf("expected runtime trace planning to avoid capture warnings, got %#v", warnings)
 	}
 	if tracePath != req.Analyse.RuntimeTracePath {
 		t.Fatalf("expected explicit trace path to be retained, got %q", tracePath)

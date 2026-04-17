@@ -132,3 +132,46 @@ func TestRuntimeNodeHookOptionsReturnsCachedError(t *testing.T) {
 		t.Fatalf("expected cached runtime hook error, got %v", err)
 	}
 }
+
+func TestRuntimeNodeHookOptionsQuotesPathsWithSpaces(t *testing.T) {
+	restoreRuntimeHookState(t)
+
+	runtimeHookPathsOnce = sync.Once{}
+	runtimeHookPathsOnce.Do(func() {
+		runtimeRequireHookPath = "/tmp/hooks/require hook.cjs"
+		runtimeLoaderHookPath = "/tmp/hooks/loader hook.mjs"
+		runtimeHookPathsErr = nil
+	})
+
+	got, err := runtimeNodeHookOptions()
+	if err != nil {
+		t.Fatalf("runtime node hook options: %v", err)
+	}
+	if !strings.Contains(got, `--require="/tmp/hooks/require hook.cjs"`) {
+		t.Fatalf("expected quoted require path, got %q", got)
+	}
+	if !strings.Contains(got, `--loader="/tmp/hooks/loader hook.mjs"`) {
+		t.Fatalf("expected quoted loader path, got %q", got)
+	}
+}
+
+func TestQuoteNodeOptionPath(t *testing.T) {
+	testCases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain path", in: "/tmp/hook.cjs", want: "/tmp/hook.cjs"},
+		{name: "spaces", in: "/tmp/with space/hook.cjs", want: `"/tmp/with space/hook.cjs"`},
+		{name: "quotes", in: `/tmp/with"quote"/hook.cjs`, want: `"/tmp/with\"quote\"/hook.cjs"`},
+		{name: "windows slashes", in: `C:\Program Files\lopper\hook.cjs`, want: `"C:\\Program Files\\lopper\\hook.cjs"`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := quoteNodeOptionPath(tc.in); got != tc.want {
+				t.Fatalf("quote node option path: expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
