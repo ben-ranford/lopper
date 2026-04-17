@@ -42,10 +42,10 @@ interface ExtensionApi {
   getLatestSummary(): string;
 }
 
-type RefreshTrigger = "command" | "auto-save" | "workspace-trust" | "initial" | "config-change" | "api";
+export type RefreshTrigger = "command" | "auto-save" | "workspace-trust" | "initial" | "config-change" | "api";
 type AnalysisSource = "fresh" | "cache";
 
-interface RefreshWorkspaceOptions {
+export interface RefreshWorkspaceOptions {
   folder?: vscode.WorkspaceFolder;
   revealErrors?: boolean;
   document?: vscode.TextDocument;
@@ -70,6 +70,10 @@ class DefaultLopperControllerFactory implements LopperControllerFactory {
   }
 }
 
+interface LopperControllerOptions {
+  registerWithVSCode?: boolean;
+}
+
 class LopperController implements LopperControllerContract, vscode.HoverProvider, vscode.CodeActionProvider {
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("lopper");
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -83,97 +87,102 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   private missingBinaryWarningShown = false;
   private readonly disposable: vscode.Disposable;
 
-  constructor(context: vscode.ExtensionContext, runner?: WorkspaceAnalysisRunner) {
+  constructor(
+    context: vscode.ExtensionContext,
+    runner?: WorkspaceAnalysisRunner,
+    options: LopperControllerOptions = {},
+  ) {
+    const registerWithVSCode = options.registerWithVSCode ?? true;
     this.runner = runner ?? new LopperRunner(this.output, context);
     this.statusBar.command = "lopper.refreshWorkspace";
     this.statusBar.text = this.latestSummary;
     this.statusBar.tooltip = "Refresh Lopper diagnostics";
     this.statusBar.show();
 
-    this.disposable = vscode.Disposable.from(
-      this.diagnostics,
-      this.statusBar,
-      this.output,
-      vscode.commands.registerCommand("lopper.refreshWorkspace", async () => {
-        await this.refreshWorkspace({ trigger: "command" });
-      }),
-      vscode.commands.registerCommand("lopper.refreshWorkspace.force", async () => {
-        await this.refreshWorkspace({ forceFresh: true, trigger: "command" });
-      }),
-      vscode.commands.registerCommand("lopper.refreshWorkspace.package", async () => {
-        await this.refreshWorkspace({ scopeModeOverride: "package", trigger: "command" });
-      }),
-      vscode.commands.registerCommand("lopper.refreshWorkspace.repo", async () => {
-        await this.refreshWorkspace({ scopeModeOverride: "repo", trigger: "command" });
-      }),
-      vscode.commands.registerCommand("lopper.refreshWorkspace.changedPackages", async () => {
-        await this.refreshWorkspace({ scopeModeOverride: "changed-packages", trigger: "command" });
-      }),
-      vscode.languages.registerHoverProvider(supportedDocumentSelectors, this),
-      vscode.languages.registerCodeActionsProvider(supportedDocumentSelectors, this, {
-        providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
-      }),
-      vscode.workspace.onDidSaveTextDocument((document) => {
-        const folder = vscode.workspace.getWorkspaceFolder(document.uri);
-        if (!folder) {
-          return;
-        }
-        this.invalidateWorkspaceSession(folder, `document saved: ${path.basename(document.fileName)}`);
-        if (!this.shouldAutoRefresh(document)) {
-          return;
-        }
-        const timerKey = folder.uri.toString();
-        const existingTimer = this.refreshTimers.get(timerKey);
-        if (existingTimer) {
-          clearTimeout(existingTimer);
-        }
-        this.refreshTimers.set(
-          timerKey,
-          setTimeout(() => {
-            this.refreshTimers.delete(timerKey);
-            void this.refreshWorkspace({ folder, revealErrors: false, document, trigger: "auto-save" });
-          }, 400),
-        );
-      }),
-      vscode.workspace.onDidChangeConfiguration((event) => {
-        for (const folder of vscode.workspace.workspaceFolders ?? []) {
-          if (!event.affectsConfiguration("lopper", folder.uri)) {
-            continue;
+    const disposables: vscode.Disposable[] = [this.diagnostics, this.statusBar, this.output];
+    if (registerWithVSCode) {
+      disposables.push(
+        vscode.commands.registerCommand("lopper.refreshWorkspace", async () => {
+          await this.refreshWorkspace({ trigger: "command" });
+        }),
+        vscode.commands.registerCommand("lopper.refreshWorkspace.force", async () => {
+          await this.refreshWorkspace({ forceFresh: true, trigger: "command" });
+        }),
+        vscode.commands.registerCommand("lopper.refreshWorkspace.package", async () => {
+          await this.refreshWorkspace({ scopeModeOverride: "package", trigger: "command" });
+        }),
+        vscode.commands.registerCommand("lopper.refreshWorkspace.repo", async () => {
+          await this.refreshWorkspace({ scopeModeOverride: "repo", trigger: "command" });
+        }),
+        vscode.commands.registerCommand("lopper.refreshWorkspace.changedPackages", async () => {
+          await this.refreshWorkspace({ scopeModeOverride: "changed-packages", trigger: "command" });
+        }),
+        vscode.languages.registerHoverProvider(supportedDocumentSelectors, this),
+        vscode.languages.registerCodeActionsProvider(supportedDocumentSelectors, this, {
+          providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+        }),
+        vscode.workspace.onDidSaveTextDocument((document) => {
+          const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+          if (!folder) {
+            return;
           }
-          this.invalidateWorkspaceSession(folder, "lopper settings changed");
+          this.invalidateWorkspaceSession(folder, `document saved: ${path.basename(document.fileName)}`);
+          if (!this.shouldAutoRefresh(document)) {
+            return;
+          }
+          const timerKey = folder.uri.toString();
+          this.clearRefreshTimer(timerKey);
+          this.refreshTimers.set(
+            timerKey,
+            setTimeout(() => {
+              this.refreshTimers.delete(timerKey);
+              void this.refreshWorkspace({ folder, revealErrors: false, document, trigger: "auto-save" });
+            }, 400),
+          );
+        }),
+        vscode.workspace.onDidChangeConfiguration((event) => {
+          for (const folder of vscode.workspace.workspaceFolders ?? []) {
+            if (!event.affectsConfiguration("lopper", folder.uri)) {
+              continue;
+            }
+            this.invalidateWorkspaceSession(folder, "lopper settings changed");
+            if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
+              continue;
+            }
+            void this.refreshWorkspace({
+              folder,
+              revealErrors: false,
+              document: this.activeDocumentForFolder(folder),
+              trigger: "config-change",
+            });
+          }
+        }),
+        vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+          for (const removedFolder of event.removed) {
+            const folderKey = removedFolder.uri.toString();
+            this.clearRefreshTimer(folderKey);
+            this.clearWorkspaceDiagnostics(removedFolder);
+            this.refreshSessions.clearFolder(folderKey);
+          }
+        }),
+        vscode.workspace.onDidGrantWorkspaceTrust(async () => {
+          const folder = this.primaryWorkspaceFolder();
+          if (!folder) {
+            return;
+          }
           if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
-            continue;
+            return;
           }
-          void this.refreshWorkspace({
+          await this.refreshWorkspace({
             folder,
             revealErrors: false,
             document: this.activeDocumentForFolder(folder),
-            trigger: "config-change",
+            trigger: "workspace-trust",
           });
-        }
-      }),
-      vscode.workspace.onDidChangeWorkspaceFolders((event) => {
-        for (const removedFolder of event.removed) {
-          this.clearWorkspaceDiagnostics(removedFolder);
-          this.refreshSessions.clearFolder(removedFolder.uri.toString());
-        }
-      }),
-      vscode.workspace.onDidGrantWorkspaceTrust(async () => {
-        const folder = this.primaryWorkspaceFolder();
-        if (!folder) {
-          return;
-        }
-        if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
-          return;
-        }
-        await this.refreshWorkspace({
-          folder,
-          revealErrors: false,
-          document: this.activeDocumentForFolder(folder),
-          trigger: "workspace-trust",
-        });
-      }),
-    );
+        }),
+      );
+    }
+    this.disposable = vscode.Disposable.from(...disposables);
   }
 
   async initialize(): Promise<void> {
@@ -203,6 +212,10 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       if (revealErrors) {
         await vscode.window.showInformationMessage("Open a folder before running Lopper diagnostics.");
       }
+      return;
+    }
+    if (!this.isWorkspaceFolderPresent(folder)) {
+      this.output.appendLine(`[refresh:skipped] ${folder.name} no longer exists in the workspace`);
       return;
     }
 
@@ -671,6 +684,21 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     this.documentUrisByWorkspace.delete(workspaceKey);
   }
 
+  private clearRefreshTimer(workspaceKey: string): void {
+    const timer = this.refreshTimers.get(workspaceKey);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    this.refreshTimers.delete(workspaceKey);
+  }
+
+  private isWorkspaceFolderPresent(folder: vscode.WorkspaceFolder): boolean {
+    return (vscode.workspace.workspaceFolders ?? []).some(
+      (workspaceFolder) => workspaceFolder.uri.toString() === folder.uri.toString(),
+    );
+  }
+
   private updateStatus(text: string, tooltip: string): void {
     this.latestSummary = text;
     this.statusBar.text = text;
@@ -764,12 +792,17 @@ class LopperExtensionBootstrap implements vscode.Disposable {
   private extensionApi(): ExtensionApi {
     return {
       refreshWorkspace: async () => {
-        await this.controller?.refreshWorkspace();
+        await this.controller?.refreshWorkspace({ trigger: "api" });
       },
       getLatestSummary: () => this.controller?.getLatestSummary() ?? "Lopper: idle",
     };
   }
 }
+
+export const __testing = {
+  createController: (runner: WorkspaceAnalysisRunner): LopperControllerContract =>
+    new LopperController({} as vscode.ExtensionContext, runner, { registerWithVSCode: false }),
+};
 
 const bootstrap = new LopperExtensionBootstrap();
 
