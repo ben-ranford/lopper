@@ -329,6 +329,12 @@ func TestAdapterDetectWalkErrorOnFileRepoPath(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseRejectsInvalidRepoPath(t *testing.T) {
+	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: string([]byte{0})}); err == nil {
+		t.Fatalf("expected invalid repo path to fail analysis")
+	}
+}
+
 func TestJSAdapterHelperBranches(t *testing.T) {
 	if !shouldSkipDetectDir("node_modules") || !shouldSkipDetectDir(".next") || shouldSkipDetectDir("src") {
 		t.Fatalf("unexpected shouldSkipDetectDir behavior")
