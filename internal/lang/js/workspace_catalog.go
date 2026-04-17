@@ -238,7 +238,38 @@ func discoverWorkspacePackageDirs(repoPath string, workspacePatterns []string) (
 	dirs := make(map[string]struct{})
 	rootManifestPath := filepath.Join(repoPath, jsPackageFile)
 
-	walkErr := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	for _, searchRoot := range workspacePatternSearchRoots(repoPath, workspacePatterns) {
+		foundDirs, rootWarnings := discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot, compiledPatterns)
+		warnings = append(warnings, rootWarnings...)
+		for dir := range foundDirs {
+			dirs[dir] = struct{}{}
+		}
+	}
+
+	out := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out, dedupeWorkspaceWarnings(warnings)
+}
+
+func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern) (map[string]struct{}, []string) {
+	dirs := make(map[string]struct{})
+	warnings := make([]string, 0)
+
+	info, err := os.Stat(searchRoot)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			warnings = append(warnings, fmt.Sprintf("unable to access workspace search root %q: %v", searchRoot, err))
+		}
+		return dirs, warnings
+	}
+	if !info.IsDir() {
+		return dirs, warnings
+	}
+
+	walkErr := filepath.WalkDir(searchRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -255,26 +286,100 @@ func discoverWorkspacePackageDirs(repoPath string, workspacePatterns []string) (
 			return nil
 		}
 		dir := filepath.Dir(path)
-		relDir, ok := workspaceRelativeDir(repoPath, dir)
-		if !ok {
-			return nil
-		}
-		if !matchesWorkspacePatterns(relDir, compiledPatterns) {
+		if !workspacePackageDirMatches(repoPath, dir, compiledPatterns) {
 			return nil
 		}
 		dirs[dir] = struct{}{}
 		return nil
 	})
 	if walkErr != nil {
-		warnings = append(warnings, fmt.Sprintf("unable to scan workspace package manifests: %v", walkErr))
+		warnings = append(warnings, fmt.Sprintf("unable to scan workspace package manifests under %q: %v", searchRoot, walkErr))
+	}
+	return dirs, warnings
+}
+
+func workspacePackageDirMatches(repoPath, dir string, patterns []workspacePattern) bool {
+	relDir, ok := workspaceRelativeDir(repoPath, dir)
+	if !ok {
+		return false
+	}
+	return matchesWorkspacePatterns(relDir, patterns)
+}
+
+func workspacePatternSearchRoots(repoPath string, workspacePatterns []string) []string {
+	repoRoot := filepath.Clean(repoPath)
+	roots := make(map[string]struct{})
+	hasPositivePattern := false
+
+	for _, rawPattern := range workspacePatterns {
+		pattern, exclude := normalizeWorkspacePattern(rawPattern)
+		if pattern == "" || exclude {
+			continue
+		}
+		hasPositivePattern = true
+
+		searchRoot := repoRoot
+		literalRoot := workspacePatternLiteralRoot(pattern)
+		if literalRoot != "" {
+			candidateRoot := filepath.Clean(filepath.Join(repoRoot, filepath.FromSlash(literalRoot)))
+			if isPathWithin(candidateRoot, repoRoot) {
+				searchRoot = candidateRoot
+			}
+		}
+		roots[searchRoot] = struct{}{}
 	}
 
-	out := make([]string, 0, len(dirs))
-	for dir := range dirs {
-		out = append(out, dir)
+	if !hasPositivePattern || len(roots) == 0 {
+		return []string{repoRoot}
+	}
+
+	out := make([]string, 0, len(roots))
+	for root := range roots {
+		out = append(out, root)
 	}
 	sort.Strings(out)
-	return out, dedupeWorkspaceWarnings(warnings)
+	return collapseWorkspaceSearchRoots(out)
+}
+
+func workspacePatternLiteralRoot(pattern string) string {
+	normalized := strings.TrimSpace(pattern)
+	for strings.HasPrefix(normalized, "./") {
+		normalized = strings.TrimPrefix(normalized, "./")
+	}
+	normalized = strings.TrimPrefix(filepath.ToSlash(normalized), "/")
+
+	parts := strings.Split(normalized, "/")
+	literalParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." || strings.ContainsAny(part, "*?[{") {
+			break
+		}
+		literalParts = append(literalParts, part)
+	}
+	if len(literalParts) == 0 {
+		return ""
+	}
+	return filepath.Join(literalParts...)
+}
+
+func collapseWorkspaceSearchRoots(roots []string) []string {
+	collapsed := make([]string, 0, len(roots))
+	for _, root := range roots {
+		nested := false
+		for _, existing := range collapsed {
+			if root == existing || isPathWithin(root, existing) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			collapsed = append(collapsed, root)
+		}
+	}
+	return collapsed
 }
 
 func workspaceRelativeDir(repoPath, dir string) (string, bool) {

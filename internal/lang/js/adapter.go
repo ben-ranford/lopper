@@ -643,9 +643,6 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 		warningSet[fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", dep)] = struct{}{}
 	}
 	for _, warning := range workspaceCatalog.warnings {
-		if strings.TrimSpace(warning) == "" {
-			continue
-		}
 		warningSet[warning] = struct{}{}
 	}
 
@@ -712,7 +709,7 @@ func (c *dependencyCollector) markFound(dep string) {
 	delete(c.missing, dep)
 }
 
-func (c *dependencyCollector) recordResolvedRoot(dep string, resolvedRoot string) {
+func (c *dependencyCollector) recordResolvedRoot(dep, resolvedRoot string) {
 	if strings.TrimSpace(dep) == "" || strings.TrimSpace(resolvedRoot) == "" {
 		return
 	}
@@ -727,9 +724,17 @@ func (c *dependencyCollector) recordResolvedRoot(dep string, resolvedRoot string
 
 func (c *dependencyCollector) mergeWorkspaceDeclarations(repoPath string, declarations map[string]workspaceDependencyDeclaration) {
 	for dep, declaration := range declarations {
-		c.markFound(dep)
+		resolvedAnyRoot := false
 		for _, root := range resolveDependencyRootsFromDeclarationDirs(repoPath, dep, declaration.declarationDirs) {
+			resolvedAnyRoot = true
 			c.recordResolvedRoot(dep, root)
+		}
+		if resolvedAnyRoot {
+			c.markFound(dep)
+			continue
+		}
+		if _, alreadyFound := c.found[dep]; !alreadyFound {
+			c.missing[dep] = struct{}{}
 		}
 	}
 }

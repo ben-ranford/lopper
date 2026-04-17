@@ -217,12 +217,26 @@ func TestWorkspaceManifestReaders(t *testing.T) {
 func TestWorkspacePatternHelpers(t *testing.T) {
 	t.Parallel()
 
+	t.Run("parse workspace patterns", testParseWorkspacePatterns)
+	t.Run("match include and exclude patterns", testWorkspacePatternMatching)
+	t.Run("compile regex and normalize pattern", testWorkspacePatternRegexAndNormalization)
+	t.Run("reject invalid patterns and default-match", testWorkspacePatternInvalidPatterns)
+	t.Run("derive search roots from patterns", testWorkspacePatternSearchRoots)
+}
+
+func testParseWorkspacePatterns(t *testing.T) {
+	t.Helper()
+
 	patterns := parseWorkspacePatterns(map[string]any{
 		"packages": []any{"packages/*", "packages/*", "", 7},
 	})
 	if !slices.Equal(patterns, []string{"packages/*"}) {
 		t.Fatalf("unexpected workspace patterns: %#v", patterns)
 	}
+}
+
+func testWorkspacePatternMatching(t *testing.T) {
+	t.Helper()
 
 	compiled, warnings := compileWorkspacePatterns([]string{" packages/* ", "!packages/legacy", "./apps/**/"})
 	if len(warnings) != 0 {
@@ -248,6 +262,10 @@ func TestWorkspacePatternHelpers(t *testing.T) {
 	if matchesWorkspacePatterns("packages/generated", excludeOnly) {
 		t.Fatalf("expected explicit exclusion to win")
 	}
+}
+
+func testWorkspacePatternRegexAndNormalization(t *testing.T) {
+	t.Helper()
 
 	regex, err := compileWorkspacePatternRegex("file?.ts")
 	if err != nil {
@@ -264,8 +282,12 @@ func TestWorkspacePatternHelpers(t *testing.T) {
 	if normalized != "packages/*" || !exclude {
 		t.Fatalf("unexpected normalized pattern: %q exclude=%v", normalized, exclude)
 	}
+}
 
-	compiled, warnings = compileWorkspacePatterns([]string{string([]byte{0xff})})
+func testWorkspacePatternInvalidPatterns(t *testing.T) {
+	t.Helper()
+
+	compiled, warnings := compileWorkspacePatterns([]string{string([]byte{0xff})})
 	if len(compiled) != 0 {
 		t.Fatalf("expected invalid utf-8 pattern to be rejected, got %#v", compiled)
 	}
@@ -274,6 +296,40 @@ func TestWorkspacePatternHelpers(t *testing.T) {
 	}
 	if !matchesWorkspacePatterns("any/path", nil) {
 		t.Fatalf("expected empty workspace pattern set to match by default")
+	}
+}
+
+func testWorkspacePatternSearchRoots(t *testing.T) {
+	t.Helper()
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	searchRoots := workspacePatternSearchRoots(repo, []string{"packages/*", "packages/web/*", "./apps/**/", "!packages/legacy"})
+	want := []string{
+		filepath.Join(repo, "apps"),
+		filepath.Join(repo, "packages"),
+	}
+	if !slices.Equal(searchRoots, want) {
+		t.Fatalf("unexpected workspace search roots: got %#v want %#v", searchRoots, want)
+	}
+
+	excludeOnlyRoots := workspacePatternSearchRoots(repo, []string{"!packages/generated"})
+	if !slices.Equal(excludeOnlyRoots, []string{filepath.Clean(repo)}) {
+		t.Fatalf("unexpected exclude-only search roots: %#v", excludeOnlyRoots)
+	}
+
+	outsideRoots := workspacePatternSearchRoots(repo, []string{"../outside/*"})
+	if !slices.Equal(outsideRoots, []string{filepath.Clean(repo)}) {
+		t.Fatalf("unexpected outside-pattern search roots: %#v", outsideRoots)
+	}
+
+	if got := workspacePatternLiteralRoot("packages//web/*"); got != filepath.Join("packages", "web") {
+		t.Fatalf("unexpected literal root for repeated separators: %q", got)
+	}
+	if got := workspacePatternLiteralRoot("apps/./web/*"); got != filepath.Join("apps", "web") {
+		t.Fatalf("unexpected literal root for dot segment: %q", got)
+	}
+	if got := workspacePatternLiteralRoot("*"); got != "" {
+		t.Fatalf("expected wildcard-only pattern to have no literal root, got %q", got)
 	}
 }
 
@@ -344,6 +400,83 @@ func TestDiscoverWorkspacePackageDirsHonorsExcludesAndSkipsNodeModules(t *testin
 	}
 }
 
+func TestDiscoverWorkspacePackageDirsScopesWalkToWorkspaceRoots(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	writeWorkspaceCatalogFiles(t, repo, map[string]string{
+		filepath.Join("packages", "web", testPackageJSONName): `{"name":"web"}`,
+		filepath.Join("vendor", "locked", testPackageJSONName): `{
+  "name": "locked"
+}`,
+	})
+
+	lockedDir := filepath.Join(repo, "vendor", "locked")
+	if err := os.Chmod(lockedDir, 0); err != nil {
+		t.Fatalf("chmod locked dir: %v", err)
+	}
+	defer func() {
+		if err := os.Chmod(lockedDir, 0o755); err != nil {
+			t.Fatalf("restore locked dir permissions: %v", err)
+		}
+	}()
+
+	dirs, warnings := discoverWorkspacePackageDirs(repo, []string{"packages/*"})
+	if len(warnings) != 0 {
+		t.Fatalf("expected scoped walk to avoid unrelated warnings, got %#v", warnings)
+	}
+	want := []string{filepath.Join(repo, "packages", "web")}
+	if !slices.Equal(dirs, want) {
+		t.Fatalf("unexpected workspace dirs from scoped walk: got %#v want %#v", dirs, want)
+	}
+}
+
+func TestDiscoverWorkspacePackageDirsInRootGuardsAndFiltering(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	rootManifestPath := filepath.Join(repo, testPackageJSONName)
+	testutil.MustWriteFile(t, rootManifestPath, `{"name":"root"}`)
+	writeWorkspaceCatalogFiles(t, repo, map[string]string{
+		filepath.Join("packages", "web", testPackageJSONName):    `{"name":"web"}`,
+		filepath.Join("packages", "legacy", testPackageJSONName): `{"name":"legacy"}`,
+		filepath.Join("packages", "web", "README.md"):            "notes",
+	})
+
+	compiled, warnings := compileWorkspacePatterns([]string{"packages/web"})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no compile warnings, got %#v", warnings)
+	}
+
+	_, invalidRootWarnings := discoverWorkspacePackageDirsInRoot(repo, rootManifestPath, string([]byte{0}), compiled)
+	if len(invalidRootWarnings) != 1 || !strings.Contains(invalidRootWarnings[0], "unable to access workspace search root") {
+		t.Fatalf("expected invalid search-root warning, got %#v", invalidRootWarnings)
+	}
+
+	notDirPath := filepath.Join(repo, "not-a-dir")
+	testutil.MustWriteFile(t, notDirPath, "x")
+	notDirDirs, notDirWarnings := discoverWorkspacePackageDirsInRoot(repo, rootManifestPath, notDirPath, compiled)
+	if len(notDirDirs) != 0 || len(notDirWarnings) != 0 {
+		t.Fatalf("expected file search root to be ignored without warnings, dirs=%#v warnings=%#v", notDirDirs, notDirWarnings)
+	}
+
+	dirs, rootWarnings := discoverWorkspacePackageDirsInRoot(repo, rootManifestPath, repo, compiled)
+	if len(rootWarnings) != 0 {
+		t.Fatalf("expected no root walk warnings, got %#v", rootWarnings)
+	}
+	if len(dirs) != 1 {
+		t.Fatalf("expected one matched workspace dir, got %#v", dirs)
+	}
+	if _, ok := dirs[filepath.Join(repo, "packages", "web")]; !ok {
+		t.Fatalf("expected matched workspace dir to include packages/web, got %#v", dirs)
+	}
+
+	outsideDir := t.TempDir()
+	if workspacePackageDirMatches(repo, outsideDir, compiled) {
+		t.Fatalf("expected outside dir to fail workspace package match")
+	}
+}
+
 func TestDiscoverWorkspacePackageDirsReportsWalkErrors(t *testing.T) {
 	t.Parallel()
 
@@ -390,6 +523,12 @@ func TestResolveDependencyRootFromDir(t *testing.T) {
 	if got := resolveDependencyRootFromDir(repo, t.TempDir(), "react"); got != "" {
 		t.Fatalf("expected outside workspace dir to return empty root, got %q", got)
 	}
+	if got := resolveDependencyRootFromDir(string([]byte{0}), workspaceDir, "react"); got != "" {
+		t.Fatalf("expected invalid repo path to return empty root, got %q", got)
+	}
+	if got := resolveDependencyRootFromDir(repo, string([]byte{0}), "react"); got != "" {
+		t.Fatalf("expected invalid start dir to return empty root, got %q", got)
+	}
 }
 
 func TestDependencyCollectorRecordResolvedRootTracksMultipleRoots(t *testing.T) {
@@ -416,6 +555,49 @@ func TestDependencyCollectorRecordResolvedRootTracksMultipleRoots(t *testing.T) 
 	collector.recordResolvedRoot("react", otherRoot)
 	if _, ok := collector.multiRoot["react"]; !ok {
 		t.Fatalf("expected differing roots to mark react as multi-root")
+	}
+}
+
+func TestDependencyCollectorMergeWorkspaceDeclarationsRespectsResolution(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	workspaceDir := filepath.Join(repo, "packages", "web")
+
+	unresolved := newDependencyCollector()
+	unresolved.missing["react"] = struct{}{}
+	unresolved.mergeWorkspaceDeclarations(repo, map[string]workspaceDependencyDeclaration{
+		"react": {declarationDirs: map[string]struct{}{workspaceDir: {}}},
+	})
+	if _, ok := unresolved.found["react"]; ok {
+		t.Fatalf("expected unresolved workspace dependency to remain unfound")
+	}
+	if _, ok := unresolved.missing["react"]; !ok {
+		t.Fatalf("expected unresolved workspace dependency to remain missing")
+	}
+
+	alreadyFound := newDependencyCollector()
+	alreadyFound.found["react"] = struct{}{}
+	alreadyFound.mergeWorkspaceDeclarations(repo, map[string]workspaceDependencyDeclaration{
+		"react": {declarationDirs: map[string]struct{}{workspaceDir: {}}},
+	})
+	if _, ok := alreadyFound.missing["react"]; ok {
+		t.Fatalf("expected already-found dependency not to be marked missing")
+	}
+
+	installWorkspaceCatalogDependencies(t, repo, "eslint")
+	resolved := newDependencyCollector()
+	resolved.mergeWorkspaceDeclarations(repo, map[string]workspaceDependencyDeclaration{
+		"eslint": {declarationDirs: map[string]struct{}{repo: {}}},
+	})
+	if _, ok := resolved.found["eslint"]; !ok {
+		t.Fatalf("expected resolved workspace dependency to be marked found")
+	}
+	if _, ok := resolved.missing["eslint"]; ok {
+		t.Fatalf("expected resolved workspace dependency not to remain missing")
+	}
+	if got := resolved.roots["eslint"]; got != filepath.Join(repo, "node_modules", "eslint") {
+		t.Fatalf("unexpected resolved root for workspace dependency: %q", got)
 	}
 }
 
