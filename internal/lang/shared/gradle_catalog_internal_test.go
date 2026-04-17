@@ -485,6 +485,32 @@ func TestGradleCatalogPathAndWarningHelpers(t *testing.T) {
 	}
 }
 
+func TestGradleCatalogLookupIndexCachesScopeMatches(t *testing.T) {
+	resolver := GradleCatalogResolver{
+		scopes: []gradleCatalogScope{
+			{root: filepath.Clean(testAppRoot)},
+		},
+	}
+	if resolver.lookup.scopesByRoot != nil {
+		t.Fatalf("expected zero-value resolver lookup index to be uninitialized")
+	}
+
+	scope := resolver.scopeForBuildFile(testBuildFile)
+	if scope == nil || scope.root != filepath.Clean(testAppRoot) {
+		t.Fatalf("expected build file to resolve against app scope, got %#v", scope)
+	}
+	if resolver.lookup.scopesByRoot == nil || resolver.lookup.cachedScopes[filepath.Clean(testBuildFile)] == nil {
+		t.Fatalf("expected lookup index and cache to be initialized, got %#v", resolver.lookup)
+	}
+
+	if unresolved := resolver.scopeForBuildFile(testOtherBuildFile); unresolved != nil {
+		t.Fatalf("expected non-matching build file to stay unresolved, got %#v", unresolved)
+	}
+	if _, ok := resolver.lookup.cachedUnmatched[filepath.Clean(testOtherBuildFile)]; !ok {
+		t.Fatalf("expected unmatched lookup to be cached, got %#v", resolver.lookup.cachedUnmatched)
+	}
+}
+
 func TestGradleCatalogReferenceCollectorIgnoresUnknownInputs(t *testing.T) {
 	resolver := GradleCatalogResolver{knownCatalogs: map[string]struct{}{gradleCatalogName: {}}}
 	collector := newGradleCatalogReferenceCollector(&resolver, testBuildFile)
