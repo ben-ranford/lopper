@@ -117,6 +117,10 @@ func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
 }
 
 func TestResolveRuntimeExecutablePathSkipsNonExecutableCandidate(t *testing.T) {
+	if isWindowsRuntime() {
+		t.Skip("non-executable mode bit checks are Unix-specific")
+	}
+
 	firstDir := t.TempDir()
 	secondDir := t.TempDir()
 
@@ -138,8 +142,106 @@ func TestResolveRuntimeExecutablePathSkipsNonExecutableCandidate(t *testing.T) {
 	}
 }
 
+func TestWindowsExecutableExtensions(t *testing.T) {
+	testCases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{
+			name: "defaults when empty",
+			in:   "",
+			want: []string{".com", ".exe", ".bat", ".cmd"},
+		},
+		{
+			name: "normalizes case and dot",
+			in:   "EXE;.cmd;.BAT;bat",
+			want: []string{".exe", ".cmd", ".bat"},
+		},
+		{
+			name: "ignores blanks",
+			in:   " ; ;.EXE;; ",
+			want: []string{".exe"},
+		},
+		{
+			name: "falls back when all entries are empty",
+			in:   ";;;",
+			want: []string{".com", ".exe", ".bat", ".cmd"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := windowsExecutableExtensions(tc.in)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("expected windows executable extensions %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestRuntimeExecutableCandidatesWindowsIncludesPathextEntries(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	t.Setenv("PATHEXT", ".CMD;.EXE")
+	dir := t.TempDir()
+	got := runtimeExecutableCandidates("npm", dir)
+	want := []string{
+		filepath.Join(dir, "npm"),
+		filepath.Join(dir, "npm") + ".cmd",
+		filepath.Join(dir, "npm") + ".exe",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected candidates %v, got %v", want, got)
+	}
+}
+
+func TestIsTrustedRuntimeExecutableOnWindowsIgnoresModeBits(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	path := filepath.Join(t.TempDir(), "npm.cmd")
+	if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o600); err != nil {
+		t.Fatalf("write tool script: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat tool script: %v", err)
+	}
+	if !isTrustedRuntimeExecutable(info) {
+		t.Fatalf("expected windows executable trust check to accept regular files")
+	}
+}
+
+func TestDefaultTrustedRuntimeBinDirEntriesOnWindowsIncludesProgramFiles(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	t.Setenv("ProgramFiles", `D:\Apps`)
+	t.Setenv("ProgramFiles(x86)", `E:\Apps86`)
+
+	got := defaultTrustedRuntimeBinDirEntries()
+	if !slices.Contains(got, filepath.Join(`D:\Apps`, "nodejs")) {
+		t.Fatalf("expected ProgramFiles nodejs entry in %v", got)
+	}
+	if !slices.Contains(got, filepath.Join(`E:\Apps86`, "nodejs")) {
+		t.Fatalf("expected ProgramFiles(x86) nodejs entry in %v", got)
+	}
+	if !slices.Contains(got, `C:\Windows\System32`) {
+		t.Fatalf("expected system32 entry in %v", got)
+	}
+}
+
 func TestNewAllowlistedRuntimeCommandRejectsUnsupportedExecutable(t *testing.T) {
 	if _, err := newAllowlistedRuntimeCommand(context.Background(), "python"); err == nil {
 		t.Fatalf("expected unsupported executable error")
 	}
+}
+
+func setRuntimeOSTest(t *testing.T, osName string) {
+	t.Helper()
+
+	originalOS := runtimeOS
+	runtimeOS = osName
+	t.Cleanup(func() {
+		runtimeOS = originalOS
+	})
 }

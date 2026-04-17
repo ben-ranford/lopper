@@ -75,7 +75,17 @@ func runtimeNodeHookOptions() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("--require=%s --loader=%s", requirePath, loaderPath), nil
+	return fmt.Sprintf("--require=%s --loader=%s", quoteNodeOptionPath(requirePath), quoteNodeOptionPath(loaderPath)), nil
+}
+
+func quoteNodeOptionPath(path string) string {
+	if !strings.ContainsAny(path, " \t\r\n\"") {
+		return path
+	}
+
+	escaped := strings.ReplaceAll(path, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`
 }
 
 func runtimeHookPaths() (string, string, error) {

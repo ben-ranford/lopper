@@ -6,12 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"unicode"
 )
 
 const runtimeBinDirsEnvKey = "LOPPER_RUNTIME_BIN_DIRS"
-const defaultTrustedRuntimeBinDirs = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+const defaultWindowsPathExt = ".COM;.EXE;.BAT;.CMD"
+
+var runtimeOS = goruntime.GOOS
 
 var runtimeExecutableAllowlist = map[string]struct{}{
 	"npm":    {},
@@ -135,18 +138,59 @@ func resolveRuntimeExecutablePath(executable string, searchDirs []string) (strin
 	}
 
 	for _, dir := range searchDirs {
-		candidate := filepath.Join(dir, executable)
+		if path, ok := resolveRuntimeExecutablePathInDir(executable, dir); ok {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("runtime test executable %q not found in trusted runtime directories", executable)
+}
+
+func resolveRuntimeExecutablePathInDir(executable, dir string) (string, bool) {
+	for _, candidate := range runtimeExecutableCandidates(executable, dir) {
 		info, err := os.Stat(candidate)
 		if err != nil || info.IsDir() {
 			continue
 		}
-		if info.Mode().Perm()&0o111 == 0 {
+		if !isTrustedRuntimeExecutable(info) {
 			continue
 		}
-		return candidate, nil
+		return candidate, true
+	}
+	return "", false
+}
+
+func runtimeExecutableCandidates(executable, dir string) []string {
+	candidates := make([]string, 0, 4)
+	addCandidate := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == candidate {
+				return
+			}
+		}
+		candidates = append(candidates, candidate)
 	}
 
-	return "", fmt.Errorf("runtime test executable %q not found in trusted runtime directories", executable)
+	base := filepath.Join(dir, executable)
+	addCandidate(base)
+
+	if !isWindowsRuntime() || filepath.Ext(executable) != "" {
+		return candidates
+	}
+	for _, ext := range windowsExecutableExtensions(os.Getenv("PATHEXT")) {
+		addCandidate(base + ext)
+	}
+	return candidates
+}
+
+func isTrustedRuntimeExecutable(info os.FileInfo) bool {
+	if isWindowsRuntime() {
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
 }
 
 func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
@@ -161,10 +205,58 @@ func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec
 
 func runtimeSearchDirs() []string {
 	configured := strings.TrimSpace(os.Getenv(runtimeBinDirsEnvKey))
-	if configured == "" {
-		configured = defaultTrustedRuntimeBinDirs
+	if configured != "" {
+		return trustedSearchDirs(configured)
 	}
-	return trustedSearchDirs(configured)
+	defaults := strings.Join(defaultTrustedRuntimeBinDirEntries(), string(os.PathListSeparator))
+	return trustedSearchDirs(defaults)
+}
+
+func defaultTrustedRuntimeBinDirEntries() []string {
+	if !isWindowsRuntime() {
+		return []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"}
+	}
+
+	return []string{
+		filepath.Join(strings.TrimSpace(os.Getenv("ProgramFiles")), "nodejs"),
+		filepath.Join(strings.TrimSpace(os.Getenv("ProgramFiles(x86)")), "nodejs"),
+		`C:\Program Files\nodejs`,
+		`C:\Program Files (x86)\nodejs`,
+		`C:\Windows\System32`,
+	}
+}
+
+func windowsExecutableExtensions(pathExtValue string) []string {
+	pathExt := strings.TrimSpace(pathExtValue)
+	if pathExt == "" {
+		pathExt = defaultWindowsPathExt
+	}
+
+	seen := make(map[string]struct{})
+	exts := make([]string, 0)
+	for _, rawExt := range strings.Split(pathExt, ";") {
+		ext := strings.ToLower(strings.TrimSpace(rawExt))
+		if ext == "" {
+			continue
+		}
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		if _, ok := seen[ext]; ok {
+			continue
+		}
+		seen[ext] = struct{}{}
+		exts = append(exts, ext)
+	}
+
+	if len(exts) == 0 {
+		return []string{".com", ".exe", ".bat", ".cmd"}
+	}
+	return exts
+}
+
+func isWindowsRuntime() bool {
+	return runtimeOS == "windows"
 }
 
 func trustedSearchDirs(dirListValue string) []string {

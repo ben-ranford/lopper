@@ -227,127 +227,144 @@ func TestCaptureReuseIfUnchangedSkipsRepeatedCommand(t *testing.T) {
 	}
 }
 
-func TestRuntimeTraceStateHelpers(t *testing.T) {
+func TestReuseRuntimeTraceIfPossibleMissingTraceSkipsReuse(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+}
 
-	if reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand); err != nil || reused {
-		t.Fatalf("expected missing trace to skip reuse, reused=%v err=%v", reused, err)
-	}
-
+func TestReuseRuntimeTraceIfPossibleDirectoryTraceSkipsReuse(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
 	if err := os.MkdirAll(tracePath, 0o750); err != nil {
 		t.Fatalf("mkdir trace path dir: %v", err)
 	}
-	if reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand); err != nil || reused {
-		t.Fatalf("expected directory trace path to skip reuse, reused=%v err=%v", reused, err)
-	}
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+}
 
-	if err := os.RemoveAll(tracePath); err != nil {
-		t.Fatalf("remove trace path dir: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
-		t.Fatalf("mkdir trace parent: %v", err)
-	}
-	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
-		t.Fatalf("write trace file: %v", err)
-	}
-	if reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand); err != nil || reused {
-		t.Fatalf("expected missing state file to skip reuse, reused=%v err=%v", reused, err)
-	}
+func TestReuseRuntimeTraceIfPossibleMissingStateSkipsReuse(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+}
 
+func TestReuseRuntimeTraceIfPossibleInvalidStateSkipsReuse(t *testing.T) {
+	tracePath := writeTraceFixture(t)
 	if err := os.WriteFile(runtimeTraceStatePath(tracePath), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid state file: %v", err)
 	}
-	if reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand); err != nil || reused {
-		t.Fatalf("expected invalid state file to skip reuse, reused=%v err=%v", reused, err)
-	}
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+}
 
+func TestParseRuntimeTraceStateValidation(t *testing.T) {
 	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"wrong","command":"npm test"}`)); ok {
 		t.Fatalf("expected wrong runtime trace schema to be rejected")
 	}
 	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v1","command":"  "}`)); ok {
 		t.Fatalf("expected blank runtime trace command to be rejected")
 	}
+}
 
+func TestWriteRuntimeTraceStateAndReuseChecks(t *testing.T) {
+	tracePath := writeTraceFixture(t)
 	if err := writeRuntimeTraceState(tracePath, "  npm test  "); err != nil {
 		t.Fatalf("write runtime trace state: %v", err)
 	}
-	if reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand); err != nil || !reused {
-		t.Fatalf("expected matching command to reuse runtime trace, reused=%v err=%v", reused, err)
-	}
-	if reused, err := reuseRuntimeTraceIfPossible(tracePath, "npm run test"); err != nil || reused {
-		t.Fatalf("expected changed command to miss reuse, reused=%v err=%v", reused, err)
-	}
 
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, true)
+	assertRuntimeReuseResult(t, tracePath, "npm run test", false)
+}
+
+func TestWriteRuntimeTraceStateFailsWhenParentMissing(t *testing.T) {
 	missingParentTrace := filepath.Join(t.TempDir(), "missing", runtimeTraceNDJSON)
 	if err := writeRuntimeTraceState(missingParentTrace, npmTestCommand); err == nil {
 		t.Fatalf("expected writeRuntimeTraceState to fail when parent directory is missing")
 	}
 }
 
-func TestRuntimeCaptureErrorAndGuardBranches(t *testing.T) {
-	t.Run("reuse surfaces stat and state read errors", func(t *testing.T) {
-		if reused, err := reuseRuntimeTraceIfPossible(string([]byte{0}), npmTestCommand); err == nil || reused {
-			t.Fatalf("expected invalid trace path stat error, reused=%v err=%v", reused, err)
-		}
+func TestReuseRuntimeTraceIfPossibleSurfacesStatError(t *testing.T) {
+	reused, err := reuseRuntimeTraceIfPossible(string([]byte{0}), npmTestCommand)
+	if err == nil || reused {
+		t.Fatalf("expected invalid trace path stat error, reused=%v err=%v", reused, err)
+	}
+}
 
-		tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
-		if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
-			t.Fatalf("mkdir trace parent: %v", err)
-		}
-		if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
-			t.Fatalf("write trace file: %v", err)
-		}
-		if err := os.MkdirAll(runtimeTraceStatePath(tracePath), 0o750); err != nil {
-			t.Fatalf("mkdir trace state dir: %v", err)
-		}
-		if reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand); err == nil || reused {
-			t.Fatalf("expected runtime trace state read error, reused=%v err=%v", reused, err)
-		}
+func TestReuseRuntimeTraceIfPossibleSurfacesStateReadError(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	if err := os.MkdirAll(runtimeTraceStatePath(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace state dir: %v", err)
+	}
+
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand)
+	if err == nil || reused {
+		t.Fatalf("expected runtime trace state read error, reused=%v err=%v", reused, err)
+	}
+}
+
+func TestPrepareTracePathFailsWhenStaleStateIsDirectory(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	statePath := runtimeTraceStatePath(tracePath)
+	if err := os.MkdirAll(statePath, 0o750); err != nil {
+		t.Fatalf("mkdir stale trace state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(statePath, "keep.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write stale trace state child: %v", err)
+	}
+	if err := prepareTracePath(tracePath); err == nil || !strings.Contains(err.Error(), "remove previous runtime trace state") {
+		t.Fatalf("expected stale trace state cleanup error, got %v", err)
+	}
+}
+
+func TestBuildRuntimeCommandRejectsUnsupportedAllowlistedPath(t *testing.T) {
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "foobar", "#!/bin/sh\nexit 0\n"))
+
+	if _, err := buildRuntimeCommand(context.Background(), "foobar test"); err == nil || !strings.Contains(err.Error(), "unsupported runtime test executable") {
+		t.Fatalf("expected allowlist rejection for unsupported executable, got %v", err)
+	}
+}
+
+func TestCaptureSurfacesTraceStateWriteFailure(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	script := "#!/bin/sh\nmkdir -p \"$LOPPER_RUNTIME_TRACE.state.json\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", script))
+
+	err := Capture(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   npmTestCommand,
 	})
+	if err == nil || !strings.Contains(err.Error(), "write runtime trace state") {
+		t.Fatalf("expected runtime trace state write error, got %v", err)
+	}
+}
 
-	t.Run("prepare trace path fails when stale state is a directory", func(t *testing.T) {
-		tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
-		statePath := runtimeTraceStatePath(tracePath)
-		if err := os.MkdirAll(statePath, 0o750); err != nil {
-			t.Fatalf("mkdir stale trace state dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(statePath, "keep.txt"), []byte("x"), 0o600); err != nil {
-			t.Fatalf("write stale trace state child: %v", err)
-		}
-		if err := prepareTracePath(tracePath); err == nil || !strings.Contains(err.Error(), "remove previous runtime trace state") {
-			t.Fatalf("expected stale trace state cleanup error, got %v", err)
-		}
-	})
+func TestRuntimeModuleFromResolvedPathIgnoresTrailingNodeModules(t *testing.T) {
+	if got := runtimeModuleFromResolvedPath("/tmp/node_modules/", "lodash"); got != "" {
+		t.Fatalf("expected empty runtime module for trailing node_modules path, got %q", got)
+	}
+}
 
-	t.Run("build runtime command rejects unsupported allowlisted path", func(t *testing.T) {
-		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "foobar", "#!/bin/sh\nexit 0\n"))
+func writeTraceFixture(t *testing.T) string {
+	t.Helper()
 
-		if _, err := buildRuntimeCommand(context.Background(), "foobar test"); err == nil || !strings.Contains(err.Error(), "unsupported runtime test executable") {
-			t.Fatalf("expected allowlist rejection for unsupported executable, got %v", err)
-		}
-	})
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace parent: %v", err)
+	}
+	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write trace file: %v", err)
+	}
+	return tracePath
+}
 
-	t.Run("capture surfaces trace state write failure", func(t *testing.T) {
-		repo := t.TempDir()
-		tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
-		script := "#!/bin/sh\nmkdir -p \"$LOPPER_RUNTIME_TRACE.state.json\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
-		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", script))
+func assertRuntimeReuseResult(t *testing.T, tracePath, command string, wantReused bool) {
+	t.Helper()
 
-		err := Capture(context.Background(), CaptureRequest{
-			RepoPath:  repo,
-			TracePath: tracePath,
-			Command:   npmTestCommand,
-		})
-		if err == nil || !strings.Contains(err.Error(), "write runtime trace state") {
-			t.Fatalf("expected runtime trace state write error, got %v", err)
-		}
-	})
-
-	t.Run("resolved path without module tail is ignored", func(t *testing.T) {
-		if got := runtimeModuleFromResolvedPath("/tmp/node_modules/", "lodash"); got != "" {
-			t.Fatalf("expected empty runtime module for trailing node_modules path, got %q", got)
-		}
-	})
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, command)
+	if err != nil {
+		t.Fatalf("reuse runtime trace: %v", err)
+	}
+	if reused != wantReused {
+		t.Fatalf("expected reused=%v, got %v", wantReused, reused)
+	}
 }
 
 func readCaptureCounter(t *testing.T, counterPath string) int {

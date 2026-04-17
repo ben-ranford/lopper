@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ type runtimeTraceState struct {
 	Command string `json:"command"`
 }
 
-func reuseRuntimeTraceIfPossible(tracePath string, command string) (bool, error) {
+func reuseRuntimeTraceIfPossible(tracePath, command string) (bool, error) {
 	info, err := os.Stat(tracePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -59,13 +60,7 @@ func parseRuntimeTraceState(stateData []byte) (runtimeTraceState, bool) {
 	return state, true
 }
 
-func writeRuntimeTraceState(tracePath string, command string) error {
-	payload, err := json.Marshal(runtimeTraceState{
-		Schema:  runtimeTraceStateSchema,
-		Command: strings.TrimSpace(command),
-	})
-	if err != nil {
-		return err
-	}
+func writeRuntimeTraceState(tracePath, command string) error {
+	payload := []byte(`{"schema":"` + runtimeTraceStateSchema + `","command":` + strconv.Quote(strings.TrimSpace(command)) + `}`)
 	return os.WriteFile(runtimeTraceStatePath(tracePath), payload, 0o600)
 }
