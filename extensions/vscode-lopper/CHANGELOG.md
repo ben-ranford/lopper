@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0
+
+- Added `package`, `repo`, and `changed-packages` scope controls in VS Code, plus force-fresh refresh commands and a tighter refresh session lifecycle.
+- Expanded dependency discovery with pnpm and Yarn workspace catalog support for JS/TS analysis.
+- Added managed Maven dependency resolution and indexed Gradle version catalog lookup for JVM projects.
+- Made runtime-assisted analysis cache-aware and hardened the PHP, Python, Ruby, and Elixir adapter pipelines for the shared `v1.4.0` release.
+
 ## 1.2.0
 
 - Expanded package ecosystem coverage across existing adapters with Ruby gemspec support, Swift CocoaPods support, Python modern packaging support, Gradle version catalog support, and C/C++ vcpkg plus Conan support.

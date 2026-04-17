@@ -2,7 +2,7 @@
   "name": "vscode-lopper",
   "displayName": "Lopper",
   "description": "VS Code diagnostics, hover details, and safe JS/TS quick fixes across Lopper adapters, including Kotlin Android.",
-  "version": "1.3.3",
+  "version": "1.4.0",
   "publisher": "BenRanford",
   "license": "MIT",
   "repository": {
