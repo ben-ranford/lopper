@@ -287,7 +287,7 @@ func TestLoadDeclaredDependenciesToleratesNilSources(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
 
 	out := make(map[string]struct{})
-	warnings, err := loadDeclaredDependencies(repo, out, nil)
+	warnings, err := loadDeclaredDependencies(context.Background(), repo, out, nil)
 	if err != nil {
 		t.Fatalf("loadDeclaredDependencies: %v", err)
 	}
