@@ -124,7 +124,7 @@ jobs:
           existing_body="$(mktemp)"
           release_notes="$(mktemp)"
 
-          gh release view "$tag" --json body --jq '.body // ""' > "$existing_body"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$existing_body"
           awk '
             /^<!-- lopper-release-assets:start -->$/ { skip = 1; next }
             /^<!-- lopper-release-assets:end -->$/ { skip = 0; next }
@@ -148,7 +148,7 @@ jobs:
             cat "$release_notes"
           } > release-body.md
 
-          gh release edit "$tag" --title "Release $tag" --notes-file release-body.md
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "Release $tag" --notes-file release-body.md
 
       - name: Upload GitHub Release assets
         run: |
@@ -159,7 +159,7 @@ jobs:
             echo "No release assets found in dist" >&2
             exit 1
           fi
-          gh release upload "$tag" "${assets[@]}" --clobber
+          gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
       - name: Setup Node
         if: ${{ env.VSCE_PUBLISH != '' }}
