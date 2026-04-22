@@ -9,6 +9,32 @@
     ".": {
       "release-type": "go",
       "changelog-path": "extensions/vscode-lopper/CHANGELOG.md",
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        }
+      ],
       "extra-files": [
         {
           "type": "json",
