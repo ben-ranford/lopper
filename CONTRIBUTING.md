@@ -67,6 +67,21 @@ make mem-profiles
 3. Keep commits focused and descriptive.
 4. Open a pull request with clear context, scope, and validation steps.
 
+## Commit style and releases
+
+Stable releases are prepared by release-please from Conventional Commits merged to `main`.
+Use these commit types for changes that should appear in release notes:
+
+- `fix(scope): summary` for patch releases.
+- `docs(scope): summary` for documentation-only patch releases.
+- `refactor(scope): summary` for refactoring patch releases.
+- `perf(scope): summary` for performance patch releases.
+- `feat(scope): summary` for minor releases.
+- `type(scope)!: summary` or a `BREAKING CHANGE:` footer for major releases.
+
+Use non-release types such as `test`, `ci`, `build`, or `chore` when the change should not by itself create a release PR.
+Good scopes include `release`, `ci`, `vscode`, `js`, `jvm`, `go`, `report`, `ui`, `runtime`, and `homebrew`.
+
 ## Adapter docs checklist
 
 If you add a new language adapter, update the contributor-facing docs and user-facing metadata in the same change:
