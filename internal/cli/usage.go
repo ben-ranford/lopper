@@ -7,6 +7,7 @@ const usage = `Usage:
   lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--fail-on-increase PERCENT]
   lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart] [--output PATH]
   lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart] [--output PATH]
+  lopper features [--format table|json]
 
 Options:
   --repo PATH                Repository path (default: .)
@@ -35,6 +36,8 @@ Options:
   --apply-codemod-confirm    Required confirmation flag for --apply-codemod
   --allow-dirty              Allow --apply-codemod to run in a dirty git worktree
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
+  --enable-feature NAME      Feature flag name or code to enable (repeatable, comma-separated)
+  --disable-feature NAME     Feature flag name or code to disable (repeatable, comma-separated)
   --output PATH, -o PATH     Write command output to file instead of stdout
   --lockfile-drift-policy MODE
                               Lockfile drift policy (off, warn, fail; default: warn)

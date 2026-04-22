@@ -16,6 +16,7 @@ type LoadResult struct {
 	Overrides     Overrides
 	Resolved      Values
 	Scope         PathScope
+	Features      FeatureConfig
 	ConfigPath    string
 	PolicySources []string
 }
@@ -23,6 +24,11 @@ type LoadResult struct {
 type PathScope struct {
 	Include []string
 	Exclude []string
+}
+
+type FeatureConfig struct {
+	Enable  []string
+	Disable []string
 }
 
 func Load(repoPath, explicitPath string) (Overrides, string, error) {
@@ -70,6 +76,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 		Overrides:     mergeResult.overrides,
 		Resolved:      resolved,
 		Scope:         mergeResult.scope,
+		Features:      mergeResult.features,
 		ConfigPath:    configPath,
 		PolicySources: mergeResult.policySourcesHighToLow(),
 	}, nil
@@ -78,6 +85,9 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 type rawConfig struct {
 	Policy rawPolicy `yaml:"policy" json:"policy"`
 	Scope  rawScope  `yaml:"scope" json:"scope"`
+	// Feature flags are resolved by the cli package; keep this field here so shared config parsing
+	// preserves unknown-field validation while accepting the feature section.
+	Features rawFeatures `yaml:"features" json:"features"`
 	// Notifications are parsed by the notify package; keep this field so threshold parsing accepts shared config files.
 	Notifications map[string]any `yaml:"notifications" json:"notifications"`
 
@@ -103,6 +113,11 @@ type rawPolicy struct {
 type rawScope struct {
 	Include []string `yaml:"include" json:"include"`
 	Exclude []string `yaml:"exclude" json:"exclude"`
+}
+
+type rawFeatures struct {
+	Enable  []string `yaml:"enable" json:"enable"`
+	Disable []string `yaml:"disable" json:"disable"`
 }
 
 type rawThresholds struct {

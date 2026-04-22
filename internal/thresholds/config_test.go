@@ -148,6 +148,44 @@ func TestLoadJSONConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFeatureFlags(t *testing.T) {
+	repo := t.TempDir()
+	cfg := `features:
+  enable:
+    - preview-flag
+    - preview-flag
+    - ""
+  disable:
+    - stable-flag
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), cfg)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf(loadConfigErrFmt, err)
+	}
+	if strings.Join(result.Features.Enable, ",") != "preview-flag" {
+		t.Fatalf("unexpected feature enable list: %#v", result.Features.Enable)
+	}
+	if strings.Join(result.Features.Disable, ",") != "stable-flag" {
+		t.Fatalf("unexpected feature disable list: %#v", result.Features.Disable)
+	}
+}
+
+func TestLoadJSONConfigFeatureFlags(t *testing.T) {
+	repo := t.TempDir()
+	cfg := `{"features":{"enable":["preview-flag"],"disable":["stable-flag"]}}`
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperJSONName), cfg)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf(loadConfigErrFmt, err)
+	}
+	if strings.Join(result.Features.Enable, ",") != "preview-flag" || strings.Join(result.Features.Disable, ",") != "stable-flag" {
+		t.Fatalf("unexpected feature config: %#v", result.Features)
+	}
+}
+
 func TestLoadConfigRejectsUnknownFields(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "thresholds:\n  unknown: 1\n")

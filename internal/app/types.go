@@ -2,6 +2,7 @@ package app
 
 import (
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
@@ -13,6 +14,7 @@ const (
 	ModeTUI       Mode = "tui"
 	ModeAnalyse   Mode = "analyse"
 	ModeDashboard Mode = "dashboard"
+	ModeFeatures  Mode = "features"
 
 	ScopeModeRepo            = analysis.ScopeModeRepo
 	ScopeModePackage         = analysis.ScopeModePackage
@@ -25,6 +27,7 @@ type Request struct {
 	Analyse   AnalyseRequest
 	TUI       TUIRequest
 	Dashboard DashboardRequest
+	Features  FeaturesRequest
 }
 
 type AnalyseRequest struct {
@@ -51,6 +54,7 @@ type AnalyseRequest struct {
 	ExcludePatterns    []string
 	ConfigPath         string
 	PolicySources      []string
+	Features           featureflags.Set
 	Thresholds         thresholds.Values
 	Notifications      notify.Config
 }
@@ -79,6 +83,10 @@ type DashboardRequest struct {
 	DefaultLanguage string
 }
 
+type FeaturesRequest struct {
+	Format string
+}
+
 func DefaultRequest() Request {
 	return Request{
 		Mode:     ModeTUI,
@@ -101,6 +109,9 @@ func DefaultRequest() Request {
 		Dashboard: DashboardRequest{
 			TopN:            20,
 			DefaultLanguage: "auto",
+		},
+		Features: FeaturesRequest{
+			Format: "table",
 		},
 	}
 }

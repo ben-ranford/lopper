@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -85,6 +85,12 @@ shellcheck:
 mod-check:
 	$(GO_CMD) mod tidy -diff
 	$(GO_CMD) mod verify
+
+feature-flag:
+	$(GO_CMD) run ./tools/featureflag add --name "$(NAME)" --description "$(DESCRIPTION)"
+
+feature-flag-check:
+	$(GO_CMD) run ./tools/featureflag validate
 
 dup-check:
 	@requested_base_ref="$(DUPLICATION_BASE)"; \
@@ -239,7 +245,7 @@ build:
 manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: format-check mod-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov
+ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov
 
 smoke: mod-check test-race build
 

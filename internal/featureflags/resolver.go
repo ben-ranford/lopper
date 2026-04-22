@@ -1,6 +1,7 @@
 package featureflags
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -114,6 +115,14 @@ func (r *Registry) Manifest(opts ResolveOptions) ([]ManifestEntry, error) {
 		return entries[i].Code < entries[j].Code
 	})
 	return entries, nil
+}
+
+func FormatManifest(manifest []ManifestEntry) ([]byte, error) {
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal feature manifest: %w", err)
+	}
+	return append(data, '\n'), nil
 }
 
 func (s *Set) Enabled(ref string) bool {

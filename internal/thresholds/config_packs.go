@@ -22,6 +22,7 @@ type packTrust struct {
 type resolveMergeResult struct {
 	overrides         Overrides
 	scope             PathScope
+	features          FeatureConfig
 	appliedSourcesLow []string
 }
 
@@ -86,6 +87,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 
 	merged := Overrides{}
 	mergedScope := PathScope{}
+	mergedFeatures := FeatureConfig{}
 	sources := make([]string, 0, len(cfg.Policy.Packs)+1)
 	for idx, packRef := range cfg.Policy.Packs {
 		resolvedRef, err := resolvePackRef(canonical, packRef)
@@ -108,6 +110,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 		}
 		merged = mergeOverrides(merged, packResult.overrides)
 		mergedScope = mergeScope(mergedScope, packResult.scope)
+		mergedFeatures = mergeFeatures(mergedFeatures, packResult.features)
 		sources = append(sources, packResult.appliedSourcesLow...)
 	}
 
@@ -117,11 +120,13 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	}
 	merged = mergeOverrides(merged, selfOverrides)
 	mergedScope = mergeScope(mergedScope, cfg.Scope.toPathScope())
+	mergedFeatures = mergeFeatures(mergedFeatures, cfg.Features.toFeatureConfig())
 	sources = append(sources, canonical)
 
 	return resolveMergeResult{
 		overrides:         merged,
 		scope:             mergedScope,
+		features:          mergedFeatures,
 		appliedSourcesLow: dedupeStable(sources),
 	}, nil
 }
