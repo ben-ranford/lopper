@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/version"
 )
 
 func (a *App) executeFeatures(req Request) (string, error) {
@@ -15,7 +16,26 @@ func (a *App) executeFeatures(req Request) (string, error) {
 	if registry == nil {
 		registry = featureflags.DefaultRegistry()
 	}
-	manifest, err := registry.Manifest(featureflags.ResolveOptions{Channel: featureflags.ChannelRelease})
+	channelValue := strings.TrimSpace(req.Features.Channel)
+	if channelValue == "" {
+		channelValue = version.Current().BuildChannel
+	}
+	channel, err := featureflags.NormalizeChannel(channelValue)
+	if err != nil {
+		return "", err
+	}
+	var lock *featureflags.ReleaseLock
+	if channel == featureflags.ChannelRelease {
+		release := strings.TrimSpace(req.Features.Release)
+		if release == "" {
+			release = version.Current().Version
+		}
+		lock, err = featureflags.DefaultReleaseLock(release)
+		if err != nil {
+			return "", err
+		}
+	}
+	manifest, err := registry.Manifest(featureflags.ResolveOptions{Channel: channel, Lock: lock})
 	if err != nil {
 		return "", err
 	}

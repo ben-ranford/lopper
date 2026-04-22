@@ -6,22 +6,25 @@ import (
 )
 
 var (
-	version   = "dev"
-	commit    = "unknown"
-	buildDate = "unknown"
+	version      = "dev"
+	commit       = "unknown"
+	buildDate    = "unknown"
+	buildChannel = "dev"
 )
 
 type Info struct {
-	Version   string
-	Commit    string
-	BuildDate string
+	Version      string
+	Commit       string
+	BuildDate    string
+	BuildChannel string
 }
 
 func Current() Info {
 	return Info{
-		Version:   normalizeVersion(version),
-		Commit:    normalizeField(commit),
-		BuildDate: normalizeField(buildDate),
+		Version:      normalizeVersion(version),
+		Commit:       normalizeField(commit),
+		BuildDate:    normalizeField(buildDate),
+		BuildChannel: normalizeBuildChannel(buildChannel),
 	}
 }
 
@@ -38,6 +41,9 @@ func (i *Info) String() string {
 	}
 	if i.BuildDate != "" {
 		extras = append(extras, "built "+i.BuildDate)
+	}
+	if i.BuildChannel != "" && i.BuildChannel != "dev" {
+		extras = append(extras, "channel "+i.BuildChannel)
 	}
 	if len(extras) == 0 {
 		return base
@@ -64,4 +70,12 @@ func normalizeField(value string) string {
 	default:
 		return trimmed
 	}
+}
+
+func normalizeBuildChannel(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return "dev"
+	}
+	return trimmed
 }

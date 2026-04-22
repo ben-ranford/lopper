@@ -44,6 +44,7 @@ jobs:
       tag: ${{ needs.prepare-rolling.outputs.tag }}
       source_sha: ${{ needs.prepare-rolling.outputs.source_sha }}
       artifact_prefix: rolling
+      build_channel: rolling
       image_tags: |
         ${{ needs.prepare-rolling.outputs.tag }}
         rolling
@@ -67,6 +68,11 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ env.SOURCE_SHA }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
 
       - name: Download rolling binary artifacts
         uses: actions/download-artifact@v8
@@ -97,6 +103,19 @@ jobs:
             fi
           done < <(git tag --list 'rolling-*' --sort=-creatordate)
 
+          args=(report --channel rolling --release "${ROLLING_TAG}")
+          if [ -n "${previous_tag}" ]; then
+            mkdir -p .artifacts
+            previous_catalog=".artifacts/previous-features.json"
+            if git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
+              git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
+            else
+              printf '[]\n' > "${previous_catalog}"
+            fi
+            args+=(--previous-catalog "${previous_catalog}")
+          fi
+          go run ./tools/featureflag "${args[@]}" > feature-flags.md
+
           {
             echo "## Rolling build from main"
             echo
@@ -106,6 +125,8 @@ jobs:
             echo "- Stability: rolling (not a stable semver release)"
             echo "- Docker rolling tag: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lopper:rolling\`"
             echo "- Homebrew rolling formula: \`ben-ranford/tap/lopper-rolling\`"
+            echo
+            cat feature-flags.md
             echo
             if [ -n "${previous_tag}" ]; then
               echo "Changes since \`${previous_tag}\`:"
@@ -200,6 +221,7 @@ jobs:
                 -s
                 -w
                 -X github.com/ben-ranford/lopper/internal/version.version=#{version}
+                -X github.com/ben-ranford/lopper/internal/version.buildChannel=rolling
               ]
               system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
               system "bash", "scripts/generate-manpage.sh", "docs/man/lopper.1"

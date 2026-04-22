@@ -52,6 +52,7 @@ jobs:
       tag: ${{ needs.release-please.outputs.tag || inputs.tag }}
       source_sha: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
       artifact_prefix: release
+      build_channel: release
       image_tags: |
         ${{ needs.release-please.outputs.tag || inputs.tag }}
         latest
@@ -81,7 +82,11 @@ jobs:
           cache-dependency-path: extensions/vscode-lopper/package-lock.json
 
       - name: Build local lopper binary
-        run: make build
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          make build VERSION="$version" BUILD_CHANNEL=release
 
       - name: Install extension dependencies
         run: make vscode-extension-install
@@ -119,12 +124,50 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
     steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: release-*
           merge-multiple: true
           path: dist
+
+      - name: Generate feature flag release report
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+          git fetch --tags --force
+          previous_tag=""
+          while IFS= read -r candidate; do
+            if [ "${candidate}" != "${RELEASE_TAG}" ]; then
+              previous_tag="${candidate}"
+              break
+            fi
+          done < <(git tag --list 'v[0-9]*' --sort=-v:refname)
+
+          args=(report --channel release --release "${RELEASE_TAG}")
+          if [ -n "${previous_tag}" ]; then
+            previous_catalog=".artifacts/previous-features.json"
+            if git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
+              git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
+            else
+              printf '[]\n' > "${previous_catalog}"
+            fi
+            args+=(--previous-catalog "${previous_catalog}")
+          fi
+          go run ./tools/featureflag "${args[@]}" > feature-flags.md
 
       - name: Update GitHub Release notes
         run: |
@@ -135,6 +178,8 @@ jobs:
 
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$existing_body"
           awk '
+            /^<!-- lopper-feature-flags:start -->$/ { skip = 1; next }
+            /^<!-- lopper-feature-flags:end -->$/ { skip = 0; next }
             /^<!-- lopper-release-assets:start -->$/ { skip = 1; next }
             /^<!-- lopper-release-assets:end -->$/ { skip = 0; next }
             skip != 1 { print }
@@ -145,6 +190,10 @@ jobs:
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
 
           {
+            if [ -s feature-flags.md ]; then
+              cat feature-flags.md
+              echo
+            fi
             echo "<!-- lopper-release-assets:start -->"
             echo "## Release assets"
             echo
@@ -292,6 +341,7 @@ jobs:
                 -s
                 -w
                 -X github.com/ben-ranford/lopper/internal/version.version=#{version}
+                -X github.com/ben-ranford/lopper/internal/version.buildChannel=release
               ]
               system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
               system "bash", "scripts/generate-manpage.sh", "docs/man/lopper.1"

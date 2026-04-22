@@ -66,6 +66,9 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 	if err := run([]string{"manifest"}); err != nil {
 		t.Fatalf("expected embedded manifest to render, got %v", err)
 	}
+	if err := run([]string{"report"}); err != nil {
+		t.Fatalf("expected embedded report to render, got %v", err)
+	}
 }
 
 func TestRunAddFeatureFlagCodeSpaceExhausted(t *testing.T) {
@@ -171,10 +174,12 @@ func TestRunAddFeatureFlagMissingCatalog(t *testing.T) {
 
 func TestRunValidateAndManifestInjectedErrors(t *testing.T) {
 	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
 	oldManifest := manifestEntriesFn
 	oldFormat := formatManifestFn
 	defer func() {
 		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
 		manifestEntriesFn = oldManifest
 		formatManifestFn = oldFormat
 	}()
@@ -188,7 +193,16 @@ func TestRunValidateAndManifestInjectedErrors(t *testing.T) {
 	}
 
 	validateDefaultRegistryFn = oldValidate
-	manifestEntriesFn = func(*featureflags.Registry) ([]featureflags.ManifestEntry, error) {
+	validateDefaultReleaseLocksFn = func() error { return errors.New("invalid locks") }
+	if err := run([]string{"validate"}); err == nil || !strings.Contains(err.Error(), "invalid locks") {
+		t.Fatalf("expected injected release lock validation error, got %v", err)
+	}
+	if err := run([]string{"manifest"}); err == nil || !strings.Contains(err.Error(), "invalid locks") {
+		t.Fatalf("expected injected manifest lock validation error, got %v", err)
+	}
+
+	validateDefaultReleaseLocksFn = oldValidateLocks
+	manifestEntriesFn = func(*featureflags.Registry, featureflags.Channel, string) ([]featureflags.ManifestEntry, error) {
 		return nil, errors.New("manifest failed")
 	}
 	if err := run([]string{"manifest"}); err == nil || !strings.Contains(err.Error(), "manifest failed") {
@@ -203,13 +217,145 @@ func TestRunValidateAndManifestInjectedErrors(t *testing.T) {
 	}
 }
 
-func TestReleaseManifest(t *testing.T) {
-	manifest, err := releaseManifest(featureflags.DefaultRegistry())
+func TestManifestEntries(t *testing.T) {
+	manifest, err := manifestEntries(featureflags.DefaultRegistry(), featureflags.ChannelRelease, "")
 	if err != nil {
 		t.Fatalf("release manifest: %v", err)
 	}
 	if len(manifest) != 0 {
 		t.Fatalf("expected empty embedded manifest, got %#v", manifest)
+	}
+}
+
+func TestRunManifestAndReportUseChannels(t *testing.T) {
+	registry := testRegistry(t)
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldDefaultRegistry := defaultRegistryFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		defaultRegistryFn = oldDefaultRegistry
+	})
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return nil }
+	defaultRegistryFn = func() *featureflags.Registry { return registry }
+	root := t.TempDir()
+	t.Chdir(root)
+
+	manifestOutput, err := captureStdout(t, func() error {
+		return run([]string{"manifest", "--channel", "rolling"})
+	})
+	if err != nil {
+		t.Fatalf("run rolling manifest: %v", err)
+	}
+	if !strings.Contains(manifestOutput, `"enabledByDefault": true`) {
+		t.Fatalf("expected rolling manifest to enable preview flag, got %s", manifestOutput)
+	}
+
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, previousCatalog, `[
+		{"code":"LOP-FEAT-0002","name":"stable-flag","lifecycle":"stable"}
+	]`)
+	reportOutput, err := captureStdout(t, func() error {
+		return run([]string{"report", "--channel", "release", "--release", "v1.4.2", "--previous-catalog", previousCatalog})
+	})
+	if err != nil {
+		t.Fatalf("run feature report: %v", err)
+	}
+	for _, want := range []string{"Stable by default", "Preview available by opt-in", "Newly added preview flags", "LOP-FEAT-0001"} {
+		if !strings.Contains(reportOutput, want) {
+			t.Fatalf("expected report to contain %q, got %s", want, reportOutput)
+		}
+	}
+}
+
+func TestRunManifestAndReportRejectBadInputs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := run([]string{"manifest", "--channel", "bad"}); err == nil || !strings.Contains(err.Error(), "invalid feature build channel") {
+		t.Fatalf("expected invalid channel error, got %v", err)
+	}
+	if err := run([]string{"manifest", "--channel"}); err == nil {
+		t.Fatalf("expected manifest flag parse error")
+	}
+	if err := run([]string{"manifest", "extra"}); err == nil || !strings.Contains(err.Error(), "too many arguments") {
+		t.Fatalf("expected manifest extra argument error, got %v", err)
+	}
+	if err := run([]string{"report", "--previous-catalog", filepath.Join(t.TempDir(), "missing.json")}); err == nil || !strings.Contains(err.Error(), "read previous feature catalog") {
+		t.Fatalf("expected missing previous catalog error, got %v", err)
+	}
+	badCatalog := "bad-features.json"
+	testutil.MustWriteFile(t, badCatalog, `not-json`)
+	if err := run([]string{"report", "--previous-catalog", badCatalog}); err == nil || !strings.Contains(err.Error(), "parse previous feature catalog") {
+		t.Fatalf("expected invalid previous catalog error, got %v", err)
+	}
+}
+
+func TestRunReportInjectedErrors(t *testing.T) {
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldManifest := manifestEntriesFn
+	oldGetwd := getwdFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		manifestEntriesFn = oldManifest
+		getwdFn = oldGetwd
+	})
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return nil }
+
+	validateDefaultRegistryFn = func() error { return errors.New("report registry invalid") }
+	if err := run([]string{"report"}); err == nil || !strings.Contains(err.Error(), "report registry invalid") {
+		t.Fatalf("expected injected report registry error, got %v", err)
+	}
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return errors.New("report locks invalid") }
+	if err := run([]string{"report"}); err == nil || !strings.Contains(err.Error(), "report locks invalid") {
+		t.Fatalf("expected injected report locks error, got %v", err)
+	}
+	validateDefaultReleaseLocksFn = func() error { return nil }
+
+	manifestEntriesFn = func(*featureflags.Registry, featureflags.Channel, string) ([]featureflags.ManifestEntry, error) {
+		return nil, errors.New("report manifest failed")
+	}
+	if err := run([]string{"report"}); err == nil || !strings.Contains(err.Error(), "report manifest failed") {
+		t.Fatalf("expected injected report manifest error, got %v", err)
+	}
+
+	manifestEntriesFn = oldManifest
+	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }
+	if err := run([]string{"report", "--previous-catalog", "previous.json"}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
+		t.Fatalf("expected previous catalog getwd error, got %v", err)
+	}
+}
+
+func TestManifestEntriesReleaseLockError(t *testing.T) {
+	oldReleaseLockProvider := releaseLockProviderFn
+	t.Cleanup(func() { releaseLockProviderFn = oldReleaseLockProvider })
+	releaseLockProviderFn = func(string) (*featureflags.ReleaseLock, error) {
+		return nil, errors.New("lock failed")
+	}
+	if _, err := manifestEntries(testRegistry(t), featureflags.ChannelRelease, "v1.4.2"); err == nil || !strings.Contains(err.Error(), "lock failed") {
+		t.Fatalf("expected release lock provider error, got %v", err)
+	}
+}
+
+func TestFormatReportReleaseLockSection(t *testing.T) {
+	registry := testRegistry(t)
+	manifest, err := registry.Manifest(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelRelease,
+		Lock:    &featureflags.ReleaseLock{Release: "v1.4.2", DefaultOn: []string{"preview-flag"}},
+	})
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	output := formatReport(featureflags.ChannelRelease, "v1.4.2", registry.Flags(), manifest, registry.Flags(), true)
+	if !strings.Contains(output, "Preview locked default-on for this release") || !strings.Contains(output, "Preview behavior") {
+		t.Fatalf("expected release lock report section, got %s", output)
+	}
+	if !strings.Contains(output, "None.") {
+		t.Fatalf("expected no newly added preview flags, got %s", output)
 	}
 }
 
@@ -262,4 +408,36 @@ func TestMainUsesExitFuncOnError(t *testing.T) {
 	if !strings.Contains(buf.String(), "usage") {
 		t.Fatalf("expected usage error on stderr, got %q", buf.String())
 	}
+}
+
+func testRegistry(t *testing.T) *featureflags.Registry {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{
+		{Code: "LOP-FEAT-0001", Name: "preview-flag", Description: "Preview behavior", Lifecycle: featureflags.LifecyclePreview},
+		{Code: "LOP-FEAT-0002", Name: "stable-flag", Description: "Stable behavior", Lifecycle: featureflags.LifecycleStable},
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	return registry
+}
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	os.Stdout = writer
+	runErr := fn()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(reader); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	return buf.String(), runErr
 }

@@ -8,11 +8,15 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/thresholds"
+	"github.com/ben-ranford/lopper/internal/version"
 )
 
 var (
-	featureRegistryProvider = featureflags.DefaultRegistry
-	validateFeatureRegistry = featureflags.ValidateDefaultRegistry
+	featureRegistryProvider    = featureflags.DefaultRegistry
+	validateFeatureRegistry    = featureflags.ValidateDefaultRegistry
+	featureBuildChannel        = func() string { return version.Current().BuildChannel }
+	featureReleaseVersion      = func() string { return version.Current().Version }
+	featureReleaseLockProvider = featureflags.DefaultReleaseLock
 )
 
 func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, thresholds.FeatureConfig, string, error) {
@@ -43,10 +47,21 @@ func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, c
 	if err := validateFeatureRegistry(); err != nil {
 		return featureflags.Set{}, err
 	}
-	return resolveFeatureSet(featureRegistryProvider(), visited, values, configFeatures)
+	channel, err := featureflags.NormalizeChannel(featureBuildChannel())
+	if err != nil {
+		return featureflags.Set{}, err
+	}
+	var lock *featureflags.ReleaseLock
+	if channel == featureflags.ChannelRelease {
+		lock, err = featureReleaseLockProvider(featureReleaseVersion())
+		if err != nil {
+			return featureflags.Set{}, err
+		}
+	}
+	return resolveFeatureSet(featureRegistryProvider(), channel, lock, visited, values, configFeatures)
 }
 
-func resolveFeatureSet(registry *featureflags.Registry, visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
+func resolveFeatureSet(registry *featureflags.Registry, channel featureflags.Channel, lock *featureflags.ReleaseLock, visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
 	enable := append([]string{}, configFeatures.Enable...)
 	disable := append([]string{}, configFeatures.Disable...)
 	if visited["enable-feature"] {
@@ -56,7 +71,8 @@ func resolveFeatureSet(registry *featureflags.Registry, visited map[string]bool,
 		disable = mergePatterns(disable, values.disableFeatures.Values())
 	}
 	return registry.Resolve(featureflags.ResolveOptions{
-		Channel: featureflags.ChannelRelease,
+		Channel: channel,
+		Lock:    lock,
 		Enable:  enable,
 		Disable: disable,
 	})

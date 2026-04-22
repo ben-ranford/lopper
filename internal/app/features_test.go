@@ -24,6 +24,49 @@ func TestExecuteFeaturesJSON(t *testing.T) {
 	}
 }
 
+func TestExecuteFeaturesRollingChannel(t *testing.T) {
+	application := &App{Features: mustFeatureRegistry(t)}
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.Channel = "rolling"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute rolling features: %v", err)
+	}
+	if !strings.Contains(output, `"code": "LOP-FEAT-0001"`) || !strings.Contains(output, `"enabledByDefault": true`) {
+		t.Fatalf("expected rolling manifest to enable preview flag: %s", output)
+	}
+}
+
+func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
+	application := &App{Features: mustFeatureRegistry(t)}
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.Channel = "release"
+	req.Features.Release = "v1.4.2"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute release features: %v", err)
+	}
+	if !strings.Contains(output, `"code": "LOP-FEAT-0002"`) || !strings.Contains(output, `"enabledByDefault": true`) {
+		t.Fatalf("expected release manifest to enable stable flag: %s", output)
+	}
+
+	emptyReq := DefaultRequest()
+	emptyReq.Mode = ModeFeatures
+	emptyOutput, err := (&App{}).Execute(context.Background(), emptyReq)
+	if err != nil {
+		t.Fatalf("execute empty features: %v", err)
+	}
+	if emptyOutput != "No feature flags registered.\n" {
+		t.Fatalf("expected empty feature table, got %q", emptyOutput)
+	}
+}
+
 func TestExecuteFeaturesTableAndInvalidFormat(t *testing.T) {
 	application := &App{Features: mustFeatureRegistry(t)}
 	req := DefaultRequest()
@@ -40,6 +83,12 @@ func TestExecuteFeaturesTableAndInvalidFormat(t *testing.T) {
 	req.Features.Format = "xml"
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected invalid features format error")
+	}
+
+	req.Features.Format = "table"
+	req.Features.Channel = "bad"
+	if _, err := application.Execute(context.Background(), req); err == nil {
+		t.Fatalf("expected invalid features channel error")
 	}
 }
 

@@ -12,6 +12,9 @@ import (
 //go:embed features.json
 var embeddedCatalog []byte
 
+//go:embed release_locks.json
+var embeddedReleaseLocks []byte
+
 var defaultRegistry, defaultRegistryErr = newDefaultRegistry()
 
 func ParseCatalog(data []byte) ([]Flag, error) {

@@ -16,6 +16,9 @@ on:
       image_tags:
         required: true
         type: string
+      build_channel:
+        required: true
+        type: string
 
 jobs:
   # Release promotion assumes the selected source commit has already passed
@@ -61,11 +64,13 @@ jobs:
           TAG: ${{ inputs.tag }}
           COMMIT_SHA: ${{ steps.build_meta.outputs.commit }}
           BUILD_DATE: ${{ steps.build_meta.outputs.build_date }}
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
         run: |
           make release \
             VERSION="$TAG" \
             GIT_COMMIT="$COMMIT_SHA" \
             BUILD_DATE="$BUILD_DATE" \
+            RELEASE_BUILD_CHANNEL="$BUILD_CHANNEL" \
             PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
       - name: Upload Linux/Windows artifacts
@@ -110,12 +115,14 @@ jobs:
           TAG: ${{ inputs.tag }}
           COMMIT_SHA: ${{ steps.build_meta.outputs.commit }}
           BUILD_DATE: ${{ steps.build_meta.outputs.build_date }}
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
         run: |
           host_goarch="$(go env GOARCH)"
           make release \
             VERSION="$TAG" \
             GIT_COMMIT="$COMMIT_SHA" \
             BUILD_DATE="$BUILD_DATE" \
+            RELEASE_BUILD_CHANNEL="$BUILD_CHANNEL" \
             PLATFORMS="darwin/${host_goarch}"
 
       - name: Upload Darwin artifacts
@@ -186,6 +193,7 @@ jobs:
             VERSION=${{ inputs.tag }}
             GIT_COMMIT=${{ steps.image_meta.outputs.commit }}
             BUILD_DATE=${{ steps.image_meta.outputs.build_date }}
+            BUILD_CHANNEL=${{ inputs.build_channel }}
           labels: |
             org.opencontainers.image.created=${{ steps.image_meta.outputs.build_date }}
             org.opencontainers.image.revision=${{ inputs.source_sha || github.sha }}
@@ -256,6 +264,7 @@ jobs:
             VERSION=${{ inputs.tag }}
             GIT_COMMIT=${{ steps.image_meta.outputs.commit }}
             BUILD_DATE=${{ steps.image_meta.outputs.build_date }}
+            BUILD_CHANNEL=${{ inputs.build_channel }}
           labels: |
             org.opencontainers.image.created=${{ steps.image_meta.outputs.build_date }}
             org.opencontainers.image.revision=${{ inputs.source_sha || github.sha }}
