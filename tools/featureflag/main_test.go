@@ -12,6 +12,21 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const graduateFeatureCatalog = `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "preview-flag",
+    "description": "Preview behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "stable-flag",
+    "description": "Stable behavior",
+    "lifecycle": "stable"
+  }
+]`
+
 func TestRunAddFeatureFlag(t *testing.T) {
 	root := t.TempDir()
 	catalogDir := filepath.Join(root, "internal", "featureflags")
@@ -44,30 +59,87 @@ func TestRunAddFeatureFlag(t *testing.T) {
 	}
 }
 
+func TestRunGraduateFeatureFlag(t *testing.T) {
+	for _, ref := range []string{"preview-flag", "LOP-FEAT-0001"} {
+		assertGraduateFeature(t, ref)
+	}
+}
+
 func TestRunFeatureFlagErrors(t *testing.T) {
-	if err := run(nil); err == nil || !strings.Contains(err.Error(), "usage") {
-		t.Fatalf("expected usage error, got %v", err)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing command", args: nil, want: "usage"},
+		{name: "unknown command", args: []string{"nope"}, want: "unknown"},
+		{name: "missing add name", args: []string{"add"}, want: "name is required"},
+		{name: "extra add argument", args: []string{"add", "--name", "new-flag", "extra"}, want: "too many arguments"},
+		{name: "missing graduate feature", args: []string{"graduate"}, want: "feature code or name is required"},
+		{name: "extra graduate argument", args: []string{"graduate", "--feature", "preview-flag", "extra"}, want: "too many arguments"},
+	} {
+		assertRunErrorContains(t, tc.name, tc.args, tc.want)
 	}
-	if err := run([]string{"nope"}); err == nil || !strings.Contains(err.Error(), "unknown") {
-		t.Fatalf("expected unknown command error, got %v", err)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "bad add flag", args: []string{"add", "--definitely-not-a-flag"}},
+		{name: "bad graduate flag", args: []string{"graduate", "--definitely-not-a-flag"}},
+	} {
+		assertRunError(t, tc.name, tc.args)
 	}
-	if err := run([]string{"add"}); err == nil || !strings.Contains(err.Error(), "name is required") {
-		t.Fatalf("expected missing name error, got %v", err)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "validate", args: []string{"validate"}},
+		{name: "manifest", args: []string{"manifest"}},
+		{name: "report", args: []string{"report"}},
+	} {
+		assertRunOK(t, tc.name, tc.args)
 	}
-	if err := run([]string{"add", "--name", "new-flag", "extra"}); err == nil || !strings.Contains(err.Error(), "too many arguments") {
-		t.Fatalf("expected extra argument error, got %v", err)
+}
+
+func TestRunGraduateFeatureFlagRejectsBadState(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, graduateFeatureCatalog)
+	t.Chdir(root)
+
+	if err := run([]string{"graduate", "--feature", "missing-flag"}); err == nil || !strings.Contains(err.Error(), "unknown feature") {
+		t.Fatalf("expected unknown feature error, got %v", err)
 	}
-	if err := run([]string{"add", "--definitely-not-a-flag"}); err == nil {
-		t.Fatalf("expected flag parse error")
+	if err := run([]string{"graduate", "--feature", "stable-flag"}); err == nil || !strings.Contains(err.Error(), "already stable") {
+		t.Fatalf("expected already stable error, got %v", err)
 	}
-	if err := run([]string{"validate"}); err != nil {
-		t.Fatalf("expected embedded registry validation to pass, got %v", err)
+}
+
+func TestRunGraduateFeatureFlagRejectsBadCatalogState(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := run([]string{"graduate", "--feature", "preview-flag"}); err == nil || !strings.Contains(err.Error(), "read feature catalog") {
+		t.Fatalf("expected missing catalog error, got %v", err)
 	}
-	if err := run([]string{"manifest"}); err != nil {
-		t.Fatalf("expected embedded manifest to render, got %v", err)
+
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[]`)
+	t.Chdir(root)
+
+	oldNewRegistry := newRegistryFn
+	t.Cleanup(func() { newRegistryFn = oldNewRegistry })
+	newRegistryFn = func([]featureflags.Flag) (*featureflags.Registry, error) {
+		return nil, errors.New("registry failed")
 	}
-	if err := run([]string{"report"}); err != nil {
-		t.Fatalf("expected embedded report to render, got %v", err)
+	if err := run([]string{"graduate", "--feature", "preview-flag"}); err == nil || !strings.Contains(err.Error(), "registry failed") {
+		t.Fatalf("expected injected registry error, got %v", err)
+	}
+
+	newRegistryFn = func([]featureflags.Flag) (*featureflags.Registry, error) {
+		return featureflags.NewRegistry([]featureflags.Flag{
+			{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: featureflags.LifecyclePreview},
+		})
+	}
+	if err := run([]string{"graduate", "--feature", "preview-flag"}); err == nil || !strings.Contains(err.Error(), "missing from the catalog") {
+		t.Fatalf("expected missing catalog target error, got %v", err)
 	}
 }
 
@@ -142,6 +214,38 @@ func TestRunAddFeatureFlagGetwdAndWriteErrors(t *testing.T) {
 		writeFileUnderFn = oldWrite
 	})
 	if err := run([]string{"add", "--name", "new-flag"}); err == nil || !strings.Contains(err.Error(), "write feature catalog") {
+		t.Fatalf("expected write error, got %v", err)
+	}
+}
+
+func TestRunGraduateFeatureFlagGetwdAndWriteErrors(t *testing.T) {
+	oldGetwd := getwdFn
+	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }
+	if err := run([]string{"graduate", "--feature", "preview-flag"}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
+		t.Fatalf("expected getwd error, got %v", err)
+	}
+	getwdFn = oldGetwd
+
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "preview-flag",
+    "description": "Preview behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	t.Chdir(root)
+
+	oldWrite := writeFileUnderFn
+	writeFileUnderFn = func(string, string, []byte, os.FileMode) error {
+		return errors.New("write failed")
+	}
+	t.Cleanup(func() {
+		getwdFn = oldGetwd
+		writeFileUnderFn = oldWrite
+	})
+	if err := run([]string{"graduate", "--feature", "preview-flag"}); err == nil || !strings.Contains(err.Error(), "write feature catalog") {
 		t.Fatalf("expected write error, got %v", err)
 	}
 }
@@ -268,6 +372,16 @@ func TestRunManifestAndReportUseChannels(t *testing.T) {
 			t.Fatalf("expected report to contain %q, got %s", want, reportOutput)
 		}
 	}
+
+	rollingReport, err := captureStdout(t, func() error {
+		return run([]string{"report", "--channel", "rolling"})
+	})
+	if err != nil {
+		t.Fatalf("run rolling report: %v", err)
+	}
+	if !strings.Contains(rollingReport, "Preview enabled by rolling channel") {
+		t.Fatalf("expected rolling report preview section, got %s", rollingReport)
+	}
 }
 
 func TestRunManifestAndReportRejectBadInputs(t *testing.T) {
@@ -280,6 +394,9 @@ func TestRunManifestAndReportRejectBadInputs(t *testing.T) {
 	}
 	if err := run([]string{"manifest", "extra"}); err == nil || !strings.Contains(err.Error(), "too many arguments") {
 		t.Fatalf("expected manifest extra argument error, got %v", err)
+	}
+	if err := run([]string{"report", "--channel"}); err == nil {
+		t.Fatalf("expected report flag parse error")
 	}
 	if err := run([]string{"report", "--previous-catalog", filepath.Join(t.TempDir(), "missing.json")}); err == nil || !strings.Contains(err.Error(), "read previous feature catalog") {
 		t.Fatalf("expected missing previous catalog error, got %v", err)
@@ -420,6 +537,80 @@ func testRegistry(t *testing.T) *featureflags.Registry {
 		t.Fatalf("new registry: %v", err)
 	}
 	return registry
+}
+
+func assertGraduateFeature(t *testing.T, ref string) {
+	t.Helper()
+	t.Run(ref, func(t *testing.T) {
+		root := t.TempDir()
+		catalogDir := writeFeatureCatalog(t, root, graduateFeatureCatalog)
+		t.Chdir(root)
+
+		output, err := captureStdout(t, func() error {
+			return run([]string{"graduate", "--feature", ref})
+		})
+		if err != nil {
+			t.Fatalf("run graduate: %v", err)
+		}
+		flags := readFeatureCatalog(t, catalogDir)
+		if flags[0].Code != "LOP-FEAT-0001" || flags[0].Lifecycle != featureflags.LifecycleStable {
+			t.Fatalf("expected preview flag to graduate, got %#v", flags[0])
+		}
+		if !strings.Contains(output, "graduated LOP-FEAT-0001 preview-flag to stable") {
+			t.Fatalf("expected graduation output, got %q", output)
+		}
+	})
+}
+
+func assertRunErrorContains(t *testing.T, name string, args []string, want string) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		err := run(args)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error containing %q, got %v", want, err)
+		}
+	})
+}
+
+func assertRunError(t *testing.T, name string, args []string) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		if err := run(args); err == nil {
+			t.Fatalf("expected run error")
+		}
+	})
+}
+
+func assertRunOK(t *testing.T, name string, args []string) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		if err := run(args); err != nil {
+			t.Fatalf("run %s: %v", name, err)
+		}
+	})
+}
+
+func readFeatureCatalog(t *testing.T, catalogDir string) []featureflags.Flag {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(catalogDir, "features.json"))
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	flags, err := featureflags.ParseCatalog(data)
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	return flags
+}
+
+func writeFeatureCatalog(t *testing.T, root, content string) string {
+	t.Helper()
+	catalogDir := filepath.Join(root, "internal", "featureflags")
+	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
+		t.Fatalf("mkdir catalog dir: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(catalogDir, "features.json"), content)
+	return catalogDir
 }
 
 func captureStdout(t *testing.T, fn func() error) (string, error) {

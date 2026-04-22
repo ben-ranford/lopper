@@ -11,7 +11,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-const catalogPath = "internal/featureflags/features.json"
+const (
+	catalogPath                  = "internal/featureflags/features.json"
+	resolveWorkingDirectoryError = "resolve working directory: %w"
+)
 
 var (
 	exitFunc                      = os.Exit
@@ -35,11 +38,13 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: featureflag add|validate|manifest|report")
+		return fmt.Errorf("usage: featureflag add|graduate|validate|manifest|report")
 	}
 	switch args[0] {
 	case "add":
 		return runAdd(args[1:])
+	case "graduate":
+		return runGraduate(args[1:])
 	case "validate":
 		return runValidate()
 	case "manifest":
@@ -68,7 +73,7 @@ func runAdd(args []string) error {
 
 	root, err := getwdFn()
 	if err != nil {
-		return fmt.Errorf("resolve working directory: %w", err)
+		return fmt.Errorf(resolveWorkingDirectoryError, err)
 	}
 	flags, err := readCatalog(root)
 	if err != nil {
@@ -96,6 +101,62 @@ func runAdd(args []string) error {
 		return fmt.Errorf("write feature catalog: %w", err)
 	}
 	_, err = fmt.Fprintf(os.Stdout, "added %s %s\n", code, strings.TrimSpace(*name))
+	return err
+}
+
+func runGraduate(args []string) error {
+	fs := flag.NewFlagSet("graduate", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	feature := fs.String("feature", strings.TrimSpace(os.Getenv("FEATURE")), "feature code or name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) > 0 {
+		return fmt.Errorf("too many arguments for featureflag graduate")
+	}
+	ref := strings.TrimSpace(*feature)
+	if ref == "" {
+		return fmt.Errorf("feature code or name is required")
+	}
+
+	root, err := getwdFn()
+	if err != nil {
+		return fmt.Errorf(resolveWorkingDirectoryError, err)
+	}
+	flags, err := readCatalog(root)
+	if err != nil {
+		return err
+	}
+	registry, err := newRegistryFn(flags)
+	if err != nil {
+		return err
+	}
+	target, ok := registry.Lookup(ref)
+	if !ok {
+		return fmt.Errorf("unknown feature: %s", ref)
+	}
+	if target.Lifecycle == featureflags.LifecycleStable {
+		return fmt.Errorf("feature %s is already stable", target.Code)
+	}
+	updated := false
+	for i := range flags {
+		if flags[i].Code == target.Code {
+			flags[i].Lifecycle = featureflags.LifecycleStable
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return fmt.Errorf("feature %s is missing from the catalog", target.Code)
+	}
+	data, err := featureflags.FormatCatalog(flags)
+	if err != nil {
+		return err
+	}
+	if err := writeFileUnderFn(root, filepath.Join(root, catalogPath), data, 0o644); err != nil {
+		return fmt.Errorf("write feature catalog: %w", err)
+	}
+	_, err = fmt.Fprintf(os.Stdout, "graduated %s %s to stable\n", target.Code, target.Name)
 	return err
 }
 
@@ -202,7 +263,7 @@ func readPreviousCatalog(path string) ([]featureflags.Flag, bool, error) {
 	}
 	root, err := getwdFn()
 	if err != nil {
-		return nil, false, fmt.Errorf("resolve working directory: %w", err)
+		return nil, false, fmt.Errorf(resolveWorkingDirectoryError, err)
 	}
 	data, err := safeio.ReadFileUnder(root, filepath.Join(root, path))
 	if err != nil {
