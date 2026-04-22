@@ -297,10 +297,11 @@ func assertKeys(t *testing.T, object map[string]any, expected ...string) {
 	for key := range object {
 		actual = append(actual, key)
 	}
+	expectedSorted := append([]string(nil), expected...)
 	sort.Strings(actual)
-	sort.Strings(expected)
-	if !reflect.DeepEqual(actual, expected) {
-		t.Fatalf("JSON keys = %v, want %v", actual, expected)
+	sort.Strings(expectedSorted)
+	if !reflect.DeepEqual(actual, expectedSorted) {
+		t.Fatalf("JSON keys = %v, want %v", actual, expectedSorted)
 	}
 }
 
