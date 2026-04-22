@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.2](https://github.com/ben-ranford/lopper/compare/v1.4.1...v1.4.2) (2026-04-22)
+
+
+### Features
+
+* **featureflags:** add helper and activation paths ([#731](https://github.com/ben-ranford/lopper/issues/731)) ([ab030cf](https://github.com/ben-ranford/lopper/commit/ab030cf9893020d8aee322ecf50332ac7959cff4))
+* **featureflags:** wire release channels and locks ([#733](https://github.com/ben-ranford/lopper/issues/733)) ([79f482e](https://github.com/ben-ranford/lopper/commit/79f482e44bc6e557826f407eac40726e1b30cbac))
+* **flags:** add assisted graduation workflow ([#735](https://github.com/ben-ranford/lopper/issues/735)) ([9190e9f](https://github.com/ben-ranford/lopper/commit/9190e9fc1b8b4b034be672cc8ed80491fb6e28b3))
+
+
+### Bug Fixes
+
+* allow manual release publish retries ([#722](https://github.com/ben-ranford/lopper/issues/722)) ([c14d0d9](https://github.com/ben-ranford/lopper/commit/c14d0d9f8069efca82a087a47f7fd6f6b4b3d581))
+* make release publish gh commands repo-explicit ([#719](https://github.com/ben-ranford/lopper/issues/719)) ([e9320fd](https://github.com/ben-ranford/lopper/commit/e9320fd67687f88971ac381de2a37d6afdf4bfda))
+* publish draft releases by listed id ([#724](https://github.com/ben-ranford/lopper/issues/724)) ([8ada4ce](https://github.com/ben-ranford/lopper/commit/8ada4ce2b2790a0da73cab4d517813eb315f7716))
+
+
+### Documentation
+
+* **featureflags:** document stability process ([#734](https://github.com/ben-ranford/lopper/issues/734)) ([3f56e73](https://github.com/ben-ranford/lopper/commit/3f56e735d2553b06a77bed3442ecbb125bbf33ad))
+
 ## [1.4.1](https://github.com/ben-ranford/lopper/compare/v1.4.0...v1.4.1) (2026-04-22)
 
 
