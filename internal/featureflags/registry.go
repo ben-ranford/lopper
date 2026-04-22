@@ -25,10 +25,10 @@ const (
 )
 
 type Flag struct {
-	Code        string
-	Name        string
-	Description string
-	Lifecycle   Lifecycle
+	Code        string    `json:"code" yaml:"code"`
+	Name        string    `json:"name" yaml:"name"`
+	Description string    `json:"description" yaml:"description"`
+	Lifecycle   Lifecycle `json:"lifecycle" yaml:"lifecycle"`
 }
 
 type Registry struct {
@@ -37,14 +37,15 @@ type Registry struct {
 	byName map[string]Flag
 }
 
-var defaultRegistry = &Registry{
-	flags:  []Flag{},
-	byCode: map[string]Flag{},
-	byName: map[string]Flag{},
+func DefaultRegistry() *Registry {
+	if defaultRegistryErr != nil {
+		return emptyRegistry()
+	}
+	return defaultRegistry
 }
 
-func DefaultRegistry() *Registry {
-	return defaultRegistry
+func ValidateDefaultRegistry() error {
+	return defaultRegistryErr
 }
 
 func NewRegistry(flags []Flag) (*Registry, error) {
@@ -72,6 +73,14 @@ func NewRegistry(flags []Flag) (*Registry, error) {
 		return registry.flags[i].Code < registry.flags[j].Code
 	})
 	return registry, nil
+}
+
+func emptyRegistry() *Registry {
+	return &Registry{
+		flags:  []Flag{},
+		byCode: map[string]Flag{},
+		byName: map[string]Flag{},
+	}
 }
 
 func (r *Registry) Flags() []Flag {

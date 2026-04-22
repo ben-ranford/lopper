@@ -195,6 +195,50 @@ func mergeScope(base, higher PathScope) PathScope {
 	return merged
 }
 
+func (f *rawFeatures) toFeatureConfig() FeatureConfig {
+	if f == nil {
+		return FeatureConfig{}
+	}
+	return FeatureConfig{
+		Enable:  normalizeFeatureRefs(f.Enable),
+		Disable: normalizeFeatureRefs(f.Disable),
+	}
+}
+
+func normalizeFeatureRefs(refs []string) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(refs))
+	normalized := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		trimmed := strings.TrimSpace(ref)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
+	merged := base
+	if len(higher.Enable) > 0 {
+		merged.Enable = append([]string{}, higher.Enable...)
+	}
+	if len(higher.Disable) > 0 {
+		merged.Disable = append([]string{}, higher.Disable...)
+	}
+	return merged
+}
+
 func dedupeStable(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))

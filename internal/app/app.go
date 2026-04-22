@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -27,6 +28,7 @@ type App struct {
 	Formatter *report.Formatter
 	TUI       ui.TUI
 	Notify    *notify.Dispatcher
+	Features  *featureflags.Registry
 }
 
 func New(out io.Writer, in io.Reader) *App {
@@ -38,6 +40,7 @@ func New(out io.Writer, in io.Reader) *App {
 		Formatter: formatter,
 		TUI:       ui.NewSummary(out, in, analyzer, formatter),
 		Notify:    notify.NewDefaultDispatcher(),
+		Features:  featureflags.DefaultRegistry(),
 	}
 }
 
@@ -49,6 +52,8 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return a.executeAnalyse(ctx, req)
 	case ModeDashboard:
 		return a.executeDashboard(ctx, req)
+	case ModeFeatures:
+		return a.executeFeatures(req)
 	default:
 		return "", ErrUnknownMode
 	}

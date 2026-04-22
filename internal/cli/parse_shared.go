@@ -174,7 +174,7 @@ func flagNeedsValue(arg string) bool {
 		return false
 	}
 	switch arg {
-	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--include", "--exclude", "--lockfile-drift-policy", "--notify-on", "--notify-slack", "--notify-teams", "--snapshot", "--filter", "--sort", "--page-size", "--repos", "--output", "-o":
+	case "--repo", "--top", "--scope-mode", "--format", "--cache-path", "--fail-on-increase", "--threshold-fail-on-increase", "--threshold-low-confidence-warning", "--threshold-min-usage-percent", "--threshold-max-uncertain-imports", "--score-weight-usage", "--score-weight-impact", "--score-weight-confidence", "--license-deny", "--language", "--runtime-profile", "--baseline", "--baseline-store", "--baseline-key", "--baseline-label", "--runtime-trace", "--runtime-test-command", "--config", "--enable-feature", "--disable-feature", "--include", "--exclude", "--lockfile-drift-policy", "--notify-on", "--notify-slack", "--notify-teams", "--snapshot", "--filter", "--sort", "--page-size", "--repos", "--output", "-o":
 		return true
 	default:
 		return false

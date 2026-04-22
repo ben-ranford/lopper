@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
@@ -20,6 +21,7 @@ type analyseParseState struct {
 	scope         thresholds.PathScope
 	policySources []string
 	configPath    string
+	features      featureflags.Set
 	notifications notify.Config
 }
 
@@ -61,7 +63,11 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	}
 
 	visited := visitedFlags(fs)
-	resolvedThresholds, resolvedScope, policySources, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
+	resolvedThresholds, resolvedScope, policySources, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
+	if err != nil {
+		return analyseParseState{}, err
+	}
+	resolvedFeatures, err := resolveAnalyseFeatures(visited, flags, configFeatures)
 	if err != nil {
 		return analyseParseState{}, err
 	}
@@ -79,6 +85,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 		scope:         resolvedScope,
 		policySources: policySources,
 		configPath:    resolvedConfigPath,
+		features:      resolvedFeatures,
 		notifications: resolvedNotifications,
 	}, nil
 }
@@ -110,6 +117,7 @@ func buildAnalyseRequest(req app.Request, flags analyseFlagValues, state analyse
 		ExcludePatterns:    resolveScopePatterns(state.visited, "exclude", flags.excludePatterns.Values(), state.scope.Exclude),
 		ConfigPath:         state.configPath,
 		PolicySources:      state.policySources,
+		Features:           state.features,
 		Thresholds:         state.thresholds,
 		Notifications:      state.notifications,
 	}

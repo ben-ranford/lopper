@@ -5,24 +5,30 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
-func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, string, error) {
+var (
+	featureRegistryProvider = featureflags.DefaultRegistry
+	validateFeatureRegistry = featureflags.ValidateDefaultRegistry
+)
+
+func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, thresholds.FeatureConfig, string, error) {
 	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, thresholds.FeatureConfig{}, "", err
 	}
 
 	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visited, values)
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, thresholds.FeatureConfig{}, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, thresholds.FeatureConfig{}, "", err
 	}
 
 	policySources := append([]string{}, loadResult.PolicySources...)
@@ -30,7 +36,30 @@ func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool)
 		policySources = append([]string{"cli"}, policySources...)
 	}
 
-	return resolvedThresholds, loadResult.Scope, policySources, loadResult.ConfigPath, nil
+	return resolvedThresholds, loadResult.Scope, policySources, loadResult.Features, loadResult.ConfigPath, nil
+}
+
+func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
+	if err := validateFeatureRegistry(); err != nil {
+		return featureflags.Set{}, err
+	}
+	return resolveFeatureSet(featureRegistryProvider(), visited, values, configFeatures)
+}
+
+func resolveFeatureSet(registry *featureflags.Registry, visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
+	enable := append([]string{}, configFeatures.Enable...)
+	disable := append([]string{}, configFeatures.Disable...)
+	if visited["enable-feature"] {
+		enable = mergePatterns(enable, values.enableFeatures.Values())
+	}
+	if visited["disable-feature"] {
+		disable = mergePatterns(disable, values.disableFeatures.Values())
+	}
+	return registry.Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelRelease,
+		Enable:  enable,
+		Disable: disable,
+	})
 }
 
 func resolveAnalyseNotifications(visited map[string]bool, values analyseFlagValues, resolvedConfigPath string) (notify.Config, error) {

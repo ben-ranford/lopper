@@ -37,6 +37,9 @@ func TestNewRegistryValidatesEntries(t *testing.T) {
 }
 
 func TestDefaultRegistryAndLookup(t *testing.T) {
+	if err := ValidateDefaultRegistry(); err != nil {
+		t.Fatalf("expected embedded default registry to be valid, got %v", err)
+	}
 	if got := DefaultRegistry().Flags(); len(got) != 0 {
 		t.Fatalf("expected empty default registry, got %#v", got)
 	}
@@ -58,6 +61,69 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	flags[0].Name = "mutated"
 	if got, _ := registry.Lookup("LOP-FEAT-0001"); got.Name != "preview-flag" {
 		t.Fatalf("expected Flags to return a defensive copy, got %#v", got)
+	}
+}
+
+func TestCatalogParseAndFormat(t *testing.T) {
+	flags, err := ParseCatalog([]byte(`[
+		{"code":"LOP-FEAT-0002","name":"stable-flag","description":"Stable behavior","lifecycle":"stable"},
+		{"code":"LOP-FEAT-0001","name":"preview-flag","description":"Preview behavior","lifecycle":"preview"}
+	]`))
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	if len(flags) != 2 || flags[0].Code != "LOP-FEAT-0001" || flags[1].Code != "LOP-FEAT-0002" {
+		t.Fatalf("expected catalog flags sorted by code, got %#v", flags)
+	}
+	data, err := FormatCatalog(flags)
+	if err != nil {
+		t.Fatalf("format catalog: %v", err)
+	}
+	formatted := string(data)
+	if !strings.Contains(formatted, `"code": "LOP-FEAT-0001"`) || !strings.HasSuffix(formatted, "\n") {
+		t.Fatalf("expected formatted JSON catalog with newline, got %q", formatted)
+	}
+
+	if _, err := ParseCatalog([]byte(`{"code":"LOP-FEAT-0001"}`)); err == nil {
+		t.Fatalf("expected non-array catalog to fail")
+	}
+	if _, err := ParseCatalog([]byte(`[{"code":"LOP-FEAT-0001","name":"alpha","lifecycle":"preview","unknown":true}]`)); err == nil {
+		t.Fatalf("expected unknown catalog field to fail")
+	}
+	if _, err := ParseCatalog([]byte(`[] []`)); err == nil {
+		t.Fatalf("expected multiple JSON values to fail")
+	}
+	if _, err := FormatCatalog([]Flag{{Code: "bad", Name: "alpha", Lifecycle: LifecyclePreview}}); err == nil {
+		t.Fatalf("expected invalid catalog flag to fail")
+	}
+}
+
+func TestDefaultRegistryFallback(t *testing.T) {
+	originalCatalog := embeddedCatalog
+	originalRegistry := defaultRegistry
+	originalErr := defaultRegistryErr
+	t.Cleanup(func() {
+		embeddedCatalog = originalCatalog
+		defaultRegistry = originalRegistry
+		defaultRegistryErr = originalErr
+	})
+
+	embeddedCatalog = []byte(`not json`)
+	registry, err := newDefaultRegistry()
+	if err == nil {
+		t.Fatalf("expected invalid embedded catalog to fail")
+	}
+	if got := registry.Flags(); len(got) != 0 {
+		t.Fatalf("expected invalid default registry fallback to be empty, got %#v", got)
+	}
+
+	defaultRegistry = registry
+	defaultRegistryErr = err
+	if got := DefaultRegistry().Flags(); len(got) != 0 {
+		t.Fatalf("expected default registry error fallback to be empty, got %#v", got)
+	}
+	if got := emptyRegistry().Flags(); len(got) != 0 {
+		t.Fatalf("expected explicit empty registry to be empty, got %#v", got)
 	}
 }
 
@@ -104,6 +170,10 @@ func TestNextCodeAllocatesGeneratedCodes(t *testing.T) {
 	}
 	if code, err := full.NextCode(); err == nil || code != "" {
 		t.Fatalf("expected exhausted code space, got %q err=%v", code, err)
+	}
+	corrupt := &Registry{flags: []Flag{{Code: "bad"}}}
+	if code, err := corrupt.NextCode(); err == nil || code != "" {
+		t.Fatalf("expected corrupt registry code to fail, got %q err=%v", code, err)
 	}
 }
 
@@ -184,6 +254,17 @@ func TestResolveReleaseLockAndExplicitOverrides(t *testing.T) {
 	resolved, err = registry.Resolve(ResolveOptions{
 		Channel: ChannelRelease,
 		Enable:  []string{"preview-flag"},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit preview enable: %v", err)
+	}
+	if !resolved.Enabled("preview-flag") {
+		t.Fatalf("expected explicit enable to turn preview flag on")
+	}
+
+	resolved, err = registry.Resolve(ResolveOptions{
+		Channel: ChannelRelease,
+		Enable:  []string{"preview-flag"},
 		Disable: []string{"preview-flag"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "both enabled and disabled") {
@@ -241,6 +322,13 @@ func TestParseReleaseLock(t *testing.T) {
 	if _, err := ParseReleaseLock([]byte(`{"release":"v1"} {"release":"v2"}`)); err == nil {
 		t.Fatalf("expected multiple JSON values to fail")
 	}
+	lock, err = ParseReleaseLock([]byte(`{"release":"v1","notes":{"":"ignored"}}`))
+	if err != nil {
+		t.Fatalf("parse lock with blank note: %v", err)
+	}
+	if len(lock.Notes) != 0 {
+		t.Fatalf("expected blank note refs to be dropped, got %#v", lock.Notes)
+	}
 }
 
 func TestValidateReleaseLockRejectsDuplicatesAndUnknownNotes(t *testing.T) {
@@ -288,6 +376,17 @@ func TestManifestReportsDefaults(t *testing.T) {
 	}
 	if manifest, err := (*Registry)(nil).Manifest(ResolveOptions{}); err != nil || len(manifest) != 0 {
 		t.Fatalf("expected nil registry manifest to be empty, manifest=%#v err=%v", manifest, err)
+	}
+}
+
+func TestFormatManifest(t *testing.T) {
+	manifest := []ManifestEntry{{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: LifecyclePreview}}
+	data, err := FormatManifest(manifest)
+	if err != nil {
+		t.Fatalf("format manifest: %v", err)
+	}
+	if !strings.Contains(string(data), `"name": "preview-flag"`) || !strings.HasSuffix(string(data), "\n") {
+		t.Fatalf("unexpected manifest JSON: %q", string(data))
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -37,6 +38,49 @@ func TestParseArgsAnalyseDependency(t *testing.T) {
 	if req.Analyse.SuggestOnly {
 		t.Fatalf("expected suggest-only to be false by default")
 	}
+}
+
+func TestParseArgsAnalyseFeatureFlags(t *testing.T) {
+	withFeatureRegistry(t)
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, parseConfigFileName), "features:\n  enable:\n    - preview-flag\n")
+
+	req := mustParseArgs(t, []string{"analyse", "lodash", repoFlagName, repo, "--disable-feature", "stable-flag"})
+	if !req.Analyse.Features.Enabled("preview-flag") {
+		t.Fatalf("expected preview flag enabled from config")
+	}
+	if req.Analyse.Features.Enabled("stable-flag") {
+		t.Fatalf("expected stable flag disabled by CLI override")
+	}
+}
+
+func TestParseArgsAnalyseFeatureFlagsRejectUnknownAndConflict(t *testing.T) {
+	withFeatureRegistry(t)
+	if err := expectParseArgsError(t, []string{"analyse", "lodash", "--enable-feature", "missing"}, "expected unknown feature error"); !strings.Contains(err.Error(), "unknown feature") {
+		t.Fatalf("expected unknown feature error, got %v", err)
+	}
+	if err := expectParseArgsError(t, []string{"analyse", "lodash", "--enable-feature", "preview-flag", "--disable-feature", "preview-flag"}, "expected feature conflict error"); !strings.Contains(err.Error(), "both enabled and disabled") {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+}
+
+func withFeatureRegistry(t *testing.T) {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{
+		{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: featureflags.LifecyclePreview},
+		{Code: "LOP-FEAT-0002", Name: "stable-flag", Lifecycle: featureflags.LifecycleStable},
+	})
+	if err != nil {
+		t.Fatalf("new feature registry: %v", err)
+	}
+	oldProvider := featureRegistryProvider
+	oldValidate := validateFeatureRegistry
+	featureRegistryProvider = func() *featureflags.Registry { return registry }
+	validateFeatureRegistry = func() error { return nil }
+	t.Cleanup(func() {
+		featureRegistryProvider = oldProvider
+		validateFeatureRegistry = oldValidate
+	})
 }
 
 func TestParseArgsAnalyseScopeMode(t *testing.T) {

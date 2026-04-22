@@ -41,6 +41,8 @@ type analyseFlagValues struct {
 	runtimeTracePath              *string
 	runtimeTestCommand            *string
 	configPath                    *string
+	enableFeatures                *patternListFlag
+	disableFeatures               *patternListFlag
 	includePatterns               *patternListFlag
 	excludePatterns               *patternListFlag
 	lockfileDriftPolicy           *string
@@ -54,6 +56,8 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 	fs.SetOutput(io.Discard)
 	includePatterns := newPatternListFlag(req.Analyse.IncludePatterns)
 	excludePatterns := newPatternListFlag(req.Analyse.ExcludePatterns)
+	enableFeatures := newPatternListFlag(nil)
+	disableFeatures := newPatternListFlag(nil)
 
 	values := analyseFlagValues{
 		repoPath:                      fs.String("repo", req.RepoPath, "repository path"),
@@ -88,6 +92,8 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
 		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
+		enableFeatures:                enableFeatures,
+		disableFeatures:               disableFeatures,
 		includePatterns:               includePatterns,
 		excludePatterns:               excludePatterns,
 		lockfileDriftPolicy:           fs.String("lockfile-drift-policy", req.Analyse.Thresholds.LockfileDriftPolicy, "lockfile drift policy (off, warn, fail)"),
@@ -95,6 +101,8 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		notifySlack:                   fs.String("notify-slack", req.Analyse.Notifications.Slack.WebhookURL, "Slack webhook URL"),
 		notifyTeams:                   fs.String("notify-teams", req.Analyse.Notifications.Teams.WebhookURL, "Teams webhook URL"),
 	}
+	fs.Var(enableFeatures, "enable-feature", "comma-separated feature flag names to enable (repeatable)")
+	fs.Var(disableFeatures, "disable-feature", "comma-separated feature flag names to disable (repeatable)")
 	fs.Var(includePatterns, "include", "comma-separated include path globs (repeatable)")
 	fs.Var(excludePatterns, "exclude", "comma-separated exclude path globs (repeatable)")
 
