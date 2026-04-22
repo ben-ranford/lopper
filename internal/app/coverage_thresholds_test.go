@@ -64,12 +64,12 @@ func TestCodemodHelpersNoOpWhenNoCodemodReportIsPresent(t *testing.T) {
 		t.Fatalf("expected disabled codemod preconditions to pass, got %v", err)
 	}
 
-	phaseContext, shouldApply, err := beginCodemodApplyPhase(&report.Report{}, t.TempDir(), "lodash")
+	target, shouldApply, err := resolveCodemodApplyTarget(&report.Report{}, t.TempDir(), "lodash")
 	if err != nil {
-		t.Fatalf("beginCodemodApplyPhase without codemod: %v", err)
+		t.Fatalf("resolveCodemodApplyTarget without codemod: %v", err)
 	}
-	if shouldApply || phaseContext.codemod != nil {
-		t.Fatalf("expected no codemod apply phase context, got shouldApply=%v context=%#v", shouldApply, phaseContext)
+	if shouldApply || target.codemod != nil {
+		t.Fatalf("expected no codemod apply target, got shouldApply=%v target=%#v", shouldApply, target)
 	}
 
 	updated, err := applyCodemodIfNeeded(context.Background(), report.Report{}, t.TempDir(), AnalyseRequest{ApplyCodemod: true}, time.Now())
@@ -88,8 +88,8 @@ func TestCodemodHelpersRejectBlankRepoPaths(t *testing.T) {
 		t.Fatalf("expected repo path validation to fail for blank path")
 	}
 
-	if _, _, err := beginCodemodApplyPhase(&report.Report{}, "", "lodash"); err == nil {
-		t.Fatalf("expected codemod phase setup to fail for blank path")
+	if _, _, err := resolveCodemodApplyTarget(&report.Report{}, "", "lodash"); err == nil {
+		t.Fatalf("expected codemod target resolution to fail for blank path")
 	}
 }
 
