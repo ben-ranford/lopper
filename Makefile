@@ -10,6 +10,8 @@ VERSION ?= dev
 VERSION_PKG ?= github.com/ben-ranford/lopper/internal/version
 GIT_COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_CHANNEL ?= dev
+RELEASE_BUILD_CHANNEL ?= release
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_MIN ?= 98
 COVERAGE_PACKAGE_MIN ?= $(COVERAGE_MIN)
@@ -47,9 +49,10 @@ HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
 ZIG ?= zig
-GO_VERSION_LDFLAGS = -X $(VERSION_PKG).version=$(VERSION) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).buildDate=$(BUILD_DATE)
+GO_VERSION_LDFLAGS = -X $(VERSION_PKG).version=$(VERSION) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).buildDate=$(BUILD_DATE) -X $(VERSION_PKG).buildChannel=$(BUILD_CHANNEL)
+RELEASE_VERSION_LDFLAGS = -X $(VERSION_PKG).version=$(VERSION) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).buildDate=$(BUILD_DATE) -X $(VERSION_PKG).buildChannel=$(RELEASE_BUILD_CHANNEL)
 BUILD_GO_LDFLAGS ?= $(GO_VERSION_LDFLAGS)
-RELEASE_GO_LDFLAGS ?= -s -w $(GO_VERSION_LDFLAGS)
+RELEASE_GO_LDFLAGS ?= -s -w $(RELEASE_VERSION_LDFLAGS)
 
 format:
 	gofmt -w .

@@ -41,7 +41,7 @@ func TestParseArgsAnalyseDependency(t *testing.T) {
 }
 
 func TestParseArgsAnalyseFeatureFlags(t *testing.T) {
-	withFeatureRegistry(t)
+	withFeatureRegistry(t, featureflags.ChannelRelease, nil)
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, parseConfigFileName), "features:\n  enable:\n    - preview-flag\n")
 
@@ -55,7 +55,7 @@ func TestParseArgsAnalyseFeatureFlags(t *testing.T) {
 }
 
 func TestParseArgsAnalyseFeatureFlagsRejectUnknownAndConflict(t *testing.T) {
-	withFeatureRegistry(t)
+	withFeatureRegistry(t, featureflags.ChannelRelease, nil)
 	if err := expectParseArgsError(t, []string{"analyse", "lodash", "--enable-feature", "missing"}, "expected unknown feature error"); !strings.Contains(err.Error(), "unknown feature") {
 		t.Fatalf("expected unknown feature error, got %v", err)
 	}
@@ -64,7 +64,22 @@ func TestParseArgsAnalyseFeatureFlagsRejectUnknownAndConflict(t *testing.T) {
 	}
 }
 
-func withFeatureRegistry(t *testing.T) {
+func TestParseArgsAnalyseFeatureFlagsUseBuildChannelAndReleaseLock(t *testing.T) {
+	withFeatureRegistry(t, featureflags.ChannelRolling, nil)
+	rolling := mustParseArgs(t, []string{"analyse", "lodash"})
+	if !rolling.Analyse.Features.Enabled("preview-flag") || !rolling.Analyse.Features.Enabled("stable-flag") {
+		t.Fatalf("expected rolling build channel to enable all flags")
+	}
+
+	lock := &featureflags.ReleaseLock{Release: "v1.4.2", DefaultOn: []string{"preview-flag"}}
+	withFeatureRegistry(t, featureflags.ChannelRelease, lock)
+	release := mustParseArgs(t, []string{"analyse", "lodash"})
+	if !release.Analyse.Features.Enabled("preview-flag") || !release.Analyse.Features.Enabled("stable-flag") {
+		t.Fatalf("expected release lock to enable preview and stable defaults")
+	}
+}
+
+func withFeatureRegistry(t *testing.T, channel featureflags.Channel, lock *featureflags.ReleaseLock) {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{
 		{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: featureflags.LifecyclePreview},
@@ -75,11 +90,20 @@ func withFeatureRegistry(t *testing.T) {
 	}
 	oldProvider := featureRegistryProvider
 	oldValidate := validateFeatureRegistry
+	oldBuildChannel := featureBuildChannel
+	oldReleaseVersion := featureReleaseVersion
+	oldReleaseLockProvider := featureReleaseLockProvider
 	featureRegistryProvider = func() *featureflags.Registry { return registry }
 	validateFeatureRegistry = func() error { return nil }
+	featureBuildChannel = func() string { return string(channel) }
+	featureReleaseVersion = func() string { return "v1.4.2" }
+	featureReleaseLockProvider = func(string) (*featureflags.ReleaseLock, error) { return lock, nil }
 	t.Cleanup(func() {
 		featureRegistryProvider = oldProvider
 		validateFeatureRegistry = oldValidate
+		featureBuildChannel = oldBuildChannel
+		featureReleaseVersion = oldReleaseVersion
+		featureReleaseLockProvider = oldReleaseLockProvider
 	})
 }
 

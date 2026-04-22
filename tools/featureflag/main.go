@@ -14,14 +14,16 @@ import (
 const catalogPath = "internal/featureflags/features.json"
 
 var (
-	exitFunc                  = os.Exit
-	getwdFn                   = os.Getwd
-	writeFileUnderFn          = safeio.WriteFileUnder
-	validateDefaultRegistryFn = featureflags.ValidateDefaultRegistry
-	defaultRegistryFn         = featureflags.DefaultRegistry
-	newRegistryFn             = featureflags.NewRegistry
-	manifestEntriesFn         = releaseManifest
-	formatManifestFn          = featureflags.FormatManifest
+	exitFunc                      = os.Exit
+	getwdFn                       = os.Getwd
+	writeFileUnderFn              = safeio.WriteFileUnder
+	validateDefaultRegistryFn     = featureflags.ValidateDefaultRegistry
+	validateDefaultReleaseLocksFn = featureflags.ValidateDefaultReleaseLocks
+	defaultRegistryFn             = featureflags.DefaultRegistry
+	newRegistryFn                 = featureflags.NewRegistry
+	manifestEntriesFn             = manifestEntries
+	formatManifestFn              = featureflags.FormatManifest
+	releaseLockProviderFn         = featureflags.DefaultReleaseLock
 )
 
 func main() {
@@ -33,7 +35,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: featureflag add|validate|manifest")
+		return fmt.Errorf("usage: featureflag add|validate|manifest|report")
 	}
 	switch args[0] {
 	case "add":
@@ -41,7 +43,9 @@ func run(args []string) error {
 	case "validate":
 		return runValidate()
 	case "manifest":
-		return runManifest()
+		return runManifest(args[1:])
+	case "report":
+		return runReport(args[1:])
 	default:
 		return fmt.Errorf("unknown featureflag command: %s", args[0])
 	}
@@ -99,15 +103,25 @@ func runValidate() error {
 	if err := validateDefaultRegistryFn(); err != nil {
 		return err
 	}
+	if err := validateDefaultReleaseLocksFn(); err != nil {
+		return err
+	}
 	_, err := fmt.Fprintln(os.Stdout, "feature flag registry valid")
 	return err
 }
 
-func runManifest() error {
+func runManifest(args []string) error {
+	channel, release, _, err := parseManifestArgs("manifest", args)
+	if err != nil {
+		return err
+	}
 	if err := validateDefaultRegistryFn(); err != nil {
 		return err
 	}
-	manifest, err := manifestEntriesFn(defaultRegistryFn())
+	if err := validateDefaultReleaseLocksFn(); err != nil {
+		return err
+	}
+	manifest, err := manifestEntriesFn(defaultRegistryFn(), channel, release)
 	if err != nil {
 		return err
 	}
@@ -119,6 +133,30 @@ func runManifest() error {
 	return err
 }
 
+func runReport(args []string) error {
+	channel, release, previousCatalog, err := parseManifestArgs("report", args)
+	if err != nil {
+		return err
+	}
+	if err := validateDefaultRegistryFn(); err != nil {
+		return err
+	}
+	if err := validateDefaultReleaseLocksFn(); err != nil {
+		return err
+	}
+	registry := defaultRegistryFn()
+	manifest, err := manifestEntriesFn(registry, channel, release)
+	if err != nil {
+		return err
+	}
+	previousFlags, compared, err := readPreviousCatalog(previousCatalog)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Print(formatReport(channel, release, registry.Flags(), manifest, previousFlags, compared))
+	return err
+}
+
 func readCatalog(root string) ([]featureflags.Flag, error) {
 	data, err := safeio.ReadFileUnder(root, filepath.Join(root, catalogPath))
 	if err != nil {
@@ -127,6 +165,140 @@ func readCatalog(root string) ([]featureflags.Flag, error) {
 	return featureflags.ParseCatalog(data)
 }
 
-func releaseManifest(registry *featureflags.Registry) ([]featureflags.ManifestEntry, error) {
-	return registry.Manifest(featureflags.ResolveOptions{Channel: featureflags.ChannelRelease})
+func parseManifestArgs(name string, args []string) (featureflags.Channel, string, string, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	channelValue := fs.String("channel", string(featureflags.ChannelRelease), "feature build channel")
+	release := fs.String("release", "", "release version for release locks")
+	previousCatalog := fs.String("previous-catalog", "", "previous feature catalog path")
+	if err := fs.Parse(args); err != nil {
+		return "", "", "", err
+	}
+	if len(fs.Args()) > 0 {
+		return "", "", "", fmt.Errorf("too many arguments for featureflag %s", name)
+	}
+	channel, err := featureflags.NormalizeChannel(*channelValue)
+	if err != nil {
+		return "", "", "", err
+	}
+	return channel, strings.TrimSpace(*release), strings.TrimSpace(*previousCatalog), nil
+}
+
+func manifestEntries(registry *featureflags.Registry, channel featureflags.Channel, release string) ([]featureflags.ManifestEntry, error) {
+	var lock *featureflags.ReleaseLock
+	var err error
+	if channel == featureflags.ChannelRelease {
+		lock, err = releaseLockProviderFn(release)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return registry.Manifest(featureflags.ResolveOptions{Channel: channel, Lock: lock})
+}
+
+func readPreviousCatalog(path string) ([]featureflags.Flag, bool, error) {
+	if path == "" {
+		return nil, false, nil
+	}
+	root, err := getwdFn()
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve working directory: %w", err)
+	}
+	data, err := safeio.ReadFileUnder(root, filepath.Join(root, path))
+	if err != nil {
+		return nil, false, fmt.Errorf("read previous feature catalog: %w", err)
+	}
+	flags, err := featureflags.ParseCatalog(data)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse previous feature catalog: %w", err)
+	}
+	return flags, true, nil
+}
+
+func formatReport(channel featureflags.Channel, release string, current []featureflags.Flag, manifest []featureflags.ManifestEntry, previous []featureflags.Flag, compared bool) string {
+	enabledByCode := make(map[string]bool, len(manifest))
+	for _, entry := range manifest {
+		enabledByCode[entry.Code] = entry.EnabledByDefault
+	}
+
+	var stableDefault, previewOptIn, previewDefault []featureflags.Flag
+	for _, flag := range current {
+		enabled := enabledByCode[flag.Code]
+		switch {
+		case flag.Lifecycle == featureflags.LifecycleStable && enabled:
+			stableDefault = append(stableDefault, flag)
+		case flag.Lifecycle == featureflags.LifecyclePreview && enabled:
+			previewDefault = append(previewDefault, flag)
+		case flag.Lifecycle == featureflags.LifecyclePreview:
+			previewOptIn = append(previewOptIn, flag)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("<!-- lopper-feature-flags:start -->\n")
+	b.WriteString("## Feature flags\n\n")
+	fmt.Fprintf(&b, "- Channel: `%s`\n", channel)
+	if release != "" {
+		fmt.Fprintf(&b, "- Release: `%s`\n", release)
+	}
+	b.WriteString("\n")
+	writeFlagSection(&b, "Stable by default", stableDefault)
+	writeFlagSection(&b, "Preview available by opt-in", previewOptIn)
+	if channel == featureflags.ChannelRolling {
+		writeFlagSection(&b, "Preview enabled by rolling channel", previewDefault)
+	} else {
+		writeFlagSection(&b, "Preview locked default-on for this release", previewDefault)
+	}
+	writeNewPreviewSection(&b, current, previous, compared)
+	b.WriteString("<!-- lopper-feature-flags:end -->\n")
+	return b.String()
+}
+
+func writeFlagSection(b *strings.Builder, title string, flags []featureflags.Flag) {
+	fmt.Fprintf(b, "### %s\n\n", title)
+	if len(flags) == 0 {
+		b.WriteString("None.\n\n")
+		return
+	}
+	for _, flag := range flags {
+		fmt.Fprintf(b, "- `%s` `%s`", flag.Code, flag.Name)
+		if flag.Description != "" {
+			fmt.Fprintf(b, " - %s", flag.Description)
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+}
+
+func writeNewPreviewSection(b *strings.Builder, current []featureflags.Flag, previous []featureflags.Flag, compared bool) {
+	b.WriteString("### Newly added preview flags since previous release\n\n")
+	if !compared {
+		b.WriteString("Not compared; no previous feature catalog was provided.\n\n")
+		return
+	}
+	previousByCode := make(map[string]struct{}, len(previous))
+	previousByName := make(map[string]struct{}, len(previous))
+	for _, flag := range previous {
+		previousByCode[flag.Code] = struct{}{}
+		previousByName[flag.Name] = struct{}{}
+	}
+	added := make([]featureflags.Flag, 0)
+	for _, flag := range current {
+		if flag.Lifecycle != featureflags.LifecyclePreview {
+			continue
+		}
+		_, seenCode := previousByCode[flag.Code]
+		_, seenName := previousByName[flag.Name]
+		if !seenCode && !seenName {
+			added = append(added, flag)
+		}
+	}
+	if len(added) == 0 {
+		b.WriteString("None.\n\n")
+		return
+	}
+	for _, flag := range added {
+		fmt.Fprintf(b, "- `%s` `%s`\n", flag.Code, flag.Name)
+	}
+	b.WriteByte('\n')
 }

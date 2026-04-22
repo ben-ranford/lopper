@@ -353,6 +353,121 @@ func TestValidateReleaseLockRejectsDuplicatesAndUnknownNotes(t *testing.T) {
 	}
 }
 
+func TestReleaseLockSetParsingAndLookup(t *testing.T) {
+	locks, err := ParseReleaseLocks([]byte(`[
+		{"release":" v1.4.2 ","defaultOn":[" preview-flag ",""],"notes":{" preview-flag ":"reviewed"}},
+		{"release":"1.4.3","defaultOn":["stable-flag"]}
+	]`))
+	if err != nil {
+		t.Fatalf("parse release locks: %v", err)
+	}
+	if len(locks) != 2 || locks[0].Release != "v1.4.2" || locks[0].DefaultOn[0] != "preview-flag" {
+		t.Fatalf("unexpected normalized release locks: %#v", locks)
+	}
+	if locks[0].Notes["preview-flag"] != "reviewed" {
+		t.Fatalf("expected normalized release note, got %#v", locks[0].Notes)
+	}
+	if _, err := ParseReleaseLocks([]byte(`{"release":"v1.4.2"}`)); err == nil {
+		t.Fatalf("expected non-array release locks to fail")
+	}
+	if _, err := ParseReleaseLocks([]byte(`[{"release":" "}]`)); err == nil || !strings.Contains(err.Error(), "release is required") {
+		t.Fatalf("expected blank release lock to fail, got %v", err)
+	}
+	if _, err := ParseReleaseLocks([]byte(`[{"release":"v1","unknown":true}]`)); err == nil {
+		t.Fatalf("expected unknown release lock field to fail")
+	}
+	if _, err := ParseReleaseLocks([]byte(`[{"release":"v1"},{"release":" v1 "}]`)); err == nil || !strings.Contains(err.Error(), "duplicate release lock") {
+		t.Fatalf("expected duplicate release lock to fail, got %v", err)
+	}
+	if _, err := ParseReleaseLocks([]byte(`[] []`)); err == nil {
+		t.Fatalf("expected multiple JSON values to fail")
+	}
+}
+
+const validDefaultReleaseLocksJSON = `[
+	{"release":"v1.4.2","defaultOn":["preview-flag"],"notes":{"preview-flag":"reviewed"}}
+]`
+
+func TestDefaultReleaseLockReturnsMatchingCopy(t *testing.T) {
+	withDefaultReleaseLocks(t, validDefaultReleaseLocksJSON)
+
+	lock := mustDefaultReleaseLock(t, "1.4.2")
+	if lock.Release != "v1.4.2" || lock.DefaultOn[0] != "preview-flag" {
+		t.Fatalf("expected release lock match, got %#v", lock)
+	}
+	lock.DefaultOn[0] = "mutated"
+	next := mustDefaultReleaseLock(t, "v1.4.2")
+	if next.DefaultOn[0] != "preview-flag" {
+		t.Fatalf("expected default release lock to return a copy, got %#v", next)
+	}
+}
+
+func TestDefaultReleaseLockReturnsNilForMissingRelease(t *testing.T) {
+	withDefaultReleaseLocks(t, validDefaultReleaseLocksJSON)
+
+	assertNoDefaultReleaseLock(t, "v1.4.3")
+	assertNoDefaultReleaseLock(t, " ")
+}
+
+func TestValidateDefaultReleaseLocksAcceptsEmbeddedData(t *testing.T) {
+	withDefaultReleaseLocks(t, validDefaultReleaseLocksJSON)
+
+	if err := ValidateDefaultReleaseLocks(); err != nil {
+		t.Fatalf("validate default release locks: %v", err)
+	}
+}
+
+func TestDefaultReleaseLocksRejectInvalidData(t *testing.T) {
+	assertDefaultReleaseLocksInvalid(t, `[{"release":"v1.4.2","defaultOn":["missing"]}]`, "unknown feature")
+	assertDefaultReleaseLocksInvalid(t, `not-json`, "invalid release locks JSON")
+}
+
+func withDefaultReleaseLocks(t *testing.T, data string) {
+	t.Helper()
+	originalLocks := embeddedReleaseLocks
+	originalRegistry := defaultRegistry
+	originalErr := defaultRegistryErr
+	t.Cleanup(func() {
+		embeddedReleaseLocks = originalLocks
+		defaultRegistry = originalRegistry
+		defaultRegistryErr = originalErr
+	})
+	defaultRegistry = testRegistry(t)
+	defaultRegistryErr = nil
+	embeddedReleaseLocks = []byte(data)
+}
+
+func mustDefaultReleaseLock(t *testing.T, release string) *ReleaseLock {
+	t.Helper()
+	lock, err := DefaultReleaseLock(release)
+	if err != nil {
+		t.Fatalf("default release lock: %v", err)
+	}
+	if lock == nil {
+		t.Fatalf("expected release lock for %q", release)
+	}
+	return lock
+}
+
+func assertNoDefaultReleaseLock(t *testing.T, release string) {
+	t.Helper()
+	lock, err := DefaultReleaseLock(release)
+	if err != nil || lock != nil {
+		t.Fatalf("expected missing release lock to be nil, lock=%#v err=%v", lock, err)
+	}
+}
+
+func assertDefaultReleaseLocksInvalid(t *testing.T, data string, want string) {
+	t.Helper()
+	withDefaultReleaseLocks(t, data)
+	if err := ValidateDefaultReleaseLocks(); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected default release lock validation to fail with %q, got %v", want, err)
+	}
+	if lock, err := DefaultReleaseLock("v1.4.2"); err == nil || lock != nil {
+		t.Fatalf("expected default release lock lookup to validate refs, lock=%#v err=%v", lock, err)
+	}
+}
+
 func TestManifestReportsDefaults(t *testing.T) {
 	registry := testRegistry(t)
 	manifest, err := registry.Manifest(ResolveOptions{

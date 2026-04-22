@@ -8,12 +8,18 @@ import (
 )
 
 func TestParseArgsFeatures(t *testing.T) {
-	req := mustParseArgs(t, []string{"features", "--format", "json"})
+	req := mustParseArgs(t, []string{"features", "--format", "json", "--channel", "rolling", "--release", "v1.4.2"})
 	if req.Mode != app.ModeFeatures {
 		t.Fatalf(modeMismatchFmt, app.ModeFeatures, req.Mode)
 	}
 	if req.Features.Format != "json" {
 		t.Fatalf("expected json format, got %q", req.Features.Format)
+	}
+	if req.Features.Channel != "rolling" {
+		t.Fatalf("expected rolling channel, got %q", req.Features.Channel)
+	}
+	if req.Features.Release != "v1.4.2" {
+		t.Fatalf("expected release version, got %q", req.Features.Release)
 	}
 }
 

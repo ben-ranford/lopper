@@ -5,6 +5,7 @@ WORKDIR /src
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
+ARG BUILD_CHANNEL=dev
 ARG TARGETPLATFORM
 
 RUN apk add --no-cache build-base
@@ -20,6 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,id=go-mod-cache,sharing=locked \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.version=${VERSION}" \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.commit=${GIT_COMMIT}" \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.buildDate=${BUILD_DATE}" \
+	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.buildChannel=${BUILD_CHANNEL}" \
 	&& CGO_ENABLED=1 go build -trimpath -ldflags="${ldflags}" -o /out/lopper ./cmd/lopper
 
 FROM alpine:3.23

@@ -84,7 +84,9 @@ type DashboardRequest struct {
 }
 
 type FeaturesRequest struct {
-	Format string
+	Format  string
+	Channel string
+	Release string
 }
 
 func DefaultRequest() Request {
