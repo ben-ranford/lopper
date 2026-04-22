@@ -1,4 +1,4 @@
-package report
+package model
 
 type DependencyReport struct {
 	Language               string                  `json:"language,omitempty"`
