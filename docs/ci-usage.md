@@ -23,7 +23,7 @@ Stable release automation:
 
 - Release versioning and changelog generation are configured in `release-please-config.json` and tracked in `.release-please-manifest.json`.
 - The current stable version is also synced into `extensions/vscode-lopper/package.json` and `extensions/vscode-lopper/package-lock.json` by the release-please PR.
-- Release commits should use Conventional Commit prefixes: `fix:` for patch releases, `feat:` for minor releases, and `type!:` or `BREAKING CHANGE:` for major releases.
+- Release commits should use Conventional Commit prefixes: `fix:` for patch releases, `feat:` for minor releases, and any type with a breaking-change marker (for example `feat!:` or `fix!:`) or a `BREAKING CHANGE:` footer for major releases.
 - Set repository secret `RELEASE_PLEASE_TOKEN` to a PAT with contents and pull request write access so release-please-created PRs can trigger normal CI. If it is not configured, the workflow falls back to `MAIN_SYNC_PAT` and then `GITHUB_TOKEN`.
 
 ## Example pipeline
