@@ -198,10 +198,11 @@ Threshold ranges:
 
 Precedence is `CLI > repo config > imported policy packs > defaults`.
 
-Tuning guide with strict/balanced/noise-reduction profiles:
+Additional guides:
 
 - `docs/threshold-tuning.md`
 - `docs/notifications.md`
+- `docs/feature-flags.md`
 
 Launch TUI:
 

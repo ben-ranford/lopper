@@ -67,6 +67,27 @@ make mem-profiles
 3. Keep commits focused and descriptive.
 4. Open a pull request with clear context, scope, and validation steps.
 
+## Feature flagging
+
+Use a feature flag when new work should merge before it is ready to become a stable default.
+This includes user-visible behavior changes, risky adapter heuristics, release workflow changes, new default policies, or features that need rolling-channel validation before broad release.
+Small refactors, tests, and documentation-only changes usually do not need flags unless they change shipped behavior.
+
+Feature flags are documented in `docs/feature-flags.md`.
+Contributor rules:
+
+- Generate the code with `make feature-flag NAME=... DESCRIPTION=...`; do not hand-allocate or recycle `LOP-FEAT-NNNN` codes.
+- New flags start as `preview`.
+- Merging the implementation PR is not graduation.
+- Rolling builds enable every registered flag by default.
+- Stable release builds enable `stable` flags by default and may enable specific `preview` flags through `internal/featureflags/release_locks.json`.
+- Release locks are release-specific default-on decisions; they do not change the lifecycle to `stable`.
+- Graduation requires a separate PR that changes the registry lifecycle to `stable` and states the rollout evidence.
+- PRs that add, lock, or graduate a feature flag must run `go run ./tools/featureflag validate`.
+
+Reviewers should ask for a flag when the change changes default user behavior but lacks enough evidence for immediate stable rollout.
+Reviewers should ask for a release lock instead of graduation when a release should publish a preview feature default-on for that release only.
+
 ## Commit style and releases
 
 Stable releases are prepared by release-please from Conventional Commits merged to `main`.
@@ -99,6 +120,7 @@ If you add a new language adapter, update the contributor-facing docs and user-f
 - What changed and why
 - Test evidence (`make ci`, `make demos-check`, `act pull_request -W .github/workflows/ci.yml --job verify`, manual commands, fixtures)
 - Documentation updates for user-facing behavior, flags, workflow changes, and examples
+- Feature flag lifecycle, release-lock, and graduation notes when the PR adds or changes flagged behavior
 - Performance notes when memory benchmark deltas are intentional, including whether `memory-approved` is needed
 - Backward compatibility notes (if any)
 
