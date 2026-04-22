@@ -698,6 +698,32 @@ func TestWalkRepoFiles(t *testing.T) {
 	}
 }
 
+func TestWalkRepoFilesRootNamedSkippedDir(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "build")
+	if err := os.MkdirAll(filepath.Join(repo, "vendor"), 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "vendor", "ignored.go"), []byte("package ignored\n"), 0o600); err != nil {
+		t.Fatalf("write ignored.go: %v", err)
+	}
+
+	var visited []string
+	err := WalkRepoFiles(context.Background(), repo, 0, ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
+		visited = append(visited, filepath.ToSlash(path[len(repo)+1:]))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk repo files: %v", err)
+	}
+	if !slices.Equal(visited, []string{"main.go"}) {
+		t.Fatalf("expected root named build to be walked while descendants stay skipped, got %#v", visited)
+	}
+}
+
 func TestWalkRepoFilesCanceled(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a"), 0o600); err != nil {

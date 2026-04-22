@@ -55,6 +55,7 @@ func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir f
 	}
 
 	walker := repoWalker{
+		rootPath: filepath.Clean(repoPath),
 		maxFiles: maxFiles,
 		skipDir:  skipDir,
 		visit:    visit,
@@ -79,6 +80,7 @@ func WalkContextErr(ctx context.Context, walkErr error) error {
 }
 
 type repoWalker struct {
+	rootPath string
 	maxFiles int
 	skipDir  func(string) bool
 	visit    func(path string, entry fs.DirEntry) error
@@ -93,7 +95,7 @@ func (w *repoWalker) handle(ctx context.Context, path string, entry fs.DirEntry,
 		return ctx.Err()
 	}
 	if entry.IsDir() {
-		if w.skipDir(entry.Name()) {
+		if filepath.Clean(path) != w.rootPath && w.skipDir(entry.Name()) {
 			return filepath.SkipDir
 		}
 		return nil
