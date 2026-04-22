@@ -181,6 +181,32 @@ Minimum evidence for graduation:
 - no open Sonar, Copilot, or review issues remain for the feature
 - release notes or PR notes identify whether any release lock should be removed or kept for historical release reporting
 
+Use the local helper when preparing a graduation change by hand:
+
+```bash
+make feature-flag-graduate FEATURE=LOP-FEAT-0001
+```
+
+or:
+
+```bash
+go run ./tools/featureflag graduate --feature example-preview
+```
+
+Maintainers can also use the assisted workflow to open a graduation PR with the required evidence already in the body:
+
+```bash
+gh workflow run graduate-feature.yml \
+  -f feature=LOP-FEAT-0001 \
+  -f evidence="Rolling builds have shipped this enabled, tests cover the stable path, and docs are updated." \
+  -f compatibility_notes="No breaking config changes; disable with --disable-feature if rollback is needed." \
+  -f release_lock_notes="Remove future locks for this feature after the PR merges."
+```
+
+The workflow changes only the registry lifecycle and opens a PR.
+It does not merge the PR, remove release locks automatically, or infer stability from release-please.
+Use the optional `issue` and `milestone` inputs when the graduation belongs somewhere other than the current feature flagging rollout issue.
+
 After graduation, future release builds enable the feature by default through `lifecycle: "stable"`.
 Remove release locks for future releases when they are no longer needed.
 
@@ -192,5 +218,5 @@ Remove release locks for future releases when they are no longer needed.
 4. Implement the behavior so `preview` is default-off in release builds but default-on in rolling builds.
 5. Add CLI/config examples or docs when users can opt in.
 6. Use release locks only when a stable release should turn on a preview feature before graduation.
-7. Graduate in a later PR when the evidence is strong enough for stable defaults.
+7. Graduate in a later PR with `make feature-flag-graduate` or the `graduate-feature.yml` workflow when the evidence is strong enough for stable defaults.
 8. Clean up obsolete preview code paths, release locks, and docs after graduation.

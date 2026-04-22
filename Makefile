@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -91,6 +91,9 @@ mod-check:
 
 feature-flag:
 	$(GO_CMD) run ./tools/featureflag add --name "$(NAME)" --description "$(DESCRIPTION)"
+
+feature-flag-graduate:
+	$(GO_CMD) run ./tools/featureflag graduate --feature "$(FEATURE)"
 
 feature-flag-check:
 	$(GO_CMD) run ./tools/featureflag validate

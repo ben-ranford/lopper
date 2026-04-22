@@ -1,0 +1,129 @@
+name: graduate feature
+
+on:
+  workflow_dispatch:
+    inputs:
+      feature:
+        description: Feature code or name to graduate
+        required: true
+        type: string
+      evidence:
+        description: Evidence supporting stable defaults
+        required: true
+        type: string
+      compatibility_notes:
+        description: Compatibility and rollback notes
+        required: true
+        type: string
+      release_lock_notes:
+        description: Release locks to remove, keep, or preserve
+        required: false
+        default: None.
+        type: string
+      issue:
+        description: Issue number to close or reference
+        required: false
+        default: "721"
+        type: string
+      milestone:
+        description: Milestone to assign to the graduation PR
+        required: false
+        default: "v1.4.2"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  graduate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      COMPATIBILITY_NOTES: ${{ inputs.compatibility_notes }}
+      EVIDENCE: ${{ inputs.evidence }}
+      FEATURE: ${{ inputs.feature }}
+      GH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+      ISSUE_NUMBER: ${{ inputs.issue }}
+      MILESTONE: ${{ inputs.milestone }}
+      RELEASE_LOCK_NOTES: ${{ inputs.release_lock_notes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Graduate feature and open PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          slug="$(printf '%s' "${FEATURE}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+          if [ -z "${slug}" ]; then
+            slug="feature"
+          fi
+          branch="feat/graduate-${slug}-$(date -u +%Y%m%d%H%M%S)"
+          git checkout -b "${branch}"
+
+          go run ./tools/featureflag graduate --feature "${FEATURE}"
+          go run ./tools/featureflag validate
+
+          git add internal/featureflags/features.json
+          if git diff --cached --quiet; then
+            echo "No feature flag catalog change was produced."
+            exit 1
+          fi
+          git commit -m "feat(flags): graduate ${FEATURE} to stable"
+          git push origin "${branch}"
+
+          issue_line=""
+          if [ -n "${ISSUE_NUMBER}" ]; then
+            issue_line="Closes #${ISSUE_NUMBER}."
+          fi
+
+          mkdir -p .artifacts
+          cat > .artifacts/graduate-feature-pr.md <<PR_BODY
+          ${issue_line}
+
+          ## Graduation evidence
+
+          ${EVIDENCE}
+
+          ## Compatibility and rollback
+
+          ${COMPATIBILITY_NOTES}
+
+          ## Release lock notes
+
+          ${RELEASE_LOCK_NOTES}
+
+          ## Validation
+
+          - \`go run ./tools/featureflag graduate --feature ${FEATURE}\`
+          - \`go run ./tools/featureflag validate\`
+          PR_BODY
+
+          pr_args=(
+            --base main
+            --head "${branch}"
+            --title "feat(flags): graduate ${FEATURE} to stable"
+            --body-file .artifacts/graduate-feature-pr.md
+            --label enhancement
+            --label target-series:1.4.x
+          )
+          if [ -n "${MILESTONE}" ]; then
+            pr_args+=(--milestone "${MILESTONE}")
+          fi
+
+          pr_url="$(gh pr create "${pr_args[@]}")"
+          echo "Opened ${pr_url}"
