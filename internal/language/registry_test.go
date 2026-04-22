@@ -23,19 +23,13 @@ type testAdapter struct {
 	detectErr error
 }
 
-type simpleAdapter struct {
-	id      string
+type simpleDetector struct {
 	matched bool
 	err     error
 }
 
-func (a *simpleAdapter) ID() string        { return a.id }
-func (a *simpleAdapter) Aliases() []string { return nil }
-func (a *simpleAdapter) Detect(context.Context, string) (bool, error) {
-	return a.matched, a.err
-}
-func (a *simpleAdapter) Analyse(context.Context, Request) (report.Report, error) {
-	return report.Report{}, nil
+func (d *simpleDetector) Detect(context.Context, string) (bool, error) {
+	return d.matched, d.err
 }
 
 func (a *testAdapter) ID() string {
@@ -200,14 +194,14 @@ func TestNormalizeDetectionAndClamp(t *testing.T) {
 }
 
 func TestDetectAdapterFallbackPath(t *testing.T) {
-	detection, err := detectAdapter(context.Background(), &simpleAdapter{id: "simple", matched: true}, ".")
+	detection, err := detectAdapter(context.Background(), &simpleDetector{matched: true}, ".")
 	if err != nil {
 		t.Fatalf("detect adapter fallback: %v", err)
 	}
 	if !detection.Matched || detection.Confidence != 60 {
 		t.Fatalf("unexpected fallback detection: %#v", detection)
 	}
-	if _, err := detectAdapter(context.Background(), &simpleAdapter{id: "simple", err: errors.New("boom")}, "."); err == nil {
+	if _, err := detectAdapter(context.Background(), &simpleDetector{err: errors.New("boom")}, "."); err == nil {
 		t.Fatalf("expected detect error from fallback adapter")
 	}
 }
@@ -299,7 +293,7 @@ func TestDetectMatchesAndFallbackDetectorBranches(t *testing.T) {
 		t.Fatalf("expected de-duped matches, got %#v", matches)
 	}
 
-	detection, err := detectAdapter(context.Background(), &simpleAdapter{id: "simple", matched: false}, ".")
+	detection, err := detectAdapter(context.Background(), &simpleDetector{matched: false}, ".")
 	if err != nil {
 		t.Fatalf("detect adapter fallback unmatched: %v", err)
 	}

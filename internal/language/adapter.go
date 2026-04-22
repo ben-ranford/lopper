@@ -85,19 +85,36 @@ func DetectMatched(ctx context.Context, repoPath string, detectWithConfidence De
 	return detection.Matched, nil
 }
 
-type Adapter interface {
+type AdapterIdentity interface {
 	ID() string
 	Aliases() []string
+}
+
+type Detector interface {
 	Detect(ctx context.Context, repoPath string) (bool, error)
-	Analyse(ctx context.Context, req Request) (report.Report, error)
 }
 
 type ConfidenceProvider interface {
-	Detect(ctx context.Context, repoPath string) (bool, error)
+	Detector
 	DetectWithConfidence(ctx context.Context, repoPath string) (Detection, error)
 }
 
+type Analyser interface {
+	Analyse(ctx context.Context, req Request) (report.Report, error)
+}
+
+type Adapter interface {
+	AdapterIdentity
+	Detector
+	Analyser
+}
+
+type CandidateAdapter interface {
+	ID() string
+	Analyser
+}
+
 type Candidate struct {
-	Adapter   Adapter
+	Adapter   CandidateAdapter
 	Detection Detection
 }
