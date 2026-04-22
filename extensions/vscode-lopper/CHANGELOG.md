@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/ben-ranford/lopper/compare/v1.4.0...v1.4.1) (2026-04-22)
+
+
+### Bug Fixes
+
+* keep skipped-name repo roots walkable ([#711](https://github.com/ben-ranford/lopper/issues/711)) ([840140a](https://github.com/ben-ranford/lopper/commit/840140a26f24d6d8d3b5b72afa3e572d44bef18d))
+
 ## 1.4.0
 
 - Added `package`, `repo`, and `changed-packages` scope controls in VS Code, plus force-fresh refresh commands and a tighter refresh session lifecycle.
