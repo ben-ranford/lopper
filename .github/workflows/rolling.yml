@@ -240,8 +240,17 @@ jobs:
           git commit -m "lopper-rolling ${{ needs.prepare-rolling.outputs.tag }}"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for rolling Homebrew formula"
-            git fetch origin main:refs/remotes/origin/main
-            git rebase origin/main
+            if ! git fetch origin main:refs/remotes/origin/main; then
+              echo "git fetch failed on attempt ${attempt}" >&2
+              sleep 2
+              continue
+            fi
+            if ! git rebase origin/main; then
+              echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
+              git rebase --abort || true
+              sleep 2
+              continue
+            fi
             if git push origin HEAD:main; then
               exit 0
             fi
