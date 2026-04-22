@@ -1,4 +1,4 @@
-package report
+package model
 
 type ScopeMetadata struct {
 	Mode     string   `json:"mode"`
