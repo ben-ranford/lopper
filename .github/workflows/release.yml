@@ -5,6 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, such as v1.4.1
+        required: false
+        type: string
+      source_sha:
+        description: Release source ref or SHA; defaults to tag when omitted
+        required: false
+        type: string
 
 concurrency:
   # Serialize release runs so newer commits queue behind in-flight releases.
@@ -34,22 +43,22 @@ jobs:
 
   orchestrate-release:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/release-orchestration.yml
     with:
-      tag: ${{ needs.release-please.outputs.tag }}
-      source_sha: ${{ needs.release-please.outputs.sha }}
+      tag: ${{ needs.release-please.outputs.tag || inputs.tag }}
+      source_sha: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
       artifact_prefix: release
       image_tags: |
-        ${{ needs.release-please.outputs.tag }}
+        ${{ needs.release-please.outputs.tag || inputs.tag }}
         latest
 
   build-vscode-extension:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,7 +66,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-please.outputs.sha }}
+          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -82,7 +91,7 @@ jobs:
 
       - name: Package VS Code extension
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -102,7 +111,7 @@ jobs:
       - release-please
       - orchestrate-release
       - build-vscode-extension
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,7 +129,7 @@ jobs:
       - name: Update GitHub Release notes
         run: |
           set -euo pipefail
-          tag="${{ needs.release-please.outputs.tag }}"
+          tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
           existing_body="$(mktemp)"
           release_notes="$(mktemp)"
 
@@ -153,7 +162,7 @@ jobs:
       - name: Upload GitHub Release assets
         run: |
           set -euo pipefail
-          tag="${{ needs.release-please.outputs.tag }}"
+          tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
           mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release assets found in dist" >&2
@@ -180,7 +189,7 @@ jobs:
       - name: Publish GitHub Release
         run: |
           set -euo pipefail
-          tag="${{ needs.release-please.outputs.tag }}"
+          tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
           release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id')"
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             -F draft=false \
@@ -190,7 +199,7 @@ jobs:
     needs:
       - release-please
       - publish
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
     runs-on: ubuntu-latest
     concurrency:
       group: homebrew-tap-main
@@ -226,7 +235,7 @@ jobs:
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -292,7 +301,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "lopper ${{ needs.release-please.outputs.tag }}"
+          git commit -m "lopper ${{ needs.release-please.outputs.tag || inputs.tag }}"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
             if ! git fetch origin main:refs/remotes/origin/main; then
