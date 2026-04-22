@@ -309,6 +309,9 @@ jobs:
       - sync-release-version
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap-main
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
@@ -334,6 +337,7 @@ jobs:
           repository: ben-ranford/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
+          fetch-depth: 0
 
       - name: Update lopper formula
         if: ${{ steps.tap_token.outputs.available == 'true' }}
@@ -406,7 +410,18 @@ jobs:
           fi
 
           git commit -m "lopper ${{ needs.prepare.outputs.tag }}"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} for Homebrew formula"
+            git fetch origin main:refs/remotes/origin/main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Failed to push Homebrew formula after retries" >&2
+          exit 1
 
       - name: Skip tap update when token is missing
         if: ${{ steps.tap_token.outputs.available != 'true' }}

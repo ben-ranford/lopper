@@ -136,6 +136,9 @@ jobs:
       - prepare-rolling
       - publish-rolling
     runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap-main
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
@@ -161,6 +164,7 @@ jobs:
           repository: ben-ranford/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
+          fetch-depth: 0
 
       - name: Update lopper-rolling formula
         if: ${{ steps.tap_token.outputs.available == 'true' }}
@@ -234,7 +238,18 @@ jobs:
           fi
 
           git commit -m "lopper-rolling ${{ needs.prepare-rolling.outputs.tag }}"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} for rolling Homebrew formula"
+            git fetch origin main:refs/remotes/origin/main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Failed to push rolling Homebrew formula after retries" >&2
+          exit 1
 
       - name: Skip rolling tap update when token is missing
         if: ${{ steps.tap_token.outputs.available != 'true' }}
