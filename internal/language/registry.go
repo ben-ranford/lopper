@@ -50,7 +50,7 @@ func (r *Registry) Register(adapter Adapter) error {
 	return nil
 }
 
-func (r *Registry) Select(ctx context.Context, repoPath string, languageID string) (Adapter, error) {
+func (r *Registry) Select(ctx context.Context, repoPath string, languageID string) (CandidateAdapter, error) {
 	candidates, err := r.Resolve(ctx, repoPath, languageID)
 	if err != nil {
 		return nil, err
@@ -171,7 +171,7 @@ func (r *Registry) detectMatches(ctx context.Context, repoPath string) ([]Candid
 	return matches, nil
 }
 
-func detectAdapter(ctx context.Context, adapter Adapter, repoPath string) (Detection, error) {
+func detectAdapter(ctx context.Context, adapter Detector, repoPath string) (Detection, error) {
 	if detector, ok := adapter.(ConfidenceProvider); ok {
 		detection, err := detector.DetectWithConfidence(ctx, repoPath)
 		if err != nil {
