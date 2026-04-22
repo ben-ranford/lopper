@@ -190,7 +190,35 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id')"
+          encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
+          gh_err_file="$(mktemp)"
+          set +e
+          release_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" --jq '.id' 2>"$gh_err_file"
+          )"
+          gh_status=$?
+          set -e
+          if [ "$gh_status" -ne 0 ]; then
+            if grep -q "HTTP 404" "$gh_err_file"; then
+              release_id=""
+            else
+              cat "$gh_err_file" >&2
+              rm -f "$gh_err_file"
+              exit "$gh_status"
+            fi
+          fi
+          rm -f "$gh_err_file"
+          if [ -z "$release_id" ]; then
+            release_id="$(
+              gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
+                | jq -r --arg tag "$tag" '.[][] | select(.tag_name == $tag) | .id' \
+                | head -n1
+            )"
+          fi
+          if [ -z "$release_id" ]; then
+            echo "Release ${tag} was not found" >&2
+            exit 1
+          fi
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             -F draft=false \
             -f make_latest=true >/dev/null
