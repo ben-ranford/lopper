@@ -79,6 +79,17 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 	}, nil
 }
 
+func validateCodemodApplyPreconditions(ctx context.Context, repoPath string, req AnalyseRequest) error {
+	if !req.ApplyCodemod {
+		return nil
+	}
+	normalizedRepoPath, err := normalizeRepoPathForCodemod(repoPath)
+	if err != nil {
+		return err
+	}
+	return ensureCleanWorktreeForCodemod(ctx, normalizedRepoPath, req.AllowDirty)
+}
+
 func decorateAnalyseReport(reportData *report.Report, prepared preparedAnalyseExecution) {
 	if reportData == nil {
 		return
