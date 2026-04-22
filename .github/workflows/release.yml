@@ -1,8 +1,9 @@
 name: release
 
 on:
-  schedule:
-    - cron: '0 12 * * 6'
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
@@ -11,124 +12,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  release-please:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      previous_tag: ${{ steps.tag.outputs.previous_tag }}
-      should_release: ${{ steps.tag.outputs.should_release }}
-      release_reason: ${{ steps.tag.outputs.release_reason }}
-      is_stable_release: ${{ steps.tag.outputs.is_stable_release }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
         with:
-          fetch-depth: 0
-
-      - name: Compute weekly semver tag
-        id: tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --tags --force
-
-          package_json_path="extensions/vscode-lopper/package.json"
-          release_floor="$(python3 scripts/read_package_version.py "$package_json_path")"
-          if [[ ! "$release_floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Extension version '$release_floor' is invalid"
-            exit 1
-          fi
-          release_floor_tag="v${release_floor}"
-          meaningful_changes="1"
-
-          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1)"
-          if [ -z "$latest_tag" ]; then
-            next_tag="$release_floor_tag"
-            previous_tag=""
-          else
-            if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              major="${BASH_REMATCH[1]}"
-              minor="${BASH_REMATCH[2]}"
-              patch="${BASH_REMATCH[3]}"
-              bumped_tag="v${major}.${minor}.$((patch + 1))"
-              if [ "$(printf '%s\n%s\n' "$release_floor" "${bumped_tag#v}" | sort -V | tail -n1)" = "$release_floor" ] && [ "$latest_tag" != "$release_floor_tag" ]; then
-                next_tag="$release_floor_tag"
-              else
-                next_tag="$bumped_tag"
-              fi
-              previous_tag="$latest_tag"
-            else
-              echo "Latest semver tag '$latest_tag' is invalid"
-              exit 1
-            fi
-          fi
-
-          commits_since_previous_tag="0"
-          if [ -n "${previous_tag}" ]; then
-            commits_since_previous_tag="$(git rev-list --count "${previous_tag}..HEAD")"
-            if git diff --quiet "${previous_tag}..HEAD" -- . \
-              ':(exclude)extensions/vscode-lopper/package.json' \
-              ':(exclude)extensions/vscode-lopper/package-lock.json'; then
-              meaningful_changes="0"
-            fi
-          fi
-
-          should_release="true"
-          release_reason="changes_detected"
-          is_stable_release="false"
-          if [[ "$next_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            is_stable_release="true"
-          fi
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            release_reason="manual_dispatch"
-          elif [ -z "${previous_tag}" ]; then
-            release_reason="initial_release"
-          elif [ "${next_tag}" = "${release_floor_tag}" ] && [ "${previous_tag}" != "${release_floor_tag}" ]; then
-            release_reason="version_alignment"
-          elif [ "${commits_since_previous_tag}" = "0" ] || [ "${meaningful_changes}" = "0" ]; then
-            should_release="false"
-            release_reason="no_changes"
-          fi
-
-          {
-            echo "tag=$next_tag"
-            echo "previous_tag=$previous_tag"
-            echo "should_release=$should_release"
-            echo "release_reason=$release_reason"
-            echo "is_stable_release=$is_stable_release"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Log release gate decision
-        run: |
-          echo "Release gate: should_release=${{ steps.tag.outputs.should_release }}"
-          echo "Release gate reason: ${{ steps.tag.outputs.release_reason }}"
-          echo "Stable semver release: ${{ steps.tag.outputs.is_stable_release }}"
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   orchestrate-release:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/release-orchestration.yml
     with:
-      tag: ${{ needs.prepare.outputs.tag }}
+      tag: ${{ needs.release-please.outputs.tag }}
+      source_sha: ${{ needs.release-please.outputs.sha }}
       artifact_prefix: release
       image_tags: |
-        ${{ needs.prepare.outputs.tag }}
+        ${{ needs.release-please.outputs.tag }}
         latest
 
   build-vscode-extension:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -152,9 +81,8 @@ jobs:
         run: xvfb-run -a make vscode-extension-test
 
       - name: Package VS Code extension
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' }}
         env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -164,7 +92,6 @@ jobs:
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Upload VS Code extension artifact
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: release-vscode-extension
@@ -172,14 +99,15 @@ jobs:
 
   publish:
     needs:
-      - prepare
+      - release-please
       - orchestrate-release
       - build-vscode-extension
-    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
     steps:
       - name: Download release artifacts
@@ -189,52 +117,58 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Generate changelog
+      - name: Update GitHub Release notes
         run: |
           set -euo pipefail
-          current_tag="${{ needs.prepare.outputs.tag }}"
+          tag="${{ needs.release-please.outputs.tag }}"
+          existing_body="$(mktemp)"
+          release_notes="$(mktemp)"
+
+          gh release view "$tag" --json body --jq '.body // ""' > "$existing_body"
+          awk '
+            /^<!-- lopper-release-assets:start -->$/ { skip = 1; next }
+            /^<!-- lopper-release-assets:end -->$/ { skip = 0; next }
+            skip != 1 { print }
+          ' "$existing_body" > "$release_notes"
+
           ghcr_owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          ghcr_ref="ghcr.io/${ghcr_owner}/lopper:${current_tag}"
+          ghcr_ref="ghcr.io/${ghcr_owner}/lopper:${tag}"
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
 
           {
-            echo "- Tag: \`${current_tag}\`"
+            echo "<!-- lopper-release-assets:start -->"
+            echo "## Release assets"
             echo
-            echo "## Container image"
+            echo "- Tag: \`${tag}\`"
+            echo "- Container image: \`${ghcr_ref}\`"
+            echo "- GHCR package: [lopper](${ghcr_package_url})"
+            echo "- VSIX asset: \`lopper-vscode-${tag#v}.vsix\`"
+            echo "<!-- lopper-release-assets:end -->"
             echo
-            echo "- Tagged image: \`${ghcr_ref}\`"
-            echo "- Package: [GHCR lopper package](${ghcr_package_url})"
-            echo
-            echo "## VS Code extension"
-            echo
-            echo "- Marketplace ID: \`BenRanford.vscode-lopper\`"
-            echo "- VSIX asset: \`lopper-vscode-${current_tag#v}.vsix\`"
-            echo
-            echo "---"
-            echo
-            echo "_GitHub auto-generated release notes follow._"
-          } > release-changelog.md
+            cat "$release_notes"
+          } > release-body.md
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: Release ${{ needs.prepare.outputs.tag }}
-          body_path: release-changelog.md
-          generate_release_notes: true
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.vsix
+          gh release edit "$tag" --title "Release $tag" --notes-file release-body.md
+
+      - name: Upload GitHub Release assets
+        run: |
+          set -euo pipefail
+          tag="${{ needs.release-please.outputs.tag }}"
+          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets found in dist" >&2
+            exit 1
+          fi
+          gh release upload "$tag" "${assets[@]}" --clobber
 
       - name: Setup Node
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
+        if: ${{ env.VSCE_PUBLISH != '' }}
         uses: actions/setup-node@v6
         with:
           node-version: 24
 
       - name: Publish VS Code extension to Marketplace
-        if: ${{ needs.prepare.outputs.is_stable_release == 'true' && env.VSCE_PUBLISH != '' }}
+        if: ${{ env.VSCE_PUBLISH != '' }}
         env:
           VSCE_PAT: ${{ env.VSCE_PUBLISH }}
         run: |
@@ -243,71 +177,20 @@ jobs:
           test -n "$vsix_path"
           npx --yes @vscode/vsce publish --packagePath "$vsix_path"
 
-  sync-release-version:
-    needs:
-      - prepare
-      - publish
-    if: ${{ needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.is_stable_release == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Validate sync token
-        env:
-          MAIN_SYNC_PAT: ${{ secrets.MAIN_SYNC_PAT }}
-        run: |
-          if [ -z "${MAIN_SYNC_PAT}" ]; then
-            echo "::error::MAIN_SYNC_PAT is required for sync-release-version direct pushes to protected main."
-            exit 1
-          fi
-
-      - name: Checkout release branch
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.MAIN_SYNC_PAT }}
-
-      - name: Sync committed extension version
-        env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          TARGET_BRANCH: ${{ github.ref_name }}
+      - name: Publish GitHub Release
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
-
-          make sync-version VERSION="$version"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add extensions/vscode-lopper/package.json extensions/vscode-lopper/package-lock.json
-          if git diff --cached --quiet; then
-            echo "No committed version surfaces changed"
-            exit 0
-          fi
-
-          git commit -m "chore: sync extension version to ${RELEASE_TAG}"
-
-          for attempt in 1 2 3; do
-            echo "Push attempt ${attempt} for synced version surfaces"
-            git fetch origin "${TARGET_BRANCH}"
-            git rebase "origin/${TARGET_BRANCH}"
-            if git push origin HEAD:"${TARGET_BRANCH}"; then
-              exit 0
-            fi
-            sleep 2
-          done
-
-          echo "Failed to push synced version surfaces after retries" >&2
-          exit 1
+          tag="${{ needs.release-please.outputs.tag }}"
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id')"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -f make_latest=true >/dev/null
 
   update-homebrew-tap:
     needs:
-      - prepare
+      - release-please
       - publish
-      - sync-release-version
-    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: homebrew-tap-main
@@ -343,7 +226,7 @@ jobs:
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -409,7 +292,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "lopper ${{ needs.prepare.outputs.tag }}"
+          git commit -m "lopper ${{ needs.release-please.outputs.tag }}"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
             if ! git fetch origin main:refs/remotes/origin/main; then
@@ -437,12 +320,12 @@ jobs:
         run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
 
   skip-release:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.should_release != 'true' }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: No-op when no changes since last semver tag
+      - name: No release created
         run: |
-          echo "Skipping weekly release: no meaningful changes detected since the previous semver tag."
+          echo "Release Please did not create a release; the release PR was created or updated instead."

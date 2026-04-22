@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "go",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "draft": true,
+  "force-tag-creation": true,
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "changelog-path": "extensions/vscode-lopper/CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "extensions/vscode-lopper/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "extensions/vscode-lopper/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "extensions/vscode-lopper/package-lock.json",
+          "jsonpath": "$['packages'][''].version"
+        }
+      ]
+    }
+  }
+}

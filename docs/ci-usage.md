@@ -3,7 +3,7 @@
 This repository includes six GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests
-- `.github/workflows/release.yml`: scheduled weekly (Saturday 12:00 UTC) semver release workflow that runs when meaningful changes exist since the previous stable tag or when version alignment needs to promote the stable CLI tag to the VS Code extension version, then runs CI, publishes a GitHub release, and syncs the committed VS Code extension version surfaces back to the published stable version with:
+- `.github/workflows/release.yml`: release-please-backed stable release workflow. On pushes to `main`, it creates or updates a release PR from Conventional Commits; when that release PR is merged, it creates a draft semver GitHub release, publishes assets, publishes images, optionally publishes the VS Code extension, publishes the draft release, and then updates the Homebrew tap with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
@@ -14,10 +14,17 @@ This repository includes six GitHub Actions workflows:
 
 Homebrew tap automation:
 
-- The weekly release workflow updates `ben-ranford/homebrew-tap` `Formula/lopper.rb` from the new semver tag.
+- The stable release workflow updates `ben-ranford/homebrew-tap` `Formula/lopper.rb` from the new semver tag.
 - The rolling workflow updates `ben-ranford/homebrew-tap` `Formula/lopper-rolling.rb` from the latest rolling tag.
 - The tap update step validates with `brew audit --strict --online`, `brew install --build-from-source`, and `brew test lopper` before push.
 - Set repository secret `HOMEBREW_TAP_TOKEN` (with write access to `ben-ranford/homebrew-tap`) to enable automatic tap updates.
+
+Stable release automation:
+
+- Release versioning and changelog generation are configured in `release-please-config.json` and tracked in `.release-please-manifest.json`.
+- The current stable version is also synced into `extensions/vscode-lopper/package.json` and `extensions/vscode-lopper/package-lock.json` by the release-please PR.
+- Release commits should use Conventional Commit prefixes: `fix:` for patch releases, `feat:` for minor releases, and any type with a breaking-change marker (for example `feat!:` or `fix!:`) or a `BREAKING CHANGE:` footer for major releases.
+- Set repository secret `RELEASE_PLEASE_TOKEN` to a PAT with contents and pull request write access so release-please-created PRs can trigger normal CI. If it is not configured, the workflow falls back to `MAIN_SYNC_PAT` and then `GITHUB_TOKEN`.
 
 ## Example pipeline
 
