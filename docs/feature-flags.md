@@ -57,7 +57,7 @@ go run ./tools/featureflag validate
 ```
 
 PRs titled with the `feat` Conventional Commit type must add at least one new feature flag entry, and CI rejects any newly added flag whose lifecycle is not `preview`.
-The PR enforcement workflow also comments with the list of new feature flags introduced by the change.
+The PR enforcement workflow keeps a sticky report on feature PRs and on any PR that violates the preview-lifecycle rule.
 
 ## User Activation
 
@@ -170,6 +170,11 @@ The report groups:
 - preview flags available by opt-in
 - preview flags enabled by rolling or locked default-on for a release
 - newly added preview flags since the previous catalog, when provided
+
+Release-please PRs also receive an automated sticky comment with the same release-channel feature flag report plus promotion guidance:
+
+- edit `internal/featureflags/release_locks.json` to ship a preview flag default-on for that release only
+- run `graduate-feature.yml` to open a dedicated PR that changes a flag from `preview` to `stable`
 
 ## Graduation
 

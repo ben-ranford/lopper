@@ -45,6 +45,24 @@ jobs:
             printf '[]\n' > .artifacts/previous-features.json
           fi
 
+      - name: Classify PR
+        id: classify_pr
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^feat(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+            echo "feature_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "feature_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "${PR_HEAD_REF}" == release-please--branches--* ]]; then
+            echo "release_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enforce feature flags on PRs
         id: enforce_flags
         continue-on-error: true
@@ -56,21 +74,71 @@ jobs:
             --previous-catalog .artifacts/previous-features.json \
             > .artifacts/feature-flag-enforcement.md
 
+      - name: Fetch tags for release PR guidance
+        if: ${{ steps.classify_pr.outputs.release_pr == 'true' }}
+        run: git fetch --tags --force
+
+      - name: Capture previous release feature catalog
+        if: ${{ steps.classify_pr.outputs.release_pr == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+          previous_catalog=".artifacts/previous-release-features.json"
+          previous_tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          if [ -n "${previous_tag}" ] && git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
+            git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
+          else
+            printf '[]\n' > "${previous_catalog}"
+          fi
+
+      - name: Write release feature guidance
+        if: ${{ steps.classify_pr.outputs.release_pr == 'true' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          RELEASE_WORKFLOW_URL: ${{ format('https://github.com/{0}/actions/workflows/graduate-feature.yml', github.repository) }}
+        run: |
+          set -euo pipefail
+          go run ./tools/featureflag release-pr-comment \
+            --pr-title "${PR_TITLE}" \
+            --previous-catalog .artifacts/previous-release-features.json \
+            --workflow-url "${RELEASE_WORKFLOW_URL}" \
+            > .artifacts/release-feature-flag-comment.md
+
       - name: Write feature flag summary
         if: ${{ always() }}
+        env:
+          ENFORCEMENT_FAILED: ${{ steps.enforce_flags.outcome == 'failure' }}
+          FEATURE_PR: ${{ steps.classify_pr.outputs.feature_pr }}
+          RELEASE_PR: ${{ steps.classify_pr.outputs.release_pr }}
         run: |
-          if [ -s .artifacts/feature-flag-enforcement.md ]; then
+          set -euo pipefail
+          if [ "${RELEASE_PR}" = "true" ] && [ -s .artifacts/release-feature-flag-comment.md ]; then
+            cat .artifacts/release-feature-flag-comment.md >> "$GITHUB_STEP_SUMMARY"
+          elif { [ "${FEATURE_PR}" = "true" ] || [ "${ENFORCEMENT_FAILED}" = "true" ]; } && [ -s .artifacts/feature-flag-enforcement.md ]; then
             cat .artifacts/feature-flag-enforcement.md >> "$GITHUB_STEP_SUMMARY"
-          else
+          elif [ "${RELEASE_PR}" = "true" ]; then
+            printf '%s\n\n%s\n' \
+              '## Release feature flags' \
+              '❌ Release feature flag guidance was not produced. Check the workflow logs.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${FEATURE_PR}" = "true" ] || [ "${ENFORCEMENT_FAILED}" = "true" ]; then
             printf '%s\n\n%s\n' \
               '## Feature flag enforcement' \
               '❌ Feature flag enforcement summary was not produced. Check the workflow logs.' \
               >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n\n%s\n' \
+              '## Feature flag enforcement' \
+              'Skipped. This PR is neither a feature PR nor a release-please promotion PR.' \
+              >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Comment feature flag report on PR
+      - name: Sync feature flag enforcement comment on PR
         if: ${{ always() && !env.ACT }}
         uses: actions/github-script@v9
+        env:
+          ENFORCEMENT_FAILED: ${{ steps.enforce_flags.outcome == 'failure' }}
+          FEATURE_PR: ${{ steps.classify_pr.outputs.feature_pr }}
         with:
           script: |
             const fs = require('node:fs');
@@ -90,7 +158,6 @@ jobs:
             if (fs.existsSync(summaryPath)) {
               summary = fs.readFileSync(summaryPath, 'utf8').trim();
             }
-            const body = summary || fallbackBody;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -105,6 +172,93 @@ jobs:
                 typeof comment.body === 'string' &&
                 comment.body.includes(marker),
             );
+
+            const shouldComment =
+              process.env.FEATURE_PR === 'true' ||
+              process.env.ENFORCEMENT_FAILED === 'true';
+            if (!shouldComment) {
+              for (const duplicate of existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+              return;
+            }
+
+            const body = summary || fallbackBody;
+            if (existing.length > 0) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing[0].id,
+                body,
+              });
+              for (const duplicate of existing.slice(1)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Sync release feature guidance comment on PR
+        if: ${{ always() && !env.ACT }}
+        uses: actions/github-script@v9
+        env:
+          RELEASE_PR: ${{ steps.classify_pr.outputs.release_pr }}
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const marker = '<!-- lopper-feature-flag-release-pr -->';
+            const summaryPath = '.artifacts/release-feature-flag-comment.md';
+            const fallbackBody = [
+              marker,
+              '## Release feature flags',
+              '',
+              '❌ Release feature flag guidance was not produced.',
+              '',
+              'See the workflow logs for the failure details.',
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = comments.filter(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            if (process.env.RELEASE_PR !== 'true') {
+              for (const duplicate of existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+              return;
+            }
+
+            const body = fs.existsSync(summaryPath)
+              ? fs.readFileSync(summaryPath, 'utf8').trim()
+              : fallbackBody;
 
             if (existing.length > 0) {
               await github.rest.issues.updateComment({

@@ -79,6 +79,8 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 		{name: "extra graduate argument", args: []string{"graduate", "--feature", "preview-flag", "extra"}, want: "too many arguments"},
 		{name: "missing previous catalog", args: []string{"pr-enforce", "--pr-title", "feat(flags): add registry"}, want: "previous feature catalog is required"},
 		{name: "extra pr-enforce argument", args: []string{"pr-enforce", "--previous-catalog", "previous.json", "extra"}, want: "too many arguments"},
+		{name: "missing release version", args: []string{"release-pr-comment"}, want: "release version is required"},
+		{name: "extra release-pr-comment argument", args: []string{"release-pr-comment", "--release", "v1.5.0", "extra"}, want: "too many arguments"},
 	} {
 		assertRunErrorContains(t, tc.name, tc.args, tc.want)
 	}
@@ -89,6 +91,7 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 		{name: "bad add flag", args: []string{"add", "--definitely-not-a-flag"}},
 		{name: "bad graduate flag", args: []string{"graduate", "--definitely-not-a-flag"}},
 		{name: "bad pr-enforce flag", args: []string{"pr-enforce", "--definitely-not-a-flag"}},
+		{name: "bad release-pr-comment flag", args: []string{"release-pr-comment", "--definitely-not-a-flag"}},
 	} {
 		assertRunError(t, tc.name, tc.args)
 	}
@@ -614,6 +617,86 @@ func TestRunPREnforceGetwdAndCatalogErrors(t *testing.T) {
 	}
 }
 
+func TestRunReleasePRComment(t *testing.T) {
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldDefaultRegistry := defaultRegistryFn
+	oldReleaseLockProvider := releaseLockProviderFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		defaultRegistryFn = oldDefaultRegistry
+		releaseLockProviderFn = oldReleaseLockProvider
+	})
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return nil }
+	defaultRegistryFn = func() *featureflags.Registry { return testRegistry(t) }
+	releaseLockProviderFn = func(string) (*featureflags.ReleaseLock, error) { return nil, nil }
+
+	root := t.TempDir()
+	t.Chdir(root)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "stable-flag",
+    "description": "Stable behavior",
+    "lifecycle": "stable"
+  }
+]`)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{
+			"release-pr-comment",
+			"--pr-title", "chore(main): release 1.5.0",
+			"--previous-catalog", previousCatalog,
+			"--workflow-url", "https://example.com/graduate-feature",
+		})
+	})
+	if err != nil {
+		t.Fatalf("run release-pr-comment: %v", err)
+	}
+	for _, want := range []string{
+		"<!-- lopper-feature-flag-release-pr -->",
+		"This release PR is preparing `v1.5.0`.",
+		"## Feature flags",
+		"### Promotion options",
+		"[`graduate-feature.yml`](https://example.com/graduate-feature)",
+		"### Graduation candidates",
+		"`LOP-FEAT-0001` `preview-flag`",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected release PR comment to contain %q, got %s", want, output)
+		}
+	}
+}
+
+func TestRunReleasePRCommentRejectsCatalogErrors(t *testing.T) {
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldDefaultRegistry := defaultRegistryFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		defaultRegistryFn = oldDefaultRegistry
+	})
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return nil }
+	defaultRegistryFn = func() *featureflags.Registry { return testRegistry(t) }
+
+	root := t.TempDir()
+	t.Chdir(root)
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", "missing.json"}); err == nil || !strings.Contains(err.Error(), "read previous feature catalog") {
+		t.Fatalf("expected missing previous catalog error, got %v", err)
+	}
+
+	badCatalog := "bad-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, badCatalog), `not-json`)
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", badCatalog}); err == nil || !strings.Contains(err.Error(), "parse previous feature catalog") {
+		t.Fatalf("expected bad previous catalog error, got %v", err)
+	}
+}
+
 func TestFormatPREnforcementReportNonFeatureBranches(t *testing.T) {
 	previewFlag := featureflags.Flag{
 		Code:        "LOP-FEAT-0002",
@@ -650,6 +733,36 @@ func TestIsFeaturePRTitle(t *testing.T) {
 		if got := isFeaturePRTitle(tc.title); got != tc.want {
 			t.Fatalf("isFeaturePRTitle(%q) = %v, want %v", tc.title, got, tc.want)
 		}
+	}
+}
+
+func TestReleasePleaseVersionFromTitle(t *testing.T) {
+	for _, tc := range []struct {
+		title string
+		want  string
+	}{
+		{title: "chore(main): release 1.5.0", want: "v1.5.0"},
+		{title: "chore(main): release v1.5.1-rc.1", want: "v1.5.1-rc.1"},
+		{title: "feat(ci): add gate", want: ""},
+	} {
+		if got := releasePleaseVersionFromTitle(tc.title); got != tc.want {
+			t.Fatalf("releasePleaseVersionFromTitle(%q) = %q, want %q", tc.title, got, tc.want)
+		}
+	}
+}
+
+func TestFormatReleasePRCommentWithoutCandidates(t *testing.T) {
+	registry := testRegistry(t)
+	manifest, err := registry.Manifest(featureflags.ResolveOptions{Channel: featureflags.ChannelRelease})
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	output := formatReleasePRComment("v1.5.0", registry.Flags(), manifest, registry.Flags(), true, "")
+	if !strings.Contains(output, "No newly added preview flags were detected for this release candidate.") {
+		t.Fatalf("expected no-candidate note, got %s", output)
+	}
+	if strings.Contains(output, "### Graduation candidates") {
+		t.Fatalf("did not expect graduation candidate section, got %s", output)
 	}
 }
 
