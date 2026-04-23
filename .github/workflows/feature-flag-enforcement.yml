@@ -86,9 +86,11 @@ jobs:
               'See the workflow logs for the failure details.',
             ].join('\n');
 
-            const body = fs.existsSync(summaryPath)
-              ? fs.readFileSync(summaryPath, 'utf8').trim()
-              : fallbackBody;
+            let summary = '';
+            if (fs.existsSync(summaryPath)) {
+              summary = fs.readFileSync(summaryPath, 'utf8').trim();
+            }
+            const body = summary || fallbackBody;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
