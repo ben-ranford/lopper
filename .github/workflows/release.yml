@@ -111,11 +111,64 @@ jobs:
           name: release-vscode-extension
           path: dist/*.vsix
 
+  build-darwin-amd64:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    runs-on: macos-15-intel
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
+
+      - name: Compute build metadata
+        id: build_meta
+        run: |
+          echo "commit=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build Darwin amd64 release artifact
+        env:
+          TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          COMMIT_SHA: ${{ steps.build_meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.build_meta.outputs.build_date }}
+        run: |
+          make release \
+            VERSION="$TAG" \
+            GIT_COMMIT="$COMMIT_SHA" \
+            BUILD_DATE="$BUILD_DATE" \
+            RELEASE_BUILD_CHANNEL=release \
+            PLATFORMS="darwin/amd64"
+
+      - name: Upload Darwin amd64 artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-darwin-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
   publish:
     needs:
       - release-please
       - orchestrate-release
       - build-vscode-extension
+      - build-darwin-amd64
     if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
     runs-on: ubuntu-latest
     permissions:
@@ -141,6 +194,18 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: dist
+
+      - name: Verify Darwin artifacts are present
+        run: |
+          set -euo pipefail
+          if ! find dist -maxdepth 1 -type f -name '*_darwin_amd64.tar.gz' | grep -q .; then
+            echo "Expected darwin/amd64 artifact is missing from dist/" >&2
+            exit 1
+          fi
+          if ! find dist -maxdepth 1 -type f -name '*_darwin_arm64.tar.gz' | grep -q .; then
+            echo "Expected darwin/arm64 artifact is missing from dist/" >&2
+            exit 1
+          fi
 
       - name: Generate feature flag release report
         env:
