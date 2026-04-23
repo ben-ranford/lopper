@@ -44,59 +44,54 @@ func TestCoverageHelperBranches(t *testing.T) {
 }
 
 func TestLoadGoModuleInfoWithOptionsErrorBranches(t *testing.T) {
-	t.Run("workspace read failure", func(t *testing.T) {
-		repo := t.TempDir()
-		goWorkPath := filepath.Join(repo, goWorkName)
-		testutil.MustWriteFile(t, goWorkPath, "use ./module\n")
-		if err := os.Chmod(goWorkPath, 0); err != nil {
-			t.Skipf("chmod go.work unreadable: %v", err)
-		}
-		defer func() {
-			if chmodErr := os.Chmod(goWorkPath, 0o644); chmodErr != nil {
-				t.Errorf("restore go.work permissions: %v", chmodErr)
-			}
-		}()
+	t.Run("workspace read failure", testWorkspaceReadFailure)
+	t.Run("nested walk failure", testNestedWalkFailure)
+	t.Run("vendored read failure", testVendoredReadFailure)
+}
 
-		if _, err := loadGoModuleInfoWithOptions(repo, moduleLoadOptions{}); err == nil {
-			t.Fatalf("expected unreadable go.work to fail module loading")
-		}
-	})
+func testWorkspaceReadFailure(t *testing.T) {
+	repo := t.TempDir()
+	goWorkPath := filepath.Join(repo, goWorkName)
+	testutil.MustWriteFile(t, goWorkPath, "use ./module\n")
+	setUnreadableForTest(t, goWorkPath, 0o644, "go.work")
 
-	t.Run("nested walk failure", func(t *testing.T) {
-		repo := t.TempDir()
-		locked := filepath.Join(repo, "locked")
-		if err := os.MkdirAll(locked, 0o755); err != nil {
-			t.Fatalf("mkdir locked: %v", err)
-		}
-		if err := os.Chmod(locked, 0); err != nil {
-			t.Skipf("chmod locked dir unreadable: %v", err)
-		}
-		defer func() {
-			if chmodErr := os.Chmod(locked, 0o755); chmodErr != nil {
-				t.Errorf("restore locked dir permissions: %v", chmodErr)
-			}
-		}()
+	if _, err := loadGoModuleInfoWithOptions(repo, moduleLoadOptions{}); err == nil {
+		t.Fatalf("expected unreadable go.work to fail module loading")
+	}
+}
 
-		if _, err := loadGoModuleInfoWithOptions(repo, moduleLoadOptions{}); err == nil {
-			t.Fatalf("expected unreadable nested directory to fail module loading")
-		}
-	})
+func testNestedWalkFailure(t *testing.T) {
+	repo := t.TempDir()
+	locked := filepath.Join(repo, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatalf("mkdir locked: %v", err)
+	}
+	setUnreadableForTest(t, locked, 0o755, "locked dir")
 
-	t.Run("vendored read failure", func(t *testing.T) {
-		repo := t.TempDir()
-		vendorModules := filepath.Join(repo, vendorModulesTxtName)
-		testutil.MustWriteFile(t, vendorModules, "# github.com/acme/dep v1.0.0\n")
-		if err := os.Chmod(vendorModules, 0); err != nil {
-			t.Skipf("chmod vendor/modules.txt unreadable: %v", err)
-		}
-		defer func() {
-			if chmodErr := os.Chmod(vendorModules, 0o644); chmodErr != nil {
-				t.Errorf("restore vendor/modules.txt permissions: %v", chmodErr)
-			}
-		}()
+	if _, err := loadGoModuleInfoWithOptions(repo, moduleLoadOptions{}); err == nil {
+		t.Fatalf("expected unreadable nested directory to fail module loading")
+	}
+}
 
-		if _, err := loadGoModuleInfoWithOptions(repo, moduleLoadOptions{EnableVendoredProvenance: true}); err == nil {
-			t.Fatalf("expected unreadable vendor/modules.txt to fail module loading")
+func testVendoredReadFailure(t *testing.T) {
+	repo := t.TempDir()
+	vendorModules := filepath.Join(repo, vendorModulesTxtName)
+	testutil.MustWriteFile(t, vendorModules, "# github.com/acme/dep v1.0.0\n")
+	setUnreadableForTest(t, vendorModules, 0o644, "vendor/modules.txt")
+
+	if _, err := loadGoModuleInfoWithOptions(repo, moduleLoadOptions{EnableVendoredProvenance: true}); err == nil {
+		t.Fatalf("expected unreadable vendor/modules.txt to fail module loading")
+	}
+}
+
+func setUnreadableForTest(t *testing.T, path string, restoreMode os.FileMode, label string) {
+	t.Helper()
+	if err := os.Chmod(path, 0); err != nil {
+		t.Skipf("chmod %s unreadable: %v", label, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(path, restoreMode); err != nil {
+			t.Errorf("restore %s permissions: %v", label, err)
 		}
 	})
 }

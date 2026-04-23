@@ -359,69 +359,89 @@ func loadVendoredModuleMetadata(repoPath string) (vendoredModuleMetadata, error)
 }
 
 func parseVendoredModuleMetadata(content []byte) vendoredModuleMetadata {
-	metadata := vendoredModuleMetadata{
-		ImportToDependency: make(map[string]string),
-		Dependencies:       make(map[string]vendoredDependencyMetadata),
-	}
-
-	state := vendoredParseState{currentDependency: ""}
+	metadata := newVendoredModuleMetadata()
+	state := vendoredParseState{}
 	for _, rawLine := range strings.Split(string(content), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, "# "):
-			dependency, replacement, ok := parseVendoredModuleHeader(line)
-			if !ok {
-				state.malformedModuleHeaders++
-				state.currentDependency = ""
-				continue
-			}
-			normalizedDependency := normalizeDependencyID(dependency)
-			current := metadata.Dependencies[normalizedDependency]
-			current.ModulePath = dependency
-			if replacement != "" {
-				current.Replacement = true
-				current.ReplacementTarget = replacement
-			}
-			metadata.Dependencies[normalizedDependency] = current
-			if _, ok := metadata.ImportToDependency[dependency]; !ok {
-				metadata.ImportToDependency[dependency] = normalizedDependency
-			}
-			state.currentDependency = normalizedDependency
-		case strings.HasPrefix(line, "## "):
-			if state.currentDependency == "" {
-				continue
-			}
-			current := metadata.Dependencies[state.currentDependency]
-			applyVendoredMetadataDirective(line, &current)
-			metadata.Dependencies[state.currentDependency] = current
-		case strings.HasPrefix(line, "#"):
-			continue
-		default:
-			pkg := firstToken(line)
-			if pkg == "" {
-				continue
-			}
-			if state.currentDependency == "" {
-				state.orphanPackageLines++
-				continue
-			}
-			current := metadata.Dependencies[state.currentDependency]
-			if current.ModulePath != "" && !hasImportPathPrefix(pkg, current.ModulePath) {
-				state.packagePrefixMismatches++
-			}
-			current.PackageCount++
-			metadata.Dependencies[state.currentDependency] = current
-			if _, ok := metadata.ImportToDependency[pkg]; !ok {
-				metadata.ImportToDependency[pkg] = state.currentDependency
-			}
-		}
+		parseVendoredModuleMetadataLine(strings.TrimSpace(rawLine), &metadata, &state)
 	}
 
 	appendVendoredMetadataWarnings(&metadata, state)
 	return metadata
+}
+
+func newVendoredModuleMetadata() vendoredModuleMetadata {
+	return vendoredModuleMetadata{
+		ImportToDependency: make(map[string]string),
+		Dependencies:       make(map[string]vendoredDependencyMetadata),
+	}
+}
+
+func parseVendoredModuleMetadataLine(line string, metadata *vendoredModuleMetadata, state *vendoredParseState) {
+	if line == "" || metadata == nil || state == nil {
+		return
+	}
+	if strings.HasPrefix(line, "# ") {
+		parseVendoredModuleHeaderLine(line, metadata, state)
+		return
+	}
+	if strings.HasPrefix(line, "## ") {
+		parseVendoredMetadataDirectiveLine(line, metadata, state)
+		return
+	}
+	if strings.HasPrefix(line, "#") {
+		return
+	}
+	parseVendoredPackageLine(line, metadata, state)
+}
+
+func parseVendoredModuleHeaderLine(line string, metadata *vendoredModuleMetadata, state *vendoredParseState) {
+	dependency, replacement, ok := parseVendoredModuleHeader(line)
+	if !ok {
+		state.malformedModuleHeaders++
+		state.currentDependency = ""
+		return
+	}
+	normalizedDependency := normalizeDependencyID(dependency)
+	current := metadata.Dependencies[normalizedDependency]
+	current.ModulePath = dependency
+	if replacement != "" {
+		current.Replacement = true
+		current.ReplacementTarget = replacement
+	}
+	metadata.Dependencies[normalizedDependency] = current
+	if _, exists := metadata.ImportToDependency[dependency]; !exists {
+		metadata.ImportToDependency[dependency] = normalizedDependency
+	}
+	state.currentDependency = normalizedDependency
+}
+
+func parseVendoredMetadataDirectiveLine(line string, metadata *vendoredModuleMetadata, state *vendoredParseState) {
+	if state.currentDependency == "" {
+		return
+	}
+	current := metadata.Dependencies[state.currentDependency]
+	applyVendoredMetadataDirective(line, &current)
+	metadata.Dependencies[state.currentDependency] = current
+}
+
+func parseVendoredPackageLine(line string, metadata *vendoredModuleMetadata, state *vendoredParseState) {
+	pkg := firstToken(line)
+	if pkg == "" {
+		return
+	}
+	if state.currentDependency == "" {
+		state.orphanPackageLines++
+		return
+	}
+	current := metadata.Dependencies[state.currentDependency]
+	if current.ModulePath != "" && !hasImportPathPrefix(pkg, current.ModulePath) {
+		state.packagePrefixMismatches++
+	}
+	current.PackageCount++
+	metadata.Dependencies[state.currentDependency] = current
+	if _, exists := metadata.ImportToDependency[pkg]; !exists {
+		metadata.ImportToDependency[pkg] = state.currentDependency
+	}
 }
 
 type vendoredParseState struct {

@@ -189,10 +189,11 @@ func TestVendoredOnlyImportRemainsUndeclared(t *testing.T) {
 		VendoredProvenanceEnabled:  true,
 		VendoredImportDependencies: map[string]string{"github.com/vendor/dep/pkg": "github.com/vendor/dep"},
 	}
-	_, metadata := parseImports([]byte(`package main
+	content := []byte(`package main
 
 import "github.com/vendor/dep/pkg"
-`), "main.go", info)
+`)
+	_, metadata := parseImports(content, "main.go", info)
 	if len(metadata) != 1 {
 		t.Fatalf("expected one import metadata entry, got %#v", metadata)
 	}
