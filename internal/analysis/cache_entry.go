@@ -47,6 +47,9 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	if req.LowConfidenceWarningPercent != nil {
 		baseKey["lowConfidenceWarningPercent"] = *req.LowConfidenceWarningPercent
 	}
+	if enabledFeatures := req.Features.EnabledCodes(); len(enabledFeatures) > 0 {
+		baseKey["enabledFeatures"] = enabledFeatures
+	}
 	if len(req.LicenseDenyList) > 0 {
 		baseKey["licenseDeny"] = req.LicenseDenyList
 	}

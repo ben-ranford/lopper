@@ -80,9 +80,9 @@ func loadPackageManifest(repoPath, manifestPath string) (packageManifest, []stri
 	root := filepath.Dir(manifestPath)
 
 	if len(overrideDeps) > 0 {
-		relManifest, relErr := filepath.Rel(repoPath, manifestPath)
-		if relErr != nil {
-			relManifest = manifestPath
+		relManifest := manifestPath
+		if relative, relErr := filepath.Rel(repoPath, manifestPath); relErr == nil && strings.TrimSpace(relative) != "" {
+			relManifest = relative
 		}
 		warnings = append(warnings, fmt.Sprintf("dependency_overrides declared in %s: %s", relManifest, strings.Join(overrideDeps, ", ")))
 	}
@@ -96,12 +96,14 @@ func loadPackageManifest(repoPath, manifestPath string) (packageManifest, []stri
 			return packageManifest{}, nil, lockErr
 		}
 		mergeLockDependencyData(dependencies, lockData.Packages, &hasPluginMetadata)
+		annotateFederatedPluginDependencies(dependencies, lockData.Packages)
 	} else if os.IsNotExist(statErr) {
-		relRoot, relErr := filepath.Rel(repoPath, root)
-		if relErr != nil || relRoot == "" {
-			relRoot = "."
+		relRoot := "."
+		if relative, relErr := filepath.Rel(repoPath, root); relErr == nil && strings.TrimSpace(relative) != "" {
+			relRoot = relative
 		}
 		warnings = append(warnings, fmt.Sprintf("pubspec.lock not found in %s; resolved package metadata may be partial", relRoot))
+		annotateFederatedPluginDependencies(dependencies, nil)
 	} else {
 		return packageManifest{}, nil, statErr
 	}
@@ -170,15 +172,18 @@ func mergeLockDependencyData(dest map[string]dependencyInfo, packages map[string
 			continue
 		}
 		classification := strings.ToLower(strings.TrimSpace(item.Dependency))
+		source := normalizeDependencySource(item.Source)
 		info := dependencyInfo{
-			Runtime:    strings.Contains(classification, "main"),
-			Dev:        strings.Contains(classification, "dev"),
-			Override:   strings.Contains(classification, "overrid"),
-			FlutterSDK: strings.EqualFold(strings.TrimSpace(item.Source), "sdk") && lockDescriptionTargetsFlutter(item.Description),
-			LocalPath:  strings.EqualFold(strings.TrimSpace(item.Source), "path"),
-			PluginLike: isLikelyFlutterPluginPackage(dependency),
-			Source:     strings.TrimSpace(item.Source),
-			Version:    strings.TrimSpace(item.Version),
+			Runtime:        strings.Contains(classification, "main"),
+			Dev:            strings.Contains(classification, "dev"),
+			Override:       strings.Contains(classification, "overrid"),
+			ResolvedInLock: true,
+			FlutterSDK:     source == dependencySourceSDK && lockDescriptionTargetsFlutter(item.Description),
+			LocalPath:      source == dependencySourcePath,
+			PluginLike:     isLikelyFlutterPluginPackage(dependency),
+			Source:         source,
+			SourceDetail:   dependencySourceDetail(item.Description, "path", "url", "sdk", "name"),
+			Version:        strings.TrimSpace(item.Version),
 		}
 		if hasPluginMetadataValue(item.Description) {
 			info.PluginLike = true
@@ -243,11 +248,30 @@ func mergeDependencyInfo(dest map[string]dependencyInfo, dependency string, inco
 	current.LocalPath = current.LocalPath || incoming.LocalPath
 	current.FlutterSDK = current.FlutterSDK || incoming.FlutterSDK
 	current.PluginLike = current.PluginLike || incoming.PluginLike
-	if current.Source == "" {
+	current.DeclaredInManifest = current.DeclaredInManifest || incoming.DeclaredInManifest
+	hadResolvedInLock := current.ResolvedInLock
+	current.ResolvedInLock = current.ResolvedInLock || incoming.ResolvedInLock
+	current.FederatedPlugin = current.FederatedPlugin || incoming.FederatedPlugin
+	if current.Source == "" || (!hadResolvedInLock && incoming.ResolvedInLock) {
 		current.Source = incoming.Source
+		if incoming.SourceDetail != "" {
+			current.SourceDetail = incoming.SourceDetail
+		}
+	} else if current.Source == incoming.Source && current.SourceDetail == "" {
+		current.SourceDetail = incoming.SourceDetail
 	}
-	if current.Version == "" {
+	if current.Version == "" || (!hadResolvedInLock && incoming.ResolvedInLock) {
 		current.Version = incoming.Version
+	}
+	if current.FederatedFamily == "" {
+		current.FederatedFamily = incoming.FederatedFamily
+	}
+	if current.FederatedRole == "" {
+		current.FederatedRole = incoming.FederatedRole
+	}
+	if len(incoming.FederatedMembers) > 0 {
+		current.FederatedMembers = dedupeStrings(append(current.FederatedMembers, incoming.FederatedMembers...))
+		sort.Strings(current.FederatedMembers)
 	}
 	dest[dependency] = current
 }

@@ -133,6 +133,20 @@ func (s *Set) Enabled(ref string) bool {
 	return s.enabled[flag.Code]
 }
 
+func (s *Set) EnabledCodes() []string {
+	if s == nil || len(s.enabled) == 0 {
+		return nil
+	}
+	codes := make([]string, 0, len(s.enabled))
+	for code, enabled := range s.enabled {
+		if enabled {
+			codes = append(codes, code)
+		}
+	}
+	sort.Strings(codes)
+	return codes
+}
+
 func (s *Set) EnabledFlag(ref string) (bool, error) {
 	flag, ok := s.lookup(ref)
 	if !ok {

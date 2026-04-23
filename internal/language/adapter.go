@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -17,6 +18,7 @@ type Request struct {
 	TopN                              int
 	SuggestOnly                       bool
 	RuntimeProfile                    string
+	Features                          featureflags.Set
 	MinUsagePercentForRecommendations *int
 	RemovalCandidateWeights           *report.RemovalCandidateWeights
 	IncludeRegistryProvenance         bool

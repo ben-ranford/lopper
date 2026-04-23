@@ -1,6 +1,9 @@
 package analysis
 
-import "github.com/ben-ranford/lopper/internal/report"
+import (
+	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/report"
+)
 
 const (
 	ScopeModeRepo            = "repo"
@@ -28,6 +31,7 @@ type Request struct {
 	RuntimeTestCommand                string
 	IncludePatterns                   []string
 	ExcludePatterns                   []string
+	Features                          featureflags.Set
 	LowConfidenceWarningPercent       *int
 	MinUsagePercentForRecommendations *int
 	RemovalCandidateWeights           *report.RemovalCandidateWeights

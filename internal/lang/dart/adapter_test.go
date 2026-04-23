@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -265,6 +266,218 @@ void main() {
 	}
 }
 
+func TestDartSourceAttributionPreviewFlagOffKeepsLegacyBehavior(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), `name: app
+dependencies:
+  http: ^1.2.0
+  git_pkg:
+    git:
+      url: https://github.com/example/git_pkg.git
+      ref: v1.0.0
+  local_pkg:
+    path: ../local_pkg
+  flutter:
+    sdk: flutter
+  url_launcher: ^6.0.0
+dependency_overrides:
+  git_pkg:
+    git:
+      url: https://github.com/example/git_pkg.git
+      ref: v1.0.1
+flutter:
+  uses-material-design: true
+`)
+	writeFile(t, filepath.Join(repo, pubspecLockName), `packages:
+  http:
+    dependency: "direct main"
+    description: {name: http, url: "https://pub.dev"}
+    source: hosted
+    version: "1.2.0"
+  git_pkg:
+    dependency: "direct overridden"
+    description: {url: "https://github.com/example/git_pkg.git", ref: "v1.0.1"}
+    source: git
+    version: "1.0.1"
+  local_pkg:
+    dependency: "direct main"
+    description: {path: ../local_pkg}
+    source: path
+    version: "0.0.1"
+  flutter:
+    dependency: "direct main"
+    description: flutter
+    source: sdk
+    version: "0.0.0"
+  url_launcher:
+    dependency: "direct main"
+    description: {name: url_launcher, url: "https://pub.dev"}
+    source: hosted
+    version: "6.0.0"
+  url_launcher_android:
+    dependency: transitive
+    description: {name: url_launcher_android, url: "https://pub.dev"}
+    source: hosted
+    version: "6.0.0"
+  url_launcher_platform_interface:
+    dependency: transitive
+    description: {name: url_launcher_platform_interface, url: "https://pub.dev"}
+    source: hosted
+    version: "2.0.0"
+`)
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart' as launcher;
+
+void main() {
+  http.Client();
+  launcher.launchUrl(Uri.parse('https://example.com'));
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     25,
+	})
+	if err != nil {
+		t.Fatalf(analyseErrorFormat, err)
+	}
+
+	if _, ok := findDependency(reportData.Dependencies, "local_pkg"); ok {
+		t.Fatalf("expected local path dependency to remain excluded with preview flag off")
+	}
+	gitDep, ok := findDependency(reportData.Dependencies, "git_pkg")
+	if !ok {
+		t.Fatalf("expected git_pkg dependency in top report")
+	}
+	if gitDep.Provenance != nil {
+		t.Fatalf("expected no provenance with preview flag off, got %#v", gitDep.Provenance)
+	}
+	urlLauncher, ok := findDependency(reportData.Dependencies, "url_launcher")
+	if !ok {
+		t.Fatalf("expected url_launcher dependency in top report")
+	}
+	if hasRiskCueCode(urlLauncher, "flutter-federated-plugin-family") {
+		t.Fatalf("expected no federated plugin cue with preview flag off")
+	}
+}
+
+func TestDartSourceAttributionPreviewFlagOnAddsSourceAndFederatedAttribution(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), `name: app
+dependencies:
+  http: ^1.2.0
+  git_pkg:
+    git:
+      url: https://github.com/example/git_pkg.git
+      ref: v1.0.0
+  local_pkg:
+    path: ../local_pkg
+  flutter:
+    sdk: flutter
+  url_launcher: ^6.0.0
+dependency_overrides:
+  git_pkg:
+    git:
+      url: https://github.com/example/git_pkg.git
+      ref: v1.0.1
+flutter:
+  uses-material-design: true
+`)
+	writeFile(t, filepath.Join(repo, pubspecLockName), `packages:
+  http:
+    dependency: "direct main"
+    description: {name: http, url: "https://pub.dev"}
+    source: hosted
+    version: "1.2.0"
+  git_pkg:
+    dependency: "direct overridden"
+    description: {url: "https://github.com/example/git_pkg.git", ref: "v1.0.1"}
+    source: git
+    version: "1.0.1"
+  local_pkg:
+    dependency: "direct main"
+    description: {path: ../local_pkg}
+    source: path
+    version: "0.0.1"
+  flutter:
+    dependency: "direct main"
+    description: flutter
+    source: sdk
+    version: "0.0.0"
+  url_launcher:
+    dependency: "direct main"
+    description: {name: url_launcher, url: "https://pub.dev"}
+    source: hosted
+    version: "6.0.0"
+  url_launcher_android:
+    dependency: transitive
+    description: {name: url_launcher_android, url: "https://pub.dev"}
+    source: hosted
+    version: "6.0.0"
+  url_launcher_platform_interface:
+    dependency: transitive
+    description: {name: url_launcher_platform_interface, url: "https://pub.dev"}
+    source: hosted
+    version: "2.0.0"
+`)
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart' as launcher;
+
+void main() {
+  http.Client();
+  launcher.launchUrl(Uri.parse('https://example.com'));
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		TopN:       25,
+		Features:   mustDartPreviewFeatureSet(t, true),
+		Dependency: "",
+	})
+	if err != nil {
+		t.Fatalf(analyseErrorFormat, err)
+	}
+
+	assertProvenanceSource(t, reportData.Dependencies, "http", dependencySourceHosted)
+	assertProvenanceSource(t, reportData.Dependencies, "git_pkg", dependencySourceGit)
+	assertProvenanceSource(t, reportData.Dependencies, "local_pkg", dependencySourcePath)
+	assertProvenanceSource(t, reportData.Dependencies, "flutter", dependencySourceSDK)
+
+	localDep, ok := findDependency(reportData.Dependencies, "local_pkg")
+	if !ok {
+		t.Fatalf("expected local_pkg dependency when preview flag is enabled")
+	}
+	if !hasRiskCueCode(localDep, "local-path-dependency") {
+		t.Fatalf("expected local path cue, got %#v", localDep.RiskCues)
+	}
+	if hasRecommendationCode(localDep, "remove-unused-dependency") {
+		t.Fatalf("expected local path dependency to skip remove-unused recommendation under preview")
+	}
+
+	gitDep, ok := findDependency(reportData.Dependencies, "git_pkg")
+	if !ok {
+		t.Fatalf("expected git_pkg dependency in report")
+	}
+	if !hasRiskCueCode(gitDep, "git-dependency-source") {
+		t.Fatalf("expected git dependency source cue, got %#v", gitDep.RiskCues)
+	}
+	if !containsRecommendationMessage(gitDep, "review-dependency-override", "git dependency") {
+		t.Fatalf("expected override recommendation context for git dependency, got %#v", gitDep.Recommendations)
+	}
+
+	urlLauncher, ok := findDependency(reportData.Dependencies, "url_launcher")
+	if !ok {
+		t.Fatalf("expected url_launcher dependency in report")
+	}
+	if !hasRiskCueCode(urlLauncher, "flutter-federated-plugin-family") {
+		t.Fatalf("expected federated plugin risk cue, got %#v", urlLauncher.RiskCues)
+	}
+	if urlLauncher.Provenance == nil || !slices.Contains(urlLauncher.Provenance.Signals, "federated:url_launcher") {
+		t.Fatalf("expected federated provenance signal, got %#v", urlLauncher.Provenance)
+	}
+}
+
 func findDependency(dependencies []report.DependencyReport, name string) (report.DependencyReport, bool) {
 	for _, dependency := range dependencies {
 		if dependency.Name == name {
@@ -290,6 +503,50 @@ func hasRecommendationCode(dep report.DependencyReport, code string) bool {
 		}
 	}
 	return false
+}
+
+func containsRecommendationMessage(dep report.DependencyReport, code string, needle string) bool {
+	for _, rec := range dep.Recommendations {
+		if rec.Code == code && strings.Contains(strings.ToLower(rec.Message), strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+func assertProvenanceSource(t *testing.T, dependencies []report.DependencyReport, name string, expected string) {
+	t.Helper()
+	dep, ok := findDependency(dependencies, name)
+	if !ok {
+		t.Fatalf("expected dependency %q in report", name)
+	}
+	if dep.Provenance == nil {
+		t.Fatalf("expected provenance for dependency %q", name)
+	}
+	if dep.Provenance.Source != expected {
+		t.Fatalf("expected provenance source %q for %q, got %#v", expected, name, dep.Provenance)
+	}
+}
+
+func mustDartPreviewFeatureSet(t *testing.T, enabled bool) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:      "LOP-FEAT-0001",
+		Name:      dartSourceAttributionPreviewFeature,
+		Lifecycle: featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new feature registry: %v", err)
+	}
+	opts := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if enabled {
+		opts.Enable = []string{dartSourceAttributionPreviewFeature}
+	}
+	features, err := registry.Resolve(opts)
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+	return features
 }
 
 func containsWarning(warnings []string, needle string) bool {

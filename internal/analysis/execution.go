@@ -64,6 +64,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			TopN:                              req.TopN,
 			SuggestOnly:                       req.SuggestOnly,
 			RuntimeProfile:                    req.RuntimeProfile,
+			Features:                          req.Features,
 			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
 			RemovalCandidateWeights:           req.RemovalCandidateWeights,
 			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,

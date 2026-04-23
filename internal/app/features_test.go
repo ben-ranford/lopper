@@ -62,8 +62,8 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute empty features: %v", err)
 	}
-	if emptyOutput != "No feature flags registered.\n" {
-		t.Fatalf("expected empty feature table, got %q", emptyOutput)
+	if !strings.Contains(emptyOutput, "dart-source-attribution-preview") || !strings.Contains(emptyOutput, "false") {
+		t.Fatalf("expected default feature table to include dart-source-attribution-preview disabled by default, got %q", emptyOutput)
 	}
 }
 

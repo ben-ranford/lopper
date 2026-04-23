@@ -268,6 +268,43 @@ flutter:
 	assertDeclaredLockResolution(t, manifest.Dependencies)
 }
 
+func TestAnnotateFederatedPluginDependenciesFromLockMetadata(t *testing.T) {
+	deps := map[string]dependencyInfo{
+		"url_launcher": {},
+		"http":         {},
+	}
+	lockPackages := map[string]pubspecLockPackage{
+		"url_launcher": {
+			Description: map[string]any{"name": "url_launcher"},
+		},
+		"url_launcher_android": {
+			Description: map[string]any{"name": "url_launcher_android"},
+		},
+		"url_launcher_platform_interface": {
+			Description: map[string]any{"name": "url_launcher_platform_interface"},
+		},
+	}
+
+	annotateFederatedPluginDependencies(deps, lockPackages)
+
+	info := deps["url_launcher"]
+	if !info.FederatedPlugin {
+		t.Fatalf("expected url_launcher to be marked as federated plugin")
+	}
+	if info.FederatedFamily != "url_launcher" {
+		t.Fatalf("expected federated family url_launcher, got %#v", info)
+	}
+	if info.FederatedRole != federatedRoleApp {
+		t.Fatalf("expected federated app role, got %#v", info)
+	}
+	if !slices.Equal(info.FederatedMembers, []string{"url_launcher_android", "url_launcher_platform_interface"}) {
+		t.Fatalf("unexpected federated members: %#v", info.FederatedMembers)
+	}
+	if deps["http"].FederatedPlugin {
+		t.Fatalf("did not expect unrelated dependency to be marked federated")
+	}
+}
+
 func TestScanBranchesAndWarnings(t *testing.T) {
 	repo := t.TempDir()
 	manifestPath := filepath.Join(repo, pubspecYAMLName)
@@ -591,11 +628,17 @@ func assertLoadedManifest(t *testing.T, manifest packageManifest, warnings []str
 	if !manifest.Dependencies["flutter"].FlutterSDK {
 		t.Fatalf("expected flutter dependency to be marked as sdk")
 	}
+	if manifest.Dependencies["flutter"].Source != dependencySourceSDK {
+		t.Fatalf("expected flutter dependency source sdk, got %#v", manifest.Dependencies["flutter"])
+	}
 	if !manifest.Dependencies["url_launcher_android"].PluginLike {
 		t.Fatalf("expected plugin package classification from lock/manifest metadata")
 	}
 	if !manifest.Dependencies["local_pkg"].LocalPath {
 		t.Fatalf("expected path dependency to be marked as local")
+	}
+	if manifest.Dependencies["local_pkg"].Source != dependencySourcePath {
+		t.Fatalf("expected local dependency source path, got %#v", manifest.Dependencies["local_pkg"])
 	}
 }
 
