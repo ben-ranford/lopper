@@ -73,6 +73,57 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseSideEffectImportIsUsed(t *testing.T) {
+	repo := t.TempDir()
+	source := "import \"reflect-metadata\"\n"
+	path := filepath.Join(repo, testIndexJS)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := writeDependency(repo, "reflect-metadata", testModuleExportsStub); err != nil {
+		t.Fatalf("write dependency: %v", err)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "reflect-metadata",
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDepFmt, len(reportData.Dependencies))
+	}
+
+	dep := reportData.Dependencies[0]
+	if len(dep.UsedImports) != 1 {
+		t.Fatalf("expected one used import for side-effect dependency, got %#v", dep.UsedImports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected no unused imports for side-effect dependency, got %#v", dep.UnusedImports)
+	}
+	if dep.UsedImports[0].Name != sideEffectImportName {
+		t.Fatalf("expected side-effect import marker name, got %#v", dep.UsedImports[0])
+	}
+
+	recCodes := make([]string, 0, len(dep.Recommendations))
+	for _, rec := range dep.Recommendations {
+		recCodes = append(recCodes, rec.Code)
+	}
+	if slices.Contains(recCodes, "remove-unused-dependency") {
+		t.Fatalf("did not expect remove-unused-dependency recommendation for side-effect import, got %#v", recCodes)
+	}
+	if slices.Contains(recCodes, "avoid-wildcard-default-imports") {
+		t.Fatalf("did not expect wildcard/default recommendation for side-effect import, got %#v", recCodes)
+	}
+
+	joinedWarnings := strings.Join(reportData.Warnings, "\n")
+	if strings.Contains(joinedWarnings, "no used exports found for dependency") {
+		t.Fatalf("did not expect no-used-exports warning for side-effect import, got %#v", reportData.Warnings)
+	}
+}
+
 func TestAdapterAnalyseTopN(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { used } from \"alpha\"\nimport { unused } from \"beta\"\nused()\n"

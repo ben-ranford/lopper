@@ -61,8 +61,11 @@ foo("x");
 	}
 
 	firstImport := parseImportStatement(importStmts[0], source, unitIndexJS)
-	if len(firstImport) != 1 || firstImport[0].Kind != ImportNamespace {
-		t.Fatalf("expected namespace fallback import for bare import, got %#v", firstImport)
+	if len(firstImport) != 1 || firstImport[0].Kind != ImportSideEffect {
+		t.Fatalf("expected side-effect fallback import for bare import, got %#v", firstImport)
+	}
+	if firstImport[0].ExportName != sideEffectImportName || firstImport[0].LocalName != "" {
+		t.Fatalf("expected side-effect import marker and empty local name, got %#v", firstImport[0])
 	}
 
 	secondImport := parseImportStatement(importStmts[1], source, unitIndexJS)
@@ -71,15 +74,24 @@ foo("x");
 	}
 
 	var sawRequire bool
+	var sawBareRequireSideEffect bool
 	for _, call := range callExprs {
 		bindings := parseRequireCall(call, source, unitIndexJS)
 		if len(bindings) == 0 {
 			continue
 		}
 		sawRequire = true
+		if len(bindings) == 1 && bindings[0].Module == "leftpad" {
+			sawBareRequireSideEffect = bindings[0].Kind == ImportSideEffect &&
+				bindings[0].ExportName == sideEffectImportName &&
+				bindings[0].LocalName == ""
+		}
 	}
 	if !sawRequire {
 		t.Fatalf("expected parsed require bindings")
+	}
+	if !sawBareRequireSideEffect {
+		t.Fatalf("expected bare require to be treated as a side-effect import")
 	}
 }
 
