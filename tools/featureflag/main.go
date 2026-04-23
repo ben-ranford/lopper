@@ -38,7 +38,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: featureflag add|graduate|validate|manifest|report|pr-enforce")
+		return fmt.Errorf("usage: featureflag add|graduate|validate|manifest|report|pr-enforce|release-pr-comment")
 	}
 	switch args[0] {
 	case "add":
@@ -53,6 +53,8 @@ func run(args []string) error {
 		return runReport(args[1:])
 	case "pr-enforce":
 		return runPREnforce(args[1:])
+	case "release-pr-comment":
+		return runReleasePRComment(args[1:])
 	default:
 		return fmt.Errorf("unknown featureflag command: %s", args[0])
 	}
@@ -339,23 +341,7 @@ func writeNewPreviewSection(b *strings.Builder, current []featureflags.Flag, pre
 		b.WriteString("Not compared; no previous feature catalog was provided.\n\n")
 		return
 	}
-	previousByCode := make(map[string]struct{}, len(previous))
-	previousByName := make(map[string]struct{}, len(previous))
-	for _, flag := range previous {
-		previousByCode[flag.Code] = struct{}{}
-		previousByName[flag.Name] = struct{}{}
-	}
-	added := make([]featureflags.Flag, 0)
-	for _, flag := range current {
-		if flag.Lifecycle != featureflags.LifecyclePreview {
-			continue
-		}
-		_, seenCode := previousByCode[flag.Code]
-		_, seenName := previousByName[flag.Name]
-		if !seenCode && !seenName {
-			added = append(added, flag)
-		}
-	}
+	added := newlyAddedPreviewFlags(current, previous, compared)
 	if len(added) == 0 {
 		b.WriteString("None.\n\n")
 		return
