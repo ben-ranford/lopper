@@ -66,6 +66,8 @@ func parsePorcelainChangedFiles(output []byte) []string {
 		if len(line) < 4 {
 			return ""
 		}
+		// Porcelain format is positional (`XY PATH`); trimming line whitespace corrupts
+		// unstaged entries that start with a leading status-space (`" M path"`).
 		path := line[3:]
 		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
 			path = path[idx+4:]
