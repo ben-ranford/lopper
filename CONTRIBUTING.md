@@ -84,6 +84,7 @@ Contributor rules:
 - Release locks are release-specific default-on decisions; they do not change the lifecycle to `stable`.
 - Graduation requires a separate PR that changes the registry lifecycle to `stable` and states the rollout evidence.
 - Use `make feature-flag-graduate FEATURE=...` locally, or run `graduate-feature.yml`, to prepare a graduation PR.
+- PRs that use the `feat` Conventional Commit type must add at least one new feature flag entry, and new entries must stay `preview`.
 - PRs that add, lock, or graduate a feature flag must run `go run ./tools/featureflag validate`.
 
 Reviewers should ask for a flag when the change changes default user behavior but lacks enough evidence for immediate stable rollout.

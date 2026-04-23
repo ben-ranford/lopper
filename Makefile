@@ -53,6 +53,9 @@ GO_VERSION_LDFLAGS = -X $(VERSION_PKG).version=$(VERSION) -X $(VERSION_PKG).comm
 RELEASE_VERSION_LDFLAGS = -X $(VERSION_PKG).version=$(VERSION) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).buildDate=$(BUILD_DATE) -X $(VERSION_PKG).buildChannel=$(RELEASE_BUILD_CHANNEL)
 BUILD_GO_LDFLAGS ?= $(GO_VERSION_LDFLAGS)
 RELEASE_GO_LDFLAGS ?= -s -w $(RELEASE_VERSION_LDFLAGS)
+TEST_VERSION_LDFLAGS = -X $(VERSION_PKG).buildChannel=$(BUILD_CHANNEL)
+GO_TEST_LDFLAGS ?= $(TEST_VERSION_LDFLAGS)
+GO_TEST_LDFLAGS_ARGS = $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFLAGS)")
 
 format:
 	gofmt -w .
@@ -151,19 +154,19 @@ vuln-check:
 	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 test:
-	$(GO_CMD) test ./...
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./...
 
 test-leaks:
-	GOLEAK=1 $(GO_CMD) test ./...
+	GOLEAK=1 $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./...
 
 test-race:
-	$(GO_CMD) test -race ./...
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race ./...
 
 bench-mem:
 	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
 	bench_output_tmp=$$(mktemp); \
 	trap 'rm -f "$$bench_output_tmp"' EXIT INT TERM; \
-	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$bench_output_tmp" 2>&1; then \
+	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$bench_output_tmp" 2>&1; then \
 		cat "$$bench_output_tmp"; \
 		exit 1; \
 	fi; \
@@ -208,13 +211,13 @@ bench-gate:
 		echo "Running memory benchmark delta against $$base_ref."; \
 	fi; \
 	(unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); \
-	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
+	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
 		cat "$$base_output_tmp"; \
 		exit 1; \
 	fi; \
 	cat "$$base_output_tmp"; \
 	cp "$$base_output_tmp" "$(BENCH_BASE_OUTPUT)"; \
-	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$head_output_tmp" 2>&1; then \
+	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$head_output_tmp" 2>&1; then \
 		cat "$$head_output_tmp"; \
 		exit 1; \
 	fi; \
@@ -235,7 +238,7 @@ bench-gate:
 cov:
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \
-		GOFLAGS=-buildvcs=false $(GO_CMD) test $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
+		GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
 		-coverprofile="$(COVERAGE_FILE)" \
 		-min="$(COVERAGE_MIN)" \

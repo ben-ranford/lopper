@@ -14,6 +14,7 @@ func TestExecuteFeaturesJSON(t *testing.T) {
 	req := DefaultRequest()
 	req.Mode = ModeFeatures
 	req.Features.Format = "json"
+	req.Features.Channel = "dev"
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {
@@ -71,6 +72,7 @@ func TestExecuteFeaturesTableAndInvalidFormat(t *testing.T) {
 	application := &App{Features: mustFeatureRegistry(t)}
 	req := DefaultRequest()
 	req.Mode = ModeFeatures
+	req.Features.Channel = "dev"
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {

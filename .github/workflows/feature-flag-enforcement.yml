@@ -1,0 +1,136 @@
+name: feature flag enforcement
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Fetch PR base
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          base_ref="${PR_BASE_REF:-main}"
+          git fetch --no-tags --depth=1 origin "${base_ref}"
+
+      - name: Capture base feature catalog
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          base_ref="${PR_BASE_REF:-main}"
+          mkdir -p .artifacts
+          if git cat-file -e "origin/${base_ref}:internal/featureflags/features.json"; then
+            git show "origin/${base_ref}:internal/featureflags/features.json" > .artifacts/previous-features.json
+          else
+            printf '[]\n' > .artifacts/previous-features.json
+          fi
+
+      - name: Enforce feature flags on PRs
+        id: enforce_flags
+        continue-on-error: true
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          go run ./tools/featureflag pr-enforce \
+            --pr-title "${PR_TITLE}" \
+            --previous-catalog .artifacts/previous-features.json \
+            > .artifacts/feature-flag-enforcement.md
+
+      - name: Write feature flag summary
+        if: ${{ always() }}
+        run: |
+          if [ -s .artifacts/feature-flag-enforcement.md ]; then
+            cat .artifacts/feature-flag-enforcement.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n\n%s\n' \
+              '## Feature flag enforcement' \
+              '❌ Feature flag enforcement summary was not produced. Check the workflow logs.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment feature flag report on PR
+        if: ${{ always() && !env.ACT }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const marker = '<!-- lopper-feature-flag-enforcement -->';
+            const summaryPath = '.artifacts/feature-flag-enforcement.md';
+            const fallbackBody = [
+              marker,
+              '## Feature flag enforcement',
+              '',
+              '❌ Feature flag enforcement summary was not produced.',
+              '',
+              'See the workflow logs for the failure details.',
+            ].join('\n');
+
+            let summary = '';
+            if (fs.existsSync(summaryPath)) {
+              summary = fs.readFileSync(summaryPath, 'utf8').trim();
+            }
+            const body = summary || fallbackBody;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = comments.filter(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            if (existing.length > 0) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing[0].id,
+                body,
+              });
+              for (const duplicate of existing.slice(1)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail on feature flag enforcement errors
+        if: ${{ steps.enforce_flags.outcome == 'failure' }}
+        run: |
+          echo "Feature flag enforcement failed. See the summary above for the added flags and any violations."
+          exit 1
