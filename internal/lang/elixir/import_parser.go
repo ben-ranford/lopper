@@ -68,19 +68,37 @@ func parseAliasLocal(line []byte) string {
 }
 
 func dependencyFromModule(module string, declared map[string]struct{}) string {
-	root := strings.Split(module, ".")[0]
-	normalized := normalizeDependencyID(camelToSnake(root))
-	if normalized == "" {
+	moduleParts := strings.Split(module, ".")
+	root := strings.TrimSpace(moduleParts[0])
+	rootDependency := normalizeDependencyID(camelToSnake(root))
+	if rootDependency == "" {
 		return ""
 	}
-	if _, ok := declared[normalized]; ok {
-		return normalized
+	if _, ok := declared[rootDependency]; ok {
+		return rootDependency
 	}
-	alt := strings.ReplaceAll(normalized, "_", "-")
-	if _, ok := declared[alt]; ok {
-		return alt
+	if len(moduleParts) > 1 {
+		secondSegmentDependency := normalizeDependencyID(camelToSnake(root) + "-" + camelToSnake(moduleParts[1]))
+		if _, ok := declared[secondSegmentDependency]; ok {
+			return secondSegmentDependency
+		}
 	}
-	return ""
+	return uniqueDeclaredDependencyWithPrefix(rootDependency, declared)
+}
+
+func uniqueDeclaredDependencyWithPrefix(rootDependency string, declared map[string]struct{}) string {
+	prefix := rootDependency + "-"
+	match := ""
+	for dependency := range declared {
+		if !strings.HasPrefix(dependency, prefix) {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = dependency
+	}
+	return match
 }
 
 func normalizeDependencyID(value string) string {
