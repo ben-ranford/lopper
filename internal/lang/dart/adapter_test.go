@@ -153,6 +153,33 @@ void main() {
 	}
 }
 
+func TestDartAdapterAnalyseMultilineImportDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:http/http.dart'
+    as http;
+
+void main() {
+  final client = http.Client();
+  client.close();
+}
+`)
+
+	depReport, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "http",
+	})
+	if err != nil {
+		t.Fatalf("analyse multiline import dependency: %v", err)
+	}
+	if len(depReport.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyReport, len(depReport.Dependencies))
+	}
+	if depReport.Dependencies[0].UsedExportsCount == 0 {
+		t.Fatalf("expected multiline import alias usage to be detected")
+	}
+}
+
 func TestDartAdapterUndeclaredImportRisk(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
