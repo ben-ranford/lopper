@@ -69,6 +69,7 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 		!strings.Contains(emptyOutput, "lockfile-drift-ecosystem-expansion-preview") ||
 		!strings.Contains(emptyOutput, "swift-carthage-preview") ||
 		!strings.Contains(emptyOutput, "powershell-adapter-preview") ||
+		!strings.Contains(emptyOutput, "go-vendored-provenance-preview") ||
 		!strings.Contains(emptyOutput, "false") {
 		t.Fatalf("expected default feature table to include embedded preview flags disabled by default, got %q", emptyOutput)
 	}

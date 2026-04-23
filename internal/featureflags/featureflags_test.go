@@ -2,6 +2,7 @@ package featureflags
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -47,6 +48,7 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	assertDefaultFlag(t, defaultFlags, "lockfile-drift-ecosystem-expansion-preview", "LOP-FEAT-0002")
 	assertDefaultFlag(t, defaultFlags, "swift-carthage-preview", "LOP-FEAT-0003")
 	assertDefaultFlag(t, defaultFlags, "powershell-adapter-preview", "LOP-FEAT-0004")
+	assertDefaultFlag(t, defaultFlags, "go-vendored-provenance-preview", "LOP-FEAT-0005")
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
 	}
@@ -96,6 +98,9 @@ func TestCatalogParseAndFormat(t *testing.T) {
 	}
 	if _, err := ParseCatalog([]byte(`[] []`)); err == nil {
 		t.Fatalf("expected multiple JSON values to fail")
+	}
+	if _, err := ParseCatalog([]byte(`[{"code":"LOP-FEAT-0001","name":"bad name","lifecycle":"preview"}]`)); err == nil {
+		t.Fatalf("expected catalog entries that fail registry validation to fail")
 	}
 	if _, err := FormatCatalog([]Flag{{Code: "bad", Name: "alpha", Lifecycle: LifecyclePreview}}); err == nil {
 		t.Fatalf("expected invalid catalog flag to fail")
@@ -502,6 +507,7 @@ func TestManifestReportsDefaults(t *testing.T) {
 	assertManifestFlag(t, manifest, "lockfile-drift-ecosystem-expansion-preview", false)
 	assertManifestFlag(t, manifest, "swift-carthage-preview", false)
 	assertManifestFlag(t, manifest, "powershell-adapter-preview", false)
+	assertManifestFlag(t, manifest, "go-vendored-provenance-preview", false)
 }
 
 func TestFormatManifest(t *testing.T) {
@@ -556,6 +562,7 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 		"lockfile-drift-ecosystem-expansion-preview",
 		"swift-carthage-preview",
 		"powershell-adapter-preview",
+		"go-vendored-provenance-preview",
 	} {
 		if dev.Enabled(name) {
 			t.Fatalf("expected %s default-off in dev channel", name)
@@ -571,6 +578,7 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 		"lockfile-drift-ecosystem-expansion-preview",
 		"swift-carthage-preview",
 		"powershell-adapter-preview",
+		"go-vendored-provenance-preview",
 	} {
 		if release.Enabled(name) {
 			t.Fatalf("expected %s default-off in release channel", name)
@@ -586,6 +594,36 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 	}
 	if !optIn.Enabled("swift-carthage-preview") {
 		t.Fatalf("expected explicit opt-in to enable swift-carthage-preview")
+	}
+}
+
+func TestEnabledCodes(t *testing.T) {
+	registry := testRegistry(t)
+	resolved, err := registry.Resolve(ResolveOptions{
+		Channel: ChannelRelease,
+		Enable:  []string{"preview-flag"},
+	})
+	if err != nil {
+		t.Fatalf("resolve enabled codes: %v", err)
+	}
+	if got := resolved.EnabledCodes(); !reflect.DeepEqual(got, []string{"LOP-FEAT-0001", "LOP-FEAT-0002"}) {
+		t.Fatalf("expected sorted enabled feature codes, got %#v", got)
+	}
+
+	resolved, err = registry.Resolve(ResolveOptions{
+		Channel: ChannelDev,
+		Disable: []string{"stable-flag"},
+	})
+	if err != nil {
+		t.Fatalf("resolve disabled codes: %v", err)
+	}
+	if got := resolved.EnabledCodes(); len(got) != 0 {
+		t.Fatalf("expected no enabled feature codes after disable override, got %#v", got)
+	}
+
+	var empty *Set
+	if got := empty.EnabledCodes(); len(got) != 0 {
+		t.Fatalf("expected nil set enabled codes to be empty, got %#v", got)
 	}
 }
 
