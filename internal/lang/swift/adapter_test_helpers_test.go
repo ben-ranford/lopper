@@ -26,6 +26,12 @@ type swiftFixturePodDependency struct {
 	version string
 }
 
+type swiftFixtureCarthageDependency struct {
+	kind      string
+	source    string
+	reference string
+}
+
 func alamofireFixtureDependency() swiftFixtureDependency {
 	return swiftFixtureDependency{
 		identity:    "alamofire",
@@ -49,6 +55,14 @@ func alamofirePodFixtureDependency() swiftFixturePodDependency {
 	return swiftFixturePodDependency{
 		name:    "Alamofire",
 		version: "5.8.1",
+	}
+}
+
+func rxSwiftCarthageFixtureDependency() swiftFixtureCarthageDependency {
+	return swiftFixtureCarthageDependency{
+		kind:      "github",
+		source:    "ReactiveX/RxSwift",
+		reference: "6.8.0",
 	}
 }
 
@@ -86,6 +100,13 @@ func writeSwiftDemoCocoaPodsProject(t *testing.T, repo string, dependencies []sw
 	writeSwiftDemoSourceFile(t, repo, mainContent)
 }
 
+func writeSwiftDemoCarthageProject(t *testing.T, repo string, dependencies []swiftFixtureCarthageDependency, mainContent string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent(dependencies))
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageResolvedName), buildCartfileResolvedContent(dependencies))
+	writeSwiftDemoSourceFile(t, repo, mainContent)
+}
+
 func writeSwiftDemoSourceFile(t *testing.T, repo string, mainContent string) {
 	t.Helper()
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
@@ -113,5 +134,33 @@ func buildPodLockContent(dependencies []swiftFixturePodDependency) string {
 		lines = append(lines, "  - "+dependency.name+" ("+dependency.version+")")
 	}
 	lines = append(lines, `COCOAPODS: 1.13.0`)
+	return strings.Join(lines, "\n")
+}
+
+func buildCartfileContent(dependencies []swiftFixtureCarthageDependency) string {
+	lines := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		kind := strings.TrimSpace(dependency.kind)
+		if kind == "" {
+			kind = "github"
+		}
+		lines = append(lines, kind+` "`+dependency.source+`" "`+dependency.reference+`"`)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildCartfileResolvedContent(dependencies []swiftFixtureCarthageDependency) string {
+	lines := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		kind := strings.TrimSpace(dependency.kind)
+		if kind == "" {
+			kind = "github"
+		}
+		reference := strings.TrimSpace(dependency.reference)
+		if reference == "" {
+			reference = "1.0.0"
+		}
+		lines = append(lines, kind+` "`+dependency.source+`" "`+reference+`"`)
+	}
 	return strings.Join(lines, "\n")
 }

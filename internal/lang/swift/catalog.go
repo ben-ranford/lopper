@@ -16,6 +16,14 @@ import (
 )
 
 func buildDependencyCatalog(repoPath string) (dependencyCatalog, []string, error) {
+	return buildDependencyCatalogWithOptions(repoPath, dependencyCatalogOptions{})
+}
+
+type dependencyCatalogOptions struct {
+	EnableCarthage bool
+}
+
+func buildDependencyCatalogWithOptions(repoPath string, opts dependencyCatalogOptions) (dependencyCatalog, []string, error) {
 	catalog := dependencyCatalog{
 		Dependencies:       make(map[string]dependencyMeta),
 		AliasToDependency:  make(map[string]string),
@@ -36,12 +44,23 @@ func buildDependencyCatalog(repoPath string) (dependencyCatalog, []string, error
 	}
 	warnings = append(warnings, podWarnings...)
 
+	carthage := packageManagerCatalogState{}
+	if opts.EnableCarthage {
+		carthageWarnings := []string(nil)
+		carthage, carthageWarnings, err = loadPackageManagerCatalog(repoPath, &catalog, loadCarthageManifestData, loadCarthageResolvedData)
+		if err != nil {
+			return dependencyCatalog{}, nil, err
+		}
+		warnings = append(warnings, carthageWarnings...)
+	}
+
 	catalog.HasSwiftPM = swiftPM.Active()
 	catalog.HasCocoaPods = cocoaPods.Active()
-	warnings = append(warnings, missingCatalogWarnings(swiftPM, cocoaPods)...)
+	catalog.HasCarthage = opts.EnableCarthage && carthage.Active()
+	warnings = append(warnings, missingCatalogWarnings(swiftPM, cocoaPods, carthage, opts.EnableCarthage)...)
 
 	if len(catalog.Dependencies) == 0 {
-		warnings = append(warnings, "no Swift dependencies were discovered from Package.swift, Package.resolved, Podfile, or Podfile.lock")
+		warnings = append(warnings, "no Swift dependencies were discovered from "+strings.Join(discoveredSwiftCatalogSources(opts), ", "))
 	}
 	return catalog, dedupeWarnings(warnings), nil
 }
@@ -75,12 +94,26 @@ func loadPackageManagerCatalog(repoPath string, catalog *dependencyCatalog, mani
 	}, append(manifestWarnings, lockWarnings...), nil
 }
 
-func missingCatalogWarnings(swiftPM, cocoaPods packageManagerCatalogState) []string {
+func missingCatalogWarnings(swiftPM, cocoaPods, carthage packageManagerCatalogState, includeCarthage bool) []string {
 	warnings := make([]string, 0, 4)
-	switch {
-	case !swiftPM.Active() && !cocoaPods.Active():
+	activeManagers := 0
+	for _, state := range []packageManagerCatalogState{swiftPM, cocoaPods} {
+		if state.Active() {
+			activeManagers++
+		}
+	}
+	if includeCarthage && carthage.Active() {
+		activeManagers++
+	}
+
+	switch activeManagers {
+	case 0:
 		warnings = append(warnings, packageManifestName+" not found; dependency declaration mapping may be incomplete")
 		warnings = append(warnings, packageResolvedName+" not found; version/resolution mapping may be incomplete")
+		if includeCarthage {
+			warnings = append(warnings, carthageManifestName+" not found; Carthage declaration mapping may be incomplete")
+			warnings = append(warnings, carthageResolvedName+" not found; Carthage version/resolution mapping may be incomplete")
+		}
 	default:
 		if swiftPM.Active() {
 			warnings = append(warnings, managerMissingWarnings(swiftPM, packageManifestName+" not found; dependency declaration mapping may be incomplete", packageResolvedName+" not found; version/resolution mapping may be incomplete")...)
@@ -88,8 +121,19 @@ func missingCatalogWarnings(swiftPM, cocoaPods packageManagerCatalogState) []str
 		if cocoaPods.Active() {
 			warnings = append(warnings, managerMissingWarnings(cocoaPods, podManifestName+" not found; CocoaPods declaration mapping may be incomplete", podLockName+" not found; CocoaPods version/resolution mapping may be incomplete")...)
 		}
+		if includeCarthage && carthage.Active() {
+			warnings = append(warnings, managerMissingWarnings(carthage, carthageManifestName+" not found; Carthage declaration mapping may be incomplete", carthageResolvedName+" not found; Carthage version/resolution mapping may be incomplete")...)
+		}
 	}
 	return warnings
+}
+
+func discoveredSwiftCatalogSources(opts dependencyCatalogOptions) []string {
+	sources := []string{packageManifestName, packageResolvedName, podManifestName, podLockName}
+	if opts.EnableCarthage {
+		sources = append(sources, carthageManifestName, carthageResolvedName)
+	}
+	return sources
 }
 
 func managerMissingWarnings(state packageManagerCatalogState, manifestWarning string, lockWarning string) []string {
@@ -463,6 +507,8 @@ func ensureDeclaredDependencyForManager(catalog *dependencyCatalog, depID string
 		meta.DeclaredViaSwiftPM = true
 	case cocoaPodsManager:
 		meta.DeclaredViaCocoaPods = true
+	case carthageManager:
+		meta.DeclaredViaCarthage = true
 	}
 	catalog.Dependencies[depID] = meta
 }
@@ -480,6 +526,8 @@ func ensureResolvedDependencyForManager(catalog *dependencyCatalog, depID string
 		meta.ResolvedViaSwiftPM = true
 	case cocoaPodsManager:
 		meta.ResolvedViaCocoaPods = true
+	case carthageManager:
+		meta.ResolvedViaCarthage = true
 	}
 	catalog.Dependencies[depID] = meta
 }

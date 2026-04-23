@@ -10,5 +10,11 @@
     "name": "lockfile-drift-ecosystem-expansion-preview",
     "description": "Preview expansion of shared lockfile drift checks for .NET, Dart, Elixir, and SwiftPM ecosystems.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0003",
+    "name": "swift-carthage-preview",
+    "description": "Enable Carthage dependency parsing for the Swift adapter.",
+    "lifecycle": "preview"
   }
 ]

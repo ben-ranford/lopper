@@ -41,14 +41,17 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 		t.Fatalf("expected embedded default registry to be valid, got %v", err)
 	}
 	defaultFlags := DefaultRegistry().Flags()
-	if len(defaultFlags) != 2 {
-		t.Fatalf("expected embedded default registry to contain two feature flags, got %#v", defaultFlags)
+	if len(defaultFlags) != 3 {
+		t.Fatalf("expected embedded default registry to contain three feature flags, got %#v", defaultFlags)
 	}
 	if got, ok := DefaultRegistry().Lookup("dart-source-attribution-preview"); !ok || got.Code != "LOP-FEAT-0001" {
 		t.Fatalf("expected dart source attribution preview flag in default registry, got %#v ok=%v", got, ok)
 	}
 	if got, ok := DefaultRegistry().Lookup("lockfile-drift-ecosystem-expansion-preview"); !ok || got.Code != "LOP-FEAT-0002" {
 		t.Fatalf("expected lockfile drift ecosystem preview flag in default registry, got %#v ok=%v", got, ok)
+	}
+	if got, ok := DefaultRegistry().Lookup("swift-carthage-preview"); !ok || got.Code != "LOP-FEAT-0003" {
+		t.Fatalf("expected swift Carthage preview flag in default registry, got %#v ok=%v", got, ok)
 	}
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
@@ -64,8 +67,8 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	if got, ok := registry.Lookup("stable-flag"); !ok || got.Code != "LOP-FEAT-0002" {
 		t.Fatalf("expected name lookup to find stable flag, got %#v ok=%v", got, ok)
 	}
-	flags := registry.Flags()
-	flags[0].Name = "mutated"
+	copiedFlags := registry.Flags()
+	copiedFlags[0].Name = "mutated"
 	if got, _ := registry.Lookup("LOP-FEAT-0001"); got.Name != "preview-flag" {
 		t.Fatalf("expected Flags to return a defensive copy, got %#v", got)
 	}
@@ -153,10 +156,10 @@ func TestNewRegistryRejectsDuplicates(t *testing.T) {
 }
 
 func TestNextCodeAllocatesGeneratedCodes(t *testing.T) {
-	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0003" {
+	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0004" {
 		t.Fatalf("expected embedded registry to allocate next code, got %q err=%v", code, err)
 	}
-	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0003" {
+	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0004" {
 		t.Fatalf("expected nil registry to allocate next code from defaults, got %q err=%v", code, err)
 	}
 
@@ -496,12 +499,18 @@ func TestManifestReportsDefaults(t *testing.T) {
 	if _, err := registry.Manifest(ResolveOptions{Enable: []string{"missing"}}); err == nil {
 		t.Fatalf("expected manifest to return resolver errors")
 	}
-	if manifest, err := (*Registry)(nil).Manifest(ResolveOptions{}); err != nil || len(manifest) != 2 {
+	manifest, err = (*Registry)(nil).Manifest(ResolveOptions{})
+	if err != nil || len(manifest) != 3 {
 		t.Fatalf("expected nil registry manifest to defer to defaults, manifest=%#v err=%v", manifest, err)
-	} else if manifest[0].Name != "dart-source-attribution-preview" {
-		t.Fatalf("expected default manifest entry for dart-source-attribution-preview, got %#v", manifest[0])
-	} else if manifest[1].Name != "lockfile-drift-ecosystem-expansion-preview" {
-		t.Fatalf("expected default manifest entry for lockfile drift preview, got %#v", manifest[1])
+	}
+	for index, expectedName := range []string{
+		"dart-source-attribution-preview",
+		"lockfile-drift-ecosystem-expansion-preview",
+		"swift-carthage-preview",
+	} {
+		if manifest[index].Name != expectedName {
+			t.Fatalf("expected default manifest entry %d to be %s, got %#v", index, expectedName, manifest[index])
+		}
 	}
 }
 
@@ -530,6 +539,10 @@ func TestEnabledFlag(t *testing.T) {
 	if enabled, err := resolved.EnabledFlag("missing"); err == nil || enabled {
 		t.Fatalf("expected unknown feature error, enabled=%v err=%v", enabled, err)
 	}
+	snapshot := resolved.Snapshot()
+	if len(snapshot) != 2 || !snapshot["LOP-FEAT-0001"] || !snapshot["LOP-FEAT-0002"] {
+		t.Fatalf("unexpected feature snapshot: %#v", snapshot)
+	}
 	var empty *Set
 	if empty.Enabled("preview-flag") {
 		t.Fatalf("expected nil set to report disabled")
@@ -537,35 +550,50 @@ func TestEnabledFlag(t *testing.T) {
 	if got := empty.EnabledCodes(); len(got) != 0 {
 		t.Fatalf("expected nil set enabled codes to be empty, got %#v", got)
 	}
+	if snapshot := empty.Snapshot(); len(snapshot) != 0 {
+		t.Fatalf("expected nil set snapshot to be empty, got %#v", snapshot)
+	}
 }
 
-func TestDefaultRegistryDartSourceAttributionPreviewDefaultsAndOptIn(t *testing.T) {
+func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 	registry := DefaultRegistry()
 	dev, err := registry.Resolve(ResolveOptions{Channel: ChannelDev})
 	if err != nil {
 		t.Fatalf("resolve dev defaults: %v", err)
 	}
-	if dev.Enabled("dart-source-attribution-preview") {
-		t.Fatalf("expected dart-source-attribution-preview default-off in dev channel")
+	for _, name := range []string{
+		"dart-source-attribution-preview",
+		"lockfile-drift-ecosystem-expansion-preview",
+		"swift-carthage-preview",
+	} {
+		if dev.Enabled(name) {
+			t.Fatalf("expected %s default-off in dev channel", name)
+		}
 	}
 
 	release, err := registry.Resolve(ResolveOptions{Channel: ChannelRelease})
 	if err != nil {
 		t.Fatalf("resolve release defaults: %v", err)
 	}
-	if release.Enabled("dart-source-attribution-preview") {
-		t.Fatalf("expected dart-source-attribution-preview default-off in release channel")
+	for _, name := range []string{
+		"dart-source-attribution-preview",
+		"lockfile-drift-ecosystem-expansion-preview",
+		"swift-carthage-preview",
+	} {
+		if release.Enabled(name) {
+			t.Fatalf("expected %s default-off in release channel", name)
+		}
 	}
 
 	optIn, err := registry.Resolve(ResolveOptions{
 		Channel: ChannelDev,
-		Enable:  []string{"dart-source-attribution-preview"},
+		Enable:  []string{"swift-carthage-preview"},
 	})
 	if err != nil {
 		t.Fatalf("resolve explicit opt-in: %v", err)
 	}
-	if !optIn.Enabled("dart-source-attribution-preview") {
-		t.Fatalf("expected explicit opt-in to enable dart-source-attribution-preview")
+	if !optIn.Enabled("swift-carthage-preview") {
+		t.Fatalf("expected explicit opt-in to enable swift-carthage-preview")
 	}
 }
 

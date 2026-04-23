@@ -149,6 +149,16 @@ func dependencyLockfileIssues(meta dependencyMeta) []dependencyLockfileIssue {
 			Rationale:          "Keeping Podfile.lock aligned improves reproducibility and pod-to-module attribution fidelity.",
 		})
 	}
+	if meta.DeclaredViaCarthage && !meta.ResolvedViaCarthage {
+		issues = append(issues, dependencyLockfileIssue{
+			Code:               "missing-carthage-lock-resolution",
+			RecommendationCode: "refresh-cartfile-resolved",
+			Manifest:           carthageManifestName,
+			Lockfile:           carthageResolvedName,
+			Message:            "dependency is declared in Cartfile but missing from Cartfile.resolved",
+			Rationale:          "Keeping Cartfile.resolved aligned improves reproducibility and Carthage framework attribution fidelity.",
+		})
+	}
 	if usesManagerSpecificMetadata(meta) {
 		return issues
 	}
@@ -166,7 +176,7 @@ func dependencyLockfileIssues(meta dependencyMeta) []dependencyLockfileIssue {
 }
 
 func usesManagerSpecificMetadata(meta dependencyMeta) bool {
-	return meta.DeclaredViaSwiftPM || meta.ResolvedViaSwiftPM || meta.DeclaredViaCocoaPods || meta.ResolvedViaCocoaPods
+	return meta.DeclaredViaSwiftPM || meta.ResolvedViaSwiftPM || meta.DeclaredViaCocoaPods || meta.ResolvedViaCocoaPods || meta.DeclaredViaCarthage || meta.ResolvedViaCarthage
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {

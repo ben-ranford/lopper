@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -94,6 +95,46 @@ func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
 	}
 	if analyzer.lastReq.MinUsagePercentForRecommendations == nil || *analyzer.lastReq.MinUsagePercentForRecommendations != 70 {
 		t.Fatalf("expected min-usage threshold to be forwarded for rust analysis, got %#v", analyzer.lastReq.MinUsagePercentForRecommendations)
+	}
+}
+
+func TestExecuteAnalyseForwardsFeatureFlags(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:      ".",
+			Dependencies:  []report.DependencyReport{{Name: "rxswift", Language: "swift"}},
+			SchemaVersion: "0.1.0",
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:      "LOP-FEAT-0001",
+		Name:      "swift-carthage-preview",
+		Lifecycle: featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	resolved, err := registry.Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{"swift-carthage-preview"},
+	})
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Features = resolved
+
+	if _, err := application.Execute(context.Background(), req); err != nil {
+		t.Fatalf(executeAnalyseErrFmt, err)
+	}
+	if !analyzer.lastReq.Features.Enabled("swift-carthage-preview") {
+		t.Fatalf("expected analyse request features to be forwarded, got %#v", analyzer.lastReq.Features)
 	}
 }
 

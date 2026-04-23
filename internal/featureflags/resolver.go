@@ -155,6 +155,17 @@ func (s *Set) EnabledFlag(ref string) (bool, error) {
 	return s.enabled[flag.Code], nil
 }
 
+func (s *Set) Snapshot() map[string]bool {
+	if s == nil || len(s.enabled) == 0 {
+		return nil
+	}
+	snapshot := make(map[string]bool, len(s.enabled))
+	for code, enabled := range s.enabled {
+		snapshot[code] = enabled
+	}
+	return snapshot
+}
+
 func (s *Set) lookup(ref string) (Flag, bool) {
 	ref = strings.TrimSpace(ref)
 	if s == nil {

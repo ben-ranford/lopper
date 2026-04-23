@@ -174,33 +174,45 @@ func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
 	}
 }
 
-func TestAnalysisCachePrepareEntryIncludesEnabledFeatures(t *testing.T) {
+func TestAnalysisCachePrepareEntryIncludesFeatureFlags(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-	request := Request{
+	req := Request{
 		RepoPath: repo,
 		Cache: &CacheOptions{
 			Enabled: true,
 			Path:    filepath.Join(repo, cacheTestDirectoryName),
 		},
 	}
-	cache := newAnalysisCache(request, repo)
+	cache := newAnalysisCache(req, repo)
 
-	baseReq := Request{RepoPath: repo, TopN: 1}
-	entryA, err := cache.prepareEntry(baseReq, "cachelang", repo)
-	if err != nil {
-		t.Fatalf("prepare entry A: %v", err)
-	}
+	disabledSet := mustResolveFeatureSet(t, false)
+	enabledSet := mustResolveFeatureSet(t, true)
 
-	withFeature := baseReq
-	withFeature.Features = mustEnabledFeatureSet(t, "dart-source-attribution-preview")
-	entryB, err := cache.prepareEntry(withFeature, "cachelang", repo)
+	entryDisabled, err := cache.prepareEntry(Request{RepoPath: repo, TopN: 1, Features: disabledSet}, "cachelang", repo)
 	if err != nil {
-		t.Fatalf("prepare entry B: %v", err)
+		t.Fatalf("prepare disabled feature entry: %v", err)
 	}
-	if entryA.KeyDigest == entryB.KeyDigest {
-		t.Fatalf("expected different cache keys when enabled feature set changes")
+	entryEnabled, err := cache.prepareEntry(Request{RepoPath: repo, TopN: 1, Features: enabledSet}, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare enabled feature entry: %v", err)
 	}
+	if entryDisabled.KeyDigest == entryEnabled.KeyDigest {
+		t.Fatalf("expected different cache keys when feature flag state changes")
+	}
+}
+
+func mustResolveFeatureSet(t *testing.T, enabled bool) featureflags.Set {
+	t.Helper()
+	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if enabled {
+		options.Enable = []string{"swift-carthage-preview"}
+	}
+	resolved, err := featureflags.DefaultRegistry().Resolve(options)
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+	return resolved
 }
 
 func TestAnalysisCacheWarnTakeWarningsAndSnapshot(t *testing.T) {
@@ -325,26 +337,6 @@ func assertLookupMissWithReason(t *testing.T, cache *analysisCache, entry cacheE
 	if len(cache.metadata.Invalidations) == 0 || cache.metadata.Invalidations[len(cache.metadata.Invalidations)-1].Reason != expectedReason {
 		t.Fatalf("expected %s invalidation, got %#v", expectedReason, cache.metadata.Invalidations)
 	}
-}
-
-func mustEnabledFeatureSet(t *testing.T, name string) featureflags.Set {
-	t.Helper()
-	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
-		Code:      "LOP-FEAT-0001",
-		Name:      name,
-		Lifecycle: featureflags.LifecyclePreview,
-	}})
-	if err != nil {
-		t.Fatalf("new feature registry: %v", err)
-	}
-	resolved, err := registry.Resolve(featureflags.ResolveOptions{
-		Channel: featureflags.ChannelDev,
-		Enable:  []string{name},
-	})
-	if err != nil {
-		t.Fatalf("resolve feature set: %v", err)
-	}
-	return resolved
 }
 
 func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {

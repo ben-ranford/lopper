@@ -24,7 +24,10 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 		return report.Report{}, err
 	}
 
-	catalog, catalogWarnings, err := buildDependencyCatalog(repoPath)
+	catalogOptions := dependencyCatalogOptions{
+		EnableCarthage: req.Features.Enabled(swiftCarthagePreviewFlagName),
+	}
+	catalog, catalogWarnings, err := buildDependencyCatalogWithOptions(repoPath, catalogOptions)
 	if err != nil {
 		return report.Report{}, err
 	}
