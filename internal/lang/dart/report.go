@@ -69,133 +69,159 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	}
 
 	if !declared && stats.HasImports {
-		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-			Code:     "undeclared-package-import",
-			Severity: "medium",
-			Message:  "package import was detected but the dependency is not declared in pubspec",
-		})
-		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-			Code:      "declare-missing-dependency",
-			Priority:  "high",
-			Message:   fmt.Sprintf("Add %q to pubspec dependencies or remove the import.", dependency),
-			Rationale: "Undeclared dependencies can break reproducible builds and reviews.",
-		})
+		addUndeclaredDependencySignals(&dep, dependency)
 	}
 
 	if declared {
-		if previewEnabled {
-			dep.Provenance = buildDartDependencyProvenance(meta)
-		}
-		if meta.Override {
-			dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-				Code:     "dependency-override",
-				Severity: "medium",
-				Message:  dependencyOverrideMessage(meta, previewEnabled),
-			})
-			dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-				Code:      "review-dependency-override",
-				Priority:  "medium",
-				Message:   dependencyOverrideRecommendation(meta, previewEnabled),
-				Rationale: "Overrides can hide upstream changes and create drift over time.",
-			})
-		}
-
-		source := dependencySource(meta)
-		if previewEnabled {
-			switch source {
-			case dependencySourcePath:
-				dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-					Code:     "local-path-dependency",
-					Severity: "low",
-					Message:  "dependency is sourced from a local path",
-				})
-				dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-					Code:      "review-local-path-dependency",
-					Priority:  "medium",
-					Message:   "Treat local path dependencies as internal package edges before removal decisions.",
-					Rationale: "Local package links are often workspace-internal and not ordinary third-party surface.",
-				})
-			case dependencySourceGit:
-				dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-					Code:     "git-dependency-source",
-					Severity: "medium",
-					Message:  "dependency resolves from a git source",
-				})
-				dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-					Code:      "pin-git-dependency",
-					Priority:  "medium",
-					Message:   "Pin git dependencies to reviewed refs and monitor upstream revision drift.",
-					Rationale: "Git-sourced dependencies can move outside normal hosted package release workflows.",
-				})
-			}
-		}
-
-		if meta.FlutterSDK {
-			dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-				Code:     "flutter-sdk-dependency",
-				Severity: "low",
-				Message:  "dependency is provided by the Flutter SDK",
-			})
-		}
-
-		pluginLike := meta.PluginLike || (previewEnabled && meta.FederatedPlugin)
-		if pluginLike {
-			dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-				Code:     "flutter-plugin-dependency",
-				Severity: "medium",
-				Message:  pluginDependencyMessage(meta, previewEnabled),
-			})
-			dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-				Code:      "audit-plugin-removal",
-				Priority:  "medium",
-				Message:   pluginRemovalRecommendation(meta, previewEnabled),
-				Rationale: "Plugin dependencies can bind Android/iOS platform code beyond Dart call sites.",
-			})
-		}
-
-		if previewEnabled && meta.FederatedPlugin {
-			dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-				Code:     "flutter-federated-plugin-family",
-				Severity: "medium",
-				Message:  federatedPluginMessage(meta),
-			})
-		}
+		applyDeclaredDependencySignals(&dep, meta, previewEnabled)
 	}
 
 	if stats.WildcardImports > 0 {
-		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-			Code:     "broad-imports",
-			Severity: "low",
-			Message:  "broad import/export directives may reduce static attribution precision",
-		})
-		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-			Code:      "prefer-explicit-imports",
-			Priority:  "low",
-			Message:   "Prefer explicit imports (`show`) or prefixes (`as`) for tighter attribution.",
-			Rationale: "Explicit import surfaces improve confidence in static usage analysis.",
-		})
+		addBroadImportSignals(&dep)
 	}
 	if dep.TotalExportsCount > 0 && dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
-		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-			Code:      "reduce-dart-surface-area",
-			Priority:  "low",
-			Message:   fmt.Sprintf("Only %.1f%% of %q imports appear used; review if a leaner package would suffice.", dep.UsedPercent, dependency),
-			Rationale: "Low observed usage can indicate avoidable dependency surface area.",
-		})
+		addLowUsageRecommendation(&dep, dependency)
 	}
 	if declared && stats.TotalCount == 0 && (!previewEnabled || !meta.LocalPath) {
-		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-			Code:      "remove-unused-dependency",
-			Priority:  "high",
-			Message:   "No imports were detected for this declared dependency; consider removing it.",
-			Rationale: "Unused dependencies increase attack and maintenance surface.",
-		})
+		addUnusedDeclaredDependencyRecommendation(&dep)
 	}
 
 	shared.SortRiskCues(dep.RiskCues)
 	shared.SortRecommendations(dep.Recommendations, recommendationPriorityRank)
 
 	return dep, warnings
+}
+
+func addUndeclaredDependencySignals(dep *report.DependencyReport, dependency string) {
+	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		Code:     "undeclared-package-import",
+		Severity: "medium",
+		Message:  "package import was detected but the dependency is not declared in pubspec",
+	})
+	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+		Code:      "declare-missing-dependency",
+		Priority:  "high",
+		Message:   fmt.Sprintf("Add %q to pubspec dependencies or remove the import.", dependency),
+		Rationale: "Undeclared dependencies can break reproducible builds and reviews.",
+	})
+}
+
+func applyDeclaredDependencySignals(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
+	if previewEnabled {
+		dep.Provenance = buildDartDependencyProvenance(meta)
+	}
+	if meta.Override {
+		addOverrideSignals(dep, meta, previewEnabled)
+	}
+	if previewEnabled {
+		addPreviewDependencySourceSignals(dep, meta)
+	}
+	if meta.FlutterSDK {
+		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+			Code:     "flutter-sdk-dependency",
+			Severity: "low",
+			Message:  "dependency is provided by the Flutter SDK",
+		})
+	}
+	if meta.PluginLike || (previewEnabled && meta.FederatedPlugin) {
+		addPluginSignals(dep, meta, previewEnabled)
+	}
+	if previewEnabled && meta.FederatedPlugin {
+		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+			Code:     "flutter-federated-plugin-family",
+			Severity: "medium",
+			Message:  federatedPluginMessage(meta),
+		})
+	}
+}
+
+func addOverrideSignals(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
+	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		Code:     "dependency-override",
+		Severity: "medium",
+		Message:  dependencyOverrideMessage(meta, previewEnabled),
+	})
+	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+		Code:      "review-dependency-override",
+		Priority:  "medium",
+		Message:   dependencyOverrideRecommendation(meta, previewEnabled),
+		Rationale: "Overrides can hide upstream changes and create drift over time.",
+	})
+}
+
+func addPreviewDependencySourceSignals(dep *report.DependencyReport, meta dependencyInfo) {
+	switch dependencySource(meta) {
+	case dependencySourcePath:
+		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+			Code:     "local-path-dependency",
+			Severity: "low",
+			Message:  "dependency is sourced from a local path",
+		})
+		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+			Code:      "review-local-path-dependency",
+			Priority:  "medium",
+			Message:   "Treat local path dependencies as internal package edges before removal decisions.",
+			Rationale: "Local package links are often workspace-internal and not ordinary third-party surface.",
+		})
+	case dependencySourceGit:
+		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+			Code:     "git-dependency-source",
+			Severity: "medium",
+			Message:  "dependency resolves from a git source",
+		})
+		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+			Code:      "pin-git-dependency",
+			Priority:  "medium",
+			Message:   "Pin git dependencies to reviewed refs and monitor upstream revision drift.",
+			Rationale: "Git-sourced dependencies can move outside normal hosted package release workflows.",
+		})
+	}
+}
+
+func addPluginSignals(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
+	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		Code:     "flutter-plugin-dependency",
+		Severity: "medium",
+		Message:  pluginDependencyMessage(meta, previewEnabled),
+	})
+	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+		Code:      "audit-plugin-removal",
+		Priority:  "medium",
+		Message:   pluginRemovalRecommendation(meta, previewEnabled),
+		Rationale: "Plugin dependencies can bind Android/iOS platform code beyond Dart call sites.",
+	})
+}
+
+func addBroadImportSignals(dep *report.DependencyReport) {
+	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
+		Code:     "broad-imports",
+		Severity: "low",
+		Message:  "broad import/export directives may reduce static attribution precision",
+	})
+	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+		Code:      "prefer-explicit-imports",
+		Priority:  "low",
+		Message:   "Prefer explicit imports (`show`) or prefixes (`as`) for tighter attribution.",
+		Rationale: "Explicit import surfaces improve confidence in static usage analysis.",
+	})
+}
+
+func addLowUsageRecommendation(dep *report.DependencyReport, dependency string) {
+	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+		Code:      "reduce-dart-surface-area",
+		Priority:  "low",
+		Message:   fmt.Sprintf("Only %.1f%% of %q imports appear used; review if a leaner package would suffice.", dep.UsedPercent, dependency),
+		Rationale: "Low observed usage can indicate avoidable dependency surface area.",
+	})
+}
+
+func addUnusedDeclaredDependencyRecommendation(dep *report.DependencyReport) {
+	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
+		Code:      "remove-unused-dependency",
+		Priority:  "high",
+		Message:   "No imports were detected for this declared dependency; consider removing it.",
+		Rationale: "Unused dependencies increase attack and maintenance surface.",
+	})
 }
 
 func dependencySource(meta dependencyInfo) string {

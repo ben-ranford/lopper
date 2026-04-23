@@ -59,6 +59,8 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 
 	emptyReq := DefaultRequest()
 	emptyReq.Mode = ModeFeatures
+	// Keep this assertion stable across CI lanes that set BUILD_CHANNEL=rolling.
+	emptyReq.Features.Channel = "dev"
 	emptyOutput, err := (&App{}).Execute(context.Background(), emptyReq)
 	if err != nil {
 		t.Fatalf("execute empty features: %v", err)

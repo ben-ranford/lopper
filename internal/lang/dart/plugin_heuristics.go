@@ -43,7 +43,7 @@ func dependencyInfoFromSpec(dependency string, value any, hasPluginMetadata *boo
 		assignDependencySource(&info, dependencySourceHosted, dependencySourceDetail(hostedValue, "url", "name"))
 	}
 
-	if versionValue := strings.TrimSpace(asString(fields["version"])); versionValue != "" {
+	if strings.TrimSpace(asString(fields["version"])) != "" {
 		assignDependencySource(&info, dependencySourceHosted, "")
 	}
 
@@ -129,6 +129,22 @@ func annotateFederatedPluginDependencies(dependencies map[string]dependencyInfo,
 		return
 	}
 
+	families := collectFederatedFamilies(candidates)
+	for rawDependency, info := range dependencies {
+		dependency := normalizeDependencyID(rawDependency)
+		if dependency == "" {
+			continue
+		}
+		family, role := resolvedFederatedFamilyRole(dependency)
+		related := relatedFederatedMembers(dependency, family, families[family], candidates)
+		if len(related) == 0 {
+			continue
+		}
+		dependencies[dependency] = applyFederatedMetadata(info, dependency, family, role, related)
+	}
+}
+
+func collectFederatedFamilies(candidates map[string]struct{}) map[string]map[string]string {
 	families := make(map[string]map[string]string)
 	for candidate := range candidates {
 		family, role, ok := federatedFamilyRole(candidate)
@@ -140,57 +156,50 @@ func annotateFederatedPluginDependencies(dependencies map[string]dependencyInfo,
 		}
 		families[family][candidate] = role
 	}
+	return families
+}
 
-	for dependency, info := range dependencies {
-		dependency = normalizeDependencyID(dependency)
-		if dependency == "" {
-			continue
-		}
-
-		family := dependency
-		role := federatedRoleApp
-		if parsedFamily, parsedRole, ok := federatedFamilyRole(dependency); ok {
-			family = parsedFamily
-			role = parsedRole
-		}
-
-		familyMembers := families[family]
-		if len(familyMembers) == 0 {
-			continue
-		}
-
-		members := make([]string, 0, len(familyMembers)+1)
-		if _, hasRoot := candidates[family]; hasRoot {
-			members = append(members, family)
-		}
-		for member := range familyMembers {
-			members = append(members, member)
-		}
-		members = dedupeStrings(members)
-		slices.Sort(members)
-		if len(members) < 2 {
-			continue
-		}
-
-		related := make([]string, 0, len(members)-1)
-		for _, member := range members {
-			if member != dependency {
-				related = append(related, member)
-			}
-		}
-		if len(related) == 0 {
-			continue
-		}
-
-		info.FederatedPlugin = true
-		info.FederatedFamily = family
-		info.FederatedRole = role
-		if dependency == family {
-			info.FederatedRole = federatedRoleApp
-		}
-		info.FederatedMembers = related
-		dependencies[dependency] = info
+func resolvedFederatedFamilyRole(dependency string) (string, string) {
+	if family, role, ok := federatedFamilyRole(dependency); ok {
+		return family, role
 	}
+	return dependency, federatedRoleApp
+}
+
+func relatedFederatedMembers(dependency string, family string, familyMembers map[string]string, candidates map[string]struct{}) []string {
+	if len(familyMembers) == 0 {
+		return nil
+	}
+	members := make([]string, 0, len(familyMembers)+1)
+	if _, hasRoot := candidates[family]; hasRoot {
+		members = append(members, family)
+	}
+	for member := range familyMembers {
+		members = append(members, member)
+	}
+	members = dedupeStrings(members)
+	slices.Sort(members)
+	if len(members) < 2 {
+		return nil
+	}
+	related := make([]string, 0, len(members)-1)
+	for _, member := range members {
+		if member != dependency {
+			related = append(related, member)
+		}
+	}
+	return related
+}
+
+func applyFederatedMetadata(info dependencyInfo, dependency string, family string, role string, related []string) dependencyInfo {
+	info.FederatedPlugin = true
+	info.FederatedFamily = family
+	info.FederatedRole = role
+	if dependency == family {
+		info.FederatedRole = federatedRoleApp
+	}
+	info.FederatedMembers = related
+	return info
 }
 
 func collectDependencyCandidates(dependencies map[string]dependencyInfo, lockPackages map[string]pubspecLockPackage) map[string]struct{} {

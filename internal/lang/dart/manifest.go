@@ -242,6 +242,14 @@ func mergeDependencyInfo(dest map[string]dependencyInfo, dependency string, inco
 		dest[dependency] = incoming
 		return
 	}
+	hadResolvedInLock := current.ResolvedInLock
+	mergeDependencyFlags(&current, incoming)
+	mergeDependencySourceAndVersion(&current, incoming, hadResolvedInLock)
+	mergeDependencyFederatedMetadata(&current, incoming)
+	dest[dependency] = current
+}
+
+func mergeDependencyFlags(current *dependencyInfo, incoming dependencyInfo) {
 	current.Runtime = current.Runtime || incoming.Runtime
 	current.Dev = current.Dev || incoming.Dev
 	current.Override = current.Override || incoming.Override
@@ -249,10 +257,13 @@ func mergeDependencyInfo(dest map[string]dependencyInfo, dependency string, inco
 	current.FlutterSDK = current.FlutterSDK || incoming.FlutterSDK
 	current.PluginLike = current.PluginLike || incoming.PluginLike
 	current.DeclaredInManifest = current.DeclaredInManifest || incoming.DeclaredInManifest
-	hadResolvedInLock := current.ResolvedInLock
 	current.ResolvedInLock = current.ResolvedInLock || incoming.ResolvedInLock
 	current.FederatedPlugin = current.FederatedPlugin || incoming.FederatedPlugin
-	if current.Source == "" || (!hadResolvedInLock && incoming.ResolvedInLock) {
+}
+
+func mergeDependencySourceAndVersion(current *dependencyInfo, incoming dependencyInfo, hadResolvedInLock bool) {
+	preferIncomingLockMetadata := !hadResolvedInLock && incoming.ResolvedInLock
+	if current.Source == "" || preferIncomingLockMetadata {
 		current.Source = incoming.Source
 		if incoming.SourceDetail != "" {
 			current.SourceDetail = incoming.SourceDetail
@@ -260,18 +271,21 @@ func mergeDependencyInfo(dest map[string]dependencyInfo, dependency string, inco
 	} else if current.Source == incoming.Source && current.SourceDetail == "" {
 		current.SourceDetail = incoming.SourceDetail
 	}
-	if current.Version == "" || (!hadResolvedInLock && incoming.ResolvedInLock) {
+	if current.Version == "" || preferIncomingLockMetadata {
 		current.Version = incoming.Version
 	}
+}
+
+func mergeDependencyFederatedMetadata(current *dependencyInfo, incoming dependencyInfo) {
 	if current.FederatedFamily == "" {
 		current.FederatedFamily = incoming.FederatedFamily
 	}
 	if current.FederatedRole == "" {
 		current.FederatedRole = incoming.FederatedRole
 	}
-	if len(incoming.FederatedMembers) > 0 {
-		current.FederatedMembers = dedupeStrings(append(current.FederatedMembers, incoming.FederatedMembers...))
-		sort.Strings(current.FederatedMembers)
+	if len(incoming.FederatedMembers) == 0 {
+		return
 	}
-	dest[dependency] = current
+	current.FederatedMembers = dedupeStrings(append(current.FederatedMembers, incoming.FederatedMembers...))
+	sort.Strings(current.FederatedMembers)
 }
