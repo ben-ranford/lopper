@@ -59,12 +59,14 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 
 	emptyReq := DefaultRequest()
 	emptyReq.Mode = ModeFeatures
+	// Keep this assertion stable across CI lanes that set BUILD_CHANNEL=rolling.
+	emptyReq.Features.Channel = "dev"
 	emptyOutput, err := (&App{}).Execute(context.Background(), emptyReq)
 	if err != nil {
 		t.Fatalf("execute empty features: %v", err)
 	}
-	if emptyOutput != "No feature flags registered.\n" {
-		t.Fatalf("expected empty feature table, got %q", emptyOutput)
+	if !strings.Contains(emptyOutput, "dart-source-attribution-preview") || !strings.Contains(emptyOutput, "false") {
+		t.Fatalf("expected default feature table to include dart-source-attribution-preview disabled by default, got %q", emptyOutput)
 	}
 }
 

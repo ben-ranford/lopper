@@ -40,8 +40,12 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	if err := ValidateDefaultRegistry(); err != nil {
 		t.Fatalf("expected embedded default registry to be valid, got %v", err)
 	}
-	if got := DefaultRegistry().Flags(); len(got) != 0 {
-		t.Fatalf("expected empty default registry, got %#v", got)
+	defaultFlags := DefaultRegistry().Flags()
+	if len(defaultFlags) == 0 {
+		t.Fatalf("expected embedded default registry to contain feature flags")
+	}
+	if got, ok := DefaultRegistry().Lookup("dart-source-attribution-preview"); !ok || got.Code != "LOP-FEAT-0001" {
+		t.Fatalf("expected dart source attribution preview flag in default registry, got %#v ok=%v", got, ok)
 	}
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
@@ -146,11 +150,11 @@ func TestNewRegistryRejectsDuplicates(t *testing.T) {
 }
 
 func TestNextCodeAllocatesGeneratedCodes(t *testing.T) {
-	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0001" {
-		t.Fatalf("expected empty registry to allocate first code, got %q err=%v", code, err)
+	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0002" {
+		t.Fatalf("expected default registry to allocate next code, got %q err=%v", code, err)
 	}
-	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0001" {
-		t.Fatalf("expected nil registry to allocate first code, got %q err=%v", code, err)
+	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0002" {
+		t.Fatalf("expected nil registry to allocate next default code, got %q err=%v", code, err)
 	}
 
 	registry, err := NewRegistry([]Flag{
@@ -489,8 +493,10 @@ func TestManifestReportsDefaults(t *testing.T) {
 	if _, err := registry.Manifest(ResolveOptions{Enable: []string{"missing"}}); err == nil {
 		t.Fatalf("expected manifest to return resolver errors")
 	}
-	if manifest, err := (*Registry)(nil).Manifest(ResolveOptions{}); err != nil || len(manifest) != 0 {
-		t.Fatalf("expected nil registry manifest to be empty, manifest=%#v err=%v", manifest, err)
+	if manifest, err := (*Registry)(nil).Manifest(ResolveOptions{}); err != nil || len(manifest) == 0 {
+		t.Fatalf("expected nil registry manifest to defer to defaults, manifest=%#v err=%v", manifest, err)
+	} else if manifest[0].Name != "dart-source-attribution-preview" {
+		t.Fatalf("expected default manifest entry for dart-source-attribution-preview, got %#v", manifest[0])
 	}
 }
 
@@ -510,6 +516,9 @@ func TestEnabledFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
+	if got := resolved.EnabledCodes(); len(got) != 2 || got[0] != "LOP-FEAT-0001" || got[1] != "LOP-FEAT-0002" {
+		t.Fatalf("expected enabled codes for rolling defaults, got %#v", got)
+	}
 	if enabled, err := resolved.EnabledFlag(" preview-flag "); err != nil || !enabled {
 		t.Fatalf("expected preview flag enabled in rolling, enabled=%v err=%v", enabled, err)
 	}
@@ -519,6 +528,39 @@ func TestEnabledFlag(t *testing.T) {
 	var empty *Set
 	if empty.Enabled("preview-flag") {
 		t.Fatalf("expected nil set to report disabled")
+	}
+	if got := empty.EnabledCodes(); len(got) != 0 {
+		t.Fatalf("expected nil set enabled codes to be empty, got %#v", got)
+	}
+}
+
+func TestDefaultRegistryDartSourceAttributionPreviewDefaultsAndOptIn(t *testing.T) {
+	registry := DefaultRegistry()
+	dev, err := registry.Resolve(ResolveOptions{Channel: ChannelDev})
+	if err != nil {
+		t.Fatalf("resolve dev defaults: %v", err)
+	}
+	if dev.Enabled("dart-source-attribution-preview") {
+		t.Fatalf("expected dart-source-attribution-preview default-off in dev channel")
+	}
+
+	release, err := registry.Resolve(ResolveOptions{Channel: ChannelRelease})
+	if err != nil {
+		t.Fatalf("resolve release defaults: %v", err)
+	}
+	if release.Enabled("dart-source-attribution-preview") {
+		t.Fatalf("expected dart-source-attribution-preview default-off in release channel")
+	}
+
+	optIn, err := registry.Resolve(ResolveOptions{
+		Channel: ChannelDev,
+		Enable:  []string{"dart-source-attribution-preview"},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit opt-in: %v", err)
+	}
+	if !optIn.Enabled("dart-source-attribution-preview") {
+		t.Fatalf("expected explicit opt-in to enable dart-source-attribution-preview")
 	}
 }
 

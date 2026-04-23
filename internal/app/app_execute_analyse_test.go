@@ -33,6 +33,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req.Analyse.CacheEnabled = false
 	req.Analyse.CachePath = "/tmp/lopper-cache"
 	req.Analyse.CacheReadOnly = true
+	req.Analyse.Features = mustEnabledPreviewFeatureSet(t)
 	req.Analyse.PolicySources = []string{"cli", "defaults"}
 	req.Analyse.Thresholds = thresholds.Values{
 		FailOnIncreasePercent:             0,

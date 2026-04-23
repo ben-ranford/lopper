@@ -12,14 +12,28 @@ type Adapter struct {
 }
 
 const (
-	pubspecYAMLName      = "pubspec.yaml"
-	pubspecYMLName       = "pubspec.yml"
-	pubspecLockName      = "pubspec.lock"
-	maxDetectionEntries  = 2048
-	maxManifestCount     = 256
-	maxScanFiles         = 4096
-	maxScannableDartFile = 2 * 1024 * 1024
-	maxWarningSamples    = 5
+	pubspecYAMLName                     = "pubspec.yaml"
+	pubspecYMLName                      = "pubspec.yml"
+	pubspecLockName                     = "pubspec.lock"
+	dartSourceAttributionPreviewFeature = "dart-source-attribution-preview"
+	maxDetectionEntries                 = 2048
+	maxManifestCount                    = 256
+	maxScanFiles                        = 4096
+	maxScannableDartFile                = 2 * 1024 * 1024
+	maxWarningSamples                   = 5
+)
+
+const (
+	dependencySourceHosted = "hosted"
+	dependencySourceGit    = "git"
+	dependencySourcePath   = "path"
+	dependencySourceSDK    = "sdk"
+)
+
+const (
+	federatedRoleApp               = "app"
+	federatedRolePlatform          = "platform"
+	federatedRolePlatformInterface = "platform-interface"
 )
 
 var dartRootSignals = []shared.RootSignal{
@@ -29,14 +43,21 @@ var dartRootSignals = []shared.RootSignal{
 }
 
 type dependencyInfo struct {
-	Runtime    bool
-	Dev        bool
-	Override   bool
-	LocalPath  bool
-	FlutterSDK bool
-	PluginLike bool
-	Source     string
-	Version    string
+	Runtime            bool
+	Dev                bool
+	Override           bool
+	LocalPath          bool
+	FlutterSDK         bool
+	PluginLike         bool
+	Source             string
+	SourceDetail       string
+	Version            string
+	DeclaredInManifest bool
+	ResolvedInLock     bool
+	FederatedPlugin    bool
+	FederatedFamily    string
+	FederatedRole      string
+	FederatedMembers   []string
 }
 
 type packageManifest struct {

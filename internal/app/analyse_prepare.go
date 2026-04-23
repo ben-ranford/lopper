@@ -56,6 +56,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 			RuntimeTestCommand:                strings.TrimSpace(req.Analyse.RuntimeTestCommand),
 			IncludePatterns:                   req.Analyse.IncludePatterns,
 			ExcludePatterns:                   req.Analyse.ExcludePatterns,
+			Features:                          req.Analyse.Features,
 			LowConfidenceWarningPercent:       &lowConfidence,
 			MinUsagePercentForRecommendations: &minUsage,
 			RemovalCandidateWeights:           &weights,

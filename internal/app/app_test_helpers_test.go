@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -90,6 +91,7 @@ func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
 		{"runtime profile", got.RuntimeProfile == "browser-import"},
 		{"scope mode", got.ScopeMode == ScopeModeChangedPackages},
 		{"cache options", got.Cache != nil && !got.Cache.Enabled && got.Cache.Path == "/tmp/lopper-cache" && got.Cache.ReadOnly},
+		{"features", got.Features.Enabled("dart-source-attribution-preview")},
 		{"suggest only", got.SuggestOnly},
 		{"removal candidate weights", got.RemovalCandidateWeights != nil && got.RemovalCandidateWeights.Usage == 0.6 && got.RemovalCandidateWeights.Impact == 0.2 && got.RemovalCandidateWeights.Confidence == 0.2},
 	}
@@ -102,4 +104,24 @@ func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
 
 func testTime() time.Time {
 	return time.Date(2026, time.February, 22, 15, 0, 0, 0, time.UTC)
+}
+
+func mustEnabledPreviewFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:      "LOP-FEAT-0001",
+		Name:      "dart-source-attribution-preview",
+		Lifecycle: featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new feature registry: %v", err)
+	}
+	features, err := registry.Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{"dart-source-attribution-preview"},
+	})
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+	return features
 }

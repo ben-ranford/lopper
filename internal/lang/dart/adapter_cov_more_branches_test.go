@@ -249,16 +249,17 @@ func testDartImportParsingAndDependencySelection(t *testing.T) {
 	if got := parseShowSymbols("show "); len(got) != 0 {
 		t.Fatalf("expected empty show clause to be ignored, got %#v", got)
 	}
-	if got := allDependencies(scanResult{
+	scan := scanResult{
 		DeclaredDependencies: map[string]dependencyInfo{
 			"local_pkg": {LocalPath: true},
 			"http":      {},
 		},
-	}); len(got) != 1 || got[0] != "http" {
+	}
+	if got := allDependencies(scan, false); len(got) != 1 || got[0] != "http" {
 		t.Fatalf("expected local path dependencies to be excluded, got %#v", got)
 	}
 
-	reportData, warnings := buildDependencyReport("http", scanResult{DeclaredDependencies: map[string]dependencyInfo{"http": {}}, Files: []fileScan{{Imports: []importBinding{{Dependency: "http", Module: "package:http/http.dart", Name: "Client", Local: "Client"}, {Dependency: "http", Module: "package:http/http.dart", Name: "Request", Local: "Request"}}, Usage: map[string]int{"Client": 1}}}}, 90)
+	reportData, warnings := buildDependencyReport("http", scanResult{DeclaredDependencies: map[string]dependencyInfo{"http": {}}, Files: []fileScan{{Imports: []importBinding{{Dependency: "http", Module: "package:http/http.dart", Name: "Client", Local: "Client"}, {Dependency: "http", Module: "package:http/http.dart", Name: "Request", Local: "Request"}}, Usage: map[string]int{"Client": 1}}}}, 90, false)
 	if len(warnings) != 0 || len(reportData.Recommendations) == 0 {
 		t.Fatalf("expected low-usage dependency recommendation, report=%#v warnings=%#v", reportData, warnings)
 	}

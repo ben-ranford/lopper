@@ -74,9 +74,6 @@ func collectManifestRoots(manifests []packageManifest) map[string]struct{} {
 	roots := make(map[string]struct{}, len(manifests))
 	for _, manifest := range manifests {
 		root := filepath.Clean(strings.TrimSpace(manifest.Root))
-		if root == "" {
-			continue
-		}
 		roots[root] = struct{}{}
 	}
 	return roots
@@ -177,9 +174,9 @@ func scanDartSourceFile(repoPath, path string, depLookup map[string]dependencyIn
 	if err != nil {
 		return err
 	}
-	relativePath, relErr := filepath.Rel(repoPath, path)
-	if relErr != nil {
-		relativePath = path
+	relativePath := path
+	if relative, relErr := filepath.Rel(repoPath, path); relErr == nil && strings.TrimSpace(relative) != "" {
+		relativePath = relative
 	}
 	imports := parseDartImports(content, relativePath, depLookup, result.UnresolvedImports)
 	result.Files = append(result.Files, fileScan{
@@ -220,9 +217,6 @@ func parseImportDirective(line string) (string, string, string, bool) {
 	kind := strings.TrimSpace(strings.ToLower(match[1]))
 	module := strings.TrimSpace(match[2])
 	clause := strings.TrimSpace(match[3])
-	if kind != "import" && kind != "export" {
-		return "", "", "", false
-	}
 	return kind, module, clause, true
 }
 
@@ -282,11 +276,7 @@ func extractAlias(clause string) string {
 	if len(match) != 2 {
 		return ""
 	}
-	alias := strings.TrimSpace(match[1])
-	if !identPattern.MatchString(alias) {
-		return ""
-	}
-	return alias
+	return strings.TrimSpace(match[1])
 }
 
 func parseShowSymbols(clause string) []string {
