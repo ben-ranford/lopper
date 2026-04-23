@@ -77,6 +77,8 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 		{name: "extra add argument", args: []string{"add", "--name", "new-flag", "extra"}, want: "too many arguments"},
 		{name: "missing graduate feature", args: []string{"graduate"}, want: "feature code or name is required"},
 		{name: "extra graduate argument", args: []string{"graduate", "--feature", "preview-flag", "extra"}, want: "too many arguments"},
+		{name: "missing previous catalog", args: []string{"pr-enforce", "--pr-title", "feat(flags): add registry"}, want: "previous feature catalog is required"},
+		{name: "extra pr-enforce argument", args: []string{"pr-enforce", "--previous-catalog", "previous.json", "extra"}, want: "too many arguments"},
 	} {
 		assertRunErrorContains(t, tc.name, tc.args, tc.want)
 	}
@@ -86,6 +88,7 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 	}{
 		{name: "bad add flag", args: []string{"add", "--definitely-not-a-flag"}},
 		{name: "bad graduate flag", args: []string{"graduate", "--definitely-not-a-flag"}},
+		{name: "bad pr-enforce flag", args: []string{"pr-enforce", "--definitely-not-a-flag"}},
 	} {
 		assertRunError(t, tc.name, tc.args)
 	}
@@ -473,6 +476,177 @@ func TestFormatReportReleaseLockSection(t *testing.T) {
 	}
 	if !strings.Contains(output, "None.") {
 		t.Fatalf("expected no newly added preview flags, got %s", output)
+	}
+}
+
+func TestRunPREnforceFeaturePRRequiresNewFlag(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	t.Chdir(root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"pr-enforce", "--pr-title", "feat(runtime): add new feature", "--previous-catalog", previousCatalog})
+	})
+	if err == nil || !strings.Contains(err.Error(), "must add at least one new feature flag") {
+		t.Fatalf("expected missing feature flag enforcement error, got %v", err)
+	}
+	if !strings.Contains(output, "Check: failed") || !strings.Contains(output, "New feature flags in this PR") {
+		t.Fatalf("expected failure report, got %s", output)
+	}
+}
+
+func TestRunPREnforceRejectsStableAddedFlag(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "new-flag",
+    "description": "New behavior",
+    "lifecycle": "stable"
+  }
+]`)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	t.Chdir(root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"pr-enforce", "--pr-title", "chore(ci): add workflow", "--previous-catalog", previousCatalog})
+	})
+	if err == nil || !strings.Contains(err.Error(), "must start as `preview`") {
+		t.Fatalf("expected preview lifecycle enforcement error, got %v", err)
+	}
+	if !strings.Contains(output, "`LOP-FEAT-0002` `new-flag` (`stable`)") {
+		t.Fatalf("expected stable flag to be listed in report, got %s", output)
+	}
+}
+
+func TestRunPREnforceReportsAddedPreviewFlag(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "new-flag",
+    "description": "New behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	t.Chdir(root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"pr-enforce", "--pr-title", "feat(vscode): add preview workflow", "--previous-catalog", previousCatalog})
+	})
+	if err != nil {
+		t.Fatalf("expected preview feature flag enforcement success, got %v", err)
+	}
+	for _, want := range []string{"Check: passed", "`LOP-FEAT-0002` `new-flag` (`preview`)", "Passed. This feature PR adds at least one new preview feature flag."} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected report to contain %q, got %s", want, output)
+		}
+	}
+}
+
+func TestRunPREnforceGetwdAndCatalogErrors(t *testing.T) {
+	oldGetwd := getwdFn
+	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }
+	if err := run([]string{"pr-enforce", "--pr-title", "feat(ci): add gate", "--previous-catalog", "previous.json"}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
+		t.Fatalf("expected getwd error, got %v", err)
+	}
+	getwdFn = oldGetwd
+
+	root := t.TempDir()
+	t.Chdir(root)
+	testutil.MustWriteFile(t, filepath.Join(root, "previous-features.json"), `[]`)
+	if err := run([]string{"pr-enforce", "--pr-title", "feat(ci): add gate", "--previous-catalog", "previous-features.json"}); err == nil || !strings.Contains(err.Error(), "read feature catalog") {
+		t.Fatalf("expected current catalog read error, got %v", err)
+	}
+
+	writeFeatureCatalog(t, root, `[]`)
+	testutil.MustWriteFile(t, filepath.Join(root, "bad-previous.json"), `not-json`)
+	if err := run([]string{"pr-enforce", "--pr-title", "feat(ci): add gate", "--previous-catalog", "bad-previous.json"}); err == nil || !strings.Contains(err.Error(), "parse previous feature catalog") {
+		t.Fatalf("expected previous catalog parse error, got %v", err)
+	}
+}
+
+func TestFormatPREnforcementReportNonFeatureBranches(t *testing.T) {
+	previewFlag := featureflags.Flag{
+		Code:        "LOP-FEAT-0002",
+		Name:        "new-flag",
+		Description: "New behavior",
+		Lifecycle:   featureflags.LifecyclePreview,
+	}
+	addedPreview := formatPREnforcementReport(prEnforcementResult{
+		RequireFlag: false,
+		AddedFlags:  []featureflags.Flag{previewFlag},
+	})
+	if !strings.Contains(addedPreview, "Passed. Added feature flags all start as `preview`.") {
+		t.Fatalf("expected non-feature added preview success message, got %s", addedPreview)
+	}
+
+	noRequirement := formatPREnforcementReport(prEnforcementResult{})
+	if !strings.Contains(noRequirement, "Passed. No new feature flag was required for this PR.") {
+		t.Fatalf("expected no-requirement success message, got %s", noRequirement)
+	}
+}
+
+func TestIsFeaturePRTitle(t *testing.T) {
+	for _, tc := range []struct {
+		title string
+		want  bool
+	}{
+		{title: "feat: add preview workflow", want: true},
+		{title: "feat(ci): add preview workflow", want: true},
+		{title: "feat(ci)!: add preview workflow", want: true},
+		{title: "fix(ci): repair workflow", want: false},
+		{title: "refactor(ci): split workflow", want: false},
+		{title: "", want: false},
+	} {
+		if got := isFeaturePRTitle(tc.title); got != tc.want {
+			t.Fatalf("isFeaturePRTitle(%q) = %v, want %v", tc.title, got, tc.want)
+		}
 	}
 }
 
