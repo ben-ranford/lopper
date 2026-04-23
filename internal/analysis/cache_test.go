@@ -32,15 +32,33 @@ func (a *countingAdapter) Aliases() []string {
 func (a *countingAdapter) Detect(context.Context, string) (bool, error) {
 	return true, nil
 }
-func (a *countingAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+func (a *countingAdapter) Analyse(_ context.Context, req language.Request) (report.Report, error) {
 	a.calls++
+	dependency := report.DependencyReport{
+		Name:              "dep",
+		UsedExportsCount:  1,
+		TotalExportsCount: 2,
+		UsedPercent:       50,
+	}
+	if req.SuggestOnly {
+		dependency.Codemod = &report.CodemodReport{
+			Mode: "suggest-only",
+			Suggestions: []report.CodemodSuggestion{
+				{
+					File:        "index.js",
+					Line:        1,
+					ImportName:  "dep",
+					FromModule:  "dep",
+					ToModule:    "dep-lite",
+					Original:    "import dep from \"dep\"",
+					Replacement: "import dep from \"dep-lite\"",
+					Patch:       "@@ -1 +1 @@\n-import dep from \"dep\"\n+import dep from \"dep-lite\"\n",
+				},
+			},
+		}
+	}
 	return report.Report{
-		Dependencies: []report.DependencyReport{{
-			Name:              "dep",
-			UsedExportsCount:  1,
-			TotalExportsCount: 2,
-			UsedPercent:       50,
-		}},
+		Dependencies: []report.DependencyReport{dependency},
 	}, nil
 }
 
@@ -111,6 +129,59 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	}
 	if len(third.Cache.Invalidations) == 0 || !strings.Contains(third.Cache.Invalidations[0].Reason, "input-changed") {
 		t.Fatalf("expected input-changed invalidation, got %#v", third.Cache.Invalidations)
+	}
+}
+
+func TestAnalysisCacheSeparatesSuggestOnlyEntries(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")
+
+	svc, adapter := newCacheTestService(t)
+	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
+
+	baseReq := newCacheRequest(repo, cacheDir, false)
+	baseReq.Dependency = "dep"
+
+	first, err := svc.Analyse(context.Background(), baseReq)
+	if err != nil {
+		t.Fatalf("first analyse: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected first run to call adapter once, got %d", adapter.calls)
+	}
+	if first.Dependencies[0].Codemod != nil {
+		t.Fatalf("expected non-suggest run to skip codemod, got %#v", first.Dependencies[0].Codemod)
+	}
+
+	suggestReq := baseReq
+	suggestReq.SuggestOnly = true
+
+	second, err := svc.Analyse(context.Background(), suggestReq)
+	if err != nil {
+		t.Fatalf("suggest-only analyse: %v", err)
+	}
+	if adapter.calls != 2 {
+		t.Fatalf("expected suggest-only mode to use a distinct cache key, adapter calls=%d", adapter.calls)
+	}
+	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses != 1 {
+		t.Fatalf("expected suggest-only run cache miss on first invocation, got %#v", second.Cache)
+	}
+	if second.Dependencies[0].Codemod == nil || second.Dependencies[0].Codemod.Mode != "suggest-only" {
+		t.Fatalf("expected suggest-only codemod output, got %#v", second.Dependencies[0].Codemod)
+	}
+
+	third, err := svc.Analyse(context.Background(), suggestReq)
+	if err != nil {
+		t.Fatalf("repeat suggest-only analyse: %v", err)
+	}
+	if adapter.calls != 2 {
+		t.Fatalf("expected repeat suggest-only run to hit cache, adapter calls=%d", adapter.calls)
+	}
+	if third.Cache == nil || third.Cache.Hits != 1 || third.Cache.Misses != 0 {
+		t.Fatalf("expected suggest-only cache hit, got %#v", third.Cache)
+	}
+	if third.Dependencies[0].Codemod == nil || third.Dependencies[0].Codemod.Mode != "suggest-only" {
+		t.Fatalf("expected cached suggest-only codemod output, got %#v", third.Dependencies[0].Codemod)
 	}
 }
 
