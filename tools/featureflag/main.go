@@ -38,7 +38,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: featureflag add|graduate|validate|manifest|report")
+		return fmt.Errorf("usage: featureflag add|graduate|validate|manifest|report|pr-enforce")
 	}
 	switch args[0] {
 	case "add":
@@ -51,6 +51,8 @@ func run(args []string) error {
 		return runManifest(args[1:])
 	case "report":
 		return runReport(args[1:])
+	case "pr-enforce":
+		return runPREnforce(args[1:])
 	default:
 		return fmt.Errorf("unknown featureflag command: %s", args[0])
 	}

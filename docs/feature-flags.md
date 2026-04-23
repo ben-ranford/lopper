@@ -56,6 +56,9 @@ Validate the registry and release locks before opening a PR:
 go run ./tools/featureflag validate
 ```
 
+PRs titled with the `feat` Conventional Commit type must add at least one new feature flag entry, and CI rejects any newly added flag whose lifecycle is not `preview`.
+The PR enforcement workflow also comments with the list of new feature flags introduced by the change.
+
 ## User Activation
 
 Preview flags can be enabled or disabled by code or name.

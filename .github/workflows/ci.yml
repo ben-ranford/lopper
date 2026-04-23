@@ -510,6 +510,74 @@ jobs:
           test -f bin/lopper
           ls -lh bin/lopper
 
+  verify-rolling:
+    name: verify (rolling)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        if: ${{ !env.ACT }}
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Go (act)
+        if: ${{ env.ACT }}
+        run: |
+          if ! command -v go >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y golang-go
+          fi
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y shellcheck
+          fi
+          go version
+
+      - name: Install shellcheck
+        if: ${{ !env.ACT }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
+          if [ -z "${ACT:-}" ]; then
+            echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          base_ref="${PR_BASE_REF:-main}"
+          git fetch --no-tags --depth=1 origin "${base_ref}"
+
+      - name: Run CI target with rolling defaults
+        env:
+          BUILD_CHANNEL: rolling
+          GH_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
+            base_ref="${PR_BASE_REF:-main}"
+            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_ENFORCE=0
+          fi
+          if [ -n "${ACT:-}" ]; then
+            PATH="$(go env GOPATH)/bin:$PATH" make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+          else
+            make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+          fi
+
   os-smoke:
     name: os-smoke (${{ matrix.os }})
     strategy:
