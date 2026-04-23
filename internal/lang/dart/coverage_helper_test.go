@@ -2,7 +2,6 @@ package dart
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,25 +10,8 @@ import (
 )
 
 func TestDartCoverageAnalysePathNormalizationFailure(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	tempWD := t.TempDir()
-	if err := os.Chdir(tempWD); err != nil {
-		t.Fatalf("chdir temp: %v", err)
-	}
-	t.Cleanup(func() {
-		if chdirErr := os.Chdir(originalWD); chdirErr != nil {
-			t.Fatalf("restore working directory: %v", chdirErr)
-		}
-	})
-	if err := os.RemoveAll(tempWD); err != nil {
-		t.Fatalf("remove temp wd: %v", err)
-	}
-
-	if _, analyseErr := NewAdapter().Analyse(context.Background(), language.Request{}); analyseErr == nil {
-		t.Fatalf("expected analyse to fail when working directory can no longer be resolved")
+	if _, analyseErr := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: string([]byte{0})}); analyseErr == nil {
+		t.Fatalf("expected analyse to fail when repository path cannot be normalized")
 	}
 }
 
