@@ -12,8 +12,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
-func TestExecuteAnalyseFailOnIncreaseThreshold(t *testing.T) {
-	delta := 3.5
+func TestExecuteAnalyseFailOnIncreaseZeroToleranceThreshold(t *testing.T) {
+	delta := 0.1
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
 			RepoPath:             ".",
@@ -27,7 +27,8 @@ func TestExecuteAnalyseFailOnIncreaseThreshold(t *testing.T) {
 	req.Mode = ModeAnalyse
 	req.Analyse.TopN = 1
 	req.Analyse.Thresholds = thresholds.Values{
-		FailOnIncreasePercent:             2,
+		FailOnIncreasePercent:             0,
+		MaxUncertainImportCount:           -1,
 		LowConfidenceWarningPercent:       thresholds.DefaultLowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: thresholds.DefaultMinUsagePercentForRecommendations,
 	}
@@ -72,8 +73,11 @@ func TestValidateFailOnIncreaseRequiresBaseline(t *testing.T) {
 	if !errors.Is(err, ErrBaselineRequired) {
 		t.Fatalf("expected ErrBaselineRequired, got %v", err)
 	}
-	if err := validateFailOnIncrease(report.Report{}, 0); err != nil {
-		t.Fatalf("expected no error when threshold disabled, got %v", err)
+	if err := validateFailOnIncrease(report.Report{}, 0); !errors.Is(err, ErrBaselineRequired) {
+		t.Fatalf("expected zero-threshold fail-on-increase to require baseline, got %v", err)
+	}
+	if err := validateFailOnIncrease(report.Report{}, -1); err != nil {
+		t.Fatalf("expected no error when threshold disabled via -1 sentinel, got %v", err)
 	}
 }
 
@@ -139,6 +143,12 @@ func TestValidateUncertaintyThreshold(t *testing.T) {
 	if err := validateUncertaintyThreshold(reportData, 1); !errors.Is(err, ErrUncertaintyThresholdExceeded) {
 		t.Fatalf("expected uncertainty threshold error, got %v", err)
 	}
+	if err := validateUncertaintyThreshold(reportData, 0); !errors.Is(err, ErrUncertaintyThresholdExceeded) {
+		t.Fatalf("expected zero-threshold uncertainty validation error, got %v", err)
+	}
+	if err := validateUncertaintyThreshold(reportData, -1); err != nil {
+		t.Fatalf("expected -1 sentinel to disable uncertainty threshold, got %v", err)
+	}
 }
 
 func TestExecuteAnalyseUncertaintyThresholdError(t *testing.T) {
@@ -147,7 +157,7 @@ func TestExecuteAnalyseUncertaintyThresholdError(t *testing.T) {
 			RepoPath:     ".",
 			Dependencies: []report.DependencyReport{{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
 			UsageUncertainty: &report.UsageUncertainty{
-				UncertainImportUses: 2,
+				UncertainImportUses: 1,
 			},
 		},
 	}
@@ -157,7 +167,7 @@ func TestExecuteAnalyseUncertaintyThresholdError(t *testing.T) {
 	req.Mode = ModeAnalyse
 	req.Analyse.TopN = 1
 	req.Analyse.Format = report.FormatJSON
-	req.Analyse.Thresholds.MaxUncertainImportCount = 1
+	req.Analyse.Thresholds.MaxUncertainImportCount = 0
 
 	output, err := application.Execute(context.Background(), req)
 	if !errors.Is(err, ErrUncertaintyThresholdExceeded) {
