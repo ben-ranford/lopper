@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -329,6 +329,9 @@ tools-install:
 	$(GO_CMD) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	$(GO_CMD) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 	$(GO_CMD) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+print-gosec-version:
+	@echo $(GOSEC_VERSION)
 
 sync-version:
 	cd $(VSCODE_EXTENSION_DIR) && npm version "$(VERSION)" --no-git-tag-version --allow-same-version
