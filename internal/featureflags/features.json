@@ -16,5 +16,11 @@
     "name": "swift-carthage-preview",
     "description": "Enable Carthage dependency parsing for the Swift adapter.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0004",
+    "name": "powershell-adapter-preview",
+    "description": "Enable preview support for the PowerShell language adapter.",
+    "lifecycle": "preview"
   }
 ]

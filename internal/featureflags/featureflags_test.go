@@ -1,6 +1,8 @@
 package featureflags
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,18 +43,10 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 		t.Fatalf("expected embedded default registry to be valid, got %v", err)
 	}
 	defaultFlags := DefaultRegistry().Flags()
-	if len(defaultFlags) != 3 {
-		t.Fatalf("expected embedded default registry to contain three feature flags, got %#v", defaultFlags)
-	}
-	if got, ok := DefaultRegistry().Lookup("dart-source-attribution-preview"); !ok || got.Code != "LOP-FEAT-0001" {
-		t.Fatalf("expected dart source attribution preview flag in default registry, got %#v ok=%v", got, ok)
-	}
-	if got, ok := DefaultRegistry().Lookup("lockfile-drift-ecosystem-expansion-preview"); !ok || got.Code != "LOP-FEAT-0002" {
-		t.Fatalf("expected lockfile drift ecosystem preview flag in default registry, got %#v ok=%v", got, ok)
-	}
-	if got, ok := DefaultRegistry().Lookup("swift-carthage-preview"); !ok || got.Code != "LOP-FEAT-0003" {
-		t.Fatalf("expected swift Carthage preview flag in default registry, got %#v ok=%v", got, ok)
-	}
+	assertDefaultFlag(t, defaultFlags, "dart-source-attribution-preview", "LOP-FEAT-0001")
+	assertDefaultFlag(t, defaultFlags, "lockfile-drift-ecosystem-expansion-preview", "LOP-FEAT-0002")
+	assertDefaultFlag(t, defaultFlags, "swift-carthage-preview", "LOP-FEAT-0003")
+	assertDefaultFlag(t, defaultFlags, "powershell-adapter-preview", "LOP-FEAT-0004")
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
 	}
@@ -156,10 +150,11 @@ func TestNewRegistryRejectsDuplicates(t *testing.T) {
 }
 
 func TestNextCodeAllocatesGeneratedCodes(t *testing.T) {
-	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0004" {
+	expectedDefaultNextCode := expectedNextDefaultCode(t)
+	if code, err := DefaultRegistry().NextCode(); err != nil || code != expectedDefaultNextCode {
 		t.Fatalf("expected embedded registry to allocate next code, got %q err=%v", code, err)
 	}
-	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0004" {
+	if code, err := (*Registry)(nil).NextCode(); err != nil || code != expectedDefaultNextCode {
 		t.Fatalf("expected nil registry to allocate next code from defaults, got %q err=%v", code, err)
 	}
 
@@ -500,18 +495,13 @@ func TestManifestReportsDefaults(t *testing.T) {
 		t.Fatalf("expected manifest to return resolver errors")
 	}
 	manifest, err = (*Registry)(nil).Manifest(ResolveOptions{})
-	if err != nil || len(manifest) != 3 {
+	if err != nil {
 		t.Fatalf("expected nil registry manifest to defer to defaults, manifest=%#v err=%v", manifest, err)
 	}
-	for index, expectedName := range []string{
-		"dart-source-attribution-preview",
-		"lockfile-drift-ecosystem-expansion-preview",
-		"swift-carthage-preview",
-	} {
-		if manifest[index].Name != expectedName {
-			t.Fatalf("expected default manifest entry %d to be %s, got %#v", index, expectedName, manifest[index])
-		}
-	}
+	assertManifestFlag(t, manifest, "dart-source-attribution-preview", false)
+	assertManifestFlag(t, manifest, "lockfile-drift-ecosystem-expansion-preview", false)
+	assertManifestFlag(t, manifest, "swift-carthage-preview", false)
+	assertManifestFlag(t, manifest, "powershell-adapter-preview", false)
 }
 
 func TestFormatManifest(t *testing.T) {
@@ -565,6 +555,7 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 		"dart-source-attribution-preview",
 		"lockfile-drift-ecosystem-expansion-preview",
 		"swift-carthage-preview",
+		"powershell-adapter-preview",
 	} {
 		if dev.Enabled(name) {
 			t.Fatalf("expected %s default-off in dev channel", name)
@@ -579,6 +570,7 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 		"dart-source-attribution-preview",
 		"lockfile-drift-ecosystem-expansion-preview",
 		"swift-carthage-preview",
+		"powershell-adapter-preview",
 	} {
 		if release.Enabled(name) {
 			t.Fatalf("expected %s default-off in release channel", name)
@@ -617,4 +609,45 @@ func testRegistry(t *testing.T) *Registry {
 		t.Fatalf("new registry: %v", err)
 	}
 	return registry
+}
+
+func assertDefaultFlag(t *testing.T, flags []Flag, name, code string) {
+	t.Helper()
+	for _, flag := range flags {
+		if flag.Name == name {
+			if flag.Code != code {
+				t.Fatalf("expected default flag %s to use code %s, got %#v", name, code, flag)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected default registry to include %s, got %#v", name, flags)
+}
+
+func assertManifestFlag(t *testing.T, manifest []ManifestEntry, name string, enabled bool) {
+	t.Helper()
+	for _, entry := range manifest {
+		if entry.Name == name {
+			if entry.EnabledByDefault != enabled {
+				t.Fatalf("expected manifest entry %s enabled=%v, got %#v", name, enabled, entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected manifest to include %s, got %#v", name, manifest)
+}
+
+func expectedNextDefaultCode(t *testing.T) string {
+	t.Helper()
+	maxSuffix := 0
+	for _, flag := range DefaultRegistry().Flags() {
+		suffix, err := strconv.Atoi(strings.TrimPrefix(flag.Code, featureCodePrefix))
+		if err != nil {
+			t.Fatalf("parse default feature code %s: %v", flag.Code, err)
+		}
+		if suffix > maxSuffix {
+			maxSuffix = suffix
+		}
+	}
+	return fmt.Sprintf("%s%04d", featureCodePrefix, maxSuffix+1)
 }

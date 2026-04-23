@@ -40,7 +40,7 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 	if err != nil {
 		return nil, err
 	}
-	candidates, err := s.resolveCandidates(ctx, analysisRepoPath, req.Language)
+	candidates, err := s.resolveCandidates(ctx, analysisRepoPath, req)
 	if err != nil {
 		cleanupFn()
 		return nil, err

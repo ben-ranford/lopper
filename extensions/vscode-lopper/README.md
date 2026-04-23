@@ -1,7 +1,7 @@
 # Lopper for VS Code
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098ff?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=BenRanford.vscode-lopper)
 
-Lopper brings dependency-surface analysis into VS Code with inline diagnostics and hover context across supported adapters, including Kotlin Android, plus safe JS/TS quick fixes powered by the `lopper` CLI.
+Lopper brings dependency-surface analysis into VS Code with inline diagnostics and hover context across supported adapters, including Kotlin Android and PowerShell, plus safe JS/TS quick fixes powered by the `lopper` CLI.
 
 ## What it does
 
@@ -17,7 +17,7 @@ The extension uses the same adapter IDs as the `lopper` CLI.
 
 - `lopper.language = auto` is the default. It prefers the active or saved editor's adapter when it can infer one, including Android Gradle Kotlin/Java modules, then falls back to `lopper` CLI auto detection.
 - `lopper.language = all` runs every matching adapter in the workspace and merges the results.
-- You can pin any supported adapter directly: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `python`, `ruby`, `rust`, or `swift`.
+- You can pin any supported adapter directly: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `powershell`, `python`, `ruby`, `rust`, or `swift`.
 
 ## Binary setup
 

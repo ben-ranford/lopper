@@ -3,6 +3,7 @@ package analysis
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -42,5 +43,18 @@ func TestRegisterAdaptersRejectsNilFactory(t *testing.T) {
 func TestRegisterAdaptersRejectsNilRegistry(t *testing.T) {
 	if registerAdapters(nil, nil) == nil {
 		t.Fatalf("expected nil registry error")
+	}
+}
+
+func TestNewServiceRegistersPowerShellAdapter(t *testing.T) {
+	service := NewService()
+	if service.InitErr != nil {
+		t.Fatalf("new service init error: %v", service.InitErr)
+	}
+	if service.Registry == nil {
+		t.Fatalf("expected non-nil language registry")
+	}
+	if !slices.Contains(service.Registry.IDs(), "powershell") {
+		t.Fatalf("expected powershell adapter to be registered, got %#v", service.Registry.IDs())
 	}
 }

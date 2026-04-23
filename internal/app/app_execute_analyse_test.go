@@ -44,6 +44,22 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 		RemovalCandidateWeightImpact:      0.2,
 		RemovalCandidateWeightConfidence:  0.2,
 	}
+	featureRegistry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:      "LOP-FEAT-0001",
+		Name:      "powershell-adapter-preview",
+		Lifecycle: featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new feature registry: %v", err)
+	}
+	resolvedFeatures, err := featureRegistry.Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{"powershell-adapter-preview"},
+	})
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+	req.Analyse.Features = resolvedFeatures
 
 	output, err := application.Execute(context.Background(), req)
 	if err != nil {
@@ -51,6 +67,9 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	assertContainsAll(t, output, []string{`"effectiveThresholds"`, `"effectivePolicy"`, `"sources": [`, `"cli"`, `"lowConfidenceWarningPercent": 33`})
 	assertForwardedAnalyseRequest(t, analyzer.lastReq)
+	if !analyzer.lastReq.Features.Enabled("powershell-adapter-preview") {
+		t.Fatalf("expected feature set to be forwarded to analysis request")
+	}
 }
 
 func TestExecuteAnalyseAnalyzerError(t *testing.T) {

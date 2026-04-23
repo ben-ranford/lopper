@@ -285,7 +285,7 @@ func TestDetectMatchesAndFallbackDetectorBranches(t *testing.T) {
 	}
 
 	// Same adapter appears under both id and alias; detectMatches should de-dupe by adapter ID.
-	matches, err := registry.detectMatches(context.Background(), ".")
+	matches, err := registry.detectMatches(context.Background(), ".", nil)
 	if err != nil {
 		t.Fatalf("detect matches: %v", err)
 	}
@@ -332,11 +332,57 @@ func TestResolveAutoSingleMatchBranch(t *testing.T) {
 	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 60}}); err != nil {
 		t.Fatalf(registerAdapterErrFmt, err)
 	}
-	candidates, err := registry.resolveAuto(context.Background(), ".")
+	candidates, err := registry.resolveAuto(context.Background(), ".", nil)
 	if err != nil {
 		t.Fatalf("resolve auto with single match: %v", err)
 	}
 	if len(candidates) != 1 || candidates[0].Adapter.ID() != "js-ts" {
 		t.Fatalf("expected one js-ts candidate, got %#v", candidates)
+	}
+}
+
+func TestResolveWithFilterRespectsAutoAllAndExplicitModes(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register(&testAdapter{id: "powershell", detection: Detection{Matched: true, Confidence: 95}}); err != nil {
+		t.Fatalf("register powershell: %v", err)
+	}
+	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 75}}); err != nil {
+		t.Fatalf(registerJSErrFmt, err)
+	}
+	filter := func(adapter Adapter) bool {
+		return adapter.ID() != "powershell"
+	}
+
+	autoCandidates, err := registry.ResolveWithFilter(context.Background(), ".", Auto, filter)
+	if err != nil {
+		t.Fatalf("resolve auto with filter: %v", err)
+	}
+	if len(autoCandidates) != 1 || autoCandidates[0].Adapter.ID() != "js-ts" {
+		t.Fatalf("expected js-ts auto candidate when powershell is filtered, got %#v", autoCandidates)
+	}
+
+	allCandidates, err := registry.ResolveWithFilter(context.Background(), ".", All, filter)
+	if err != nil {
+		t.Fatalf("resolve all with filter: %v", err)
+	}
+	if len(allCandidates) != 1 || allCandidates[0].Adapter.ID() != "js-ts" {
+		t.Fatalf("expected js-ts all candidate when powershell is filtered, got %#v", allCandidates)
+	}
+
+	if _, err := registry.ResolveWithFilter(context.Background(), ".", "powershell", filter); !errors.Is(err, ErrNoMatch) {
+		t.Fatalf("expected explicit filtered adapter to return ErrNoMatch, got %v", err)
+	}
+}
+
+func TestAdapterAllowedHandlesNilsAndFilterOutcomes(t *testing.T) {
+	if adapterAllowed(nil, nil) {
+		t.Fatalf("expected nil adapter to be disallowed")
+	}
+	adapter := &testAdapter{id: "js-ts", detection: Detection{Matched: true}}
+	if !adapterAllowed(adapter, nil) {
+		t.Fatalf("expected adapter to be allowed without filter")
+	}
+	if adapterAllowed(adapter, func(Adapter) bool { return false }) {
+		t.Fatalf("expected filter to disallow adapter")
 	}
 }
