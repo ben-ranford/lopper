@@ -77,17 +77,14 @@ func isFeaturePRTitle(title string) bool {
 
 func newlyAddedFlags(current, previous []featureflags.Flag) []featureflags.Flag {
 	previousByCode := make(map[string]struct{}, len(previous))
-	previousByName := make(map[string]struct{}, len(previous))
 	for _, flag := range previous {
 		previousByCode[flag.Code] = struct{}{}
-		previousByName[flag.Name] = struct{}{}
 	}
 
 	added := make([]featureflags.Flag, 0)
 	for _, flag := range current {
 		_, seenCode := previousByCode[flag.Code]
-		_, seenName := previousByName[flag.Name]
-		if !seenCode && !seenName {
+		if !seenCode {
 			added = append(added, flag)
 		}
 	}
