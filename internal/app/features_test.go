@@ -65,8 +65,10 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute empty features: %v", err)
 	}
-	if !strings.Contains(emptyOutput, "dart-source-attribution-preview") || !strings.Contains(emptyOutput, "false") {
-		t.Fatalf("expected default feature table to include dart-source-attribution-preview disabled by default, got %q", emptyOutput)
+	if !strings.Contains(emptyOutput, "dart-source-attribution-preview") ||
+		!strings.Contains(emptyOutput, "lockfile-drift-ecosystem-expansion-preview") ||
+		!strings.Contains(emptyOutput, "false") {
+		t.Fatalf("expected default feature table to include embedded preview flags disabled by default, got %q", emptyOutput)
 	}
 }
 
@@ -93,6 +95,25 @@ func TestExecuteFeaturesTableAndInvalidFormat(t *testing.T) {
 	req.Features.Channel = "bad"
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected invalid features channel error")
+	}
+}
+
+func TestExecuteFeaturesExplicitEmptyRegistry(t *testing.T) {
+	emptyRegistry, err := featureflags.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("new empty feature registry: %v", err)
+	}
+	application := &App{Features: emptyRegistry}
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Channel = "dev"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute empty features: %v", err)
+	}
+	if output != "No feature flags registered.\n" {
+		t.Fatalf("unexpected empty feature output: %q", output)
 	}
 }
 

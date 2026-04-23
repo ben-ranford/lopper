@@ -41,11 +41,14 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 		t.Fatalf("expected embedded default registry to be valid, got %v", err)
 	}
 	defaultFlags := DefaultRegistry().Flags()
-	if len(defaultFlags) == 0 {
-		t.Fatalf("expected embedded default registry to contain feature flags")
+	if len(defaultFlags) != 2 {
+		t.Fatalf("expected embedded default registry to contain two feature flags, got %#v", defaultFlags)
 	}
 	if got, ok := DefaultRegistry().Lookup("dart-source-attribution-preview"); !ok || got.Code != "LOP-FEAT-0001" {
 		t.Fatalf("expected dart source attribution preview flag in default registry, got %#v ok=%v", got, ok)
+	}
+	if got, ok := DefaultRegistry().Lookup("lockfile-drift-ecosystem-expansion-preview"); !ok || got.Code != "LOP-FEAT-0002" {
+		t.Fatalf("expected lockfile drift ecosystem preview flag in default registry, got %#v ok=%v", got, ok)
 	}
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
@@ -150,11 +153,11 @@ func TestNewRegistryRejectsDuplicates(t *testing.T) {
 }
 
 func TestNextCodeAllocatesGeneratedCodes(t *testing.T) {
-	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0002" {
-		t.Fatalf("expected default registry to allocate next code, got %q err=%v", code, err)
+	if code, err := DefaultRegistry().NextCode(); err != nil || code != "LOP-FEAT-0003" {
+		t.Fatalf("expected embedded registry to allocate next code, got %q err=%v", code, err)
 	}
-	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0002" {
-		t.Fatalf("expected nil registry to allocate next default code, got %q err=%v", code, err)
+	if code, err := (*Registry)(nil).NextCode(); err != nil || code != "LOP-FEAT-0003" {
+		t.Fatalf("expected nil registry to allocate next code from defaults, got %q err=%v", code, err)
 	}
 
 	registry, err := NewRegistry([]Flag{
@@ -493,10 +496,12 @@ func TestManifestReportsDefaults(t *testing.T) {
 	if _, err := registry.Manifest(ResolveOptions{Enable: []string{"missing"}}); err == nil {
 		t.Fatalf("expected manifest to return resolver errors")
 	}
-	if manifest, err := (*Registry)(nil).Manifest(ResolveOptions{}); err != nil || len(manifest) == 0 {
+	if manifest, err := (*Registry)(nil).Manifest(ResolveOptions{}); err != nil || len(manifest) != 2 {
 		t.Fatalf("expected nil registry manifest to defer to defaults, manifest=%#v err=%v", manifest, err)
 	} else if manifest[0].Name != "dart-source-attribution-preview" {
 		t.Fatalf("expected default manifest entry for dart-source-attribution-preview, got %#v", manifest[0])
+	} else if manifest[1].Name != "lockfile-drift-ecosystem-expansion-preview" {
+		t.Fatalf("expected default manifest entry for lockfile drift preview, got %#v", manifest[1])
 	}
 }
 

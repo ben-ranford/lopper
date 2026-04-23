@@ -18,7 +18,7 @@ type preparedAnalyseExecution struct {
 }
 
 func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseExecution, error) {
-	lockfileWarnings, err := evaluateLockfileDriftPolicy(ctx, req.RepoPath, req.Analyse.Thresholds.LockfileDriftPolicy)
+	lockfileWarnings, err := evaluateLockfileDriftPolicyWithFeatures(ctx, req.RepoPath, req.Analyse.Thresholds.LockfileDriftPolicy, req.Analyse.Features)
 	if err != nil {
 		return preparedAnalyseExecution{}, err
 	}

@@ -332,11 +332,14 @@ func TestManifestEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("release manifest: %v", err)
 	}
-	if len(manifest) == 0 {
+	if len(manifest) != 2 {
 		t.Fatalf("expected embedded manifest entries, got %#v", manifest)
 	}
 	if manifest[0].Name != "dart-source-attribution-preview" || manifest[0].EnabledByDefault {
 		t.Fatalf("expected dart-source-attribution-preview default-off in release channel, got %#v", manifest[0])
+	}
+	if manifest[1].Name != "lockfile-drift-ecosystem-expansion-preview" || manifest[1].EnabledByDefault {
+		t.Fatalf("expected lockfile drift preview default-off in release channel, got %#v", manifest[1])
 	}
 }
 
