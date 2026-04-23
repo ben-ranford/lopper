@@ -100,7 +100,7 @@ func detectUmbrellaAppsPath(content []byte) (bool, string) {
 }
 
 func stripElixirComments(content []byte) string {
-	masked := maskElixirImportSource(content)
+	masked := sanitizeElixirSource(content)
 
 	var stripped strings.Builder
 	stripped.Grow(len(content))
