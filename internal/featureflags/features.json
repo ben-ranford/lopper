@@ -21,7 +21,7 @@
     "code": "LOP-FEAT-0004",
     "name": "powershell-adapter-preview",
     "description": "Enable preview support for the PowerShell language adapter.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0005",
