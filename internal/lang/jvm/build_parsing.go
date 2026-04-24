@@ -60,7 +60,10 @@ const (
 	pomDependencyManaged
 )
 
-var pomPropertyTokenPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+var (
+	pomPropertyTokenPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+	gradleDependencyPattern = regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt|annotationProcessor|testAnnotationProcessor|testCompileOnly|debugImplementation|releaseImplementation|kaptTest|kaptAndroidTest|classpath)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
+)
 
 func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[string]string, map[string]string, []string) {
 	descriptors := make([]dependencyDescriptor, 0)
@@ -356,10 +359,9 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 }
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
-	pattern := regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
 	gradleParser := func(path, content string) ([]dependencyDescriptor, []string) {
-		descriptors := parseGradleMatches(content, pattern)
+		descriptors := parseGradleMatches(content, gradleDependencyPattern)
 		catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
 		for _, descriptor := range catalogDescriptors {
 			descriptors = append(descriptors, dependencyDescriptor{

@@ -194,6 +194,52 @@ func TestJVMDescriptorAndBuildFileHelpers(t *testing.T) {
 	}
 }
 
+func TestJVMParseGradleDependenciesSupportsCommonConfigurations(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), `
+dependencies {
+  annotationProcessor "org.projectlombok:lombok:1.18.32"
+  testAnnotationProcessor("org.mapstruct:mapstruct-processor:1.6.0")
+  testCompileOnly "org.jetbrains:annotations:24.1.0"
+  debugImplementation "com.android.support:appcompat-v7:28.0.0"
+  releaseImplementation("com.android.support:multidex:1.0.3")
+  kaptTest "com.google.dagger:dagger-compiler:2.52"
+  kaptAndroidTest("com.google.dagger:dagger-android-processor:2.52")
+  classpath "com.android.tools.build:gradle:8.7.0"
+}
+`)
+
+	descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no gradle warnings, got %#v", warnings)
+	}
+
+	names := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		names = append(names, descriptor.Name)
+	}
+
+	expected := []string{
+		"lombok",
+		"mapstruct-processor",
+		"annotations",
+		"appcompat-v7",
+		"multidex",
+		"dagger-compiler",
+		"dagger-android-processor",
+		"gradle",
+	}
+	if len(descriptors) != len(expected) {
+		t.Fatalf("expected %d gradle descriptors, got %#v", len(expected), descriptors)
+	}
+
+	for _, name := range expected {
+		if !slices.Contains(names, name) {
+			t.Fatalf("expected gradle dependency %q in %#v", name, descriptors)
+		}
+	}
+}
+
 func TestJVMParsePomDependenciesIncludesManagedAndBOMEntries(t *testing.T) {
 	repo := t.TempDir()
 	properties := `
