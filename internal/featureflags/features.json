@@ -3,7 +3,7 @@
     "code": "LOP-FEAT-0001",
     "name": "dart-source-attribution-preview",
     "description": "Enable richer Dart and Flutter dependency source attribution and federated plugin relationship reporting.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0002",
