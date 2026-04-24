@@ -78,7 +78,7 @@ func applyImportSourceAttribution(dependency string, dependencyReport *report.De
 	applyImportProvenance(dependencyReport.UnusedImports)
 }
 
-func importKey(module string, name string) string {
+func importKey(module, name string) string {
 	return normalizeDependencyID(module) + ":" + normalizeDependencyID(name)
 }
 

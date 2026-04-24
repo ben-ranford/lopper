@@ -15,12 +15,16 @@ type extensionLanguageProperty struct {
 	EnumDescriptions []string `json:"enumDescriptions"`
 }
 
+type extensionConfiguration struct {
+	Properties map[string]extensionLanguageProperty `json:"properties"`
+}
+
+type extensionContributes struct {
+	Configuration extensionConfiguration `json:"configuration"`
+}
+
 type extensionPackageManifest struct {
-	Contributes struct {
-		Configuration struct {
-			Properties map[string]extensionLanguageProperty `json:"properties"`
-		} `json:"configuration"`
-	} `json:"contributes"`
+	Contributes extensionContributes `json:"contributes"`
 }
 
 func TestPowerShellAdapterUserFacingListsIncludePowerShell(t *testing.T) {

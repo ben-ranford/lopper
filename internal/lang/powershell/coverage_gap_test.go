@@ -13,56 +13,10 @@ import (
 )
 
 func TestCoverageGapParserBranches(t *testing.T) {
-	if expressionComplete("") {
-		t.Fatalf("expected empty expression to be incomplete")
-	}
-	if !expressionComplete("[string]") {
-		t.Fatalf("expected balanced square expression to be complete")
-	}
-
-	modules, warnings := parseModuleExpression("Pester,,Az.Accounts")
-	if !reflect.DeepEqual(modules, []string{"Pester", "Az.Accounts"}) || len(warnings) != 0 {
-		t.Fatalf("unexpected module-expression parse result, modules=%#v warnings=%#v", modules, warnings)
-	}
-
-	module, dynamic, warning := parseModuleExpressionItem("@(@{ Other = 'x' })")
-	if module != "" || dynamic || !strings.Contains(strings.ToLower(warning), "modulename") {
-		t.Fatalf("expected nested warning branch, got module=%q dynamic=%v warning=%q", module, dynamic, warning)
-	}
-
-	imports, lineWarnings := parsePowerShellLine("using module './local.psm1'", "run.ps1", 3, nil)
-	if len(imports) != 0 || len(lineWarnings) != 0 {
-		t.Fatalf("expected local using-module path to be ignored, imports=%#v warnings=%#v", imports, lineWarnings)
-	}
-
-	dependency, parsedModule, dynamic := parseImportModuleDependency("   ", nil)
-	if dependency != "" || parsedModule != "" || dynamic {
-		t.Fatalf("expected blank import-module expression to be ignored, got dep=%q module=%q dynamic=%v", dependency, parsedModule, dynamic)
-	}
-
-	value, tokenDynamic := parseStaticModuleToken(",;")
-	if value != "" || tokenDynamic {
-		t.Fatalf("expected empty static token after trimming separators, got value=%q dynamic=%v", value, tokenDynamic)
-	}
-
-	value, tokenDynamic = parseStaticModuleToken("\"./local.psm1\"")
-	if value != "" || tokenDynamic {
-		t.Fatalf("expected quoted local path to be ignored, got value=%q dynamic=%v", value, tokenDynamic)
-	}
-
-	if !isDynamicToken("prefix$(Resolve-Module)") {
-		t.Fatalf("expected contains-$() branch to classify token as dynamic")
-	}
-	if !isLocalModulePath("module.psm1") {
-		t.Fatalf("expected extension-only module path to be treated as local path")
-	}
-
-	if parts := splitTopLevel("   ", ','); len(parts) != 0 {
-		t.Fatalf("expected empty split for whitespace input, got %#v", parts)
-	}
-	if parts := splitTopLevel("\"a,b\",c", ','); !reflect.DeepEqual(parts, []string{"\"a,b\"", "c"}) {
-		t.Fatalf("unexpected quoted comma split result: %#v", parts)
-	}
+	assertCoverageGapExpressionParsing(t)
+	assertCoverageGapImportParsing(t)
+	assertCoverageGapTokenHelpers(t)
+	assertCoverageGapSplitHelpers(t)
 }
 
 func TestCoverageGapDetectionAndScanBranches(t *testing.T) {
@@ -114,5 +68,68 @@ func TestCoverageGapDetectionAndScanBranches(t *testing.T) {
 
 	if _, err := scanRepo(context.Background(), symlinkRepo); err == nil {
 		t.Fatalf("expected scan to fail when reading symlink outside repo root")
+	}
+}
+
+func assertCoverageGapExpressionParsing(t *testing.T) {
+	t.Helper()
+	if expressionComplete("") {
+		t.Fatalf("expected empty expression to be incomplete")
+	}
+	if !expressionComplete("[string]") {
+		t.Fatalf("expected balanced square expression to be complete")
+	}
+
+	modules, warnings := parseModuleExpression("Pester,,Az.Accounts")
+	if !reflect.DeepEqual(modules, []string{"Pester", "Az.Accounts"}) || len(warnings) != 0 {
+		t.Fatalf("unexpected module-expression parse result, modules=%#v warnings=%#v", modules, warnings)
+	}
+
+	module, dynamic, warning := parseModuleExpressionItem("@(@{ Other = 'x' })")
+	if module != "" || dynamic || !strings.Contains(strings.ToLower(warning), "modulename") {
+		t.Fatalf("expected nested warning branch, got module=%q dynamic=%v warning=%q", module, dynamic, warning)
+	}
+}
+
+func assertCoverageGapImportParsing(t *testing.T) {
+	t.Helper()
+	imports, lineWarnings := parsePowerShellLine("using module './local.psm1'", "run.ps1", 3, nil)
+	if len(imports) != 0 || len(lineWarnings) != 0 {
+		t.Fatalf("expected local using-module path to be ignored, imports=%#v warnings=%#v", imports, lineWarnings)
+	}
+
+	dependency, parsedModule, dynamic := parseImportModuleDependency("   ", nil)
+	if dependency != "" || parsedModule != "" || dynamic {
+		t.Fatalf("expected blank import-module expression to be ignored, got dep=%q module=%q dynamic=%v", dependency, parsedModule, dynamic)
+	}
+}
+
+func assertCoverageGapTokenHelpers(t *testing.T) {
+	t.Helper()
+	value, tokenDynamic := parseStaticModuleToken(",;")
+	if value != "" || tokenDynamic {
+		t.Fatalf("expected empty static token after trimming separators, got value=%q dynamic=%v", value, tokenDynamic)
+	}
+
+	value, tokenDynamic = parseStaticModuleToken("\"./local.psm1\"")
+	if value != "" || tokenDynamic {
+		t.Fatalf("expected quoted local path to be ignored, got value=%q dynamic=%v", value, tokenDynamic)
+	}
+
+	if !isDynamicToken("prefix$(Resolve-Module)") {
+		t.Fatalf("expected contains-$() branch to classify token as dynamic")
+	}
+	if !isLocalModulePath("module.psm1") {
+		t.Fatalf("expected extension-only module path to be treated as local path")
+	}
+}
+
+func assertCoverageGapSplitHelpers(t *testing.T) {
+	t.Helper()
+	if parts := splitTopLevel("   ", ','); len(parts) != 0 {
+		t.Fatalf("expected empty split for whitespace input, got %#v", parts)
+	}
+	if parts := splitTopLevel("\"a,b\",c", ','); !reflect.DeepEqual(parts, []string{"\"a,b\"", "c"}) {
+		t.Fatalf("unexpected quoted comma split result: %#v", parts)
 	}
 }

@@ -56,34 +56,7 @@ Import-Module $dynamic
 	if err != nil {
 		t.Fatalf("analyse dependency: %v", err)
 	}
-	if len(depReport.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
-	}
-	dependency := depReport.Dependencies[0]
-	if dependency.Language != adapterID {
-		t.Fatalf("expected dependency language %q, got %#v", adapterID, dependency)
-	}
-	if dependency.Name != "pester" {
-		t.Fatalf("expected dependency name pester, got %#v", dependency)
-	}
-	if dependency.UsedExportsCount == 0 {
-		t.Fatalf("expected static usage attribution from Import-Module and #Requires, got %#v", dependency)
-	}
-	if dependency.Provenance == nil || dependency.Provenance.Source != dependencySourceManifest {
-		t.Fatalf("expected manifest provenance on dependency, got %#v", dependency.Provenance)
-	}
-	if len(dependency.Provenance.Signals) == 0 || dependency.Provenance.Signals[0] != "Demo.psd1" {
-		t.Fatalf("expected manifest signal in provenance, got %#v", dependency.Provenance)
-	}
-	if len(dependency.UsedImports) == 0 {
-		t.Fatalf("expected used imports for pester, got %#v", dependency)
-	}
-	importProvenance := strings.Join(dependency.UsedImports[0].Provenance, ",")
-	for _, expected := range []string{usageSourceImportModule, usageSourceRequiresModule} {
-		if !strings.Contains(importProvenance, expected) {
-			t.Fatalf("expected import provenance to include %q, got %#v", expected, dependency.UsedImports)
-		}
-	}
+	assertPowerShellDependencyAnalysis(t, depReport)
 	if !containsPowerShellWarning(depReport.Warnings, "dynamic import-module expression") {
 		t.Fatalf("expected dynamic import warning, got %#v", depReport.Warnings)
 	}
@@ -92,15 +65,7 @@ Import-Module $dynamic
 	if err != nil {
 		t.Fatalf("analyse topN: %v", err)
 	}
-	names := make([]string, 0, len(topReport.Dependencies))
-	for _, dep := range topReport.Dependencies {
-		names = append(names, dep.Name)
-	}
-	for _, expected := range []string{"pester", "az.accounts"} {
-		if !slices.Contains(names, expected) {
-			t.Fatalf("expected %q in top report dependencies, got %#v", expected, names)
-		}
-	}
+	assertPowerShellTopDependencyNames(t, topReport.Dependencies, "pester", "az.accounts")
 }
 
 func TestPowerShellAdapterAnalyseNoFilesAndNoDeclarationsWarnings(t *testing.T) {
@@ -194,6 +159,70 @@ func assertPowerShellDetectWrapper(t *testing.T, matched bool, err error) {
 	if !matched {
 		t.Fatalf("PowerShell Detect returned false")
 	}
+}
+
+func assertPowerShellDependencyAnalysis(t *testing.T, depReport report.Report) {
+	t.Helper()
+	if len(depReport.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(depReport.Dependencies))
+	}
+
+	dependency := depReport.Dependencies[0]
+	if dependency.Language != adapterID {
+		t.Fatalf("expected dependency language %q, got %#v", adapterID, dependency)
+	}
+	if dependency.Name != "pester" {
+		t.Fatalf("expected dependency name pester, got %#v", dependency)
+	}
+	if dependency.UsedExportsCount == 0 {
+		t.Fatalf("expected static usage attribution from Import-Module and #Requires, got %#v", dependency)
+	}
+	assertPowerShellManifestProvenance(t, dependency)
+	assertPowerShellImportProvenance(t, dependency)
+}
+
+func assertPowerShellManifestProvenance(t *testing.T, dependency report.DependencyReport) {
+	t.Helper()
+	if dependency.Provenance == nil || dependency.Provenance.Source != dependencySourceManifest {
+		t.Fatalf("expected manifest provenance on dependency, got %#v", dependency.Provenance)
+	}
+	if len(dependency.Provenance.Signals) == 0 || dependency.Provenance.Signals[0] != "Demo.psd1" {
+		t.Fatalf("expected manifest signal in provenance, got %#v", dependency.Provenance)
+	}
+}
+
+func assertPowerShellImportProvenance(t *testing.T, dependency report.DependencyReport) {
+	t.Helper()
+	if len(dependency.UsedImports) == 0 {
+		t.Fatalf("expected used imports for pester, got %#v", dependency)
+	}
+
+	importProvenance := strings.Join(dependency.UsedImports[0].Provenance, ",")
+	for _, expected := range []string{usageSourceImportModule, usageSourceRequiresModule} {
+		if !strings.Contains(importProvenance, expected) {
+			t.Fatalf("expected import provenance to include %q, got %#v", expected, dependency.UsedImports)
+		}
+	}
+}
+
+func assertPowerShellTopDependencyNames(t *testing.T, dependencies []report.DependencyReport, expectedNames ...string) {
+	t.Helper()
+	for _, expected := range expectedNames {
+		if slices.ContainsFunc(dependencies, func(dep report.DependencyReport) bool {
+			return dep.Name == expected
+		}) {
+			continue
+		}
+		t.Fatalf("expected %q in top report dependencies, got %#v", expected, powerShellDependencyNames(dependencies))
+	}
+}
+
+func powerShellDependencyNames(dependencies []report.DependencyReport) []string {
+	names := make([]string, 0, len(dependencies))
+	for _, dep := range dependencies {
+		names = append(names, dep.Name)
+	}
+	return names
 }
 
 func containsPowerShellWarning(warnings []string, fragment string) bool {

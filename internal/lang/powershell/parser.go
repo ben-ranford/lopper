@@ -118,7 +118,7 @@ func parseRequiredModules(content []byte, manifestPath string) ([]string, []stri
 	return declared, warnings
 }
 
-func extractRequiredModulesAssignments(content string, manifestPath string) ([]assignmentExpression, []string) {
+func extractRequiredModulesAssignments(content, manifestPath string) ([]assignmentExpression, []string) {
 	lines := strings.Split(content, "\n")
 	assignments := make([]assignmentExpression, 0)
 	warnings := make([]string, 0)
@@ -589,21 +589,32 @@ func splitTopLevel(value string, separator byte) []string {
 		if scanner.advance(ch) {
 			continue
 		}
-		if ch == separator && scanner.complete() {
-			appendSegment(i)
-			if separator == ' ' {
-				for i+1 < len(value) && value[i+1] == ' ' {
-					i++
-				}
-			}
-			start = i + 1
+		nextStart, ok := consumeTopLevelSeparator(value, i, separator, &scanner)
+		if !ok {
+			continue
 		}
+		appendSegment(i)
+		start = nextStart
+		i = nextStart - 1
 	}
 	appendSegment(len(value))
 	return items
 }
 
-func flagValue(value string, flag string) (string, bool) {
+func consumeTopLevelSeparator(value string, index int, separator byte, scanner *powerShellExpressionScanner) (int, bool) {
+	if value[index] != separator || !scanner.complete() {
+		return 0, false
+	}
+	if separator != ' ' {
+		return index + 1, true
+	}
+	for index+1 < len(value) && value[index+1] == ' ' {
+		index++
+	}
+	return index + 1, true
+}
+
+func flagValue(value, flag string) (string, bool) {
 	tokens := splitArguments(value)
 	for i := 0; i < len(tokens); i++ {
 		token := strings.TrimSpace(tokens[i])
@@ -622,37 +633,10 @@ func flagValue(value string, flag string) (string, bool) {
 }
 
 func stripPowerShellInlineComment(line string) string {
-	inSingle := false
-	inDouble := false
-	escaped := false
+	scanner := powerShellExpressionScanner{}
 	for i := 0; i < len(line); i++ {
 		ch := line[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if ch == '`' {
-			escaped = true
-			continue
-		}
-		if inSingle {
-			if ch == '\'' {
-				inSingle = false
-			}
-			continue
-		}
-		if inDouble {
-			if ch == '"' {
-				inDouble = false
-			}
-			continue
-		}
-		switch ch {
-		case '\'':
-			inSingle = true
-		case '"':
-			inDouble = true
-		case '#':
+		if !scanner.advance(ch) && ch == '#' {
 			return line[:i]
 		}
 	}
