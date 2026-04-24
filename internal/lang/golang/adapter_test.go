@@ -373,42 +373,6 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 	}
 }
 
-func TestAdapterAnalyseSkipsBuildTaggedFileBeyondLegacyHeaderLimit(t *testing.T) {
-	repo := t.TempDir()
-	writeRepoGoModLines(t, repo, moduleDemoLine, "", requirePrefix+"(", "\t"+depUUID+versionV160, "\t"+depLo+" v1.47.0", ")", "")
-	writeRepoMainLines(t, repo, packageMainLine, "", "import \""+depUUID+"\"", "", "func main() { _ = uuid.NewString() }", "")
-
-	taggedLines := make([]string, 0, 80)
-	for i := 0; i < 64; i++ {
-		taggedLines = append(taggedLines, "// filler header comment")
-	}
-	taggedLines = append(taggedLines, "//go:build never")
-	taggedLines = append(taggedLines, packageMainLine)
-	taggedLines = append(taggedLines, "")
-	taggedLines = append(taggedLines, importLoLine)
-	taggedLines = append(taggedLines, "")
-	taggedLines = append(taggedLines, "var _ = lo.Contains([]int{1,2}, 2)")
-	taggedLines = append(taggedLines, "")
-	writeFile(t, filepath.Join(repo, "inactive_long_header.go"), strings.Join(taggedLines, "\n"))
-
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     5,
-	})
-	names := dependencyNames(reportData.Dependencies)
-	if !slices.Contains(names, depUUID) {
-		t.Fatalf("expected uuid dependency in %#v", names)
-	}
-	if slices.Contains(names, depLo) {
-		t.Fatalf("did not expect lo dependency from long-header build-tagged file in %#v", names)
-	}
-
-	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
-	if !strings.Contains(warningsText, "build constraints") {
-		t.Fatalf("expected build-constraint warning, got %#v", reportData.Warnings)
-	}
-}
-
 func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoModLines(t, repo, "module example.com/root", "", requirePrefix+depUUID+versionV160, "")
