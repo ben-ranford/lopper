@@ -154,6 +154,12 @@ func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) repor
 
 type importBinding = shared.ImportRecord
 
+type fromImportSymbolLine struct {
+	symbols string
+	line    string
+	index   int
+}
+
 type fileScan struct {
 	Path    string
 	Imports []importBinding
@@ -264,9 +270,36 @@ var (
 )
 
 func parseImports(content []byte, filePath string, repoPath string) []importBinding {
+	type pendingFromImport struct {
+		module      string
+		symbolLines []fromImportSymbolLine
+		parenDepth  int
+	}
+
+	var pending *pendingFromImport
+
 	return shared.ParseImportLines(content, filePath, func(line string, index int) []shared.ImportRecord {
 		lineNoComment := stripComment(line)
-		if strings.TrimSpace(lineNoComment) == "" {
+		trimmed := strings.TrimSpace(lineNoComment)
+
+		if pending != nil {
+			if trimmed != "" {
+				pending.symbolLines = append(pending.symbolLines, fromImportSymbolLine{
+					symbols: trimmed,
+					line:    lineNoComment,
+					index:   index,
+				})
+				pending.parenDepth += fromImportParenthesisDelta(trimmed)
+			}
+			if pending.parenDepth <= 0 {
+				records := parseFromImportLines(pending.module, pending.symbolLines, filePath, repoPath)
+				pending = nil
+				return records
+			}
+			return nil
+		}
+
+		if trimmed == "" {
 			return nil
 		}
 
@@ -275,7 +308,21 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 		}
 
 		if matches := fromLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 3 {
-			return parseFromImportLine(matches[1], matches[2], filePath, repoPath, index, lineNoComment)
+			symbols := strings.TrimSpace(matches[2])
+			parenDepth := fromImportParenthesisDelta(symbols)
+			if parenDepth > 0 {
+				pending = &pendingFromImport{
+					module: matches[1],
+					symbolLines: []fromImportSymbolLine{{
+						symbols: symbols,
+						line:    lineNoComment,
+						index:   index,
+					}},
+					parenDepth: parenDepth,
+				}
+				return nil
+			}
+			return parseFromImportLine(matches[1], symbols, filePath, repoPath, index, lineNoComment)
 		}
 		return nil
 	})
@@ -307,17 +354,45 @@ func parseImportLine(partsText string, filePath string, repoPath string, index i
 }
 
 func parseFromImportLine(moduleValue string, symbolsValue string, filePath string, repoPath string, index int, line string) []importBinding {
-	moduleName := strings.TrimSpace(moduleValue)
-	if strings.HasPrefix(moduleName, ".") {
+	moduleName, dependency, ok := resolveFromImportDependency(moduleValue, repoPath)
+	if !ok {
 		return nil
 	}
-	dependency := dependencyFromModule(repoPath, moduleName)
-	if dependency == "" {
+
+	return parseFromImportSymbols(moduleName, dependency, symbolsValue, filePath, index, line)
+}
+
+func parseFromImportLines(moduleValue string, symbolLines []fromImportSymbolLine, filePath string, repoPath string) []importBinding {
+	moduleName, dependency, ok := resolveFromImportDependency(moduleValue, repoPath)
+	if !ok {
 		return nil
 	}
 
 	bindings := make([]importBinding, 0)
+	for _, symbolLine := range symbolLines {
+		bindings = append(bindings, parseFromImportSymbols(moduleName, dependency, symbolLine.symbols, filePath, symbolLine.index, symbolLine.line)...)
+	}
+	return bindings
+}
+
+func resolveFromImportDependency(moduleValue string, repoPath string) (string, string, bool) {
+	moduleName := strings.TrimSpace(moduleValue)
+	if strings.HasPrefix(moduleName, ".") {
+		return "", "", false
+	}
+	dependency := dependencyFromModule(repoPath, moduleName)
+	if dependency == "" {
+		return "", "", false
+	}
+	return moduleName, dependency, true
+}
+
+func parseFromImportSymbols(moduleName string, dependency string, symbolsValue string, filePath string, index int, line string) []importBinding {
+	symbolsValue = normalizeFromImportSymbols(symbolsValue)
+
+	bindings := make([]importBinding, 0)
 	for _, part := range splitCSV(symbolsValue) {
+		part = strings.Trim(strings.TrimSpace(part), "()")
 		symbol, local := parseImportPart(part)
 		if symbol == "" {
 			continue
@@ -335,6 +410,18 @@ func parseFromImportLine(moduleValue string, symbolsValue string, filePath strin
 		})
 	}
 	return bindings
+}
+
+func fromImportParenthesisDelta(value string) int {
+	return strings.Count(value, "(") - strings.Count(value, ")")
+}
+
+func normalizeFromImportSymbols(value string) string {
+	value = strings.TrimSpace(value)
+	for len(value) >= 2 && strings.HasPrefix(value, "(") && strings.HasSuffix(value, ")") {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	return value
 }
 
 func importLocation(filePath string, index int, line string) report.Location {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -36,13 +37,78 @@ func TestAdapterDetectWithPythonSource(t *testing.T) {
 }
 
 func TestAdapterAnalyseDependency(t *testing.T) {
-	repo := t.TempDir()
 	source := "import requests\nfrom numpy import array, mean\narray([1])\nrequests.get('x')\n"
+	dep := analysePythonDependency(t, source, "numpy")
+	assertDependencyReport(t, dep, dependencyReportExpectation{language: "python", used: 1, total: 2})
+}
+
+func TestParseImportsHandlesParenthesizedFromImports(t *testing.T) {
+	repo := t.TempDir()
+	source := "from django.db import (models, migrations)\nfrom requests import (\n    Session,\n    Response as Resp,\n)\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 4 {
+		t.Fatalf("expected four parsed from-import bindings, got %#v", imports)
+	}
+
+	expected := []importBinding{
+		{Dependency: "django", Module: "django.db", Name: "models", Local: "models"},
+		{Dependency: "django", Module: "django.db", Name: "migrations", Local: "migrations"},
+		{Dependency: "requests", Module: "requests", Name: "Session", Local: "Session"},
+		{Dependency: "requests", Module: "requests", Name: "Response", Local: "Resp"},
+	}
+	for index, want := range expected {
+		assertImportBinding(t, imports[index], want)
+	}
+
+	for _, imported := range imports {
+		if strings.ContainsAny(imported.Name, "()") || strings.ContainsAny(imported.Local, "()") {
+			t.Fatalf("expected sanitized symbol names without parentheses, got %#v", imported)
+		}
+	}
+}
+
+func assertImportBinding(t *testing.T, got importBinding, want importBinding) {
+	t.Helper()
+	if got.Dependency != want.Dependency || got.Module != want.Module || got.Name != want.Name || got.Local != want.Local {
+		t.Fatalf("unexpected import binding: got %#v, want dependency=%q module=%q name=%q local=%q", got, want.Dependency, want.Module, want.Name, want.Local)
+	}
+}
+
+func TestAdapterAnalyseDependencyWithParenthesizedFromImports(t *testing.T) {
+	source := "from requests import (\n    Session,\n    Response,\n)\nSession()\n"
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", used: 1, total: 2})
+}
+
+type dependencyReportExpectation struct {
+	name     string
+	language string
+	used     int
+	total    int
+}
+
+func assertDependencyReport(t *testing.T, got report.DependencyReport, want dependencyReportExpectation) {
+	t.Helper()
+	if want.name != "" && got.Name != want.name {
+		t.Fatalf("expected dependency report for %q, got %q", want.name, got.Name)
+	}
+	if want.language != "" && got.Language != want.language {
+		t.Fatalf("expected language %q, got %q", want.language, got.Language)
+	}
+	if got.UsedExportsCount != want.used || got.TotalExportsCount != want.total {
+		t.Fatalf("expected used/total %d/%d, got %d/%d", want.used, want.total, got.UsedExportsCount, got.TotalExportsCount)
+	}
+}
+
+func analysePythonDependency(t *testing.T, source string, dependency string) report.DependencyReport {
+	t.Helper()
+	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
-		Dependency: "numpy",
+		Dependency: dependency,
 	})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
@@ -50,14 +116,7 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	if len(reportData.Dependencies) != 1 {
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
-
-	dep := reportData.Dependencies[0]
-	if dep.Language != "python" {
-		t.Fatalf("expected language python, got %q", dep.Language)
-	}
-	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 2 {
-		t.Fatalf("expected numpy used/total 1/2, got %d/%d", dep.UsedExportsCount, dep.TotalExportsCount)
-	}
+	return reportData.Dependencies[0]
 }
 
 func TestAdapterAnalyseTopNRequiresRequirementsDependencies(t *testing.T) {
