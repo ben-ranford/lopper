@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/dashboard"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -404,6 +405,43 @@ func TestRunDashboardAnalysesDefaultsTopNAndScope(t *testing.T) {
 	}
 	if results[0].Input.Path != "./api" {
 		t.Fatalf("unexpected result ordering: %#v", results)
+	}
+}
+
+func TestRunDashboardAnalysesForwardsFeatures(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			"./scripts": {Dependencies: []report.DependencyReport{{Name: "pester"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	features, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelRelease,
+	})
+	if err != nil {
+		t.Fatalf("resolve release features: %v", err)
+	}
+	if !features.Enabled("powershell-adapter-preview") {
+		t.Fatalf("expected release default features to include powershell adapter")
+	}
+
+	repos := []dashboard.RepoInput{
+		{Name: "scripts", Path: "./scripts", Language: "powershell"},
+	}
+	dashboardReq := DashboardRequest{
+		Features: features,
+	}
+	results := application.runDashboardAnalyses(context.Background(), dashboardReq, repos)
+	if len(results) != 1 {
+		t.Fatalf("expected one analysis result, got %#v", results)
+	}
+	if len(analyzer.calls) != 1 {
+		t.Fatalf("expected one analyzer call, got %#v", analyzer.calls)
+	}
+	if !analyzer.calls[0].Features.Enabled("powershell-adapter-preview") {
+		t.Fatalf("expected dashboard analysis request to forward powershell feature flag")
 	}
 }
 

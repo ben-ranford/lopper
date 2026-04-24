@@ -205,6 +205,7 @@ func (a *App) runDashboardAnalyses(ctx context.Context, request DashboardRequest
 					TopN:           topN,
 					ScopeMode:      analysis.ScopeModeRepo,
 					Language:       repoInput.Language,
+					Features:       request.Features,
 					RuntimeProfile: "node-import",
 				})
 

@@ -81,6 +81,7 @@ type DashboardRequest struct {
 	OutputPath      string
 	TopN            int
 	DefaultLanguage string
+	Features        featureflags.Set
 }
 
 type FeaturesRequest struct {

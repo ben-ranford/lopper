@@ -44,21 +44,40 @@ func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool)
 }
 
 func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
-	if err := validateFeatureRegistry(); err != nil {
+	channel, lock, err := resolveFeatureBuildContext()
+	if err != nil {
 		return featureflags.Set{}, err
+	}
+	return resolveFeatureSet(featureRegistryProvider(), channel, lock, visited, values, configFeatures)
+}
+
+func resolveDefaultFeatureSet() (featureflags.Set, error) {
+	channel, lock, err := resolveFeatureBuildContext()
+	if err != nil {
+		return featureflags.Set{}, err
+	}
+	return featureRegistryProvider().Resolve(featureflags.ResolveOptions{
+		Channel: channel,
+		Lock:    lock,
+	})
+}
+
+func resolveFeatureBuildContext() (featureflags.Channel, *featureflags.ReleaseLock, error) {
+	if err := validateFeatureRegistry(); err != nil {
+		return "", nil, err
 	}
 	channel, err := featureflags.NormalizeChannel(featureBuildChannel())
 	if err != nil {
-		return featureflags.Set{}, err
+		return "", nil, err
 	}
 	var lock *featureflags.ReleaseLock
 	if channel == featureflags.ChannelRelease {
 		lock, err = featureReleaseLockProvider(featureReleaseVersion())
 		if err != nil {
-			return featureflags.Set{}, err
+			return "", nil, err
 		}
 	}
-	return resolveFeatureSet(featureRegistryProvider(), channel, lock, visited, values, configFeatures)
+	return channel, lock, nil
 }
 
 func resolveFeatureSet(registry *featureflags.Registry, channel featureflags.Channel, lock *featureflags.ReleaseLock, visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
