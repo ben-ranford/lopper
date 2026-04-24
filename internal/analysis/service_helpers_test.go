@@ -126,11 +126,33 @@ func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 		t.Fatalf("expected language to be applied")
 	}
 	adjustRelativeLocations("/repo", repoPackageARoot, deps)
-	if deps[0].UsedImports[0].Locations[0].File != filepath.Clean("packages/a/src/main.js") {
+	if deps[0].UsedImports[0].Locations[0].File != "packages/a/src/main.js" {
 		t.Fatalf("expected relative file adjustment, got %q", deps[0].UsedImports[0].Locations[0].File)
 	}
 	if deps[0].UnusedImports[0].Locations[0].File != "/abs/file.js" {
 		t.Fatalf("expected absolute file path unchanged")
+	}
+}
+
+func TestAdjustImportLocationsSlashNormalizesWindowsPaths(t *testing.T) {
+	imports := []report.ImportUse{{
+		Locations: []report.Location{
+			{File: `src\main.js`, Line: 1},
+			{File: `src\..\feature\entry.js`, Line: 2},
+			{File: `C:\repo\pkg\abs.js`, Line: 3},
+		},
+	}}
+
+	adjustImportLocations(`packages\a`, imports)
+
+	if got := imports[0].Locations[0].File; got != "packages/a/src/main.js" {
+		t.Fatalf("expected slash-normalized relative import location, got %q", got)
+	}
+	if got := imports[0].Locations[1].File; got != "packages/a/feature/entry.js" {
+		t.Fatalf("expected cleaned slash-normalized relative import location, got %q", got)
+	}
+	if got := imports[0].Locations[2].File; got != "C:/repo/pkg/abs.js" {
+		t.Fatalf("expected absolute windows import location to remain absolute and slash-normalized, got %q", got)
 	}
 }
 
