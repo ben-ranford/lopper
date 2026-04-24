@@ -137,7 +137,7 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	}
 	// Force registry resolve error via unsupported explicit language.
 	svc := &Service{Registry: reg}
-	if _, err := svc.resolveCandidates(context.Background(), ".", "unknown"); err == nil {
+	if _, err := svc.resolveCandidates(context.Background(), ".", Request{Language: "unknown"}); err == nil {
 		t.Fatalf("expected prepareAnalysis resolve error")
 	}
 

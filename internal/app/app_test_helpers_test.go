@@ -91,7 +91,7 @@ func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
 		{"runtime profile", got.RuntimeProfile == "browser-import"},
 		{"scope mode", got.ScopeMode == ScopeModeChangedPackages},
 		{"cache options", got.Cache != nil && !got.Cache.Enabled && got.Cache.Path == "/tmp/lopper-cache" && got.Cache.ReadOnly},
-		{"features", got.Features.Enabled("dart-source-attribution-preview")},
+		{"features", got.Features.Enabled("powershell-adapter-preview")},
 		{"suggest only", got.SuggestOnly},
 		{"removal candidate weights", got.RemovalCandidateWeights != nil && got.RemovalCandidateWeights.Usage == 0.6 && got.RemovalCandidateWeights.Impact == 0.2 && got.RemovalCandidateWeights.Confidence == 0.2},
 	}

@@ -60,6 +60,9 @@ func TestRunHelp(t *testing.T) {
 	if !strings.Contains(out.String(), "kotlin-android") {
 		t.Fatalf("expected help output to include kotlin-android adapter")
 	}
+	if !strings.Contains(out.String(), "powershell") {
+		t.Fatalf("expected help output to include powershell adapter")
+	}
 }
 
 func TestRunVersion(t *testing.T) {
@@ -190,5 +193,8 @@ func TestUsageReturnsText(t *testing.T) {
 	}
 	if !strings.Contains(Usage(), "Supported IDs: auto, all, js-ts, python, cpp, jvm, kotlin-android") {
 		t.Fatalf("expected usage text to include supported adapter ids")
+	}
+	if !strings.Contains(Usage(), "powershell") {
+		t.Fatalf("expected usage text to include powershell adapter id")
 	}
 }

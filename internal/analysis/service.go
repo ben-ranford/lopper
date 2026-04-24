@@ -45,6 +45,7 @@ func (s *Service) prepareAnalysis(req Request) (string, error) {
 	return repoPath, nil
 }
 
-func (s *Service) resolveCandidates(ctx context.Context, repoPath string, languageID string) ([]language.Candidate, error) {
-	return s.Registry.Resolve(ctx, repoPath, languageID)
+func (s *Service) resolveCandidates(ctx context.Context, repoPath string, req Request) ([]language.Candidate, error) {
+	filter := adapterFeatureFilter(req.Features)
+	return s.Registry.ResolveWithFilter(ctx, repoPath, req.Language, filter)
 }

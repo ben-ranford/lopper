@@ -12,6 +12,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/jvm"
 	"github.com/ben-ranford/lopper/internal/lang/kotlinandroid"
 	"github.com/ben-ranford/lopper/internal/lang/php"
+	"github.com/ben-ranford/lopper/internal/lang/powershell"
 	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/lang/ruby"
 	"github.com/ben-ranford/lopper/internal/lang/rust"
@@ -37,6 +38,7 @@ var (
 		func() language.Adapter { return elixir.NewAdapter() },
 		func() language.Adapter { return swift.NewAdapter() },
 		func() language.Adapter { return dart.NewAdapter() },
+		func() language.Adapter { return powershell.NewAdapter() },
 	}
 )
 

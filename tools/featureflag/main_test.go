@@ -332,18 +332,13 @@ func TestManifestEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("release manifest: %v", err)
 	}
-	if len(manifest) != 3 {
+	if len(manifest) < 4 {
 		t.Fatalf("expected embedded manifest entries, got %#v", manifest)
 	}
-	if manifest[0].Name != "dart-source-attribution-preview" || manifest[0].EnabledByDefault {
-		t.Fatalf("expected dart-source-attribution-preview default-off in release channel, got %#v", manifest[0])
-	}
-	if manifest[1].Name != "lockfile-drift-ecosystem-expansion-preview" || manifest[1].EnabledByDefault {
-		t.Fatalf("expected lockfile drift preview default-off in release channel, got %#v", manifest[1])
-	}
-	if manifest[2].Name != "swift-carthage-preview" || manifest[2].EnabledByDefault {
-		t.Fatalf("expected swift Carthage preview default-off in release channel, got %#v", manifest[2])
-	}
+	assertManifestEntryDefault(t, manifest, "dart-source-attribution-preview", false)
+	assertManifestEntryDefault(t, manifest, "lockfile-drift-ecosystem-expansion-preview", false)
+	assertManifestEntryDefault(t, manifest, "swift-carthage-preview", false)
+	assertManifestEntryDefault(t, manifest, "powershell-adapter-preview", false)
 }
 
 func TestRunManifestAndReportUseChannels(t *testing.T) {
@@ -1142,6 +1137,19 @@ func readFeatureCatalog(t *testing.T, catalogDir string) []featureflags.Flag {
 		t.Fatalf("parse catalog: %v", err)
 	}
 	return flags
+}
+
+func assertManifestEntryDefault(t *testing.T, manifest []featureflags.ManifestEntry, name string, enabled bool) {
+	t.Helper()
+	for _, entry := range manifest {
+		if entry.Name == name {
+			if entry.EnabledByDefault != enabled {
+				t.Fatalf("expected %s enabledByDefault=%v, got %#v", name, enabled, entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected manifest entry for %s, got %#v", name, manifest)
 }
 
 func writeFeatureCatalog(t *testing.T, root, content string) string {

@@ -33,7 +33,7 @@ The VS Code extension adds editor diagnostics and hover context across supported
 - Extension ID: `BenRanford.vscode-lopper`
 - Command: `Lopper: Refresh Diagnostics`
 - Adapter mode: `lopper.language` with `auto` by default. `auto` follows the active or saved editor when possible, including Android Gradle Kotlin/Java modules and merged adapter matches, or you can pin a specific adapter.
-- Supported adapter pins: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `python`, `ruby`, `rust`, `swift`
+- Supported adapter pins: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `python`, `ruby`, `rust`, `swift`, `powershell` (preview-gated by `powershell-adapter-preview`)
 - Binary resolution order: `LOPPER_BINARY_PATH`, `lopper.binaryPath`, workspace `bin/lopper`, `PATH`, then managed download from GitHub releases
 - Quick fixes: deterministic JS/TS subpath rewrites when `lopper` reports a safe codemod suggestion
 

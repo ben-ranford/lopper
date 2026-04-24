@@ -19,6 +19,8 @@ type Registry struct {
 	adapters map[string]Adapter
 }
 
+type AdapterFilter func(Adapter) bool
+
 func NewRegistry() *Registry {
 	return &Registry{adapters: make(map[string]Adapter)}
 }
@@ -62,16 +64,20 @@ func (r *Registry) Select(ctx context.Context, repoPath string, languageID strin
 }
 
 func (r *Registry) Resolve(ctx context.Context, repoPath string, languageID string) ([]Candidate, error) {
+	return r.ResolveWithFilter(ctx, repoPath, languageID, nil)
+}
+
+func (r *Registry) ResolveWithFilter(ctx context.Context, repoPath string, languageID string, filter AdapterFilter) ([]Candidate, error) {
 	if r == nil {
 		return nil, errors.New("language registry is nil")
 	}
 
 	languageID = normalizeID(languageID)
 	if languageID == "" || languageID == Auto {
-		return r.resolveAuto(ctx, repoPath)
+		return r.resolveAuto(ctx, repoPath, filter)
 	}
 	if languageID == All {
-		matches, err := r.detectMatches(ctx, repoPath)
+		matches, err := r.detectMatches(ctx, repoPath, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -84,6 +90,9 @@ func (r *Registry) Resolve(ctx context.Context, repoPath string, languageID stri
 	adapter, ok := r.adapters[languageID]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknown, languageID)
+	}
+	if !adapterAllowed(adapter, filter) {
+		return nil, ErrNoMatch
 	}
 	detection, err := detectAdapter(ctx, adapter, repoPath)
 	if err != nil {
@@ -118,8 +127,8 @@ func (r *Registry) IDs() []string {
 	return ids
 }
 
-func (r *Registry) resolveAuto(ctx context.Context, repoPath string) ([]Candidate, error) {
-	matches, err := r.detectMatches(ctx, repoPath)
+func (r *Registry) resolveAuto(ctx context.Context, repoPath string, filter AdapterFilter) ([]Candidate, error) {
+	matches, err := r.detectMatches(ctx, repoPath, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +145,7 @@ func (r *Registry) resolveAuto(ctx context.Context, repoPath string) ([]Candidat
 	}
 }
 
-func (r *Registry) detectMatches(ctx context.Context, repoPath string) ([]Candidate, error) {
+func (r *Registry) detectMatches(ctx context.Context, repoPath string, filter AdapterFilter) ([]Candidate, error) {
 	if len(r.adapters) == 0 {
 		return nil, nil
 	}
@@ -149,6 +158,9 @@ func (r *Registry) detectMatches(ctx context.Context, repoPath string) ([]Candid
 			continue
 		}
 		seen[adapterID] = struct{}{}
+		if !adapterAllowed(adapter, filter) {
+			continue
+		}
 
 		detection, err := detectAdapter(ctx, adapter, repoPath)
 		if err != nil {
@@ -220,4 +232,14 @@ func clampConfidence(value int) int {
 
 func normalizeID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func adapterAllowed(adapter Adapter, filter AdapterFilter) bool {
+	if adapter == nil {
+		return false
+	}
+	if filter == nil {
+		return true
+	}
+	return filter(adapter)
 }

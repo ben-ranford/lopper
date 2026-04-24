@@ -29,6 +29,14 @@ suite("language configuration", () => {
       inferLopperLanguageForDocument({ fileName: "/repo/src/lib.cs", languageId: "csharp" }),
       "dotnet",
     );
+    assert.equal(
+      inferLopperLanguageForDocument({ fileName: "/repo/scripts/bootstrap.ps1", languageId: "powershell" }),
+      "powershell",
+    );
+    assert.equal(
+      inferLopperLanguageForDocument({ fileName: "/repo/modules/demo.psd1", languageId: "plaintext" }),
+      "powershell",
+    );
   });
 
   test("prefers kotlin-android for Android Gradle modules", async () => {
@@ -72,6 +80,7 @@ suite("language configuration", () => {
     assert.equal(resolveLopperLanguage("auto", { fileName: "/repo/README.md", languageId: "markdown" }), "auto");
     assert.equal(resolveLopperLanguage("all", pythonDocument), "all");
     assert.equal(resolveLopperLanguage("kotlin-android", pythonDocument), "kotlin-android");
+    assert.equal(resolveLopperLanguage("powershell", pythonDocument), "powershell");
     assert.equal(resolveLopperLanguage("rust", pythonDocument), "rust");
   });
 

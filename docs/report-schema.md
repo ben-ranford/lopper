@@ -46,7 +46,7 @@ CSV columns:
 - `summary`: aggregated totals across all dependency rows.
 - `scope`: analysis scope metadata (`mode`, `packages`).
 - `usageUncertainty`: JS/TS usage certainty summary (`confirmedImportUses`, `uncertainImportUses`, `samples`).
-- `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`).
+- `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`, `powershell`).
 - `effectiveThresholds`: resolved threshold values applied for this run.
 - `effectivePolicy`: resolved policy object, including precedence sources, scoring weights, and license policy controls (`CLI > repo config > imported policy packs > defaults`).
 - `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
