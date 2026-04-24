@@ -238,37 +238,54 @@ func collectDirective(lines []string) (string, int, bool) {
 }
 
 func hasDirectiveTerminator(line string) bool {
-	var quote byte
-	escaped := false
+	state := directiveTerminatorState{}
 	for i := 0; i < len(line); i++ {
 		character := line[i]
-		if quote != 0 {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if character == '\\' {
-				escaped = true
-				continue
-			}
-			if character == quote {
-				quote = 0
-			}
+		if state.consumeQuoted(character) {
 			continue
 		}
 
-		switch character {
-		case '\'', '"':
-			quote = character
-		case '/':
-			if i+1 < len(line) && line[i+1] == '/' {
-				return false
-			}
-		case ';':
+		if directiveCommentStarts(line, i) {
+			return false
+		}
+		if character == ';' {
 			return hasOnlyDirectiveTrailingContent(line[i+1:])
 		}
+		state.openQuote(character)
 	}
 	return false
+}
+
+type directiveTerminatorState struct {
+	quote   byte
+	escaped bool
+}
+
+func (s *directiveTerminatorState) consumeQuoted(character byte) bool {
+	if s.quote == 0 {
+		return false
+	}
+	if s.escaped {
+		s.escaped = false
+		return true
+	}
+	switch character {
+	case '\\':
+		s.escaped = true
+	case s.quote:
+		s.quote = 0
+	}
+	return true
+}
+
+func (s *directiveTerminatorState) openQuote(character byte) {
+	if character == '\'' || character == '"' {
+		s.quote = character
+	}
+}
+
+func directiveCommentStarts(line string, index int) bool {
+	return line[index] == '/' && index+1 < len(line) && line[index+1] == '/'
 }
 
 func hasOnlyDirectiveTrailingContent(suffix string) bool {

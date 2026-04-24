@@ -160,6 +160,12 @@ type fromImportSymbolLine struct {
 	index   int
 }
 
+type pendingFromImport struct {
+	module      string
+	symbolLines []fromImportSymbolLine
+	parenDepth  int
+}
+
 type fileScan struct {
 	Path    string
 	Imports []importBinding
@@ -270,62 +276,74 @@ var (
 )
 
 func parseImports(content []byte, filePath string, repoPath string) []importBinding {
-	type pendingFromImport struct {
-		module      string
-		symbolLines []fromImportSymbolLine
-		parenDepth  int
-	}
-
 	var pending *pendingFromImport
 
 	return shared.ParseImportLines(content, filePath, func(line string, index int) []shared.ImportRecord {
 		lineNoComment := stripComment(line)
 		trimmed := strings.TrimSpace(lineNoComment)
 
-		if pending != nil {
-			if trimmed != "" {
-				pending.symbolLines = append(pending.symbolLines, fromImportSymbolLine{
-					symbols: trimmed,
-					line:    lineNoComment,
-					index:   index,
-				})
-				pending.parenDepth += fromImportParenthesisDelta(trimmed)
-			}
-			if pending.parenDepth <= 0 {
-				records := parseFromImportLines(pending.module, pending.symbolLines, filePath, repoPath)
-				pending = nil
-				return records
-			}
-			return nil
+		if records, handled := continuePendingFromImport(&pending, trimmed, lineNoComment, filePath, repoPath, index); handled {
+			return records
 		}
 
-		if trimmed == "" {
-			return nil
-		}
+		return parseImportRecord(trimmed, lineNoComment, filePath, repoPath, index, &pending)
+	})
+}
 
-		if matches := importLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 2 {
-			return parseImportLine(matches[1], filePath, repoPath, index, lineNoComment)
-		}
+func continuePendingFromImport(pending **pendingFromImport, trimmed string, lineNoComment string, filePath string, repoPath string, index int) ([]importBinding, bool) {
+	if *pending == nil {
+		return nil, false
+	}
+	if trimmed != "" {
+		appendPendingFromImportLine(*pending, trimmed, lineNoComment, index)
+	}
+	if (*pending).parenDepth > 0 {
+		return nil, true
+	}
+	records := parseFromImportLines((*pending).module, (*pending).symbolLines, filePath, repoPath)
+	*pending = nil
+	return records, true
+}
 
-		if matches := fromLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 3 {
-			symbols := strings.TrimSpace(matches[2])
-			parenDepth := fromImportParenthesisDelta(symbols)
-			if parenDepth > 0 {
-				pending = &pendingFromImport{
-					module: matches[1],
-					symbolLines: []fromImportSymbolLine{{
-						symbols: symbols,
-						line:    lineNoComment,
-						index:   index,
-					}},
-					parenDepth: parenDepth,
-				}
-				return nil
-			}
-			return parseFromImportLine(matches[1], symbols, filePath, repoPath, index, lineNoComment)
+func appendPendingFromImportLine(pending *pendingFromImport, symbols string, line string, index int) {
+	pending.symbolLines = append(pending.symbolLines, fromImportSymbolLine{
+		symbols: symbols,
+		line:    line,
+		index:   index,
+	})
+	pending.parenDepth += fromImportParenthesisDelta(symbols)
+}
+
+func parseImportRecord(trimmed string, lineNoComment string, filePath string, repoPath string, index int, pending **pendingFromImport) []importBinding {
+	if trimmed == "" {
+		return nil
+	}
+	if matches := importLinePattern.FindStringSubmatch(lineNoComment); len(matches) == 2 {
+		return parseImportLine(matches[1], filePath, repoPath, index, lineNoComment)
+	}
+	return parseFromImportRecord(lineNoComment, filePath, repoPath, index, pending)
+}
+
+func parseFromImportRecord(lineNoComment string, filePath string, repoPath string, index int, pending **pendingFromImport) []importBinding {
+	matches := fromLinePattern.FindStringSubmatch(lineNoComment)
+	if len(matches) != 3 {
+		return nil
+	}
+	symbols := strings.TrimSpace(matches[2])
+	parenDepth := fromImportParenthesisDelta(symbols)
+	if parenDepth > 0 {
+		*pending = &pendingFromImport{
+			module: matches[1],
+			symbolLines: []fromImportSymbolLine{{
+				symbols: symbols,
+				line:    lineNoComment,
+				index:   index,
+			}},
+			parenDepth: parenDepth,
 		}
 		return nil
-	})
+	}
+	return parseFromImportLine(matches[1], symbols, filePath, repoPath, index, lineNoComment)
 }
 
 func parseImportLine(partsText string, filePath string, repoPath string, index int, line string) []importBinding {
@@ -375,7 +393,7 @@ func parseFromImportLines(moduleValue string, symbolLines []fromImportSymbolLine
 	return bindings
 }
 
-func resolveFromImportDependency(moduleValue string, repoPath string) (string, string, bool) {
+func resolveFromImportDependency(moduleValue, repoPath string) (string, string, bool) {
 	moduleName := strings.TrimSpace(moduleValue)
 	if strings.HasPrefix(moduleName, ".") {
 		return "", "", false
