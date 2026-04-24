@@ -328,11 +328,10 @@ func parsePowerShellLine(line string, filePath string, lineNo int, declared map[
 
 func parseRequiresLine(requiresBody string, line string, filePath string, lineNo int, declared map[string]struct{}) ([]importBinding, []string) {
 	requiresBody = stripPowerShellInlineComment(requiresBody)
-	match := requiresModulesOptionPattern.FindStringSubmatch(requiresBody)
-	if len(match) != 2 {
+	expr, hasModulesOption := extractRequiresModulesExpression(requiresBody)
+	if !hasModulesOption {
 		return nil, nil
 	}
-	expr := strings.TrimSpace(match[1])
 	if expr == "" {
 		warning := fmt.Sprintf("#Requires -Modules in %s:%d had no module list", filePath, lineNo)
 		return nil, []string{warning}
@@ -630,6 +629,42 @@ func flagValue(value, flag string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func extractRequiresModulesExpression(requiresBody string) (string, bool) {
+	tokens := splitArguments(requiresBody)
+	for i := 0; i < len(tokens); i++ {
+		token := strings.TrimSpace(tokens[i])
+		if token == "" {
+			continue
+		}
+		if strings.EqualFold(token, "-modules") {
+			return collectRequiresModulesExpression(tokens, i+1), true
+		}
+		if strings.HasPrefix(strings.ToLower(token), "-modules:") {
+			inline := strings.TrimSpace(token[len("-modules:"):])
+			if inline != "" {
+				return inline, true
+			}
+			return collectRequiresModulesExpression(tokens, i+1), true
+		}
+	}
+	return "", false
+}
+
+func collectRequiresModulesExpression(tokens []string, start int) string {
+	moduleTokens := make([]string, 0, len(tokens)-start)
+	for i := start; i < len(tokens); i++ {
+		token := strings.TrimSpace(tokens[i])
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		moduleTokens = append(moduleTokens, token)
+	}
+	return strings.TrimSpace(strings.Join(moduleTokens, " "))
 }
 
 func stripPowerShellInlineComment(line string) string {

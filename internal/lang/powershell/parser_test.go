@@ -264,6 +264,32 @@ func TestParseRequiresLineStripsTrailingComment(t *testing.T) {
 	}
 }
 
+func TestParseRequiresLineIgnoresTrailingRequiresOptions(t *testing.T) {
+	imports, warnings := parseRequiresLine(" -Modules Pester -Version 7.0", "#Requires -Modules Pester -Version 7.0", "script.ps1", 5, nil)
+	if len(warnings) != 0 || len(imports) != 1 {
+		t.Fatalf("expected one #Requires import and no warnings, imports=%#v warnings=%#v", imports, warnings)
+	}
+	if imports[0].Record.Dependency != "pester" {
+		t.Fatalf("expected trailing #Requires options to be excluded from dependency, got %#v", imports[0])
+	}
+}
+
+func TestParseRequiresLineParsesAllModulesBeforeTrailingOption(t *testing.T) {
+	imports, warnings := parseRequiresLine(" -Modules Pester, Az.Accounts -RunAsAdministrator", "#Requires -Modules Pester, Az.Accounts -RunAsAdministrator", "script.ps1", 5, nil)
+	if len(warnings) != 0 || len(imports) != 2 {
+		t.Fatalf("expected two #Requires imports and no warnings, imports=%#v warnings=%#v", imports, warnings)
+	}
+
+	dependencies := make([]string, 0, len(imports))
+	for _, imp := range imports {
+		dependencies = append(dependencies, imp.Record.Dependency)
+	}
+	slices.Sort(dependencies)
+	if !reflect.DeepEqual(dependencies, []string{"az.accounts", "pester"}) {
+		t.Fatalf("unexpected #Requires dependencies from module list, got %#v", dependencies)
+	}
+}
+
 func TestNewImportBindingNormalizesDependencyAndDefaultsModule(t *testing.T) {
 	binding := newImportBinding(" Pester ", "", "script.ps1", 3, "Import-Module Pester", usageSourceImportModule)
 	if binding.Record.Dependency != "pester" || binding.Record.Module != "pester" {
