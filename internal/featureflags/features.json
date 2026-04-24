@@ -15,7 +15,7 @@
     "code": "LOP-FEAT-0003",
     "name": "swift-carthage-preview",
     "description": "Enable Carthage dependency parsing for the Swift adapter.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0004",
