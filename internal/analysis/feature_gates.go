@@ -12,12 +12,12 @@ const (
 )
 
 func adapterFeatureFilter(features featureflags.Set) language.AdapterFilter {
-	previewFeatures := previewAdapterFeatures(featureflags.DefaultRegistry())
+	adapterFeatures := adapterFeatureFlags(featureflags.DefaultRegistry())
 	return func(adapter language.Adapter) bool {
 		if adapter == nil {
 			return false
 		}
-		featureName, ok := previewFeatures[normalizeAdapterID(adapter.ID())]
+		featureName, ok := adapterFeatures[normalizeAdapterID(adapter.ID())]
 		if !ok {
 			return true
 		}
@@ -25,16 +25,13 @@ func adapterFeatureFilter(features featureflags.Set) language.AdapterFilter {
 	}
 }
 
-func previewAdapterFeatures(registry *featureflags.Registry) map[string]string {
+func adapterFeatureFlags(registry *featureflags.Registry) map[string]string {
 	if registry == nil {
 		registry = featureflags.DefaultRegistry()
 	}
 	flags := registry.Flags()
 	features := make(map[string]string, len(flags))
 	for _, flag := range flags {
-		if flag.Lifecycle != featureflags.LifecyclePreview {
-			continue
-		}
 		adapterID, ok := previewAdapterID(flag.Name)
 		if !ok {
 			continue

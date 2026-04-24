@@ -18,7 +18,7 @@ The core contracts are in `internal/language`.
 - `elixir` (Elixir/Mix)
 - `swift` (Swift)
 - `dart` (Dart/Flutter)
-- `powershell` (PowerShell, preview-gated)
+- `powershell` (PowerShell)
 
 ## Adapter contract
 

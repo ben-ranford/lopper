@@ -503,11 +503,11 @@ func TestManifestReportsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil registry manifest to defer to defaults, manifest=%#v err=%v", manifest, err)
 	}
-	assertManifestFlag(t, manifest, "dart-source-attribution-preview", false)
-	assertManifestFlag(t, manifest, "lockfile-drift-ecosystem-expansion-preview", false)
-	assertManifestFlag(t, manifest, "swift-carthage-preview", false)
-	assertManifestFlag(t, manifest, "powershell-adapter-preview", false)
-	assertManifestFlag(t, manifest, "go-vendored-provenance-preview", false)
+	assertManifestFlag(t, manifest, "dart-source-attribution-preview", true)
+	assertManifestFlag(t, manifest, "lockfile-drift-ecosystem-expansion-preview", true)
+	assertManifestFlag(t, manifest, "swift-carthage-preview", true)
+	assertManifestFlag(t, manifest, "powershell-adapter-preview", true)
+	assertManifestFlag(t, manifest, "go-vendored-provenance-preview", true)
 }
 
 func TestFormatManifest(t *testing.T) {
@@ -551,7 +551,7 @@ func TestEnabledFlag(t *testing.T) {
 	}
 }
 
-func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
+func TestDefaultRegistryGraduatedDefaultsAndDisable(t *testing.T) {
 	registry := DefaultRegistry()
 	dev, err := registry.Resolve(ResolveOptions{Channel: ChannelDev})
 	if err != nil {
@@ -564,8 +564,8 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 		"powershell-adapter-preview",
 		"go-vendored-provenance-preview",
 	} {
-		if dev.Enabled(name) {
-			t.Fatalf("expected %s default-off in dev channel", name)
+		if !dev.Enabled(name) {
+			t.Fatalf("expected %s default-on in dev channel", name)
 		}
 	}
 
@@ -580,20 +580,20 @@ func TestDefaultRegistryPreviewDefaultsAndOptIn(t *testing.T) {
 		"powershell-adapter-preview",
 		"go-vendored-provenance-preview",
 	} {
-		if release.Enabled(name) {
-			t.Fatalf("expected %s default-off in release channel", name)
+		if !release.Enabled(name) {
+			t.Fatalf("expected %s default-on in release channel", name)
 		}
 	}
 
-	optIn, err := registry.Resolve(ResolveOptions{
-		Channel: ChannelDev,
-		Enable:  []string{"swift-carthage-preview"},
+	disabled, err := registry.Resolve(ResolveOptions{
+		Channel: ChannelRelease,
+		Disable: []string{"swift-carthage-preview"},
 	})
 	if err != nil {
-		t.Fatalf("resolve explicit opt-in: %v", err)
+		t.Fatalf("resolve explicit disable: %v", err)
 	}
-	if !optIn.Enabled("swift-carthage-preview") {
-		t.Fatalf("expected explicit opt-in to enable swift-carthage-preview")
+	if disabled.Enabled("swift-carthage-preview") {
+		t.Fatalf("expected explicit disable to turn off swift-carthage-preview")
 	}
 }
 

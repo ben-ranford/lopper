@@ -3,30 +3,30 @@
     "code": "LOP-FEAT-0001",
     "name": "dart-source-attribution-preview",
     "description": "Enable richer Dart and Flutter dependency source attribution and federated plugin relationship reporting.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0002",
     "name": "lockfile-drift-ecosystem-expansion-preview",
     "description": "Preview expansion of shared lockfile drift checks for .NET, Dart, Elixir, and SwiftPM ecosystems.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0003",
     "name": "swift-carthage-preview",
     "description": "Enable Carthage dependency parsing for the Swift adapter.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0004",
     "name": "powershell-adapter-preview",
     "description": "Enable preview support for the PowerShell language adapter.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0005",
     "name": "go-vendored-provenance-preview",
     "description": "Enable vendored dependency provenance for Go using vendor/modules.txt metadata.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   }
 ]
