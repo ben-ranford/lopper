@@ -183,6 +183,19 @@ func TestMapIncludeToDependencyBranches(t *testing.T) {
 	}
 }
 
+func TestMapIncludeToDependencyIgnoresRepoHeaderFromIncludeDir(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	includeDir := filepath.Join(repo, "include")
+	testutil.MustWriteFile(t, source, "#include <project/header.hpp>\n")
+	testutil.MustWriteFile(t, filepath.Join(includeDir, "project", "header.hpp"), "// local")
+
+	dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "project/header.hpp", Delimiter: '<'}, []string{includeDir}, newDependencyCatalog())
+	if dep != "" || unresolved {
+		t.Fatalf("expected repo include-dir header to be ignored, got dep=%q unresolved=%v", dep, unresolved)
+	}
+}
+
 func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	if got := dependencyFromIncludePath("openssl/ssl.h"); got != "openssl" {
 		t.Fatalf("expected openssl, got %q", got)
