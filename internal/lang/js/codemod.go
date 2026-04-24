@@ -152,6 +152,8 @@ func codemodSkipOrder(item report.CodemodSkip) string {
 
 func codemodSkipReason(imp ImportBinding, file FileScan) (string, string) {
 	switch imp.Kind {
+	case ImportSideEffect:
+		return codemodReasonSideEffectImport, "side-effect imports are not safe to rewrite automatically"
 	case ImportNamespace:
 		if imp.LocalName == "*" && imp.ExportName == "*" {
 			return codemodReasonSideEffectImport, "side-effect imports are not safe to rewrite automatically"

@@ -16,10 +16,13 @@ import (
 type ImportKind string
 
 const (
-	ImportNamed     ImportKind = "named"
-	ImportNamespace ImportKind = "namespace"
-	ImportDefault   ImportKind = "default"
+	ImportNamed      ImportKind = "named"
+	ImportNamespace  ImportKind = "namespace"
+	ImportDefault    ImportKind = "default"
+	ImportSideEffect ImportKind = "side-effect"
 )
+
+const sideEffectImportName = "<side-effect>"
 
 type ImportBinding struct {
 	Module     string

@@ -454,6 +454,8 @@ func applyImportUsage(imp ImportBinding, file FileScan, usedExports map[string]s
 		return applyNamedImportUsage(imp, file, usedExports, counts)
 	case ImportNamespace, ImportDefault:
 		return applyNamespaceOrDefaultImportUsage(imp, file, usedExports, counts)
+	case ImportSideEffect:
+		return applySideEffectImportUsage(imp, usedExports)
 	default:
 		return false
 	}
@@ -489,6 +491,15 @@ func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedEx
 		}
 	}
 	return used
+}
+
+func applySideEffectImportUsage(imp ImportBinding, usedExports map[string]struct{}) bool {
+	exportName := imp.ExportName
+	if exportName == "" {
+		exportName = sideEffectImportName
+	}
+	usedExports[exportName] = struct{}{}
+	return true
 }
 
 func recordImportUse(binding ImportBinding, provenance string) report.ImportUse {

@@ -308,6 +308,41 @@ func TestCollectDependencyImportUsageWildcardWarning(t *testing.T) {
 	}
 }
 
+func TestCollectDependencyImportUsageSideEffectImport(t *testing.T) {
+	scan := ScanResult{
+		Files: []FileScan{
+			{
+				Path: testJsFile,
+				Imports: []ImportBinding{
+					{
+						Module:     "reflect-metadata",
+						ExportName: sideEffectImportName,
+						LocalName:  "",
+						Kind:       ImportSideEffect,
+						Location:   report.Location{File: testJsFile, Line: 1},
+					},
+				},
+				IdentifierUsage: map[string]int{},
+				NamespaceUsage:  map[string]map[string]int{},
+			},
+		},
+	}
+
+	usage := collectDependencyImportUsage(scan, "reflect-metadata")
+	if len(usage.UsedImports) != 1 {
+		t.Fatalf("expected side-effect import to be marked used, got %#v", usage.UsedImports)
+	}
+	if len(usage.UnusedImports) != 0 {
+		t.Fatalf("expected no unused imports for side-effect import, got %#v", usage.UnusedImports)
+	}
+	if _, ok := usage.UsedExports[sideEffectImportName]; !ok {
+		t.Fatalf("expected side-effect usage marker in used exports, got %#v", usage.UsedExports)
+	}
+	if usage.HasAmbiguousWildcard {
+		t.Fatalf("did not expect side-effect import to mark wildcard ambiguity")
+	}
+}
+
 func TestNamespaceReferenceExtractionBranches(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte(`

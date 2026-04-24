@@ -32,6 +32,57 @@ func parseJSNodeByType(t *testing.T, source []byte, nodeType string) *sitter.Nod
 	return found
 }
 
+func collectImportAndCallNodes(tree *sitter.Tree) ([]*sitter.Node, []*sitter.Node) {
+	var importStmts []*sitter.Node
+	var callExprs []*sitter.Node
+	walkNode(tree.RootNode(), func(node *sitter.Node) {
+		switch node.Type() {
+		case "import_statement":
+			importStmts = append(importStmts, node)
+		case "call_expression":
+			callExprs = append(callExprs, node)
+		}
+	})
+	return importStmts, callExprs
+}
+
+func assertBareImportSideEffect(t *testing.T, importStmts []*sitter.Node, source []byte) {
+	t.Helper()
+	firstImport := parseImportStatement(importStmts[0], source, unitIndexJS)
+	if len(firstImport) != 1 || firstImport[0].Kind != ImportSideEffect {
+		t.Fatalf("expected side-effect fallback import for bare import, got %#v", firstImport)
+	}
+	if firstImport[0].ExportName != sideEffectImportName || firstImport[0].LocalName != "" {
+		t.Fatalf("expected side-effect import marker and empty local name, got %#v", firstImport[0])
+	}
+}
+
+func assertNamedImportParsing(t *testing.T, importStmts []*sitter.Node, source []byte) {
+	t.Helper()
+	secondImport := parseImportStatement(importStmts[1], source, unitIndexJS)
+	if len(secondImport) == 0 || secondImport[0].Kind != ImportNamed {
+		t.Fatalf("expected named import parsing, got %#v", secondImport)
+	}
+}
+
+func scanRequireBindings(callExprs []*sitter.Node, source []byte) (bool, bool) {
+	var sawRequire bool
+	var sawBareRequireSideEffect bool
+	for _, call := range callExprs {
+		bindings := parseRequireCall(call, source, unitIndexJS)
+		if len(bindings) == 0 {
+			continue
+		}
+		sawRequire = true
+		if len(bindings) == 1 && bindings[0].Module == "leftpad" {
+			sawBareRequireSideEffect = bindings[0].Kind == ImportSideEffect &&
+				bindings[0].ExportName == sideEffectImportName &&
+				bindings[0].LocalName == ""
+		}
+	}
+	return sawRequire, sawBareRequireSideEffect
+}
+
 func TestScanImportAndRequireHelperBranches(t *testing.T) {
 	source := []byte(`
 import "pkg";
@@ -46,40 +97,19 @@ foo("x");
 		t.Fatalf(parseSourceErrFmt, err)
 	}
 
-	var importStmts []*sitter.Node
-	var callExprs []*sitter.Node
-	walkNode(tree.RootNode(), func(node *sitter.Node) {
-		switch node.Type() {
-		case "import_statement":
-			importStmts = append(importStmts, node)
-		case "call_expression":
-			callExprs = append(callExprs, node)
-		}
-	})
+	importStmts, callExprs := collectImportAndCallNodes(tree)
 	if len(importStmts) < 2 || len(callExprs) == 0 {
 		t.Fatalf("expected import and call expressions")
 	}
 
-	firstImport := parseImportStatement(importStmts[0], source, unitIndexJS)
-	if len(firstImport) != 1 || firstImport[0].Kind != ImportNamespace {
-		t.Fatalf("expected namespace fallback import for bare import, got %#v", firstImport)
-	}
-
-	secondImport := parseImportStatement(importStmts[1], source, unitIndexJS)
-	if len(secondImport) == 0 || secondImport[0].Kind != ImportNamed {
-		t.Fatalf("expected named import parsing, got %#v", secondImport)
-	}
-
-	var sawRequire bool
-	for _, call := range callExprs {
-		bindings := parseRequireCall(call, source, unitIndexJS)
-		if len(bindings) == 0 {
-			continue
-		}
-		sawRequire = true
-	}
+	assertBareImportSideEffect(t, importStmts, source)
+	assertNamedImportParsing(t, importStmts, source)
+	sawRequire, sawBareRequireSideEffect := scanRequireBindings(callExprs, source)
 	if !sawRequire {
 		t.Fatalf("expected parsed require bindings")
+	}
+	if !sawBareRequireSideEffect {
+		t.Fatalf("expected bare require to be treated as a side-effect import")
 	}
 }
 

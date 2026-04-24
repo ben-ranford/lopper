@@ -41,12 +41,12 @@ func parseImportStatement(node *sitter.Node, content []byte, relPath string) []I
 		clause = firstNamedChildOfType(node, "import_clause")
 	}
 	if clause == nil {
-		return []ImportBinding{makeImportBinding(module, "*", "*", ImportNamespace, relPath, node)}
+		return []ImportBinding{makeImportBinding(module, sideEffectImportName, "", ImportSideEffect, relPath, node)}
 	}
 
 	bindings := parseImportClause(clause, content, module, relPath)
 	if len(bindings) == 0 {
-		bindings = []ImportBinding{makeImportBinding(module, "*", "*", ImportNamespace, relPath, node)}
+		bindings = []ImportBinding{makeImportBinding(module, sideEffectImportName, "", ImportSideEffect, relPath, node)}
 	}
 
 	return bindings
@@ -128,7 +128,7 @@ func parseRequireCall(node *sitter.Node, content []byte, relPath string) []Impor
 
 	bindings := parseRequireBinding(node, content, module, relPath)
 	if len(bindings) == 0 {
-		return []ImportBinding{makeImportBinding(module, "*", "*", ImportNamespace, relPath, node)}
+		return []ImportBinding{makeImportBinding(module, sideEffectImportName, "", ImportSideEffect, relPath, node)}
 	}
 	return bindings
 }
