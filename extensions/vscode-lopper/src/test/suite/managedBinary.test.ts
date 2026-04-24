@@ -193,6 +193,132 @@ suite("managed binary installer", () => {
     }
   });
 
+  test("falls back to PATH when workspace-local bin binary is missing", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-local-missing-"));
+    const pathRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-local-path-"));
+    const fallbackBinary = path.join(pathRoot, platformBinaryName());
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeExecutable(fallbackBinary);
+      process.env.PATH = joinPathEntries([pathRoot, previousPath]);
+
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async () => {
+            throw new Error("should not install when PATH fallback resolves");
+          },
+        },
+        { appendLine: () => undefined },
+        undefined,
+        process.platform,
+      );
+
+      const resolvedPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot,
+        workspaceTrusted: true,
+        autoDownloadBinary: false,
+      });
+
+      assert.equal(resolvedPath, fallbackBinary);
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(pathRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects workspace-local bin paths that are directories", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-local-dir-"));
+    const pathRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-local-dir-path-"));
+    const fallbackBinary = path.join(pathRoot, platformBinaryName());
+    const localBinaryPath = path.join(workspaceRoot, "bin", platformBinaryName());
+    const previousPath = process.env.PATH;
+
+    try {
+      await mkdir(localBinaryPath, { recursive: true });
+      await writeExecutable(fallbackBinary);
+      process.env.PATH = joinPathEntries([pathRoot, previousPath]);
+
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async () => {
+            throw new Error("should not install when auto-download is disabled");
+          },
+        },
+        { appendLine: () => undefined },
+        undefined,
+        process.platform,
+      );
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: false,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError &&
+          error.message.includes("workspace-local lopper binary must point to a file") &&
+          error.message.includes(localBinaryPath),
+      );
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(pathRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects non-executable workspace-local bin binaries on unix hosts", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-local-nonexec-"));
+    const pathRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-local-nonexec-path-"));
+    const fallbackBinary = path.join(pathRoot, platformBinaryName());
+    const localBinaryPath = path.join(workspaceRoot, "bin", platformBinaryName());
+    const previousPath = process.env.PATH;
+
+    try {
+      await mkdir(path.dirname(localBinaryPath), { recursive: true });
+      await writeFile(localBinaryPath, "#!/bin/sh\nexit 0\n", "utf8");
+      await chmod(localBinaryPath, 0o644);
+      await writeExecutable(fallbackBinary);
+      process.env.PATH = joinPathEntries([pathRoot, previousPath]);
+
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async () => {
+            throw new Error("should not install when auto-download is disabled");
+          },
+        },
+        { appendLine: () => undefined },
+        undefined,
+        process.platform,
+      );
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: false,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError &&
+          error.message.includes("workspace-local lopper binary is not executable") &&
+          error.message.includes(localBinaryPath),
+      );
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(pathRoot, { recursive: true, force: true });
+    }
+  });
+
   test("fails when auto-download is disabled and no binaries resolve", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-test-"));
     const previousPath = process.env.PATH;

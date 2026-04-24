@@ -245,26 +245,23 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
 
   private async resolveLocalBinaryPath(request: BinaryResolutionRequest): Promise<string | undefined> {
     const localBinary = path.join(request.workspaceRoot, "bin", binaryFileName(this.platform));
-    try {
-      const fileStat = await stat(localBinary);
-      if (!fileStat.isFile()) {
-        throw new Error("Local lopper binary is not a regular file");
-      }
-      if (this.platform === "win32") {
-        // On Windows, executability is inferred from .exe and file accessibility.
-        await access(localBinary);
-      } else {
-        // On POSIX, require execute permission.
-        await access(localBinary, fsConstants.X_OK);
-      }
-      if (!request.workspaceTrusted) {
-        this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
-        return this.resolvePathBinary(request);
-      }
-      return localBinary;
-    } catch {
+    const localBinaryStats = await this.localBinaryStats(localBinary);
+    if (!localBinaryStats) {
       return this.resolvePathBinary(request);
     }
+
+    if (!localBinaryStats.isFile()) {
+      throw new BinaryResolutionError(`workspace-local lopper binary must point to a file: ${localBinary}`);
+    }
+
+    await this.ensureWorkspaceLocalBinaryExecutable(localBinary);
+
+    if (!request.workspaceTrusted) {
+      this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
+      return this.resolvePathBinary(request);
+    }
+
+    return localBinary;
   }
 
   private async resolvePathBinary(request: BinaryResolutionRequest): Promise<string | undefined> {
@@ -326,6 +323,33 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       await access(binaryPath, fsConstants.X_OK);
     } catch {
       throw new BinaryResolutionError(`${source} points to a non-executable file: ${binaryPath}`);
+    }
+  }
+
+  private async localBinaryStats(localBinaryPath: string) {
+    try {
+      return await stat(localBinaryPath);
+    } catch (error) {
+      if (isFileMissingError(error)) {
+        return undefined;
+      }
+      throw new BinaryResolutionError(
+        `failed to access workspace-local lopper binary: ${localBinaryPath}${formatErrorDetail(error)}`,
+      );
+    }
+  }
+
+  private async ensureWorkspaceLocalBinaryExecutable(localBinaryPath: string): Promise<void> {
+    try {
+      if (this.platform === "win32") {
+        // On Windows, executability is inferred from .exe and file accessibility.
+        await access(localBinaryPath);
+      } else {
+        // On POSIX, require execute permission.
+        await access(localBinaryPath, fsConstants.X_OK);
+      }
+    } catch {
+      throw new BinaryResolutionError(`workspace-local lopper binary is not executable: ${localBinaryPath}`);
     }
   }
 
@@ -613,4 +637,17 @@ function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): bo
 
 async function canonicalPath(targetPath: string): Promise<string> {
   return realpath(targetPath);
+}
+
+function isFileMissingError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as NodeJS.ErrnoException).code === "ENOENT",
+  );
+}
+
+function formatErrorDetail(error: unknown): string {
+  return error instanceof Error && error.message ? `: ${error.message}` : "";
 }
