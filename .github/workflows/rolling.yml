@@ -49,10 +49,65 @@ jobs:
         ${{ needs.prepare-rolling.outputs.tag }}
         rolling
 
+  build-darwin-amd64-rolling:
+    needs:
+      - prepare-rolling
+    runs-on: macos-15-intel
+    permissions:
+      contents: read
+    env:
+      ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+      SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
+    steps:
+      - name: Checkout rolling source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Compute build metadata
+        id: build_meta
+        run: |
+          echo "commit=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Install Go tooling
+        run: |
+          make tools-install
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build Darwin amd64 rolling artifact
+        env:
+          COMMIT_SHA: ${{ steps.build_meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.build_meta.outputs.build_date }}
+        run: |
+          make release \
+            VERSION="$ROLLING_TAG" \
+            GIT_COMMIT="$COMMIT_SHA" \
+            BUILD_DATE="$BUILD_DATE" \
+            RELEASE_BUILD_CHANNEL=rolling \
+            PLATFORMS="darwin/amd64"
+
+      - name: Upload Darwin amd64 rolling artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rolling-darwin-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
   publish-rolling:
     needs:
       - prepare-rolling
       - orchestrate-rolling
+      - build-darwin-amd64-rolling
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -80,6 +135,18 @@ jobs:
           pattern: rolling-*
           merge-multiple: true
           path: dist
+
+      - name: Verify Darwin artifacts are present
+        run: |
+          set -euo pipefail
+          if ! find dist -maxdepth 1 -type f -name '*_darwin_amd64.tar.gz' | grep -q .; then
+            echo "Expected darwin/amd64 artifact is missing from dist/" >&2
+            exit 1
+          fi
+          if ! find dist -maxdepth 1 -type f -name '*_darwin_arm64.tar.gz' | grep -q .; then
+            echo "Expected darwin/arm64 artifact is missing from dist/" >&2
+            exit 1
+          fi
 
       - name: Build rolling source bundle
         run: |
