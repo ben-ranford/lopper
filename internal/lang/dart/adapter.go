@@ -22,7 +22,8 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 		return report.Report{}, err
 	}
 
-	scan, err := a.scanRepo(ctx, repoPath, &result)
+	previewEnabled := req.Features.Enabled(dartSourceAttributionPreviewFeature)
+	scan, err := a.scanRepoWithOptions(ctx, repoPath, &result, previewEnabled)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -39,13 +40,17 @@ func (a *Adapter) newReport(rawRepoPath string) (string, report.Report, error) {
 }
 
 func (a *Adapter) scanRepo(ctx context.Context, repoPath string, result *report.Report) (scanResult, error) {
+	return a.scanRepoWithOptions(ctx, repoPath, result, false)
+}
+
+func (a *Adapter) scanRepoWithOptions(ctx context.Context, repoPath string, result *report.Report, includeLocalPathImports bool) (scanResult, error) {
 	manifests, warnings, err := collectManifestData(repoPath)
 	if err != nil {
 		return scanResult{}, err
 	}
 	result.Warnings = append(result.Warnings, warnings...)
 
-	scan, err := scanRepo(ctx, repoPath, manifests)
+	scan, err := scanRepoWithOptions(ctx, repoPath, manifests, includeLocalPathImports)
 	if err != nil {
 		return scanResult{}, err
 	}

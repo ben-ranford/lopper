@@ -15,6 +15,10 @@ import (
 )
 
 func scanRepo(ctx context.Context, repoPath string, manifests []packageManifest) (scanResult, error) {
+	return scanRepoWithOptions(ctx, repoPath, manifests, false)
+}
+
+func scanRepoWithOptions(ctx context.Context, repoPath string, manifests []packageManifest, includeLocalPathImports bool) (scanResult, error) {
 	result := scanResult{
 		DeclaredDependencies: make(map[string]dependencyInfo),
 		UnresolvedImports:    make(map[string]int),
@@ -38,7 +42,7 @@ func scanRepo(ctx context.Context, repoPath string, manifests []packageManifest)
 	}
 
 	for _, manifest := range manifests {
-		stop, err := scanManifestRoot(ctx, repoPath, manifest, allRoots, scannedFiles, &fileCount, &result)
+		stop, err := scanManifestRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, &fileCount, &result, includeLocalPathImports)
 		if err != nil {
 			return scanResult{}, err
 		}
@@ -56,10 +60,14 @@ func scanRepo(ctx context.Context, repoPath string, manifests []packageManifest)
 }
 
 func scanManifestRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) (bool, error) {
+	return scanManifestRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result, false)
+}
+
+func scanManifestRootWithOptions(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) (bool, error) {
 	if result.SkippedFilesByBound {
 		return true, nil
 	}
-	err := scanPackageRoot(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result)
+	err := scanPackageRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result, includeLocalPathImports)
 	switch {
 	case result.SkippedFilesByBound, errors.Is(err, fs.SkipAll):
 		return true, nil
@@ -86,19 +94,24 @@ func mergeDeclaredDependencies(dest, incoming map[string]dependencyInfo) {
 }
 
 func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	return scanPackageRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result, false)
+}
+
+func scanPackageRootWithOptions(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) error {
 	root := manifest.Root
 	if root == "" {
 		root = repoPath
 	}
 
 	scanner := packageRootScanner{
-		repoPath:     repoPath,
-		root:         root,
-		depLookup:    manifest.Dependencies,
-		allRoots:     allRoots,
-		scannedFiles: scannedFiles,
-		fileCount:    fileCount,
-		result:       result,
+		repoPath:                repoPath,
+		root:                    root,
+		depLookup:               manifest.Dependencies,
+		allRoots:                allRoots,
+		scannedFiles:            scannedFiles,
+		fileCount:               fileCount,
+		result:                  result,
+		includeLocalPathImports: includeLocalPathImports,
 	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		return walkPackageEntry(ctx, scanner, path, entry, walkErr)
@@ -106,13 +119,14 @@ func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManif
 }
 
 type packageRootScanner struct {
-	repoPath     string
-	root         string
-	depLookup    map[string]dependencyInfo
-	allRoots     map[string]struct{}
-	scannedFiles map[string]struct{}
-	fileCount    *int
-	result       *scanResult
+	repoPath                string
+	root                    string
+	depLookup               map[string]dependencyInfo
+	allRoots                map[string]struct{}
+	scannedFiles            map[string]struct{}
+	fileCount               *int
+	result                  *scanResult
+	includeLocalPathImports bool
 }
 
 func walkPackageEntry(ctx context.Context, scanner packageRootScanner, path string, entry fs.DirEntry, walkErr error) error {
@@ -122,7 +136,7 @@ func walkPackageEntry(ctx context.Context, scanner packageRootScanner, path stri
 	if entry.IsDir() {
 		return scanPackageDir(scanner.root, path, entry.Name(), scanner.allRoots)
 	}
-	return scanPackageFileEntry(scanner.repoPath, path, scanner.depLookup, scanner.scannedFiles, scanner.fileCount, scanner.result)
+	return scanPackageFileEntryWithOptions(scanner.repoPath, path, scanner.depLookup, scanner.scannedFiles, scanner.fileCount, scanner.result, scanner.includeLocalPathImports)
 }
 
 func walkContextErr(ctx context.Context, walkErr error) error {
@@ -143,6 +157,10 @@ func scanPackageDir(root, path, name string, allRoots map[string]struct{}) error
 }
 
 func scanPackageFileEntry(repoPath string, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	return scanPackageFileEntryWithOptions(repoPath, path, depLookup, scannedFiles, fileCount, result, false)
+}
+
+func scanPackageFileEntryWithOptions(repoPath string, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) error {
 	if !strings.EqualFold(filepath.Ext(path), ".dart") {
 		return nil
 	}
@@ -157,10 +175,14 @@ func scanPackageFileEntry(repoPath string, path string, depLookup map[string]dep
 		result.SkippedFilesByBound = true
 		return fs.SkipAll
 	}
-	return scanDartSourceFile(repoPath, cleanPath, depLookup, result)
+	return scanDartSourceFileWithOptions(repoPath, cleanPath, depLookup, result, includeLocalPathImports)
 }
 
 func scanDartSourceFile(repoPath, path string, depLookup map[string]dependencyInfo, result *scanResult) error {
+	return scanDartSourceFileWithOptions(repoPath, path, depLookup, result, false)
+}
+
+func scanDartSourceFileWithOptions(repoPath, path string, depLookup map[string]dependencyInfo, result *scanResult, includeLocalPathImports bool) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -178,7 +200,7 @@ func scanDartSourceFile(repoPath, path string, depLookup map[string]dependencyIn
 	if relative, relErr := filepath.Rel(repoPath, path); relErr == nil && strings.TrimSpace(relative) != "" {
 		relativePath = relative
 	}
-	imports := parseDartImports(content, relativePath, depLookup, result.UnresolvedImports)
+	imports := parseDartImportsWithOptions(content, relativePath, depLookup, result.UnresolvedImports, includeLocalPathImports)
 	result.Files = append(result.Files, fileScan{
 		Path:    relativePath,
 		Imports: imports,
@@ -188,6 +210,10 @@ func scanDartSourceFile(repoPath, path string, depLookup map[string]dependencyIn
 }
 
 func parseDartImports(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int) []importBinding {
+	return parseDartImportsWithOptions(content, filePath, depLookup, unresolved, false)
+}
+
+func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int, includeLocalPathImports bool) []importBinding {
 	lines := strings.Split(string(content), "\n")
 	imports := make([]importBinding, 0)
 	for i := 0; i < len(lines); i++ {
@@ -202,7 +228,7 @@ func parseDartImports(content []byte, filePath string, depLookup map[string]depe
 			continue
 		}
 
-		dependency := resolveDependencyFromModule(module, depLookup, unresolved)
+		dependency := resolveDependencyFromModuleWithOptions(module, depLookup, unresolved, includeLocalPathImports)
 		if dependency == "" {
 			continue
 		}
@@ -416,6 +442,10 @@ func parseShowSymbols(clause string) []string {
 }
 
 func resolveDependencyFromModule(module string, depLookup map[string]dependencyInfo, unresolved map[string]int) string {
+	return resolveDependencyFromModuleWithOptions(module, depLookup, unresolved, false)
+}
+
+func resolveDependencyFromModuleWithOptions(module string, depLookup map[string]dependencyInfo, unresolved map[string]int, includeLocalPathImports bool) string {
 	module = strings.TrimSpace(module)
 	if !strings.HasPrefix(module, "package:") {
 		return ""
@@ -433,7 +463,7 @@ func resolveDependencyFromModule(module string, depLookup map[string]dependencyI
 		return ""
 	}
 	if info, ok := depLookup[dependency]; ok {
-		if info.LocalPath {
+		if info.LocalPath && !includeLocalPathImports {
 			return ""
 		}
 		return dependency
