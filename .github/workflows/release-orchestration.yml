@@ -54,7 +54,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
+      - name: Resolve gosec version
+        id: gosec_version
+        run: echo "value=$(make --silent print-gosec-version)" >> "$GITHUB_OUTPUT"
+
       - name: Install Go tooling
+        env:
+          GOSEC_VERSION: ${{ steps.gosec_version.outputs.value }}
         run: |
           make tools-install
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -105,7 +111,13 @@ jobs:
       - name: Install shellcheck
         run: brew install shellcheck
 
+      - name: Resolve gosec version
+        id: gosec_version
+        run: echo "value=$(make --silent print-gosec-version)" >> "$GITHUB_OUTPUT"
+
       - name: Install Go tooling
+        env:
+          GOSEC_VERSION: ${{ steps.gosec_version.outputs.value }}
         run: |
           make tools-install
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
