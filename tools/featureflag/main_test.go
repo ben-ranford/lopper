@@ -558,6 +558,209 @@ func TestRunPREnforceRejectsStableAddedFlag(t *testing.T) {
 	}
 }
 
+func TestRunPREnforceRejectsDuplicateFeatureFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		catalog string
+		want    string
+	}{
+		{
+			name: "duplicate code",
+			catalog: `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "first-new-flag",
+    "description": "New behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "second-new-flag",
+    "description": "Other behavior",
+    "lifecycle": "preview"
+  }
+]`,
+			want: "Feature flag ids (`code`) must be unique: `LOP-FEAT-0002`",
+		},
+		{
+			name: "duplicate name",
+			catalog: `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "duplicate-new-flag",
+    "description": "New behavior",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0003",
+    "name": "duplicate-new-flag",
+    "description": "Other behavior",
+    "lifecycle": "preview"
+  }
+]`,
+			want: "Feature flag names must be unique: `duplicate-new-flag`",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFeatureCatalog(t, root, tc.catalog)
+			previousCatalog := "previous-features.json"
+			testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+			t.Chdir(root)
+
+			output, err := captureStdout(t, func() error {
+				return run([]string{"pr-enforce", "--pr-title", "feat(flags): add registry", "--previous-catalog", previousCatalog})
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected duplicate feature flag enforcement error containing %q, got %v", tc.want, err)
+			}
+			if !strings.Contains(output, "Check: failed") || !strings.Contains(output, tc.want) {
+				t.Fatalf("expected duplicate feature flag failure report containing %q, got %s", tc.want, output)
+			}
+		})
+	}
+}
+
+func TestReadCurrentCatalogForPREnforcementFallbacks(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "existing-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	flags, violations, err := readCurrentCatalogForPREnforcement(root)
+	if err != nil {
+		t.Fatalf("expected valid catalog to read, got %v", err)
+	}
+	if len(flags) != 1 || flags[0].Code != "LOP-FEAT-0001" || len(violations) != 0 {
+		t.Fatalf("unexpected valid catalog result: flags=%#v violations=%#v", flags, violations)
+	}
+
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "first-flag",
+    "description": "First flag",
+    "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "named-flag",
+    "description": "Duplicate code",
+    "lifecycle": "preview"
+  }
+]`)
+	flags, violations, err = readCurrentCatalogForPREnforcement(root)
+	if err != nil {
+		t.Fatalf("expected duplicate catalog to be converted to violations, got %v", err)
+	}
+	if len(flags) != 0 || len(violations) != 1 {
+		t.Fatalf("unexpected duplicate catalog result: flags=%#v violations=%#v", flags, violations)
+	}
+	if !strings.Contains(violations[0], "`first-flag`") || !strings.Contains(violations[0], "`named-flag`") {
+		t.Fatalf("expected duplicate violation to include colliding refs, got %#v", violations)
+	}
+
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "bad",
+    "name": "unique-flag",
+    "description": "Invalid but not duplicate",
+    "lifecycle": "preview"
+  }
+]`)
+	if _, _, err := readCurrentCatalogForPREnforcement(root); err == nil || !strings.Contains(err.Error(), "invalid feature code") {
+		t.Fatalf("expected non-duplicate catalog parse error, got %v", err)
+	}
+
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0004",
+    "name": "bad-lifecycle",
+    "description": "Invalid lifecycle",
+    "lifecycle": "not-a-lifecycle"
+  },
+  {
+    "code": "LOP-FEAT-0004",
+    "name": "duplicate-code",
+    "description": "Duplicate code",
+    "lifecycle": "preview"
+  }
+]`)
+	if _, _, err := readCurrentCatalogForPREnforcement(root); err == nil || !strings.Contains(err.Error(), "invalid feature lifecycle") {
+		t.Fatalf("expected invalid lifecycle to take precedence over duplicate fallback, got %v", err)
+	}
+}
+
+func TestEvaluatePREnforcementSkipsAddedFlagChecksForCatalogViolations(t *testing.T) {
+	current := []featureflags.Flag{{Code: "LOP-FEAT-0002", Name: "new-stable", Lifecycle: featureflags.LifecycleStable}}
+	catalogViolations := []string{"Feature flag ids (`code`) must be unique: `LOP-FEAT-0002`."}
+	result := evaluatePREnforcement("feat(flags): add registry", current, nil, catalogViolations)
+	if len(result.AddedFlags) != 0 || len(result.InvalidAddedFlags) != 0 {
+		t.Fatalf("expected catalog violations to short-circuit added flag checks, got %#v", result)
+	}
+	if violations := result.violations(); len(violations) != 1 || !strings.Contains(violations[0], "must be unique") {
+		t.Fatalf("expected only catalog violation, got %#v", violations)
+	}
+}
+
+func TestDuplicateFeatureFlagViolationsFormatsMissingRefs(t *testing.T) {
+	violations := duplicateFeatureFlagViolations([]featureflags.Flag{
+		{Code: "LOP-FEAT-0001"},
+		{Code: "LOP-FEAT-0001", Name: "named-flag"},
+	})
+	if len(violations) != 1 || !strings.Contains(violations[0], "`<missing>`") || !strings.Contains(violations[0], "`named-flag`") {
+		t.Fatalf("expected missing and named refs in duplicate violation, got %#v", violations)
+	}
+}
+
+func TestIsDuplicateFeatureCatalogError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{err: nil, want: false},
+		{err: errors.New("duplicate feature code: LOP-FEAT-0001"), want: true},
+		{err: errors.New("duplicate feature name: preview-flag"), want: true},
+		{err: errors.New("invalid feature lifecycle: bad"), want: false},
+	} {
+		if got := isDuplicateFeatureCatalogError(tc.err); got != tc.want {
+			t.Fatalf("isDuplicateFeatureCatalogError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestDecodeFeatureCatalogRejectsInvalidInput(t *testing.T) {
+	if _, err := decodeFeatureCatalog([]byte(`not-json`)); err == nil || !strings.Contains(err.Error(), "invalid feature catalog JSON") {
+		t.Fatalf("expected invalid JSON error, got %v", err)
+	}
+	if _, err := decodeFeatureCatalog([]byte(`[] []`)); err == nil || !strings.Contains(err.Error(), "multiple JSON values") {
+		t.Fatalf("expected multiple JSON values error, got %v", err)
+	}
+}
+
 func TestRunPREnforceReportsAddedPreviewFlag(t *testing.T) {
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, `[
@@ -697,6 +900,48 @@ func TestRunReleasePRCommentRejectsCatalogErrors(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(root, badCatalog), `not-json`)
 	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", badCatalog}); err == nil || !strings.Contains(err.Error(), "parse previous feature catalog") {
 		t.Fatalf("expected bad previous catalog error, got %v", err)
+	}
+}
+
+func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldDefaultRegistry := defaultRegistryFn
+	oldManifestEntries := manifestEntriesFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		defaultRegistryFn = oldDefaultRegistry
+		manifestEntriesFn = oldManifestEntries
+	})
+
+	root := t.TempDir()
+	t.Chdir(root)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[]`)
+
+	validateDefaultRegistryFn = func() error { return errors.New("registry failed") }
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", previousCatalog}); err == nil || !strings.Contains(err.Error(), "registry failed") {
+		t.Fatalf("expected registry validation error, got %v", err)
+	}
+
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return errors.New("locks failed") }
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", previousCatalog}); err == nil || !strings.Contains(err.Error(), "locks failed") {
+		t.Fatalf("expected release lock validation error, got %v", err)
+	}
+
+	validateDefaultReleaseLocksFn = func() error { return nil }
+	defaultRegistryFn = func() *featureflags.Registry { return testRegistry(t) }
+	manifestEntriesFn = func(*featureflags.Registry, featureflags.Channel, string) ([]featureflags.ManifestEntry, error) {
+		return nil, errors.New("manifest failed")
+	}
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", previousCatalog}); err == nil || !strings.Contains(err.Error(), "manifest failed") {
+		t.Fatalf("expected manifest error, got %v", err)
+	}
+
+	if got := newlyAddedPreviewFlags(testRegistry(t).Flags(), nil, false); len(got) != 0 {
+		t.Fatalf("expected no preview flags when not compared, got %#v", got)
 	}
 }
 

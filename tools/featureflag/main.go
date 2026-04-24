@@ -223,11 +223,19 @@ func runReport(args []string) error {
 }
 
 func readCatalog(root string) ([]featureflags.Flag, error) {
+	data, err := readCatalogData(root)
+	if err != nil {
+		return nil, err
+	}
+	return featureflags.ParseCatalog(data)
+}
+
+func readCatalogData(root string) ([]byte, error) {
 	data, err := safeio.ReadFileUnder(root, filepath.Join(root, catalogPath))
 	if err != nil {
 		return nil, fmt.Errorf("read feature catalog: %w", err)
 	}
-	return featureflags.ParseCatalog(data)
+	return data, nil
 }
 
 func parseManifestArgs(name string, args []string) (featureflags.Channel, string, string, error) {
