@@ -190,23 +190,97 @@ func scanDartSourceFile(repoPath, path string, depLookup map[string]dependencyIn
 func parseDartImports(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int) []importBinding {
 	lines := strings.Split(string(content), "\n")
 	imports := make([]importBinding, 0)
-	for i, line := range lines {
-		kind, module, clause, ok := parseImportDirective(line)
+	for i := 0; i < len(lines); i++ {
+		directive, consumed, ok := collectDirective(lines[i:])
 		if !ok {
 			continue
 		}
+		lineIndex := i
+		i += consumed - 1
+		kind, module, clause, ok := parseImportDirective(directive)
+		if !ok {
+			continue
+		}
+
 		dependency := resolveDependencyFromModule(module, depLookup, unresolved)
 		if dependency == "" {
 			continue
 		}
 		location := report.Location{
 			File:   filePath,
-			Line:   i + 1,
-			Column: shared.FirstContentColumn(line),
+			Line:   lineIndex + 1,
+			Column: shared.FirstContentColumn(lines[lineIndex]),
 		}
 		imports = append(imports, buildDirectiveBindings(kind, module, clause, dependency, location)...)
 	}
 	return imports
+}
+
+func collectDirective(lines []string) (string, int, bool) {
+	if len(lines) == 0 || !directiveStartPattern.MatchString(lines[0]) {
+		return "", 1, false
+	}
+	if hasDirectiveTerminator(lines[0]) {
+		return lines[0], 1, true
+	}
+
+	directive := lines[0]
+	for i := 1; i < len(lines); i++ {
+		if !isDirectiveContinuationLine(lines[i]) {
+			return "", 1, false
+		}
+		directive += "\n" + lines[i]
+		if hasDirectiveTerminator(lines[i]) {
+			return directive, i + 1, true
+		}
+	}
+	return "", 1, false
+}
+
+func hasDirectiveTerminator(line string) bool {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		character := line[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if character == '\\' {
+				escaped = true
+				continue
+			}
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		switch character {
+		case '\'', '"':
+			quote = character
+		case '/':
+			if i+1 < len(line) && line[i+1] == '/' {
+				return false
+			}
+		case ';':
+			return hasOnlyDirectiveTrailingContent(line[i+1:])
+		}
+	}
+	return false
+}
+
+func hasOnlyDirectiveTrailingContent(suffix string) bool {
+	trimmed := strings.TrimSpace(suffix)
+	return trimmed == "" || strings.HasPrefix(trimmed, "//")
+}
+
+func isDirectiveContinuationLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	return line[0] == ' ' || line[0] == '\t'
 }
 
 func parseImportDirective(line string) (string, string, string, bool) {
@@ -217,7 +291,25 @@ func parseImportDirective(line string) (string, string, string, bool) {
 	kind := strings.TrimSpace(strings.ToLower(match[1]))
 	module := strings.TrimSpace(match[2])
 	clause := strings.TrimSpace(match[3])
+	if !isValidDirectiveClause(clause) {
+		return "", "", "", false
+	}
 	return kind, module, clause, true
+}
+
+func isValidDirectiveClause(clause string) bool {
+	remaining := strings.TrimSpace(clause)
+	for remaining != "" {
+		switch {
+		case directiveAliasClausePattern.MatchString(remaining):
+			remaining = strings.TrimSpace(directiveAliasClausePattern.ReplaceAllString(remaining, ""))
+		case directiveCombinatorClausePattern.MatchString(remaining):
+			remaining = strings.TrimSpace(directiveCombinatorClausePattern.ReplaceAllString(remaining, ""))
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func buildDirectiveBindings(kind, module, clause, dependency string, location report.Location) []importBinding {

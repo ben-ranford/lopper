@@ -42,6 +42,100 @@ func TestParseImportDirectiveAndShowSymbols(t *testing.T) {
 	}
 }
 
+func TestParseDartImportsHandlesMultilineDirective(t *testing.T) {
+	content := []byte(`import 'package:http/http.dart'
+    as http;
+
+void main() {
+  http.Client();
+}
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+
+	if len(imports) != 1 {
+		t.Fatalf("expected exactly one import binding, got %#v", imports)
+	}
+	if imports[0].Dependency != "http" || imports[0].Local != "http" {
+		t.Fatalf("expected http alias binding, got %#v", imports[0])
+	}
+	if imports[0].Location.Line != 1 || imports[0].Location.Column != 1 {
+		t.Fatalf("expected multiline directive location at line 1 column 1, got %#v", imports[0].Location)
+	}
+}
+
+func TestParseDartImportsSkipsUnterminatedDirective(t *testing.T) {
+	content := []byte(`import 'package:http/http.dart'
+void main() {
+  print('missing semicolon');
+}
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+	if len(imports) != 0 {
+		t.Fatalf("expected unterminated directive to be ignored, got %#v", imports)
+	}
+}
+
+func TestParseDartImportsSkipsUnterminatedDirectiveBeforeIndentedStatement(t *testing.T) {
+	content := []byte(`import 'package:http/http.dart'
+  final value = 'not a directive terminator';
+void main() {}
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+	if len(imports) != 0 {
+		t.Fatalf("expected unterminated directive before indented statement to be ignored, got %#v", imports)
+	}
+}
+
+func TestParseDartImportsSkipsMalformedAndNonPackageDirectives(t *testing.T) {
+	content := []byte(`import foo;
+import 'dart:core';
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+	if len(imports) != 0 {
+		t.Fatalf("expected malformed and non-package directives to be ignored, got %#v", imports)
+	}
+}
+
+func TestCollectDirectiveBranches(t *testing.T) {
+	if directive, consumed, ok := collectDirective(nil); ok || directive != "" || consumed != 1 {
+		t.Fatalf("expected empty input to fail collect, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+	}
+
+	if directive, consumed, ok := collectDirective([]string{"part 'x.dart';"}); ok || directive != "" || consumed != 1 {
+		t.Fatalf("expected non-import line to fail collect, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+	}
+
+	directive, consumed, ok := collectDirective([]string{
+		"import 'package:http/http.dart'",
+		"",
+		"\tas http;",
+	})
+	if !ok || consumed != 3 || !strings.Contains(directive, "as http;") {
+		t.Fatalf("expected blank and tab-indented continuation to parse, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+	}
+
+	if directive, consumed, ok := collectDirective([]string{
+		"import 'package:http/http.dart'",
+		"    as http",
+	}); ok || directive != "" || consumed != 1 {
+		t.Fatalf("expected unterminated multiline collect to fail, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+	}
+
+	if directive, consumed, ok := collectDirective([]string{
+		"import 'package:http/http.dart'",
+		"    // semicolon in comment ;",
+	}); ok || directive != "" || consumed != 1 {
+		t.Fatalf("expected comment semicolon to be ignored, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+	}
+
+	if directive, consumed, ok := collectDirective([]string{
+		"import 'package:http/http.dart'",
+		"    show Foo; // trailing comment",
+	}); !ok || consumed != 2 || !strings.Contains(directive, "show Foo;") {
+		t.Fatalf("expected directive terminator before trailing comment, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+	}
+}
+
 func TestBuildDirectiveBindingsBranches(t *testing.T) {
 	location := report.Location{File: "lib/main.dart", Line: 1, Column: 1}
 	exportBindings := buildDirectiveBindings("export", fooPackageModule, "", "foo", location)
