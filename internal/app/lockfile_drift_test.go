@@ -904,16 +904,38 @@ func TestFindDistributedRuleLockfiles(t *testing.T) {
 		}
 	})
 
-	t.Run("ignores non-dotnet central rules", func(t *testing.T) {
-		repo := t.TempDir()
-		snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
-
-		lockfiles, err := findDistributedRuleLockfiles(snapshot, lockfileRule{manager: "npm", manifest: manifestFileName}, []string{manifestFileName}, nil)
-		if err != nil {
-			t.Fatalf("findDistributedRuleLockfiles: %v", err)
+	t.Run("returns no lockfiles for non-distributed scenarios", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			rule      lockfileRule
+			manifests []string
+		}{
+			{
+				name:      "non-dotnet rule",
+				rule:      lockfileRule{manager: "npm", manifest: manifestFileName},
+				manifests: []string{manifestFileName},
+			},
+			{
+				name:      "dotnet central without project lockfiles",
+				rule:      lockfileRule{manager: ".NET", manifest: dotnetCentralManifest},
+				manifests: []string{dotnetCentralManifest},
+			},
 		}
-		if len(lockfiles) != 0 {
-			t.Fatalf("expected no distributed lockfiles for non-dotnet rules, got %#v", lockfiles)
+
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				repo := t.TempDir()
+				snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
+
+				lockfiles, err := findDistributedRuleLockfiles(snapshot, tc.rule, tc.manifests, nil)
+				if err != nil {
+					t.Fatalf("findDistributedRuleLockfiles: %v", err)
+				}
+				if len(lockfiles) != 0 {
+					t.Fatalf("expected no distributed lockfiles, got %#v", lockfiles)
+				}
+			})
 		}
 	})
 
@@ -930,19 +952,6 @@ func TestFindDistributedRuleLockfiles(t *testing.T) {
 		}
 		if len(lockfiles) != 1 || lockfiles[0].name != "src/App/packages.lock.json" {
 			t.Fatalf("unexpected distributed lockfiles: %#v", lockfiles)
-		}
-	})
-
-	t.Run("returns no lockfiles when no project lockfiles exist", func(t *testing.T) {
-		repo := t.TempDir()
-		snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
-
-		lockfiles, err := findDistributedRuleLockfiles(snapshot, lockfileRule{manager: ".NET", manifest: dotnetCentralManifest}, []string{dotnetCentralManifest}, nil)
-		if err != nil {
-			t.Fatalf("findDistributedRuleLockfiles: %v", err)
-		}
-		if len(lockfiles) != 0 {
-			t.Fatalf("expected no distributed lockfiles, got %#v", lockfiles)
 		}
 	})
 
