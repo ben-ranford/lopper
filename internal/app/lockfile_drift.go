@@ -22,6 +22,8 @@ const (
 	lockfileDriftWarningPrefix                     = "lockfile drift detected: "
 	pyprojectManifestName                          = "pyproject.toml"
 	lockfileDriftEcosystemExpansionPreviewFlagName = "lockfile-drift-ecosystem-expansion-preview"
+	dotnetCSharpProjectManifestExt                = ".csproj"
+	dotnetFSharpProjectManifestExt                = ".fsproj"
 )
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
@@ -81,7 +83,7 @@ var lockfileRules = []lockfileRule{
 	{
 		manager:            ".NET",
 		manifest:           "Directory.Packages.props",
-		manifestExts:       []string{".csproj", ".fsproj"},
+		manifestExts:       []string{dotnetCSharpProjectManifestExt, dotnetFSharpProjectManifestExt},
 		manifestLabel:      ".NET project manifest (*.csproj, *.fsproj) or Directory.Packages.props",
 		lockfiles:          []string{"packages.lock.json"},
 		remedy:             "run dotnet restore --use-lock-file (or dotnet restore for existing lock mode) and commit the updated files",
@@ -464,7 +466,7 @@ func isDotnetCentralOnlyRuleManifest(rule lockfileRule, manifests []string) bool
 		switch {
 		case strings.EqualFold(lowerName, rule.manifest):
 			hasCentralManifest = true
-		case strings.HasSuffix(lowerName, ".csproj"), strings.HasSuffix(lowerName, ".fsproj"):
+		case strings.HasSuffix(lowerName, dotnetCSharpProjectManifestExt), strings.HasSuffix(lowerName, dotnetFSharpProjectManifestExt):
 			return false
 		}
 	}
@@ -520,7 +522,7 @@ func dirContainsDotnetProjectManifest(dir string) (bool, error) {
 			continue
 		}
 		lowerName := strings.ToLower(entry.Name())
-		if strings.HasSuffix(lowerName, ".csproj") || strings.HasSuffix(lowerName, ".fsproj") {
+		if strings.HasSuffix(lowerName, dotnetCSharpProjectManifestExt) || strings.HasSuffix(lowerName, dotnetFSharpProjectManifestExt) {
 			return true, nil
 		}
 	}
