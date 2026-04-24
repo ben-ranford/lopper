@@ -158,6 +158,62 @@ func TestDetectLockfileDriftPreviewEcosystemsManifestChangeWithoutLockfileChange
 	}
 }
 
+func TestDetectLockfileDriftPreviewEcosystemsMissingLockfile(t *testing.T) {
+	cases := []struct {
+		name         string
+		manifest     string
+		manifestBody string
+		wantWarning  string
+		wantRemedy   string
+	}{
+		{
+			name:         "dotnet project",
+			manifest:     dotnetProjectManifest,
+			manifestBody: "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n",
+			wantWarning:  ".NET in .: App.csproj exists but no matching lockfile (packages.lock.json) was found",
+			wantRemedy:   "dotnet restore --use-lock-file",
+		},
+		{
+			name:         "dotnet central package management",
+			manifest:     dotnetCentralManifest,
+			manifestBody: "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n",
+			wantWarning:  ".NET in .: Directory.Packages.props exists but no matching lockfile (packages.lock.json) was found",
+			wantRemedy:   "dotnet restore --use-lock-file",
+		},
+		{
+			name:         "dart",
+			manifest:     dartManifestName,
+			manifestBody: "name: demo\ndependencies:\n  http: ^1.2.0\n",
+			wantWarning:  "Dart in .: pubspec.yaml exists but no matching lockfile (pubspec.lock) was found",
+			wantRemedy:   "dart pub get",
+		},
+		{
+			name:         "elixir",
+			manifest:     elixirManifestName,
+			manifestBody: "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [app: :demo, version: \"0.1.0\", deps: deps()]\n  defp deps, do: [{:jason, \"~> 1.4\"}]\nend\n",
+			wantWarning:  "Elixir in .: mix.exs exists but no matching lockfile (mix.lock) was found",
+			wantRemedy:   "mix deps.get",
+		},
+		{
+			name:         "swift package manager",
+			manifest:     swiftManifestName,
+			manifestBody: "// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: \"Demo\", dependencies: [.package(url: \"https://github.com/apple/swift-argument-parser\", from: \"1.3.0\")], targets: [.target(name: \"Demo\")])\n",
+			wantWarning:  "SwiftPM in .: Package.swift exists but no matching lockfile (Package.resolved) was found",
+			wantRemedy:   "swift package resolve",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, tc.manifest), tc.manifestBody)
+
+			warnings, err := detectLockfileDriftWithFeatures(context.Background(), repo, false, lockfileDriftFeatureSet(t, true))
+			assertSingleLockfileDriftWarning(t, warnings, err, tc.wantWarning, tc.wantRemedy)
+		})
+	}
+}
+
 func TestDetectLockfileDriftEcosystemExpansionPreviewDisabledPreservesCurrentBehavior(t *testing.T) {
 	t.Run("preview ecosystems stay disabled", func(t *testing.T) {
 		repo := t.TempDir()
@@ -173,6 +229,19 @@ func TestDetectLockfileDriftEcosystemExpansionPreviewDisabledPreservesCurrentBeh
 		}
 		if len(warnings) != 0 {
 			t.Fatalf("expected no preview warning when feature is disabled, got %#v", warnings)
+		}
+	})
+
+	t.Run("preview missing lockfiles stay disabled", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, dartManifestName), "name: demo\ndependencies:\n  http: ^1.2.0\n")
+
+		warnings, err := detectLockfileDriftWithFeatures(context.Background(), repo, false, lockfileDriftFeatureSet(t, false))
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected no preview missing-lockfile warning when feature is disabled, got %#v", warnings)
 		}
 	})
 
