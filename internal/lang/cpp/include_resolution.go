@@ -51,6 +51,11 @@ type includeResolver struct {
 	catalog     dependencyCatalog
 }
 
+type includeLookup struct {
+	sourcePath string
+	header     string
+}
+
 type scanStage struct {
 	scanner includeResolver
 	result  scanResult
@@ -330,7 +335,10 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if isLikelyStdHeader(header) {
 		return "", false
 	}
-	if r.includeResolvesWithinRepo(sourcePath, header) {
+	if r.includeResolvesWithinRepo(includeLookup{
+		sourcePath: sourcePath,
+		header:     header,
+	}) {
 		return "", false
 	}
 	if include.Delimiter == '"' {
@@ -344,11 +352,11 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	return correlateDeclaredDependency(dependency, r.catalog), false
 }
 
-func (r *includeResolver) includeResolvesWithinRepo(sourcePath string, header string) bool {
-	sourceDir := filepath.Dir(sourcePath)
-	candidates := []string{filepath.Join(sourceDir, filepath.FromSlash(header))}
+func (r *includeResolver) includeResolvesWithinRepo(include includeLookup) bool {
+	sourceDir := filepath.Dir(include.sourcePath)
+	candidates := []string{filepath.Join(sourceDir, filepath.FromSlash(include.header))}
 	for _, includeDir := range r.includeDirs {
-		candidates = append(candidates, filepath.Join(includeDir, filepath.FromSlash(header)))
+		candidates = append(candidates, filepath.Join(includeDir, filepath.FromSlash(include.header)))
 	}
 	for _, candidate := range candidates {
 		candidate = filepath.Clean(candidate)

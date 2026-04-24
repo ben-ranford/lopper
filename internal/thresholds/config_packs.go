@@ -90,21 +90,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	mergedFeatures := FeatureConfig{}
 	sources := make([]string, 0, len(cfg.Policy.Packs)+1)
 	for idx, packRef := range cfg.Policy.Packs {
-		resolvedRef, err := resolvePackRef(canonical, packRef)
-		if err != nil {
-			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
-		}
-		childCanonical, childRemote, err := canonicalPolicyLocation(resolvedRef)
-		if err != nil {
-			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
-		}
-		if childRemote && !trust.explicit {
-			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs require an explicit config path", canonical, idx)
-		}
-		if err := validatePackBoundary(childCanonical, childRemote, trust); err != nil {
-			return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
-		}
-		packResult, err := r.resolveFile(childCanonical, r.nestedPackTrust(childCanonical, childRemote))
+		packResult, err := r.resolvePack(canonical, trust, idx, packRef)
 		if err != nil {
 			return resolveMergeResult{}, err
 		}
@@ -129,6 +115,26 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 		features:          mergedFeatures,
 		appliedSourcesLow: dedupeStable(sources),
 	}, nil
+}
+
+func (r *packResolver) resolvePack(canonical string, trust packTrust, idx int, packRef string) (resolveMergeResult, error) {
+	resolvedRef, err := resolvePackRef(canonical, packRef)
+	if err != nil {
+		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+	}
+
+	childCanonical, childRemote, err := canonicalPolicyLocation(resolvedRef)
+	if err != nil {
+		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+	}
+	if childRemote && !trust.explicit {
+		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs require an explicit config path", canonical, idx)
+	}
+	if err := validatePackBoundary(childCanonical, childRemote, trust); err != nil {
+		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+	}
+
+	return r.resolveFile(childCanonical, r.nestedPackTrust(childCanonical, childRemote))
 }
 
 func validatePackBoundary(path string, remote bool, trust packTrust) error {
