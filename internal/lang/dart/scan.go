@@ -20,8 +20,9 @@ func scanRepo(ctx context.Context, repoPath string, manifests []packageManifest)
 
 func scanRepoWithOptions(ctx context.Context, repoPath string, manifests []packageManifest, includeLocalPathImports bool) (scanResult, error) {
 	result := scanResult{
-		DeclaredDependencies: make(map[string]dependencyInfo),
-		UnresolvedImports:    make(map[string]int),
+		DeclaredDependencies:    make(map[string]dependencyInfo),
+		UnresolvedImports:       make(map[string]int),
+		includeLocalPathImports: includeLocalPathImports,
 	}
 
 	if len(manifests) == 0 {
@@ -42,7 +43,7 @@ func scanRepoWithOptions(ctx context.Context, repoPath string, manifests []packa
 	}
 
 	for _, manifest := range manifests {
-		stop, err := scanManifestRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, &fileCount, &result, includeLocalPathImports)
+		stop, err := scanManifestRoot(ctx, repoPath, manifest, allRoots, scannedFiles, &fileCount, &result)
 		if err != nil {
 			return scanResult{}, err
 		}
@@ -60,14 +61,10 @@ func scanRepoWithOptions(ctx context.Context, repoPath string, manifests []packa
 }
 
 func scanManifestRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) (bool, error) {
-	return scanManifestRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result, false)
-}
-
-func scanManifestRootWithOptions(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) (bool, error) {
 	if result.SkippedFilesByBound {
 		return true, nil
 	}
-	err := scanPackageRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result, includeLocalPathImports)
+	err := scanPackageRoot(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result)
 	switch {
 	case result.SkippedFilesByBound, errors.Is(err, fs.SkipAll):
 		return true, nil
@@ -94,10 +91,6 @@ func mergeDeclaredDependencies(dest, incoming map[string]dependencyInfo) {
 }
 
 func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	return scanPackageRootWithOptions(ctx, repoPath, manifest, allRoots, scannedFiles, fileCount, result, false)
-}
-
-func scanPackageRootWithOptions(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) error {
 	root := manifest.Root
 	if root == "" {
 		root = repoPath
@@ -111,7 +104,7 @@ func scanPackageRootWithOptions(ctx context.Context, repoPath string, manifest p
 		scannedFiles:            scannedFiles,
 		fileCount:               fileCount,
 		result:                  result,
-		includeLocalPathImports: includeLocalPathImports,
+		includeLocalPathImports: result.includeLocalPathImports,
 	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		return walkPackageEntry(ctx, scanner, path, entry, walkErr)
