@@ -8,20 +8,54 @@ import (
 )
 
 const (
-	powerShellAdapterID             = "powershell"
-	powerShellAdapterPreviewFeature = "powershell-adapter-preview"
+	adapterPreviewFeatureSuffix = "-adapter-preview"
 )
 
 func adapterFeatureFilter(features featureflags.Set) language.AdapterFilter {
+	previewFeatures := previewAdapterFeatures(featureflags.DefaultRegistry())
 	return func(adapter language.Adapter) bool {
 		if adapter == nil {
 			return false
 		}
-		switch strings.ToLower(strings.TrimSpace(adapter.ID())) {
-		case powerShellAdapterID:
-			return features.Enabled(powerShellAdapterPreviewFeature)
-		default:
+		featureName, ok := previewFeatures[normalizeAdapterID(adapter.ID())]
+		if !ok {
 			return true
 		}
+		return features.Enabled(featureName)
 	}
+}
+
+func previewAdapterFeatures(registry *featureflags.Registry) map[string]string {
+	if registry == nil {
+		registry = featureflags.DefaultRegistry()
+	}
+	flags := registry.Flags()
+	features := make(map[string]string, len(flags))
+	for _, flag := range flags {
+		if flag.Lifecycle != featureflags.LifecyclePreview {
+			continue
+		}
+		adapterID, ok := previewAdapterID(flag.Name)
+		if !ok {
+			continue
+		}
+		features[adapterID] = flag.Name
+	}
+	return features
+}
+
+func previewAdapterID(featureName string) (string, bool) {
+	normalized := normalizeAdapterID(featureName)
+	if !strings.HasSuffix(normalized, adapterPreviewFeatureSuffix) {
+		return "", false
+	}
+	adapterID := strings.TrimSuffix(normalized, adapterPreviewFeatureSuffix)
+	if adapterID == "" {
+		return "", false
+	}
+	return adapterID, true
+}
+
+func normalizeAdapterID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
