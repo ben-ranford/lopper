@@ -137,33 +137,39 @@ func parseCarthageLine(line string, requireReference bool) (carthageDependency, 
 }
 
 func stripHashCommentOutsideQuotes(line string) string {
-	inString := false
-	escaped := false
+	state := carthageCommentScanState{}
 	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if ch == '\\' {
-				escaped = true
-				continue
-			}
-			if ch == '"' {
-				inString = false
-			}
-			continue
-		}
-		if ch == '"' {
-			inString = true
-			continue
-		}
-		if ch == '#' {
+		if endsCarthageLineAtHash(line[i], &state) {
 			return line[:i]
 		}
 	}
 	return line
+}
+
+type carthageCommentScanState struct {
+	inString bool
+	escaped  bool
+}
+
+func endsCarthageLineAtHash(ch byte, state *carthageCommentScanState) bool {
+	if state.inString {
+		if state.escaped {
+			state.escaped = false
+			return false
+		}
+		switch ch {
+		case '\\':
+			state.escaped = true
+		case '"':
+			state.inString = false
+		}
+		return false
+	}
+	if ch == '"' {
+		state.inString = true
+		return false
+	}
+	return ch == '#'
 }
 
 func splitCarthageLinePrefix(line string) (string, string, bool) {
