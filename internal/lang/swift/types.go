@@ -78,6 +78,7 @@ type swiftStringScanState struct {
 	multiline    bool
 	rawHashCount int
 	escaped      bool
+	blockDepth   int
 }
 
 type resolvedPin struct {
