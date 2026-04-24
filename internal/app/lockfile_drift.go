@@ -28,16 +28,15 @@ var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 var execGitCommandContextFn = gitexec.CommandContext
 
 type lockfileRule struct {
-	manager             string
-	manifest            string
-	manifestNames       []string
-	manifestExts        []string
-	manifestLabel       string
-	lockfiles           []string
-	remedy              string
-	skipMissingLockfile bool
-	previewFeatureFlag  string
-	manifestMatcher     func(repoPath, dir string) (bool, error)
+	manager            string
+	manifest           string
+	manifestNames      []string
+	manifestExts       []string
+	manifestLabel      string
+	lockfiles          []string
+	remedy             string
+	previewFeatureFlag string
+	manifestMatcher    func(repoPath, dir string) (bool, error)
 }
 
 type lockfileGitContext struct {
@@ -78,39 +77,35 @@ var lockfileRules = []lockfileRule{
 	{manager: "Poetry", manifest: pyprojectManifestName, manifestLabel: "Poetry configuration in pyproject.toml", lockfiles: []string{"poetry.lock"}, remedy: "run poetry lock and commit the updated files", manifestMatcher: pyprojectSectionMatcher("tool.poetry")},
 	{manager: "uv", manifest: pyprojectManifestName, manifestLabel: "uv configuration in pyproject.toml", lockfiles: []string{"uv.lock"}, remedy: "run uv lock and commit the updated files", manifestMatcher: pyprojectSectionMatcher("tool.uv")},
 	{
-		manager:             ".NET",
-		manifest:            "Directory.Packages.props",
-		manifestExts:        []string{".csproj", ".fsproj"},
-		manifestLabel:       ".NET project manifest (*.csproj, *.fsproj) or Directory.Packages.props",
-		lockfiles:           []string{"packages.lock.json"},
-		remedy:              "run dotnet restore --use-lock-file (or dotnet restore for existing lock mode) and commit the updated files",
-		skipMissingLockfile: true,
-		previewFeatureFlag:  lockfileDriftEcosystemExpansionPreviewFlagName,
+		manager:            ".NET",
+		manifest:           "Directory.Packages.props",
+		manifestExts:       []string{".csproj", ".fsproj"},
+		manifestLabel:      ".NET project manifest (*.csproj, *.fsproj) or Directory.Packages.props",
+		lockfiles:          []string{"packages.lock.json"},
+		remedy:             "run dotnet restore --use-lock-file (or dotnet restore for existing lock mode) and commit the updated files",
+		previewFeatureFlag: lockfileDriftEcosystemExpansionPreviewFlagName,
 	},
 	{
-		manager:             "Dart",
-		manifest:            "pubspec.yaml",
-		manifestNames:       []string{"pubspec.yml"},
-		lockfiles:           []string{"pubspec.lock"},
-		remedy:              "run dart pub get (or flutter pub get) and commit the updated files",
-		skipMissingLockfile: true,
-		previewFeatureFlag:  lockfileDriftEcosystemExpansionPreviewFlagName,
+		manager:            "Dart",
+		manifest:           "pubspec.yaml",
+		manifestNames:      []string{"pubspec.yml"},
+		lockfiles:          []string{"pubspec.lock"},
+		remedy:             "run dart pub get (or flutter pub get) and commit the updated files",
+		previewFeatureFlag: lockfileDriftEcosystemExpansionPreviewFlagName,
 	},
 	{
-		manager:             "Elixir",
-		manifest:            "mix.exs",
-		lockfiles:           []string{"mix.lock"},
-		remedy:              "run mix deps.get and commit the updated files",
-		skipMissingLockfile: true,
-		previewFeatureFlag:  lockfileDriftEcosystemExpansionPreviewFlagName,
+		manager:            "Elixir",
+		manifest:           "mix.exs",
+		lockfiles:          []string{"mix.lock"},
+		remedy:             "run mix deps.get and commit the updated files",
+		previewFeatureFlag: lockfileDriftEcosystemExpansionPreviewFlagName,
 	},
 	{
-		manager:             "SwiftPM",
-		manifest:            "Package.swift",
-		lockfiles:           []string{"Package.resolved"},
-		remedy:              "run swift package resolve and commit the updated files",
-		skipMissingLockfile: true,
-		previewFeatureFlag:  lockfileDriftEcosystemExpansionPreviewFlagName,
+		manager:            "SwiftPM",
+		manifest:           "Package.swift",
+		lockfiles:          []string{"Package.resolved"},
+		remedy:             "run swift package resolve and commit the updated files",
+		previewFeatureFlag: lockfileDriftEcosystemExpansionPreviewFlagName,
 	},
 }
 
@@ -292,9 +287,6 @@ func shouldSkipMissingLockfileForManifest(snapshot lockfileDirSnapshot, rule loc
 		if !matched {
 			return true, nil
 		}
-	}
-	if rule.skipMissingLockfile {
-		return true, nil
 	}
 	text := string(content)
 	switch manifestName {
