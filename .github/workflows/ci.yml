@@ -68,21 +68,26 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Fetch PR base
+      - name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
+          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          base_ref="${BASE_REF:-main}"
           git fetch --no-tags --depth=1 origin "${base_ref}"
 
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${PR_BASE_REF:-main}"
+            base_ref="${BASE_REF:-main}"
             export MEMORY_BENCH_BASE="origin/${base_ref}"
             export MEMORY_BENCH_ENFORCE=0
           fi
@@ -168,10 +173,8 @@ jobs:
         id: lopper_base
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
-        env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          base_ref="${PR_BASE_REF:-main}"
+          base_ref="${BASE_REF:-main}"
           mkdir -p .artifacts
           git worktree add --detach .artifacts/base "origin/${base_ref}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
