@@ -11,10 +11,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 )
 
-const (
-	powerShellFeatureCode = "LOP-FEAT-0001"
-	powerShellFeatureName = "powershell-adapter-preview"
-)
+const powerShellFeatureName = "powershell-adapter-preview"
 
 func TestServicePowerShellPreviewGateDefaultsOff(t *testing.T) {
 	repo := t.TempDir()
@@ -101,21 +98,29 @@ func writePowerShellFixtureRepo(t *testing.T, repo string) {
 
 func mustResolvePowerShellFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
-	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
-		Code:      powerShellFeatureCode,
-		Name:      powerShellFeatureName,
-		Lifecycle: featureflags.LifecyclePreview,
-	}})
-	if err != nil {
-		t.Fatalf("new feature registry: %v", err)
-	}
+	flag := mustLookupPowerShellPreviewFlag(t)
 	enable := []string(nil)
 	if enabled {
-		enable = []string{powerShellFeatureName}
+		enable = []string{flag.Code}
 	}
-	set, err := registry.Resolve(featureflags.ResolveOptions{Channel: featureflags.ChannelDev, Enable: enable})
+	set, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  enable,
+	})
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)
 	}
 	return set
+}
+
+func mustLookupPowerShellPreviewFlag(t *testing.T) featureflags.Flag {
+	t.Helper()
+	if err := featureflags.ValidateDefaultRegistry(); err != nil {
+		t.Fatalf("validate default registry: %v", err)
+	}
+	flag, ok := featureflags.DefaultRegistry().Lookup(powerShellFeatureName)
+	if !ok {
+		t.Fatalf("expected shipped feature registry to include %q", powerShellFeatureName)
+	}
+	return flag
 }
