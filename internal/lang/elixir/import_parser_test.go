@@ -8,26 +8,30 @@ import (
 
 func TestParseImportsFromSanitizedSeparatesSourceSanitizer(t *testing.T) {
 	content := []byte("defmodule Demo do\n  message = \"\"\"\n  alias Foo.Bar\n  \"\"\"\n  alias Foo.Bar, as: Baz\nend\n")
-	sanitized := append([]byte(nil), content...)
+	sanitized := sanitizeElixirSource(content)
 
-	heredocAlias := []byte("alias Foo.Bar")
-	index := bytes.Index(content, heredocAlias)
+	realAlias := []byte("alias Foo.Bar, as: Baz")
+	index := bytes.Index(content, realAlias)
 	if index < 0 {
-		t.Fatalf("expected fixture to contain heredoc alias text")
+		t.Fatalf("expected fixture to contain non-heredoc alias text")
 	}
-	for i := index; i < index+len(heredocAlias); i++ {
+	for i := index; i < index+len(realAlias); i++ {
 		sanitized[i] = ' '
 	}
 
 	imports := parseImportsFromSanitized(content, sanitized, "lib/demo.ex", map[string]struct{}{"foo": {}})
-	if len(imports) != 1 {
-		t.Fatalf("expected one import from pre-sanitized source, got %#v", imports)
+	if len(imports) != 0 {
+		t.Fatalf("expected no imports after masking non-heredoc alias in pre-sanitized source, got %#v", imports)
 	}
-	if imports[0].Local != "Baz" {
-		t.Fatalf("expected alias local Baz, got %q", imports[0].Local)
-	}
-	if imports[0].Location.Line != 5 {
-		t.Fatalf("expected import location line 5, got %d", imports[0].Location.Line)
+}
+
+func TestParseImportsFromSanitizedRejectsMismatchedBufferLengths(t *testing.T) {
+	content := []byte("defmodule Demo do\n  alias Foo.Bar\nend\n")
+	sanitized := sanitizeElixirSource(content)
+
+	imports := parseImportsFromSanitized(content, sanitized[:len(sanitized)-1], "lib/demo.ex", map[string]struct{}{"foo": {}})
+	if len(imports) != 0 {
+		t.Fatalf("expected mismatched sanitized buffer to produce no imports, got %#v", imports)
 	}
 }
 

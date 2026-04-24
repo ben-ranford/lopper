@@ -14,6 +14,9 @@ func parseImports(content []byte, filePath string, declared map[string]struct{})
 }
 
 func parseImportsFromSanitized(content []byte, sanitized []byte, filePath string, declared map[string]struct{}) []shared.ImportRecord {
+	if len(sanitized) != len(content) {
+		return nil
+	}
 	matches := importPattern.FindAllSubmatchIndex(sanitized, -1)
 	records := make([]shared.ImportRecord, 0, len(matches))
 	for _, idx := range matches {
