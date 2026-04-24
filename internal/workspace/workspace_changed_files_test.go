@@ -49,8 +49,8 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 		},
 		{
 			name:   "status_fallback",
-			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff fail\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  pkg/a.go\"\n  echo \"R  old.go -> pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
-			want:   []string{"pkg/a.go", "pkg/b.go"},
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff fail\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  pkg/a.go\"\n  echo \" M pkg/unstaged.go\"\n  echo \"R  old.go -> pkg/b.go\"\n  exit 0\nfi\nexit 1\n",
+			want:   []string{"pkg/a.go", "pkg/b.go", "pkg/unstaged.go"},
 		},
 		{
 			name:   "diff_and_status_union",
@@ -145,6 +145,11 @@ func TestParseChangedFileHelpers(t *testing.T) {
 	porcelain := parsePorcelainChangedFiles([]byte("M   packages/a/file.ts\nR  old.ts ->  packages/b/new.ts\n"))
 	if len(porcelain) != 2 || porcelain[0] != " packages/a/file.ts" || porcelain[1] != " packages/b/new.ts" {
 		t.Fatalf("expected parsed porcelain paths, got %#v", porcelain)
+	}
+
+	unstaged := parsePorcelainChangedFiles([]byte(" M main.go\n"))
+	if len(unstaged) != 1 || unstaged[0] != "main.go" {
+		t.Fatalf("expected unstaged path to keep full filename, got %#v", unstaged)
 	}
 
 	withShort := parsePorcelainChangedFiles([]byte("\n??\nA  file.txt\n"))
