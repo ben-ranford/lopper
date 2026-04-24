@@ -214,6 +214,55 @@ func TestDetectLockfileDriftPreviewEcosystemsMissingLockfile(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftDotnetCentralProjectLockfilesAvoidRootMissingWarning(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{\"version\":1,\"dependencies\":{}}\n")
+
+	warnings, err := detectLockfileDriftWithFeatures(context.Background(), repo, false, lockfileDriftFeatureSet(t, true))
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings when only project-level .NET lockfiles are present, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftDotnetCentralProjectLockfileManifestChange(t *testing.T) {
+	t.Run("warns when central manifest changes without project lockfile changes", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n")
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{\"version\":1,\"dependencies\":{}}\n")
+		initGitRepo(t, repo)
+
+		writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /><PackageVersion Include=\"Serilog\" Version=\"3.1.0\" /></ItemGroup></Project>\n")
+
+		warnings, err := detectLockfileDriftWithFeatures(context.Background(), repo, false, lockfileDriftFeatureSet(t, true))
+		assertSingleLockfileDriftWarning(t, warnings, err, ".NET in .: Directory.Packages.props changed while no matching lockfile changed", "dotnet restore --use-lock-file")
+	})
+
+	t.Run("does not warn when central manifest and project lockfile both change", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n")
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{\"version\":1,\"dependencies\":{}}\n")
+		initGitRepo(t, repo)
+
+		writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /><PackageVersion Include=\"Serilog\" Version=\"3.1.0\" /></ItemGroup></Project>\n")
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{\"version\":1,\"dependencies\":{\"Serilog\":\"3.1.0\"}}\n")
+
+		warnings, err := detectLockfileDriftWithFeatures(context.Background(), repo, false, lockfileDriftFeatureSet(t, true))
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected no warnings when project lockfiles changed with Directory.Packages.props, got %#v", warnings)
+		}
+	})
+}
+
 func TestDetectLockfileDriftEcosystemExpansionPreviewDisabledPreservesCurrentBehavior(t *testing.T) {
 	t.Run("preview ecosystems stay disabled", func(t *testing.T) {
 		repo := t.TempDir()
@@ -371,10 +420,42 @@ func TestDetectLockfileDriftInvalidRepoPath(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftWithFeaturesPropagatesGitContextError(t *testing.T) {
+	repo := t.TempDir()
+	original := collectLockfileGitContextFn
+	collectLockfileGitContextFn = func(context.Context, string) (lockfileGitContext, error) {
+		return lockfileGitContext{}, errors.New("forced git context failure")
+	}
+	defer func() { collectLockfileGitContextFn = original }()
+
+	_, err := detectLockfileDriftWithFeatures(context.Background(), repo, false, featureflags.Set{})
+	if err == nil || !strings.Contains(err.Error(), "forced git context failure") {
+		t.Fatalf("expected git context failure, got %v", err)
+	}
+}
+
+func TestDetectLockfileDriftWithFeaturesNormalizePathError(t *testing.T) {
+	original := normalizeRepoPathFn
+	normalizeRepoPathFn = func(string) (string, error) { return "", errors.New("forced normalize error") }
+	defer func() { normalizeRepoPathFn = original }()
+
+	_, err := detectLockfileDriftWithFeatures(context.Background(), t.TempDir(), false, featureflags.Set{})
+	if err == nil || !strings.Contains(err.Error(), "forced normalize error") {
+		t.Fatalf("expected normalize path error, got %v", err)
+	}
+}
+
 func TestReadDirectoryFilesMissingPath(t *testing.T) {
 	_, err := readDirectoryFiles(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
 		t.Fatalf("expected readDirectoryFiles to fail for missing path")
+	}
+}
+
+func TestScanLockfileDriftMissingRepoPath(t *testing.T) {
+	_, err := scanLockfileDrift(context.Background(), filepath.Join(t.TempDir(), "missing"), lockfileGitContext{}, false, lockfileRules)
+	if err == nil {
+		t.Fatalf("expected scanLockfileDrift to fail for missing repo path")
 	}
 }
 
@@ -678,6 +759,196 @@ func TestFindRuleLockfiles(t *testing.T) {
 	found := findRuleLockfiles(files, []string{lockfileName, "missing.lock"})
 	if len(found) != 1 || found[0].name != lockfileName {
 		t.Fatalf("unexpected lockfiles found: %#v", found)
+	}
+}
+
+func TestIsDotnetCentralOnlyRuleManifest(t *testing.T) {
+	cases := []struct {
+		name      string
+		rule      lockfileRule
+		manifests []string
+		want      bool
+	}{
+		{
+			name:      "central manifest only",
+			rule:      lockfileRule{manager: ".NET", manifest: dotnetCentralManifest},
+			manifests: []string{dotnetCentralManifest},
+			want:      true,
+		},
+		{
+			name:      "central manifest with project manifest",
+			rule:      lockfileRule{manager: ".NET", manifest: dotnetCentralManifest},
+			manifests: []string{dotnetCentralManifest, dotnetProjectManifest},
+			want:      false,
+		},
+		{
+			name:      "project manifest only",
+			rule:      lockfileRule{manager: ".NET", manifest: dotnetCentralManifest},
+			manifests: []string{dotnetProjectManifest},
+			want:      false,
+		},
+		{
+			name:      "different manager",
+			rule:      lockfileRule{manager: "npm", manifest: dotnetCentralManifest},
+			manifests: []string{dotnetCentralManifest},
+			want:      false,
+		},
+		{
+			name:      "case-insensitive central manifest",
+			rule:      lockfileRule{manager: ".NET", manifest: dotnetCentralManifest},
+			manifests: []string{"directory.packages.props"},
+			want:      true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := isDotnetCentralOnlyRuleManifest(tc.rule, tc.manifests)
+			if got != tc.want {
+				t.Fatalf("isDotnetCentralOnlyRuleManifest() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDirContainsDotnetProjectManifest(t *testing.T) {
+	t.Run("finds project manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, dotnetProjectManifest), "<Project></Project>\n")
+
+		hasManifest, err := dirContainsDotnetProjectManifest(dir)
+		if err != nil {
+			t.Fatalf("dirContainsDotnetProjectManifest: %v", err)
+		}
+		if !hasManifest {
+			t.Fatalf("expected %s to be detected", dotnetProjectManifest)
+		}
+	})
+
+	t.Run("returns false when no project manifest exists", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "packages.lock.json"), "{}\n")
+
+		hasManifest, err := dirContainsDotnetProjectManifest(dir)
+		if err != nil {
+			t.Fatalf("dirContainsDotnetProjectManifest: %v", err)
+		}
+		if hasManifest {
+			t.Fatalf("expected false when no project manifest exists")
+		}
+	})
+
+	t.Run("detects fsharp project manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "App.fsproj"), "<Project></Project>\n")
+
+		hasManifest, err := dirContainsDotnetProjectManifest(dir)
+		if err != nil {
+			t.Fatalf("dirContainsDotnetProjectManifest: %v", err)
+		}
+		if !hasManifest {
+			t.Fatalf("expected App.fsproj to be detected")
+		}
+	})
+
+	t.Run("returns error for missing directory", func(t *testing.T) {
+		_, err := dirContainsDotnetProjectManifest(filepath.Join(t.TempDir(), "missing"))
+		if err == nil {
+			t.Fatalf("expected missing directory error")
+		}
+	})
+}
+
+func TestFindDotnetProjectLockfiles(t *testing.T) {
+	t.Run("finds lockfiles next to project manifests and skips irrelevant directories", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{}\n")
+		writeFile(t, filepath.Join(repo, "src", "NoProject", dotnetLockfileName), "{}\n")
+		writeFile(t, filepath.Join(repo, "node_modules", "Ignored", dotnetProjectManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(repo, "node_modules", "Ignored", dotnetLockfileName), "{}\n")
+
+		lockfiles, err := findDotnetProjectLockfiles(repo)
+		if err != nil {
+			t.Fatalf("findDotnetProjectLockfiles: %v", err)
+		}
+		if len(lockfiles) != 1 {
+			t.Fatalf("expected one project lockfile, got %#v", lockfiles)
+		}
+		if lockfiles[0].name != "src/App/packages.lock.json" {
+			t.Fatalf("unexpected lockfile path %q", lockfiles[0].name)
+		}
+	})
+
+	t.Run("returns error for missing root directory", func(t *testing.T) {
+		_, err := findDotnetProjectLockfiles(filepath.Join(t.TempDir(), "missing"))
+		if err == nil {
+			t.Fatalf("expected missing directory error")
+		}
+	})
+}
+
+func TestFindDistributedRuleLockfilesReturnsExisting(t *testing.T) {
+	repo := t.TempDir()
+	snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
+	existing := []presentLockfile{{name: dotnetLockfileName}}
+
+	lockfiles, err := findDistributedRuleLockfiles(snapshot, lockfileRule{manager: ".NET", manifest: dotnetCentralManifest}, []string{dotnetCentralManifest}, existing)
+	if err != nil {
+		t.Fatalf("findDistributedRuleLockfiles: %v", err)
+	}
+	if len(lockfiles) != 1 || lockfiles[0].name != dotnetLockfileName {
+		t.Fatalf("expected existing lockfile to be preserved, got %#v", lockfiles)
+	}
+}
+
+func TestFindDistributedRuleLockfilesIgnoresNonDotnetRule(t *testing.T) {
+	repo := t.TempDir()
+	snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
+	assertNoDistributedLockfiles(t, snapshot, lockfileRule{manager: "npm", manifest: manifestFileName}, []string{manifestFileName})
+}
+
+func TestFindDistributedRuleLockfilesReturnsNoLockfilesWithoutProjects(t *testing.T) {
+	repo := t.TempDir()
+	snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
+	assertNoDistributedLockfiles(t, snapshot, lockfileRule{manager: ".NET", manifest: dotnetCentralManifest}, []string{dotnetCentralManifest})
+}
+
+func TestFindDistributedRuleLockfilesDiscoversProjectLockfiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{}\n")
+	snapshot := lockfileDirSnapshot{repoPath: repo, path: repo}
+
+	lockfiles, err := findDistributedRuleLockfiles(snapshot, lockfileRule{manager: ".NET", manifest: dotnetCentralManifest}, []string{dotnetCentralManifest}, nil)
+	if err != nil {
+		t.Fatalf("findDistributedRuleLockfiles: %v", err)
+	}
+	if len(lockfiles) != 1 || lockfiles[0].name != "src/App/packages.lock.json" {
+		t.Fatalf("unexpected distributed lockfiles: %#v", lockfiles)
+	}
+}
+
+func TestFindDistributedRuleLockfilesReturnsErrorWhenSnapshotPathMissing(t *testing.T) {
+	root := t.TempDir()
+	snapshot := lockfileDirSnapshot{repoPath: root, path: filepath.Join(root, "missing")}
+
+	_, err := findDistributedRuleLockfiles(snapshot, lockfileRule{manager: ".NET", manifest: dotnetCentralManifest}, []string{dotnetCentralManifest}, nil)
+	if err == nil {
+		t.Fatalf("expected distributed lockfile discovery error")
+	}
+}
+
+func assertNoDistributedLockfiles(t *testing.T, snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string) {
+	t.Helper()
+	lockfiles, err := findDistributedRuleLockfiles(snapshot, rule, manifests, nil)
+	if err != nil {
+		t.Fatalf("findDistributedRuleLockfiles: %v", err)
+	}
+	if len(lockfiles) != 0 {
+		t.Fatalf("expected no distributed lockfiles, got %#v", lockfiles)
 	}
 }
 
