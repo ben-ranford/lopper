@@ -8,16 +8,18 @@ import (
 )
 
 const (
-	DefaultFailOnIncreasePercent             = 0
+	// -1 disables threshold enforcement; 0 is strict zero-tolerance.
+	DefaultFailOnIncreasePercent             = -1
 	DefaultLowConfidenceWarningPercent       = 40
 	DefaultMinUsagePercentForRecommendations = 40
-	DefaultMaxUncertainImportCount           = 0
-	DefaultRemovalCandidateWeightUsage       = 0.50
-	DefaultRemovalCandidateWeightImpact      = 0.30
-	DefaultRemovalCandidateWeightConfidence  = 0.20
-	DefaultLockfileDriftPolicy               = "warn"
-	DefaultLicenseFailOnDeny                 = false
-	DefaultLicenseIncludeRegistryProvenance  = false
+	// -1 disables threshold enforcement; 0 is strict zero-tolerance.
+	DefaultMaxUncertainImportCount          = -1
+	DefaultRemovalCandidateWeightUsage      = 0.50
+	DefaultRemovalCandidateWeightImpact     = 0.30
+	DefaultRemovalCandidateWeightConfidence = 0.20
+	DefaultLockfileDriftPolicy              = "warn"
+	DefaultLicenseFailOnDeny                = false
+	DefaultLicenseIncludeRegistryProvenance = false
 )
 
 var validLockfileDriftPolicies = map[string]struct{}{
@@ -81,7 +83,7 @@ func (v *Values) Validate() error {
 	if err := validatePercentageRange("min_usage_percent_for_recommendations", v.MinUsagePercentForRecommendations); err != nil {
 		return err
 	}
-	if err := validateNonNegative("max_uncertain_import_count", v.MaxUncertainImportCount); err != nil {
+	if err := validateThresholdWithDisableSentinel("max_uncertain_import_count", v.MaxUncertainImportCount); err != nil {
 		return err
 	}
 	if err := validateWeight("removal_candidate_weight_usage", v.RemovalCandidateWeightUsage); err != nil {
@@ -157,7 +159,7 @@ func (o *Overrides) Validate() error {
 		return err
 	}
 	if err := validateOptionalInt(o.MaxUncertainImportCount, func(value int) error {
-		return validateNonNegative("max_uncertain_import_count", value)
+		return validateThresholdWithDisableSentinel("max_uncertain_import_count", value)
 	}); err != nil {
 		return err
 	}
@@ -171,16 +173,13 @@ func (o *Overrides) Validate() error {
 	return nil
 }
 
-func validateNonNegative(name string, value int) error {
-	if value < 0 {
-		return fmt.Errorf("invalid threshold %s: %d (must be >= 0)", name, value)
-	}
-	return nil
+func validateFailOnIncrease(value int) error {
+	return validateThresholdWithDisableSentinel("fail_on_increase_percent", value)
 }
 
-func validateFailOnIncrease(value int) error {
-	if value < 0 {
-		return fmt.Errorf("invalid threshold fail_on_increase_percent: %d (must be >= 0)", value)
+func validateThresholdWithDisableSentinel(name string, value int) error {
+	if value < -1 {
+		return fmt.Errorf("invalid threshold %s: %d (must be -1 (disabled) or >= 0)", name, value)
 	}
 	return nil
 }

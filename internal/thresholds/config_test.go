@@ -73,6 +73,30 @@ func TestLoadYAMLConfig(t *testing.T) {
 	}
 }
 
+func TestLoadYAMLConfigAllowsDisabledSentinelThresholds(t *testing.T) {
+	repo := t.TempDir()
+	cfg := strings.Join([]string{"thresholds:", " fail_on_increase_percent: -1", " max_uncertain_import_count: -1", ""}, "\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), cfg)
+
+	overrides, _, err := Load(repo, "")
+	if err != nil {
+		t.Fatalf(loadConfigErrFmt, err)
+	}
+	if overrides.FailOnIncreasePercent == nil || *overrides.FailOnIncreasePercent != -1 {
+		t.Fatalf("expected parsed fail_on_increase_percent override=-1, got %#v", overrides.FailOnIncreasePercent)
+	}
+	if overrides.MaxUncertainImportCount == nil || *overrides.MaxUncertainImportCount != -1 {
+		t.Fatalf("expected parsed max_uncertain_import_count override=-1, got %#v", overrides.MaxUncertainImportCount)
+	}
+	resolved := overrides.Apply(Defaults())
+	if resolved.FailOnIncreasePercent != -1 {
+		t.Fatalf("expected fail_on_increase_percent=-1, got %d", resolved.FailOnIncreasePercent)
+	}
+	if resolved.MaxUncertainImportCount != -1 {
+		t.Fatalf("expected max_uncertain_import_count=-1, got %d", resolved.MaxUncertainImportCount)
+	}
+}
+
 func TestNormalizePathPatternsNormalizesSeparatorsAndDedupes(t *testing.T) {
 	got := normalizePathPatterns([]string{"src\\**\\*.go", " src/**/*.go ", "vendor\\**"})
 	if strings.Join(got, ",") != "src/**/*.go,"+vendorGlob {

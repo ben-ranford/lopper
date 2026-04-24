@@ -104,7 +104,7 @@ func resolveCurrentBaselineKey(repoPath string) string {
 }
 
 func validateFailOnIncrease(reportData report.Report, threshold int) error {
-	if threshold <= 0 {
+	if threshold < 0 {
 		return nil
 	}
 	if reportData.WasteIncreasePercent == nil {
@@ -118,7 +118,7 @@ func validateFailOnIncrease(reportData report.Report, threshold int) error {
 }
 
 func validateUncertaintyThreshold(reportData report.Report, threshold int) error {
-	if threshold <= 0 {
+	if threshold < 0 {
 		return nil
 	}
 

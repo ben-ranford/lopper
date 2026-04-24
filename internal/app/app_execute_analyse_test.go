@@ -37,7 +37,8 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	req.Analyse.Features = mustEnabledPreviewFeatureSet(t)
 	req.Analyse.PolicySources = []string{"cli", "defaults"}
 	req.Analyse.Thresholds = thresholds.Values{
-		FailOnIncreasePercent:             0,
+		FailOnIncreasePercent:             -1,
+		MaxUncertainImportCount:           thresholds.DefaultMaxUncertainImportCount,
 		LowConfidenceWarningPercent:       33,
 		MinUsagePercentForRecommendations: 44,
 		RemovalCandidateWeightUsage:       0.6,
@@ -104,7 +105,8 @@ func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
 	req.Analyse.Dependency = "serde"
 	req.Analyse.Format = report.FormatJSON
 	req.Analyse.Thresholds = thresholds.Values{
-		FailOnIncreasePercent:             0,
+		FailOnIncreasePercent:             -1,
+		MaxUncertainImportCount:           thresholds.DefaultMaxUncertainImportCount,
 		LowConfidenceWarningPercent:       35,
 		MinUsagePercentForRecommendations: 70,
 	}
