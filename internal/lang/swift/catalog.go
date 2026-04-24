@@ -340,24 +340,25 @@ func parseStringFields(expression string) map[string]string {
 }
 
 func extractDotCallArguments(content, callName string, maxItems int) []string {
+	contentNoComments := blankSwiftCommentsPreservingStrings(content)
 	token := "." + callName
 	items := make([]string, 0)
 	searchFrom := 0
-	for searchFrom < len(content) {
-		idx := strings.Index(content[searchFrom:], token)
+	for searchFrom < len(contentNoComments) {
+		idx := strings.Index(contentNoComments[searchFrom:], token)
 		if idx < 0 {
 			break
 		}
 		callStart := searchFrom + idx
 		cursor := callStart + len(token)
-		for cursor < len(content) && unicode.IsSpace(rune(content[cursor])) {
+		for cursor < len(contentNoComments) && unicode.IsSpace(rune(contentNoComments[cursor])) {
 			cursor++
 		}
-		if cursor >= len(content) || content[cursor] != '(' {
+		if cursor >= len(contentNoComments) || contentNoComments[cursor] != '(' {
 			searchFrom = callStart + len(token)
 			continue
 		}
-		arguments, nextPos, ok := captureParenthesized(content, cursor)
+		arguments, nextPos, ok := captureParenthesized(contentNoComments, cursor)
 		if !ok {
 			break
 		}
@@ -396,7 +397,7 @@ func captureParenthesized(content string, openParenIndex int) (string, int, bool
 
 func consumeQuotedByte(ch byte, inString *byte, escaped *bool) bool {
 	if *inString == 0 {
-		if ch == '\'' || ch == '"' {
+		if ch == '"' {
 			*inString = ch
 			return true
 		}

@@ -16,7 +16,53 @@ func blankSwiftStringsAndComments(content []byte) string {
 			index = consumeSwiftStringContent(content, index, &builder, &state)
 			continue
 		}
+		if state.blockDepth > 0 {
+			index = consumeSwiftBlockCommentContent(content, index, &builder, &state)
+			continue
+		}
 		index = consumeSwiftCodeContent(content, index, &builder, &state)
+	}
+	return builder.String()
+}
+
+func blankSwiftCommentsPreservingStrings(content string) string {
+	builder := strings.Builder{}
+	builder.Grow(len(content))
+
+	bytes := []byte(content)
+	state := swiftStringScanState{}
+	for index := 0; index < len(bytes); {
+		if state.inString {
+			index = consumeSwiftStringContentPreservingContent(bytes, index, &builder, &state)
+			continue
+		}
+		if state.blockDepth > 0 {
+			index = consumeSwiftBlockCommentContent(bytes, index, &builder, &state)
+			continue
+		}
+		if startsSwiftLineComment(bytes, index) {
+			index = blankSwiftLineComment(bytes, index, &builder)
+			continue
+		}
+		if startsSwiftBlockComment(bytes, index) {
+			state.blockDepth = 1
+			builder.WriteString("  ")
+			index += 2
+			continue
+		}
+		hashCount, nextIndex, isMultiline, ok := detectSwiftStringStart(bytes, index)
+		if ok {
+			builder.WriteString(content[index:nextIndex])
+			state.inString = true
+			state.multiline = isMultiline
+			state.rawHashCount = hashCount
+			state.escaped = false
+			index = nextIndex
+			continue
+		}
+
+		builder.WriteByte(bytes[index])
+		index++
 	}
 	return builder.String()
 }
@@ -50,6 +96,11 @@ func consumeSwiftCodeContent(content []byte, index int, builder *strings.Builder
 	if startsSwiftLineComment(content, index) {
 		return blankSwiftLineComment(content, index, builder)
 	}
+	if startsSwiftBlockComment(content, index) {
+		state.blockDepth = 1
+		builder.WriteString("  ")
+		return index + 2
+	}
 
 	hashCount, nextIndex, isMultiline, ok := detectSwiftStringStart(content, index)
 	if ok {
@@ -70,6 +121,48 @@ func resetSwiftStringScanState(state *swiftStringScanState) {
 	state.multiline = false
 	state.rawHashCount = 0
 	state.escaped = false
+}
+
+func consumeSwiftBlockCommentContent(content []byte, index int, builder *strings.Builder, state *swiftStringScanState) int {
+	if startsSwiftBlockComment(content, index) {
+		state.blockDepth++
+		builder.WriteString("  ")
+		return index + 2
+	}
+	if endsSwiftBlockComment(content, index) {
+		state.blockDepth--
+		builder.WriteString("  ")
+		return index + 2
+	}
+	if content[index] == '\n' {
+		builder.WriteByte('\n')
+		return index + 1
+	}
+	builder.WriteByte(' ')
+	return index + 1
+}
+
+func consumeSwiftStringContentPreservingContent(content []byte, index int, builder *strings.Builder, state *swiftStringScanState) int {
+	if matchesSwiftStringDelimiter(content, index, state.rawHashCount, state.multiline) {
+		delimiterLen := swiftStringDelimiterLength(state.rawHashCount, state.multiline)
+		builder.Write(content[index : index+delimiterLen])
+		resetSwiftStringScanState(state)
+		return index + delimiterLen
+	}
+
+	ch := content[index]
+	builder.WriteByte(ch)
+	if ch == '\n' {
+		state.escaped = false
+		return index + 1
+	}
+	if ch == '\\' && !state.multiline && state.rawHashCount == 0 && !state.escaped {
+		state.escaped = true
+		return index + 1
+	}
+
+	state.escaped = false
+	return index + 1
 }
 
 func detectSwiftStringStart(content []byte, index int) (int, int, bool, bool) {
@@ -119,6 +212,14 @@ func swiftStringDelimiterLength(rawHashCount int, multiline bool) int {
 
 func startsSwiftLineComment(content []byte, index int) bool {
 	return index+1 < len(content) && content[index] == '/' && content[index+1] == '/'
+}
+
+func startsSwiftBlockComment(content []byte, index int) bool {
+	return index+1 < len(content) && content[index] == '/' && content[index+1] == '*'
+}
+
+func endsSwiftBlockComment(content []byte, index int) bool {
+	return index+1 < len(content) && content[index] == '*' && content[index+1] == '/'
 }
 
 func blankSwiftLineComment(content []byte, index int, builder *strings.Builder) int {

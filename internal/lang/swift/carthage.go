@@ -11,7 +11,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -105,7 +104,7 @@ func parseCarthageDependencies(content []byte, requireReference bool) []carthage
 }
 
 func parseCarthageLine(line string, requireReference bool) (carthageDependency, bool) {
-	line = strings.TrimSpace(shared.StripLineComment(line, "#"))
+	line = strings.TrimSpace(stripHashCommentOutsideQuotes(line))
 	if line == "" {
 		return carthageDependency{}, false
 	}
@@ -135,6 +134,36 @@ func parseCarthageLine(line string, requireReference bool) (carthageDependency, 
 		Reference:  strings.TrimSpace(reference),
 		Dependency: depID,
 	}, true
+}
+
+func stripHashCommentOutsideQuotes(line string) string {
+	inString := false
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inString = true
+			continue
+		}
+		if ch == '#' {
+			return line[:i]
+		}
+	}
+	return line
 }
 
 func splitCarthageLinePrefix(line string) (string, string, bool) {

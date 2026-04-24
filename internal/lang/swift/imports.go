@@ -7,8 +7,8 @@ import (
 )
 
 func parseSwiftImports(content []byte, filePath string) []importBinding {
-	return shared.ParseImportLines(content, filePath, func(line string, index int) []shared.ImportRecord {
-		line = shared.StripLineComment(line, "//")
+	sanitized := blankSwiftStringsAndComments(content)
+	return shared.ParseImportLines([]byte(sanitized), filePath, func(line string, index int) []shared.ImportRecord {
 		matches := swiftImportPattern.FindStringSubmatch(line)
 		if len(matches) != 2 {
 			return nil
