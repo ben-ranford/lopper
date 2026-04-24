@@ -1,6 +1,6 @@
 package elixir
 
-type elixirImportMaskState struct {
+type elixirSourceMaskState struct {
 	inSingleQuote   bool
 	inDoubleQuote   bool
 	inSingleHeredoc bool
@@ -8,34 +8,34 @@ type elixirImportMaskState struct {
 	escaped         bool
 }
 
-func maskElixirImportSource(content []byte) []byte {
+func sanitizeElixirSource(content []byte) []byte {
 	sanitized := make([]byte, len(content))
 	copy(sanitized, content)
-	state := elixirImportMaskState{}
+	state := elixirSourceMaskState{}
 
 	for i := 0; i < len(content); i++ {
-		i += maskElixirSourceAt(content, sanitized, i, &state)
+		i += sanitizeElixirSourceAt(content, sanitized, i, &state)
 	}
 
 	return sanitized
 }
 
-func maskElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirImportMaskState) int {
+func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	switch {
 	case state.inDoubleHeredoc:
-		return maskElixirHeredocByte(content, sanitized, index, state, '"')
+		return sanitizeElixirHeredocByte(content, sanitized, index, state, '"')
 	case state.inSingleHeredoc:
-		return maskElixirHeredocByte(content, sanitized, index, state, '\'')
+		return sanitizeElixirHeredocByte(content, sanitized, index, state, '\'')
 	case state.inDoubleQuote:
-		return maskElixirQuotedByte(content, sanitized, index, state, '"')
+		return sanitizeElixirQuotedByte(content, sanitized, index, state, '"')
 	case state.inSingleQuote:
-		return maskElixirQuotedByte(content, sanitized, index, state, '\'')
+		return sanitizeElixirQuotedByte(content, sanitized, index, state, '\'')
 	default:
-		return startElixirMaskedRegion(content, sanitized, index, state)
+		return startElixirSanitizedRegion(content, sanitized, index, state)
 	}
 }
 
-func maskElixirHeredocByte(content []byte, sanitized []byte, index int, state *elixirImportMaskState, quote byte) int {
+func sanitizeElixirHeredocByte(content []byte, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
 	maskElixirSourceByte(sanitized, index)
 	if !isElixirTripleQuote(content, index, quote) {
 		return 0
@@ -50,7 +50,7 @@ func maskElixirHeredocByte(content []byte, sanitized []byte, index int, state *e
 	return 2
 }
 
-func maskElixirQuotedByte(content []byte, sanitized []byte, index int, state *elixirImportMaskState, quote byte) int {
+func sanitizeElixirQuotedByte(content []byte, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
 	maskElixirSourceByte(sanitized, index)
 	if state.escaped {
 		state.escaped = false
@@ -70,7 +70,7 @@ func maskElixirQuotedByte(content []byte, sanitized []byte, index int, state *el
 	return 0
 }
 
-func startElixirMaskedRegion(content []byte, sanitized []byte, index int, state *elixirImportMaskState) int {
+func startElixirSanitizedRegion(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	if isElixirTripleQuote(content, index, '"') {
 		maskElixirSourceByte(sanitized, index)
 		maskElixirSourceByte(sanitized, index+1)
