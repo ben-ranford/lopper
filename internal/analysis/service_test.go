@@ -298,6 +298,47 @@ func TestServiceAnalyseSwiftCarthageAllModeBehindPreviewFlag(t *testing.T) {
 	assertReportLanguages(t, reportData.Dependencies, "swift", "js-ts")
 }
 
+func TestServiceAnalyseDartStableDefaultsKeepLocalPathImportUsage(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "pubspec.yaml"), `name: demo
+dependencies:
+  local_pkg:
+    path: ../local_pkg
+`)
+	writeFile(t, filepath.Join(repo, "pubspec.lock"), `packages:
+  local_pkg:
+    dependency: "direct main"
+    description: {path: ../local_pkg}
+    source: path
+    version: "0.0.1"
+`)
+	writeFile(t, filepath.Join(repo, "lib", "main.dart"), `import 'package:local_pkg/local_pkg.dart' as local;
+void main() { local.run(); }
+`)
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "local_pkg",
+		Language:   "dart",
+		Features:   mustResolveStableDefaultsFeatureSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse dart with stable defaults: %v", err)
+	}
+	dep := singleDependencyReport(t, reportData)
+	if dep.Language != "dart" {
+		t.Fatalf("expected dart language, got %#v", dep)
+	}
+	if dep.TotalExportsCount == 0 || dep.UsedExportsCount == 0 {
+		t.Fatalf("expected local path import usage under stable defaults, got %#v", dep)
+	}
+	for _, warning := range reportData.Warnings {
+		if strings.Contains(strings.ToLower(warning), `no imports found for dependency "local_pkg"`) {
+			t.Fatalf("expected local path import attribution under stable defaults, got warnings %#v", reportData.Warnings)
+		}
+	}
+}
+
 func writeSwiftCarthageAnalysisFixture(t *testing.T, repo string) {
 	t.Helper()
 	writeFile(t, filepath.Join(repo, "Cartfile"), "github \"ReactiveX/RxSwift\" ~> 6.0\n")
@@ -343,6 +384,17 @@ func mustResolveSwiftCarthagePreviewSet(t *testing.T, enabled bool) featureflags
 	resolved, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {
 		t.Fatalf("resolve swift Carthage preview feature set: %v", err)
+	}
+	return resolved
+}
+
+func mustResolveStableDefaultsFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+	})
+	if err != nil {
+		t.Fatalf("resolve stable defaults feature set: %v", err)
 	}
 	return resolved
 }

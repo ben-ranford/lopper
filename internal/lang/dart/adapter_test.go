@@ -505,6 +505,53 @@ void main() {
 	}
 }
 
+func TestDartSourceAttributionStableDefaultsKeepLocalPathImportUsage(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pubspecYAMLName), `name: app
+dependencies:
+  local_pkg:
+    path: ../local_pkg
+`)
+	writeFile(t, filepath.Join(repo, pubspecLockName), `packages:
+  local_pkg:
+    dependency: "direct main"
+    description: {path: ../local_pkg}
+    source: path
+    version: "0.0.1"
+`)
+	writeFile(t, filepath.Join(repo, "lib", mainDartFileName), `import 'package:local_pkg/local_pkg.dart' as local;
+
+void main() {
+  local.run();
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "local_pkg",
+		Features:   mustDartStableDefaultFeatureSet(t),
+	})
+	if err != nil {
+		t.Fatalf(analyseErrorFormat, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyReport, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Name != "local_pkg" {
+		t.Fatalf("expected local_pkg dependency, got %#v", dep)
+	}
+	if dep.TotalExportsCount == 0 || dep.UsedExportsCount == 0 {
+		t.Fatalf("expected local path import usage under stable defaults, got %#v", dep)
+	}
+	if !hasRiskCueCode(dep, "local-path-dependency") {
+		t.Fatalf("expected local path dependency cue under stable defaults, got %#v", dep.RiskCues)
+	}
+	if containsWarning(reportData.Warnings, `no imports found for dependency "local_pkg"`) {
+		t.Fatalf("expected local path imports to be attributed under stable defaults, got warnings %#v", reportData.Warnings)
+	}
+}
+
 func findDependency(dependencies []report.DependencyReport, name string) (report.DependencyReport, bool) {
 	for _, dependency := range dependencies {
 		if dependency.Name == name {
@@ -572,6 +619,20 @@ func mustDartPreviewFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	features, err := registry.Resolve(opts)
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)
+	}
+	return features
+}
+
+func mustDartStableDefaultFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	features, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+	})
+	if err != nil {
+		t.Fatalf("resolve stable default feature set: %v", err)
+	}
+	if !features.Enabled(dartSourceAttributionPreviewFeature) {
+		t.Fatalf("expected %q enabled by stable defaults", dartSourceAttributionPreviewFeature)
 	}
 	return features
 }

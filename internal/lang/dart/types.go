@@ -96,14 +96,15 @@ type fileScan struct {
 }
 
 type scanResult struct {
-	Files                []fileScan
-	Warnings             []string
-	DeclaredDependencies map[string]dependencyInfo
-	UnresolvedImports    map[string]int
-	HasFlutterProject    bool
-	HasPluginMetadata    bool
-	SkippedLargeFiles    int
-	SkippedFilesByBound  bool
+	Files                   []fileScan
+	Warnings                []string
+	DeclaredDependencies    map[string]dependencyInfo
+	UnresolvedImports       map[string]int
+	includeLocalPathImports bool
+	HasFlutterProject       bool
+	HasPluginMetadata       bool
+	SkippedLargeFiles       int
+	SkippedFilesByBound     bool
 }
 
 var (
