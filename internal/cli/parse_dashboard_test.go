@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 )
 
 func TestParseArgsDashboardRepos(t *testing.T) {
@@ -82,6 +84,39 @@ func TestParseArgsDashboardValidation(t *testing.T) {
 	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
 	if !strings.Contains(err.Error(), "--top must be > 0") {
 		t.Fatalf("unexpected dashboard top validation error: %v", err)
+	}
+}
+
+func TestParseArgsDashboardResolvesDefaultFeatureFlags(t *testing.T) {
+	t.Run("release defaults include stable flags", func(t *testing.T) {
+		withFeatureRegistry(t, featureflags.ChannelRelease, nil)
+		req := mustParseArgs(t, []string{"dashboard", dashboardReposFlagName, "./api"})
+		if !req.Dashboard.Features.Enabled("stable-flag") {
+			t.Fatalf("expected stable feature enabled from release defaults")
+		}
+		if req.Dashboard.Features.Enabled("preview-flag") {
+			t.Fatalf("expected preview feature disabled without release lock override")
+		}
+	})
+
+	t.Run("release lock enables preview flags", func(t *testing.T) {
+		lock := &featureflags.ReleaseLock{Release: "v1.4.2", DefaultOn: []string{"preview-flag"}}
+		withFeatureRegistry(t, featureflags.ChannelRelease, lock)
+		req := mustParseArgs(t, []string{"dashboard", dashboardReposFlagName, "./api"})
+		if !req.Dashboard.Features.Enabled("stable-flag") || !req.Dashboard.Features.Enabled("preview-flag") {
+			t.Fatalf("expected release-lock defaults to include stable and preview flags")
+		}
+	})
+}
+
+func TestParseArgsDashboardReturnsFeatureResolutionError(t *testing.T) {
+	oldValidate := validateFeatureRegistry
+	validateFeatureRegistry = func() error { return errors.New("registry invalid") }
+	t.Cleanup(func() { validateFeatureRegistry = oldValidate })
+
+	_, err := ParseArgs([]string{"dashboard", dashboardReposFlagName, "./api"})
+	if err == nil || !strings.Contains(err.Error(), "registry invalid") {
+		t.Fatalf("expected dashboard feature-resolution error, got %v", err)
 	}
 }
 

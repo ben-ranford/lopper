@@ -46,6 +46,10 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 	if len(repos) == 0 && strings.TrimSpace(*configFlag) == "" {
 		return req, fmt.Errorf("dashboard requires --repos or --config")
 	}
+	resolvedFeatures, err := resolveDefaultFeatureSet()
+	if err != nil {
+		return req, err
+	}
 
 	dashboardRepos := make([]app.DashboardRepo, 0, len(repos))
 	for _, repoPath := range repos {
@@ -60,6 +64,7 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 		OutputPath:      outputPath,
 		TopN:            *topFlag,
 		DefaultLanguage: strings.TrimSpace(*languageFlag),
+		Features:        resolvedFeatures,
 	}
 
 	return req, nil
