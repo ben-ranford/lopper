@@ -2,7 +2,9 @@ package analysis
 
 import (
 	"context"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -138,13 +140,34 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 }
 
 func adjustImportLocations(prefix string, imports []report.ImportUse) {
+	normalizedPrefix := normalizeLocationPath(prefix)
 	for j := range imports {
 		for k := range imports[j].Locations {
 			location := &imports[j].Locations[k]
-			if filepath.IsAbs(location.File) {
+			normalizedFile := normalizeLocationPath(location.File)
+			if isAbsoluteLocationPath(location.File) {
+				location.File = normalizedFile
 				continue
 			}
-			location.File = filepath.Clean(filepath.Join(prefix, location.File))
+			location.File = path.Clean(path.Join(normalizedPrefix, normalizedFile))
 		}
 	}
+}
+
+func normalizeLocationPath(value string) string {
+	return path.Clean(strings.ReplaceAll(value, "\\", "/"))
+}
+
+func isAbsoluteLocationPath(value string) bool {
+	if value == "" {
+		return false
+	}
+	if filepath.IsAbs(value) || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "\\") {
+		return true
+	}
+	if len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		drive := value[0]
+		return (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
+	}
+	return false
 }
