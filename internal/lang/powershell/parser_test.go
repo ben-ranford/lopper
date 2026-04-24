@@ -254,39 +254,49 @@ func TestParseRequiresLineWithoutModulesReturnsNoData(t *testing.T) {
 	}
 }
 
-func TestParseRequiresLineStripsTrailingComment(t *testing.T) {
-	imports, warnings := parseRequiresLine(" -Modules Pester # comment", "#Requires -Modules Pester # comment", "script.ps1", 5, nil)
-	if len(warnings) != 0 || len(imports) != 1 {
-		t.Fatalf("expected one #Requires import and no warnings, imports=%#v warnings=%#v", imports, warnings)
+func TestParseRequiresLineModuleListParsing(t *testing.T) {
+	cases := []struct {
+		name         string
+		requiresBody string
+		line         string
+		wantDeps     []string
+	}{
+		{
+			name:         "strips trailing comment",
+			requiresBody: " -Modules Pester # comment",
+			line:         "#Requires -Modules Pester # comment",
+			wantDeps:     []string{"pester"},
+		},
+		{
+			name:         "ignores trailing requires options",
+			requiresBody: " -Modules Pester -Version 7.0",
+			line:         "#Requires -Modules Pester -Version 7.0",
+			wantDeps:     []string{"pester"},
+		},
+		{
+			name:         "parses all modules before trailing option",
+			requiresBody: " -Modules Pester, Az.Accounts -RunAsAdministrator",
+			line:         "#Requires -Modules Pester, Az.Accounts -RunAsAdministrator",
+			wantDeps:     []string{"az.accounts", "pester"},
+		},
 	}
-	if imports[0].Record.Dependency != "pester" {
-		t.Fatalf("expected trailing comment to be excluded from dependency, got %#v", imports[0])
-	}
-}
 
-func TestParseRequiresLineIgnoresTrailingRequiresOptions(t *testing.T) {
-	imports, warnings := parseRequiresLine(" -Modules Pester -Version 7.0", "#Requires -Modules Pester -Version 7.0", "script.ps1", 5, nil)
-	if len(warnings) != 0 || len(imports) != 1 {
-		t.Fatalf("expected one #Requires import and no warnings, imports=%#v warnings=%#v", imports, warnings)
-	}
-	if imports[0].Record.Dependency != "pester" {
-		t.Fatalf("expected trailing #Requires options to be excluded from dependency, got %#v", imports[0])
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			imports, warnings := parseRequiresLine(tc.requiresBody, tc.line, "script.ps1", 5, nil)
+			if len(warnings) != 0 {
+				t.Fatalf("expected no #Requires warnings, got %#v", warnings)
+			}
 
-func TestParseRequiresLineParsesAllModulesBeforeTrailingOption(t *testing.T) {
-	imports, warnings := parseRequiresLine(" -Modules Pester, Az.Accounts -RunAsAdministrator", "#Requires -Modules Pester, Az.Accounts -RunAsAdministrator", "script.ps1", 5, nil)
-	if len(warnings) != 0 || len(imports) != 2 {
-		t.Fatalf("expected two #Requires imports and no warnings, imports=%#v warnings=%#v", imports, warnings)
-	}
-
-	dependencies := make([]string, 0, len(imports))
-	for _, imp := range imports {
-		dependencies = append(dependencies, imp.Record.Dependency)
-	}
-	slices.Sort(dependencies)
-	if !reflect.DeepEqual(dependencies, []string{"az.accounts", "pester"}) {
-		t.Fatalf("unexpected #Requires dependencies from module list, got %#v", dependencies)
+			dependencies := make([]string, 0, len(imports))
+			for _, imp := range imports {
+				dependencies = append(dependencies, imp.Record.Dependency)
+			}
+			slices.Sort(dependencies)
+			if !reflect.DeepEqual(dependencies, tc.wantDeps) {
+				t.Fatalf("unexpected #Requires dependencies: got=%#v want=%#v", dependencies, tc.wantDeps)
+			}
+		})
 	}
 }
 
