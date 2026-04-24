@@ -9,6 +9,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const invalidPolicyPackErrFmt = "parse config file %s: invalid policy.packs[%d]: %w"
+
 type packResolver struct {
 	repoPath string
 	stack    []string
@@ -120,18 +122,18 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 func (r *packResolver) resolvePack(canonical string, trust packTrust, idx int, packRef string) (resolveMergeResult, error) {
 	resolvedRef, err := resolvePackRef(canonical, packRef)
 	if err != nil {
-		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+		return resolveMergeResult{}, fmt.Errorf(invalidPolicyPackErrFmt, canonical, idx, err)
 	}
 
 	childCanonical, childRemote, err := canonicalPolicyLocation(resolvedRef)
 	if err != nil {
-		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+		return resolveMergeResult{}, fmt.Errorf(invalidPolicyPackErrFmt, canonical, idx, err)
 	}
 	if childRemote && !trust.explicit {
 		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs require an explicit config path", canonical, idx)
 	}
 	if err := validatePackBoundary(childCanonical, childRemote, trust); err != nil {
-		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: %w", canonical, idx, err)
+		return resolveMergeResult{}, fmt.Errorf(invalidPolicyPackErrFmt, canonical, idx, err)
 	}
 
 	return r.resolveFile(childCanonical, r.nestedPackTrust(childCanonical, childRemote))
