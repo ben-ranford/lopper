@@ -67,7 +67,6 @@ trap 'rm -f "$tmp_matches"' EXIT INT TERM
 set +e
 "${diff_args[@]}" | awk -v pattern="$marker_pattern" -v file_pattern="$source_file_pattern" '
 BEGIN {
-	IGNORECASE = 1
 	file = ""
 	line = 0
 	found = 0
@@ -88,7 +87,8 @@ BEGIN {
 }
 /^\+/ && $0 !~ /^\+\+\+/ {
 	content = substr($0, 2)
-	if (check_file && content ~ pattern) {
+	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
+	if (check_file && tolower(content) ~ pattern) {
 		printf "%s:%d:%s\n", file, line, content
 		found = 1
 	}

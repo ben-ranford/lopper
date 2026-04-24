@@ -26,6 +26,18 @@ func TestInlineSuppressionCheckRejectsStagedMarkers(t *testing.T) {
 			want:    "//" + "nosec",
 		},
 		{
+			name:    "NOSEC uppercase",
+			path:    mainGoPath,
+			content: mainGoWithComment("NOSEC G404"),
+			want:    "//" + "NOSEC",
+		},
+		{
+			name:    "NOSONAR uppercase block comment",
+			path:    mainGoPath,
+			content: mainGoWithBlockComment("NOSONAR"),
+			want:    "NOSONAR",
+		},
+		{
 			name:    "nolint",
 			path:    mainGoPath,
 			content: mainGoWithComment("nolint:staticcheck"),
@@ -121,6 +133,10 @@ func mainGoWithoutComment() string {
 
 func mainGoWithComment(comment string) string {
 	return "package main\n\nfunc main() {\n\t_ = 1 //" + comment + "\n}\n"
+}
+
+func mainGoWithBlockComment(comment string) string {
+	return "package main\n\nfunc main() {\n\t_ = 1 /* " + comment + " */\n}\n"
 }
 
 func newInlineSuppressionRepo(t *testing.T) string {
