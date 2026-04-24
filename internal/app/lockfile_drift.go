@@ -25,6 +25,8 @@ const (
 )
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
+var normalizeRepoPathFn = workspace.NormalizeRepoPath
+var collectLockfileGitContextFn = collectLockfileGitContext
 var execGitCommandContextFn = gitexec.CommandContext
 
 type lockfileRule struct {
@@ -134,11 +136,11 @@ func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool)
 }
 
 func detectLockfileDriftWithFeatures(ctx context.Context, repoPath string, stopOnFirst bool, features featureflags.Set) ([]string, error) {
-	normalizedPath, err := workspace.NormalizeRepoPath(repoPath)
+	normalizedPath, err := normalizeRepoPathFn(repoPath)
 	if err != nil {
 		return nil, err
 	}
-	gitContext, err := collectLockfileGitContext(ctx, normalizedPath)
+	gitContext, err := collectLockfileGitContextFn(ctx, normalizedPath)
 	if err != nil {
 		return nil, err
 	}
@@ -334,6 +336,10 @@ func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitCo
 		manifestName = manifests[0]
 	}
 	lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
+	lockfiles, err := findDistributedRuleLockfiles(snapshot, rule, manifests, lockfiles)
+	if err != nil {
+		return lockfileDriftFinding{}, false, err
+	}
 
 	finding, handled, err := evaluateMissingOrStaleLockfileWithManifest(snapshot, rule, hasManifest, manifestName, lockfiles)
 	if handled || err != nil {
@@ -432,6 +438,93 @@ func evaluateManifestChangeFinding(snapshot lockfileDirSnapshot, rule lockfileRu
 		manifest: changedManifest,
 		relDir:   snapshot.relDir,
 	}, true, nil
+}
+
+func findDistributedRuleLockfiles(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, lockfiles []presentLockfile) ([]presentLockfile, error) {
+	if len(lockfiles) > 0 || !isDotnetCentralOnlyRuleManifest(rule, manifests) {
+		return lockfiles, nil
+	}
+	projectLockfiles, err := findDotnetProjectLockfiles(snapshot.path)
+	if err != nil {
+		return nil, err
+	}
+	if len(projectLockfiles) == 0 {
+		return lockfiles, nil
+	}
+	return projectLockfiles, nil
+}
+
+func isDotnetCentralOnlyRuleManifest(rule lockfileRule, manifests []string) bool {
+	if rule.manager != ".NET" {
+		return false
+	}
+	hasCentralManifest := false
+	for _, manifest := range manifests {
+		lowerName := strings.ToLower(strings.TrimSpace(manifest))
+		switch {
+		case strings.EqualFold(lowerName, rule.manifest):
+			hasCentralManifest = true
+		case strings.HasSuffix(lowerName, ".csproj"), strings.HasSuffix(lowerName, ".fsproj"):
+			return false
+		}
+	}
+	return hasCentralManifest
+}
+
+func findDotnetProjectLockfiles(rootDir string) ([]presentLockfile, error) {
+	rootDir = filepath.Clean(rootDir)
+	lockfiles := make([]presentLockfile, 0)
+	err := filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if path != rootDir && shouldSkipLockfileDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() != "packages.lock.json" {
+			return nil
+		}
+
+		lockDir := filepath.Dir(path)
+		hasProjectManifest, err := dirContainsDotnetProjectManifest(lockDir)
+		if err != nil {
+			return err
+		}
+		if !hasProjectManifest {
+			return nil
+		}
+
+		relPath := filepath.ToSlash(strings.TrimPrefix(path, rootDir+string(filepath.Separator)))
+		lockfiles = append(lockfiles, presentLockfile{name: relPath})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(lockfiles, func(i, j int) bool {
+		return lockfiles[i].name < lockfiles[j].name
+	})
+	return lockfiles, nil
+}
+
+func dirContainsDotnetProjectManifest(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		lowerName := strings.ToLower(entry.Name())
+		if strings.HasSuffix(lowerName, ".csproj") || strings.HasSuffix(lowerName, ".fsproj") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func buildLockfileDriftWarnings(findings []lockfileDriftFinding) []string {
