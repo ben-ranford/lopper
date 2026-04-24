@@ -509,40 +509,64 @@ func findRuleLockfiles(files map[string]fs.FileInfo, names []string) []presentLo
 func findRuleManifests(files map[string]fs.FileInfo, rule lockfileRule) []string {
 	manifests := make([]string, 0, 1+len(rule.manifestNames))
 	seen := make(map[string]struct{})
-	appendManifest := func(name string) {
-		if _, exists := seen[name]; exists {
-			return
-		}
-		if _, exists := files[name]; !exists {
-			return
-		}
-		seen[name] = struct{}{}
-		manifests = append(manifests, name)
-	}
-
-	appendManifest(rule.manifest)
+	manifests = appendManifestIfPresent(manifests, seen, files, rule.manifest)
 	for _, name := range rule.manifestNames {
-		appendManifest(name)
+		manifests = appendManifestIfPresent(manifests, seen, files, name)
 	}
-
-	if len(rule.manifestExts) > 0 {
-		lowerExts := make([]string, 0, len(rule.manifestExts))
-		for _, ext := range rule.manifestExts {
-			lowerExts = append(lowerExts, strings.ToLower(strings.TrimSpace(ext)))
-		}
-		for name := range files {
-			lowerName := strings.ToLower(name)
-			for _, ext := range lowerExts {
-				if ext != "" && strings.HasSuffix(lowerName, ext) {
-					appendManifest(name)
-					break
-				}
-			}
-		}
+	for _, name := range findManifestExtMatches(files, rule.manifestExts) {
+		manifests = appendManifestIfPresent(manifests, seen, files, name)
 	}
 
 	sort.Strings(manifests)
 	return manifests
+}
+
+func appendManifestIfPresent(manifests []string, seen map[string]struct{}, files map[string]fs.FileInfo, name string) []string {
+	if _, exists := seen[name]; exists {
+		return manifests
+	}
+	if _, exists := files[name]; !exists {
+		return manifests
+	}
+	seen[name] = struct{}{}
+	return append(manifests, name)
+}
+
+func findManifestExtMatches(files map[string]fs.FileInfo, manifestExts []string) []string {
+	lowerExts := normalizedManifestExts(manifestExts)
+	if len(lowerExts) == 0 {
+		return nil
+	}
+
+	matches := make([]string, 0, len(files))
+	for name := range files {
+		if manifestMatchesAnyExt(name, lowerExts) {
+			matches = append(matches, name)
+		}
+	}
+	return matches
+}
+
+func normalizedManifestExts(manifestExts []string) []string {
+	lowerExts := make([]string, 0, len(manifestExts))
+	for _, ext := range manifestExts {
+		normalizedExt := strings.ToLower(strings.TrimSpace(ext))
+		if normalizedExt == "" {
+			continue
+		}
+		lowerExts = append(lowerExts, normalizedExt)
+	}
+	return lowerExts
+}
+
+func manifestMatchesAnyExt(name string, manifestExts []string) bool {
+	lowerName := strings.ToLower(name)
+	for _, ext := range manifestExts {
+		if strings.HasSuffix(lowerName, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func manifestNameForFinding(finding lockfileDriftFinding) string {
