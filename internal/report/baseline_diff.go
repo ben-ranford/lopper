@@ -120,11 +120,12 @@ func appendDependencyDelta(comparison *BaselineComparison, delta DependencyDelta
 		comparison.Added = append(comparison.Added, delta)
 	case DependencyDeltaRemoved:
 		comparison.Removed = append(comparison.Removed, delta)
-	}
-	if delta.WastePercentDelta > 0 {
-		comparison.Regressions = append(comparison.Regressions, delta)
-	} else if delta.WastePercentDelta < 0 {
-		comparison.Progressions = append(comparison.Progressions, delta)
+	case DependencyDeltaChanged:
+		if delta.WastePercentDelta > 0 {
+			comparison.Regressions = append(comparison.Regressions, delta)
+		} else if delta.WastePercentDelta < 0 {
+			comparison.Progressions = append(comparison.Progressions, delta)
+		}
 	}
 }
 

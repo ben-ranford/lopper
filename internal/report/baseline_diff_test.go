@@ -93,12 +93,14 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 		Dependencies: []DependencyReport{
 			{Name: "b", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25, EstimatedUnusedBytes: 100},
 			{Name: "a", Language: "go", UsedExportsCount: 3, TotalExportsCount: 3, UsedPercent: 100, EstimatedUnusedBytes: 0},
+			{Name: "d", Language: "rust", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50, EstimatedUnusedBytes: 20},
 		},
 	}
 	baseline := Report{
 		Dependencies: []DependencyReport{
 			{Name: "b", Language: "js-ts", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50, EstimatedUnusedBytes: 50},
 			{Name: "c", Language: "python", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50, EstimatedUnusedBytes: 10},
+			{Name: "d", Language: "rust", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25, EstimatedUnusedBytes: 30},
 		},
 	}
 
@@ -107,7 +109,7 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	for _, dep := range comparison.Dependencies {
 		gotOrder = append(gotOrder, dep.Language+"/"+dep.Name)
 	}
-	wantOrder := []string{"go/a", "js-ts/b", "python/c"}
+	wantOrder := []string{"go/a", "js-ts/b", "python/c", "rust/d"}
 	if !slices.Equal(gotOrder, wantOrder) {
 		t.Fatalf("unexpected deterministic delta ordering: got=%v want=%v", gotOrder, wantOrder)
 	}
@@ -120,8 +122,39 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	if len(comparison.Regressions) != 1 || comparison.Regressions[0].Name != "b" {
 		t.Fatalf("expected one regression dependency, got %#v", comparison.Regressions)
 	}
-	if len(comparison.Progressions) != 1 || comparison.Progressions[0].Name != "c" {
+	if len(comparison.Progressions) != 1 || comparison.Progressions[0].Name != "d" {
 		t.Fatalf("expected one progression dependency, got %#v", comparison.Progressions)
+	}
+}
+
+func TestComputeBaselineComparisonClassifiesRegressionsOnlyForChangedDependencies(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{
+			{Name: "added-high", Language: "go", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10, EstimatedUnusedBytes: 90},
+			{Name: "changed-reg", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10, EstimatedUnusedBytes: 90},
+			{Name: "changed-prog", Language: "python", UsedExportsCount: 9, TotalExportsCount: 10, UsedPercent: 90, EstimatedUnusedBytes: 10},
+		},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{
+			{Name: "removed-high", Language: "ruby", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10, EstimatedUnusedBytes: 90},
+			{Name: "changed-reg", Language: "js-ts", UsedExportsCount: 9, TotalExportsCount: 10, UsedPercent: 90, EstimatedUnusedBytes: 10},
+			{Name: "changed-prog", Language: "python", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10, EstimatedUnusedBytes: 90},
+		},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if len(comparison.Added) != 1 || comparison.Added[0].Name != "added-high" {
+		t.Fatalf("expected one added dependency, got %#v", comparison.Added)
+	}
+	if len(comparison.Removed) != 1 || comparison.Removed[0].Name != "removed-high" {
+		t.Fatalf("expected one removed dependency, got %#v", comparison.Removed)
+	}
+	if len(comparison.Regressions) != 1 || comparison.Regressions[0].Name != "changed-reg" || comparison.Regressions[0].Kind != DependencyDeltaChanged {
+		t.Fatalf("expected only changed dependency regressions, got %#v", comparison.Regressions)
+	}
+	if len(comparison.Progressions) != 1 || comparison.Progressions[0].Name != "changed-prog" || comparison.Progressions[0].Kind != DependencyDeltaChanged {
+		t.Fatalf("expected only changed dependency progressions, got %#v", comparison.Progressions)
 	}
 }
 
