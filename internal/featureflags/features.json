@@ -27,6 +27,6 @@
     "code": "LOP-FEAT-0005",
     "name": "go-vendored-provenance-preview",
     "description": "Enable vendored dependency provenance for Go using vendor/modules.txt metadata.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   }
 ]
