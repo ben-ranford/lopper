@@ -4,5 +4,11 @@
     "name": "dart-source-attribution-preview",
     "description": "Enable richer Dart and Flutter dependency source attribution and federated plugin relationship reporting.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0002",
+    "name": "lockfile-drift-ecosystem-expansion-preview",
+    "description": "Preview expansion of shared lockfile drift checks for .NET, Dart, Elixir, and SwiftPM ecosystems.",
+    "lifecycle": "preview"
   }
 ]
