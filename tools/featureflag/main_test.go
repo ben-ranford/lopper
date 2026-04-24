@@ -339,6 +339,7 @@ func TestManifestEntries(t *testing.T) {
 	assertManifestEntryDefault(t, manifest, "lockfile-drift-ecosystem-expansion-preview", false)
 	assertManifestEntryDefault(t, manifest, "swift-carthage-preview", false)
 	assertManifestEntryDefault(t, manifest, "powershell-adapter-preview", false)
+	assertManifestEntryDefault(t, manifest, "go-vendored-provenance-preview", false)
 }
 
 func TestRunManifestAndReportUseChannels(t *testing.T) {
