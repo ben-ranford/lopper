@@ -240,78 +240,11 @@ func TestParseStaticModuleTokenAndResolveDependencyHelpers(t *testing.T) {
 }
 
 func TestParserPrimitiveHelpers(t *testing.T) {
-	if !expressionComplete("@('Pester')") {
-		t.Fatalf("expected balanced expression to be complete")
-	}
-	if expressionComplete("@('Pester',") {
-		t.Fatalf("expected trailing-comma expression to be incomplete")
-	}
-	if expressionComplete("'unterminated") {
-		t.Fatalf("expected unterminated quote expression to be incomplete")
-	}
-
-	if got, ok := unwrapArrayExpression("@( 'Pester', 'Az.Accounts' )"); !ok || !strings.Contains(got, "Pester") {
-		t.Fatalf("expected wrapped array to unwrap, got value=%q ok=%v", got, ok)
-	}
-	if got, ok := unwrapArrayExpression("'Pester'"); ok || got != "" {
-		t.Fatalf("expected non-array expression to not unwrap, got value=%q ok=%v", got, ok)
-	}
-
-	if got := trimOuterParentheses("(( 'Pester' ))"); got != "'Pester'" {
-		t.Fatalf("unexpected trimmed parenthesized value: %q", got)
-	}
-
-	parts := splitArguments("-Name 'Pester' -ErrorAction Stop")
-	if !reflect.DeepEqual(parts, []string{"-Name", "'Pester'", "-ErrorAction", "Stop"}) {
-		t.Fatalf("unexpected split arguments output: %#v", parts)
-	}
-	parts = splitTopLevel("'a,b',@(1,2),x", ',')
-	if !reflect.DeepEqual(parts, []string{"'a,b'", "@(1,2)", "x"}) {
-		t.Fatalf("unexpected top-level comma split result: %#v", parts)
-	}
-
-	if value, ok := flagValue("-Name:'Pester' -Force", "name"); !ok || value != "'Pester'" {
-		t.Fatalf("expected colon-flag value parse, got value=%q ok=%v", value, ok)
-	}
-	if value, ok := flagValue("-Name 'Pester' -Force", "name"); !ok || value != "'Pester'" {
-		t.Fatalf("expected spaced-flag value parse, got value=%q ok=%v", value, ok)
-	}
-	if value, ok := flagValue("-Force", "name"); ok || value != "" {
-		t.Fatalf("expected missing-flag value to be absent, got value=%q ok=%v", value, ok)
-	}
-
-	if line := stripPowerShellInlineComment("Import-Module 'Pester' # comment"); strings.TrimSpace(line) != "Import-Module 'Pester'" {
-		t.Fatalf("unexpected comment stripping result: %q", line)
-	}
-	if line := stripPowerShellInlineComment("Import-Module 'P#ester'"); !strings.Contains(line, "P#ester") {
-		t.Fatalf("expected quoted hash to be preserved, got %q", line)
-	}
-
-	if !isQuoted("'value'", '\'') || !isQuoted("\"value\"", '"') {
-		t.Fatalf("expected quoted helper checks to pass")
-	}
-	if isQuoted("value", '\'') {
-		t.Fatalf("expected unquoted helper check to fail")
-	}
-	if !isHashtableExpression("@{ ModuleName = 'x' }") {
-		t.Fatalf("expected hashtable expression helper checks to pass")
-	}
-	if isHashtableExpression("x") || isHashtableExpression("{ ModuleName = 'x' }") {
-		t.Fatalf("expected non-hashtable expression helper checks to fail")
-	}
-
-	if !isDynamicToken("$x") || !isDynamicToken("$(Get-Module)") || !isDynamicToken("[string]::Join(',')") || !isDynamicToken("(Get-Module)") {
-		t.Fatalf("expected dynamic token helper checks to pass")
-	}
-	if isDynamicToken("Pester") {
-		t.Fatalf("expected static token to not be treated as dynamic")
-	}
-	if !isLocalModulePath("..\\demo\\module.psd1") || !isLocalModulePath("/modules/demo.psm1") {
-		t.Fatalf("expected local module path helper checks to pass")
-	}
-	if isLocalModulePath("Pester") {
-		t.Fatalf("expected package name to not be treated as local path")
-	}
+	assertParserExpressionPrimitives(t)
+	assertParserSplitHelpers(t)
+	assertParserFlagValueHelpers(t)
+	assertParserCommentHelpers(t)
+	assertParserTokenClassifierHelpers(t)
 }
 
 func TestParseRequiresLineWithoutModulesReturnsNoData(t *testing.T) {
@@ -338,5 +271,93 @@ func TestNewImportBindingNormalizesDependencyAndDefaultsModule(t *testing.T) {
 	}
 	if binding.Source != usageSourceImportModule {
 		t.Fatalf("expected source attribution to be preserved, got %#v", binding)
+	}
+}
+
+func assertParserExpressionPrimitives(t *testing.T) {
+	t.Helper()
+	if !expressionComplete("@('Pester')") {
+		t.Fatalf("expected balanced expression to be complete")
+	}
+	if expressionComplete("@('Pester',") {
+		t.Fatalf("expected trailing-comma expression to be incomplete")
+	}
+	if expressionComplete("'unterminated") {
+		t.Fatalf("expected unterminated quote expression to be incomplete")
+	}
+
+	if got, ok := unwrapArrayExpression("@( 'Pester', 'Az.Accounts' )"); !ok || !strings.Contains(got, "Pester") {
+		t.Fatalf("expected wrapped array to unwrap, got value=%q ok=%v", got, ok)
+	}
+	if got, ok := unwrapArrayExpression("'Pester'"); ok || got != "" {
+		t.Fatalf("expected non-array expression to not unwrap, got value=%q ok=%v", got, ok)
+	}
+
+	if got := trimOuterParentheses("(( 'Pester' ))"); got != "'Pester'" {
+		t.Fatalf("unexpected trimmed parenthesized value: %q", got)
+	}
+}
+
+func assertParserSplitHelpers(t *testing.T) {
+	t.Helper()
+	parts := splitArguments("-Name 'Pester' -ErrorAction Stop")
+	if !reflect.DeepEqual(parts, []string{"-Name", "'Pester'", "-ErrorAction", "Stop"}) {
+		t.Fatalf("unexpected split arguments output: %#v", parts)
+	}
+	parts = splitTopLevel("'a,b',@(1,2),x", ',')
+	if !reflect.DeepEqual(parts, []string{"'a,b'", "@(1,2)", "x"}) {
+		t.Fatalf("unexpected top-level comma split result: %#v", parts)
+	}
+}
+
+func assertParserFlagValueHelpers(t *testing.T) {
+	t.Helper()
+	if value, ok := flagValue("-Name:'Pester' -Force", "name"); !ok || value != "'Pester'" {
+		t.Fatalf("expected colon-flag value parse, got value=%q ok=%v", value, ok)
+	}
+	if value, ok := flagValue("-Name 'Pester' -Force", "name"); !ok || value != "'Pester'" {
+		t.Fatalf("expected spaced-flag value parse, got value=%q ok=%v", value, ok)
+	}
+	if value, ok := flagValue("-Force", "name"); ok || value != "" {
+		t.Fatalf("expected missing-flag value to be absent, got value=%q ok=%v", value, ok)
+	}
+}
+
+func assertParserCommentHelpers(t *testing.T) {
+	t.Helper()
+	if line := stripPowerShellInlineComment("Import-Module 'Pester' # comment"); strings.TrimSpace(line) != "Import-Module 'Pester'" {
+		t.Fatalf("unexpected comment stripping result: %q", line)
+	}
+	if line := stripPowerShellInlineComment("Import-Module 'P#ester'"); !strings.Contains(line, "P#ester") {
+		t.Fatalf("expected quoted hash to be preserved, got %q", line)
+	}
+}
+
+func assertParserTokenClassifierHelpers(t *testing.T) {
+	t.Helper()
+	if !isQuoted("'value'", '\'') || !isQuoted("\"value\"", '"') {
+		t.Fatalf("expected quoted helper checks to pass")
+	}
+	if isQuoted("value", '\'') {
+		t.Fatalf("expected unquoted helper check to fail")
+	}
+	if !isHashtableExpression("@{ ModuleName = 'x' }") {
+		t.Fatalf("expected hashtable expression helper checks to pass")
+	}
+	if isHashtableExpression("x") || isHashtableExpression("{ ModuleName = 'x' }") {
+		t.Fatalf("expected non-hashtable expression helper checks to fail")
+	}
+
+	if !isDynamicToken("$x") || !isDynamicToken("$(Get-Module)") || !isDynamicToken("[string]::Join(',')") || !isDynamicToken("(Get-Module)") {
+		t.Fatalf("expected dynamic token helper checks to pass")
+	}
+	if isDynamicToken("Pester") {
+		t.Fatalf("expected static token to not be treated as dynamic")
+	}
+	if !isLocalModulePath("..\\demo\\module.psd1") || !isLocalModulePath("/modules/demo.psm1") {
+		t.Fatalf("expected local module path helper checks to pass")
+	}
+	if isLocalModulePath("Pester") {
+		t.Fatalf("expected package name to not be treated as local path")
 	}
 }

@@ -43,6 +43,24 @@ func TestCoverageHelperDetectionAndScanBranches(t *testing.T) {
 }
 
 func TestCoverageHelperParserBranches(t *testing.T) {
+	assertCoverageHelperModuleExpressions(t)
+	assertCoverageHelperDependencyParsing(t)
+	assertCoverageHelperTokenClassification(t)
+	assertCoverageHelperSplitTopLevel(t)
+}
+
+func assertContainsWarning(t *testing.T, warnings []string, want string) {
+	t.Helper()
+	for _, warning := range warnings {
+		if strings.Contains(warning, want) {
+			return
+		}
+	}
+	t.Fatalf("expected warning containing %q, got %#v", want, warnings)
+}
+
+func assertCoverageHelperModuleExpressions(t *testing.T) {
+	t.Helper()
 	if module, dynamic, warning := parseModuleExpressionItem(""); module != "" || dynamic || warning != "" {
 		t.Fatalf("expected blank module expression item to be ignored, got module=%q dynamic=%v warning=%q", module, dynamic, warning)
 	}
@@ -52,7 +70,10 @@ func TestCoverageHelperParserBranches(t *testing.T) {
 	if module, dynamic, warning := parseModuleExpressionItem("@{ Something = 'x' }"); module != "" || dynamic || !strings.Contains(warning, "did not include ModuleName") {
 		t.Fatalf("expected missing ModuleName warning, got module=%q dynamic=%v warning=%q", module, dynamic, warning)
 	}
+}
 
+func assertCoverageHelperDependencyParsing(t *testing.T) {
+	t.Helper()
 	if dependency, module, dynamic := parseImportModuleDependency("-Name", nil); dependency != "" || module != "" || !dynamic {
 		t.Fatalf("expected incomplete -Name expression to be dynamic, got dep=%q module=%q dynamic=%v", dependency, module, dynamic)
 	}
@@ -72,7 +93,10 @@ func TestCoverageHelperParserBranches(t *testing.T) {
 	if len(dependencies) != 1 || dependencies[0] != "modulea" || len(warnings) == 0 {
 		t.Fatalf("expected requires modules parsing to keep declared static modules and warn on dynamic values, got deps=%#v warnings=%#v", dependencies, warnings)
 	}
+}
 
+func assertCoverageHelperTokenClassification(t *testing.T) {
+	t.Helper()
 	if value, dynamic := parseStaticModuleToken("\"$moduleName\""); value != "" || !dynamic {
 		t.Fatalf("expected interpolated string token to be dynamic, got value=%q dynamic=%v", value, dynamic)
 	}
@@ -93,19 +117,12 @@ func TestCoverageHelperParserBranches(t *testing.T) {
 	if isLocalModulePath("module.name") {
 		t.Fatalf("expected bare module name to remain non-local")
 	}
+}
 
+func assertCoverageHelperSplitTopLevel(t *testing.T) {
+	t.Helper()
 	segments := splitTopLevel("Name    Value   @(1,2)  @{A=1}", ' ')
 	if len(segments) != 4 {
 		t.Fatalf("expected splitTopLevel to collapse repeated spaces while preserving top-level segments, got %#v", segments)
 	}
-}
-
-func assertContainsWarning(t *testing.T, warnings []string, want string) {
-	t.Helper()
-	for _, warning := range warnings {
-		if strings.Contains(warning, want) {
-			return
-		}
-	}
-	t.Fatalf("expected warning containing %q, got %#v", want, warnings)
 }
