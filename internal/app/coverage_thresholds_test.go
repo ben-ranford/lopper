@@ -229,6 +229,45 @@ func TestWarningHelpersCoverEmptyAndDefaultPaths(t *testing.T) {
 	}
 }
 
+func TestAppendManifestIfPresentGuardsDuplicatesAndMissingFiles(t *testing.T) {
+	repo := t.TempDir()
+	manifestPath := filepath.Join(repo, goModManifestName)
+	writeTextFile(t, manifestPath, "module example.com/test\n", 0o644)
+
+	files := map[string]fs.FileInfo{
+		goModManifestName: mustStatFile(t, manifestPath),
+	}
+	seen := make(map[string]struct{})
+
+	manifests := appendManifestIfPresent(nil, seen, files, goModManifestName)
+	if len(manifests) != 1 || manifests[0] != goModManifestName {
+		t.Fatalf("expected manifest to be appended once, got %#v", manifests)
+	}
+
+	manifests = appendManifestIfPresent(manifests, seen, files, goModManifestName)
+	if len(manifests) != 1 {
+		t.Fatalf("expected duplicate manifest to be ignored, got %#v", manifests)
+	}
+
+	manifests = appendManifestIfPresent(manifests, seen, files, "missing.toml")
+	if len(manifests) != 1 {
+		t.Fatalf("expected missing manifest to be ignored, got %#v", manifests)
+	}
+}
+
+func TestNormalizedManifestExtsDropsBlankEntries(t *testing.T) {
+	got := normalizedManifestExts([]string{" .csproj ", "", "  ", ".FSPROJ"})
+	want := []string{".csproj", ".fsproj"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d extensions, got %#v", len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected normalized extensions %#v, got %#v", want, got)
+		}
+	}
+}
+
 func TestPyprojectMatcherReadErrorsAreWrapped(t *testing.T) {
 	matcher := pyprojectSectionMatcher("tool.poetry")
 	_, err := matcher(t.TempDir(), t.TempDir())
