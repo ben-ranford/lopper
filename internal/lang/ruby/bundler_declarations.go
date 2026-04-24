@@ -48,9 +48,7 @@ func loadGemfileLockDependencies(repoPath string, out map[string]struct{}, sourc
 	if len(content) == 0 {
 		return nil
 	}
-	for _, dependency := range parseGemfileLockDeclarations(content) {
-		out[dependency] = struct{}{}
-	}
+	applyGemfileLockDeclarations(content, out)
 	parseGemfileLockSourceAttribution(content, out, sources)
 	return nil
 }
@@ -74,15 +72,35 @@ func parseGemfileDeclarations(content []byte) []bundlerDeclaration {
 func parseGemfileLockDeclarations(content []byte) []string {
 	dependencies := make([]string, 0)
 	for _, line := range strings.Split(string(content), "\n") {
-		matches := gemSpecPattern.FindStringSubmatch(line)
-		if len(matches) != 2 {
+		dependency, ok := parseGemfileLockDeclarationLine(line)
+		if !ok {
 			continue
 		}
-		if dependency := normalizeDependencyID(matches[1]); dependency != "" {
-			dependencies = append(dependencies, dependency)
-		}
+		dependencies = append(dependencies, dependency)
 	}
 	return dependencies
+}
+
+func applyGemfileLockDeclarations(content []byte, out map[string]struct{}) {
+	for _, line := range strings.Split(string(content), "\n") {
+		dependency, ok := parseGemfileLockDeclarationLine(line)
+		if !ok {
+			continue
+		}
+		out[dependency] = struct{}{}
+	}
+}
+
+func parseGemfileLockDeclarationLine(line string) (string, bool) {
+	matches := gemSpecPattern.FindStringSubmatch(line)
+	if len(matches) != 2 {
+		return "", false
+	}
+	dependency := normalizeDependencyID(matches[1])
+	if dependency == "" {
+		return "", false
+	}
+	return dependency, true
 }
 
 func applyBundlerDeclarations(out map[string]struct{}, sources map[string]rubyDependencySource, declarations []bundlerDeclaration) {

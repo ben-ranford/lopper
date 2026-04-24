@@ -43,6 +43,23 @@ GEM
 	}
 }
 
+func TestRubyApplyGemfileLockDeclarationsSeam(t *testing.T) {
+	content := []byte(`GEM
+  specs:
+    httparty (0.22.0)
+      json (>= 2.0)
+    rack (3.1.0)
+`)
+
+	out := map[string]struct{}{}
+	applyGemfileLockDeclarations(content, out)
+	got := sortedMapKeys(out)
+	want := []string{"httparty", "json", "rack"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("applyGemfileLockDeclarations()=%#v want %#v", got, want)
+	}
+}
+
 func TestRubyParseGemfileLockSourceDeclarationsSeam(t *testing.T) {
 	content := []byte(`GIT
   specs:
@@ -112,5 +129,14 @@ func declarationTuples(declarations []bundlerDeclaration) []string {
 	for _, declaration := range declarations {
 		out = append(out, declaration.dependency+"|"+declaration.kind+"|"+declaration.signal)
 	}
+	return out
+}
+
+func sortedMapKeys(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	slices.Sort(out)
 	return out
 }
