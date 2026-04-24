@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
@@ -17,6 +21,7 @@ type prEnforcementResult struct {
 	RequireFlag       bool
 	AddedFlags        []featureflags.Flag
 	InvalidAddedFlags []featureflags.Flag
+	CatalogViolations []string
 }
 
 func runPREnforce(args []string) error {
@@ -38,7 +43,7 @@ func runPREnforce(args []string) error {
 	if err != nil {
 		return fmt.Errorf(resolveWorkingDirectoryError, err)
 	}
-	current, err := readCatalog(root)
+	current, catalogViolations, err := readCurrentCatalogForPREnforcement(root)
 	if err != nil {
 		return err
 	}
@@ -50,18 +55,19 @@ func runPREnforce(args []string) error {
 		return fmt.Errorf("previous feature catalog is required")
 	}
 
-	result := evaluatePREnforcement(strings.TrimSpace(*prTitle), current, previous)
+	result := evaluatePREnforcement(strings.TrimSpace(*prTitle), current, previous, catalogViolations)
 	if _, err := fmt.Print(formatPREnforcementReport(result)); err != nil {
 		return err
 	}
 	return result.err()
 }
 
-func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag) prEnforcementResult {
+func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag, catalogViolations []string) prEnforcementResult {
 	addedFlags := newlyAddedFlags(current, previous)
 	result := prEnforcementResult{
-		RequireFlag: isFeaturePRTitle(prTitle),
-		AddedFlags:  addedFlags,
+		RequireFlag:       isFeaturePRTitle(prTitle),
+		AddedFlags:        addedFlags,
+		CatalogViolations: catalogViolations,
 	}
 	for _, flag := range addedFlags {
 		if flag.Lifecycle != featureflags.LifecyclePreview {
@@ -69,6 +75,88 @@ func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag
 		}
 	}
 	return result
+}
+
+func readCurrentCatalogForPREnforcement(root string) ([]featureflags.Flag, []string, error) {
+	data, err := readCatalogData(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	flags, err := featureflags.ParseCatalog(data)
+	if err == nil {
+		return flags, nil, nil
+	}
+
+	decodedFlags, decodeErr := decodeFeatureCatalog(data)
+	if decodeErr != nil {
+		return nil, nil, err
+	}
+	violations := duplicateFeatureFlagViolations(decodedFlags)
+	if len(violations) == 0 {
+		return nil, nil, err
+	}
+	return decodedFlags, violations, nil
+}
+
+func decodeFeatureCatalog(data []byte) ([]featureflags.Flag, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var flags []featureflags.Flag
+	if err := decoder.Decode(&flags); err != nil {
+		return nil, fmt.Errorf("invalid feature catalog JSON: %w", err)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, fmt.Errorf("invalid feature catalog JSON: multiple JSON values")
+	}
+	return flags, nil
+}
+
+func duplicateFeatureFlagViolations(flags []featureflags.Flag) []string {
+	codes := make(map[string][]string, len(flags))
+	names := make(map[string][]string, len(flags))
+	for _, flag := range flags {
+		code := strings.TrimSpace(flag.Code)
+		name := strings.TrimSpace(flag.Name)
+		if code != "" {
+			codes[code] = append(codes[code], name)
+		}
+		if name != "" {
+			names[name] = append(names[name], code)
+		}
+	}
+
+	violations := make([]string, 0, 2)
+	for _, code := range sortedDuplicateKeys(codes) {
+		violations = append(violations, fmt.Sprintf("Feature flag ids (`code`) must be unique: `%s` is used by %s.", code, formatDuplicateRefs(codes[code])))
+	}
+	for _, name := range sortedDuplicateKeys(names) {
+		violations = append(violations, fmt.Sprintf("Feature flag names must be unique: `%s` is used by %s.", name, formatDuplicateRefs(names[name])))
+	}
+	return violations
+}
+
+func sortedDuplicateKeys(groups map[string][]string) []string {
+	keys := make([]string, 0, len(groups))
+	for key, refs := range groups {
+		if len(refs) > 1 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func formatDuplicateRefs(refs []string) string {
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			ref = "<missing>"
+		}
+		parts = append(parts, fmt.Sprintf("`%s`", ref))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 func isFeaturePRTitle(title string) bool {
@@ -107,7 +195,7 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 		b.WriteString("- Feature PR: no\n")
 	}
 	fmt.Fprintf(&b, "- Check: %s\n", status)
-	b.WriteString("- Rule: feature PRs must add a feature flag, and new flags must start as `preview`.\n\n")
+	b.WriteString("- Rule: feature PRs must add a feature flag, new flags must start as `preview`, and feature flag ids and names must be unique.\n\n")
 
 	b.WriteString("### New feature flags in this PR\n\n")
 	if len(result.AddedFlags) == 0 {
@@ -145,7 +233,8 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 }
 
 func (r *prEnforcementResult) violations() []string {
-	violations := make([]string, 0, 2)
+	violations := make([]string, 0, 2+len(r.CatalogViolations))
+	violations = append(violations, r.CatalogViolations...)
 	if r.RequireFlag && len(r.AddedFlags) == 0 {
 		violations = append(violations, "Feature PRs must add at least one new feature flag in `internal/featureflags/features.json`.")
 	}
