@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -246,6 +247,104 @@ func TestServiceAnalyseSwiftCocoaPodsAutoAndAllModes(t *testing.T) {
 			t.Fatalf("expected js-ts results in all-mode report, got %#v", reportData.Dependencies)
 		}
 	})
+}
+
+func TestServiceAnalyseSwiftCarthageAutoModeBehindPreviewFlag(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftCarthageAnalysisFixture(t, repo)
+	service := NewService()
+
+	withoutFlag, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+	})
+	if err != nil {
+		t.Fatalf("analyse swift Carthage auto without flag: %v", err)
+	}
+	if dep := singleDependencyReport(t, withoutFlag); dep.TotalExportsCount != 0 {
+		t.Fatalf("expected preview-off analysis to avoid Carthage attribution, got %#v", dep)
+	}
+
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+		Features:   mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatalf("analyse swift Carthage auto with flag: %v", err)
+	}
+	dep := singleDependencyReport(t, reportData)
+	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
+		t.Fatalf("expected Carthage-attributed swift dependency in auto mode, got %#v", dep)
+	}
+}
+
+func TestServiceAnalyseSwiftCarthageAllModeBehindPreviewFlag(t *testing.T) {
+	repo := t.TempDir()
+	writeJSFixture(t, repo)
+	writeSwiftCarthageAnalysisFixture(t, repo)
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath: repo,
+		TopN:     10,
+		Language: "all",
+		Features: mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatalf("analyse all mixed Swift Carthage repo: %v", err)
+	}
+	assertReportLanguages(t, reportData.Dependencies, "swift", "js-ts")
+}
+
+func writeSwiftCarthageAnalysisFixture(t *testing.T, repo string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, "Cartfile"), "github \"ReactiveX/RxSwift\" ~> 6.0\n")
+	writeFile(t, filepath.Join(repo, "Cartfile.resolved"), "github \"ReactiveX/RxSwift\" \"6.8.0\"\n")
+	writeFile(t, filepath.Join(repo, "Sources", "App", "main.swift"), "import RxSwift\nlet value = DisposeBag()\n")
+}
+
+func writeJSFixture(t *testing.T, repo string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, indexJSFileName), lodashMapUsageJS)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+}
+
+func singleDependencyReport(t *testing.T, reportData report.Report) report.DependencyReport {
+	t.Helper()
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+	return reportData.Dependencies[0]
+}
+
+func assertReportLanguages(t *testing.T, dependencies []report.DependencyReport, expected ...string) {
+	t.Helper()
+	languages := make([]string, 0, len(dependencies))
+	for _, dep := range dependencies {
+		languages = append(languages, dep.Language)
+	}
+	for _, languageID := range expected {
+		if !slices.Contains(languages, languageID) {
+			t.Fatalf("expected language %q in dependencies, got %#v", languageID, languages)
+		}
+	}
+}
+
+func mustResolveSwiftCarthagePreviewSet(t *testing.T, enabled bool) featureflags.Set {
+	t.Helper()
+	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if enabled {
+		options.Enable = []string{"swift-carthage-preview"}
+	}
+	resolved, err := featureflags.DefaultRegistry().Resolve(options)
+	if err != nil {
+		t.Fatalf("resolve swift Carthage preview feature set: %v", err)
+	}
+	return resolved
 }
 
 func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {

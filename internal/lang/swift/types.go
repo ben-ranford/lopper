@@ -3,20 +3,25 @@ package swift
 import "github.com/ben-ranford/lopper/internal/lang/shared"
 
 const (
-	swiftAdapterID          = "swift"
-	packageManifestName     = "Package.swift"
-	packageResolvedName     = "Package.resolved"
-	podManifestName         = "Podfile"
-	podLockName             = "Podfile.lock"
-	maxDetectFiles          = 2048
-	maxScanFiles            = 4096
-	maxScannableSwiftFile   = 2 * 1024 * 1024
-	maxManifestDeclarations = 512
-	maxPodDeclarations      = 512
-	maxWarningSamples       = 5
-	ambiguousDependencyKey  = "\x00"
-	swiftPackageManager     = "swiftpm"
-	cocoaPodsManager        = "cocoapods"
+	swiftAdapterID               = "swift"
+	swiftCarthagePreviewFlagName = "swift-carthage-preview"
+	packageManifestName          = "Package.swift"
+	packageResolvedName          = "Package.resolved"
+	podManifestName              = "Podfile"
+	podLockName                  = "Podfile.lock"
+	carthageManifestName         = "Cartfile"
+	carthageResolvedName         = "Cartfile.resolved"
+	maxDetectFiles               = 2048
+	maxScanFiles                 = 4096
+	maxScannableSwiftFile        = 2 * 1024 * 1024
+	maxManifestDeclarations      = 512
+	maxPodDeclarations           = 512
+	maxCarthageDeclarations      = 512
+	maxWarningSamples            = 5
+	ambiguousDependencyKey       = "\x00"
+	swiftPackageManager          = "swiftpm"
+	cocoaPodsManager             = "cocoapods"
+	carthageManager              = "carthage"
 )
 
 type importBinding = shared.ImportRecord
@@ -37,6 +42,8 @@ type dependencyMeta struct {
 	ResolvedViaSwiftPM   bool
 	DeclaredViaCocoaPods bool
 	ResolvedViaCocoaPods bool
+	DeclaredViaCarthage  bool
+	ResolvedViaCarthage  bool
 }
 
 type dependencyCatalog struct {
@@ -46,6 +53,7 @@ type dependencyCatalog struct {
 	LocalModules       map[string]struct{}
 	HasSwiftPM         bool
 	HasCocoaPods       bool
+	HasCarthage        bool
 }
 
 type scanResult struct {
@@ -102,4 +110,11 @@ type podLockEntry struct {
 	Name    string
 	Version string
 	Source  string
+}
+
+type carthageDependency struct {
+	Kind       string
+	Source     string
+	Reference  string
+	Dependency string
 }

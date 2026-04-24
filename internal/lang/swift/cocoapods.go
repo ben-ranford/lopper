@@ -307,6 +307,10 @@ func dedupePodLockEntries(entries []podLockEntry) []podLockEntry {
 }
 
 func cocoaPodsAmbiguityWarning(ambiguousModules map[string]struct{}) string {
+	return formatAmbiguousModuleWarning("CocoaPods", ambiguousModules)
+}
+
+func formatAmbiguousModuleWarning(manager string, ambiguousModules map[string]struct{}) string {
 	aliases := shared.SortedKeys(ambiguousModules)
 	if len(aliases) == 0 {
 		return ""
@@ -315,7 +319,7 @@ func cocoaPodsAmbiguityWarning(ambiguousModules map[string]struct{}) string {
 	if len(samples) > maxWarningSamples {
 		samples = samples[:maxWarningSamples]
 	}
-	message := "ambiguous CocoaPods module mapping for inferred aliases: " + strings.Join(samples, ", ")
+	message := "ambiguous " + manager + " module mapping for inferred aliases: " + strings.Join(samples, ", ")
 	if len(aliases) > maxWarningSamples {
 		message += fmt.Sprintf(", +%d more", len(aliases)-maxWarningSamples)
 	}
