@@ -21,34 +21,52 @@ func TestWithRuntimeTraceEnv(t *testing.T) {
 		t.Fatalf("with runtime trace env: %v", err)
 	}
 
-	var hasTrace bool
-	var hasNodeOptions bool
-	for _, entry := range env {
-		if entry == "LOPPER_RUNTIME_TRACE="+tracePath {
-			hasTrace = true
-		}
-		if strings.HasPrefix(entry, "NODE_OPTIONS=") {
-			hasNodeOptions = true
-			if !strings.Contains(entry, "--max-old-space-size=4096") {
-				t.Fatalf("expected existing NODE_OPTIONS to be preserved: %q", entry)
-			}
-			if strings.Contains(entry, "./scripts/runtime/") {
-				t.Fatalf("expected absolute runtime hook paths, got %q", entry)
-			}
-			if !strings.Contains(entry, "--require="+requirePath) {
-				t.Fatalf("expected require hook to be included: %q", entry)
-			}
-			if !strings.Contains(entry, "--loader="+loaderPath) {
-				t.Fatalf("expected loader hook to be included: %q", entry)
-			}
-		}
+	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
+	assertNodeOptionsEntry(t, env, requirePath, loaderPath)
+}
+
+func assertEnvEntryValue(t *testing.T, env []string, key, want string) {
+	t.Helper()
+
+	got, ok := lookupEnvEntry(env, key)
+	if !ok {
+		t.Fatalf("expected %s to be set", key)
 	}
-	if !hasTrace {
-		t.Fatalf("expected LOPPER_RUNTIME_TRACE to be set")
+	if got != want {
+		t.Fatalf("expected %s=%q, got %q", key, want, got)
 	}
-	if !hasNodeOptions {
+}
+
+func assertNodeOptionsEntry(t *testing.T, env []string, requirePath, loaderPath string) {
+	t.Helper()
+
+	nodeOptions, ok := lookupEnvEntry(env, "NODE_OPTIONS")
+	if !ok {
 		t.Fatalf("expected NODE_OPTIONS to be set")
 	}
+	if !strings.Contains(nodeOptions, "--max-old-space-size=4096") {
+		t.Fatalf("expected existing NODE_OPTIONS to be preserved: %q", nodeOptions)
+	}
+	if strings.Contains(nodeOptions, "./scripts/runtime/") {
+		t.Fatalf("expected absolute runtime hook paths, got %q", nodeOptions)
+	}
+	if !strings.Contains(nodeOptions, "--require="+requirePath) {
+		t.Fatalf("expected require hook to be included: %q", nodeOptions)
+	}
+	if !strings.Contains(nodeOptions, "--loader="+loaderPath) {
+		t.Fatalf("expected loader hook to be included: %q", nodeOptions)
+	}
+}
+
+func lookupEnvEntry(env []string, key string) (string, bool) {
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 || parts[0] != key {
+			continue
+		}
+		return parts[1], true
+	}
+	return "", false
 }
 
 func TestTrustedSearchDirs(t *testing.T) {
