@@ -9,7 +9,7 @@
     "code": "LOP-FEAT-0002",
     "name": "lockfile-drift-ecosystem-expansion-preview",
     "description": "Preview expansion of shared lockfile drift checks for .NET, Dart, Elixir, and SwiftPM ecosystems.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0003",
