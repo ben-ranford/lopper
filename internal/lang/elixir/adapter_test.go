@@ -124,11 +124,47 @@ func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 	if got := camelToSnake("PhoenixHTML"); got != "phoenix_html" {
 		t.Fatalf("unexpected snake case value: %q", got)
 	}
-	if dep := dependencyFromModule("Ecto.Changeset", declared); dep != "ecto-sql" && dep != "" {
+	if dep := dependencyFromModule("Ecto.Changeset", declared); dep != "ecto-sql" {
 		t.Fatalf("unexpected dependency resolution: %q", dep)
 	}
 	if !shouldSkipDir("_build") || shouldSkipDir("lib") {
 		t.Fatalf("unexpected skip-dir behavior")
+	}
+}
+
+func TestDependencyFromModuleRootFallbacks(t *testing.T) {
+	if dep := dependencyFromModule("Ecto.Query", map[string]struct{}{"ecto-sql": {}}); dep != "ecto-sql" {
+		t.Fatalf("expected unique root fallback to ecto-sql, got %q", dep)
+	}
+	if dep := dependencyFromModule("Ecto.Query", map[string]struct{}{"ecto-enum": {}, "ecto-sql": {}}); dep != "" {
+		t.Fatalf("expected ambiguous root fallback to return empty, got %q", dep)
+	}
+	if dep := dependencyFromModule("Phoenix.HTML", map[string]struct{}{"phoenix-html": {}}); dep != "phoenix-html" {
+		t.Fatalf("expected two-segment module fallback to phoenix-html, got %q", dep)
+	}
+}
+
+func TestAnalyseAttributesModuleRootsToDeclaredDependencies(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  defp deps, do: [{:ecto_sql, \"~> 3.0\"}]\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "lib", "demo.ex"), "defmodule Demo do\n  alias Ecto.Query\n\n  def list_posts do\n    Query.from(\"posts\")\n  end\nend\n")
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "ecto-sql"})
+	if err != nil {
+		t.Fatalf("analyse root fallback dependency: %v", err)
+	}
+	if len(result.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %#v", result.Dependencies)
+	}
+	dependency := result.Dependencies[0]
+	if dependency.Name != "ecto-sql" {
+		t.Fatalf("expected ecto-sql dependency report, got %#v", dependency)
+	}
+
+	imports := append([]report.ImportUse{}, dependency.UsedImports...)
+	imports = append(imports, dependency.UnusedImports...)
+	if !containsImportModule(imports, "Ecto.Query") {
+		t.Fatalf("expected Ecto.Query to be attributed to ecto-sql, got %#v", imports)
 	}
 }
 
@@ -415,6 +451,15 @@ func testElixirDeclaredDependencyReadBranches(t *testing.T) {
 func containsSuffix(values []string, suffix string) bool {
 	for _, value := range values {
 		if strings.HasSuffix(value, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsImportModule(imports []report.ImportUse, module string) bool {
+	for _, imp := range imports {
+		if imp.Module == module {
 			return true
 		}
 	}
