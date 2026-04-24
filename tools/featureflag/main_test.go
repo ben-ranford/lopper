@@ -661,8 +661,8 @@ func TestReadCurrentCatalogForPREnforcementFallbacks(t *testing.T) {
 	writeFeatureCatalog(t, root, `[
   {
     "code": "LOP-FEAT-0002",
-    "name": "",
-    "description": "Missing name",
+    "name": "first-flag",
+    "description": "First flag",
     "lifecycle": "preview"
   },
   {
@@ -676,11 +676,11 @@ func TestReadCurrentCatalogForPREnforcementFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected duplicate catalog to be converted to violations, got %v", err)
 	}
-	if len(flags) != 2 || len(violations) != 1 {
+	if len(flags) != 0 || len(violations) != 1 {
 		t.Fatalf("unexpected duplicate catalog result: flags=%#v violations=%#v", flags, violations)
 	}
-	if !strings.Contains(violations[0], "`<missing>`") || !strings.Contains(violations[0], "`named-flag`") {
-		t.Fatalf("expected duplicate violation to include missing and named refs, got %#v", violations)
+	if !strings.Contains(violations[0], "`first-flag`") || !strings.Contains(violations[0], "`named-flag`") {
+		t.Fatalf("expected duplicate violation to include colliding refs, got %#v", violations)
 	}
 
 	writeFeatureCatalog(t, root, `[
@@ -693,6 +693,62 @@ func TestReadCurrentCatalogForPREnforcementFallbacks(t *testing.T) {
 ]`)
 	if _, _, err := readCurrentCatalogForPREnforcement(root); err == nil || !strings.Contains(err.Error(), "invalid feature code") {
 		t.Fatalf("expected non-duplicate catalog parse error, got %v", err)
+	}
+
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0004",
+    "name": "bad-lifecycle",
+    "description": "Invalid lifecycle",
+    "lifecycle": "not-a-lifecycle"
+  },
+  {
+    "code": "LOP-FEAT-0004",
+    "name": "duplicate-code",
+    "description": "Duplicate code",
+    "lifecycle": "preview"
+  }
+]`)
+	if _, _, err := readCurrentCatalogForPREnforcement(root); err == nil || !strings.Contains(err.Error(), "invalid feature lifecycle") {
+		t.Fatalf("expected invalid lifecycle to take precedence over duplicate fallback, got %v", err)
+	}
+}
+
+func TestEvaluatePREnforcementSkipsAddedFlagChecksForCatalogViolations(t *testing.T) {
+	current := []featureflags.Flag{{Code: "LOP-FEAT-0002", Name: "new-stable", Lifecycle: featureflags.LifecycleStable}}
+	catalogViolations := []string{"Feature flag ids (`code`) must be unique: `LOP-FEAT-0002`."}
+	result := evaluatePREnforcement("feat(flags): add registry", current, nil, catalogViolations)
+	if len(result.AddedFlags) != 0 || len(result.InvalidAddedFlags) != 0 {
+		t.Fatalf("expected catalog violations to short-circuit added flag checks, got %#v", result)
+	}
+	if violations := result.violations(); len(violations) != 1 || !strings.Contains(violations[0], "must be unique") {
+		t.Fatalf("expected only catalog violation, got %#v", violations)
+	}
+}
+
+func TestDuplicateFeatureFlagViolationsFormatsMissingRefs(t *testing.T) {
+	violations := duplicateFeatureFlagViolations([]featureflags.Flag{
+		{Code: "LOP-FEAT-0001"},
+		{Code: "LOP-FEAT-0001", Name: "named-flag"},
+	})
+	if len(violations) != 1 || !strings.Contains(violations[0], "`<missing>`") || !strings.Contains(violations[0], "`named-flag`") {
+		t.Fatalf("expected missing and named refs in duplicate violation, got %#v", violations)
+	}
+}
+
+func TestIsDuplicateFeatureCatalogError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{err: nil, want: false},
+		{err: errors.New("duplicate feature code: LOP-FEAT-0001"), want: true},
+		{err: errors.New("duplicate feature name: preview-flag"), want: true},
+		{err: errors.New("invalid feature lifecycle: bad"), want: false},
+	} {
+		if got := isDuplicateFeatureCatalogError(tc.err); got != tc.want {
+			t.Fatalf("isDuplicateFeatureCatalogError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }
 
@@ -844,6 +900,48 @@ func TestRunReleasePRCommentRejectsCatalogErrors(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(root, badCatalog), `not-json`)
 	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", badCatalog}); err == nil || !strings.Contains(err.Error(), "parse previous feature catalog") {
 		t.Fatalf("expected bad previous catalog error, got %v", err)
+	}
+}
+
+func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldDefaultRegistry := defaultRegistryFn
+	oldManifestEntries := manifestEntriesFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		defaultRegistryFn = oldDefaultRegistry
+		manifestEntriesFn = oldManifestEntries
+	})
+
+	root := t.TempDir()
+	t.Chdir(root)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[]`)
+
+	validateDefaultRegistryFn = func() error { return errors.New("registry failed") }
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", previousCatalog}); err == nil || !strings.Contains(err.Error(), "registry failed") {
+		t.Fatalf("expected registry validation error, got %v", err)
+	}
+
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return errors.New("locks failed") }
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", previousCatalog}); err == nil || !strings.Contains(err.Error(), "locks failed") {
+		t.Fatalf("expected release lock validation error, got %v", err)
+	}
+
+	validateDefaultReleaseLocksFn = func() error { return nil }
+	defaultRegistryFn = func() *featureflags.Registry { return testRegistry(t) }
+	manifestEntriesFn = func(*featureflags.Registry, featureflags.Channel, string) ([]featureflags.ManifestEntry, error) {
+		return nil, errors.New("manifest failed")
+	}
+	if err := run([]string{"release-pr-comment", "--release", "v1.5.0", "--previous-catalog", previousCatalog}); err == nil || !strings.Contains(err.Error(), "manifest failed") {
+		t.Fatalf("expected manifest error, got %v", err)
+	}
+
+	if got := newlyAddedPreviewFlags(testRegistry(t).Flags(), nil, false); len(got) != 0 {
+		t.Fatalf("expected no preview flags when not compared, got %#v", got)
 	}
 }
 

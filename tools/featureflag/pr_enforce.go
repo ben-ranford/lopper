@@ -63,12 +63,16 @@ func runPREnforce(args []string) error {
 }
 
 func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag, catalogViolations []string) prEnforcementResult {
-	addedFlags := newlyAddedFlags(current, previous)
 	result := prEnforcementResult{
 		RequireFlag:       isFeaturePRTitle(prTitle),
-		AddedFlags:        addedFlags,
 		CatalogViolations: catalogViolations,
 	}
+	if len(catalogViolations) > 0 {
+		return result
+	}
+
+	addedFlags := newlyAddedFlags(current, previous)
+	result.AddedFlags = addedFlags
 	for _, flag := range addedFlags {
 		if flag.Lifecycle != featureflags.LifecyclePreview {
 			result.InvalidAddedFlags = append(result.InvalidAddedFlags, flag)
@@ -86,6 +90,9 @@ func readCurrentCatalogForPREnforcement(root string) ([]featureflags.Flag, []str
 	if err == nil {
 		return flags, nil, nil
 	}
+	if !isDuplicateFeatureCatalogError(err) {
+		return nil, nil, err
+	}
 
 	decodedFlags, decodeErr := decodeFeatureCatalog(data)
 	if decodeErr != nil {
@@ -95,7 +102,16 @@ func readCurrentCatalogForPREnforcement(root string) ([]featureflags.Flag, []str
 	if len(violations) == 0 {
 		return nil, nil, err
 	}
-	return decodedFlags, violations, nil
+	return nil, violations, nil
+}
+
+func isDuplicateFeatureCatalogError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "duplicate feature code:") ||
+		strings.HasPrefix(message, "duplicate feature name:")
 }
 
 func decodeFeatureCatalog(data []byte) ([]featureflags.Flag, error) {
@@ -235,6 +251,9 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 func (r *prEnforcementResult) violations() []string {
 	violations := make([]string, 0, 2+len(r.CatalogViolations))
 	violations = append(violations, r.CatalogViolations...)
+	if len(violations) > 0 {
+		return violations
+	}
 	if r.RequireFlag && len(r.AddedFlags) == 0 {
 		violations = append(violations, "Feature PRs must add at least one new feature flag in `internal/featureflags/features.json`.")
 	}
