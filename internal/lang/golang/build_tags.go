@@ -38,11 +38,10 @@ func matchesActiveBuild(content []byte) bool {
 
 func extractBuildConstraintExpressions(content []byte) (constraint.Expr, []constraint.Expr) {
 	lines := strings.Split(string(content), "\n")
-	maxLines := minInt(len(lines), maxGoBuildHeaderLine)
 	plusBuildExprs := make([]constraint.Expr, 0)
 	var goBuildExpr constraint.Expr
 
-	for i := 0; i < maxLines; i++ {
+	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -100,10 +99,7 @@ func isActiveBuildTag(tag string) bool {
 		return true
 	}
 	if tag == "unix" {
-		switch runtime.GOOS {
-		case "android", "darwin", "dragonfly", "freebsd", "illumos", "ios", "linux", "netbsd", "openbsd", "solaris":
-			return true
-		}
+		return isUnixGOOS(runtime.GOOS)
 	}
 	if tag == "cgo" {
 		return strings.EqualFold(os.Getenv("CGO_ENABLED"), "1")
@@ -113,6 +109,15 @@ func isActiveBuildTag(tag string) bool {
 	}
 	// Unknown tags are treated as disabled unless set explicitly.
 	return false
+}
+
+func isUnixGOOS(goos string) bool {
+	switch strings.TrimSpace(strings.ToLower(goos)) {
+	case "aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "linux", "netbsd", "openbsd", "solaris":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSupportedGoReleaseTag(tag string) bool {

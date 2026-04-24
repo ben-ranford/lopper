@@ -766,8 +766,10 @@ func TestTrimModuleVersionSuffix(t *testing.T) {
 
 func TestBuildConstraintHelpers(t *testing.T) {
 	t.Run("matching_and_extraction", testBuildConstraintMatchingAndExtraction)
+	t.Run("scan_beyond_legacy_header_limit", testBuildConstraintScanBeyondLegacyHeaderLimit)
 	t.Run("comment_parsing_and_scan_stop", testBuildConstraintCommentAndScanStop)
 	t.Run("tag_helpers", testBuildConstraintTagHelpers)
+	t.Run("unix_os_set", testBuildConstraintUnixOSSet)
 }
 
 func testBuildConstraintMatchingAndExtraction(t *testing.T) {
@@ -812,6 +814,26 @@ func testBuildConstraintCommentAndScanStop(t *testing.T) {
 	}
 }
 
+func testBuildConstraintScanBeyondLegacyHeaderLimit(t *testing.T) {
+	lines := make([]string, 0, 70)
+	for i := 0; i < 64; i++ {
+		lines = append(lines, "// filler header comment")
+	}
+	lines = append(lines, "//go:build never", packageMainLine, "")
+	content := []byte(strings.Join(lines, "\n"))
+
+	goBuildExpr, plusBuildExprs := extractBuildConstraintExpressions(content)
+	if goBuildExpr == nil {
+		t.Fatalf("expected go:build expression beyond line 64 to be parsed")
+	}
+	if len(plusBuildExprs) != 0 {
+		t.Fatalf("expected no +build expressions, got %#v", plusBuildExprs)
+	}
+	if matchesActiveBuild(content) {
+		t.Fatalf("expected //go:build never beyond line 64 to be inactive")
+	}
+}
+
 func testBuildConstraintTagHelpers(t *testing.T) {
 	if isActiveBuildTag("definitely-not-a-real-tag") {
 		t.Fatalf("expected unknown tag to be inactive")
@@ -840,6 +862,23 @@ func testBuildConstraintTagHelpers(t *testing.T) {
 	}
 	if !isActiveBuildTag("go1.1") {
 		t.Fatalf("expected go1.1 tag active")
+	}
+}
+
+func testBuildConstraintUnixOSSet(t *testing.T) {
+	t.Helper()
+	unixGoos := []string{"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "linux", "netbsd", "openbsd", "solaris"}
+	nonUnixGoos := []string{"js", "plan9", "wasip1", "windows", "zos"}
+
+	for _, goos := range unixGoos {
+		if !isUnixGOOS(goos) {
+			t.Fatalf("expected %q to match unix build tag", goos)
+		}
+	}
+	for _, goos := range nonUnixGoos {
+		if isUnixGOOS(goos) {
+			t.Fatalf("expected %q not to match unix build tag", goos)
+		}
 	}
 }
 
