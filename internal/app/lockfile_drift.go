@@ -22,8 +22,8 @@ const (
 	lockfileDriftWarningPrefix                     = "lockfile drift detected: "
 	pyprojectManifestName                          = "pyproject.toml"
 	lockfileDriftEcosystemExpansionPreviewFlagName = "lockfile-drift-ecosystem-expansion-preview"
-	dotnetCSharpProjectManifestExt                = ".csproj"
-	dotnetFSharpProjectManifestExt                = ".fsproj"
+	dotnetCSharpProjectManifestExt                 = ".csproj"
+	dotnetFSharpProjectManifestExt                 = ".fsproj"
 )
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
