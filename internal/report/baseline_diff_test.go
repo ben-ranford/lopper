@@ -120,8 +120,24 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	if len(comparison.Regressions) != 1 || comparison.Regressions[0].Name != "b" {
 		t.Fatalf("expected one regression dependency, got %#v", comparison.Regressions)
 	}
-	if len(comparison.Progressions) != 1 || comparison.Progressions[0].Name != "c" {
-		t.Fatalf("expected one progression dependency, got %#v", comparison.Progressions)
+	if len(comparison.Progressions) != 0 {
+		t.Fatalf("expected no progression dependencies, got %#v", comparison.Progressions)
+	}
+}
+
+func TestAppendDependencyDeltaClassifiesRegressionsOnlyForChangedDependencies(t *testing.T) {
+	comparison := BaselineComparison{}
+
+	appendDependencyDelta(&comparison, DependencyDelta{Kind: DependencyDeltaAdded, Name: "added", WastePercentDelta: 90})
+	appendDependencyDelta(&comparison, DependencyDelta{Kind: DependencyDeltaRemoved, Name: "removed", WastePercentDelta: -90})
+	appendDependencyDelta(&comparison, DependencyDelta{Kind: DependencyDeltaChanged, Name: "reg", WastePercentDelta: 1})
+	appendDependencyDelta(&comparison, DependencyDelta{Kind: DependencyDeltaChanged, Name: "prog", WastePercentDelta: -1})
+
+	if len(comparison.Regressions) != 1 || comparison.Regressions[0].Name != "reg" {
+		t.Fatalf("expected only changed dependency regressions, got %#v", comparison.Regressions)
+	}
+	if len(comparison.Progressions) != 1 || comparison.Progressions[0].Name != "prog" {
+		t.Fatalf("expected only changed dependency progressions, got %#v", comparison.Progressions)
 	}
 }
 
