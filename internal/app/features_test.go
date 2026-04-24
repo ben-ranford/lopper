@@ -20,7 +20,7 @@ func TestExecuteFeaturesJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute features: %v", err)
 	}
-	if !strings.Contains(output, `"code": "LOP-FEAT-0001"`) || !strings.Contains(output, `"enabledByDefault": false`) {
+	if !strings.Contains(output, `"code": "LOP-FEAT-0001"`) || !strings.Contains(output, `"enabledByDefault": true`) {
 		t.Fatalf("unexpected feature manifest output: %s", output)
 	}
 }
@@ -70,8 +70,8 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 		!strings.Contains(emptyOutput, "swift-carthage-preview") ||
 		!strings.Contains(emptyOutput, "powershell-adapter-preview") ||
 		!strings.Contains(emptyOutput, "go-vendored-provenance-preview") ||
-		!strings.Contains(emptyOutput, "false") {
-		t.Fatalf("expected default feature table to include embedded preview flags disabled by default, got %q", emptyOutput)
+		!strings.Contains(emptyOutput, "true") {
+		t.Fatalf("expected default feature table to include embedded graduated flags enabled by default, got %q", emptyOutput)
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 
 const powerShellFeatureName = "powershell-adapter-preview"
 
-func TestServicePowerShellPreviewGateDefaultsOff(t *testing.T) {
+func TestServicePowerShellFeatureGateCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	writePowerShellFixtureRepo(t, repo)
 
@@ -22,13 +22,14 @@ func TestServicePowerShellPreviewGateDefaultsOff(t *testing.T) {
 		RepoPath: repo,
 		Language: "powershell",
 		TopN:     1,
+		Features: mustResolvePowerShellFeatureSet(t, false),
 	})
 	if !errors.Is(err, language.ErrNoMatch) {
-		t.Fatalf("expected ErrNoMatch when powershell preview flag is disabled, got %v", err)
+		t.Fatalf("expected ErrNoMatch when powershell feature flag is disabled, got %v", err)
 	}
 }
 
-func TestServicePowerShellPreviewGateEnabled(t *testing.T) {
+func TestServicePowerShellFeatureGateEnabled(t *testing.T) {
 	repo := t.TempDir()
 	writePowerShellFixtureRepo(t, repo)
 
@@ -41,17 +42,17 @@ func TestServicePowerShellPreviewGateEnabled(t *testing.T) {
 		ScopeMode: ScopeModePackage,
 	})
 	if err != nil {
-		t.Fatalf("analyse powershell with preview enabled: %v", err)
+		t.Fatalf("analyse powershell with feature enabled: %v", err)
 	}
 	if len(reportData.Dependencies) == 0 {
-		t.Fatalf("expected powershell dependencies when preview flag is enabled")
+		t.Fatalf("expected powershell dependencies when feature flag is enabled")
 	}
 	if reportData.Dependencies[0].Language != "powershell" {
 		t.Fatalf("expected powershell dependency language, got %#v", reportData.Dependencies)
 	}
 }
 
-func TestServiceAutoSkipsGatedPowerShellAndFallsBack(t *testing.T) {
+func TestServiceAutoSkipsDisabledPowerShellAndFallsBack(t *testing.T) {
 	repo := t.TempDir()
 	writePowerShellFixtureRepo(t, repo)
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
@@ -64,9 +65,10 @@ func TestServiceAutoSkipsGatedPowerShellAndFallsBack(t *testing.T) {
 		RepoPath: repo,
 		Language: "auto",
 		TopN:     5,
+		Features: mustResolvePowerShellFeatureSet(t, false),
 	})
 	if err != nil {
-		t.Fatalf("analyse auto with gated powershell: %v", err)
+		t.Fatalf("analyse auto with disabled powershell: %v", err)
 	}
 	if len(reportData.Dependencies) == 0 {
 		t.Fatalf("expected dependencies from fallback adapter")
@@ -79,7 +81,7 @@ func TestServiceAutoSkipsGatedPowerShellAndFallsBack(t *testing.T) {
 		t.Fatalf("expected js-ts dependency rows, got %#v", reportData.Dependencies)
 	}
 	if slices.Contains(languages, "powershell") {
-		t.Fatalf("did not expect powershell rows with preview disabled, got %#v", reportData.Dependencies)
+		t.Fatalf("did not expect powershell rows with feature disabled, got %#v", reportData.Dependencies)
 	}
 }
 
@@ -99,14 +101,13 @@ func writePowerShellFixtureRepo(t *testing.T, repo string) {
 func mustResolvePowerShellFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
 	flag := mustLookupPowerShellPreviewFlag(t)
-	enable := []string(nil)
-	if enabled {
-		enable = []string{flag.Code}
-	}
-	set, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+	options := featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
-		Enable:  enable,
-	})
+	}
+	if !enabled {
+		options.Disable = []string{flag.Code}
+	}
+	set, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)
 	}
