@@ -35,6 +35,7 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 		"root":           normalizedRoot,
 		"dependency":     req.Dependency,
 		"topN":           req.TopN,
+		"suggestOnly":    req.SuggestOnly,
 		"runtimeProfile": req.RuntimeProfile,
 		"configPath":     strings.TrimSpace(req.ConfigPath),
 	}
