@@ -82,6 +82,7 @@ Contributor rules:
 - Rolling builds enable every registered flag by default.
 - Stable release builds enable `stable` flags by default and may enable specific `preview` flags through `internal/featureflags/release_locks.json`.
 - Release locks are release-specific default-on decisions; they do not change the lifecycle to `stable`.
+- The stable release workflow stamps `firstStableRelease` after a flag ships in a semver release so later release PRs only surface first-release preview flags.
 - Graduation requires a separate PR that changes the registry lifecycle to `stable` and states the rollout evidence.
 - Use `make feature-flag-graduate FEATURE=...` locally, or run `graduate-feature.yml`, to prepare a graduation PR.
 - PRs that use the `feat` Conventional Commit type must add at least one new feature flag entry, and new entries must stay `preview`.

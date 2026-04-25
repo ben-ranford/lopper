@@ -77,6 +77,8 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 		{name: "extra add argument", args: []string{"add", "--name", "new-flag", "extra"}, want: "too many arguments"},
 		{name: "missing graduate feature", args: []string{"graduate"}, want: "feature code or name is required"},
 		{name: "extra graduate argument", args: []string{"graduate", "--feature", "preview-flag", "extra"}, want: "too many arguments"},
+		{name: "missing stamp release version", args: []string{"stamp-release"}, want: "release version is required"},
+		{name: "extra stamp-release argument", args: []string{"stamp-release", "--release", "v1.5.0", "extra"}, want: "too many arguments"},
 		{name: "missing previous catalog", args: []string{"pr-enforce", "--pr-title", "feat(flags): add registry"}, want: "previous feature catalog is required"},
 		{name: "extra pr-enforce argument", args: []string{"pr-enforce", "--previous-catalog", "previous.json", "extra"}, want: "too many arguments"},
 		{name: "missing release version", args: []string{"release-pr-comment"}, want: "release version is required"},
@@ -90,6 +92,7 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 	}{
 		{name: "bad add flag", args: []string{"add", "--definitely-not-a-flag"}},
 		{name: "bad graduate flag", args: []string{"graduate", "--definitely-not-a-flag"}},
+		{name: "bad stamp-release flag", args: []string{"stamp-release", "--definitely-not-a-flag"}},
 		{name: "bad pr-enforce flag", args: []string{"pr-enforce", "--definitely-not-a-flag"}},
 		{name: "bad release-pr-comment flag", args: []string{"release-pr-comment", "--definitely-not-a-flag"}},
 	} {
@@ -104,6 +107,56 @@ func TestRunFeatureFlagErrors(t *testing.T) {
 		{name: "report", args: []string{"report"}},
 	} {
 		assertRunOK(t, tc.name, tc.args)
+	}
+}
+
+func TestRunStampRelease(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, graduateFeatureCatalog)
+	t.Chdir(root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"stamp-release", "--release", "1.5.0"})
+	})
+	if err != nil {
+		t.Fatalf("run stamp-release: %v", err)
+	}
+	flags := readFeatureCatalog(t, filepath.Join(root, "internal", "featureflags"))
+	for _, flag := range flags {
+		if flag.FirstStableRelease != "v1.5.0" {
+			t.Fatalf("expected stamped release for %s, got %#v", flag.Code, flag)
+		}
+	}
+	if !strings.Contains(output, "stamped 2 feature(s) with first stable release v1.5.0") {
+		t.Fatalf("expected stamp output, got %q", output)
+	}
+}
+
+func TestRunStampReleaseNoopWhenAlreadyStamped(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "preview-flag",
+    "description": "Preview behavior",
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.5.0"
+  }
+]`)
+	t.Chdir(root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"stamp-release", "--release", "v1.5.1"})
+	})
+	if err != nil {
+		t.Fatalf("run stamp-release noop: %v", err)
+	}
+	flags := readFeatureCatalog(t, filepath.Join(root, "internal", "featureflags"))
+	if flags[0].FirstStableRelease != "v1.5.0" {
+		t.Fatalf("expected existing stamp to remain unchanged, got %#v", flags[0])
+	}
+	if !strings.Contains(output, "no feature release stamps to update for v1.5.1") {
+		t.Fatalf("expected noop output, got %q", output)
 	}
 }
 
@@ -252,6 +305,31 @@ func TestRunGraduateFeatureFlagGetwdAndWriteErrors(t *testing.T) {
 		writeFileUnderFn = oldWrite
 	})
 	if err := run([]string{"graduate", "--feature", "preview-flag"}); err == nil || !strings.Contains(err.Error(), "write feature catalog") {
+		t.Fatalf("expected write error, got %v", err)
+	}
+}
+
+func TestRunStampReleaseGetwdAndWriteErrors(t *testing.T) {
+	oldGetwd := getwdFn
+	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }
+	if err := run([]string{"stamp-release", "--release", "v1.5.0"}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
+		t.Fatalf("expected getwd error, got %v", err)
+	}
+	getwdFn = oldGetwd
+
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, graduateFeatureCatalog)
+	t.Chdir(root)
+
+	oldWrite := writeFileUnderFn
+	writeFileUnderFn = func(string, string, []byte, os.FileMode) error {
+		return errors.New("write failed")
+	}
+	t.Cleanup(func() {
+		getwdFn = oldGetwd
+		writeFileUnderFn = oldWrite
+	})
+	if err := run([]string{"stamp-release", "--release", "v1.5.0"}); err == nil || !strings.Contains(err.Error(), "write feature catalog") {
 		t.Fatalf("expected write error, got %v", err)
 	}
 }
@@ -826,17 +904,14 @@ func TestRunReleasePRComment(t *testing.T) {
 	oldValidate := validateDefaultRegistryFn
 	oldValidateLocks := validateDefaultReleaseLocksFn
 	oldDefaultRegistry := defaultRegistryFn
-	oldReleaseLockProvider := releaseLockProviderFn
 	t.Cleanup(func() {
 		validateDefaultRegistryFn = oldValidate
 		validateDefaultReleaseLocksFn = oldValidateLocks
 		defaultRegistryFn = oldDefaultRegistry
-		releaseLockProviderFn = oldReleaseLockProvider
 	})
 	validateDefaultRegistryFn = func() error { return nil }
 	validateDefaultReleaseLocksFn = func() error { return nil }
 	defaultRegistryFn = func() *featureflags.Registry { return testRegistry(t) }
-	releaseLockProviderFn = func(string) (*featureflags.ReleaseLock, error) { return nil, nil }
 
 	root := t.TempDir()
 	t.Chdir(root)
@@ -939,8 +1014,8 @@ func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
 		t.Fatalf("expected manifest error, got %v", err)
 	}
 
-	if got := newlyAddedPreviewFlags(testRegistry(t).Flags(), nil, false); len(got) != 0 {
-		t.Fatalf("expected no preview flags when not compared, got %#v", got)
+	if got := graduationCandidatePreviewFlags(testRegistry(t).Flags()); len(got) != 1 || got[0].Code != "LOP-FEAT-0001" {
+		t.Fatalf("expected only unstamped preview flags as candidates, got %#v", got)
 	}
 }
 
@@ -999,13 +1074,31 @@ func TestReleasePleaseVersionFromTitle(t *testing.T) {
 }
 
 func TestFormatReleasePRCommentWithoutCandidates(t *testing.T) {
-	registry := testRegistry(t)
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{
+		{
+			Code:               "LOP-FEAT-0001",
+			Name:               "preview-flag",
+			Description:        "Preview behavior",
+			Lifecycle:          featureflags.LifecyclePreview,
+			FirstStableRelease: "v1.5.0",
+		},
+		{
+			Code:               "LOP-FEAT-0002",
+			Name:               "stable-flag",
+			Description:        "Stable behavior",
+			Lifecycle:          featureflags.LifecycleStable,
+			FirstStableRelease: "v1.5.0",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
 	manifest, err := registry.Manifest(featureflags.ResolveOptions{Channel: featureflags.ChannelRelease})
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
 	output := formatReleasePRComment("v1.5.0", registry.Flags(), manifest, registry.Flags(), true, "")
-	if !strings.Contains(output, "No newly added preview flags were detected for this release candidate.") {
+	if !strings.Contains(output, "No preview flags are shipping in their first stable release candidate.") {
 		t.Fatalf("expected no-candidate note, got %s", output)
 	}
 	if strings.Contains(output, "### Graduation candidates") {

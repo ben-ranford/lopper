@@ -2,12 +2,15 @@ package featureflags
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
 
 const featureCodePrefix = "LOP-FEAT-"
 const maxFeatureCode = 9999
+
+var stableReleaseVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 
 type Lifecycle string
 
@@ -25,10 +28,11 @@ const (
 )
 
 type Flag struct {
-	Code        string    `json:"code" yaml:"code"`
-	Name        string    `json:"name" yaml:"name"`
-	Description string    `json:"description" yaml:"description"`
-	Lifecycle   Lifecycle `json:"lifecycle" yaml:"lifecycle"`
+	Code               string    `json:"code" yaml:"code"`
+	Name               string    `json:"name" yaml:"name"`
+	Description        string    `json:"description" yaml:"description"`
+	Lifecycle          Lifecycle `json:"lifecycle" yaml:"lifecycle"`
+	FirstStableRelease string    `json:"firstStableRelease,omitempty" yaml:"firstStableRelease,omitempty"`
 }
 
 type Registry struct {
@@ -166,7 +170,28 @@ func normalizeFlag(flag Flag) (Flag, error) {
 		return Flag{}, fmt.Errorf("feature %s: %w", flag.Code, err)
 	}
 	flag.Lifecycle = lifecycle
+	firstStableRelease, err := normalizeStableReleaseVersion(flag.FirstStableRelease)
+	if err != nil {
+		return Flag{}, fmt.Errorf("feature %s: %w", flag.Code, err)
+	}
+	flag.FirstStableRelease = firstStableRelease
 	return flag, nil
+}
+
+func normalizeStableReleaseVersion(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(strings.ToLower(value), "v") {
+		value = "v" + strings.TrimSpace(value[1:])
+	} else {
+		value = "v" + value
+	}
+	if !stableReleaseVersionPattern.MatchString(value) {
+		return "", fmt.Errorf("invalid first stable release %q: must use vMAJOR.MINOR.PATCH", value)
+	}
+	return value, nil
 }
 
 func validateFeatureCode(code string) error {

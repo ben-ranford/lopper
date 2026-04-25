@@ -471,6 +471,70 @@ jobs:
         if: ${{ steps.tap_token.outputs.available != 'true' }}
         run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
 
+  stamp-feature-release-history:
+    needs:
+      - release-please
+      - publish
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: feature-release-history-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag || github.sha }}
+          token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Stamp first stable release history
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
+          go run ./tools/featureflag validate
+
+          git add internal/featureflags/features.json
+          if git diff --cached --quiet; then
+            echo "No feature release history changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} for feature release history"
+            if ! git fetch origin main:refs/remotes/origin/main; then
+              echo "git fetch failed on attempt ${attempt}" >&2
+              sleep 2
+              continue
+            fi
+            if ! git rebase origin/main; then
+              echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
+              git rebase --abort || true
+              sleep 2
+              continue
+            fi
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Failed to push feature release history after retries" >&2
+          exit 1
+
   skip-release:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created != 'true' }}

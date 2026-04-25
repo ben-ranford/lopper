@@ -37,6 +37,10 @@ func TestNewRegistryValidatesEntries(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "invalid feature lifecycle") {
 		t.Fatalf("expected invalid lifecycle error, got %v", err)
 	}
+	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: LifecyclePreview, FirstStableRelease: "nope"}})
+	if err == nil || !strings.Contains(err.Error(), "invalid first stable release") {
+		t.Fatalf("expected invalid first stable release error, got %v", err)
+	}
 }
 
 func TestDefaultRegistryAndLookup(t *testing.T) {
@@ -49,6 +53,9 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	assertDefaultFlag(t, defaultFlags, "swift-carthage-preview", "LOP-FEAT-0003")
 	assertDefaultFlag(t, defaultFlags, "powershell-adapter-preview", "LOP-FEAT-0004")
 	assertDefaultFlag(t, defaultFlags, "go-vendored-provenance-preview", "LOP-FEAT-0005")
+	if defaultFlags[0].FirstStableRelease != "v1.5.0" {
+		t.Fatalf("expected default flags to retain first stable release history, got %#v", defaultFlags[0])
+	}
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
 	}
@@ -72,7 +79,7 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 
 func TestCatalogParseAndFormat(t *testing.T) {
 	flags, err := ParseCatalog([]byte(`[
-		{"code":"LOP-FEAT-0002","name":"stable-flag","description":"Stable behavior","lifecycle":"stable"},
+		{"code":"LOP-FEAT-0002","name":"stable-flag","description":"Stable behavior","lifecycle":"stable","firstStableRelease":"1.5.0"},
 		{"code":"LOP-FEAT-0001","name":"preview-flag","description":"Preview behavior","lifecycle":"preview"}
 	]`))
 	if err != nil {
@@ -81,12 +88,15 @@ func TestCatalogParseAndFormat(t *testing.T) {
 	if len(flags) != 2 || flags[0].Code != "LOP-FEAT-0001" || flags[1].Code != "LOP-FEAT-0002" {
 		t.Fatalf("expected catalog flags sorted by code, got %#v", flags)
 	}
+	if flags[1].FirstStableRelease != "v1.5.0" {
+		t.Fatalf("expected first stable release to normalize, got %#v", flags[1])
+	}
 	data, err := FormatCatalog(flags)
 	if err != nil {
 		t.Fatalf("format catalog: %v", err)
 	}
 	formatted := string(data)
-	if !strings.Contains(formatted, `"code": "LOP-FEAT-0001"`) || !strings.HasSuffix(formatted, "\n") {
+	if !strings.Contains(formatted, `"code": "LOP-FEAT-0001"`) || !strings.Contains(formatted, `"firstStableRelease": "v1.5.0"`) || !strings.HasSuffix(formatted, "\n") {
 		t.Fatalf("expected formatted JSON catalog with newline, got %q", formatted)
 	}
 
@@ -637,10 +647,11 @@ func testRegistry(t *testing.T) *Registry {
 			Lifecycle:   LifecyclePreview,
 		},
 		{
-			Code:        "LOP-FEAT-0002",
-			Name:        "stable-flag",
-			Description: "Stable behavior",
-			Lifecycle:   LifecycleStable,
+			Code:               "LOP-FEAT-0002",
+			Name:               "stable-flag",
+			Description:        "Stable behavior",
+			Lifecycle:          LifecycleStable,
+			FirstStableRelease: "v1.5.0",
 		},
 	})
 	if err != nil {
