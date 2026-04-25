@@ -85,7 +85,7 @@ func TestBuildRuntimeCommandRequiresInput(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
+func TestBuildRuntimeCommandRejectsInvalidInput(t *testing.T) {
 	testCases := []struct {
 		name    string
 		command string
@@ -101,27 +101,6 @@ func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
 			command: `node -e "console.log('hello world')`,
 			wantErr: "unterminated quote",
 		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := buildRuntimeCommand(context.Background(), tc.command)
-			if err == nil {
-				t.Fatalf("expected error containing %q", tc.wantErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-			}
-		})
-	}
-}
-
-func TestBuildRuntimeCommandRejectsUnsafeCommands(t *testing.T) {
-	testCases := []struct {
-		name    string
-		command string
-		wantErr string
-	}{
 		{
 			name:    "shell operator",
 			command: `npm test && echo bad`,

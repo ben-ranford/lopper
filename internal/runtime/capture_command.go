@@ -32,11 +32,8 @@ var runtimeExecutableAllowlist = map[string]struct{}{
 }
 
 func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error) {
-	fields, err := parseRuntimeCommand(command)
+	fields, err := parseValidatedCommand(command)
 	if err != nil {
-		return nil, err
-	}
-	if err := validateRuntimeCommand(command, fields); err != nil {
 		return nil, err
 	}
 	if len(fields) == 0 {
@@ -63,11 +60,8 @@ func ValidateCommand(command string) error {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	fields, err := parseRuntimeCommand(command)
-	if err != nil {
-		return err
-	}
-	return validateRuntimeCommand(command, fields)
+	_, err := parseValidatedCommand(command)
+	return err
 }
 
 type runtimeCommandParser struct {
@@ -94,6 +88,17 @@ func parseRuntimeCommand(command string) ([]string, error) {
 	parser.flush()
 
 	return parser.fields, nil
+}
+
+func parseValidatedCommand(command string) ([]string, error) {
+	fields, err := parseRuntimeCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRuntimeCommand(command, fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
 }
 
 func validateRuntimeCommand(command string, fields []string) error {
