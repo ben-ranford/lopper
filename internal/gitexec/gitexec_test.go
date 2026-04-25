@@ -60,6 +60,9 @@ func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")
 	t.Setenv("GIT_WORK_TREE", "/tmp/fake-worktree")
 	t.Setenv("GIT_INDEX_FILE", "/tmp/fake-index")
+	t.Setenv("LD_PRELOAD", "/tmp/malicious.so")
+	t.Setenv("LD_LIBRARY_PATH", "/tmp/malicious-lib")
+	t.Setenv("DYLD_FOO", "/tmp/malicious-dyld")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/attacker-global")
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
@@ -75,6 +78,9 @@ func TestSanitizedEnv(t *testing.T) {
 	}
 	if containsEnvPrefix(env, "GIT_DIR=") || containsEnvPrefix(env, "GIT_WORK_TREE=") || containsEnvPrefix(env, "GIT_INDEX_FILE=") {
 		t.Fatalf("expected git override vars to be stripped, got %#v", env)
+	}
+	if containsEnvPrefix(env, "LD_") || containsEnvPrefix(env, "DYLD_") {
+		t.Fatalf("expected dynamic loader vars to be stripped, got %#v", env)
 	}
 	if containsEnv(env, attackerGlobalConfigEnvEntry) ||
 		containsEnv(env, "GIT_CONFIG_COUNT=1") ||
