@@ -97,6 +97,33 @@ func TestReadFileLimitRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestReadFileLimitRejectsEmptyPath(t *testing.T) {
+	if _, err := ReadFileLimit("", 1); err == nil {
+		t.Fatal("expected empty path error")
+	}
+}
+
+func TestReadFileLimitRejectsMissingParentDirectory(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "missing", "file.txt")
+
+	_, err := ReadFileLimit(targetPath, 1)
+	if err == nil {
+		t.Fatal("expected missing parent directory error")
+	}
+	if !strings.Contains(err.Error(), "open parent root") {
+		t.Fatalf("expected open parent root error, got %v", err)
+	}
+}
+
+func TestReadFileLimitRejectsMissingFile(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "missing.txt")
+
+	_, err := ReadFileLimit(targetPath, 1)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing file error, got %v", err)
+	}
+}
+
 func TestReadFileLimitRejectsSpecialFile(t *testing.T) {
 	for _, path := range []string{"/dev/zero", "NUL"} {
 		info, err := os.Stat(path)
