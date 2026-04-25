@@ -39,14 +39,25 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const repo = context.payload.repository || {};
-            const squashTitle = repo.squash_merge_commit_title ??
-              (repo.use_squash_pr_title_as_default === true ? 'PR_TITLE' :
-                repo.use_squash_pr_title_as_default === false ? 'COMMIT_OR_PR_TITLE' : '');
-            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(repo.allow_merge_commit ?? ''));
-            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(repo.allow_rebase_merge ?? ''));
-            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(repo.allow_squash_merge ?? ''));
-            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(squashTitle));
+            const data = await github.graphql(
+              `query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  mergeCommitAllowed
+                  rebaseMergeAllowed
+                  squashMergeAllowed
+                  squashMergeCommitTitle
+                }
+              }`,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              },
+            );
+            const repo = data.repository;
+            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(repo.mergeCommitAllowed));
+            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(repo.rebaseMergeAllowed));
+            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(repo.squashMergeAllowed));
+            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(repo.squashMergeCommitTitle || ''));
 
       - name: Validate PR title and template
         env:
