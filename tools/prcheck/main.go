@@ -42,6 +42,13 @@ var requiredChecklistItems = []string{
 	"Ready for review",
 }
 
+type repoMergePolicy struct {
+	allowMergeCommit       string
+	allowRebaseMerge       string
+	allowSquashMerge       string
+	squashMergeCommitTitle string
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stderr))
 }
@@ -52,6 +59,11 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	title := fs.String("title", strings.TrimSpace(getenv("PR_TITLE")), "pull request title")
 	headRef := fs.String("head-ref", strings.TrimSpace(getenv("PR_HEAD_REF")), "pull request head ref")
 	bodyFile := fs.String("body-file", "", "path to a file containing the pull request body")
+	checkRepoPolicy := fs.Bool("check-repo-policy", false, "validate repository merge policy")
+	allowMergeCommit := fs.String("allow-merge-commit", strings.TrimSpace(getenv("REPO_ALLOW_MERGE_COMMIT")), "whether the repository allows merge commits")
+	allowRebaseMerge := fs.String("allow-rebase-merge", strings.TrimSpace(getenv("REPO_ALLOW_REBASE_MERGE")), "whether the repository allows rebase merges")
+	allowSquashMerge := fs.String("allow-squash-merge", strings.TrimSpace(getenv("REPO_ALLOW_SQUASH_MERGE")), "whether the repository allows squash merges")
+	squashMergeCommitTitle := fs.String("squash-merge-commit-title", strings.TrimSpace(getenv("REPO_SQUASH_MERGE_COMMIT_TITLE")), "repository default squash merge title mode")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -73,6 +85,20 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			return 1
 		}
 		return 1
+	}
+	if *checkRepoPolicy {
+		policy := repoMergePolicy{
+			allowMergeCommit:       *allowMergeCommit,
+			allowRebaseMerge:       *allowRebaseMerge,
+			allowSquashMerge:       *allowSquashMerge,
+			squashMergeCommitTitle: *squashMergeCommitTitle,
+		}
+		if err := validateRepoMergePolicy(policy); err != nil {
+			if _, writeErr := fmt.Fprintf(stderr, "%v\n", err); writeErr != nil {
+				return 1
+			}
+			return 1
+		}
 	}
 	return 0
 }
@@ -242,4 +268,27 @@ func fieldHasValue(content, field string) bool {
 func checkedChecklistItem(content, item string) bool {
 	pattern := regexp.MustCompile(`(?mi)^-\s*\[[x]\]\s*` + regexp.QuoteMeta(item) + `\s*$`)
 	return pattern.MatchString(content)
+}
+
+func validateRepoMergePolicy(policy repoMergePolicy) error {
+	var failures []string
+	failures = append(failures, repoPolicyExpectationFailure(policy.allowSquashMerge, "true", "Repository must allow squash merges so release-please sees a single PR title-derived commit on main")...)
+	failures = append(failures, repoPolicyExpectationFailure(policy.allowMergeCommit, "false", "Repository must disable merge commits so merged PRs cannot bypass the squash-title release policy")...)
+	failures = append(failures, repoPolicyExpectationFailure(policy.allowRebaseMerge, "false", "Repository must disable rebase merges so merged PRs cannot bypass the squash-title release policy")...)
+	failures = append(failures, repoPolicyExpectationFailure(policy.squashMergeCommitTitle, "PR_TITLE", "Repository squash merge titles must default to the PR title so release-please sees the validated Conventional Commit title")...)
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "\n"))
+	}
+	return nil
+}
+
+func repoPolicyExpectationFailure(actual, expected, message string) []string {
+	actual = strings.TrimSpace(actual)
+	if actual == expected {
+		return nil
+	}
+	if actual == "" {
+		return []string{fmt.Sprintf("%s (expected %q, got empty value)", message, expected)}
+	}
+	return []string{fmt.Sprintf("%s (expected %q, got %q)", message, expected, actual)}
 }

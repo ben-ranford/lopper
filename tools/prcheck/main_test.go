@@ -34,6 +34,86 @@ func TestRunAcceptsBodyFile(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsValidRepoPolicy(t *testing.T) {
+	var stderr bytes.Buffer
+	base := map[string]string{
+		"PR_TITLE":    "fix(release): validate PR metadata",
+		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
+		"PR_BODY":     validBody(),
+	}
+	values := mergeMaps(base, validRepoPolicyEnv())
+	env := mapEnv(values)
+	code := run([]string{"--check-repo-policy"}, env, &stderr)
+	if code != 0 {
+		t.Fatalf("run exited with %d, stderr: %s", code, stderr.String())
+	}
+}
+
+func TestRunRejectsInvalidRepoPolicy(t *testing.T) {
+	var stderr bytes.Buffer
+	base := map[string]string{
+		"PR_TITLE":    "fix(release): validate PR metadata",
+		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
+		"PR_BODY":     validBody(),
+	}
+	policy := map[string]string{
+		"REPO_ALLOW_MERGE_COMMIT":        "true",
+		"REPO_ALLOW_REBASE_MERGE":        "false",
+		"REPO_ALLOW_SQUASH_MERGE":        "true",
+		"REPO_SQUASH_MERGE_COMMIT_TITLE": "COMMIT_OR_PR_TITLE",
+	}
+	values := mergeMaps(base, policy)
+	env := mapEnv(values)
+	code := run([]string{"--check-repo-policy"}, env, &stderr)
+	if code != 1 {
+		t.Fatalf("run exited with %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Repository must disable merge commits") {
+		t.Fatalf("stderr did not explain repo policy failure: %s", stderr.String())
+	}
+}
+
+func TestRunRejectsMissingRepoPolicyValue(t *testing.T) {
+	var stderr bytes.Buffer
+	base := map[string]string{
+		"PR_TITLE":    "fix(release): validate PR metadata",
+		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
+		"PR_BODY":     validBody(),
+	}
+	policy := map[string]string{
+		"REPO_ALLOW_MERGE_COMMIT": "false",
+		"REPO_ALLOW_REBASE_MERGE": "false",
+		"REPO_ALLOW_SQUASH_MERGE": "true",
+	}
+	values := mergeMaps(base, policy)
+	code := run([]string{"--check-repo-policy"}, mapEnv(values), &stderr)
+	if code != 1 {
+		t.Fatalf("run exited with %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `expected "PR_TITLE", got empty value`) {
+		t.Fatalf("stderr did not explain missing repo policy value: %s", stderr.String())
+	}
+}
+
+func TestRunHandlesRepoPolicyValidationErrorWriteFailure(t *testing.T) {
+	base := map[string]string{
+		"PR_TITLE":    "fix(release): validate PR metadata",
+		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
+		"PR_BODY":     validBody(),
+	}
+	policy := map[string]string{
+		"REPO_ALLOW_MERGE_COMMIT":        "false",
+		"REPO_ALLOW_REBASE_MERGE":        "false",
+		"REPO_ALLOW_SQUASH_MERGE":        "true",
+		"REPO_SQUASH_MERGE_COMMIT_TITLE": "COMMIT_OR_PR_TITLE",
+	}
+	values := mergeMaps(base, policy)
+	code := run([]string{"--check-repo-policy"}, mapEnv(values), &errWriter{})
+	if code != 1 {
+		t.Fatalf("run exited with %d", code)
+	}
+}
+
 func TestRunRejectsMissingBodyFile(t *testing.T) {
 	var stderr bytes.Buffer
 	args := []string{"--title", "fix(release): validate PR metadata", "--body-file", filepath.Join(t.TempDir(), "missing.md")}
@@ -189,6 +269,25 @@ Additional manual validation:
 func mapEnv(values map[string]string) func(string) string {
 	return func(key string) string {
 		return values[key]
+	}
+}
+
+func mergeMaps(parts ...map[string]string) map[string]string {
+	merged := make(map[string]string)
+	for _, part := range parts {
+		for key, value := range part {
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+func validRepoPolicyEnv() map[string]string {
+	return map[string]string{
+		"REPO_ALLOW_MERGE_COMMIT":        "false",
+		"REPO_ALLOW_REBASE_MERGE":        "false",
+		"REPO_ALLOW_SQUASH_MERGE":        "true",
+		"REPO_SQUASH_MERGE_COMMIT_TITLE": "PR_TITLE",
 	}
 }
 

@@ -1,3 +1,5 @@
+<!-- PR title must use Conventional Commits, for example `fix(scope): concise summary`. Squash merges publish that title to `main`, so do not rewrite it into a non-conventional subject. -->
+
 ## Summary
 
 Describe the problem and the intent of this change. Use `N/A` only when the section truly does not apply.
