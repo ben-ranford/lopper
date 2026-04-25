@@ -105,45 +105,25 @@ func TestValidateRejectsNonConventionalTitle(t *testing.T) {
 
 func TestValidateRequiresTemplateSections(t *testing.T) {
 	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", strings.Replace(validBody(), "## Validation", "## Verification", 1))
-	if err == nil {
-		t.Fatal("validate succeeded with missing Validation section")
-	}
-	if !strings.Contains(err.Error(), `missing required template section "Validation"`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	expectValidationError(t, err, `missing required template section "Validation"`)
 }
 
 func TestValidateRejectsPlaceholderOnlySection(t *testing.T) {
 	body := strings.Replace(validBody(), "Stops release-please from missing patch fixes.", "Describe the problem and the intent of this change.", 1)
 	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
-	if err == nil {
-		t.Fatal("validate succeeded with placeholder-only Summary")
-	}
-	if !strings.Contains(err.Error(), `section "Summary" must be completed`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	expectValidationError(t, err, `section "Summary" must be completed`)
 }
 
 func TestValidateRequiresRiskFields(t *testing.T) {
 	body := strings.Replace(validBody(), "- Performance impact: None\n", "", 1)
 	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
-	if err == nil {
-		t.Fatal("validate succeeded with missing risk field")
-	}
-	if !strings.Contains(err.Error(), `field "Performance impact"`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	expectValidationError(t, err, `field "Performance impact"`)
 }
 
 func TestValidateRequiresCheckedChecklist(t *testing.T) {
 	body := strings.Replace(validBody(), "- [x] Ready for review", "- [ ] Ready for review", 1)
 	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
-	if err == nil {
-		t.Fatal("validate succeeded with unchecked checklist item")
-	}
-	if !strings.Contains(err.Error(), `Checklist item "Ready for review"`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	expectValidationError(t, err, `Checklist item "Ready for review"`)
 }
 
 func TestValidateRejectsBlankSectionWithCommentOnly(t *testing.T) {
@@ -209,6 +189,16 @@ Additional manual validation:
 func mapEnv(values map[string]string) func(string) string {
 	return func(key string) string {
 		return values[key]
+	}
+}
+
+func expectValidationError(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("validate succeeded, want error containing %q", want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

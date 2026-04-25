@@ -92,12 +92,29 @@ func validate(title, headRef, body string) error {
 	}
 
 	sections := parseSections(body)
+	failures = append(failures, missingHeadingFailures(sections)...)
+	failures = append(failures, incompleteSectionFailures(sections)...)
+	failures = append(failures, riskFieldFailures(sections)...)
+	failures = append(failures, checklistFailures(sections)...)
+
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "\n"))
+	}
+	return nil
+}
+
+func missingHeadingFailures(sections map[string]string) []string {
+	var failures []string
 	for _, heading := range requiredHeadings {
 		if _, ok := sections[heading]; !ok {
 			failures = append(failures, fmt.Sprintf("PR body is missing required template section %q", heading))
 		}
 	}
+	return failures
+}
 
+func incompleteSectionFailures(sections map[string]string) []string {
+	var failures []string
 	for _, heading := range []string{"Summary", "Changes", "Validation"} {
 		content, ok := sections[heading]
 		if !ok {
@@ -107,27 +124,34 @@ func validate(title, headRef, body string) error {
 			failures = append(failures, fmt.Sprintf("PR section %q must be completed; keep the heading and replace placeholder text with real content or N/A", heading))
 		}
 	}
+	return failures
+}
 
-	if content, ok := sections["Risk and compatibility"]; ok {
-		for _, field := range requiredRiskFields {
-			if !fieldHasValue(content, field) {
-				failures = append(failures, fmt.Sprintf("Risk and compatibility field %q must be present and filled, using N/A or None when there is no impact", field))
-			}
+func riskFieldFailures(sections map[string]string) []string {
+	content, ok := sections["Risk and compatibility"]
+	if !ok {
+		return nil
+	}
+	message := `Risk and compatibility field %q must be present and filled, using N/A or None when there is no impact`
+	return requiredItemFailures(content, requiredRiskFields, fieldHasValue, message)
+}
+
+func checklistFailures(sections map[string]string) []string {
+	content, ok := sections["Checklist"]
+	if !ok {
+		return nil
+	}
+	return requiredItemFailures(content, requiredChecklistItems, checkedChecklistItem, `Checklist item %q must be present and checked`)
+}
+
+func requiredItemFailures(content string, items []string, valid func(string, string) bool, message string) []string {
+	var failures []string
+	for _, item := range items {
+		if !valid(content, item) {
+			failures = append(failures, fmt.Sprintf(message, item))
 		}
 	}
-
-	if content, ok := sections["Checklist"]; ok {
-		for _, item := range requiredChecklistItems {
-			if !checkedChecklistItem(content, item) {
-				failures = append(failures, fmt.Sprintf("Checklist item %q must be present and checked", item))
-			}
-		}
-	}
-
-	if len(failures) > 0 {
-		return errors.New(strings.Join(failures, "\n"))
-	}
-	return nil
+	return failures
 }
 
 func isReleasePleasePR(headRef, title string) bool {
