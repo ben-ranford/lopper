@@ -343,7 +343,7 @@ func TestExecuteAnalyseBootstrapBaselineStoreOnFirstSave(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
 			RepoPath:      ".",
-			Dependencies:   []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+			Dependencies:  []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
 			SchemaVersion: "0.1.0",
 		},
 	}
