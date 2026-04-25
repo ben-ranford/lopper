@@ -217,7 +217,7 @@ func wasteFromDependency(dep DependencyReport) float64 {
 		return 0
 	}
 	usedPercent := dep.UsedPercent
-	if usedPercent == 0 && dep.UsedExportsCount > 0 {
+	if usedPercent <= 0 {
 		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
 	}
 	return 100 - usedPercent

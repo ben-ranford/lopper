@@ -88,6 +88,23 @@ func TestSummaryHelpersHandleNilInputs(t *testing.T) {
 	}
 }
 
+func TestWasteFromDependencyRecomputesNonPositiveUsedPercent(t *testing.T) {
+	dependency := DependencyReport{
+		UsedExportsCount:  1,
+		TotalExportsCount: 4,
+		UsedPercent:       -1,
+	}
+
+	if got := wasteFromDependency(dependency); got != 75 {
+		t.Fatalf("expected waste to be recomputed from used/total counts, got %f", got)
+	}
+
+	dependency.UsedPercent = 0
+	if got := wasteFromDependency(dependency); got != 75 {
+		t.Fatalf("expected zero used percent to be recomputed from used/total counts, got %f", got)
+	}
+}
+
 func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	current := Report{
 		Dependencies: []DependencyReport{
