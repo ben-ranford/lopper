@@ -282,6 +282,18 @@ func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
+	err := expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "npm test && echo bad"}, "expected unsafe runtime command rejection")
+	if !strings.Contains(err.Error(), "indirect command execution") {
+		t.Fatalf("expected indirect command execution rejection, got %v", err)
+	}
+
+	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "node -e 'console.log(\"hi\")'"}, "expected unsafe runtime flag rejection")
+	if !strings.Contains(err.Error(), "unsafe executable flag") {
+		t.Fatalf("expected unsafe executable flag rejection, got %v", err)
+	}
+}
+
 func TestParseArgsAnalyseSuggestOnly(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "lodash", suggestOnlyFlag})
 	if !req.Analyse.SuggestOnly {

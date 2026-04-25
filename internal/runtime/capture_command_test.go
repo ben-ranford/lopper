@@ -48,13 +48,13 @@ func TestBuildRuntimeCommandPreservesParsedArgs(t *testing.T) {
 	}{
 		{
 			name:    "quoted args",
-			command: `node -e "console.log('hello world')"`,
-			want:    []string{"node", "-e", "console.log('hello world')"},
+			command: `node -r "console.log('hello world')"`,
+			want:    []string{"node", "-r", "console.log('hello world')"},
 		},
 		{
 			name:    "single quoted args",
-			command: `node -e 'console.log("hello")'`,
-			want:    []string{"node", "-e", `console.log("hello")`},
+			command: `node -r 'console.log("hello")'`,
+			want:    []string{"node", "-r", `console.log("hello")`},
 		},
 		{
 			name:    "escaped whitespace",
@@ -85,7 +85,7 @@ func TestBuildRuntimeCommandRequiresInput(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
+func TestBuildRuntimeCommandRejectsInvalidInput(t *testing.T) {
 	testCases := []struct {
 		name    string
 		command string
@@ -113,6 +113,52 @@ func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestBuildRuntimeCommandRejectsUnsafeSyntaxAndFlags(t *testing.T) {
+	checkRejects := func(command, wantErr string) {
+		t.Helper()
+
+		_, err := buildRuntimeCommand(context.Background(), command)
+		if err == nil {
+			t.Fatalf("expected error containing %q", wantErr)
+		}
+		if !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("expected error containing %q, got %v", wantErr, err)
+		}
+	}
+
+	checkRejects(`npm test && echo bad`, "indirect command execution operators")
+	checkRejects(`node -e 'console.log("hi")'`, "unsafe executable flag")
+}
+
+func TestValidateCommand(t *testing.T) {
+	if err := ValidateCommand(" "); err != nil {
+		t.Fatalf("expected blank command to be ignored, got %v", err)
+	}
+	if err := ValidateCommand("npm test"); err != nil {
+		t.Fatalf("expected safe command to validate, got %v", err)
+	}
+
+	err := ValidateCommand(`node -e 'console.log("hi")'`)
+	if err == nil || !strings.Contains(err.Error(), "unsafe executable flag") {
+		t.Fatalf("expected unsafe executable flag rejection, got %v", err)
+	}
+}
+
+func TestContainsUnsafeRuntimeCommandSyntax(t *testing.T) {
+	if containsUnsafeRuntimeCommandSyntax(`node -r 'const value = "a\\b"'`) {
+		t.Fatalf("expected backslashes in single quotes to stay safe")
+	}
+	if containsUnsafeRuntimeCommandSyntax(`node -r 'console.log("a && b")'`) {
+		t.Fatalf("expected shell operators in single quotes to stay safe")
+	}
+	if containsUnsafeRuntimeCommandSyntax(`node -r '$(pwd)'`) {
+		t.Fatalf("expected subshell syntax in single quotes to stay safe")
+	}
+	if !containsUnsafeRuntimeCommandSyntax(`node -r $(pwd)`) {
+		t.Fatalf("expected subshell syntax outside quotes to be rejected")
 	}
 }
 

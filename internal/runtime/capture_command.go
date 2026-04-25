@@ -32,7 +32,7 @@ var runtimeExecutableAllowlist = map[string]struct{}{
 }
 
 func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error) {
-	fields, err := parseRuntimeCommand(command)
+	fields, err := parseValidatedCommand(command)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +54,14 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	cmd.Path = executablePath
 	cmd.Args = append([]string{executablePath}, args...)
 	return cmd, nil
+}
+
+func ValidateCommand(command string) error {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	_, err := parseValidatedCommand(command)
+	return err
 }
 
 type runtimeCommandParser struct {
@@ -80,6 +88,100 @@ func parseRuntimeCommand(command string) ([]string, error) {
 	parser.flush()
 
 	return parser.fields, nil
+}
+
+func parseValidatedCommand(command string) ([]string, error) {
+	fields, err := parseRuntimeCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRuntimeCommand(command, fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+func validateRuntimeCommand(command string, fields []string) error {
+	if containsUnsafeRuntimeCommandSyntax(command) {
+		return fmt.Errorf("runtime test command uses indirect command execution operators; pass a direct executable and arguments instead")
+	}
+
+	if len(fields) == 0 {
+		return fmt.Errorf("runtime test command is required")
+	}
+
+	return rejectRuntimeCommandUnsafeFlags(fields[0], fields[1:])
+}
+
+func containsUnsafeRuntimeCommandSyntax(command string) bool {
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+	runes := []rune(command)
+
+	for i, ch := range runes {
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		switch ch {
+		case '\\':
+			if inSingleQuote {
+				continue
+			}
+			escaped = true
+		case '\'':
+			if inDoubleQuote {
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+		case '"':
+			if inSingleQuote {
+				continue
+			}
+			inDoubleQuote = !inDoubleQuote
+		case '|', '&', ';', '>', '<', '`', '\n', '\r':
+			if inSingleQuote {
+				continue
+			}
+			return true
+		case '$':
+			if inSingleQuote {
+				continue
+			}
+			if i+1 < len(runes) && runes[i+1] == '(' {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func rejectRuntimeCommandUnsafeFlags(executable string, args []string) error {
+	flags, ok := runtimeCommandUnsafeFlags[executable]
+	if !ok {
+		return nil
+	}
+
+	for _, arg := range args {
+		for _, flag := range flags {
+			if arg == flag || strings.HasPrefix(arg, flag+"=") {
+				return fmt.Errorf("runtime test command uses unsafe executable flag %q for %q", arg, executable)
+			}
+		}
+	}
+	return nil
+}
+
+var runtimeCommandUnsafeFlags = map[string][]string{
+	"node": {"-e", "--eval", "-p", "--print"},
+	"bun":  {"-e", "--eval", "-p", "--print"},
+	"deno": {"eval"},
+	"npm":  {"exec"},
+	"pnpm": {"exec"},
+	"yarn": {"dlx"},
 }
 
 func (p *runtimeCommandParser) consume(ch rune) {
