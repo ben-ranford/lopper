@@ -164,7 +164,9 @@ func applySummaryCommand(state *summaryState, input string, out io.Writer) bool 
 		state.page++
 		return true
 	case "prev", "p":
-		state.page--
+		if state.page > 1 {
+			state.page--
+		}
 		return true
 	case "size":
 		return handleSizeCommand(state, fields)

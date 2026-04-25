@@ -68,6 +68,14 @@ func TestSummaryCommandHandlersPagingAndShortcuts(t *testing.T) {
 			},
 		},
 		{
+			name: "prev command clamps at first page",
+			expectations: []summaryCommandExpectation{
+				newSummaryCommandExpectation("page 1", true, 1, 10, sortByWaste),
+				newSummaryCommandExpectation("prev", true, 1, 10, sortByWaste),
+				newSummaryCommandExpectation("p", true, 1, 10, sortByWaste),
+			},
+		},
+		{
 			name: "size command resets page",
 			expectations: []summaryCommandExpectation{
 				newSummaryCommandExpectation("size 7", true, 1, 7, sortByWaste),
