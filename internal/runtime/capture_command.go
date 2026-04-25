@@ -59,7 +59,7 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	return cmd, nil
 }
 
-func ValidateRuntimeCommand(command string) error {
+func ValidateCommand(command string) error {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}

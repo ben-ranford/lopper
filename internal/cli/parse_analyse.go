@@ -57,7 +57,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	if err := validateCodemodApplyFlags(*flags.suggestOnly, *flags.applyCodemod, *flags.applyCodemodConfirm, *flags.allowDirty, dependency, *flags.top); err != nil {
 		return analyseParseState{}, err
 	}
-	if err := runtime.ValidateRuntimeCommand(*flags.runtimeTestCommand); err != nil {
+	if err := runtime.ValidateCommand(*flags.runtimeTestCommand); err != nil {
 		return analyseParseState{}, err
 	}
 
