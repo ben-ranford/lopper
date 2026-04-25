@@ -95,8 +95,8 @@ func buildSlackPayload(delivery Delivery) ([]byte, error) {
 			{
 				Type: "section",
 				Text: &slackText{
-					Type: "mrkdwn",
-					Text: fmt.Sprintf("*Repository:* `%s`\n*Trigger:* `%s`", repoPath, delivery.Trigger),
+					Type: "plain_text",
+					Text: fmt.Sprintf("Repository: %s\nTrigger: %s", repoPath, delivery.Trigger),
 				},
 			},
 			{
