@@ -9,6 +9,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
@@ -54,6 +55,9 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 		return analyseParseState{}, err
 	}
 	if err := validateCodemodApplyFlags(*flags.suggestOnly, *flags.applyCodemod, *flags.applyCodemodConfirm, *flags.allowDirty, dependency, *flags.top); err != nil {
+		return analyseParseState{}, err
+	}
+	if err := runtime.ValidateRuntimeCommand(*flags.runtimeTestCommand); err != nil {
 		return analyseParseState{}, err
 	}
 

@@ -48,13 +48,13 @@ func TestBuildRuntimeCommandPreservesParsedArgs(t *testing.T) {
 	}{
 		{
 			name:    "quoted args",
-			command: `node -e "console.log('hello world')"`,
-			want:    []string{"node", "-e", "console.log('hello world')"},
+			command: `node -r "console.log('hello world')"`,
+			want:    []string{"node", "-r", "console.log('hello world')"},
 		},
 		{
 			name:    "single quoted args",
-			command: `node -e 'console.log("hello")'`,
-			want:    []string{"node", "-e", `console.log("hello")`},
+			command: `node -r 'console.log("hello")'`,
+			want:    []string{"node", "-r", `console.log("hello")`},
 		},
 		{
 			name:    "escaped whitespace",
@@ -100,6 +100,37 @@ func TestBuildRuntimeCommandRejectsMalformedInput(t *testing.T) {
 			name:    "unterminated quote",
 			command: `node -e "console.log('hello world')`,
 			wantErr: "unterminated quote",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildRuntimeCommand(context.Background(), tc.command)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestBuildRuntimeCommandRejectsUnsafeCommands(t *testing.T) {
+	testCases := []struct {
+		name    string
+		command string
+		wantErr string
+	}{
+		{
+			name:    "shell operator",
+			command: `npm test && echo bad`,
+			wantErr: "indirect command execution operators",
+		},
+		{
+			name:    "eval flag",
+			command: `node -e 'console.log("hi")'`,
+			wantErr: "unsafe executable flag",
 		},
 	}
 
