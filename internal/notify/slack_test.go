@@ -112,6 +112,51 @@ func TestBuildSlackPayloadIncludesThresholdStatus(t *testing.T) {
 	}
 }
 
+func TestBuildSlackPayloadBackticksInRepoPathAndTrigger(t *testing.T) {
+	repoPath := "repo/`service`"
+	trigger := Trigger("bre`ach")
+
+	data, err := buildSlackPayload(Delivery{
+		Channel: ChannelSlack,
+		Trigger: trigger,
+		Report: report.Report{
+			RepoPath: repoPath,
+			Summary:  &report.Summary{DependencyCount: 3, UsedPercent: 45.5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build payload with backticks: %v", err)
+	}
+
+	type text struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type block struct {
+		Text *text `json:"text"`
+	}
+	type payload struct {
+		Blocks []block `json:"blocks"`
+	}
+
+	var decoded payload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(decoded.Blocks) < 2 || decoded.Blocks[1].Text == nil {
+		t.Fatalf("expected repository/trigger section in payload, got %#v", decoded)
+	}
+
+	if decoded.Blocks[1].Text.Type != "plain_text" {
+		t.Fatalf("expected repository/trigger section as plain_text, got %q", decoded.Blocks[1].Text.Type)
+	}
+
+	expected := "Repository: " + repoPath + "\nTrigger: " + string(trigger)
+	if decoded.Blocks[1].Text.Text != expected {
+		t.Fatalf("expected repository/trigger text %q, got %q", expected, decoded.Blocks[1].Text.Text)
+	}
+}
+
 func TestSlackNotifierNotifyBuildPayloadError(t *testing.T) {
 	err := NewSlackNotifier(nil).Notify(context.Background(), Delivery{
 		Channel:    ChannelSlack,
