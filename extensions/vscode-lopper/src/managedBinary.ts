@@ -1,4 +1,5 @@
 import AdmZip from "adm-zip";
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   access,
@@ -20,6 +21,7 @@ import * as tar from "tar";
 export interface GitHubReleaseAsset {
   name: string;
   browser_download_url: string;
+  digest?: string;
 }
 
 export interface GitHubRelease {
@@ -77,6 +79,7 @@ export interface ManagedBinaryInstallProgress {
 interface ManagedBinaryMetadata {
   binaryPath: string;
   tag: string;
+  binaryDigest?: string;
 }
 
 interface ManagedBinaryDeps {
@@ -110,16 +113,28 @@ export class ManagedBinaryInstaller {
 
   async findInstalledBinary(releaseTag?: string): Promise<string | undefined> {
     const explicitTag = normalizeReleaseTag(releaseTag);
-    if (explicitTag) {
-      const binaryPath = this.binaryPathFor(explicitTag);
-      return (await fileExists(binaryPath)) ? binaryPath : undefined;
-    }
-
     const metadata = await this.readMetadata();
-    if (!metadata) {
+    const binaryPath = explicitTag ? this.binaryPathFor(explicitTag) : metadata?.binaryPath;
+
+    if (!binaryPath || !(await fileExists(binaryPath))) {
       return undefined;
     }
-    return (await fileExists(metadata.binaryPath)) ? metadata.binaryPath : undefined;
+
+    if (
+      !metadata ||
+      metadata.binaryPath !== binaryPath ||
+      metadata.tag !== (explicitTag ?? metadata.tag) ||
+      typeof metadata.binaryDigest !== "string"
+    ) {
+      this.output.appendLine(`managed binary cache integrity metadata missing; re-downloading ${binaryPath}`);
+      return undefined;
+    }
+
+    if (!(await verifyBinaryDigest(binaryPath, metadata.binaryDigest))) {
+      this.output.appendLine(`managed binary integrity check failed; re-downloading ${binaryPath}`);
+      return undefined;
+    }
+    return binaryPath;
   }
 
   async ensureInstalled(releaseTag?: string): Promise<ManagedBinaryInstallResult> {
@@ -140,8 +155,10 @@ export class ManagedBinaryInstaller {
     this.output.appendLine(`downloading managed lopper binary: ${asset.name}`);
 
     try {
+      const expectedArchiveDigest = parseAssetDigest(asset);
       await mkdir(extractDir, { recursive: true });
       await this.deps.downloadAsset(asset, archivePath);
+      await verifyBinaryArchive(archivePath, expectedArchiveDigest, asset.name);
       await extractArchive(archivePath, extractDir);
 
       const extractedBinary = await findBinaryInDirectory(extractDir, binaryFileName(this.deps.host.platform));
@@ -154,7 +171,8 @@ export class ManagedBinaryInstaller {
       if (this.deps.host.platform !== "win32") {
         await chmod(binaryPath, 0o755);
       }
-      await this.writeMetadata({ binaryPath, tag: release.tag_name });
+      const binaryDigest = await sha256File(binaryPath);
+      await this.writeMetadata({ binaryPath, tag: release.tag_name, binaryDigest });
 
       return { binaryPath, tag: release.tag_name, downloaded: true };
     } finally {
@@ -183,7 +201,11 @@ export class ManagedBinaryInstaller {
       if (typeof parsed.binaryPath !== "string" || typeof parsed.tag !== "string") {
         return undefined;
       }
-      return { binaryPath: parsed.binaryPath, tag: parsed.tag };
+      return {
+        binaryPath: parsed.binaryPath,
+        tag: parsed.tag,
+        binaryDigest: typeof parsed.binaryDigest === "string" ? parsed.binaryDigest : undefined,
+      };
     } catch {
       return undefined;
     }
@@ -475,6 +497,35 @@ function isAssetLike(asset: unknown): asset is GitHubReleaseAsset {
     asset !== null &&
     typeof (asset as Partial<GitHubReleaseAsset>).name === "string" &&
     typeof (asset as Partial<GitHubReleaseAsset>).browser_download_url === "string";
+}
+
+function parseAssetDigest(asset: GitHubReleaseAsset): string {
+  if (typeof asset.digest !== "string") {
+    throw new Error(`managed release asset ${asset.name} is missing a sha256 digest`);
+  }
+
+  const match = asset.digest.trim().match(/^sha256:([a-fA-F0-9]{64})$/);
+  if (!match) {
+    throw new Error(`managed release asset ${asset.name} has invalid sha256 digest`);
+  }
+
+  return match[1].toLowerCase();
+}
+
+async function verifyBinaryArchive(archivePath: string, expectedDigest: string, assetName: string): Promise<void> {
+  const observedDigest = await sha256File(archivePath);
+  if (observedDigest !== expectedDigest) {
+    throw new Error(`managed release archive integrity check failed for ${assetName}`);
+  }
+}
+
+async function verifyBinaryDigest(filePath: string, expectedDigest: string): Promise<boolean> {
+  return (await sha256File(filePath)) === expectedDigest;
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const buffer = await readFile(filePath);
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 async function downloadAsset(asset: GitHubReleaseAsset, destinationPath: string): Promise<void> {

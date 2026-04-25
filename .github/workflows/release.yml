@@ -35,7 +35,7 @@ jobs:
     steps:
       - name: Run release-please
         id: release
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
@@ -65,17 +65,17 @@ jobs:
       contents: read
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
           cache: npm
@@ -106,7 +106,7 @@ jobs:
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Upload VS Code extension artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-vscode-extension
           path: dist/*.vsix
@@ -119,7 +119,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
 
@@ -130,7 +130,7 @@ jobs:
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
 
@@ -156,7 +156,7 @@ jobs:
             PLATFORMS="darwin/amd64"
 
       - name: Upload Darwin amd64 artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-darwin-amd64
           path: |
@@ -175,21 +175,20 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
           ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: release-*
           merge-multiple: true
@@ -284,21 +283,26 @@ jobs:
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
-      - name: Setup Node
-        if: ${{ env.VSCE_PUBLISH != '' }}
-        uses: actions/setup-node@v6
+      - name: Setup Node for VSIX publish
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
 
       - name: Publish VS Code extension to Marketplace
-        if: ${{ env.VSCE_PUBLISH != '' }}
         env:
-          VSCE_PAT: ${{ env.VSCE_PUBLISH }}
+          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
         run: |
           set -euo pipefail
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "VSCE publish token not configured; skipping marketplace publish."
+            exit 0
+          fi
+
+          make vscode-extension-install
+
           vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
           test -n "$vsix_path"
-          npx --yes @vscode/vsce publish --packagePath "$vsix_path"
+          ./extensions/vscode-lopper/node_modules/.bin/vsce publish --packagePath "$vsix_path"
 
       - name: Publish GitHub Release
         run: |
@@ -366,7 +370,7 @@ jobs:
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: ben-ranford/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -484,14 +488,14 @@ jobs:
       contents: write
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
           ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag || github.sha }}
           token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
 

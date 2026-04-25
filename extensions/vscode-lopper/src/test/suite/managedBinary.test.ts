@@ -1,5 +1,6 @@
 import AdmZip from "adm-zip";
 import * as assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -106,7 +107,7 @@ suite("managed binary installer", () => {
       const releaseTag = "v9.8.7";
       const host = { platform: "linux" as const, arch: "x64" };
       const archivePath = await createTarballFixture(tempRoot, releaseTag, host, "linux binary");
-      const installer = createInstaller(tempRoot, releaseTag, host, archivePath);
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath);
 
       const cachedBefore = await installer.findInstalledBinary();
       assert.equal(cachedBefore, undefined);
@@ -129,12 +130,32 @@ suite("managed binary installer", () => {
       const releaseTag = "v1.0.0";
       const host = { platform: "win32" as const, arch: "x64" };
       const archivePath = await createZipFixture(tempRoot, releaseTag, host, "windows binary");
-      const installer = createInstaller(tempRoot, releaseTag, host, archivePath);
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath);
 
       const result = await installer.ensureInstalled();
       assert.equal(result.downloaded, true);
       assert.match(result.binaryPath, /lopper\.exe$/);
       assert.equal(await readFile(result.binaryPath, "utf8"), "windows binary");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects managed binary archive downloads with checksum mismatch", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
+    try {
+      const releaseTag = "v9.8.7";
+      const host = { platform: "linux" as const, arch: "x64" };
+      const archivePath = await createTarballFixture(tempRoot, releaseTag, host, "linux binary");
+      const badDigest = "0".repeat(64);
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath, badDigest);
+
+      await assert.rejects(
+        installer.ensureInstalled(),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("integrity check failed"),
+      );
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -392,17 +413,21 @@ suite("managed binary installer", () => {
   });
 });
 
-function createInstaller(
+async function createInstaller(
   tempRoot: string,
   releaseTag: string,
   host: { platform: NodeJS.Platform; arch: string },
   archivePath: string,
-): ManagedBinaryInstaller {
+  archiveDigest?: string,
+): Promise<ManagedBinaryInstaller> {
+  const binaryDigest = archiveDigest ?? (await sha256File(archivePath));
+
   const release: GitHubRelease = {
     tag_name: releaseTag,
     assets: [
       {
         name: assetNameForRelease(releaseTag, host),
+        digest: `sha256:${binaryDigest}`,
         browser_download_url: `file://${archivePath}`,
       },
     ],
@@ -419,6 +444,11 @@ function createInstaller(
       },
     },
   );
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const buffer = await readFile(filePath);
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 async function createTarballFixture(
