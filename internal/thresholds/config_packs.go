@@ -208,9 +208,9 @@ func readPolicyLocation(location string, trust packTrust, remote bool) ([]byte, 
 		err  error
 	)
 	if trust.localRoot == "" {
-		data, err = safeio.ReadFile(location)
+		data, err = safeio.ReadFileLimit(location, maxRemotePolicyBytes)
 	} else {
-		data, err = safeio.ReadFileUnder(trust.localRoot, location)
+		data, err = safeio.ReadFileUnderLimit(trust.localRoot, location, maxRemotePolicyBytes)
 	}
 	if err != nil {
 		return nil, fmt.Errorf(readConfigFileErrFmt, location, err)

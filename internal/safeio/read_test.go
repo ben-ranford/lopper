@@ -69,6 +69,49 @@ func TestReadFileUnderLimitRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestReadFileLimitReadsFile(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	data, err := ReadFileLimit(targetPath, 5)
+	if err != nil {
+		t.Fatalf("ReadFileLimit returned error: %v", err)
+	}
+	if got := string(data); got != "hello" {
+		t.Fatalf(unexpectedContentFmt, got)
+	}
+}
+
+func TestReadFileLimitRejectsOversizedFile(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "large.txt")
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	_, err := ReadFileLimit(targetPath, 4)
+	if !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestReadFileLimitRejectsSpecialFile(t *testing.T) {
+	for _, path := range []string{"/dev/zero", "NUL"} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().IsRegular() {
+			continue
+		}
+
+		if _, err := ReadFileLimit(path, 1024); !errors.Is(err, ErrFileTooLarge) {
+			t.Fatalf("expected ErrFileTooLarge for %s, got %v", path, err)
+		}
+		return
+	}
+	t.Skip("non-regular file unavailable")
+}
+
 func TestReadOpenedFileRejectsOversizedPipeContent(t *testing.T) {
 	reader, writer, err := os.Pipe()
 	if err != nil {
