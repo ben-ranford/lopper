@@ -144,23 +144,23 @@ func TestResolveRefSHAFallsBackToCommonDir(t *testing.T) {
 }
 
 func TestResolveRefSHAErrorPaths(t *testing.T) {
-	t.Run("returns packed refs read error when loose ref invalid", func(t *testing.T) {
+	t.Run("returns ref not found when loose ref invalid and packed refs are missing", func(t *testing.T) {
 		gitDir := t.TempDir()
 		mustWrite(t, filepath.Join(gitDir, "refs", "heads", "main"), "bad-sha\n")
 
 		_, err := resolveRefSHA(gitDir, mainRefPath)
-		if err == nil || !strings.Contains(err.Error(), packedRefsFile) {
-			t.Fatalf("expected packed-refs error, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "ref "+mainRefPath+" not found") {
+			t.Fatalf("expected ref-not-found error, got %v", err)
 		}
 	})
 
-	t.Run("returns loose ref read error when packed refs do not match", func(t *testing.T) {
+	t.Run("returns ref not found when loose ref is missing and packed refs do not match", func(t *testing.T) {
 		gitDir := t.TempDir()
 		mustWrite(t, filepath.Join(gitDir, packedRefsFile), shaMain+" "+otherMainRef+"\n")
 
 		_, err := resolveRefSHA(gitDir, mainRefPath)
-		if err == nil || !strings.Contains(err.Error(), mainRefPath) {
-			t.Fatalf("expected loose ref error, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "ref "+mainRefPath+" not found") {
+			t.Fatalf("expected ref-not-found error, got %v", err)
 		}
 	})
 
@@ -172,6 +172,28 @@ func TestResolveRefSHAErrorPaths(t *testing.T) {
 		_, err := resolveRefSHA(gitDir, mainRefPath)
 		if err == nil || !strings.Contains(err.Error(), "ref "+mainRefPath+" not found") {
 			t.Fatalf("expected ref-not-found error, got %v", err)
+		}
+	})
+
+	t.Run("returns ref not found when loose and packed refs are missing", func(t *testing.T) {
+		gitDir := t.TempDir()
+
+		_, err := resolveRefSHA(gitDir, mainRefPath)
+		if err == nil || !strings.Contains(err.Error(), "ref "+mainRefPath+" not found") {
+			t.Fatalf("expected ref-not-found error, got %v", err)
+		}
+	})
+
+	t.Run("returns packed refs read error when packed refs path is unreadable", func(t *testing.T) {
+		gitDir := t.TempDir()
+		mustWrite(t, filepath.Join(gitDir, "refs", "heads", "main"), "bad-sha\n")
+		if err := os.MkdirAll(filepath.Join(gitDir, packedRefsFile), 0o755); err != nil {
+			t.Fatalf("mkdir packed-refs dir: %v", err)
+		}
+
+		_, err := resolveRefSHA(gitDir, mainRefPath)
+		if err == nil || !strings.Contains(err.Error(), packedRefsFile) {
+			t.Fatalf("expected packed-refs read error, got %v", err)
 		}
 	})
 }

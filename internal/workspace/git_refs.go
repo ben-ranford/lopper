@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -69,10 +71,10 @@ func findPackedRefSHA(packedRefs, ref string) string {
 }
 
 func resolveRefLookupError(ref string, refErr, packedErr error) error {
-	if refErr != nil {
+	if refErr != nil && !errors.Is(refErr, os.ErrNotExist) {
 		return refErr
 	}
-	if packedErr != nil {
+	if packedErr != nil && !errors.Is(packedErr, os.ErrNotExist) {
 		return packedErr
 	}
 	return fmt.Errorf("ref %s not found", ref)
