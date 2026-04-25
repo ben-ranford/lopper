@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.1](https://github.com/ben-ranford/lopper/compare/v1.5.0...v1.5.1) (2026-04-25)
+
+
+### Bug Fixes
+
+* align Go build tag handling with go list ([#793](https://github.com/ben-ranford/lopper/issues/793)) ([ba1ebf9](https://github.com/ben-ranford/lopper/commit/ba1ebf999bb658ab8ba6b2fbb3227f7fba5b466c))
+* attribute Dart local path dependency imports ([#792](https://github.com/ben-ranford/lopper/issues/792)) ([a149aef](https://github.com/ben-ranford/lopper/commit/a149aef3872e14253350399a560bd1f1f8128180))
+* avoid .NET central package lockfile false positives ([#795](https://github.com/ben-ranford/lopper/issues/795)) ([35c6f86](https://github.com/ben-ranford/lopper/commit/35c6f8693b18c13ab134d166e2289ca5a19b942a))
+* classify baseline regressions only for changed dependencies ([#796](https://github.com/ben-ranford/lopper/issues/796)) ([779a167](https://github.com/ben-ranford/lopper/commit/779a1678525da5c09255438ed7638615511f7f71))
+* fix Swift parser comment and Carthage edge cases ([#794](https://github.com/ben-ranford/lopper/issues/794)) ([3942c77](https://github.com/ben-ranford/lopper/commit/3942c77d861cba5f198dec27088397b55bcaf14f))
+* parse PowerShell Requires module options correctly ([#791](https://github.com/ben-ranford/lopper/issues/791)) ([a01b8d8](https://github.com/ben-ranford/lopper/commit/a01b8d88e5dbd3ac1f9834b2209add03af7a4411))
+* **release:** include historical bug commits ([#801](https://github.com/ben-ranford/lopper/issues/801)) ([977495d](https://github.com/ben-ranford/lopper/commit/977495d6dc44eecbd2699fd3e5dc85ec254f493f))
+* surface VS Code local binary validation errors ([#799](https://github.com/ben-ranford/lopper/issues/799)) ([c9db02c](https://github.com/ben-ranford/lopper/commit/c9db02c14a842998d16a65c818bfffc6c3fe4169))
+
 ## [1.5.0](https://github.com/ben-ranford/lopper/compare/v1.4.2...v1.5.0) (2026-04-24)
 
 
