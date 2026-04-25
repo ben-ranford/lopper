@@ -19,6 +19,8 @@ func TestEscapeLeadingFormula(t *testing.T) {
 		{name: "plus", value: "+cmd", want: "'+cmd"},
 		{name: "minus", value: "-cmd", want: "'-cmd"},
 		{name: "at", value: "@cmd", want: "'@cmd"},
+		{name: "tab", value: "\tcmd", want: "'\tcmd"},
+		{name: "carriage", value: "\rcmd", want: "'\rcmd"},
 	}
 
 	for _, tc := range tests {
@@ -36,8 +38,8 @@ func TestEscapeLeadingFormula(t *testing.T) {
 func TestEscapeLeadingFormulaRow(t *testing.T) {
 	t.Parallel()
 
-	values := []string{"dependency", "=sum(A1:A2)", "@cmd"}
-	want := []string{"dependency", "'=sum(A1:A2)", "'@cmd"}
+	values := []string{"dependency", "=sum(A1:A2)", "@cmd", "\tcmd", "\rcmd"}
+	want := []string{"dependency", "'=sum(A1:A2)", "'@cmd", "'\tcmd", "'\rcmd"}
 
 	if got := EscapeLeadingFormulaRow(values); !reflect.DeepEqual(got, want) {
 		t.Fatalf("EscapeLeadingFormulaRow(%v) = %v, want %v", values, got, want)

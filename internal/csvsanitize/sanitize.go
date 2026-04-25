@@ -6,7 +6,7 @@ func EscapeLeadingFormula(value string) string {
 	}
 
 	switch value[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r':
 		return "'" + value
 	default:
 		return value
