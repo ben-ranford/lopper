@@ -766,6 +766,49 @@ func TestLoadWithPolicyRemotePackWithPinFromExplicitConfig(t *testing.T) {
 	}
 }
 
+func TestLoadWithExplicitConfigRejectsOversizedLocalPolicyPack(t *testing.T) {
+	repo := t.TempDir()
+	largePath := filepath.Join(repo, "packs", "huge.yml")
+	if err := os.MkdirAll(filepath.Dir(largePath), 0o755); err != nil {
+		t.Fatalf("create pack dir: %v", err)
+	}
+	if err := os.WriteFile(largePath, []byte(strings.Repeat("x", maxRemotePolicyBytes+1)), 0o600); err != nil {
+		t.Fatalf("write oversized pack file: %v", err)
+	}
+	policy := "policy:\n  packs:\n    - " + largePath + "\n"
+	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), policy)
+
+	_, err := LoadWithPolicy(repo, customConfigName)
+	if err == nil {
+		t.Fatal("expected explicit config oversized policy pack error")
+	}
+	if !strings.Contains(err.Error(), "file exceeds size limit") {
+		t.Fatalf("unexpected policy pack read error: %v", err)
+	}
+}
+
+func TestLoadWithExplicitConfigRejectsSpecialFilePolicyPack(t *testing.T) {
+	repo := t.TempDir()
+	for _, path := range []string{"/dev/zero"} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().IsRegular() {
+			continue
+		}
+
+		policy := "policy:\n  packs:\n    - " + path + "\n"
+		testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), policy)
+		_, err = LoadWithPolicy(repo, customConfigName)
+		if err == nil {
+			t.Fatalf("expected explicit config non-regular policy pack error")
+		}
+		if !strings.Contains(err.Error(), "file exceeds size limit") {
+			t.Fatalf("unexpected policy pack read error: %v", err)
+		}
+		return
+	}
+	t.Skip("non-regular file unavailable")
+}
+
 func newPinnedRemotePolicyServer(t *testing.T, packBody string) (*httptest.Server, string, *int32) {
 	t.Helper()
 

@@ -78,6 +78,36 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 	return readOpenedFile(file, maxBytes)
 }
 
+// ReadFileLimit reads the exact targetPath by opening its parent directory as a root.
+func ReadFileLimit(targetPath string, maxBytes int64) (data []byte, err error) {
+	target, err := resolveExactFileTarget(targetPath)
+	if err != nil {
+		return nil, err
+	}
+
+	root, err := openRootFn(target.parentDir)
+	if err != nil {
+		return nil, fmt.Errorf("open parent root: %w", err)
+	}
+	defer func() {
+		if closeErr := closeRootFn(root); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	file, err := openRootOpenFn(root, target.fileName)
+	if err != nil {
+		return nil, translateOpenNotExist(err, targetPath)
+	}
+	defer func() {
+		if closeErr := closeFileFn(file); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	return readOpenedFile(file, maxBytes)
+}
+
 // ReadFile reads the exact targetPath by opening its parent directory as a root.
 func ReadFile(targetPath string) (data []byte, err error) {
 	file, err := OpenFile(targetPath)
