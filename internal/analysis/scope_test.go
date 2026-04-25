@@ -120,6 +120,9 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(scopedPath, "src", "linked.js")); !os.IsNotExist(err) {
 		t.Fatalf("expected symlinked file to be skipped, got err=%v", err)
 	}
+	if !containsWarning(warnings, "analysis scope include matches: src/**/*.js=1") {
+		t.Fatalf("expected include summary to count only copied files, got %#v", warnings)
+	}
 	if !containsWarning(warnings, "analysis scope skipped file: src/linked.js (is symlink (not copied))") {
 		t.Fatalf("expected symlink skip diagnostic, got %#v", warnings)
 	}
