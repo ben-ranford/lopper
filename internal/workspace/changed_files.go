@@ -23,7 +23,11 @@ func ChangedFiles(repoPath string) ([]string, error) {
 		return nil, errors.Join(diffErr, statusErr)
 	}
 	if diffErr != nil {
-		return parsePorcelainChangedFiles(statusOutput), nil
+		statusFiles := parsePorcelainChangedFiles(statusOutput)
+		if len(statusFiles) == 0 {
+			return nil, diffErr
+		}
+		return statusFiles, nil
 	}
 	if statusErr != nil {
 		return parseChangedFileLines(diffOutput), nil

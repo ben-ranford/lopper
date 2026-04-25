@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestAnalysisPipelineFinalReportMergedPath(t *testing.T) {
@@ -158,6 +159,30 @@ func TestScopedCandidateRootsChangedPackagesFallsBack(t *testing.T) {
 	roots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, []string{root}, repo)
 	if len(roots) != 1 || roots[0] != root {
 		t.Fatalf("expected package roots fallback, got %#v", roots)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "falling back to package scope") {
+		t.Fatalf("expected changed-packages fallback warning, got %#v", warnings)
+	}
+}
+
+func TestScopedCandidateRootsChangedPackagesFallsBackForSingleCommitRepo(t *testing.T) {
+	repo := t.TempDir()
+	root := filepath.Join(repo, "packages", "a")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a1\n"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.email", "analysis-test@example.com")
+	testutil.RunGit(t, repo, "config", "user.name", "Analysis Test")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "initial commit")
+
+	roots, warnings := scopedCandidateRoots(ScopeModeChangedPackages, []string{root}, repo)
+	if len(roots) != 1 || roots[0] != root {
+		t.Fatalf("expected package-root fallback, got %#v", roots)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "falling back to package scope") {
 		t.Fatalf("expected changed-packages fallback warning, got %#v", warnings)

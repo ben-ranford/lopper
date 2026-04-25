@@ -79,6 +79,24 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 	}
 }
 
+func TestChangedFilesReturnsDiffFailureForSingleCommitRepoWhenStatusClean(t *testing.T) {
+	repo := t.TempDir()
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.name", "Workspace Test")
+	testutil.RunGit(t, repo, "config", "user.email", "workspace-test@example.com")
+	mustWrite(t, filepath.Join(repo, "tracked.txt"), "tracked\n")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "initial commit")
+
+	changed, err := ChangedFiles(repo)
+	if err == nil || !strings.Contains(err.Error(), "HEAD~1") {
+		t.Fatalf("expected HEAD~1 diff failure error for single-commit clean repo, got files=%#v err=%v", changed, err)
+	}
+	if len(changed) != 0 {
+		t.Fatalf("expected no changed file names after no-status fallback failure, got %#v", changed)
+	}
+}
+
 func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
 	setupFakeGitResolver(t, "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff failed\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"status failed\" >&2\n  exit 3\nfi\nexit 1\n")
 
