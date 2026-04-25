@@ -157,6 +157,8 @@ func TestFormatCSVDependencyNamesSanitizeFormulaPrefixes(t *testing.T) {
 			{Name: "+cmd", Language: "go"},
 			{Name: "-cmd", Language: "go"},
 			{Name: "@cmd", Language: "go"},
+			{Name: "\tcmd", Language: "go"},
+			{Name: "\rcmd", Language: "go"},
 		},
 	}
 
@@ -166,8 +168,8 @@ func TestFormatCSVDependencyNamesSanitizeFormulaPrefixes(t *testing.T) {
 	}
 
 	rows := readCSVRows(t, output)
-	if len(rows) != 5 {
-		t.Fatalf("expected header and four dependency rows, got %d rows", len(rows))
+	if len(rows) != 7 {
+		t.Fatalf("expected header and six dependency rows, got %d rows", len(rows))
 	}
 
 	rowByName := map[string]map[string]string{}
@@ -177,6 +179,14 @@ func TestFormatCSVDependencyNamesSanitizeFormulaPrefixes(t *testing.T) {
 	}
 
 	for _, name := range []string{"=2+3", "+cmd", "-cmd", "@cmd"} {
+		if got, ok := rowByName["'"+name]; !ok {
+			t.Fatalf("expected sanitized dependency name %q in csv rows, got %#v", "'"+name, rowByName)
+		} else if got["dependency_name"] != "'"+name {
+			t.Fatalf("expected dependency_name %q, got %q", "'"+name, got["dependency_name"])
+		}
+	}
+
+	for _, name := range []string{"\tcmd", "\rcmd"} {
 		if got, ok := rowByName["'"+name]; !ok {
 			t.Fatalf("expected sanitized dependency name %q in csv rows, got %#v", "'"+name, rowByName)
 		} else if got["dependency_name"] != "'"+name {

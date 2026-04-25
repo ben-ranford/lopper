@@ -208,10 +208,18 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 				WasteCandidateCount:   0,
 				WasteCandidatePercent: 0,
 			},
+			{
+				Name:                  "\trepo",
+				Path:                  "\rpath",
+				Language:              "python",
+				DependencyCount:       1,
+				WasteCandidateCount:   0,
+				WasteCandidatePercent: 0,
+			},
 		},
 		Summary: Summary{
-			TotalRepos:           1,
-			TotalDeps:            1,
+			TotalRepos:           2,
+			TotalDeps:            2,
 			TotalWasteCandidates: 0,
 			CrossRepoDuplicates:  1,
 			CriticalCVEs:         0,
@@ -220,7 +228,7 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 			{
 				Name:         "-shared",
 				Count:        3,
-				Repositories: []string{"repo-a", "-repo-b", "@repo-c"},
+				Repositories: []string{"repo-a", "-repo-b", "@repo-c", "\trepo-d"},
 			},
 		},
 	}
@@ -247,11 +255,22 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 		}
 	}
 
-	if len(repoRow) != 10 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" {
+	if len(repoRow) != 10 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[2] != "go" {
 		t.Fatalf("expected sanitized repo csv row, got %#v", repoRow)
 	}
-	if len(crossRepoRow) != 3 || crossRepoRow[0] != "'-shared" || crossRepoRow[2] != "repo-a|'-repo-b|'@repo-c" {
+	if len(crossRepoRow) != 3 || crossRepoRow[0] != "'-shared" || !strings.Contains(crossRepoRow[2], "'\trepo-d") {
 		t.Fatalf("expected sanitized cross-repo csv row, got %#v", crossRepoRow)
+	}
+
+	foundTabRepoCSVRow := false
+	for _, row := range rows {
+		if len(row) == 10 && row[0] == "'\trepo" && row[1] == "'\rpath" {
+			foundTabRepoCSVRow = true
+			break
+		}
+	}
+	if !foundTabRepoCSVRow {
+		t.Fatalf("expected additional sanitized repo row, got %#v", rows)
 	}
 }
 
