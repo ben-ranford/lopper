@@ -89,6 +89,9 @@ func shouldStripGitEnvKey(key string) bool {
 	if strings.HasPrefix(key, "GIT_") {
 		return true
 	}
+	if strings.HasPrefix(key, "LD_") || strings.HasPrefix(key, "DYLD_") {
+		return true
+	}
 	switch key {
 	case "PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "PAGER", "EDITOR", "VISUAL":
 		return true
