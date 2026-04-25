@@ -126,9 +126,6 @@ func (w *scopeWalker) walk(currentPath string, entry fs.DirEntry, walkErr error)
 		return nil
 	}
 	if entry.Type()&fs.ModeSymlink != 0 {
-		if includeMatched {
-			w.stats.includeMatches[includePattern]++
-		}
 		recordScopeSkipReason(w.stats, slashed, "is symlink (not copied)")
 		return nil
 	}
