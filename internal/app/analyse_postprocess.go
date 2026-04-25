@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -19,6 +21,9 @@ func (a *App) applyBaselineIfNeeded(reportData report.Report, repoPath string, r
 	}
 
 	baseline, loadedKey, err := report.LoadWithKey(baselinePath)
+	if err != nil && isBootstrapableMissingBaseline(req, err) {
+		return reportData, nil
+	}
 	if err != nil {
 		return reportData, err
 	}
@@ -31,6 +36,22 @@ func (a *App) applyBaselineIfNeeded(reportData report.Report, repoPath string, r
 	}
 
 	return reportData, nil
+}
+
+func isBootstrapableMissingBaseline(req AnalyseRequest, err error) bool {
+	if !req.SaveBaseline {
+		return false
+	}
+	if strings.TrimSpace(req.BaselinePath) != "" {
+		return false
+	}
+	if strings.TrimSpace(req.BaselineStorePath) == "" {
+		return false
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return true
 }
 
 func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string, string, string, bool, error) {

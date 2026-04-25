@@ -338,3 +338,34 @@ func TestExecuteAnalyseSaveBaselineErrorPreservesOriginalWhenFormatFails(t *test
 		t.Fatalf("expected save-baseline store error, got %v", err)
 	}
 }
+
+func TestExecuteAnalyseBootstrapBaselineStoreOnFirstSave(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath:      ".",
+			Dependencies:   []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}},
+			SchemaVersion: "0.1.0",
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	baselineStore := t.TempDir()
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = "."
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.SaveBaseline = true
+	req.Analyse.BaselineStorePath = baselineStore
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected bootstrap execute to succeed, got %v", err)
+	}
+	if !strings.Contains(output, "saved immutable baseline snapshot:") {
+		t.Fatalf("expected baseline save warning in output, got %q", output)
+	}
+	if _, err := os.Stat(report.BaselineSnapshotPath(baselineStore, resolveCurrentBaselineKey("."))); err != nil {
+		t.Fatalf("expected initial baseline snapshot to be written: %v", err)
+	}
+}
