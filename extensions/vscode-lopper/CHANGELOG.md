@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.5.2](https://github.com/ben-ranford/lopper/compare/v1.5.1...v1.5.2) (2026-04-25)
+
+
+### Bug Fixes
+
+* **analysis:** fallback changed-packages when HEAD~1 is unavailable ([#914](https://github.com/ben-ranford/lopper/issues/914)) ([aae66d1](https://github.com/ben-ranford/lopper/commit/aae66d1d582b3738a1220c348b3dd60c3f94f411))
+* **app:** bootstrap first run baseline store on save-baseline ([#913](https://github.com/ben-ranford/lopper/issues/913)) ([6c69402](https://github.com/ben-ranford/lopper/commit/6c694026559dabde83c227bc82816d4b01ac58d3))
+* **cli:** prevent positional capture and preserve mapped run exit codes ([#809](https://github.com/ben-ranford/lopper/issues/809)) ([11ab3ff](https://github.com/ben-ranford/lopper/commit/11ab3ffb35ddd2d51ed954b2ec42fb7c16334195))
+* escape tab and CR-prefixed CSV values ([#911](https://github.com/ben-ranford/lopper/issues/911)) ([8a4fe6f](https://github.com/ben-ranford/lopper/commit/8a4fe6f5074c104eb4d56c3b8ae4803566b4302d))
+* **flags:** suppress repeated release PR graduation candidates ([#812](https://github.com/ben-ranford/lopper/issues/812)) ([7a9c032](https://github.com/ben-ranford/lopper/commit/7a9c032eddcd24f29be2c7f2e62f1589d6427787))
+* gate unsafe runtime test command shapes ([#915](https://github.com/ben-ranford/lopper/issues/915)) ([2e0c76a](https://github.com/ben-ranford/lopper/commit/2e0c76a509e67091991f0b54a030c38936aca0d3))
+* **gitexec:** strip loader injection env vars ([#910](https://github.com/ben-ranford/lopper/issues/910)) ([b06b338](https://github.com/ben-ranford/lopper/commit/b06b338424e13a8545392b0fe8a836910b884a60))
+* **notify:** handle backticks in Slack repository and trigger text ([#806](https://github.com/ben-ranford/lopper/issues/806)) ([4d66e59](https://github.com/ben-ranford/lopper/commit/4d66e59421edf7769eda16a2b13fa09b80177ff5))
+* **php:** parse inline use statements after open tag ([#807](https://github.com/ben-ranford/lopper/issues/807)) ([ff377c8](https://github.com/ben-ranford/lopper/commit/ff377c86ed8bded81d9933943d8a0f5ce684e91a))
+* **release:** add checksum and action hardening for VS Code release ([8ed3909](https://github.com/ben-ranford/lopper/commit/8ed3909f1548087087d094c266fb85f9084f62bd))
+* **release:** enforce conventional squash merge policy ([#811](https://github.com/ben-ranford/lopper/issues/811)) ([4a78290](https://github.com/ben-ranford/lopper/commit/4a78290ea15956a50189a9940beccce342008f46))
+* **release:** harden managed-binary integrity and pin release workflow actions ([#916](https://github.com/ben-ranford/lopper/issues/916)) ([8ed3909](https://github.com/ben-ranford/lopper/commit/8ed3909f1548087087d094c266fb85f9084f62bd))
+* **report:** recompute waste when used percent is non-positive ([#805](https://github.com/ben-ranford/lopper/issues/805)) ([aee46bb](https://github.com/ben-ranford/lopper/commit/aee46bb5817530e57223481a271af8e20ac94877))
+* sanitize tab and CR prefixes in CSV sanitizer ([8a4fe6f](https://github.com/ben-ranford/lopper/commit/8a4fe6f5074c104eb4d56c3b8ae4803566b4302d))
+* **thresholds:** bound local policy pack reads in explicit mode ([#912](https://github.com/ben-ranford/lopper/issues/912)) ([5a6a6e1](https://github.com/ben-ranford/lopper/commit/5a6a6e109712388ea757af499e5719e32bdb36ea))
+* **ui:** preserve detail names and clamp prev pagination ([#803](https://github.com/ben-ranford/lopper/issues/803)) ([149dffc](https://github.com/ben-ranford/lopper/commit/149dffc435d471096406d26b8c3ec8d70c4f1c0e))
+* **vscode-lopper:** reject workspace-escaping CLI diagnostics paths ([#917](https://github.com/ben-ranford/lopper/issues/917)) ([0346635](https://github.com/ben-ranford/lopper/commit/0346635f335ca18c6cba134a3cb66b7d7a29ebf6))
+* **workspace:** return descriptive missing-ref lookup errors ([#808](https://github.com/ben-ranford/lopper/issues/808)) ([2cf35c5](https://github.com/ben-ranford/lopper/commit/2cf35c588202e2f9715e3ddf1e6f71229018d2f1))
+
 ## [1.5.1](https://github.com/ben-ranford/lopper/compare/v1.5.0...v1.5.1) (2026-04-25)
 
 
