@@ -234,6 +234,45 @@ $logger = new \Monolog\Logger("app");
 	}
 }
 
+func TestPHPAdapterParsesUseStatementsInlineWithPHPOpenTag(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))
+	lockTemplate := `{
+  "packages": [
+    {
+      "name": %q,
+      "autoload": {"psr-4": {"Monolog\\": "src/Monolog"}}
+    }
+  ]
+}
+`
+	lockContent := fmt.Sprintf(lockTemplate, testMonologDependency)
+	writeFile(t, filepath.Join(repo, testComposerLock), lockContent)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php use Monolog\Logger; $logger = new Logger("app");
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: testMonologDependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.TotalExportsCount == 0 {
+		t.Fatalf("expected inline open-tag use import to be counted")
+	}
+	if dep.UsedExportsCount == 0 {
+		t.Fatalf("expected inline open-tag use import usage to be counted")
+	}
+	if containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("did not expect no-import warning for inline open-tag use import: %#v", reportData.Warnings)
+	}
+}
+
 func TestPHPAdapterIgnoresNamespaceMentionsInCommentsAndStrings(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))

@@ -15,7 +15,7 @@ type importParseResult struct {
 	unresolvedCount int
 }
 
-var useStmtPattern = regexp.MustCompile(`(?ms)^\s*use\s+([^;]+);`)
+var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+([^;]+);`)
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
 
