@@ -94,7 +94,8 @@ Reviewers should ask for a release lock instead of graduation when a release sho
 
 Stable releases are prepared by release-please from Conventional Commits merged to `main`.
 Pull request titles are validated in CI and become the default squash commit title, so the PR title must use the same Conventional Commit format.
-Use `fix(scope): summary` for bug fixes; do not use `bug:` because release-please does not treat it as a release note type.
+Use `fix(scope): summary` for bug fixes; do not use `bug:` for new PRs.
+The release-please config still treats historical `bug:` commits as Bug Fixes so already-merged fixes are not stranded outside the next patch release.
 
 Use these commit types for changes that should appear in release notes:
 

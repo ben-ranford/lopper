@@ -19,6 +19,10 @@
           "section": "Bug Fixes"
         },
         {
+          "type": "bug",
+          "section": "Bug Fixes"
+        },
+        {
           "type": "perf",
           "section": "Performance Improvements"
         },
