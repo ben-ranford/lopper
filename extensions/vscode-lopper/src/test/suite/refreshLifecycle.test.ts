@@ -2,10 +2,10 @@ import * as assert from "node:assert/strict";
 import { chmod, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { suite, test } from "mocha";
+import { setup, suite, test } from "mocha";
 import * as vscode from "vscode";
 
-import { __testing } from "../../extension";
+import { __testing, deactivate } from "../../extension";
 import type { RefreshWorkspaceOptions } from "../../extension";
 import type { WorkspaceAnalysis, WorkspaceAnalysisRunner } from "../../lopperRunner";
 
@@ -24,6 +24,10 @@ interface LifecycleHarness {
 type TestController = ReturnType<typeof __testing.createController>;
 
 suite("refresh lifecycle", () => {
+  setup(() => {
+    deactivate();
+  });
+
   test("reuses in-flight refreshes for identical requests", async function () {
     this.timeout(30_000);
 
