@@ -572,7 +572,14 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   ): void {
     for (const importUse of dependency.unusedImports ?? []) {
       for (const location of importUse.locations ?? []) {
-        const { uri, range } = this.resolveLocation(analysis.folder, location, importUse);
+        const uri = this.resolveWorkspacePath(analysis.folder, location.file);
+        if (!uri) {
+          this.output.appendLine(
+            `[refresh:skipped] ignoring out-of-workspace unused-import location for ${dependency.name}: ${location.file}`,
+          );
+          continue;
+        }
+        const { range } = this.resolveLocation(analysis.folder, location, importUse);
         const key = this.metadataKey(dependency.name, "unused-import", location.file, location.line, importUse.name);
         const diagnostic = new vscode.Diagnostic(
           range,
@@ -599,7 +606,13 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   ): void {
     const codemod = analysis.codemodsByDependency.get(dependency.name);
     for (const suggestion of codemod?.suggestions ?? []) {
-      const uri = vscode.Uri.file(path.join(analysis.folder.uri.fsPath, suggestion.file));
+      const uri = this.resolveWorkspacePath(analysis.folder, suggestion.file);
+      if (!uri) {
+        this.output.appendLine(
+          `[refresh:skipped] ignoring out-of-workspace codemod suggestion for ${dependency.name}: ${suggestion.file}`,
+        );
+        continue;
+      }
       const lineIndex = Math.max(0, suggestion.line - 1);
       const range = new vscode.Range(lineIndex, 0, lineIndex, suggestion.original.length);
       const key = this.metadataKey(dependency.name, "codemod", suggestion.file, suggestion.line, suggestion.importName);
@@ -625,7 +638,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     location: LopperLocation,
     importUse: LopperImportUse,
   ): { uri: vscode.Uri; range: vscode.Range } {
-    const uri = vscode.Uri.file(path.join(folder.uri.fsPath, location.file));
+    const uri = vscode.Uri.file(path.resolve(folder.uri.fsPath, location.file));
     const line = Math.max(0, location.line - 1);
     const startColumn = Math.max(0, location.column - 1);
     const endColumn = startColumn + Math.max(importUse.name.length, 1);
@@ -633,6 +646,17 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       uri,
       range: new vscode.Range(line, startColumn, line, endColumn),
     };
+  }
+
+  private resolveWorkspacePath(folder: vscode.WorkspaceFolder, relativePath: string): vscode.Uri | undefined {
+    const workspaceRoot = path.resolve(folder.uri.fsPath);
+    const candidatePath = path.resolve(workspaceRoot, relativePath);
+    return this.isPathInsideWorkspace(candidatePath, workspaceRoot) ? vscode.Uri.file(candidatePath) : undefined;
+  }
+
+  private isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
+    const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+    return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
   }
 
   private pushDiagnostic(

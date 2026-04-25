@@ -2,10 +2,10 @@ import * as assert from "node:assert/strict";
 import { chmod, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { suite, test } from "mocha";
+import { setup, suite, test } from "mocha";
 import * as vscode from "vscode";
 
-import { __testing } from "../../extension";
+import { __testing, deactivate } from "../../extension";
 import type { RefreshWorkspaceOptions } from "../../extension";
 import type { WorkspaceAnalysis, WorkspaceAnalysisRunner } from "../../lopperRunner";
 
@@ -24,6 +24,10 @@ interface LifecycleHarness {
 type TestController = ReturnType<typeof __testing.createController>;
 
 suite("refresh lifecycle", () => {
+  setup(() => {
+    deactivate();
+  });
+
   test("reuses in-flight refreshes for identical requests", async function () {
     this.timeout(30_000);
 
@@ -142,6 +146,90 @@ suite("refresh lifecycle", () => {
       );
     });
   });
+
+  test("skips unused import diagnostics for out-of-workspace file paths", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const escapedPath = "../outside.ts";
+
+      await withController(
+        {
+          analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+            return makeAnalysis(harness, {
+              dependencyCount: 1,
+              usedPercent: 50,
+              unusedImportLocations: [{ file: escapedPath, line: 1, column: 1 }],
+            });
+          },
+        },
+        async (controller) => {
+          await refresh(controller, harness);
+
+          const diagnostics = vscode.languages.getDiagnostics(harness.document.uri).filter((item) => item.source === "lopper");
+          assert.equal(diagnostics.length, 0);
+        },
+      );
+    });
+  });
+
+  test("skips escaped codemod suggestions while keeping in-workspace diagnostics", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const validSuggestionPath = "src/index.ts";
+      const escapedSuggestionPath = "../outside.ts";
+
+      await withController(
+        {
+          analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+            const analysis = makeAnalysis(harness, {
+              dependencyCount: 1,
+              usedPercent: 50,
+              withUnusedImport: true,
+            });
+            analysis.codemodsByDependency = new Map([
+              [
+                analysis.report.dependencies[0]!.name,
+                {
+                  mode: "replace",
+                  suggestions: [
+                    {
+                      file: escapedSuggestionPath,
+                      line: 1,
+                      importName: "scope-lib",
+                      fromModule: "scope-lib",
+                      toModule: "scope-lib",
+                      original: "import scope-lib from \"scope-lib\";",
+                      replacement: "import scope-lib from \"scope-lib\";",
+                    },
+                    {
+                      file: validSuggestionPath,
+                      line: 1,
+                      importName: "chunk",
+                      fromModule: "scope-lib",
+                      toModule: "scope-lib/chunk",
+                      original: "import chunk from \"scope-lib\";",
+                      replacement: "import chunk from \"scope-lib/chunk\";",
+                    },
+                  ],
+                },
+              ],
+            ]);
+            return analysis;
+          },
+        },
+        async (controller) => {
+          await refresh(controller, harness);
+
+          const diagnostics = vscode.languages.getDiagnostics(harness.document.uri).filter((item) => item.source === "lopper");
+          const codemodDiagnostics = diagnostics.filter((item) => item.message.includes("subpath import"));
+          assert.equal(codemodDiagnostics.length, 1);
+          assert.equal(diagnostics.length, 2);
+        },
+      );
+    });
+  });
 });
 
 async function withHarness(run: (harness: LifecycleHarness) => Promise<void>): Promise<void> {
@@ -230,6 +318,7 @@ function makeAnalysis(
     dependencyCount: number;
     usedPercent: number;
     withUnusedImport?: boolean;
+    unusedImportLocations?: Array<{ file: string; line: number; column: number }>;
   },
 ): WorkspaceAnalysis {
   return makeWorkspaceAnalysis({
@@ -247,7 +336,9 @@ function makeWorkspaceAnalysis(options: {
   dependencyCount: number;
   usedPercent: number;
   withUnusedImport?: boolean;
+  unusedImportLocations?: Array<{ file: string; line: number; column: number }>;
 }): WorkspaceAnalysis {
+  const unusedImportLocations = options.unusedImportLocations ?? [{ file: "src/index.ts", line: 1, column: 1 }];
   const dependency = {
     name: "scope-lib",
     usedExportsCount: 1,
@@ -256,12 +347,7 @@ function makeWorkspaceAnalysis(options: {
     unusedImports:
       options.withUnusedImport === false
         ? []
-        : [
-          {
-            name: "chunk",
-            locations: [{ file: "src/index.ts", line: 1, column: 1 }],
-          },
-        ],
+        : [{ name: "chunk", locations: unusedImportLocations }],
   };
 
   return {

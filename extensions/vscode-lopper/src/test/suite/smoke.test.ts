@@ -1,7 +1,9 @@
 import * as assert from "node:assert/strict";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { suite, test } from "mocha";
+import { suite, teardown, test } from "mocha";
+
+import { deactivate } from "../../extension";
 
 suite("vscode-lopper smoke", () => {
   const fixturePath = path.join(
@@ -10,6 +12,10 @@ suite("vscode-lopper smoke", () => {
     "index.ts",
   );
   const fixtureUri = vscode.Uri.file(fixturePath);
+
+  teardown(() => {
+    deactivate();
+  });
 
   test("refreshes diagnostics, hover details, and quick fixes", async function () {
     this.timeout(60_000);
@@ -53,9 +59,7 @@ suite("vscode-lopper smoke", () => {
     assert.match(normalizedHoverText, /Provenance:/);
     assert.match(normalizedHoverText, /unknown/i);
 
-    const quickFixes = await vscode.commands.executeCommand<
-      (vscode.CodeAction | vscode.Command)[]
-    >("vscode.executeCodeActionProvider", fixtureUri, new vscode.Range(0, 0, 0, 10));
+    const quickFixes = await waitForCodeActions(fixtureUri, new vscode.Range(0, 0, 0, 10));
     assert.ok(quickFixes && quickFixes.length > 0, "expected quick fixes");
     const codeAction = quickFixes.find(
       (item): item is vscode.CodeAction =>
@@ -81,4 +85,39 @@ async function waitForDiagnostics(uri: vscode.Uri, minimumCount: number): Promis
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return vscode.languages.getDiagnostics(uri);
+}
+
+async function waitForCodeActions(
+  uri: vscode.Uri,
+  range: vscode.Range,
+): Promise<(vscode.CodeAction | vscode.Command)[]> {
+  const timeoutAt = Date.now() + 20_000;
+  let lastError: unknown;
+  while (Date.now() < timeoutAt) {
+    try {
+      const actions = await vscode.commands.executeCommand<(vscode.CodeAction | vscode.Command)[]>(
+        "vscode.executeCodeActionProvider",
+        uri,
+        range,
+      );
+      if ((actions?.length ?? 0) > 0) {
+        return actions;
+      }
+    } catch (error) {
+      lastError = error;
+      if (!isCanceledError(error)) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  return [];
+}
+
+function isCanceledError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Canceled");
 }
