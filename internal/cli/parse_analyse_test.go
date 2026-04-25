@@ -705,6 +705,16 @@ func TestParseArgsAnalyseInvalidCombinations(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseTrailingFlagDoesNotConsumeDependency(t *testing.T) {
+	_, err := ParseArgs([]string{"analyse", "lodash", "--config"})
+	if err == nil {
+		t.Fatalf("expected missing flag value error")
+	}
+	if !strings.Contains(err.Error(), "flag needs an argument: -config") {
+		t.Fatalf(unexpectedValidationErrFmt, err)
+	}
+}
+
 func TestParseArgsVisitedFlagThresholdAliasMatch(t *testing.T) {
 	req := mustParseArgs(t, []string{
 		"analyse", "--top", "2",

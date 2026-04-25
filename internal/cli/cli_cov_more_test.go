@@ -41,3 +41,23 @@ func TestRunRunnerErrorWriteFailure(t *testing.T) {
 		t.Fatalf("expected err writer failure to return exit code 1, got %d", code)
 	}
 }
+
+func TestRunPreservesRunErrorExitCodeOnOutputWriteFailure(t *testing.T) {
+	cases := []struct {
+		name     string
+		runErr   error
+		wantCode int
+	}{
+		{name: "threshold_breach", runErr: app.ErrFailOnIncrease, wantCode: 3},
+		{name: "lockfile_drift", runErr: app.ErrLockfileDrift, wantCode: 4},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(&fakeRunner{output: "partial report", err: tc.runErr}, &failWriter{}, &bytes.Buffer{})
+			if code := c.Run(context.Background(), []string{"analyse", "lodash"}); code != tc.wantCode {
+				t.Fatalf("expected mapped run error exit code %d, got %d", tc.wantCode, code)
+			}
+		})
+	}
+}

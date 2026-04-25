@@ -141,9 +141,9 @@ func isVersionArg(args []string) bool {
 	return len(args) == 1 && strings.TrimSpace(args[0]) == "--version"
 }
 
-func normalizeArgs(args []string) []string {
+func normalizeArgs(args []string) ([]string, error) {
 	if len(args) == 0 {
-		return args
+		return args, nil
 	}
 
 	flags := make([]string, 0, len(args))
@@ -157,7 +157,10 @@ func normalizeArgs(args []string) []string {
 		}
 		if strings.HasPrefix(arg, "-") {
 			flags = append(flags, arg)
-			if flagNeedsValue(arg) && i+1 < len(args) {
+			if flagNeedsValue(arg) {
+				if i+1 >= len(args) || args[i+1] == "--" {
+					return nil, missingFlagValueError(arg)
+				}
 				flags = append(flags, args[i+1])
 				i++
 			}
@@ -166,7 +169,15 @@ func normalizeArgs(args []string) []string {
 		positionals = append(positionals, arg)
 	}
 
-	return append(flags, positionals...)
+	return append(flags, positionals...), nil
+}
+
+func missingFlagValueError(arg string) error {
+	name := strings.TrimLeft(arg, "-")
+	if name == "" {
+		name = arg
+	}
+	return fmt.Errorf("flag needs an argument: -%s", name)
 }
 
 func flagNeedsValue(arg string) bool {
