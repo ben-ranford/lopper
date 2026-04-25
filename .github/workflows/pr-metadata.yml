@@ -35,8 +35,32 @@ jobs:
             fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
             core.exportVariable('PR_BODY_FILE', bodyPath);
 
+      - name: Read repository merge policy
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const data = await github.graphql(
+              `query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  mergeCommitAllowed
+                  rebaseMergeAllowed
+                  squashMergeAllowed
+                  squashMergeCommitTitle
+                }
+              }`,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              },
+            );
+            const repo = data.repository;
+            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(repo.mergeCommitAllowed));
+            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(repo.rebaseMergeAllowed));
+            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(repo.squashMergeAllowed));
+            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(repo.squashMergeCommitTitle || ''));
+
       - name: Validate PR title and template
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: go run ./tools/prcheck --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --body-file "$PR_BODY_FILE"
+        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --body-file "$PR_BODY_FILE"
