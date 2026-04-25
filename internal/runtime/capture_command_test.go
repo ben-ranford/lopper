@@ -133,6 +133,35 @@ func TestBuildRuntimeCommandRejectsUnsafeSyntaxAndFlags(t *testing.T) {
 	checkRejects(`node -e 'console.log("hi")'`, "unsafe executable flag")
 }
 
+func TestValidateCommand(t *testing.T) {
+	if err := ValidateCommand(" "); err != nil {
+		t.Fatalf("expected blank command to be ignored, got %v", err)
+	}
+	if err := ValidateCommand("npm test"); err != nil {
+		t.Fatalf("expected safe command to validate, got %v", err)
+	}
+
+	err := ValidateCommand(`node -e 'console.log("hi")'`)
+	if err == nil || !strings.Contains(err.Error(), "unsafe executable flag") {
+		t.Fatalf("expected unsafe executable flag rejection, got %v", err)
+	}
+}
+
+func TestContainsUnsafeRuntimeCommandSyntax(t *testing.T) {
+	if containsUnsafeRuntimeCommandSyntax(`node -r 'const value = "a\\b"'`) {
+		t.Fatalf("expected backslashes in single quotes to stay safe")
+	}
+	if containsUnsafeRuntimeCommandSyntax(`node -r 'console.log("a && b")'`) {
+		t.Fatalf("expected shell operators in single quotes to stay safe")
+	}
+	if containsUnsafeRuntimeCommandSyntax(`node -r '$(pwd)'`) {
+		t.Fatalf("expected subshell syntax in single quotes to stay safe")
+	}
+	if !containsUnsafeRuntimeCommandSyntax(`node -r $(pwd)`) {
+		t.Fatalf("expected subshell syntax outside quotes to be rejected")
+	}
+}
+
 func TestResolveRuntimeExecutablePathSkipsNonExecutableCandidate(t *testing.T) {
 	if isWindowsRuntime() {
 		t.Skip("non-executable mode bit checks are Unix-specific")
