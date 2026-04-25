@@ -63,7 +63,10 @@ func TestSplitPatternListSkipsEmptyAndDuplicateEntries(t *testing.T) {
 }
 
 func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
-	args := normalizeArgs([]string{"lodash", "--top", "5", "--format=json", "--", "--literal"})
+	args, err := normalizeArgs([]string{"lodash", "--top", "5", "--format=json", "--", "--literal"})
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
 	if len(args) == 0 {
 		t.Fatalf("expected normalized args")
 	}
@@ -78,6 +81,16 @@ func TestNormalizeArgsAndFlagNeedsValue(t *testing.T) {
 	}
 	if flagNeedsValue("--unknown-flag") {
 		t.Fatalf("did not expect unknown flag to be treated as requiring value")
+	}
+}
+
+func TestNormalizeArgsMissingFlagValueReturnsError(t *testing.T) {
+	_, err := normalizeArgs([]string{"lodash", "--config"})
+	if err == nil {
+		t.Fatalf("expected missing flag value error")
+	}
+	if !strings.Contains(err.Error(), "flag needs an argument: -config") {
+		t.Fatalf(unexpectedValidationErrFmt, err)
 	}
 }
 

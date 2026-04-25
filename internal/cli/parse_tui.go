@@ -10,7 +10,11 @@ import (
 )
 
 func parseTUI(args []string, req app.Request) (app.Request, error) {
-	args = normalizeArgs(args)
+	normalizedArgs, err := normalizeArgs(args)
+	if err != nil {
+		return req, err
+	}
+	args = normalizedArgs
 
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

@@ -47,6 +47,9 @@ func (c *CommandLine) Run(ctx context.Context, args []string) int {
 	output, runErr := c.Executor.Execute(ctx, req)
 	writeErr := c.writeOutput(output)
 	if writeErr != nil {
+		if runErr != nil {
+			return exitCodeForRunError(runErr)
+		}
 		return 1
 	}
 
