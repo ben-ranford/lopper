@@ -105,10 +105,7 @@ func validateRuntimeCommand(command string, fields []string) error {
 		return fmt.Errorf("runtime test command is required")
 	}
 
-	if err := rejectRuntimeCommandUnsafeFlags(fields[0], fields[1:]); err != nil {
-		return err
-	}
-	return nil
+	return rejectRuntimeCommandUnsafeFlags(fields[0], fields[1:])
 }
 
 func containsUnsafeRuntimeCommandSyntax(command string) bool {
