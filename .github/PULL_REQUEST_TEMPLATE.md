@@ -1,6 +1,6 @@
 ## Summary
 
-Describe the problem and the intent of this change.
+Describe the problem and the intent of this change. Use `N/A` only when the section truly does not apply.
 
 ## Changes
 

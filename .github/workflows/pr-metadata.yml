@@ -1,0 +1,42 @@
+name: pr metadata
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+jobs:
+  validate:
+    name: pr-metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Write PR body
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-body.md');
+            fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
+            core.exportVariable('PR_BODY_FILE', bodyPath);
+
+      - name: Validate PR title and template
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: go run ./tools/prcheck --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --body-file "$PR_BODY_FILE"

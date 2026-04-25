@@ -93,6 +93,9 @@ Reviewers should ask for a release lock instead of graduation when a release sho
 ## Commit style and releases
 
 Stable releases are prepared by release-please from Conventional Commits merged to `main`.
+Pull request titles are validated in CI and become the default squash commit title, so the PR title must use the same Conventional Commit format.
+Use `fix(scope): summary` for bug fixes; do not use `bug:` because release-please does not treat it as a release note type.
+
 Use these commit types for changes that should appear in release notes:
 
 - `fix(scope): summary` for patch releases.
@@ -104,6 +107,10 @@ Use these commit types for changes that should appear in release notes:
 
 Use non-release types such as `test`, `ci`, `build`, or `chore` when the change should not by itself create a release PR.
 Good scopes include `release`, `ci`, `vscode`, `js`, `jvm`, `go`, `report`, `ui`, `runtime`, and `homebrew`.
+
+PR descriptions are also validated before merge.
+Keep every heading from `.github/PULL_REQUEST_TEMPLATE.md`, fill every risk field with a concrete value such as `None` or `N/A`, and check every checklist item once it has been considered.
+Generated release-please PRs keep their release-generated changelog body, but their title still has to use `chore(main): release x.y.z`.
 
 ## Adapter docs checklist
 
