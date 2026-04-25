@@ -439,12 +439,16 @@ func isDetailCommand(input string) (string, bool) {
 	if input == "" {
 		return "", false
 	}
-	fields := strings.Fields(input)
-	if len(fields) < 2 {
+	command, args, ok := strings.Cut(input, " ")
+	if !ok {
 		return "", false
 	}
-	if fields[0] != "open" && fields[0] != "detail" {
+	if command != "open" && command != "detail" {
 		return "", false
 	}
-	return fields[1], true
+	dependency := strings.TrimSpace(args)
+	if dependency == "" {
+		return "", false
+	}
+	return dependency, true
 }

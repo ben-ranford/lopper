@@ -188,6 +188,9 @@ func TestIsDetailCommand(t *testing.T) {
 	if dep, ok := isDetailCommand("detail js-ts:lodash"); !ok || dep != "js-ts:lodash" {
 		t.Fatalf("expected detail command parse")
 	}
+	if dep, ok := isDetailCommand("open aws sdk v3"); !ok || dep != "aws sdk v3" {
+		t.Fatalf("expected multi-word dependency to parse without truncation")
+	}
 	if _, ok := isDetailCommand("open"); ok {
 		t.Fatalf("expected invalid detail command to fail")
 	}
