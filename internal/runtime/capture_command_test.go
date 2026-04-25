@@ -101,16 +101,6 @@ func TestBuildRuntimeCommandRejectsInvalidInput(t *testing.T) {
 			command: `node -e "console.log('hello world')`,
 			wantErr: "unterminated quote",
 		},
-		{
-			name:    "shell operator",
-			command: `npm test && echo bad`,
-			wantErr: "indirect command execution operators",
-		},
-		{
-			name:    "eval flag",
-			command: `node -e 'console.log("hi")'`,
-			wantErr: "unsafe executable flag",
-		},
 	}
 
 	for _, tc := range testCases {
@@ -124,6 +114,23 @@ func TestBuildRuntimeCommandRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildRuntimeCommandRejectsUnsafeSyntaxAndFlags(t *testing.T) {
+	checkRejects := func(command, wantErr string) {
+		t.Helper()
+
+		_, err := buildRuntimeCommand(context.Background(), command)
+		if err == nil {
+			t.Fatalf("expected error containing %q", wantErr)
+		}
+		if !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("expected error containing %q, got %v", wantErr, err)
+		}
+	}
+
+	checkRejects(`npm test && echo bad`, "indirect command execution operators")
+	checkRejects(`node -e 'console.log("hi")'`, "unsafe executable flag")
 }
 
 func TestResolveRuntimeExecutablePathSkipsNonExecutableCandidate(t *testing.T) {
