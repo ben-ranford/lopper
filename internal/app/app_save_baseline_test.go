@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -139,5 +141,67 @@ func TestSaveBaselineIfNeededDisabledNoop(t *testing.T) {
 	}
 	if len(updated.Warnings) != 1 || updated.Warnings[0] != "keep" {
 		t.Fatalf("expected unchanged report on noop save baseline, got %#v", updated)
+	}
+}
+
+func TestIsBootstrapableMissingBaseline(t *testing.T) {
+	testCases := []struct {
+		name string
+		req  AnalyseRequest
+		err  error
+		want bool
+	}{
+		{
+			name: "save baseline store missing baseline",
+			req: AnalyseRequest{
+				SaveBaseline:      true,
+				BaselineStorePath: t.TempDir(),
+			},
+			err:  os.ErrNotExist,
+			want: true,
+		},
+		{
+			name: "save baseline disabled",
+			req: AnalyseRequest{
+				BaselineStorePath: t.TempDir(),
+			},
+			err:  os.ErrNotExist,
+			want: false,
+		},
+		{
+			name: "explicit baseline path bypasses bootstrap",
+			req: AnalyseRequest{
+				SaveBaseline:      true,
+				BaselinePath:      testBaselinePath,
+				BaselineStorePath: t.TempDir(),
+			},
+			err:  os.ErrNotExist,
+			want: false,
+		},
+		{
+			name: "missing baseline store path",
+			req: AnalyseRequest{
+				SaveBaseline: true,
+			},
+			err:  os.ErrNotExist,
+			want: false,
+		},
+		{
+			name: "different error kind",
+			req: AnalyseRequest{
+				SaveBaseline:      true,
+				BaselineStorePath: t.TempDir(),
+			},
+			err:  errors.New("boom"),
+			want: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBootstrapableMissingBaseline(tc.req, tc.err); got != tc.want {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+		})
 	}
 }
