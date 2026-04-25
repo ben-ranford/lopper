@@ -11,6 +11,7 @@ import (
 )
 
 var releasePleasePRTitlePattern = regexp.MustCompile(`(?i)\brelease\s+v?([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)\b`)
+var releaseVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 
 func runReleasePRComment(args []string) error {
 	fs := flag.NewFlagSet("release-pr-comment", flag.ContinueOnError)
@@ -60,9 +61,14 @@ func normalizeReleaseVersion(value string) string {
 		return ""
 	}
 	if strings.HasPrefix(strings.ToLower(value), "v") {
-		return "v" + strings.TrimSpace(value[1:])
+		value = "v" + strings.TrimSpace(value[1:])
+	} else {
+		value = "v" + value
 	}
-	return "v" + value
+	if !releaseVersionPattern.MatchString(value) {
+		return ""
+	}
+	return value
 }
 
 func releasePleaseVersionFromTitle(title string) string {
@@ -97,6 +103,19 @@ func newlyAddedPreviewFlags(current, previous []featureflags.Flag, compared bool
 	return added
 }
 
+func graduationCandidatePreviewFlags(current []featureflags.Flag) []featureflags.Flag {
+	candidates := make([]featureflags.Flag, 0)
+	for _, flag := range current {
+		if flag.Lifecycle != featureflags.LifecyclePreview {
+			continue
+		}
+		if flag.FirstStableRelease == "" {
+			candidates = append(candidates, flag)
+		}
+	}
+	return candidates
+}
+
 func formatReleasePRComment(release string, current []featureflags.Flag, manifest []featureflags.ManifestEntry, previous []featureflags.Flag, compared bool, workflowURL string) string {
 	var b strings.Builder
 	b.WriteString("<!-- lopper-feature-flag-release-pr -->\n")
@@ -112,9 +131,9 @@ func formatReleasePRComment(release string, current []featureflags.Flag, manifes
 		fmt.Fprintf(&b, "- Graduate a preview flag for future releases with `graduate-feature.yml` using the feature code or name, then merge that PR before publishing `%s`.\n", release)
 	}
 
-	candidates := newlyAddedPreviewFlags(current, previous, compared)
+	candidates := graduationCandidatePreviewFlags(current)
 	if len(candidates) == 0 {
-		b.WriteString("- No newly added preview flags were detected for this release candidate.\n")
+		b.WriteString("- No preview flags are shipping in their first stable release candidate.\n")
 		return b.String()
 	}
 

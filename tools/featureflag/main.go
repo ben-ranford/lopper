@@ -38,13 +38,15 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: featureflag add|graduate|validate|manifest|report|pr-enforce|release-pr-comment")
+		return fmt.Errorf("usage: featureflag add|graduate|stamp-release|validate|manifest|report|pr-enforce|release-pr-comment")
 	}
 	switch args[0] {
 	case "add":
 		return runAdd(args[1:])
 	case "graduate":
 		return runGraduate(args[1:])
+	case "stamp-release":
+		return runStampRelease(args[1:])
 	case "validate":
 		return runValidate()
 	case "manifest":
