@@ -92,6 +92,39 @@ func TestFormatSARIFWasteOnlyReport(t *testing.T) {
 	}
 }
 
+func TestFormatSARIFWasteOnlyReportNonPositiveDelta(t *testing.T) {
+	testCases := []struct {
+		name         string
+		wasteIncrease float64
+	}{
+		{name: "zero", wasteIncrease: 0},
+		{name: "negative", wasteIncrease: -3.5},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := NewFormatter().Format(Report{WasteIncreasePercent: &tc.wasteIncrease}, FormatSARIF)
+			if err != nil {
+				t.Fatalf("format waste-only sarif report: %v", err)
+			}
+
+			var payload sarifLog
+			if err := json.Unmarshal([]byte(output), &payload); err != nil {
+				t.Fatalf(errParseSARIFOutput, err)
+			}
+			if len(payload.Runs) != 1 {
+				t.Fatalf(errExpectedOneRun, len(payload.Runs))
+			}
+			if len(payload.Runs[0].Results) != 0 {
+				t.Fatalf("expected no results for non-positive waste delta, got %d", len(payload.Runs[0].Results))
+			}
+			if len(payload.Runs[0].Tool.Driver.Rules) != 0 {
+				t.Fatalf("expected no rules for non-positive waste delta, got %d", len(payload.Runs[0].Tool.Driver.Rules))
+			}
+		})
+	}
+}
+
 func TestNormalizeRuleToken(t *testing.T) {
 	tests := []struct {
 		name  string
