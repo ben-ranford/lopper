@@ -16,6 +16,23 @@ const (
 	indexJSFile = "index.js"
 )
 
+func collectDependencyImportUsageFromSource(t *testing.T, dependency, source string) dependencyImportUsage {
+	t.Helper()
+
+	repo := t.TempDir()
+	path := filepath.Join(repo, indexJSFile)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	scan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+
+	return collectDependencyImportUsage(scan, dependency)
+}
+
 func TestNamespaceUsageComputedProperty(t *testing.T) {
 	repo := t.TempDir()
 	source := "import * as util from \"lodash\"\nutil['map']([1], (x) => x)\n"
@@ -382,22 +399,10 @@ func TestCollectDependencyImportUsageSideEffectImport(t *testing.T) {
 }
 
 func TestCollectDependencyImportUsageNamespaceDestructureTracksProperties(t *testing.T) {
-	repo := t.TempDir()
-	source := `import * as util from "lodash"
+	usage := collectDependencyImportUsageFromSource(t, "lodash", `import * as util from "lodash"
 const { map } = util
 map([1], (x) => x)
-`
-	path := filepath.Join(repo, indexJSFile)
-	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-
-	scan, err := ScanRepo(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("scan repo: %v", err)
-	}
-
-	usage := collectDependencyImportUsage(scan, "lodash")
+`)
 	if _, ok := usage.UsedExports["map"]; !ok {
 		t.Fatalf("expected map export usage from namespace destructure, got %#v", usage.UsedExports)
 	}
@@ -410,23 +415,11 @@ map([1], (x) => x)
 }
 
 func TestCollectDependencyImportUsageNamespaceDestructureRestKeepsWildcard(t *testing.T) {
-	repo := t.TempDir()
-	source := `import * as util from "lodash"
+	usage := collectDependencyImportUsageFromSource(t, "lodash", `import * as util from "lodash"
 const { map, ...rest } = util
 map([1], (x) => x)
 void rest
-`
-	path := filepath.Join(repo, indexJSFile)
-	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-
-	scan, err := ScanRepo(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("scan repo: %v", err)
-	}
-
-	usage := collectDependencyImportUsage(scan, "lodash")
+`)
 	if _, ok := usage.UsedExports["map"]; !ok {
 		t.Fatalf("expected map export usage from namespace destructure, got %#v", usage.UsedExports)
 	}
