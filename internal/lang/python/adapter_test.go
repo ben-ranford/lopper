@@ -171,6 +171,29 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseTopNIgnoresSrcLayoutLocalPackages(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), "[project]\nname='demo'\nversion='0.1.0'\ndependencies=['requests>=2.0']\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "app", "__init__.py"), localModuleContent)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainPy), "import app\nimport requests\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse src-layout repo: %v", err)
+	}
+
+	names := dependencyNames(reportData)
+	if slices.Contains(names, "app") {
+		t.Fatalf("expected src-layout local package to be excluded, got %#v", names)
+	}
+	if !slices.Contains(names, "requests") {
+		t.Fatalf("expected external dependency to remain present, got %#v", names)
+	}
+}
+
 func TestAdapterMetadataAndDetect(t *testing.T) {
 	adapter := NewAdapter()
 	if adapter.ID() != "python" {
