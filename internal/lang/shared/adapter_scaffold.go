@@ -22,7 +22,11 @@ type RootSignal struct {
 func ApplyRootSignals(repoPath string, signals []RootSignal, detection *language.Detection, roots map[string]struct{}) error {
 	for _, signal := range signals {
 		path := filepath.Join(repoPath, signal.Name)
-		if _, err := os.Stat(path); err == nil {
+		info, err := os.Stat(path)
+		if err == nil {
+			if info.IsDir() {
+				continue
+			}
 			if detection != nil {
 				detection.Matched = true
 				detection.Confidence += signal.Confidence
