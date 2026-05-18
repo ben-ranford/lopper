@@ -347,6 +347,51 @@ func TestParseUseStatementFunctionAndConstImports(t *testing.T) {
 	}
 }
 
+func TestParseGroupedUseStatementFunctionAndConstImports(t *testing.T) {
+	resolver := composerResolver{declared: map[string]struct{}{helpersVendorLibDependency: {}}}
+	resolver.namespaceToDep = map[string]string{"Vendor\\Lib": helpersVendorLibDependency}
+
+	tests := []struct {
+		statement       string
+		expectedModules []string
+	}{
+		{
+			statement:       "function Vendor\\Lib\\{helper, util as utilAlias}",
+			expectedModules: []string{"Vendor\\Lib\\helper", "Vendor\\Lib\\util"},
+		},
+		{
+			statement:       "const Vendor\\Lib\\{VERSION, BUILD as B}",
+			expectedModules: []string{"Vendor\\Lib\\VERSION", "Vendor\\Lib\\BUILD"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.statement, func(t *testing.T) {
+			imports, groupedDeps, unresolved := parseUseStatement(tc.statement, "x.php", 1, resolver)
+			if unresolved != 0 {
+				t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+			}
+			if len(groupedDeps) != 1 {
+				t.Fatalf("expected grouped dependency attribution, got %#v", groupedDeps)
+			}
+			if _, ok := groupedDeps[helpersVendorLibDependency]; !ok {
+				t.Fatalf("expected grouped dependency %q, got %#v", helpersVendorLibDependency, groupedDeps)
+			}
+			if len(imports) != len(tc.expectedModules) {
+				t.Fatalf("expected %d imports, got %d", len(tc.expectedModules), len(imports))
+			}
+			for i, imp := range imports {
+				if imp.Dependency != helpersVendorLibDependency {
+					t.Fatalf("expected dependency %q, got %#v", helpersVendorLibDependency, imp)
+				}
+				if imp.Module != tc.expectedModules[i] {
+					t.Fatalf("expected module %q, got %#v", tc.expectedModules[i], imp)
+				}
+			}
+		})
+	}
+}
+
 func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	imports, unresolved := parseNamespaceReferences([]byte(helpersPHPHeader+"use Monolog\\Logger;\n"), "x.php", resolver)
