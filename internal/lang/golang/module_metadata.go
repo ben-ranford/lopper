@@ -102,43 +102,33 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 }
 
 func parseGoMod(content []byte) (string, []string, map[string]string) {
-	depSet := make(map[string]struct{})
-	replaceSet := make(map[string]string)
-
 	file, err := modfile.Parse(goModName, content, nil)
 	if err != nil && file == nil {
-		return "", []string{}, replaceSet
+		return "", []string{}, map[string]string{}
 	}
 	if file == nil {
-		return "", []string{}, replaceSet
+		return "", []string{}, map[string]string{}
 	}
 
-	modulePath := ""
-	if file.Module != nil {
-		modulePath = strings.TrimSpace(file.Module.Mod.Path)
+	return goModModulePath(file), goModDependencies(file.Require), goModReplacements(file.Replace)
+}
+
+func goModModulePath(file *modfile.File) string {
+	if file == nil || file.Module == nil {
+		return ""
 	}
 
-	for _, requirement := range file.Require {
+	return strings.TrimSpace(file.Module.Mod.Path)
+}
+
+func goModDependencies(requirements []*modfile.Require) []string {
+	depSet := make(map[string]struct{}, len(requirements))
+	for _, requirement := range requirements {
 		dependency := strings.TrimSpace(requirement.Mod.Path)
 		if dependency == "" {
 			continue
 		}
 		depSet[dependency] = struct{}{}
-	}
-	for _, replacement := range file.Replace {
-		oldPath := strings.TrimSpace(replacement.Old.Path)
-		newPath := strings.TrimSpace(replacement.New.Path)
-		if oldPath == "" || newPath == "" {
-			continue
-		}
-		if isLocalReplaceTarget(newPath) {
-			continue
-		}
-		// Track only import-like replacement targets.
-		if !looksExternalImport(newPath) {
-			continue
-		}
-		replaceSet[newPath] = oldPath
 	}
 
 	dependencies := make([]string, 0, len(depSet))
@@ -146,7 +136,33 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 		dependencies = append(dependencies, dep)
 	}
 	sort.Strings(dependencies)
-	return modulePath, dependencies, replaceSet
+
+	return dependencies
+}
+
+func goModReplacements(replacements []*modfile.Replace) map[string]string {
+	replaceSet := make(map[string]string)
+	for _, replacement := range replacements {
+		oldPath := strings.TrimSpace(replacement.Old.Path)
+		newPath := strings.TrimSpace(replacement.New.Path)
+		if !shouldTrackGoModReplacement(oldPath, newPath) {
+			continue
+		}
+		replaceSet[newPath] = oldPath
+	}
+
+	return replaceSet
+}
+
+func shouldTrackGoModReplacement(oldPath, newPath string) bool {
+	if oldPath == "" || newPath == "" {
+		return false
+	}
+	if isLocalReplaceTarget(newPath) {
+		return false
+	}
+	// Track only import-like replacement targets.
+	return looksExternalImport(newPath)
 }
 
 func addGoModReplacement(line string, replaceSet map[string]string) {
