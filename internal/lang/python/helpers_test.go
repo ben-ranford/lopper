@@ -53,12 +53,14 @@ func TestPythonModuleResolutionHelpers(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "localpkg", "__init__.py"), localModuleContent)
 	testutil.MustWriteFile(t, filepath.Join(repo, "single.py"), localModuleContent)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "app", "__init__.py"), localModuleContent)
 	dependencyCases := []struct {
 		module string
 		want   string
 	}{
 		{module: "os", want: ""},
 		{module: "localpkg.module", want: ""},
+		{module: "app.module", want: ""},
 		{module: "requests.sessions", want: "requests"},
 	}
 	for _, tc := range dependencyCases {
@@ -72,6 +74,7 @@ func TestPythonModuleResolutionHelpers(t *testing.T) {
 	}{
 		{module: "localpkg", want: true},
 		{module: "single", want: true},
+		{module: "app", want: true},
 		{module: "missing", want: false},
 	}
 	for _, tc := range localCases {

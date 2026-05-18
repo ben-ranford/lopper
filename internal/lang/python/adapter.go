@@ -546,13 +546,26 @@ func dependencyFromModule(repoPath, moduleName string) string {
 }
 
 func isLocalModule(repoPath, root string) bool {
-	if _, err := os.Stat(filepath.Join(repoPath, root+".py")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(repoPath, root, "__init__.py")); err == nil {
-		return true
+	for _, searchRoot := range localModuleSearchRoots(repoPath) {
+		if _, err := os.Stat(filepath.Join(searchRoot, root+".py")); err == nil {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(searchRoot, root, "__init__.py")); err == nil {
+			return true
+		}
 	}
 	return false
+}
+
+func localModuleSearchRoots(repoPath string) []string {
+	roots := []string{repoPath}
+
+	srcRoot := filepath.Join(repoPath, "src")
+	if info, err := os.Stat(srcRoot); err == nil && info.IsDir() {
+		roots = append(roots, srcRoot)
+	}
+
+	return roots
 }
 
 func normalizeDependencyID(value string) string {
