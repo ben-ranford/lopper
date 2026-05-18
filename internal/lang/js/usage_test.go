@@ -66,9 +66,9 @@ func TestNamespaceUsageMemberExpression(t *testing.T) {
 func TestNamespaceUsageObjectDestructuring(t *testing.T) {
 	repo := t.TempDir()
 	source := `import * as util from "lodash"
-const { map, filter: alias, reduce = fallback } = util
+const { map, filter: alias, reduce = fallback, "select": picker } = util
 let pick
-({ pick } = util)
+({ pick } = (util))
 `
 	path := filepath.Join(repo, indexJSFile)
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
@@ -92,6 +92,9 @@ let pick
 	}
 	if usage["reduce"] == 0 {
 		t.Fatalf("expected destructured default reduce usage")
+	}
+	if usage["select"] == 0 {
+		t.Fatalf("expected destructured string-key select usage")
 	}
 	if usage["pick"] == 0 {
 		t.Fatalf("expected assignment destructure pick usage")
@@ -398,6 +401,41 @@ map([1], (x) => x)
 	if _, ok := usage.UsedExports["map"]; !ok {
 		t.Fatalf("expected map export usage from namespace destructure, got %#v", usage.UsedExports)
 	}
+	if _, ok := usage.UsedExports["*"]; ok {
+		t.Fatalf("did not expect wildcard usage for static namespace destructure, got %#v", usage.UsedExports)
+	}
+	if usage.HasAmbiguousWildcard {
+		t.Fatalf("did not expect ambiguous wildcard usage for static namespace destructure")
+	}
+}
+
+func TestCollectDependencyImportUsageNamespaceDestructureRestKeepsWildcard(t *testing.T) {
+	repo := t.TempDir()
+	source := `import * as util from "lodash"
+const { map, ...rest } = util
+map([1], (x) => x)
+void rest
+`
+	path := filepath.Join(repo, indexJSFile)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	scan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+
+	usage := collectDependencyImportUsage(scan, "lodash")
+	if _, ok := usage.UsedExports["map"]; !ok {
+		t.Fatalf("expected map export usage from namespace destructure, got %#v", usage.UsedExports)
+	}
+	if _, ok := usage.UsedExports["*"]; !ok {
+		t.Fatalf("expected wildcard usage for rest destructure, got %#v", usage.UsedExports)
+	}
+	if !usage.HasAmbiguousWildcard {
+		t.Fatalf("expected ambiguous wildcard usage for rest destructure")
+	}
 }
 
 func TestNamespaceReferenceExtractionBranches(t *testing.T) {
@@ -444,5 +482,31 @@ func TestExtractPropertyStringBackticksAndRaw(t *testing.T) {
 	})
 	if !slices.Contains(found, "value") || !slices.Contains(found, "quoted") {
 		t.Fatalf("expected string extraction from template and quoted strings, got %#v", found)
+	}
+}
+
+func TestExtractObjectPatternPropertyUnsupportedNodes(t *testing.T) {
+	if got := extractObjectPatternProperty(nil, nil); got != "" {
+		t.Fatalf("expected empty property for nil node, got %q", got)
+	}
+
+	parser := newSourceParser()
+	source := []byte(`const { ...rest } = util`)
+	tree, err := parser.Parse(context.Background(), indexJSFile, source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	var restPattern *sitter.Node
+	walkNode(tree.RootNode(), func(node *sitter.Node) {
+		if restPattern == nil && node.Type() == "rest_pattern" {
+			restPattern = node
+		}
+	})
+	if restPattern == nil {
+		t.Fatalf("expected rest pattern node")
+	}
+	if got := extractObjectPatternProperty(restPattern, source); got != "" {
+		t.Fatalf("expected rest pattern to have no static property, got %q", got)
 	}
 }

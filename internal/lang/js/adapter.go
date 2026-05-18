@@ -480,7 +480,7 @@ func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedEx
 			counts[prop] += count
 		}
 	}
-	if count := file.IdentifierUsage[imp.LocalName]; count > 0 {
+	if count := file.IdentifierUsage[imp.LocalName]; count > 0 && hasDirectIdentifierUsage(imp, file) {
 		used = true
 		if imp.Kind == ImportDefault {
 			usedExports["default"] = struct{}{}
