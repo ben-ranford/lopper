@@ -3,6 +3,9 @@
   "extends": [
     "config:recommended"
   ],
+  "ignorePaths": [
+    "**/test-fixtures/**"
+  ],
   "platformAutomerge": true,
   "packageRules": [
     {
