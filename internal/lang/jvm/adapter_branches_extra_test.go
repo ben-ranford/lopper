@@ -57,6 +57,22 @@ func TestJVMRootSignalAndScanErrorBranches(t *testing.T) {
 	if applyJVMRootSignals(repoFile, detection, roots) == nil {
 		t.Fatalf("expected root signal stat error for non-directory repo path")
 	}
+
+	repo := t.TempDir()
+	for _, dirName := range []string{pomXMLName, buildGradleName, buildGradleKTSName} {
+		if err := os.Mkdir(filepath.Join(repo, dirName), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dirName, err)
+		}
+	}
+
+	detection = &language.Detection{}
+	roots = map[string]struct{}{}
+	if err := applyJVMRootSignals(repo, detection, roots); err != nil {
+		t.Fatalf("apply root signals with manifest-named directories: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 || len(roots) != 0 {
+		t.Fatalf("expected no root signals from manifest-named directories, got detection=%#v roots=%#v", detection, roots)
+	}
 }
 
 func TestJVMSourceAndBuildFileBranches(t *testing.T) {
