@@ -186,7 +186,7 @@ func parseGroupedUseStatement(statement, filePath string, line int, resolver com
 	if open < 0 || closeBrace <= open {
 		return nil, nil, 0, false
 	}
-	base := normalizeNamespace(statement[:open])
+	base := normalizeNamespace(stripUseImportQualifier(statement[:open]))
 	inside := statement[open+1 : closeBrace]
 	imports, groupedDeps, unresolved := parseUseParts(strings.Split(inside, ","), base, filePath, line, resolver, true)
 	return imports, groupedDeps, unresolved, true
