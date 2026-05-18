@@ -1424,7 +1424,7 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 }
 
 func TestParseGoModRequireAndReplaceBlocks(t *testing.T) {
-	content := strings.Join([]string{
+	contentLines := []string{
 		"module example.com/root",
 		"",
 		"require (",
@@ -1437,7 +1437,8 @@ func TestParseGoModRequireAndReplaceBlocks(t *testing.T) {
 		"\texample.com/local => ./local",
 		")",
 		"",
-	}, "\n")
+	}
+	content := strings.Join(contentLines, "\n")
 
 	modulePath, dependencies, replacements := parseGoMod([]byte(content))
 	if modulePath != "example.com/root" {

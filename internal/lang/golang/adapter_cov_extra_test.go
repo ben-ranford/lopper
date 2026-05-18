@@ -148,6 +148,17 @@ func assertGoModHelpers(t *testing.T) {
 	if len(replacements) != 0 {
 		t.Fatalf("expected local replacement target to be ignored, got %#v", replacements)
 	}
+
+	malformedModulePath, malformedDependencies, malformedReplacements := parseGoMod([]byte("module example.com/root\nrequire (\n"))
+	if malformedModulePath != "" {
+		t.Fatalf("expected malformed go.mod parse to return empty module path, got %q", malformedModulePath)
+	}
+	if malformedDependencies == nil || len(malformedDependencies) != 0 {
+		t.Fatalf("expected malformed go.mod parse to preserve empty dependency slice, got %#v", malformedDependencies)
+	}
+	if len(malformedReplacements) != 0 {
+		t.Fatalf("expected malformed go.mod parse to preserve empty replacements, got %#v", malformedReplacements)
+	}
 }
 
 func assertGoWorkAndPathHelpers(t *testing.T) {

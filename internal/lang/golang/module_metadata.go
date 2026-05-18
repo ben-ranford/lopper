@@ -105,9 +105,12 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 	depSet := make(map[string]struct{})
 	replaceSet := make(map[string]string)
 
-	file, _ := modfile.Parse(goModName, content, nil)
+	file, err := modfile.Parse(goModName, content, nil)
+	if err != nil && file == nil {
+		return "", []string{}, replaceSet
+	}
 	if file == nil {
-		return "", nil, replaceSet
+		return "", []string{}, replaceSet
 	}
 
 	modulePath := ""
