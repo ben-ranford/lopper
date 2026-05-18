@@ -42,6 +42,19 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	assertDependencyReport(t, dep, dependencyReportExpectation{language: "python", used: 1, total: 2})
 }
 
+func TestAdapterAnalyseDependencyUsesKnownImportAliases(t *testing.T) {
+	source := "from bs4 import BeautifulSoup\n" +
+		"from dateutil import parser\n" +
+		"BeautifulSoup('<p>hi</p>', 'html.parser')\n" +
+		"parser.parse('2026-05-18')\n"
+
+	bs4Dependency := analysePythonDependency(t, source, "beautifulsoup4")
+	assertDependencyReport(t, bs4Dependency, dependencyReportExpectation{name: "beautifulsoup4", language: "python", used: 1, total: 1})
+
+	dateutilDependency := analysePythonDependency(t, source, "python-dateutil")
+	assertDependencyReport(t, dateutilDependency, dependencyReportExpectation{name: "python-dateutil", language: "python", used: 1, total: 1})
+}
+
 func TestParseImportsHandlesParenthesizedFromImports(t *testing.T) {
 	repo := t.TempDir()
 	source := "from django.db import (models, migrations)\nfrom requests import (\n    Session,\n    Response as Resp,\n)\n"
@@ -171,6 +184,35 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseTopNUsesCanonicalPackageNamesForKnownImportAliases(t *testing.T) {
+	repo := t.TempDir()
+	source := "from bs4 import BeautifulSoup\n" +
+		"from dateutil import parser\n" +
+		"BeautifulSoup('<p>hi</p>', 'html.parser')\n" +
+		"parser.parse('2026-05-18')\n"
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     2,
+	})
+	if err != nil {
+		t.Fatalf("analyse alias imports: %v", err)
+	}
+
+	names := dependencyNames(reportData)
+	for _, dependency := range []string{"beautifulsoup4", "python-dateutil"} {
+		if !slices.Contains(names, dependency) {
+			t.Fatalf("expected dependency %q in %#v", dependency, names)
+		}
+	}
+	for _, alias := range []string{"bs4", "dateutil"} {
+		if slices.Contains(names, alias) {
+			t.Fatalf("did not expect import alias %q in %#v", alias, names)
+		}
+	}
+}
+
 func TestAdapterAnalyseTopNIgnoresSrcLayoutLocalPackages(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), "[project]\nname='demo'\nversion='0.1.0'\ndependencies=['requests>=2.0']\n")
@@ -227,6 +269,12 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 func TestNormalizeDependencyID(t *testing.T) {
 	if got := normalizeDependencyID(" My_Package.Name "); got != "my-package-name" {
 		t.Fatalf("unexpected normalized dependency ID: %q", got)
+	}
+	if got := normalizeDependencyID("bs4"); got != "beautifulsoup4" {
+		t.Fatalf("expected bs4 alias to canonicalize, got %q", got)
+	}
+	if got := normalizeDependencyID("dateutil"); got != "python-dateutil" {
+		t.Fatalf("expected dateutil alias to canonicalize, got %q", got)
 	}
 }
 
