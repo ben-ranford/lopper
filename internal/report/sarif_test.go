@@ -117,7 +117,7 @@ func assertWasteOnlySARIFWithoutResult(t *testing.T, wasteIncrease float64) {
 
 func TestFormatSARIFWasteOnlyReportNonPositiveDelta(t *testing.T) {
 	testCases := []struct {
-		name         string
+		name          string
 		wasteIncrease float64
 	}{
 		{name: "zero", wasteIncrease: 0},
