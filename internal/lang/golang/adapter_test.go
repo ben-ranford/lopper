@@ -911,7 +911,6 @@ func TestGoModReplacementAndTokensEdgeCases(t *testing.T) {
 		t.Fatalf("expected local replacement target to be skipped, got %#v", replaceSet)
 	}
 
-	addGoModDependency("", nil)
 	addGoModReplacement("", nil)
 	addGoModReplacement("=> github.com/new/path", replaceSet)
 	addGoModReplacement("example.com/old =>", replaceSet)
@@ -1323,9 +1322,6 @@ func TestDiscoverNestedModulesIgnoresGoModDirectory(t *testing.T) {
 }
 
 func TestMiscCoverageBranches(t *testing.T) {
-	// nil state and empty line branch
-	processGoModLine("", nil)
-
 	if normalizeGoWorkPath("   ") != "" {
 		t.Fatalf("expected empty normalized go.work path")
 	}
@@ -1352,9 +1348,6 @@ func TestMiscCoverageBranches(t *testing.T) {
 		BlankImportsByDependency:      map[string]int{},
 		UndeclaredImportsByDependency: map[string]int{},
 	})
-	addGoModDependency("   ", map[string]struct{}{})
-	processGoModLine(moduleDemoLine, nil)
-	processGoModLine("", &goModParseState{depSet: map[string]struct{}{}, replaceSet: map[string]string{}})
 	if isLocalReplaceTarget("") {
 		t.Fatalf("expected empty path not to be local replacement")
 	}
@@ -1430,34 +1423,33 @@ func TestSafeReadGuardsForGoModuleAndSource(t *testing.T) {
 	}
 }
 
-func TestParseGoModReplaceControlBranches(t *testing.T) {
-	state := &goModParseState{}
-	if parseGoModReplaceBlockControl("replace (", state) != true || !state.inReplaceBlock {
-		t.Fatalf("expected start replace block")
-	}
-	if parseGoModReplaceBlockControl(")", state) != true || state.inReplaceBlock {
-		t.Fatalf("expected close replace block")
-	}
-	if parseGoModReplaceBlockControl("not replace", state) {
-		t.Fatalf("expected no replace block control")
-	}
-}
+func TestParseGoModRequireAndReplaceBlocks(t *testing.T) {
+	content := strings.Join([]string{
+		"module example.com/root",
+		"",
+		"require (",
+		"\t" + depUUID + versionV160,
+		"\t" + depLo + " v1.47.0 // indirect",
+		")",
+		"",
+		"replace (",
+		"\t" + moduleOriginal + " v1.0.0 => github.com/fork/original v1.0.0",
+		"\texample.com/local => ./local",
+		")",
+		"",
+	}, "\n")
 
-func TestProcessGoModLineInBlockBranches(t *testing.T) {
-	state := &goModParseState{
-		depSet:         map[string]struct{}{},
-		replaceSet:     map[string]string{},
-		inRequireBlock: true,
+	modulePath, dependencies, replacements := parseGoMod([]byte(content))
+	if modulePath != "example.com/root" {
+		t.Fatalf("expected module path example.com/root, got %q", modulePath)
 	}
-	processGoModLine(depUUID+" v1.6.0", state)
-	if _, ok := state.depSet[depUUID]; !ok {
-		t.Fatalf("expected dependency from require block")
+	if !slices.Equal(dependencies, []string{depUUID, depLo}) {
+		t.Fatalf("unexpected dependencies: %#v", dependencies)
 	}
-
-	state.inRequireBlock = false
-	state.inReplaceBlock = true
-	processGoModLine(moduleOriginal+" => github.com/fork/original v1.0.0", state)
-	if got := state.replaceSet["github.com/fork/original"]; got != moduleOriginal {
+	if len(replacements) != 1 {
+		t.Fatalf("expected one non-local replacement, got %#v", replacements)
+	}
+	if got := replacements["github.com/fork/original"]; got != moduleOriginal {
 		t.Fatalf("expected replacement mapping from replace block, got %q", got)
 	}
 }

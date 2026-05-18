@@ -52,13 +52,6 @@ func TestGoAdapterCoverageHelpersMore(t *testing.T) {
 		t.Fatalf("expected wildcard import risk cue")
 	}
 
-	processGoModLine("replace (", &goModParseState{
-		replaceSet: make(map[string]string),
-	})
-	if parseGoModReplaceBlockControl("replace (", &goModParseState{}) != true {
-		t.Fatalf("expected replace block control to start block")
-	}
-
 	if got := inferDependency("example.com/x"); got != "example.com/x" {
 		t.Fatalf("expected short external path inference, got %q", got)
 	}
@@ -139,13 +132,21 @@ func assertGoTagVersionHelpers(t *testing.T) {
 
 func assertGoModHelpers(t *testing.T) {
 	t.Helper()
-	if parseGoModBlockControl("x", "require (", nil) {
-		t.Fatalf("expected nil inBlock pointer to return false")
-	}
 	replaceSet := map[string]string{}
 	addGoModReplacement("example.com/old => local/module", replaceSet)
 	if len(replaceSet) != 0 {
 		t.Fatalf("expected non-external replacement target to be ignored")
+	}
+
+	modulePath, dependencies, replacements := parseGoMod([]byte("module example.com/root\n\nrequire github.com/acme/dep v1.2.3\nreplace example.com/old => ./local/module\n"))
+	if modulePath != "example.com/root" {
+		t.Fatalf("expected module path from modfile parse, got %q", modulePath)
+	}
+	if len(dependencies) != 1 || dependencies[0] != "github.com/acme/dep" {
+		t.Fatalf("expected dependency from modfile parse, got %#v", dependencies)
+	}
+	if len(replacements) != 0 {
+		t.Fatalf("expected local replacement target to be ignored, got %#v", replacements)
 	}
 }
 
