@@ -63,6 +63,41 @@ func TestNamespaceUsageMemberExpression(t *testing.T) {
 	}
 }
 
+func TestNamespaceUsageObjectDestructuring(t *testing.T) {
+	repo := t.TempDir()
+	source := `import * as util from "lodash"
+const { map, filter: alias, reduce = fallback } = util
+let pick
+({ pick } = util)
+`
+	path := filepath.Join(repo, indexJSFile)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(result.Files))
+	}
+
+	usage := result.Files[0].NamespaceUsage["util"]
+	if usage["map"] == 0 {
+		t.Fatalf("expected destructured shorthand map usage")
+	}
+	if usage["filter"] == 0 {
+		t.Fatalf("expected destructured aliased filter usage")
+	}
+	if usage["reduce"] == 0 {
+		t.Fatalf("expected destructured default reduce usage")
+	}
+	if usage["pick"] == 0 {
+		t.Fatalf("expected assignment destructure pick usage")
+	}
+}
+
 func TestHasDirectIdentifierUsage(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -340,6 +375,28 @@ func TestCollectDependencyImportUsageSideEffectImport(t *testing.T) {
 	}
 	if usage.HasAmbiguousWildcard {
 		t.Fatalf("did not expect side-effect import to mark wildcard ambiguity")
+	}
+}
+
+func TestCollectDependencyImportUsageNamespaceDestructureTracksProperties(t *testing.T) {
+	repo := t.TempDir()
+	source := `import * as util from "lodash"
+const { map } = util
+map([1], (x) => x)
+`
+	path := filepath.Join(repo, indexJSFile)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	scan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+
+	usage := collectDependencyImportUsage(scan, "lodash")
+	if _, ok := usage.UsedExports["map"]; !ok {
+		t.Fatalf("expected map export usage from namespace destructure, got %#v", usage.UsedExports)
 	}
 }
 
