@@ -18,6 +18,10 @@ const (
 	testMainPy           = "main.py"
 	testDirOwnerOnlyMode = 0o700
 	testDirBlockedMode   = 0o000
+	testAliasImportsPy   = "from bs4 import BeautifulSoup\n" +
+		"from dateutil import parser\n" +
+		"BeautifulSoup('<p>hi</p>', 'html.parser')\n" +
+		"parser.parse('2026-05-18')\n"
 )
 
 func TestAdapterDetectWithPythonSource(t *testing.T) {
@@ -43,15 +47,10 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 }
 
 func TestAdapterAnalyseDependencyUsesKnownImportAliases(t *testing.T) {
-	source := "from bs4 import BeautifulSoup\n" +
-		"from dateutil import parser\n" +
-		"BeautifulSoup('<p>hi</p>', 'html.parser')\n" +
-		"parser.parse('2026-05-18')\n"
-
-	bs4Dependency := analysePythonDependency(t, source, "beautifulsoup4")
+	bs4Dependency := analysePythonDependency(t, testAliasImportsPy, "beautifulsoup4")
 	assertDependencyReport(t, bs4Dependency, dependencyReportExpectation{name: "beautifulsoup4", language: "python", used: 1, total: 1})
 
-	dateutilDependency := analysePythonDependency(t, source, "python-dateutil")
+	dateutilDependency := analysePythonDependency(t, testAliasImportsPy, "python-dateutil")
 	assertDependencyReport(t, dateutilDependency, dependencyReportExpectation{name: "python-dateutil", language: "python", used: 1, total: 1})
 }
 
@@ -111,6 +110,15 @@ func assertDependencyReport(t *testing.T, got report.DependencyReport, want depe
 	}
 	if got.UsedExportsCount != want.used || got.TotalExportsCount != want.total {
 		t.Fatalf("expected used/total %d/%d, got %d/%d", want.used, want.total, got.UsedExportsCount, got.TotalExportsCount)
+	}
+}
+
+func assertDependencyNamesInclude(t *testing.T, names []string, dependencies ...string) {
+	t.Helper()
+	for _, dependency := range dependencies {
+		if !slices.Contains(names, dependency) {
+			t.Fatalf("expected dependency %q in %#v", dependency, names)
+		}
 	}
 }
 
@@ -177,20 +185,12 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 		t.Fatalf("expected two dependencies, got %d", len(reportData.Dependencies))
 	}
 	names := []string{reportData.Dependencies[0].Name, reportData.Dependencies[1].Name}
-	for _, dependency := range []string{"numpy", "requests"} {
-		if !slices.Contains(names, dependency) {
-			t.Fatalf("expected dependency %q in %#v", dependency, names)
-		}
-	}
+	assertDependencyNamesInclude(t, names, "numpy", "requests")
 }
 
 func TestAdapterAnalyseTopNUsesCanonicalPackageNamesForKnownImportAliases(t *testing.T) {
 	repo := t.TempDir()
-	source := "from bs4 import BeautifulSoup\n" +
-		"from dateutil import parser\n" +
-		"BeautifulSoup('<p>hi</p>', 'html.parser')\n" +
-		"parser.parse('2026-05-18')\n"
-	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), testAliasImportsPy)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath: repo,
@@ -201,11 +201,7 @@ func TestAdapterAnalyseTopNUsesCanonicalPackageNamesForKnownImportAliases(t *tes
 	}
 
 	names := dependencyNames(reportData)
-	for _, dependency := range []string{"beautifulsoup4", "python-dateutil"} {
-		if !slices.Contains(names, dependency) {
-			t.Fatalf("expected dependency %q in %#v", dependency, names)
-		}
-	}
+	assertDependencyNamesInclude(t, names, "beautifulsoup4", "python-dateutil")
 	for _, alias := range []string{"bs4", "dateutil"} {
 		if slices.Contains(names, alias) {
 			t.Fatalf("did not expect import alias %q in %#v", alias, names)
@@ -267,14 +263,18 @@ func TestAdapterMetadataAndDetect(t *testing.T) {
 }
 
 func TestNormalizeDependencyID(t *testing.T) {
-	if got := normalizeDependencyID(" My_Package.Name "); got != "my-package-name" {
-		t.Fatalf("unexpected normalized dependency ID: %q", got)
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{input: " My_Package.Name ", want: "my-package-name"},
+		{input: "bs4", want: "beautifulsoup4"},
+		{input: "dateutil", want: "python-dateutil"},
 	}
-	if got := normalizeDependencyID("bs4"); got != "beautifulsoup4" {
-		t.Fatalf("expected bs4 alias to canonicalize, got %q", got)
-	}
-	if got := normalizeDependencyID("dateutil"); got != "python-dateutil" {
-		t.Fatalf("expected dateutil alias to canonicalize, got %q", got)
+	for _, tc := range cases {
+		if got := normalizeDependencyID(tc.input); got != tc.want {
+			t.Fatalf("normalizeDependencyID(%q): expected %q, got %q", tc.input, tc.want, got)
+		}
 	}
 }
 
