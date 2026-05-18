@@ -570,7 +570,11 @@ func localModuleSearchRoots(repoPath string) []string {
 
 func normalizeDependencyID(value string) string {
 	replacer := strings.NewReplacer("_", "-", ".", "-")
-	return replacer.Replace(shared.NormalizeDependencyID(value))
+	normalized := replacer.Replace(shared.NormalizeDependencyID(value))
+	if canonical, ok := pythonKnownImportAliases[normalized]; ok {
+		return canonical
+	}
+	return normalized
 }
 
 func shouldSkipDir(name string) bool {
@@ -592,4 +596,13 @@ var pythonStdlib = map[string]bool{
 	"ssl": true, "statistics": true, "string": true, "struct": true, "subprocess": true, "sys": true,
 	"tempfile": true, "textwrap": true, "threading": true, "time": true, "traceback": true, "typing": true,
 	"unittest": true, "urllib": true, "uuid": true, "warnings": true, "weakref": true, "xml": true, "zipfile": true,
+}
+
+var pythonKnownImportAliases = map[string]string{
+	"bs4":      "beautifulsoup4",
+	"cv2":      "opencv-python",
+	"dateutil": "python-dateutil",
+	"dotenv":   "python-dotenv",
+	"pil":      "pillow",
+	"sklearn":  "scikit-learn",
 }
