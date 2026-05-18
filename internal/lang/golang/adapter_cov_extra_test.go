@@ -153,7 +153,7 @@ func assertGoModHelpers(t *testing.T) {
 	if malformedModulePath != "" {
 		t.Fatalf("expected malformed go.mod parse to return empty module path, got %q", malformedModulePath)
 	}
-	if malformedDependencies == nil || len(malformedDependencies) != 0 {
+	if len(malformedDependencies) != 0 {
 		t.Fatalf("expected malformed go.mod parse to preserve empty dependency slice, got %#v", malformedDependencies)
 	}
 	if len(malformedReplacements) != 0 {
