@@ -72,19 +72,13 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	if *bodyFile != "" {
 		data, err := os.ReadFile(*bodyFile)
 		if err != nil {
-			if _, writeErr := fmt.Fprintf(stderr, "read PR body: %v\n", err); writeErr != nil {
-				return 1
-			}
-			return 1
+			return writeRunError(stderr, "read PR body: %v\n", err)
 		}
 		body = string(data)
 	}
 
 	if err := validate(*title, *headRef, body); err != nil {
-		if _, writeErr := fmt.Fprintf(stderr, "%v\n", err); writeErr != nil {
-			return 1
-		}
-		return 1
+		return writeRunError(stderr, "%v\n", err)
 	}
 	if *checkRepoPolicy {
 		policy := repoMergePolicy{
@@ -94,13 +88,15 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			squashMergeCommitTitle: *squashMergeCommitTitle,
 		}
 		if err := validateRepoMergePolicy(policy); err != nil {
-			if _, writeErr := fmt.Fprintf(stderr, "%v\n", err); writeErr != nil {
-				return 1
-			}
-			return 1
+			return writeRunError(stderr, "%v\n", err)
 		}
 	}
 	return 0
+}
+
+func writeRunError(stderr io.Writer, format string, args ...interface{}) int {
+	_, _ = fmt.Fprintf(stderr, format, args...)
+	return 1
 }
 
 func validate(title, headRef, body string) error {
