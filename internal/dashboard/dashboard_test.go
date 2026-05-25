@@ -238,22 +238,9 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 		t.Fatalf("format csv with formula-like values: %v", err)
 	}
 
-	reader := csv.NewReader(strings.NewReader(csvOutput))
-	reader.FieldsPerRecord = -1
-	rows, err := reader.ReadAll()
-	if err != nil {
-		t.Fatalf("read csv output: %v", err)
-	}
-
-	var repoRow, crossRepoRow []string
-	for i, row := range rows {
-		if len(row) > 0 && row[0] == "repo_name" && i+1 < len(rows) {
-			repoRow = rows[i+1]
-		}
-		if len(row) > 0 && row[0] == "dependency_name" && i+1 < len(rows) {
-			crossRepoRow = rows[i+1]
-		}
-	}
+	rows := mustReadDashboardCSVRows(t, csvOutput)
+	repoRow := dashboardCSVRowAfterHeader(rows, "repo_name")
+	crossRepoRow := dashboardCSVRowAfterHeader(rows, "dependency_name")
 
 	if len(repoRow) != 10 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[2] != "go" {
 		t.Fatalf("expected sanitized repo csv row, got %#v", repoRow)
@@ -262,14 +249,7 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 		t.Fatalf("expected sanitized cross-repo csv row, got %#v", crossRepoRow)
 	}
 
-	foundTabRepoCSVRow := false
-	for _, row := range rows {
-		if len(row) == 10 && row[0] == "'\trepo" && row[1] == "'\rpath" {
-			foundTabRepoCSVRow = true
-			break
-		}
-	}
-	if !foundTabRepoCSVRow {
+	if !dashboardCSVContainsRepoRow(rows, "'\trepo", "'\rpath") {
 		t.Fatalf("expected additional sanitized repo row, got %#v", rows)
 	}
 }
@@ -423,6 +403,39 @@ func poisonedDashboardCSVWriter(t *testing.T, writer *failingDashboardWriter) *c
 		t.Fatalf("expected seed write to poison csv writer")
 	}
 	return csvWriter
+}
+
+func mustReadDashboardCSVRows(t *testing.T, csvOutput string) [][]string {
+	t.Helper()
+
+	reader := csv.NewReader(strings.NewReader(csvOutput))
+	reader.FieldsPerRecord = -1
+	rows, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("read csv output: %v", err)
+	}
+
+	return rows
+}
+
+func dashboardCSVRowAfterHeader(rows [][]string, header string) []string {
+	for i, row := range rows {
+		if len(row) > 0 && row[0] == header && i+1 < len(rows) {
+			return rows[i+1]
+		}
+	}
+
+	return nil
+}
+
+func dashboardCSVContainsRepoRow(rows [][]string, name, path string) bool {
+	for _, row := range rows {
+		if len(row) == 10 && row[0] == name && row[1] == path {
+			return true
+		}
+	}
+
+	return false
 }
 
 type failingDashboardWriter struct {
