@@ -121,10 +121,9 @@ export class ManagedBinaryInstaller {
     }
 
     if (
-      !metadata ||
-      metadata.binaryPath !== binaryPath ||
-      metadata.tag !== (explicitTag ?? metadata.tag) ||
-      typeof metadata.binaryDigest !== "string"
+      metadata?.binaryPath !== binaryPath ||
+      metadata?.tag !== (explicitTag ?? metadata?.tag) ||
+      typeof metadata?.binaryDigest !== "string"
     ) {
       this.output.appendLine(`managed binary cache integrity metadata missing; re-downloading ${binaryPath}`);
       return undefined;
@@ -501,10 +500,10 @@ function isAssetLike(asset: unknown): asset is GitHubReleaseAsset {
 
 function parseAssetDigest(asset: GitHubReleaseAsset): string {
   if (typeof asset.digest !== "string") {
-    throw new Error(`managed release asset ${asset.name} is missing a sha256 digest`);
+    throw new TypeError(`managed release asset ${asset.name} is missing a string sha256 digest`);
   }
 
-  const match = asset.digest.trim().match(/^sha256:([a-fA-F0-9]{64})$/);
+  const match = /^sha256:([a-fA-F0-9]{64})$/.exec(asset.digest.trim());
   if (!match) {
     throw new Error(`managed release asset ${asset.name} has invalid sha256 digest`);
   }

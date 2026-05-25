@@ -190,7 +190,7 @@ suite("refresh lifecycle", () => {
             });
             analysis.codemodsByDependency = new Map([
               [
-                analysis.report.dependencies[0]!.name,
+                analysis.report.dependencies[0].name,
                 {
                   mode: "replace",
                   suggestions: [
