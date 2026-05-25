@@ -94,11 +94,15 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	return 0
 }
 
-func writeRunError(stderr io.Writer, format string, args ...interface{}) int {
-	if _, err := fmt.Fprintf(stderr, format, args...); err != nil {
-		return 1
-	}
+func writeRunError(stderr io.Writer, format string, args ...any) int {
+	writeErrorMessage(stderr, format, args...)
 	return 1
+}
+
+func writeErrorMessage(stderr io.Writer, format string, args ...any) {
+	if _, err := fmt.Fprintf(stderr, format, args...); err != nil {
+		return
+	}
 }
 
 func validate(title, headRef, body string) error {
