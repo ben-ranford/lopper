@@ -500,7 +500,7 @@ function isAssetLike(asset: unknown): asset is GitHubReleaseAsset {
 
 function parseAssetDigest(asset: GitHubReleaseAsset): string {
   if (typeof asset.digest !== "string") {
-    throw new TypeError(`managed release asset ${asset.name} is missing a sha256 digest`);
+    throw new TypeError(`managed release asset ${asset.name} is missing a string sha256 digest`);
   }
 
   const match = /^sha256:([a-fA-F0-9]{64})$/.exec(asset.digest.trim());
