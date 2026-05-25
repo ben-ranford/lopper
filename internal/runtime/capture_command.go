@@ -114,49 +114,81 @@ func validateRuntimeCommand(command string, fields []string) error {
 }
 
 func containsUnsafeRuntimeCommandSyntax(command string) bool {
-	inSingleQuote := false
-	inDoubleQuote := false
-	escaped := false
+	var parser runtimeCommandUnsafeSyntaxParser
 	runes := []rune(command)
 
 	for i, ch := range runes {
-		if escaped {
-			escaped = false
-			continue
-		}
-
-		switch ch {
-		case '\\':
-			if inSingleQuote {
-				continue
-			}
-			escaped = true
-		case '\'':
-			if inDoubleQuote {
-				continue
-			}
-			inSingleQuote = !inSingleQuote
-		case '"':
-			if inSingleQuote {
-				continue
-			}
-			inDoubleQuote = !inDoubleQuote
-		case '|', '&', ';', '>', '<', '`', '\n', '\r':
-			if inSingleQuote {
-				continue
-			}
+		if parser.consume(ch, nextRuntimeCommandRune(runes, i)) {
 			return true
-		case '$':
-			if inSingleQuote {
-				continue
-			}
-			if i+1 < len(runes) && runes[i+1] == '(' {
-				return true
-			}
 		}
 	}
 
 	return false
+}
+
+type runtimeCommandUnsafeSyntaxParser struct {
+	inSingleQuote bool
+	inDoubleQuote bool
+	escaped       bool
+}
+
+func (p *runtimeCommandUnsafeSyntaxParser) consume(ch, next rune) bool {
+	if p.escaped {
+		p.escaped = false
+		return false
+	}
+
+	switch ch {
+	case '\\':
+		if p.inSingleQuote {
+			return false
+		}
+		p.escaped = true
+		return false
+	case '\'':
+		if p.inDoubleQuote {
+			return false
+		}
+		p.inSingleQuote = !p.inSingleQuote
+		return false
+	case '"':
+		if p.inSingleQuote {
+			return false
+		}
+		p.inDoubleQuote = !p.inDoubleQuote
+		return false
+	case '$':
+		return p.isSubshellStart(next)
+	default:
+		return p.isUnsafeOperator(ch)
+	}
+}
+
+func (p *runtimeCommandUnsafeSyntaxParser) isSubshellStart(next rune) bool {
+	if p.inSingleQuote {
+		return false
+	}
+	return next == '('
+}
+
+func (p *runtimeCommandUnsafeSyntaxParser) isUnsafeOperator(ch rune) bool {
+	if p.inSingleQuote {
+		return false
+	}
+
+	switch ch {
+	case '|', '&', ';', '>', '<', '`', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func nextRuntimeCommandRune(runes []rune, index int) rune {
+	if index+1 >= len(runes) {
+		return 0
+	}
+	return runes[index+1]
 }
 
 func rejectRuntimeCommandUnsafeFlags(executable string, args []string) error {
