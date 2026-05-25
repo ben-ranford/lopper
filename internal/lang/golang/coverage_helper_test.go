@@ -1,12 +1,16 @@
 package golang
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 func TestCoverageHelperBranches(t *testing.T) {
@@ -105,5 +109,62 @@ func TestResolveRepoBoundedPathAbsoluteOutside(t *testing.T) {
 	}
 	if _, ok := resolveRepoBoundedPath(repo, filepath.Join(outside, "x")); ok {
 		t.Fatalf("expected absolute path outside repo to be rejected")
+	}
+}
+
+func TestAdditionalGoCoverageBranches(t *testing.T) {
+	if _, err := scanRepo(context.Background(), "\x00", moduleInfo{}); err == nil {
+		t.Fatalf("expected invalid repo path to fail scanRepo")
+	}
+
+	info := &moduleInfo{}
+	if err := loadVendoredMetadata(t.TempDir(), moduleLoadOptions{EnableVendoredProvenance: true}, info); err != nil {
+		t.Fatalf("expected vendored metadata load without manifest to succeed, got %v", err)
+	}
+	if info.VendoredProvenanceEnabled {
+		t.Fatalf("expected vendored provenance flag to remain disabled without manifest")
+	}
+
+	if got := goModModulePath(&modfile.File{}); got != "" {
+		t.Fatalf("expected empty module path for nil modfile module, got %q", got)
+	}
+
+	dependencies := goModDependencies([]*modfile.Require{
+		{Mod: module.Version{Path: ""}},
+		{Mod: module.Version{Path: "github.com/acme/dep"}},
+	})
+	if !slices.Equal(dependencies, []string{"github.com/acme/dep"}) {
+		t.Fatalf("expected blank dependency paths to be ignored, got %#v", dependencies)
+	}
+
+	if shouldTrackGoModReplacement("", "github.com/acme/fork") {
+		t.Fatalf("expected empty old path replacement to be ignored")
+	}
+	if shouldTrackGoModReplacement("example.com/original", "") {
+		t.Fatalf("expected empty new path replacement to be ignored")
+	}
+	if !shouldTrackGoModReplacement("example.com/original", "github.com/acme/fork") {
+		t.Fatalf("expected external replacement target to be tracked")
+	}
+
+	replaceSet := map[string]string{}
+	addGoModReplacement("example.com/original => github.com/acme/fork v1.0.0", replaceSet)
+	if got := replaceSet["github.com/acme/fork"]; got != "example.com/original" {
+		t.Fatalf("expected replacement import mapping, got %q", got)
+	}
+
+	metadata := newVendoredModuleMetadata()
+	state := &vendoredParseState{}
+	parseVendoredModuleMetadataLine("", &metadata, state)
+	parseVendoredModuleMetadataLine("# comment", &metadata, state)
+	parseVendoredMetadataDirectiveLine("## explicit", &metadata, &vendoredParseState{})
+	parseVendoredPackageLine("   ", &metadata, state)
+
+	if _, _, ok := parseVendoredModuleHeader("# => github.com/acme/fork v1.0.0"); ok {
+		t.Fatalf("expected vendored header without module path to be rejected")
+	}
+
+	if expr, kind := parseBuildConstraintComment("// +build !"); expr == nil || kind != "plus" {
+		t.Fatalf("expected +build directive to parse with plus kind, got expr=%v kind=%q", expr, kind)
 	}
 }

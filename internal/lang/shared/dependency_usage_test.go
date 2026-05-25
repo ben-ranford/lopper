@@ -670,6 +670,26 @@ func TestApplyRootSignals(t *testing.T) {
 	}
 }
 
+func TestApplyRootSignalsIgnoresManifestNamedDirectories(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "CMakeLists.txt"), 0o755); err != nil {
+		t.Fatalf("mkdir manifest-named directory: %v", err)
+	}
+
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	err := ApplyRootSignals(repo, []RootSignal{{Name: "CMakeLists.txt", Confidence: 40}}, &detection, roots)
+	if err != nil {
+		t.Fatalf("apply root signals: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 {
+		t.Fatalf("expected directory signal to be ignored, got detection=%#v", detection)
+	}
+	if len(roots) != 0 {
+		t.Fatalf("expected no roots from directory signal, got %#v", roots)
+	}
+}
+
 func TestWalkRepoFiles(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {

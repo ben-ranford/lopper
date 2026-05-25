@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"golang.org/x/mod/modfile"
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
@@ -101,117 +102,67 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 }
 
 func parseGoMod(content []byte) (string, []string, map[string]string) {
-	state := goModParseState{
-		depSet:     make(map[string]struct{}),
-		replaceSet: make(map[string]string),
+	file, err := modfile.Parse(goModName, content, nil)
+	if err != nil && file == nil {
+		return "", []string{}, map[string]string{}
 	}
-	for _, rawLine := range strings.Split(string(content), "\n") {
-		processGoModLine(strings.TrimSpace(stripInlineComment(rawLine)), &state)
+	if file == nil {
+		return "", []string{}, map[string]string{}
 	}
 
-	dependencies := make([]string, 0, len(state.depSet))
-	for dep := range state.depSet {
+	return goModModulePath(file), goModDependencies(file.Require), goModReplacements(file.Replace)
+}
+
+func goModModulePath(file *modfile.File) string {
+	if file == nil || file.Module == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(file.Module.Mod.Path)
+}
+
+func goModDependencies(requirements []*modfile.Require) []string {
+	depSet := make(map[string]struct{}, len(requirements))
+	for _, requirement := range requirements {
+		dependency := strings.TrimSpace(requirement.Mod.Path)
+		if dependency == "" {
+			continue
+		}
+		depSet[dependency] = struct{}{}
+	}
+
+	dependencies := make([]string, 0, len(depSet))
+	for dep := range depSet {
 		dependencies = append(dependencies, dep)
 	}
 	sort.Strings(dependencies)
-	return state.modulePath, dependencies, state.replaceSet
+
+	return dependencies
 }
 
-type goModParseState struct {
-	modulePath     string
-	depSet         map[string]struct{}
-	replaceSet     map[string]string
-	inRequireBlock bool
-	inReplaceBlock bool
+func goModReplacements(replacements []*modfile.Replace) map[string]string {
+	replaceSet := make(map[string]string)
+	for _, replacement := range replacements {
+		oldPath := strings.TrimSpace(replacement.Old.Path)
+		newPath := strings.TrimSpace(replacement.New.Path)
+		if !shouldTrackGoModReplacement(oldPath, newPath) {
+			continue
+		}
+		replaceSet[newPath] = oldPath
+	}
+
+	return replaceSet
 }
 
-func processGoModLine(line string, state *goModParseState) {
-	if line == "" || state == nil {
-		return
-	}
-	if parseGoModModuleLine(line, state) {
-		return
-	}
-	if parseGoModRequireBlockControl(line, state) {
-		return
-	}
-	if parseGoModReplaceBlockControl(line, state) {
-		return
-	}
-	if state.inReplaceBlock {
-		addGoModReplacement(line, state.replaceSet)
-		return
-	}
-	if state.inRequireBlock {
-		addGoModDependency(line, state.depSet)
-		return
-	}
-	parseGoModSingleRequire(line, state.depSet)
-	parseGoModSingleReplace(line, state.replaceSet)
-}
-
-func parseGoModModuleLine(line string, state *goModParseState) bool {
-	if !strings.HasPrefix(line, "module ") {
+func shouldTrackGoModReplacement(oldPath, newPath string) bool {
+	if oldPath == "" || newPath == "" {
 		return false
 	}
-	fields := strings.Fields(line)
-	if len(fields) >= 2 {
-		state.modulePath = fields[1]
-	}
-	return true
-}
-
-func parseGoModRequireBlockControl(line string, state *goModParseState) bool {
-	return parseGoModBlockControl(line, "require (", &state.inRequireBlock)
-}
-
-func parseGoModReplaceBlockControl(line string, state *goModParseState) bool {
-	return parseGoModBlockControl(line, "replace (", &state.inReplaceBlock)
-}
-
-func parseGoModBlockControl(line string, startToken string, inBlock *bool) bool {
-	if inBlock == nil {
+	if isLocalReplaceTarget(newPath) {
 		return false
 	}
-	if strings.HasPrefix(line, startToken) {
-		*inBlock = true
-		return true
-	}
-	if *inBlock && line == ")" {
-		*inBlock = false
-		return true
-	}
-	return false
-}
-
-func parseGoModSingleRequire(line string, depSet map[string]struct{}) {
-	parseGoModSingleDirective(line, "require ", func(value string) {
-		addGoModDependency(value, depSet)
-	})
-}
-
-func parseGoModSingleReplace(line string, replaceSet map[string]string) {
-	parseGoModSingleDirective(line, "replace ", func(value string) {
-		addGoModReplacement(value, replaceSet)
-	})
-}
-
-func parseGoModSingleDirective(line, prefix string, handler func(string)) {
-	if handler == nil || !strings.HasPrefix(line, prefix) {
-		return
-	}
-	handler(strings.TrimPrefix(line, prefix))
-}
-
-func addGoModDependency(line string, depSet map[string]struct{}) {
-	if depSet == nil {
-		return
-	}
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return
-	}
-	depSet[fields[0]] = struct{}{}
+	// Track only import-like replacement targets.
+	return looksExternalImport(newPath)
 }
 
 func addGoModReplacement(line string, replaceSet map[string]string) {

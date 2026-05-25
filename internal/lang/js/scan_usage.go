@@ -40,6 +40,9 @@ func isIdentifierUsage(node *sitter.Node) bool {
 	if parent == nil {
 		return false
 	}
+	if isStaticObjectDestructureValueUsage(node) {
+		return false
+	}
 
 	switch parent.Type() {
 	case "import_specifier", "import_clause", "namespace_import", "named_imports", "import_statement":
@@ -67,4 +70,70 @@ func isIdentifierUsage(node *sitter.Node) bool {
 	default:
 		return true
 	}
+}
+
+func isStaticObjectDestructureValueUsage(node *sitter.Node) bool {
+	expr := node
+	parent := expr.Parent()
+	for parent != nil && parent.Type() == "parenthesized_expression" {
+		expr = parent
+		parent = expr.Parent()
+	}
+	if parent == nil {
+		return false
+	}
+
+	var pattern, value *sitter.Node
+	switch parent.Type() {
+	case "variable_declarator":
+		pattern = parent.ChildByFieldName("name")
+		value = parent.ChildByFieldName("value")
+	case "assignment_expression":
+		pattern = parent.ChildByFieldName("left")
+		value = parent.ChildByFieldName("right")
+	default:
+		return false
+	}
+
+	if value == nil || value.ID() != expr.ID() {
+		return false
+	}
+
+	return hasOnlyStaticObjectPatternProperties(pattern)
+}
+
+func hasOnlyStaticObjectPatternProperties(pattern *sitter.Node) bool {
+	if pattern == nil || pattern.Type() != "object_pattern" || pattern.NamedChildCount() == 0 {
+		return false
+	}
+
+	for i := 0; i < int(pattern.NamedChildCount()); i++ {
+		if !isStaticObjectPatternProperty(pattern.NamedChild(i)) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isStaticObjectPatternProperty(node *sitter.Node) bool {
+	if node == nil {
+		return false
+	}
+
+	switch node.Type() {
+	case "shorthand_property_identifier_pattern", "property_identifier", "object_assignment_pattern":
+		return true
+	case "pair_pattern":
+		key := node.ChildByFieldName("key")
+		if key == nil {
+			return false
+		}
+		switch key.Type() {
+		case "property_identifier", "identifier", "string":
+			return true
+		}
+	}
+
+	return false
 }

@@ -149,6 +149,87 @@ function fn(param, { nested }, ...rest) {
 	}
 }
 
+func TestJSCollectIdentifierUsageSuppressesStaticNamespaceDestructureValues(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+import * as util from "pkg";
+const { map, "filter": alias } = util;
+let pick;
+({ pick } = (util));
+const { ...rest } = util;
+void rest;
+`)
+
+	tree := mustParseJS(t, parser, source)
+	counts := collectIdentifierUsage(tree, source)
+	if counts["util"] != 1 {
+		t.Fatalf("expected only rest destructure to count namespace identifier usage, got %#v", counts)
+	}
+}
+
+func TestJSStaticObjectDestructureHelpers(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`
+const {} = util;
+const { ...rest } = util;
+const { plain, "quoted": alias, value = fallback } = util;
+`)
+
+	tree := mustParseJS(t, parser, source)
+	patterns := make([]*sitter.Node, 0, 3)
+	utilIdentifiers := make([]*sitter.Node, 0, 3)
+	walkNode(tree.RootNode(), func(node *sitter.Node) {
+		switch {
+		case node.Type() == "object_pattern":
+			patterns = append(patterns, node)
+		case node.Type() == "identifier" && nodeText(node, source) == "util":
+			utilIdentifiers = append(utilIdentifiers, node)
+		}
+	})
+
+	if len(patterns) != 3 || len(utilIdentifiers) != 3 {
+		t.Fatalf("expected three object patterns and util identifiers, got patterns=%d identifiers=%d", len(patterns), len(utilIdentifiers))
+	}
+	if isStaticObjectPatternProperty(nil) {
+		t.Fatalf("expected nil node not to count as a static object pattern property")
+	}
+	if isStaticObjectPatternProperty(patterns[1].NamedChild(0)) {
+		t.Fatalf("expected rest pattern not to count as a static object pattern property")
+	}
+	if !isStaticObjectPatternProperty(patterns[2].NamedChild(0)) {
+		t.Fatalf("expected shorthand property to count as a static object pattern property")
+	}
+	if hasOnlyStaticObjectPatternProperties(patterns[0]) {
+		t.Fatalf("expected empty object pattern not to count as static property usage")
+	}
+	if hasOnlyStaticObjectPatternProperties(patterns[1]) {
+		t.Fatalf("expected rest destructure not to count as static property usage")
+	}
+	if !hasOnlyStaticObjectPatternProperties(patterns[2]) {
+		t.Fatalf("expected property-only destructure to count as static property usage")
+	}
+
+	if isStaticObjectDestructureValueUsage(utilIdentifiers[0]) {
+		t.Fatalf("expected empty object pattern value not to be suppressed")
+	}
+	if isStaticObjectDestructureValueUsage(utilIdentifiers[1]) {
+		t.Fatalf("expected rest destructure value not to be suppressed")
+	}
+	if !isStaticObjectDestructureValueUsage(utilIdentifiers[2]) {
+		t.Fatalf("expected property-only destructure value to be suppressed")
+	}
+}
+
+func TestApplySideEffectImportUsagePreservesExplicitExportName(t *testing.T) {
+	usedExports := make(map[string]struct{})
+	if !applySideEffectImportUsage(ImportBinding{ExportName: "side-effect"}, usedExports) {
+		t.Fatalf("expected side-effect import usage to be marked used")
+	}
+	if _, ok := usedExports["side-effect"]; !ok {
+		t.Fatalf("expected explicit side-effect export marker, got %#v", usedExports)
+	}
+}
+
 func TestJSRequireBindingAndDynamicImportBranches(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte(`

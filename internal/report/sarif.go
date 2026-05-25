@@ -137,6 +137,9 @@ func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, 
 	if wasteIncreasePercent == nil {
 		return
 	}
+	if *wasteIncreasePercent <= 0 {
+		return
+	}
 	ruleID := "lopper/waste/increase"
 	rules.add(sarifRule{
 		ID:               ruleID,

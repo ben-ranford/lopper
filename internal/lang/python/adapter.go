@@ -546,18 +546,35 @@ func dependencyFromModule(repoPath, moduleName string) string {
 }
 
 func isLocalModule(repoPath, root string) bool {
-	if _, err := os.Stat(filepath.Join(repoPath, root+".py")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(repoPath, root, "__init__.py")); err == nil {
-		return true
+	for _, searchRoot := range localModuleSearchRoots(repoPath) {
+		if _, err := os.Stat(filepath.Join(searchRoot, root+".py")); err == nil {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(searchRoot, root, "__init__.py")); err == nil {
+			return true
+		}
 	}
 	return false
 }
 
+func localModuleSearchRoots(repoPath string) []string {
+	roots := []string{repoPath}
+
+	srcRoot := filepath.Join(repoPath, "src")
+	if info, err := os.Stat(srcRoot); err == nil && info.IsDir() {
+		roots = append(roots, srcRoot)
+	}
+
+	return roots
+}
+
 func normalizeDependencyID(value string) string {
 	replacer := strings.NewReplacer("_", "-", ".", "-")
-	return replacer.Replace(shared.NormalizeDependencyID(value))
+	normalized := replacer.Replace(shared.NormalizeDependencyID(value))
+	if canonical, ok := pythonKnownImportAliases[normalized]; ok {
+		return canonical
+	}
+	return normalized
 }
 
 func shouldSkipDir(name string) bool {
@@ -579,4 +596,13 @@ var pythonStdlib = map[string]bool{
 	"ssl": true, "statistics": true, "string": true, "struct": true, "subprocess": true, "sys": true,
 	"tempfile": true, "textwrap": true, "threading": true, "time": true, "traceback": true, "typing": true,
 	"unittest": true, "urllib": true, "uuid": true, "warnings": true, "weakref": true, "xml": true, "zipfile": true,
+}
+
+var pythonKnownImportAliases = map[string]string{
+	"bs4":      "beautifulsoup4",
+	"cv2":      "opencv-python",
+	"dateutil": "python-dateutil",
+	"dotenv":   "python-dotenv",
+	"pil":      "pillow",
+	"sklearn":  "scikit-learn",
 }

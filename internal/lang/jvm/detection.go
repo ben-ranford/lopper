@@ -63,7 +63,11 @@ func applyJVMRootSignals(repoPath string, detection *language.Detection, roots m
 	}
 	for _, signal := range rootSignals {
 		path := filepath.Join(repoPath, signal.name)
-		if _, err := os.Stat(path); err == nil {
+		info, err := os.Stat(path)
+		if err == nil {
+			if info.IsDir() {
+				continue
+			}
 			detection.Matched = true
 			detection.Confidence += signal.confidence
 			roots[repoPath] = struct{}{}
