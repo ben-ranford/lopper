@@ -95,7 +95,9 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 }
 
 func writeRunError(stderr io.Writer, format string, args ...interface{}) int {
-	_, _ = fmt.Fprintf(stderr, format, args...)
+	if _, err := fmt.Fprintf(stderr, format, args...); err != nil {
+		return 1
+	}
 	return 1
 }
 
