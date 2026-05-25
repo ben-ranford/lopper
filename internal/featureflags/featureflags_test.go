@@ -9,38 +9,14 @@ import (
 )
 
 func TestNewRegistryValidatesEntries(t *testing.T) {
-	_, err := NewRegistry([]Flag{{Code: "", Name: "alpha", Lifecycle: LifecyclePreview}})
-	if err == nil || !strings.Contains(err.Error(), "feature code is required") {
-		t.Fatalf("expected missing code error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "BAD-0001", Name: "alpha", Lifecycle: LifecyclePreview}})
-	if err == nil || !strings.Contains(err.Error(), "invalid feature code") {
-		t.Fatalf("expected invalid code error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "Alpha", Lifecycle: LifecyclePreview}})
-	if err == nil || !strings.Contains(err.Error(), "invalid feature name") {
-		t.Fatalf("expected invalid name error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-001", Name: "alpha", Lifecycle: LifecyclePreview}})
-	if err == nil || !strings.Contains(err.Error(), "must use LOP-FEAT-NNNN") {
-		t.Fatalf("expected short code error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-00A1", Name: "alpha", Lifecycle: LifecyclePreview}})
-	if err == nil || !strings.Contains(err.Error(), "suffix must be numeric") {
-		t.Fatalf("expected nonnumeric code error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "", Lifecycle: LifecyclePreview}})
-	if err == nil || !strings.Contains(err.Error(), "feature name is required") {
-		t.Fatalf("expected missing name error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: "unknown"}})
-	if err == nil || !strings.Contains(err.Error(), "invalid feature lifecycle") {
-		t.Fatalf("expected invalid lifecycle error, got %v", err)
-	}
-	_, err = NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: LifecyclePreview, FirstStableRelease: "nope"}})
-	if err == nil || !strings.Contains(err.Error(), "invalid first stable release") {
-		t.Fatalf("expected invalid first stable release error, got %v", err)
-	}
+	assertNewRegistryErrorContains(t, []Flag{{Code: "", Name: "alpha", Lifecycle: LifecyclePreview}}, "feature code is required", "missing code")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "BAD-0001", Name: "alpha", Lifecycle: LifecyclePreview}}, "invalid feature code", "invalid code")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "Alpha", Lifecycle: LifecyclePreview}}, "invalid feature name", "invalid name")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-001", Name: "alpha", Lifecycle: LifecyclePreview}}, "must use LOP-FEAT-NNNN", "short code")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-00A1", Name: "alpha", Lifecycle: LifecyclePreview}}, "suffix must be numeric", "nonnumeric code")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "", Lifecycle: LifecyclePreview}}, "feature name is required", "missing name")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: "unknown"}}, "invalid feature lifecycle", "invalid lifecycle")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: LifecyclePreview, FirstStableRelease: "nope"}}, "invalid first stable release", "invalid first stable release")
 }
 
 func TestDefaultRegistryAndLookup(t *testing.T) {
@@ -485,6 +461,14 @@ func assertDefaultReleaseLocksInvalid(t *testing.T, data string, want string) {
 	}
 	if lock, err := DefaultReleaseLock("v1.4.2"); err == nil || lock != nil {
 		t.Fatalf("expected default release lock lookup to validate refs, lock=%#v err=%v", lock, err)
+	}
+}
+
+func assertNewRegistryErrorContains(t *testing.T, flags []Flag, want, label string) {
+	t.Helper()
+	_, err := NewRegistry(flags)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected %s error containing %q, got %v", label, want, err)
 	}
 }
 
