@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.3](https://github.com/ben-ranford/lopper/compare/v1.5.2...v1.5.3) (2026-05-25)
+
+
+### Bug Fixes
+
+* **ci:** update go toolchain to 1.26.3 ([#934](https://github.com/ben-ranford/lopper/issues/934)) ([c10e486](https://github.com/ben-ranford/lopper/commit/c10e48682ecf709d66c6b754e9cbbaf261fbe889))
+* **ci:** update go toolchain to 1.26.3 to resolve security vulnerabilities ([c10e486](https://github.com/ben-ranford/lopper/commit/c10e48682ecf709d66c6b754e9cbbaf261fbe889))
+* **golang:** use modfile for go.mod parsing ([#942](https://github.com/ben-ranford/lopper/issues/942)) ([c664aa3](https://github.com/ben-ranford/lopper/commit/c664aa36c9c833aa08bd1204691c98318e925bb9))
+* **js:** track destructured namespace imports ([#941](https://github.com/ben-ranford/lopper/issues/941)) ([2a142af](https://github.com/ben-ranford/lopper/commit/2a142af0b5a6c1239467bee5c4a8aa70491b5b2a))
+* **jvm:** ignore manifest-named directories ([66615b8](https://github.com/ben-ranford/lopper/commit/66615b898555051a76387097cbbf392b6645d51c))
+* **jvm:** ignore manifest-named directories during detection ([#940](https://github.com/ben-ranford/lopper/issues/940)) ([66615b8](https://github.com/ben-ranford/lopper/commit/66615b898555051a76387097cbbf392b6645d51c))
+* **php:** handle grouped function and const imports ([#938](https://github.com/ben-ranford/lopper/issues/938)) ([685fa96](https://github.com/ben-ranford/lopper/commit/685fa96c8d94b28e15cba9cdc4d34e400ed9676d))
+* **python:** canonicalize known import aliases ([#944](https://github.com/ben-ranford/lopper/issues/944)) ([8fc110c](https://github.com/ben-ranford/lopper/commit/8fc110cccafc5cad00b5b8864d1661d656eaec7f))
+* **python:** ignore src-layout local modules ([#943](https://github.com/ben-ranford/lopper/issues/943)) ([6860ff0](https://github.com/ben-ranford/lopper/commit/6860ff06d0717598874f3e0f2a560d93a11f18e7))
+* **report:** skip SARIF increase warnings for reductions ([#937](https://github.com/ben-ranford/lopper/issues/937)) ([f4d7178](https://github.com/ben-ranford/lopper/commit/f4d7178024c487853008ec9fc313004bf0a578f9))
+* **shared:** ignore manifest-named directories in root signals ([#939](https://github.com/ben-ranford/lopper/issues/939)) ([20ebd7c](https://github.com/ben-ranford/lopper/commit/20ebd7c4e4d82bd8b9346194ce53b67678ff8ce7))
+
 ## [1.5.2](https://github.com/ben-ranford/lopper/compare/v1.5.1...v1.5.2) (2026-04-25)
 
 
