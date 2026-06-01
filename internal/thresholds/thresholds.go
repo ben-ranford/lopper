@@ -2,9 +2,10 @@ package thresholds
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
@@ -14,9 +15,6 @@ const (
 	DefaultMinUsagePercentForRecommendations = 40
 	// -1 disables threshold enforcement; 0 is strict zero-tolerance.
 	DefaultMaxUncertainImportCount          = -1
-	DefaultRemovalCandidateWeightUsage      = 0.50
-	DefaultRemovalCandidateWeightImpact     = 0.30
-	DefaultRemovalCandidateWeightConfidence = 0.20
 	DefaultLockfileDriftPolicy              = "warn"
 	DefaultLicenseFailOnDeny                = false
 	DefaultLicenseIncludeRegistryProvenance = false
@@ -58,15 +56,24 @@ type Overrides struct {
 	LicenseIncludeRegistryProvenance  *bool
 }
 
+func RemovalCandidateWeights(v Values) report.RemovalCandidateWeights {
+	return report.RemovalCandidateWeights{
+		Usage:      v.RemovalCandidateWeightUsage,
+		Impact:     v.RemovalCandidateWeightImpact,
+		Confidence: v.RemovalCandidateWeightConfidence,
+	}
+}
+
 func Defaults() Values {
+	defaultWeights := report.DefaultRemovalCandidateWeights()
 	return Values{
 		FailOnIncreasePercent:             DefaultFailOnIncreasePercent,
 		LowConfidenceWarningPercent:       DefaultLowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: DefaultMinUsagePercentForRecommendations,
 		MaxUncertainImportCount:           DefaultMaxUncertainImportCount,
-		RemovalCandidateWeightUsage:       DefaultRemovalCandidateWeightUsage,
-		RemovalCandidateWeightImpact:      DefaultRemovalCandidateWeightImpact,
-		RemovalCandidateWeightConfidence:  DefaultRemovalCandidateWeightConfidence,
+		RemovalCandidateWeightUsage:       defaultWeights.Usage,
+		RemovalCandidateWeightImpact:      defaultWeights.Impact,
+		RemovalCandidateWeightConfidence:  defaultWeights.Confidence,
 		LockfileDriftPolicy:               DefaultLockfileDriftPolicy,
 		LicenseFailOnDeny:                 DefaultLicenseFailOnDeny,
 		LicenseIncludeRegistryProvenance:  DefaultLicenseIncludeRegistryProvenance,
@@ -86,17 +93,8 @@ func (v *Values) Validate() error {
 	if err := validateThresholdWithDisableSentinel("max_uncertain_import_count", v.MaxUncertainImportCount); err != nil {
 		return err
 	}
-	if err := validateWeight("removal_candidate_weight_usage", v.RemovalCandidateWeightUsage); err != nil {
+	if err := report.ValidateRemovalCandidateWeightSet(RemovalCandidateWeights(*v)); err != nil {
 		return err
-	}
-	if err := validateWeight("removal_candidate_weight_impact", v.RemovalCandidateWeightImpact); err != nil {
-		return err
-	}
-	if err := validateWeight("removal_candidate_weight_confidence", v.RemovalCandidateWeightConfidence); err != nil {
-		return err
-	}
-	if !hasPositiveWeight(v.RemovalCandidateWeightUsage, v.RemovalCandidateWeightImpact, v.RemovalCandidateWeightConfidence) {
-		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
 	}
 	if err := validateLockfileDriftPolicy(v.LockfileDriftPolicy); err != nil {
 		return err
@@ -198,37 +196,11 @@ func validatePercentageRange(name string, value int) error {
 	return nil
 }
 
-func validateWeight(name string, value float64) error {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return fmt.Errorf("invalid threshold %s: %v (must be finite)", name, value)
-	}
-	if value < 0 {
-		return fmt.Errorf("invalid threshold %s: %v (must be >= 0)", name, value)
-	}
-	return nil
-}
-
-func hasPositiveWeight(values ...float64) bool {
-	for _, value := range values {
-		if value > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func validateOptionalInt(value *int, validate func(int) error) error {
 	if value == nil {
 		return nil
 	}
 	return validate(*value)
-}
-
-func validateOptionalWeight(name string, value *float64) error {
-	if value == nil {
-		return nil
-	}
-	return validateWeight(name, *value)
 }
 
 func validateOptionalString(value *string, validate func(string) error) error {
@@ -239,31 +211,22 @@ func validateOptionalString(value *string, validate func(string) error) error {
 }
 
 func validateOptionalWeights(overrides *Overrides) error {
-	weightChecks := []struct {
-		name  string
-		value *float64
-	}{
-		{name: "removal_candidate_weight_usage", value: overrides.RemovalCandidateWeightUsage},
-		{name: "removal_candidate_weight_impact", value: overrides.RemovalCandidateWeightImpact},
-		{name: "removal_candidate_weight_confidence", value: overrides.RemovalCandidateWeightConfidence},
-	}
-	anySet := false
-	for _, check := range weightChecks {
-		if check.value != nil {
-			anySet = true
-		}
-		if err := validateOptionalWeight(check.name, check.value); err != nil {
-			return err
-		}
-	}
-	if !anySet {
+	if overrides.RemovalCandidateWeightUsage == nil &&
+		overrides.RemovalCandidateWeightImpact == nil &&
+		overrides.RemovalCandidateWeightConfidence == nil {
 		return nil
 	}
-	values := overrides.Apply(Defaults())
-	if !hasPositiveWeight(values.RemovalCandidateWeightUsage, values.RemovalCandidateWeightImpact, values.RemovalCandidateWeightConfidence) {
-		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
+	weights := report.DefaultRemovalCandidateWeights()
+	if overrides.RemovalCandidateWeightUsage != nil {
+		weights.Usage = *overrides.RemovalCandidateWeightUsage
 	}
-	return nil
+	if overrides.RemovalCandidateWeightImpact != nil {
+		weights.Impact = *overrides.RemovalCandidateWeightImpact
+	}
+	if overrides.RemovalCandidateWeightConfidence != nil {
+		weights.Confidence = *overrides.RemovalCandidateWeightConfidence
+	}
+	return report.ValidateRemovalCandidateWeightSet(weights)
 }
 
 func normalizeDenyList(values []string) []string {

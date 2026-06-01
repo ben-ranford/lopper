@@ -6,6 +6,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 type preparedAnalyseExecution struct {
@@ -28,11 +29,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 
 	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
 	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
-	weights := report.RemovalCandidateWeights{
-		Usage:      req.Analyse.Thresholds.RemovalCandidateWeightUsage,
-		Impact:     req.Analyse.Thresholds.RemovalCandidateWeightImpact,
-		Confidence: req.Analyse.Thresholds.RemovalCandidateWeightConfidence,
-	}
+	weights := thresholds.RemovalCandidateWeights(req.Analyse.Thresholds)
 	runtimeTracePath, runtimeTracePathExplicit := prepareRuntimeTracePlan(req)
 	effectiveThresholds := report.EffectiveThresholds{
 		FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,

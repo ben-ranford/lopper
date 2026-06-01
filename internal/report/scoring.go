@@ -1,6 +1,7 @@
 package report
 
 import (
+	"fmt"
 	"math"
 	"slices"
 )
@@ -10,6 +11,12 @@ var defaultRemovalCandidateWeights = RemovalCandidateWeights{
 	Impact:     0.30,
 	Confidence: 0.20,
 }
+
+const (
+	removalCandidateWeightUsageField      = "removal_candidate_weight_usage"
+	removalCandidateWeightImpactField     = "removal_candidate_weight_impact"
+	removalCandidateWeightConfidenceField = "removal_candidate_weight_confidence"
+)
 
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
 	AnnotateRemovalCandidateScoresWithWeights(dependencies, DefaultRemovalCandidateWeights())
@@ -38,10 +45,7 @@ func DefaultRemovalCandidateWeights() RemovalCandidateWeights {
 }
 
 func NormalizeRemovalCandidateWeights(weights RemovalCandidateWeights) RemovalCandidateWeights {
-	if !isFiniteWeight(weights.Usage) || !isFiniteWeight(weights.Impact) || !isFiniteWeight(weights.Confidence) {
-		return defaultRemovalCandidateWeights
-	}
-	if weights.Usage < 0 || weights.Impact < 0 || weights.Confidence < 0 {
+	if err := ValidateRemovalCandidateWeightSet(weights); err != nil {
 		return defaultRemovalCandidateWeights
 	}
 	total := weights.Usage + weights.Impact + weights.Confidence
@@ -56,6 +60,32 @@ func NormalizeRemovalCandidateWeights(weights RemovalCandidateWeights) RemovalCa
 		Impact:     weights.Impact / total,
 		Confidence: weights.Confidence / total,
 	}
+}
+
+func validateRemovalCandidateWeight(name string, value float64) error {
+	if !isFiniteWeight(value) {
+		return fmt.Errorf("invalid threshold %s: %v (must be finite)", name, value)
+	}
+	if value < 0 {
+		return fmt.Errorf("invalid threshold %s: %v (must be >= 0)", name, value)
+	}
+	return nil
+}
+
+func ValidateRemovalCandidateWeightSet(weights RemovalCandidateWeights) error {
+	if err := validateRemovalCandidateWeight(removalCandidateWeightUsageField, weights.Usage); err != nil {
+		return err
+	}
+	if err := validateRemovalCandidateWeight(removalCandidateWeightImpactField, weights.Impact); err != nil {
+		return err
+	}
+	if err := validateRemovalCandidateWeight(removalCandidateWeightConfidenceField, weights.Confidence); err != nil {
+		return err
+	}
+	if weights.Usage <= 0 && weights.Impact <= 0 && weights.Confidence <= 0 {
+		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
+	}
+	return nil
 }
 
 func isFiniteWeight(value float64) bool {
