@@ -11,15 +11,27 @@ func TestMergeReportsCoordinatesFamiliesInStableOrder(t *testing.T) {
 	firstGeneratedAt := time.Date(2026, time.January, 10, 10, 0, 0, 0, time.UTC)
 	secondGeneratedAt := firstGeneratedAt.Add(2 * time.Hour)
 
+	firstSamples := []string{"a.js", "b.js", "c.js"}
+	secondSamples := []string{"d.js", "e.js", "f.js"}
+	firstDependencies := []report.DependencyReport{
+		dependencyReport("js-ts", "lodash", 1, 2, "map"),
+		dependencyReport("go", "cobra", 1, 1, ""),
+	}
+	secondDependencies := []report.DependencyReport{
+		dependencyReport("js-ts", "lodash", 2, 3, "filter"),
+		dependencyReport("python", "requests", 1, 2, ""),
+	}
+	secondDependencies[0].ReachabilityConfidence = &report.ReachabilityConfidence{
+		Model: "static",
+		Score: 0.7,
+	}
+	secondDependencies[0].RemovalCandidate = &report.RemovalCandidate{Score: 42}
+	secondDependencies[0].License = &report.DependencyLicense{SPDX: "MIT"}
+	secondDependencies[0].Provenance = &report.DependencyProvenance{Source: "registry"}
+
 	reports := []report.Report{
-		mergeFamilyReport(firstGeneratedAt, "w-first", 1, 2, []string{"a.js", "b.js", "c.js"},
-			dependencyReport("js-ts", "lodash", 1, 2, "map"),
-			dependencyReport("go", "cobra", 1, 1, ""),
-		),
-		mergeFamilyReport(secondGeneratedAt, "w-second", 3, 4, []string{"d.js", "e.js", "f.js"},
-			dependencyReport("js-ts", "lodash", 2, 3, "filter"),
-			dependencyReport("python", "requests", 1, 2, ""),
-		),
+		mergeFamilyReport(firstGeneratedAt, "w-first", 1, 2, firstSamples, firstDependencies...),
+		mergeFamilyReport(secondGeneratedAt, "w-second", 3, 4, secondSamples, secondDependencies...),
 	}
 
 	merged := mergeReports("/repo", reports)
@@ -117,5 +129,23 @@ func assertMergedDependencies(t *testing.T, merged report.Report) {
 	}
 	if len(merged.Dependencies[1].UsedImports) != 2 {
 		t.Fatalf("expected duplicate dependency used imports to merge, got %#v", merged.Dependencies[1].UsedImports)
+	}
+	assertMergedDependencyMetadata(t, merged.Dependencies[1])
+}
+
+func assertMergedDependencyMetadata(t *testing.T, dependency report.DependencyReport) {
+	t.Helper()
+
+	if dependency.ReachabilityConfidence == nil || dependency.ReachabilityConfidence.Model != "static" {
+		t.Fatalf("expected merged reachability confidence, got %#v", dependency.ReachabilityConfidence)
+	}
+	if dependency.RemovalCandidate == nil || dependency.RemovalCandidate.Score != 42 {
+		t.Fatalf("expected merged removal candidate, got %#v", dependency.RemovalCandidate)
+	}
+	if dependency.License == nil || dependency.License.SPDX != "MIT" {
+		t.Fatalf("expected merged dependency license, got %#v", dependency.License)
+	}
+	if dependency.Provenance == nil || dependency.Provenance.Source != "registry" {
+		t.Fatalf("expected merged dependency provenance, got %#v", dependency.Provenance)
 	}
 }

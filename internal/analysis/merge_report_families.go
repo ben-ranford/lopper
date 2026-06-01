@@ -45,7 +45,7 @@ func (m *warningsReportFamilyMerger) merge(current report.Report) {
 }
 
 func (m *warningsReportFamilyMerger) finalize(result *report.Report) {
-	result.Warnings = append(result.Warnings, m.warnings...)
+	result.Warnings = append([]string(nil), m.warnings...)
 }
 
 type usageUncertaintyReportFamilyMerger struct {
@@ -100,6 +100,7 @@ func (m *dependencyReportFamilyMerger) finalize(result *report.Report) {
 	for key := range m.mergedByKey {
 		orderedKeys = append(orderedKeys, key)
 	}
+	// Keep mergeReports deterministic for direct callers; finalReport may apply presentation ordering later.
 	sort.Strings(orderedKeys)
 	result.Dependencies = make([]report.DependencyReport, 0, len(orderedKeys))
 	for _, key := range orderedKeys {
