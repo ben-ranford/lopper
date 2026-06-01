@@ -375,25 +375,8 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 
 func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoGoModLines(t, repo, "module example.com/root", "", requirePrefix+depUUID+versionV160, "")
-	writeRepoMainLines(t, repo, packageMainLine, "", "import \""+depUUID+"\"", "", "func main() { _ = uuid.NewString() }", "")
-
-	nestedGoModLines := []string{
-		"module example.com/api",
-		"",
-		requirePrefix + depLo + " v1.47.0",
-		"",
-	}
-	writeFile(t, filepath.Join(repo, "services", "api", fileGoMod), strings.Join(nestedGoModLines, "\n"))
-	nestedMainLines := []string{
-		packageMainLine,
-		"",
-		importLoLine,
-		"",
-		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
-		"",
-	}
-	writeFile(t, filepath.Join(repo, "services", "api", fileMainGo), strings.Join(nestedMainLines, "\n"))
+	writeRootUUIDModule(t, repo)
+	writeNestedLoModule(t, repo, "services", "api")
 
 	reportData := analyseReport(t, language.Request{
 		RepoPath: repo,
@@ -435,26 +418,8 @@ func TestAdapterAnalyseWorkspaceGoWorkScansMembers(t *testing.T) {
 
 func TestScanRepoReusesLoadedNestedModuleDirs(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoGoModLines(t, repo, "module example.com/root", "", requirePrefix+depUUID+versionV160, "")
-	writeRepoMainLines(t, repo, packageMainLine, "", "import \""+depUUID+"\"", "", "func main() { _ = uuid.NewString() }", "")
-
-	nestedGoModLines := []string{
-		"module example.com/api",
-		"",
-		requirePrefix + depLo + " v1.47.0",
-		"",
-	}
-	nestedMainLines := []string{
-		packageMainLine,
-		"",
-		importLoLine,
-		"",
-		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
-		"",
-	}
-	nestedDir := filepath.Join(repo, "services", "api")
-	writeFile(t, filepath.Join(nestedDir, fileGoMod), strings.Join(nestedGoModLines, "\n"))
-	writeFile(t, filepath.Join(nestedDir, fileMainGo), strings.Join(nestedMainLines, "\n"))
+	writeRootUUIDModule(t, repo)
+	nestedDir := writeNestedLoModule(t, repo, "services", "api")
 
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {
@@ -477,13 +442,8 @@ func TestScanRepoReusesLoadedNestedModuleDirs(t *testing.T) {
 		t.Fatalf("expected one cached nested module skip, got %d", scan.SkippedNestedModuleDirs)
 	}
 
-	deps := dependencySetFromScan(scan)
-	if _, ok := deps[depUUID]; !ok {
-		t.Fatalf("expected root dependency %q in %#v", depUUID, deps)
-	}
-	if _, ok := deps[depLo]; ok {
-		t.Fatalf("did not expect nested dependency %q in %#v", depLo, deps)
-	}
+	requireScannedDependency(t, scan, depUUID)
+	requireSkippedDependency(t, scan, depLo)
 }
 
 func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
@@ -492,9 +452,7 @@ func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
 	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
 
-	excludedNestedDir := filepath.Join(repo, "tools", "api")
-	writeFile(t, filepath.Join(excludedNestedDir, fileGoMod), "module example.com/tools/api\n\nrequire "+depLo+" v1.47.0\n")
-	writeFile(t, filepath.Join(excludedNestedDir, fileMainGo), packageMainLine+"\n\n"+importLoLine+"\n\nfunc main() { _ = lo.Contains([]int{1,2}, 2) }\n")
+	excludedNestedDir := writeNestedLoModule(t, repo, "tools", "api")
 
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {
@@ -519,13 +477,8 @@ func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
 		t.Fatalf("expected one nested module skip, got %d", scan.SkippedNestedModuleDirs)
 	}
 
-	deps := dependencySetFromScan(scan)
-	if _, ok := deps[depUUID]; !ok {
-		t.Fatalf("expected workspace member dependency %q in %#v", depUUID, deps)
-	}
-	if _, ok := deps[depLo]; ok {
-		t.Fatalf("did not expect excluded nested dependency %q in %#v", depLo, deps)
-	}
+	requireScannedDependency(t, scan, depUUID)
+	requireSkippedDependency(t, scan, depLo)
 }
 
 func TestBuildRequestedGoDependenciesNoInputWarning(t *testing.T) {
@@ -1215,6 +1168,37 @@ func writeRepoMainLines(t *testing.T, repo string, lines ...string) {
 	writeRepoMain(t, repo, strings.Join(lines, "\n"))
 }
 
+func writeRootUUIDModule(t *testing.T, repo string) {
+	t.Helper()
+	writeRepoGoModLines(t, repo, "module example.com/root", "", requirePrefix+depUUID+versionV160, "")
+	writeRepoMainLines(t, repo, packageMainLine, "", "import \""+depUUID+"\"", "", "func main() { _ = uuid.NewString() }", "")
+}
+
+func writeNestedLoModule(t *testing.T, repo string, path ...string) string {
+	t.Helper()
+	nestedDir := filepath.Join(append([]string{repo}, path...)...)
+	writeRepoModuleFile(t, nestedDir, "module example.com/api", requirePrefix+depLo+" v1.47.0")
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), strings.Join([]string{
+		packageMainLine,
+		"",
+		importLoLine,
+		"",
+		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
+		"",
+	}, "\n"))
+	return nestedDir
+}
+
+func writeRepoModuleFile(t *testing.T, dir, moduleLine, requireLine string) {
+	t.Helper()
+	writeFile(t, filepath.Join(dir, fileGoMod), strings.Join([]string{
+		moduleLine,
+		"",
+		requireLine,
+		"",
+	}, "\n"))
+}
+
 func mkdirGoWorkDir(t *testing.T, repo string) {
 	t.Helper()
 	if err := os.Mkdir(filepath.Join(repo, fileGoWork), 0o755); err != nil {
@@ -1257,6 +1241,22 @@ func dependencySetFromScan(scan scanResult) map[string]struct{} {
 		}
 	}
 	return deps
+}
+
+func requireScannedDependency(t *testing.T, scan scanResult, dependency string) {
+	t.Helper()
+	deps := dependencySetFromScan(scan)
+	if _, ok := deps[dependency]; !ok {
+		t.Fatalf("expected dependency %q in %#v", dependency, deps)
+	}
+}
+
+func requireSkippedDependency(t *testing.T, scan scanResult, dependency string) {
+	t.Helper()
+	deps := dependencySetFromScan(scan)
+	if _, ok := deps[dependency]; ok {
+		t.Fatalf("did not expect dependency %q in %#v", dependency, deps)
+	}
 }
 
 func TestUtilityCoverageBranches(t *testing.T) {
