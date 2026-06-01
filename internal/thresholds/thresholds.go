@@ -56,7 +56,7 @@ type Overrides struct {
 	LicenseIncludeRegistryProvenance  *bool
 }
 
-func (v Values) RemovalCandidateWeights() report.RemovalCandidateWeights {
+func (v *Values) RemovalCandidateWeights() report.RemovalCandidateWeights {
 	return report.RemovalCandidateWeights{
 		Usage:      v.RemovalCandidateWeightUsage,
 		Impact:     v.RemovalCandidateWeightImpact,
