@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -703,6 +704,61 @@ func TestDetectLockfileDriftPythonManagerSignals(t *testing.T) {
 			t.Fatalf("expected uv warning for changed pyproject.toml without uv.lock update, got %#v", warnings)
 		}
 	})
+}
+
+func TestDetectLockfileDriftCachesPyprojectReadsAcrossPythonRules(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[tool.uv]\n")
+
+	originalReadFileUnder := readFileUnderFn
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+	})
+
+	pyprojectReads := 0
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if filepath.Base(targetPath) == pyprojectManifestName {
+			pyprojectReads++
+		}
+		return safeio.ReadFileUnder(rootDir, targetPath)
+	}
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected one warning each for Poetry and uv, got %#v", warnings)
+	}
+	if pyprojectReads != 1 {
+		t.Fatalf("expected %s to be read once per directory pass, got %d reads", pyprojectManifestName, pyprojectReads)
+	}
+}
+
+func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, poetryLockName), "metadata = {}\n")
+
+	originalReadFileUnder := readFileUnderFn
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+	})
+
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if filepath.Base(targetPath) == pyprojectManifestName {
+			return nil, errors.New("forced read error")
+		}
+		return safeio.ReadFileUnder(rootDir, targetPath)
+	}
+
+	_, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil {
+		t.Fatalf("expected read error")
+	}
+	if !strings.Contains(err.Error(), "read pyproject.toml for tool.poetry lockfile drift detection") {
+		t.Fatalf("expected matcher read error context, got %v", err)
+	}
 }
 
 func TestLockfileDriftHelpers(t *testing.T) {
