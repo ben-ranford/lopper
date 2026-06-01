@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const dotNetProgramSource = "Program.cs"
@@ -314,6 +316,92 @@ func TestDotNetDiscoveryAndParsingStagesCompose(t *testing.T) {
 	}
 	if parsed.File.Path != dotNetProgramSource {
 		t.Fatalf("unexpected parsed file path: %#v", parsed.File)
+	}
+}
+
+func TestDotNetDiscoverScanInputsPreservesMixedRepoOutputs(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFile), `
+<Project>
+  <ItemGroup>
+    <PackageVersion Include="Acme.Logging" Version="1.2.3" />
+  </ItemGroup>
+</Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "App.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "Lib", "Lib.fsproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="8.0.0" />
+  </ItemGroup>
+</Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "packages.lock.json"), `{"version":1}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "Program.cs"), "using Newtonsoft.Json;\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "Lib", "Module.fs"), "open Acme.Logging\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "Generated.g.cs"), "using Generated;\n")
+
+	inputs, err := discoverScanInputs(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("discover scan inputs: %v", err)
+	}
+
+	if !slices.Equal(inputs.DeclaredDependencies, []string{"acme.logging", "fsharp.core", "newtonsoft.json"}) {
+		t.Fatalf("unexpected declared dependencies: %#v", inputs.DeclaredDependencies)
+	}
+	if inputs.SkippedGenerated != 1 {
+		t.Fatalf("expected one generated source file skip, got %d", inputs.SkippedGenerated)
+	}
+	if !slices.Contains(inputs.Warnings, "skipped 1 generated source file(s)") {
+		t.Fatalf("expected generated source warning, got %#v", inputs.Warnings)
+	}
+	if len(inputs.SourceFiles) != 2 {
+		t.Fatalf("expected two source files, got %#v", inputs.SourceFiles)
+	}
+
+	paths := make([]string, 0, len(inputs.SourceFiles))
+	for _, file := range inputs.SourceFiles {
+		paths = append(paths, file.RelativePath)
+	}
+	if !slices.Contains(paths, filepath.Join("src", "App", "Program.cs")) {
+		t.Fatalf("expected Program.cs source document, got %#v", paths)
+	}
+	if !slices.Contains(paths, filepath.Join("src", "Lib", "Module.fs")) {
+		t.Fatalf("expected Module.fs source document, got %#v", paths)
+	}
+}
+
+func TestDotNetDiscoverScanInputsKeepsManifestDiscoveryAfterSourceCap(t *testing.T) {
+	repo := t.TempDir()
+	for i := 0; i < maxScanFiles+10; i++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, "a-src", "f"+strconv.Itoa(i)+".cs"), "using Acme.Foo;\n")
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "z-manifests", "Late.csproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Late.Manifest" Version="1.0.0" />
+  </ItemGroup>
+</Project>`)
+
+	inputs, err := discoverScanInputs(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("discover scan inputs with cap: %v", err)
+	}
+
+	if !inputs.SkippedFileLimit {
+		t.Fatalf("expected source scan cap to be triggered")
+	}
+	if len(inputs.SourceFiles) != maxScanFiles {
+		t.Fatalf("expected capped source file count %d, got %d", maxScanFiles, len(inputs.SourceFiles))
+	}
+	if !slices.Contains(inputs.DeclaredDependencies, "late.manifest") {
+		t.Fatalf("expected dependencies discovered after source cap, got %#v", inputs.DeclaredDependencies)
+	}
+	if !slices.Contains(inputs.Warnings, "source scan capped at 4096 files") {
+		t.Fatalf("expected source cap warning, got %#v", inputs.Warnings)
 	}
 }
 
