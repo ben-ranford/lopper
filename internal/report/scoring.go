@@ -13,9 +13,9 @@ var defaultRemovalCandidateWeights = RemovalCandidateWeights{
 }
 
 const (
-	RemovalCandidateWeightUsageField      = "removal_candidate_weight_usage"
-	RemovalCandidateWeightImpactField     = "removal_candidate_weight_impact"
-	RemovalCandidateWeightConfidenceField = "removal_candidate_weight_confidence"
+	removalCandidateWeightUsageField      = "removal_candidate_weight_usage"
+	removalCandidateWeightImpactField     = "removal_candidate_weight_impact"
+	removalCandidateWeightConfidenceField = "removal_candidate_weight_confidence"
 )
 
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
@@ -62,7 +62,7 @@ func NormalizeRemovalCandidateWeights(weights RemovalCandidateWeights) RemovalCa
 	}
 }
 
-func ValidateRemovalCandidateWeight(name string, value float64) error {
+func validateRemovalCandidateWeight(name string, value float64) error {
 	if !isFiniteWeight(value) {
 		return fmt.Errorf("invalid threshold %s: %v (must be finite)", name, value)
 	}
@@ -73,13 +73,13 @@ func ValidateRemovalCandidateWeight(name string, value float64) error {
 }
 
 func ValidateRemovalCandidateWeightSet(weights RemovalCandidateWeights) error {
-	if err := ValidateRemovalCandidateWeight(RemovalCandidateWeightUsageField, weights.Usage); err != nil {
+	if err := validateRemovalCandidateWeight(removalCandidateWeightUsageField, weights.Usage); err != nil {
 		return err
 	}
-	if err := ValidateRemovalCandidateWeight(RemovalCandidateWeightImpactField, weights.Impact); err != nil {
+	if err := validateRemovalCandidateWeight(removalCandidateWeightImpactField, weights.Impact); err != nil {
 		return err
 	}
-	if err := ValidateRemovalCandidateWeight(RemovalCandidateWeightConfidenceField, weights.Confidence); err != nil {
+	if err := validateRemovalCandidateWeight(removalCandidateWeightConfidenceField, weights.Confidence); err != nil {
 		return err
 	}
 	if weights.Usage <= 0 && weights.Impact <= 0 && weights.Confidence <= 0 {
