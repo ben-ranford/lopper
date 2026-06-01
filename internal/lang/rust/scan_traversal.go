@@ -18,7 +18,39 @@ func scanRoots(manifestPaths []string, repoPath string) []string {
 	if len(roots) == 0 {
 		return []string{repoPath}
 	}
-	return roots
+	return collapseScanRoots(roots)
+}
+
+func collapseScanRoots(roots []string) []string {
+	collapsed := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if hasScanRootParent(collapsed, root) {
+			continue
+		}
+		collapsed = dropNestedScanRoots(collapsed, root)
+		collapsed = append(collapsed, root)
+	}
+	return collapsed
+}
+
+func hasScanRootParent(roots []string, candidate string) bool {
+	for _, root := range roots {
+		if isSubPath(root, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func dropNestedScanRoots(roots []string, candidate string) []string {
+	filtered := roots[:0]
+	for _, root := range roots {
+		if isSubPath(candidate, root) {
+			continue
+		}
+		filtered = append(filtered, root)
+	}
+	return filtered
 }
 
 func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {

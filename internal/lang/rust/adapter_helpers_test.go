@@ -160,6 +160,10 @@ func TestManifestDiscoveryAndWorkspaceResolution(t *testing.T) {
 	if len(warnings) == 0 {
 		t.Fatalf("expected warning for unresolved workspace member pattern")
 	}
+	roots := scanRoots(paths, repo)
+	if len(roots) != 1 || !strings.HasSuffix(roots[0], filepath.Join("crates", "a")) {
+		t.Fatalf("expected member-only workspace roots to remain unchanged, got %#v", roots)
+	}
 
 	members := resolveWorkspaceMembers(repo, "crates/*")
 	if len(members) != 1 || !strings.HasSuffix(members[0], filepath.Join("crates", "a")) {
@@ -981,6 +985,9 @@ func TestRootSignalsAndManifestDiscoveryVariants(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for resolvable workspace members, got %#v", warnings)
+	}
+	if roots := scanRoots(paths, repo); len(roots) != 1 || !samePath(roots[0], repo) {
+		t.Fatalf("expected overlapping workspace roots to collapse to repo root, got %#v", roots)
 	}
 }
 
