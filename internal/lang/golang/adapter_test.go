@@ -453,6 +453,7 @@ func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
 
 	excludedNestedDir := writeNestedLoModule(t, repo, "tools", "api")
+	workspaceNestedDir := writeNestedLoModule(t, repo, "svc", "a", "nested", "api")
 
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {
@@ -468,13 +469,16 @@ func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
 	if _, ok := info.NestedModuleDirs[excludedNestedDir]; !ok {
 		t.Fatalf("expected non-workspace nested module dir %q cached in %#v", excludedNestedDir, info.NestedModuleDirs)
 	}
+	if _, ok := info.NestedModuleDirs[workspaceNestedDir]; !ok {
+		t.Fatalf("expected nested module under workspace dir %q cached in %#v", workspaceNestedDir, info.NestedModuleDirs)
+	}
 
 	scan, err := scanRepo(context.Background(), repo, info)
 	if err != nil {
 		t.Fatalf("scanRepo: %v", err)
 	}
-	if scan.SkippedNestedModuleDirs != 1 {
-		t.Fatalf("expected one nested module skip, got %d", scan.SkippedNestedModuleDirs)
+	if scan.SkippedNestedModuleDirs != 2 {
+		t.Fatalf("expected two nested module skips, got %d", scan.SkippedNestedModuleDirs)
 	}
 
 	requireScannedDependency(t, scan, depUUID)
@@ -1178,25 +1182,15 @@ func writeNestedLoModule(t *testing.T, repo string, path ...string) string {
 	t.Helper()
 	nestedDir := filepath.Join(append([]string{repo}, path...)...)
 	writeRepoModuleFile(t, nestedDir, "module example.com/api", requirePrefix+depLo+" v1.47.0")
-	writeFile(t, filepath.Join(nestedDir, fileMainGo), strings.Join([]string{
-		packageMainLine,
-		"",
-		importLoLine,
-		"",
-		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
-		"",
-	}, "\n"))
+	mainContent := packageMainLine + "\n\n" + importLoLine + "\n\nfunc main() { _ = lo.Contains([]int{1,2}, 2) }\n"
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), mainContent)
 	return nestedDir
 }
 
 func writeRepoModuleFile(t *testing.T, dir, moduleLine, requireLine string) {
 	t.Helper()
-	writeFile(t, filepath.Join(dir, fileGoMod), strings.Join([]string{
-		moduleLine,
-		"",
-		requireLine,
-		"",
-	}, "\n"))
+	modContent := moduleLine + "\n\n" + requireLine + "\n"
+	writeFile(t, filepath.Join(dir, fileGoMod), modContent)
 }
 
 func mkdirGoWorkDir(t *testing.T, repo string) {

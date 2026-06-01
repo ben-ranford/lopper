@@ -115,18 +115,18 @@ func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {
 	return normalized
 }
 
-func excludeDirSet(dirs map[string]struct{}, exclusions map[string]struct{}) map[string]struct{} {
-	if dirs == nil {
+func unionDirSet(primary map[string]struct{}, extra map[string]struct{}) map[string]struct{} {
+	if len(primary) == 0 && len(extra) == 0 {
 		return nil
 	}
-	filtered := make(map[string]struct{}, len(dirs))
-	for dir := range dirs {
-		if _, skip := exclusions[dir]; skip {
-			continue
-		}
-		filtered[dir] = struct{}{}
+	union := make(map[string]struct{}, len(primary)+len(extra))
+	for dir := range primary {
+		union[dir] = struct{}{}
 	}
-	return filtered
+	for dir := range extra {
+		union[dir] = struct{}{}
+	}
+	return union
 }
 
 func parseGoMod(content []byte) (string, []string, map[string]string) {
