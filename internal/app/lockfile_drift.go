@@ -24,6 +24,8 @@ const (
 	lockfileDriftEcosystemExpansionPreviewFlagName = "lockfile-drift-ecosystem-expansion-preview"
 	dotnetCSharpProjectManifestExt                 = ".csproj"
 	dotnetFSharpProjectManifestExt                 = ".fsproj"
+	pyprojectPoetrySection                         = "tool.poetry"
+	pyprojectUVSection                             = "tool.uv"
 )
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
@@ -97,9 +99,9 @@ var lockfileRules = []lockfileRule{
 		manifestLabel:         "Poetry configuration in pyproject.toml",
 		lockfiles:             []string{"poetry.lock"},
 		remedy:                "run poetry lock and commit the updated files",
-		manifestMatcherLabel:  "tool.poetry",
-		manifestMatcherNeedle: pyprojectSectionNeedle("tool.poetry"),
-		manifestMatcher:       pyprojectSectionMatcher("tool.poetry"),
+		manifestMatcherLabel:  pyprojectPoetrySection,
+		manifestMatcherNeedle: pyprojectSectionNeedle(pyprojectPoetrySection),
+		manifestMatcher:       pyprojectSectionMatcher(pyprojectPoetrySection),
 	},
 	{
 		manager:               "uv",
@@ -107,9 +109,9 @@ var lockfileRules = []lockfileRule{
 		manifestLabel:         "uv configuration in pyproject.toml",
 		lockfiles:             []string{"uv.lock"},
 		remedy:                "run uv lock and commit the updated files",
-		manifestMatcherLabel:  "tool.uv",
-		manifestMatcherNeedle: pyprojectSectionNeedle("tool.uv"),
-		manifestMatcher:       pyprojectSectionMatcher("tool.uv"),
+		manifestMatcherLabel:  pyprojectUVSection,
+		manifestMatcherNeedle: pyprojectSectionNeedle(pyprojectUVSection),
+		manifestMatcher:       pyprojectSectionMatcher(pyprojectUVSection),
 	},
 	{
 		manager:            ".NET",
