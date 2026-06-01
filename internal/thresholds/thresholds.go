@@ -216,8 +216,17 @@ func validateOptionalWeights(overrides *Overrides) error {
 		overrides.RemovalCandidateWeightConfidence == nil {
 		return nil
 	}
-	values := overrides.Apply(Defaults())
-	return report.ValidateRemovalCandidateWeightSet(RemovalCandidateWeights(values))
+	weights := report.DefaultRemovalCandidateWeights()
+	if overrides.RemovalCandidateWeightUsage != nil {
+		weights.Usage = *overrides.RemovalCandidateWeightUsage
+	}
+	if overrides.RemovalCandidateWeightImpact != nil {
+		weights.Impact = *overrides.RemovalCandidateWeightImpact
+	}
+	if overrides.RemovalCandidateWeightConfidence != nil {
+		weights.Confidence = *overrides.RemovalCandidateWeightConfidence
+	}
+	return report.ValidateRemovalCandidateWeightSet(weights)
 }
 
 func normalizeDenyList(values []string) []string {
