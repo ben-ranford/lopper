@@ -304,16 +304,16 @@ func newLockfileManifestCache(snapshot lockfileDirSnapshot) *lockfileManifestCac
 	}
 }
 
-func (cache *lockfileManifestCache) readManifest(manifestName string) ([]byte, error) {
-	if cache == nil {
+func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error) {
+	if c == nil {
 		return nil, errors.New("nil lockfile manifest cache")
 	}
-	cached, ok := cache.reads[manifestName]
+	cached, ok := c.reads[manifestName]
 	if ok {
 		return cached.content, cached.err
 	}
-	content, err := readFileUnderFn(cache.snapshot.repoPath, filepath.Join(cache.snapshot.path, manifestName))
-	cache.reads[manifestName] = cachedManifestRead{
+	content, err := readFileUnderFn(c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
+	c.reads[manifestName] = cachedManifestRead{
 		content: content,
 		err:     err,
 	}
@@ -462,10 +462,6 @@ func evaluateMissingOrStaleLockfile(snapshot lockfileDirSnapshot, rule lockfileR
 	return evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, lockfiles, nil)
 }
 
-func evaluateMissingOrStaleLockfileWithManifest(snapshot lockfileDirSnapshot, rule lockfileRule, hasManifest bool, manifestName string, lockfiles []presentLockfile) (lockfileDriftFinding, bool, error) {
-	return evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, lockfiles, nil)
-}
-
 func evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot lockfileDirSnapshot, rule lockfileRule, hasManifest bool, manifestName string, lockfiles []presentLockfile, cache *lockfileManifestCache) (lockfileDriftFinding, bool, error) {
 	switch {
 	case hasManifest && len(lockfiles) == 0:
@@ -487,15 +483,6 @@ func evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot lockfileDirSnap
 	default:
 		return lockfileDriftFinding{}, false, nil
 	}
-}
-
-func manifestMatchesRule(snapshot lockfileDirSnapshot, rule lockfileRule) (bool, error) {
-	manifestName := rule.manifest
-	manifestNames := findRuleManifests(snapshot.files, rule)
-	if len(manifestNames) > 0 {
-		manifestName = manifestNames[0]
-	}
-	return manifestMatchesRuleWithCache(snapshot, rule, manifestName, nil)
 }
 
 func manifestMatchesRuleWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, error) {
