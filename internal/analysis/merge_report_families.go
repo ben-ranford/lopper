@@ -100,7 +100,7 @@ func (m *dependencyReportFamilyMerger) finalize(result *report.Report) {
 	for key := range m.mergedByKey {
 		orderedKeys = append(orderedKeys, key)
 	}
-	// Keep mergeReports deterministic for direct callers; finalReport may apply presentation ordering later.
+	// Preserve deterministic order in the merged report itself.
 	sort.Strings(orderedKeys)
 	result.Dependencies = make([]report.DependencyReport, 0, len(orderedKeys))
 	for _, key := range orderedKeys {
