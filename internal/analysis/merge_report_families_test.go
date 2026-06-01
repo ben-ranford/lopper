@@ -12,40 +12,14 @@ func TestMergeReportsCoordinatesFamiliesInStableOrder(t *testing.T) {
 	secondGeneratedAt := firstGeneratedAt.Add(2 * time.Hour)
 
 	reports := []report.Report{
-		{
-			GeneratedAt: firstGeneratedAt,
-			Warnings:    []string{"w-first"},
-			UsageUncertainty: &report.UsageUncertainty{
-				ConfirmedImportUses: 1,
-				UncertainImportUses: 2,
-				Samples: []report.Location{
-					{File: "a.js"},
-					{File: "b.js"},
-					{File: "c.js"},
-				},
-			},
-			Dependencies: []report.DependencyReport{
-				{Language: "js-ts", Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedImports: []report.ImportUse{{Module: "lodash", Name: "map"}}},
-				{Language: "go", Name: "cobra", UsedExportsCount: 1, TotalExportsCount: 1},
-			},
-		},
-		{
-			GeneratedAt: secondGeneratedAt,
-			Warnings:    []string{"w-second"},
-			UsageUncertainty: &report.UsageUncertainty{
-				ConfirmedImportUses: 3,
-				UncertainImportUses: 4,
-				Samples: []report.Location{
-					{File: "d.js"},
-					{File: "e.js"},
-					{File: "f.js"},
-				},
-			},
-			Dependencies: []report.DependencyReport{
-				{Language: "js-ts", Name: "lodash", UsedExportsCount: 2, TotalExportsCount: 3, UsedImports: []report.ImportUse{{Module: "lodash", Name: "filter"}}},
-				{Language: "python", Name: "requests", UsedExportsCount: 1, TotalExportsCount: 2},
-			},
-		},
+		mergeFamilyReport(firstGeneratedAt, "w-first", 1, 2, []string{"a.js", "b.js", "c.js"},
+			dependencyReport("js-ts", "lodash", 1, 2, "map"),
+			dependencyReport("go", "cobra", 1, 1, ""),
+		),
+		mergeFamilyReport(secondGeneratedAt, "w-second", 3, 4, []string{"d.js", "e.js", "f.js"},
+			dependencyReport("js-ts", "lodash", 2, 3, "filter"),
+			dependencyReport("python", "requests", 1, 2, ""),
+		),
 	}
 
 	merged := mergeReports("/repo", reports)
@@ -53,6 +27,40 @@ func TestMergeReportsCoordinatesFamiliesInStableOrder(t *testing.T) {
 	assertMergedReportMetadata(t, merged, secondGeneratedAt)
 	assertMergedUsageUncertainty(t, merged)
 	assertMergedDependencies(t, merged)
+}
+
+func mergeFamilyReport(generatedAt time.Time, warning string, confirmed, uncertain int, samples []string, dependencies ...report.DependencyReport) report.Report {
+	return report.Report{
+		GeneratedAt:      generatedAt,
+		Warnings:         []string{warning},
+		UsageUncertainty: usageUncertainty(confirmed, uncertain, samples),
+		Dependencies:     dependencies,
+	}
+}
+
+func usageUncertainty(confirmed, uncertain int, sampleFiles []string) *report.UsageUncertainty {
+	samples := make([]report.Location, 0, len(sampleFiles))
+	for _, file := range sampleFiles {
+		samples = append(samples, report.Location{File: file})
+	}
+	return &report.UsageUncertainty{
+		ConfirmedImportUses: confirmed,
+		UncertainImportUses: uncertain,
+		Samples:             samples,
+	}
+}
+
+func dependencyReport(language, name string, usedExports, totalExports int, usedImport string) report.DependencyReport {
+	dependency := report.DependencyReport{
+		Language:          language,
+		Name:              name,
+		UsedExportsCount:  usedExports,
+		TotalExportsCount: totalExports,
+	}
+	if usedImport != "" {
+		dependency.UsedImports = []report.ImportUse{{Module: name, Name: usedImport}}
+	}
+	return dependency
 }
 
 func assertMergedReportMetadata(t *testing.T, merged report.Report, wantGeneratedAt time.Time) {
