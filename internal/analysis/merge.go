@@ -47,7 +47,7 @@ func cappedSampleCopy(samples []report.Location) []report.Location {
 
 func mergeDependency(left, right report.DependencyReport) report.DependencyReport {
 	merged := left
-	for _, mergeFamily := range dependencyFamilyMergeOrder() {
+	for _, mergeFamily := range dependencyFamilyMergeOrder {
 		mergeFamily(&merged, left, right)
 	}
 	return merged
@@ -55,15 +55,13 @@ func mergeDependency(left, right report.DependencyReport) report.DependencyRepor
 
 type dependencyFamilyMergeFn func(merged *report.DependencyReport, left, right report.DependencyReport)
 
-func dependencyFamilyMergeOrder() []dependencyFamilyMergeFn {
-	return []dependencyFamilyMergeFn{
-		mergeDependencyExportFamily,
-		mergeDependencyImportFamily,
-		mergeDependencySymbolFamily,
-		mergeDependencyRiskFamily,
-		mergeDependencyCodemodFamily,
-		mergeDependencyRuntimeFamily,
-	}
+var dependencyFamilyMergeOrder = []dependencyFamilyMergeFn{
+	mergeDependencyExportFamily,
+	mergeDependencyImportFamily,
+	mergeDependencySymbolFamily,
+	mergeDependencyRiskFamily,
+	mergeDependencyCodemodFamily,
+	mergeDependencyRuntimeFamily,
 }
 
 func mergeDependencyExportFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
