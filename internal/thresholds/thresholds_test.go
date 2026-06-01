@@ -17,7 +17,7 @@ func TestDefaultsValidate(t *testing.T) {
 
 func TestDefaultsRemovalCandidateWeightsMatchReportDefaults(t *testing.T) {
 	defaults := Defaults()
-	if got, want := defaults.RemovalCandidateWeights(), report.DefaultRemovalCandidateWeights(); got != want {
+	if got, want := RemovalCandidateWeights(defaults), report.DefaultRemovalCandidateWeights(); got != want {
 		t.Fatalf("default removal candidate weights = %#v, want %#v", got, want)
 	}
 }
@@ -33,7 +33,7 @@ func TestValuesRemovalCandidateWeightsNormalizeConsistentlyWithReport(t *testing
 	}
 
 	want := report.RemovalCandidateWeights{Usage: 0.5, Impact: 0.25, Confidence: 0.25}
-	if got := report.NormalizeRemovalCandidateWeights(values.RemovalCandidateWeights()); got != want {
+	if got := report.NormalizeRemovalCandidateWeights(RemovalCandidateWeights(values)); got != want {
 		t.Fatalf("normalized removal candidate weights = %#v, want %#v", got, want)
 	}
 }
@@ -55,8 +55,8 @@ func TestThresholdWeightsRemainConsistentWithReportScoring(t *testing.T) {
 	depsFromThresholdWeights := append([]report.DependencyReport(nil), baseDeps...)
 	depsFromNormalizedWeights := append([]report.DependencyReport(nil), baseDeps...)
 
-	report.AnnotateRemovalCandidateScoresWithWeights(depsFromThresholdWeights, values.RemovalCandidateWeights())
-	normalizedWeights := report.NormalizeRemovalCandidateWeights(values.RemovalCandidateWeights())
+	report.AnnotateRemovalCandidateScoresWithWeights(depsFromThresholdWeights, RemovalCandidateWeights(values))
+	normalizedWeights := report.NormalizeRemovalCandidateWeights(RemovalCandidateWeights(values))
 	report.AnnotateRemovalCandidateScoresWithWeights(depsFromNormalizedWeights, normalizedWeights)
 
 	for i := range depsFromThresholdWeights {

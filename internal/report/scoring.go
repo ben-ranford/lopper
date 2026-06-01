@@ -73,20 +73,16 @@ func ValidateRemovalCandidateWeight(name string, value float64) error {
 }
 
 func ValidateRemovalCandidateWeightSet(weights RemovalCandidateWeights) error {
-	checks := []struct {
-		name  string
-		value float64
-	}{
-		{name: RemovalCandidateWeightUsageField, value: weights.Usage},
-		{name: RemovalCandidateWeightImpactField, value: weights.Impact},
-		{name: RemovalCandidateWeightConfidenceField, value: weights.Confidence},
+	if err := ValidateRemovalCandidateWeight(RemovalCandidateWeightUsageField, weights.Usage); err != nil {
+		return err
 	}
-	for _, check := range checks {
-		if err := ValidateRemovalCandidateWeight(check.name, check.value); err != nil {
-			return err
-		}
+	if err := ValidateRemovalCandidateWeight(RemovalCandidateWeightImpactField, weights.Impact); err != nil {
+		return err
 	}
-	if !hasPositiveWeight(weights.Usage, weights.Impact, weights.Confidence) {
+	if err := ValidateRemovalCandidateWeight(RemovalCandidateWeightConfidenceField, weights.Confidence); err != nil {
+		return err
+	}
+	if weights.Usage <= 0 && weights.Impact <= 0 && weights.Confidence <= 0 {
 		return fmt.Errorf("invalid removal candidate weights: at least one weight must be greater than 0")
 	}
 	return nil
@@ -94,15 +90,6 @@ func ValidateRemovalCandidateWeightSet(weights RemovalCandidateWeights) error {
 
 func isFiniteWeight(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
-}
-
-func hasPositiveWeight(values ...float64) bool {
-	for _, value := range values {
-		if value > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func RemovalCandidateScore(dep DependencyReport) (float64, bool) {

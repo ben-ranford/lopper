@@ -56,7 +56,7 @@ type Overrides struct {
 	LicenseIncludeRegistryProvenance  *bool
 }
 
-func (v *Values) RemovalCandidateWeights() report.RemovalCandidateWeights {
+func RemovalCandidateWeights(v Values) report.RemovalCandidateWeights {
 	return report.RemovalCandidateWeights{
 		Usage:      v.RemovalCandidateWeightUsage,
 		Impact:     v.RemovalCandidateWeightImpact,
@@ -93,7 +93,7 @@ func (v *Values) Validate() error {
 	if err := validateThresholdWithDisableSentinel("max_uncertain_import_count", v.MaxUncertainImportCount); err != nil {
 		return err
 	}
-	if err := report.ValidateRemovalCandidateWeightSet(v.RemovalCandidateWeights()); err != nil {
+	if err := report.ValidateRemovalCandidateWeightSet(RemovalCandidateWeights(*v)); err != nil {
 		return err
 	}
 	if err := validateLockfileDriftPolicy(v.LockfileDriftPolicy); err != nil {
@@ -217,7 +217,7 @@ func validateOptionalWeights(overrides *Overrides) error {
 		return nil
 	}
 	values := overrides.Apply(Defaults())
-	return report.ValidateRemovalCandidateWeightSet(values.RemovalCandidateWeights())
+	return report.ValidateRemovalCandidateWeightSet(RemovalCandidateWeights(values))
 }
 
 func normalizeDenyList(values []string) []string {
