@@ -15,10 +15,11 @@ type resolvedCacheOptions struct {
 }
 
 type analysisCache struct {
-	options   resolvedCacheOptions
-	metadata  report.CacheMetadata
-	warnings  []string
-	cacheable bool
+	options         resolvedCacheOptions
+	metadata        report.CacheMetadata
+	warnings        []string
+	cacheable       bool
+	inputDigestMemo map[cacheInputDigestMemoKey]string
 }
 
 func newAnalysisCache(req Request, repoPath string) *analysisCache {
@@ -29,9 +30,10 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		ReadOnly: options.ReadOnly,
 	}
 	cache := &analysisCache{
-		options:  options,
-		metadata: metadata,
-		warnings: make([]string, 0),
+		options:         options,
+		metadata:        metadata,
+		warnings:        make([]string, 0),
+		inputDigestMemo: make(map[cacheInputDigestMemoKey]string),
 	}
 	if !options.Enabled {
 		cache.cacheable = false
