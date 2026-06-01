@@ -433,6 +433,101 @@ func TestAdapterAnalyseWorkspaceGoWorkScansMembers(t *testing.T) {
 	}
 }
 
+func TestScanRepoReusesLoadedNestedModuleDirs(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoGoModLines(t, repo, "module example.com/root", "", requirePrefix+depUUID+versionV160, "")
+	writeRepoMainLines(t, repo, packageMainLine, "", "import \""+depUUID+"\"", "", "func main() { _ = uuid.NewString() }", "")
+
+	nestedGoModLines := []string{
+		"module example.com/api",
+		"",
+		requirePrefix + depLo + " v1.47.0",
+		"",
+	}
+	nestedMainLines := []string{
+		packageMainLine,
+		"",
+		importLoLine,
+		"",
+		"func main() { _ = lo.Contains([]int{1,2}, 2) }",
+		"",
+	}
+	nestedDir := filepath.Join(repo, "services", "api")
+	writeFile(t, filepath.Join(nestedDir, fileGoMod), strings.Join(nestedGoModLines, "\n"))
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), strings.Join(nestedMainLines, "\n"))
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if _, ok := info.NestedModuleDirs[nestedDir]; !ok {
+		t.Fatalf("expected nested module dir %q cached in %#v", nestedDir, info.NestedModuleDirs)
+	}
+
+	// Removing nested go.mod after module loading verifies scanRepo reuses cached dirs.
+	if err := os.Remove(filepath.Join(nestedDir, fileGoMod)); err != nil {
+		t.Fatalf("remove nested go.mod: %v", err)
+	}
+
+	scan, err := scanRepo(context.Background(), repo, info)
+	if err != nil {
+		t.Fatalf("scanRepo: %v", err)
+	}
+	if scan.SkippedNestedModuleDirs != 1 {
+		t.Fatalf("expected one cached nested module skip, got %d", scan.SkippedNestedModuleDirs)
+	}
+
+	deps := dependencySetFromScan(scan)
+	if _, ok := deps[depUUID]; !ok {
+		t.Fatalf("expected root dependency %q in %#v", depUUID, deps)
+	}
+	if _, ok := deps[depLo]; ok {
+		t.Fatalf("did not expect nested dependency %q in %#v", depLo, deps)
+	}
+}
+
+func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
+	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
+
+	excludedNestedDir := filepath.Join(repo, "tools", "api")
+	writeFile(t, filepath.Join(excludedNestedDir, fileGoMod), "module example.com/tools/api\n\nrequire "+depLo+" v1.47.0\n")
+	writeFile(t, filepath.Join(excludedNestedDir, fileMainGo), packageMainLine+"\n\n"+importLoLine+"\n\nfunc main() { _ = lo.Contains([]int{1,2}, 2) }\n")
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	workspaceDir := filepath.Join(repo, "svc", "a")
+	if _, ok := info.WorkspaceModuleExclusions[workspaceDir]; !ok {
+		t.Fatalf("expected workspace exclusion %q in %#v", workspaceDir, info.WorkspaceModuleExclusions)
+	}
+	if _, ok := info.NestedModuleDirs[workspaceDir]; ok {
+		t.Fatalf("did not expect workspace dir %q in nested module skips %#v", workspaceDir, info.NestedModuleDirs)
+	}
+	if _, ok := info.NestedModuleDirs[excludedNestedDir]; !ok {
+		t.Fatalf("expected non-workspace nested module dir %q cached in %#v", excludedNestedDir, info.NestedModuleDirs)
+	}
+
+	scan, err := scanRepo(context.Background(), repo, info)
+	if err != nil {
+		t.Fatalf("scanRepo: %v", err)
+	}
+	if scan.SkippedNestedModuleDirs != 1 {
+		t.Fatalf("expected one nested module skip, got %d", scan.SkippedNestedModuleDirs)
+	}
+
+	deps := dependencySetFromScan(scan)
+	if _, ok := deps[depUUID]; !ok {
+		t.Fatalf("expected workspace member dependency %q in %#v", depUUID, deps)
+	}
+	if _, ok := deps[depLo]; ok {
+		t.Fatalf("did not expect excluded nested dependency %q in %#v", depLo, deps)
+	}
+}
+
 func TestBuildRequestedGoDependenciesNoInputWarning(t *testing.T) {
 	deps, warnings := buildRequestedGoDependencies(language.Request{}, scanResult{})
 	if len(deps) != 0 {
@@ -1149,6 +1244,19 @@ func dependencyNames(dependencies []report.DependencyReport) []string {
 		names = append(names, dep.Name)
 	}
 	return names
+}
+
+func dependencySetFromScan(scan scanResult) map[string]struct{} {
+	deps := make(map[string]struct{})
+	for _, file := range scan.Files {
+		for _, imported := range file.Imports {
+			if imported.Dependency == "" {
+				continue
+			}
+			deps[imported.Dependency] = struct{}{}
+		}
+	}
+	return deps
 }
 
 func TestUtilityCoverageBranches(t *testing.T) {

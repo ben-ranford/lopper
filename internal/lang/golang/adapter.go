@@ -92,11 +92,7 @@ func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scan
 	if repoPath == "" {
 		return result, fs.ErrInvalid
 	}
-	workspaceMemberDirs, err := workspaceRootModuleDirs(repoPath, moduleInfo)
-	if err != nil {
-		return result, err
-	}
-	nestedModules, err := nestedModuleDirs(repoPath, workspaceMemberDirs)
+	nestedModules, err := nestedModuleDirsForScan(repoPath, moduleInfo)
 	if err != nil {
 		return result, err
 	}
@@ -107,6 +103,22 @@ func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scan
 	}
 	appendScanWarnings(&result, moduleInfo)
 	return result, nil
+}
+
+func nestedModuleDirsForScan(repoPath string, info moduleInfo) (map[string]struct{}, error) {
+	if info.NestedModuleDirs != nil {
+		return info.NestedModuleDirs, nil
+	}
+
+	workspaceModuleExclusions := info.WorkspaceModuleExclusions
+	if workspaceModuleExclusions == nil {
+		var err error
+		workspaceModuleExclusions, err = workspaceRootModuleDirs(repoPath, info)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nestedModuleDirs(repoPath, workspaceModuleExclusions)
 }
 
 func newScanResult() scanResult {

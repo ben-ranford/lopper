@@ -26,6 +26,8 @@ type moduleInfo struct {
 	ModulePath                 string
 	LocalModulePaths           []string
 	DeclaredDependencies       []string
+	NestedModuleDirs           map[string]struct{}
+	WorkspaceModuleExclusions  map[string]struct{}
 	ReplacementImports         map[string]string
 	VendoredImportDependencies map[string]string
 	VendoredDependencies       map[string]vendoredDependencyMetadata
