@@ -845,6 +845,18 @@ func TestPyprojectSectionMatcherReadError(t *testing.T) {
 	}
 }
 
+func TestManifestMatcherNeedleDoesNotDeriveFromLabel(t *testing.T) {
+	rule := lockfileRule{manifestMatcherLabel: pyprojectPoetrySection}
+	if got := manifestMatcherNeedle(rule); got != "" {
+		t.Fatalf("expected label-only rule to have no matcher needle, got %q", got)
+	}
+
+	rule.manifestMatcherNeedle = pyprojectSectionNeedle(pyprojectPoetrySection)
+	if got, want := manifestMatcherNeedle(rule), pyprojectSectionNeedle(pyprojectPoetrySection); got != want {
+		t.Fatalf("manifestMatcherNeedle() = %q, want %q", got, want)
+	}
+}
+
 func TestLockfileDriftHelpers(t *testing.T) {
 	repo := t.TempDir()
 	nestedDir := filepath.Join(repo, "nested")

@@ -789,14 +789,7 @@ func pyprojectSectionNeedle(section string) string {
 }
 
 func manifestMatcherNeedle(rule lockfileRule) string {
-	if rule.manifestMatcherNeedle != "" {
-		return rule.manifestMatcherNeedle
-	}
-	section := strings.TrimSpace(rule.manifestMatcherLabel)
-	if section == "" {
-		return ""
-	}
-	return pyprojectSectionNeedle(section)
+	return strings.TrimSpace(rule.manifestMatcherNeedle)
 }
 
 func pyprojectSectionNeedleMatchesContent(needle string, content []byte) bool {
