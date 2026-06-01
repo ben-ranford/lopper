@@ -24,23 +24,28 @@ const (
 	lockfileDriftEcosystemExpansionPreviewFlagName = "lockfile-drift-ecosystem-expansion-preview"
 	dotnetCSharpProjectManifestExt                 = ".csproj"
 	dotnetFSharpProjectManifestExt                 = ".fsproj"
+	pyprojectPoetrySection                         = "tool.poetry"
+	pyprojectUVSection                             = "tool.uv"
 )
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 var normalizeRepoPathFn = workspace.NormalizeRepoPath
 var collectLockfileGitContextFn = collectLockfileGitContext
 var execGitCommandContextFn = gitexec.CommandContext
+var readFileUnderFn = safeio.ReadFileUnder
 
 type lockfileRule struct {
-	manager            string
-	manifest           string
-	manifestNames      []string
-	manifestExts       []string
-	manifestLabel      string
-	lockfiles          []string
-	remedy             string
-	previewFeatureFlag string
-	manifestMatcher    func(repoPath, dir string) (bool, error)
+	manager               string
+	manifest              string
+	manifestNames         []string
+	manifestExts          []string
+	manifestLabel         string
+	lockfiles             []string
+	remedy                string
+	previewFeatureFlag    string
+	manifestMatcherLabel  string
+	manifestMatcherNeedle string
+	manifestMatcher       func(repoPath, dir string) (bool, error)
 }
 
 type lockfileGitContext struct {
@@ -53,6 +58,16 @@ type lockfileDirSnapshot struct {
 	path     string
 	relDir   string
 	files    map[string]fs.FileInfo
+}
+
+type cachedManifestRead struct {
+	content []byte
+	err     error
+}
+
+type lockfileManifestCache struct {
+	snapshot lockfileDirSnapshot
+	reads    map[string]cachedManifestRead
 }
 
 type lockfileDriftKind uint8
@@ -78,8 +93,26 @@ var lockfileRules = []lockfileRule{
 	{manager: "Cargo", manifest: "Cargo.toml", lockfiles: []string{"Cargo.lock"}, remedy: "run cargo generate-lockfile (or cargo build) and commit the updated files"},
 	{manager: "Go modules", manifest: "go.mod", lockfiles: []string{"go.sum"}, remedy: "run go mod tidy and commit the updated files"},
 	{manager: "Pipenv", manifest: "Pipfile", lockfiles: []string{"Pipfile.lock"}, remedy: "run pipenv lock and commit the updated files"},
-	{manager: "Poetry", manifest: pyprojectManifestName, manifestLabel: "Poetry configuration in pyproject.toml", lockfiles: []string{"poetry.lock"}, remedy: "run poetry lock and commit the updated files", manifestMatcher: pyprojectSectionMatcher("tool.poetry")},
-	{manager: "uv", manifest: pyprojectManifestName, manifestLabel: "uv configuration in pyproject.toml", lockfiles: []string{"uv.lock"}, remedy: "run uv lock and commit the updated files", manifestMatcher: pyprojectSectionMatcher("tool.uv")},
+	{
+		manager:               "Poetry",
+		manifest:              pyprojectManifestName,
+		manifestLabel:         "Poetry configuration in pyproject.toml",
+		lockfiles:             []string{"poetry.lock"},
+		remedy:                "run poetry lock and commit the updated files",
+		manifestMatcherLabel:  pyprojectPoetrySection,
+		manifestMatcherNeedle: pyprojectSectionNeedle(pyprojectPoetrySection),
+		manifestMatcher:       pyprojectSectionMatcher(pyprojectPoetrySection),
+	},
+	{
+		manager:               "uv",
+		manifest:              pyprojectManifestName,
+		manifestLabel:         "uv configuration in pyproject.toml",
+		lockfiles:             []string{"uv.lock"},
+		remedy:                "run uv lock and commit the updated files",
+		manifestMatcherLabel:  pyprojectUVSection,
+		manifestMatcherNeedle: pyprojectSectionNeedle(pyprojectUVSection),
+		manifestMatcher:       pyprojectSectionMatcher(pyprojectUVSection),
+	},
 	{
 		manager:            ".NET",
 		manifest:           "Directory.Packages.props",
@@ -269,6 +302,52 @@ func readLockfileDirSnapshot(repoPath, dir string) (lockfileDirSnapshot, error) 
 	}, nil
 }
 
+func newLockfileManifestCache(snapshot lockfileDirSnapshot) *lockfileManifestCache {
+	return &lockfileManifestCache{
+		snapshot: snapshot,
+	}
+}
+
+func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error) {
+	if c == nil {
+		return nil, errors.New("nil lockfile manifest cache")
+	}
+	if c.reads != nil {
+		cached, ok := c.reads[manifestName]
+		if ok {
+			return cached.content, cached.err
+		}
+	}
+	content, err := readFileUnderFn(c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
+	if c.reads == nil {
+		c.reads = make(map[string]cachedManifestRead)
+	}
+	c.reads[manifestName] = cachedManifestRead{
+		content: content,
+		err:     err,
+	}
+	return content, err
+}
+
+func readManifestForLockfileDrift(snapshot lockfileDirSnapshot, manifestName, matcherLabel string, cache *lockfileManifestCache) ([]byte, error) {
+	var (
+		content []byte
+		err     error
+	)
+	if cache != nil {
+		content, err = cache.readManifest(manifestName)
+	} else {
+		content, err = readFileUnderFn(snapshot.repoPath, filepath.Join(snapshot.path, manifestName))
+	}
+	if err != nil {
+		if strings.TrimSpace(matcherLabel) != "" {
+			return nil, fmt.Errorf("read %s for %s lockfile drift detection: %w", manifestName, matcherLabel, err)
+		}
+		return nil, fmt.Errorf("read %s for lockfile drift detection: %w", manifestName, err)
+	}
+	return content, nil
+}
+
 func shouldSkipMissingLockfile(snapshot lockfileDirSnapshot, rule lockfileRule) (bool, error) {
 	manifestNames := findRuleManifests(snapshot.files, rule)
 	manifestName := rule.manifest
@@ -279,11 +358,21 @@ func shouldSkipMissingLockfile(snapshot lockfileDirSnapshot, rule lockfileRule) 
 }
 
 func shouldSkipMissingLockfileForManifest(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string) (bool, error) {
-	content, err := safeio.ReadFileUnder(snapshot.repoPath, filepath.Join(snapshot.path, manifestName))
+	return shouldSkipMissingLockfileForManifestWithCache(snapshot, rule, manifestName, nil)
+}
+
+func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, error) {
+	content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
 	if err != nil {
-		return false, fmt.Errorf("read %s for lockfile drift detection: %w", manifestName, err)
+		return false, err
 	}
-	if rule.manifestMatcher != nil {
+	sectionNeedle := manifestMatcherNeedle(rule)
+	switch {
+	case sectionNeedle != "":
+		if !pyprojectSectionNeedleMatchesContent(sectionNeedle, content) {
+			return true, nil
+		}
+	case rule.manifestMatcher != nil:
 		matched, matchErr := rule.manifestMatcher(snapshot.repoPath, snapshot.path)
 		if matchErr != nil {
 			return false, matchErr
@@ -317,8 +406,9 @@ func evaluateLockfileDir(snapshot lockfileDirSnapshot, gitContext lockfileGitCon
 
 func evaluateLockfileDirWithRules(snapshot lockfileDirSnapshot, gitContext lockfileGitContext, rules []lockfileRule) ([]lockfileDriftFinding, error) {
 	findings := make([]lockfileDriftFinding, 0, len(rules))
+	manifestCache := newLockfileManifestCache(snapshot)
 	for _, rule := range rules {
-		finding, ok, err := evaluateLockfileRule(snapshot, rule, gitContext)
+		finding, ok, err := evaluateLockfileRuleWithCache(snapshot, rule, gitContext, manifestCache)
 		if err != nil {
 			return nil, err
 		}
@@ -331,6 +421,10 @@ func evaluateLockfileDirWithRules(snapshot lockfileDirSnapshot, gitContext lockf
 }
 
 func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitContext lockfileGitContext) (lockfileDriftFinding, bool, error) {
+	return evaluateLockfileRuleWithCache(snapshot, rule, gitContext, nil)
+}
+
+func evaluateLockfileRuleWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, gitContext lockfileGitContext, cache *lockfileManifestCache) (lockfileDriftFinding, bool, error) {
 	manifests := findRuleManifests(snapshot.files, rule)
 	hasManifest := len(manifests) > 0
 	manifestName := rule.manifest
@@ -343,7 +437,7 @@ func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitCo
 		return lockfileDriftFinding{}, false, err
 	}
 
-	finding, handled, err := evaluateMissingOrStaleLockfileWithManifest(snapshot, rule, hasManifest, manifestName, lockfiles)
+	finding, handled, err := evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, lockfiles, cache)
 	if handled || err != nil {
 		return finding, handled, err
 	}
@@ -351,7 +445,7 @@ func evaluateLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, gitCo
 		return lockfileDriftFinding{}, false, nil
 	}
 
-	matchesManifest, err := manifestMatchesRule(snapshot, rule)
+	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifestName, cache)
 	if err != nil {
 		return lockfileDriftFinding{}, false, err
 	}
@@ -374,13 +468,13 @@ func evaluateMissingOrStaleLockfile(snapshot lockfileDirSnapshot, rule lockfileR
 	if hasManifest && len(manifestNames) > 0 {
 		manifestName = manifestNames[0]
 	}
-	return evaluateMissingOrStaleLockfileWithManifest(snapshot, rule, hasManifest, manifestName, lockfiles)
+	return evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, lockfiles, nil)
 }
 
-func evaluateMissingOrStaleLockfileWithManifest(snapshot lockfileDirSnapshot, rule lockfileRule, hasManifest bool, manifestName string, lockfiles []presentLockfile) (lockfileDriftFinding, bool, error) {
+func evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot lockfileDirSnapshot, rule lockfileRule, hasManifest bool, manifestName string, lockfiles []presentLockfile, cache *lockfileManifestCache) (lockfileDriftFinding, bool, error) {
 	switch {
 	case hasManifest && len(lockfiles) == 0:
-		skip, err := shouldSkipMissingLockfileForManifest(snapshot, rule, manifestName)
+		skip, err := shouldSkipMissingLockfileForManifestWithCache(snapshot, rule, manifestName, cache)
 		if err != nil {
 			return lockfileDriftFinding{}, false, err
 		}
@@ -400,7 +494,16 @@ func evaluateMissingOrStaleLockfileWithManifest(snapshot lockfileDirSnapshot, ru
 	}
 }
 
-func manifestMatchesRule(snapshot lockfileDirSnapshot, rule lockfileRule) (bool, error) {
+func manifestMatchesRuleWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, error) {
+	section := strings.TrimSpace(rule.manifestMatcherLabel)
+	sectionNeedle := manifestMatcherNeedle(rule)
+	if sectionNeedle != "" {
+		content, err := readManifestForLockfileDrift(snapshot, manifestName, section, cache)
+		if err != nil {
+			return false, err
+		}
+		return pyprojectSectionNeedleMatchesContent(sectionNeedle, content), nil
+	}
 	if rule.manifestMatcher == nil {
 		return true, nil
 	}
@@ -671,14 +774,26 @@ func manifestDescription(rule lockfileRule) string {
 }
 
 func pyprojectSectionMatcher(section string) func(repoPath, dir string) (bool, error) {
-	needle := "[" + strings.ToLower(strings.TrimSpace(section)) + "]"
+	needle := pyprojectSectionNeedle(section)
 	return func(repoPath, dir string) (bool, error) {
-		content, err := safeio.ReadFileUnder(repoPath, filepath.Join(dir, pyprojectManifestName))
+		content, err := readFileUnderFn(repoPath, filepath.Join(dir, pyprojectManifestName))
 		if err != nil {
 			return false, fmt.Errorf("read %s for %s lockfile drift detection: %w", pyprojectManifestName, section, err)
 		}
-		return strings.Contains(strings.ToLower(string(content)), needle), nil
+		return pyprojectSectionNeedleMatchesContent(needle, content), nil
 	}
+}
+
+func pyprojectSectionNeedle(section string) string {
+	return "[" + strings.ToLower(strings.TrimSpace(section)) + "]"
+}
+
+func manifestMatcherNeedle(rule lockfileRule) string {
+	return strings.TrimSpace(rule.manifestMatcherNeedle)
+}
+
+func pyprojectSectionNeedleMatchesContent(needle string, content []byte) bool {
+	return strings.Contains(strings.ToLower(string(content)), needle)
 }
 
 func relativeDir(repoPath, dir string) string {

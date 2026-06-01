@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -703,6 +704,157 @@ func TestDetectLockfileDriftPythonManagerSignals(t *testing.T) {
 			t.Fatalf("expected uv warning for changed pyproject.toml without uv.lock update, got %#v", warnings)
 		}
 	})
+}
+
+func TestDetectLockfileDriftCachesPyprojectReadsAcrossPythonRules(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[tool.uv]\n")
+
+	originalReadFileUnder := readFileUnderFn
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+	})
+
+	pyprojectReads := 0
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if filepath.Base(targetPath) == pyprojectManifestName {
+			pyprojectReads++
+		}
+		return safeio.ReadFileUnder(rootDir, targetPath)
+	}
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected one warning each for Poetry and uv, got %#v", warnings)
+	}
+	if pyprojectReads != 1 {
+		t.Fatalf("expected %s to be read once per directory pass, got %d reads", pyprojectManifestName, pyprojectReads)
+	}
+}
+
+func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, poetryLockName), "metadata = {}\n")
+
+	originalReadFileUnder := readFileUnderFn
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+	})
+
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if filepath.Base(targetPath) == pyprojectManifestName {
+			return nil, errors.New("forced read error")
+		}
+		return safeio.ReadFileUnder(rootDir, targetPath)
+	}
+
+	_, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil {
+		t.Fatalf("expected read error")
+	}
+	if !strings.Contains(err.Error(), "read pyproject.toml for tool.poetry lockfile drift detection") {
+		t.Fatalf("expected matcher read error context, got %v", err)
+	}
+}
+
+func TestLockfileManifestCacheDirectBranches(t *testing.T) {
+	if _, err := (*lockfileManifestCache)(nil).readManifest(pyprojectManifestName); err == nil {
+		t.Fatalf("expected nil cache read to fail")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	snapshot, err := readLockfileDirSnapshot(repo, repo)
+	if err != nil {
+		t.Fatalf("read lockfile snapshot: %v", err)
+	}
+
+	originalReadFileUnder := readFileUnderFn
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+	})
+
+	reads := 0
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if filepath.Base(targetPath) == pyprojectManifestName {
+			reads++
+		}
+		return safeio.ReadFileUnder(rootDir, targetPath)
+	}
+
+	cache := newLockfileManifestCache(snapshot)
+	if cache.reads != nil {
+		t.Fatalf("expected manifest reads map to be allocated lazily")
+	}
+	if _, err := cache.readManifest(pyprojectManifestName); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if _, err := cache.readManifest(pyprojectManifestName); err != nil {
+		t.Fatalf("read cached manifest: %v", err)
+	}
+	if reads != 1 {
+		t.Fatalf("expected cached manifest read once, got %d", reads)
+	}
+}
+
+func TestShouldSkipMissingLockfileManifestMatcherBranches(t *testing.T) {
+	repo := t.TempDir()
+	manifestName := "custom.toml"
+	writeFile(t, filepath.Join(repo, manifestName), "name = \"demo\"\n")
+	snapshot, err := readLockfileDirSnapshot(repo, repo)
+	if err != nil {
+		t.Fatalf("read lockfile snapshot: %v", err)
+	}
+
+	matcherErr := errors.New("forced matcher error")
+	rule := lockfileRule{
+		manifest: manifestName,
+		manifestMatcher: func(string, string) (bool, error) {
+			return false, matcherErr
+		},
+	}
+	if _, err := shouldSkipMissingLockfileForManifestWithCache(snapshot, rule, manifestName, newLockfileManifestCache(snapshot)); !errors.Is(err, matcherErr) {
+		t.Fatalf("expected matcher error, got %v", err)
+	}
+
+	rule.manifestMatcher = func(string, string) (bool, error) {
+		return false, nil
+	}
+	skip, err := shouldSkipMissingLockfileForManifestWithCache(snapshot, rule, manifestName, newLockfileManifestCache(snapshot))
+	if err != nil || !skip {
+		t.Fatalf("expected non-matching manifest to skip, skip=%v err=%v", skip, err)
+	}
+
+	rule.manifestMatcher = func(string, string) (bool, error) {
+		return true, nil
+	}
+	skip, err = shouldSkipMissingLockfileForManifestWithCache(snapshot, rule, manifestName, newLockfileManifestCache(snapshot))
+	if err != nil || skip {
+		t.Fatalf("expected matching generic manifest to warn, skip=%v err=%v", skip, err)
+	}
+}
+
+func TestPyprojectSectionMatcherReadError(t *testing.T) {
+	matched, err := pyprojectSectionMatcher("tool.poetry")(t.TempDir(), t.TempDir())
+	if err == nil || matched {
+		t.Fatalf("expected pyproject section matcher read error, matched=%v err=%v", matched, err)
+	}
+}
+
+func TestManifestMatcherNeedleDoesNotDeriveFromLabel(t *testing.T) {
+	rule := lockfileRule{manifestMatcherLabel: pyprojectPoetrySection}
+	if got := manifestMatcherNeedle(rule); got != "" {
+		t.Fatalf("expected label-only rule to have no matcher needle, got %q", got)
+	}
+
+	rule.manifestMatcherNeedle = pyprojectSectionNeedle(pyprojectPoetrySection)
+	if got, want := manifestMatcherNeedle(rule), pyprojectSectionNeedle(pyprojectPoetrySection); got != want {
+		t.Fatalf("manifestMatcherNeedle() = %q, want %q", got, want)
+	}
 }
 
 func TestLockfileDriftHelpers(t *testing.T) {
