@@ -50,15 +50,28 @@ func TestMergeReportsCoordinatesFamiliesInStableOrder(t *testing.T) {
 
 	merged := mergeReports("/repo", reports)
 
+	assertMergedReportMetadata(t, merged, secondGeneratedAt)
+	assertMergedUsageUncertainty(t, merged)
+	assertMergedDependencies(t, merged)
+}
+
+func assertMergedReportMetadata(t *testing.T, merged report.Report, wantGeneratedAt time.Time) {
+	t.Helper()
+
 	if merged.RepoPath != "/repo" {
 		t.Fatalf("expected repo path to be preserved, got %q", merged.RepoPath)
 	}
-	if merged.GeneratedAt != secondGeneratedAt {
-		t.Fatalf("expected latest generatedAt timestamp, got %v want %v", merged.GeneratedAt, secondGeneratedAt)
+	if merged.GeneratedAt != wantGeneratedAt {
+		t.Fatalf("expected latest generatedAt timestamp, got %v want %v", merged.GeneratedAt, wantGeneratedAt)
 	}
 	if len(merged.Warnings) != 2 || merged.Warnings[0] != "w-first" || merged.Warnings[1] != "w-second" {
 		t.Fatalf("expected warning merge order to follow report order, got %#v", merged.Warnings)
 	}
+}
+
+func assertMergedUsageUncertainty(t *testing.T, merged report.Report) {
+	t.Helper()
+
 	if merged.UsageUncertainty == nil {
 		t.Fatal("expected merged usage uncertainty")
 	}
@@ -74,6 +87,10 @@ func TestMergeReportsCoordinatesFamiliesInStableOrder(t *testing.T) {
 	if got := merged.UsageUncertainty.Samples[4].File; got != "e.js" {
 		t.Fatalf("expected last kept sample to come from second report, got %q", got)
 	}
+}
+
+func assertMergedDependencies(t *testing.T, merged report.Report) {
+	t.Helper()
 
 	if len(merged.Dependencies) != 3 {
 		t.Fatalf("expected three merged dependencies, got %#v", merged.Dependencies)
