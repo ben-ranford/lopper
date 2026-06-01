@@ -23,6 +23,11 @@ type cacheDigestInput struct {
 	allowMissing bool
 }
 
+type cacheInputDigestMemoKey struct {
+	normalizedRoot  string
+	cleanConfigPath string
+}
+
 func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return cacheEntryDescriptor{}, nil
@@ -59,7 +64,7 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
-	inputDigest, err := c.computeInputDigest(normalizedRoot, req.ConfigPath)
+	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath)
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
@@ -68,6 +73,25 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 		KeyDigest:   baseDigest,
 		InputDigest: inputDigest,
 	}, nil
+}
+
+func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string, error) {
+	if c.inputDigestMemo == nil {
+		c.inputDigestMemo = make(map[cacheInputDigestMemoKey]string)
+	}
+	memoKey := cacheInputDigestMemoKey{
+		normalizedRoot:  filepath.Clean(rootPath),
+		cleanConfigPath: cleanConfigPath(configPath),
+	}
+	if digest, ok := c.inputDigestMemo[memoKey]; ok {
+		return digest, nil
+	}
+	digest, err := c.computeInputDigest(memoKey.normalizedRoot, memoKey.cleanConfigPath)
+	if err != nil {
+		return "", err
+	}
+	c.inputDigestMemo[memoKey] = digest
+	return digest, nil
 }
 
 func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
@@ -85,11 +109,11 @@ func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string,
 		})
 	}
 
-	if strings.TrimSpace(configPath) != "" {
-		cleanConfigPath := filepath.Clean(strings.TrimSpace(configPath))
+	cleanedConfigPath := cleanConfigPath(configPath)
+	if cleanedConfigPath != "" {
 		inputs = append(inputs, cacheDigestInput{
-			sortKey:      "config\x00" + cleanConfigPath,
-			path:         cleanConfigPath,
+			sortKey:      "config\x00" + cleanedConfigPath,
+			path:         cleanedConfigPath,
 			allowMissing: true,
 		})
 	}
@@ -104,6 +128,13 @@ func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string,
 		}
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func cleanConfigPath(configPath string) string {
+	if strings.TrimSpace(configPath) == "" {
+		return ""
+	}
+	return filepath.Clean(strings.TrimSpace(configPath))
 }
 
 func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {

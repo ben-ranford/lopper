@@ -15,10 +15,11 @@ type resolvedCacheOptions struct {
 }
 
 type analysisCache struct {
-	options   resolvedCacheOptions
-	metadata  report.CacheMetadata
-	warnings  []string
-	cacheable bool
+	options         resolvedCacheOptions
+	metadata        report.CacheMetadata
+	warnings        []string
+	cacheable       bool
+	inputDigestMemo map[cacheInputDigestMemoKey]string
 }
 
 func newAnalysisCache(req Request, repoPath string) *analysisCache {

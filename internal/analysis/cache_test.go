@@ -273,6 +273,100 @@ func TestAnalysisCachePrepareEntryIncludesFeatureFlags(t *testing.T) {
 	}
 }
 
+func TestAnalysisCachePrepareEntryMemoizesInputDigestForSameRootAndConfig(t *testing.T) {
+	repo := t.TempDir()
+	root := filepath.Join(repo, "root")
+	testutil.MustWriteFile(t, filepath.Join(root, cacheTestJSIndexFileName), "console.log('hello')\n")
+	configPath := filepath.Join(repo, ".lopper.yml")
+	testutil.MustWriteFile(t, configPath, "threshold: 1\n")
+
+	req := Request{
+		RepoPath:   repo,
+		ConfigPath: configPath,
+		TopN:       1,
+		Cache:      &CacheOptions{Enabled: true, Path: filepath.Join(repo, cacheTestDirectoryName)},
+	}
+	cache := newAnalysisCache(req, repo)
+
+	firstEntry, err := cache.prepareEntry(req, "adapter-a", root)
+	if err != nil {
+		t.Fatalf("prepare first entry: %v", err)
+	}
+	if firstEntry.InputDigest == "" {
+		t.Fatalf("expected first entry to include input digest")
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove root: %v", err)
+	}
+
+	secondEntry, err := cache.prepareEntry(req, "adapter-b", root)
+	if err != nil {
+		t.Fatalf("expected memoized digest reuse for same root+config, got error: %v", err)
+	}
+	if firstEntry.InputDigest != secondEntry.InputDigest {
+		t.Fatalf("expected reused input digest for same root+config, first=%q second=%q", firstEntry.InputDigest, secondEntry.InputDigest)
+	}
+	if firstEntry.KeyDigest == secondEntry.KeyDigest {
+		t.Fatalf("expected adapter-specific cache keys to remain distinct")
+	}
+}
+
+func TestAnalysisCachePrepareEntryDoesNotReuseInputDigestForDifferentConfigPath(t *testing.T) {
+	repo := t.TempDir()
+	root := filepath.Join(repo, "root")
+	testutil.MustWriteFile(t, filepath.Join(root, cacheTestJSIndexFileName), "console.log('hello')\n")
+	configPathA := filepath.Join(repo, ".lopper-a.yml")
+	configPathB := filepath.Join(repo, ".lopper-b.yml")
+	testutil.MustWriteFile(t, configPathA, "threshold: 1\n")
+	testutil.MustWriteFile(t, configPathB, "threshold: 2\n")
+
+	baseReq := Request{
+		RepoPath: repo,
+		TopN:     1,
+		Cache:    &CacheOptions{Enabled: true, Path: filepath.Join(repo, cacheTestDirectoryName)},
+	}
+	cache := newAnalysisCache(baseReq, repo)
+
+	reqA := baseReq
+	reqA.ConfigPath = configPathA
+	if _, err := cache.prepareEntry(reqA, "adapter-a", root); err != nil {
+		t.Fatalf("prepare first entry: %v", err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove root: %v", err)
+	}
+
+	reqB := baseReq
+	reqB.ConfigPath = configPathB
+	if _, err := cache.prepareEntry(reqB, "adapter-b", root); err == nil {
+		t.Fatalf("expected digest recomputation for different config path to fail after root removal")
+	}
+}
+
+func TestAnalysisCachePrepareEntryDoesNotReuseInputDigestForDifferentRoot(t *testing.T) {
+	repo := t.TempDir()
+	rootA := filepath.Join(repo, "root-a")
+	rootB := filepath.Join(repo, "root-b")
+	testutil.MustWriteFile(t, filepath.Join(rootA, cacheTestJSIndexFileName), "console.log('hello')\n")
+	configPath := filepath.Join(repo, ".lopper.yml")
+	testutil.MustWriteFile(t, configPath, "threshold: 1\n")
+
+	req := Request{
+		RepoPath:   repo,
+		ConfigPath: configPath,
+		TopN:       1,
+		Cache:      &CacheOptions{Enabled: true, Path: filepath.Join(repo, cacheTestDirectoryName)},
+	}
+	cache := newAnalysisCache(req, repo)
+
+	if _, err := cache.prepareEntry(req, "adapter-a", rootA); err != nil {
+		t.Fatalf("prepare first entry: %v", err)
+	}
+	if _, err := cache.prepareEntry(req, "adapter-b", rootB); err == nil {
+		t.Fatalf("expected digest recomputation for different root to fail when root is missing")
+	}
+}
+
 func mustResolveFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
 	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
