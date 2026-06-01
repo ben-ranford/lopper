@@ -113,24 +113,6 @@ type scanInputDiscoverer struct {
 	sourceScanLimited bool
 }
 
-func discoverSourceFiles(ctx context.Context, repoPath string) (sourceDiscovery, error) {
-	discovery := sourceDiscovery{}
-	discoverer := newSourceDiscoverer(repoPath, &discovery)
-
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return discoverer.walk(path, entry, walkErr)
-	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return discovery, err
-	}
-
-	appendSourceDiscoveryWarnings(&discovery)
-	return discovery, nil
-}
-
 func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDiscoverer {
 	return sourceDiscoverer{
 		repoPath:  repoPath,

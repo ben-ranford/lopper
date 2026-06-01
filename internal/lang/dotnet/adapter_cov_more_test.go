@@ -3,6 +3,7 @@ package dotnet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -57,6 +58,22 @@ func TestDotNetDetectWithConfidenceGuardBranches(t *testing.T) {
 	detection, err = NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil || !detection.Matched {
 		t.Fatalf("expected detection success with skipped obj dir, detection=%#v err=%v", detection, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewAdapter().DetectWithConfidence(ctx, repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled detection, got %v", err)
+	}
+}
+
+func TestDotNetAnalyseEmptyRepoWarnsNoDependencies(t *testing.T) {
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: t.TempDir(), TopN: 1})
+	if err != nil {
+		t.Fatalf("analyse empty repo: %v", err)
+	}
+	if !slices.Contains(result.Warnings, "no .NET package dependencies discovered from project manifests") {
+		t.Fatalf("expected no dependencies warning, got %#v", result.Warnings)
 	}
 }
 
@@ -131,6 +148,79 @@ func TestDotNetScannerSkipsObjDirAndMissingSource(t *testing.T) {
 	}
 	if discoverer.discoverFile(filePath) == nil {
 		t.Fatalf("expected removed source file to fail discovery")
+	}
+}
+
+func TestDotNetSourceDiscovererWalkCoversDirectoryAndFile(t *testing.T) {
+	repo := t.TempDir()
+	srcDir := filepath.Join(repo, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("mkdir src dir: %v", err)
+	}
+	dirEntry := mustReadDirEntry(t, repo, "src")
+
+	discovery := sourceDiscovery{}
+	discoverer := newSourceDiscoverer(repo, &discovery)
+	if err := discoverer.walk(srcDir, dirEntry, nil); err != nil {
+		t.Fatalf("walk src dir: %v", err)
+	}
+
+	sourcePath := filepath.Join(srcDir, dotNetProgramSource)
+	if err := os.WriteFile(sourcePath, []byte("using Vendor.Pkg;\n"), 0o644); err != nil {
+		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
+	}
+	sourceEntry := mustReadDirEntry(t, srcDir, dotNetProgramSource)
+	if err := discoverer.walk(sourcePath, sourceEntry, nil); err != nil {
+		t.Fatalf("walk source file: %v", err)
+	}
+	if len(discovery.Files) != 1 || discovery.Files[0].RelativePath != filepath.Join("src", dotNetProgramSource) {
+		t.Fatalf("unexpected source discovery: %#v", discovery.Files)
+	}
+}
+
+func TestDotNetScanInputDiscovererBranches(t *testing.T) {
+	repo := t.TempDir()
+	objDir := filepath.Join(repo, "obj")
+	if err := os.Mkdir(objDir, 0o755); err != nil {
+		t.Fatalf(dotNetMkdirObjDirErrFmt, err)
+	}
+	objEntry := mustReadDirEntry(t, repo, "obj")
+
+	discovery := sourceDiscovery{}
+	discoverer := newScanInputDiscoverer(repo, &discovery)
+	if err := discoverer.walk(objDir, objEntry, nil); !errors.Is(err, filepath.SkipDir) {
+		t.Fatalf("expected scan input discoverer to skip obj dir, got %v", err)
+	}
+
+	manifestPath := filepath.Join(repo, "App.csproj")
+	testutil.MustWriteFile(t, manifestPath, `<Project><ItemGroup><PackageReference Include="Vendor.Pkg" /></ItemGroup></Project>`)
+	manifestEntry := mustReadDirEntry(t, repo, "App.csproj")
+	if err := discoverer.walk(manifestPath, manifestEntry, nil); err != nil {
+		t.Fatalf("walk manifest: %v", err)
+	}
+	if _, ok := discoverer.dependencySet["vendor.pkg"]; !ok {
+		t.Fatalf("expected manifest dependency, got %#v", discoverer.dependencySet)
+	}
+
+	badManifestPath := filepath.Join(repo, "Bad.csproj")
+	testutil.MustWriteFile(t, badManifestPath, `<Project />`)
+	badManifestEntry := mustReadDirEntry(t, repo, "Bad.csproj")
+	if err := os.Remove(badManifestPath); err != nil {
+		t.Fatalf("remove bad manifest: %v", err)
+	}
+	if err := discoverer.walk(badManifestPath, badManifestEntry, nil); err == nil {
+		t.Fatalf("expected removed manifest to fail scan input discovery")
+	}
+
+	discoverer.sourceScanLimited = true
+	sourcePath := filepath.Join(repo, dotNetProgramSource)
+	testutil.MustWriteFile(t, sourcePath, "using Vendor.Pkg;\n")
+	sourceEntry := mustReadDirEntry(t, repo, dotNetProgramSource)
+	if err := discoverer.walk(sourcePath, sourceEntry, nil); err != nil {
+		t.Fatalf("walk source while limited: %v", err)
+	}
+	if len(discovery.Files) != 0 {
+		t.Fatalf("expected limited source scan to skip new source files, got %#v", discovery.Files)
 	}
 }
 
@@ -376,7 +466,7 @@ func TestDotNetDiscoverScanInputsPreservesMixedRepoOutputs(t *testing.T) {
 
 func TestDotNetDiscoverScanInputsKeepsManifestDiscoveryAfterSourceCap(t *testing.T) {
 	repo := t.TempDir()
-	for i := 0; i < maxScanFiles+10; i++ {
+	for i := 0; i < maxScanFiles+1; i++ {
 		testutil.MustWriteFile(t, filepath.Join(repo, "a-src", "f"+strconv.Itoa(i)+".cs"), "using Acme.Foo;\n")
 	}
 	testutil.MustWriteFile(t, filepath.Join(repo, "z-manifests", "Late.csproj"), `
@@ -400,8 +490,45 @@ func TestDotNetDiscoverScanInputsKeepsManifestDiscoveryAfterSourceCap(t *testing
 	if !slices.Contains(inputs.DeclaredDependencies, "late.manifest") {
 		t.Fatalf("expected dependencies discovered after source cap, got %#v", inputs.DeclaredDependencies)
 	}
-	if !slices.Contains(inputs.Warnings, "source scan capped at 4096 files") {
+	expectedWarning := fmt.Sprintf("source scan capped at %d files", maxScanFiles)
+	if !slices.Contains(inputs.Warnings, expectedWarning) {
 		t.Fatalf("expected source cap warning, got %#v", inputs.Warnings)
+	}
+}
+
+func TestDotNetSolutionRootsRemainRepoBounded(t *testing.T) {
+	repo := t.TempDir()
+	projectPath := filepath.Join(repo, "src", "App", "App.csproj")
+	testutil.MustWriteFile(t, projectPath, `<Project />`)
+	solutionPath := filepath.Join(repo, "App.sln")
+	testutil.MustWriteFile(t, solutionPath, `
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src/App/App.csproj", "{11111111-1111-1111-1111-111111111111}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Outside", "../outside/Outside.csproj", "{22222222-2222-2222-2222-222222222222}"
+EndProject
+`)
+
+	roots := map[string]struct{}{}
+	if err := addSolutionRoots(repo, solutionPath, roots); err != nil {
+		t.Fatalf("add solution roots: %v", err)
+	}
+	if _, ok := roots[filepath.Dir(projectPath)]; !ok {
+		t.Fatalf("expected in-repo project root, got %#v", roots)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("expected only in-repo project root, got %#v", roots)
+	}
+	if !isRepoBoundedPath(repo, filepath.Join(repo, "src")) {
+		t.Fatalf("expected src to be repo-bounded")
+	}
+	if isRepoBoundedPath(repo, filepath.Dir(repo)) {
+		t.Fatalf("did not expect parent dir to be repo-bounded")
+	}
+	if isRepoBoundedPath(repo, "\x00") {
+		t.Fatalf("expected invalid candidate path to be rejected")
+	}
+	if err := addSolutionRoots(repo, filepath.Join(repo, "missing.sln"), map[string]struct{}{}); err == nil {
+		t.Fatalf("expected missing solution to fail")
 	}
 }
 
