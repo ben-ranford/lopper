@@ -56,9 +56,14 @@ func discoverScanInputs(ctx context.Context, repoPath string) (scanInputs, error
 	}
 
 	sourceScan := sourceDiscovery{}
-	scanner := newScanInputDiscoverer(ctx, repoPath, &sourceScan)
+	scanner := newScanInputDiscoverer(repoPath, &sourceScan)
 
-	err := filepath.WalkDir(repoPath, scanner.walk)
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return scanner.walk(path, entry, walkErr)
+	})
 	if err != nil {
 		return inputs, err
 	}
@@ -103,7 +108,6 @@ type sourceDiscoverer struct {
 }
 
 type scanInputDiscoverer struct {
-	ctx               context.Context
 	dependencySet     map[string]struct{}
 	sourceDiscoverer  sourceDiscoverer
 	sourceScanLimited bool
@@ -134,9 +138,8 @@ func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDisc
 	}
 }
 
-func newScanInputDiscoverer(ctx context.Context, repoPath string, source *sourceDiscovery) scanInputDiscoverer {
+func newScanInputDiscoverer(repoPath string, source *sourceDiscovery) scanInputDiscoverer {
 	return scanInputDiscoverer{
-		ctx:              ctx,
 		dependencySet:    make(map[string]struct{}),
 		sourceDiscoverer: newSourceDiscoverer(repoPath, source),
 	}
@@ -145,9 +148,6 @@ func newScanInputDiscoverer(ctx context.Context, repoPath string, source *source
 func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error) error {
 	if walkErr != nil {
 		return walkErr
-	}
-	if d.ctx != nil && d.ctx.Err() != nil {
-		return d.ctx.Err()
 	}
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
