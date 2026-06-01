@@ -30,10 +30,9 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		ReadOnly: options.ReadOnly,
 	}
 	cache := &analysisCache{
-		options:         options,
-		metadata:        metadata,
-		warnings:        make([]string, 0),
-		inputDigestMemo: make(map[cacheInputDigestMemoKey]string),
+		options:  options,
+		metadata: metadata,
+		warnings: make([]string, 0),
 	}
 	if !options.Enabled {
 		cache.cacheable = false
