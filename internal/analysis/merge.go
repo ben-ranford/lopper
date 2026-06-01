@@ -8,38 +8,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func mergeReports(repoPath string, reports []report.Report) report.Report {
-	result := report.Report{
-		RepoPath: repoPath,
-	}
-	mergedByKey := make(map[string]report.DependencyReport)
-	orderedKeys := make([]string, 0)
-
-	for _, current := range reports {
-		result.Warnings = append(result.Warnings, current.Warnings...)
-		result.UsageUncertainty = mergeUsageUncertainty(result.UsageUncertainty, current.UsageUncertainty)
-		if current.GeneratedAt.After(result.GeneratedAt) {
-			result.GeneratedAt = current.GeneratedAt
-		}
-		for _, dep := range current.Dependencies {
-			key := dep.Language + "\x00" + dep.Name
-			if existing, ok := mergedByKey[key]; ok {
-				mergedByKey[key] = mergeDependency(existing, dep)
-				continue
-			}
-			mergedByKey[key] = dep
-			orderedKeys = append(orderedKeys, key)
-		}
-	}
-
-	sort.Strings(orderedKeys)
-	result.Dependencies = make([]report.DependencyReport, 0, len(orderedKeys))
-	for _, key := range orderedKeys {
-		result.Dependencies = append(result.Dependencies, mergedByKey[key])
-	}
-	return result
-}
-
 func mergeUsageUncertainty(left, right *report.UsageUncertainty) *report.UsageUncertainty {
 	if left == nil {
 		if right == nil {
@@ -79,24 +47,70 @@ func cappedSampleCopy(samples []report.Location) []report.Location {
 
 func mergeDependency(left, right report.DependencyReport) report.DependencyReport {
 	merged := left
-	merged.UsedExportsCount += right.UsedExportsCount
-	merged.TotalExportsCount += right.TotalExportsCount
+	for _, mergeFamily := range dependencyFamilyMergeOrder {
+		mergeFamily(&merged, left, right)
+	}
+	return merged
+}
+
+type dependencyFamilyMergeFn func(merged *report.DependencyReport, left, right report.DependencyReport)
+
+var dependencyFamilyMergeOrder = []dependencyFamilyMergeFn{
+	mergeDependencyExportFamily,
+	mergeDependencyImportFamily,
+	mergeDependencySymbolFamily,
+	mergeDependencyRiskFamily,
+	mergeDependencyCodemodFamily,
+	mergeDependencyRuntimeFamily,
+	mergeDependencyMetadataFamily,
+}
+
+func mergeDependencyExportFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
+	merged.UsedExportsCount = left.UsedExportsCount + right.UsedExportsCount
+	merged.TotalExportsCount = left.TotalExportsCount + right.TotalExportsCount
 	if merged.TotalExportsCount > 0 {
 		merged.UsedPercent = (float64(merged.UsedExportsCount) / float64(merged.TotalExportsCount)) * 100
 	}
-	merged.EstimatedUnusedBytes += right.EstimatedUnusedBytes
+	merged.EstimatedUnusedBytes = left.EstimatedUnusedBytes + right.EstimatedUnusedBytes
+}
 
+func mergeDependencyImportFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
 	merged.UsedImports = mergeImportUses(left.UsedImports, right.UsedImports)
 	merged.UnusedImports = mergeImportUses(left.UnusedImports, right.UnusedImports)
 	merged.UnusedImports = filterUsedOverlaps(merged.UnusedImports, merged.UsedImports)
+}
+
+func mergeDependencySymbolFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
 	merged.UnusedExports = mergeSymbolRefs(left.UnusedExports, right.UnusedExports)
+	merged.TopUsedSymbols = mergeTopSymbols(left.TopUsedSymbols, right.TopUsedSymbols)
+}
+
+func mergeDependencyRiskFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
 	merged.RiskCues = mergeRiskCues(left.RiskCues, right.RiskCues)
 	merged.Recommendations = mergeRecommendations(left.Recommendations, right.Recommendations)
-	merged.Codemod = mergeCodemodReport(left.Codemod, right.Codemod)
-	merged.TopUsedSymbols = mergeTopSymbols(left.TopUsedSymbols, right.TopUsedSymbols)
-	merged.RuntimeUsage = mergeRuntimeUsage(left.RuntimeUsage, right.RuntimeUsage)
+}
 
-	return merged
+func mergeDependencyCodemodFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
+	merged.Codemod = mergeCodemodReport(left.Codemod, right.Codemod)
+}
+
+func mergeDependencyRuntimeFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
+	merged.RuntimeUsage = mergeRuntimeUsage(left.RuntimeUsage, right.RuntimeUsage)
+}
+
+func mergeDependencyMetadataFamily(merged *report.DependencyReport, _ report.DependencyReport, right report.DependencyReport) {
+	if merged.ReachabilityConfidence == nil {
+		merged.ReachabilityConfidence = right.ReachabilityConfidence
+	}
+	if merged.RemovalCandidate == nil {
+		merged.RemovalCandidate = right.RemovalCandidate
+	}
+	if merged.License == nil {
+		merged.License = right.License
+	}
+	if merged.Provenance == nil {
+		merged.Provenance = right.Provenance
+	}
 }
 
 func filterUsedOverlaps(unused, used []report.ImportUse) []report.ImportUse {
