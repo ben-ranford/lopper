@@ -28,11 +28,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 
 	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
 	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
-	weights := report.RemovalCandidateWeights{
-		Usage:      req.Analyse.Thresholds.RemovalCandidateWeightUsage,
-		Impact:     req.Analyse.Thresholds.RemovalCandidateWeightImpact,
-		Confidence: req.Analyse.Thresholds.RemovalCandidateWeightConfidence,
-	}
+	weights := req.Analyse.Thresholds.RemovalCandidateWeights()
 	runtimeTracePath, runtimeTracePathExplicit := prepareRuntimeTracePlan(req)
 	effectiveThresholds := report.EffectiveThresholds{
 		FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,

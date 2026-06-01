@@ -4,12 +4,70 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func TestDefaultsValidate(t *testing.T) {
 	values := Defaults()
 	if err := values.Validate(); err != nil {
 		t.Fatalf("validate defaults: %v", err)
+	}
+}
+
+func TestDefaultsRemovalCandidateWeightsMatchReportDefaults(t *testing.T) {
+	defaults := Defaults()
+	if got, want := defaults.RemovalCandidateWeights(), report.DefaultRemovalCandidateWeights(); got != want {
+		t.Fatalf("default removal candidate weights = %#v, want %#v", got, want)
+	}
+}
+
+func TestValuesRemovalCandidateWeightsNormalizeConsistentlyWithReport(t *testing.T) {
+	values := Defaults()
+	values.RemovalCandidateWeightUsage = 2
+	values.RemovalCandidateWeightImpact = 1
+	values.RemovalCandidateWeightConfidence = 1
+
+	if err := values.Validate(); err != nil {
+		t.Fatalf("validate values: %v", err)
+	}
+
+	want := report.RemovalCandidateWeights{Usage: 0.5, Impact: 0.25, Confidence: 0.25}
+	if got := report.NormalizeRemovalCandidateWeights(values.RemovalCandidateWeights()); got != want {
+		t.Fatalf("normalized removal candidate weights = %#v, want %#v", got, want)
+	}
+}
+
+func TestThresholdWeightsRemainConsistentWithReportScoring(t *testing.T) {
+	values := Defaults()
+	values.RemovalCandidateWeightUsage = 2
+	values.RemovalCandidateWeightImpact = 1
+	values.RemovalCandidateWeightConfidence = 1
+
+	if err := values.Validate(); err != nil {
+		t.Fatalf("validate values: %v", err)
+	}
+
+	baseDeps := []report.DependencyReport{
+		{Name: "alpha", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10},
+		{Name: "beta", UsedExportsCount: 8, TotalExportsCount: 10, UsedPercent: 80},
+	}
+	depsFromThresholdWeights := append([]report.DependencyReport(nil), baseDeps...)
+	depsFromNormalizedWeights := append([]report.DependencyReport(nil), baseDeps...)
+
+	report.AnnotateRemovalCandidateScoresWithWeights(depsFromThresholdWeights, values.RemovalCandidateWeights())
+	normalizedWeights := report.NormalizeRemovalCandidateWeights(values.RemovalCandidateWeights())
+	report.AnnotateRemovalCandidateScoresWithWeights(depsFromNormalizedWeights, normalizedWeights)
+
+	for i := range depsFromThresholdWeights {
+		got := depsFromThresholdWeights[i].RemovalCandidate
+		want := depsFromNormalizedWeights[i].RemovalCandidate
+		if got == nil || want == nil {
+			t.Fatalf("expected removal candidate scores for dependency index %d", i)
+		}
+		if got.Score != want.Score || got.Usage != want.Usage || got.Impact != want.Impact || got.Confidence != want.Confidence || got.Weights != want.Weights {
+			t.Fatalf("inconsistent scoring at dependency index %d: from thresholds=%#v normalized=%#v", i, got, want)
+		}
 	}
 }
 

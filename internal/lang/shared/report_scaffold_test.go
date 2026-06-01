@@ -72,6 +72,11 @@ func TestResolveSharedReportHelpers(t *testing.T) {
 	if got := ResolveRemovalCandidateWeights(&customWeights); got != wantWeights {
 		t.Fatalf("resolved removal candidate weights = %#v, want %#v", got, wantWeights)
 	}
+
+	invalidWeights := report.RemovalCandidateWeights{}
+	if got := ResolveRemovalCandidateWeights(&invalidWeights); got != defaultWeights {
+		t.Fatalf("invalid removal candidate weights should fall back to defaults = %#v, want %#v", got, defaultWeights)
+	}
 }
 
 func TestRecommendationPriorityRank(t *testing.T) {
