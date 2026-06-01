@@ -55,20 +55,26 @@ func discoverScanInputs(ctx context.Context, repoPath string) (scanInputs, error
 		return inputs, fs.ErrInvalid
 	}
 
-	declared, err := collectDeclaredDependencies(repoPath)
-	if err != nil {
-		return inputs, err
-	}
-	inputs.DeclaredDependencies = declared
+	sourceScan := sourceDiscovery{}
+	scanner := newScanInputDiscoverer(repoPath, &sourceScan)
 
-	sources, err := discoverSourceFiles(ctx, repoPath)
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return scanner.walk(path, entry, walkErr)
+	})
 	if err != nil {
 		return inputs, err
 	}
-	inputs.SourceFiles = sources.Files
-	inputs.SkippedGenerated = sources.SkippedGeneratedFiles
-	inputs.SkippedFileLimit = sources.SkippedFileLimit
-	inputs.Warnings = append(inputs.Warnings, sources.Warnings...)
+
+	appendSourceDiscoveryWarnings(&sourceScan)
+
+	inputs.DeclaredDependencies = sortedDependencies(scanner.dependencySet)
+	inputs.SourceFiles = sourceScan.Files
+	inputs.SkippedGenerated = sourceScan.SkippedGeneratedFiles
+	inputs.SkippedFileLimit = sourceScan.SkippedFileLimit
+	inputs.Warnings = append(inputs.Warnings, sourceScan.Warnings...)
 	return inputs, nil
 }
 
@@ -101,22 +107,10 @@ type sourceDiscoverer struct {
 	visitedSourceFiles int
 }
 
-func discoverSourceFiles(ctx context.Context, repoPath string) (sourceDiscovery, error) {
-	discovery := sourceDiscovery{}
-	discoverer := newSourceDiscoverer(repoPath, &discovery)
-
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return discoverer.walk(path, entry, walkErr)
-	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return discovery, err
-	}
-
-	appendSourceDiscoveryWarnings(&discovery)
-	return discovery, nil
+type scanInputDiscoverer struct {
+	dependencySet     map[string]struct{}
+	sourceDiscoverer  sourceDiscoverer
+	sourceScanLimited bool
 }
 
 func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDiscoverer {
@@ -124,6 +118,41 @@ func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDisc
 		repoPath:  repoPath,
 		discovery: discovery,
 	}
+}
+
+func newScanInputDiscoverer(repoPath string, source *sourceDiscovery) scanInputDiscoverer {
+	return scanInputDiscoverer{
+		dependencySet:    make(map[string]struct{}),
+		sourceDiscoverer: newSourceDiscoverer(repoPath, source),
+	}
+}
+
+func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		if shouldSkipDir(entry.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+
+	dependencies, err := parseManifestDependenciesForEntry(d.sourceDiscoverer.repoPath, path, entry.Name())
+	if err != nil {
+		return err
+	}
+	addDependencies(d.dependencySet, dependencies)
+
+	if d.sourceScanLimited {
+		return nil
+	}
+	err = d.sourceDiscoverer.discoverFile(path)
+	if errors.Is(err, fs.SkipAll) {
+		d.sourceScanLimited = true
+		return nil
+	}
+	return err
 }
 
 func (d *sourceDiscoverer) walk(path string, entry fs.DirEntry, walkErr error) error {
