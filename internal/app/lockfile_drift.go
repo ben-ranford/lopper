@@ -33,16 +33,17 @@ var execGitCommandContextFn = gitexec.CommandContext
 var readFileUnderFn = safeio.ReadFileUnder
 
 type lockfileRule struct {
-	manager              string
-	manifest             string
-	manifestNames        []string
-	manifestExts         []string
-	manifestLabel        string
-	lockfiles            []string
-	remedy               string
-	previewFeatureFlag   string
-	manifestMatcherLabel string
-	manifestMatcher      func(repoPath, dir string) (bool, error)
+	manager               string
+	manifest              string
+	manifestNames         []string
+	manifestExts          []string
+	manifestLabel         string
+	lockfiles             []string
+	remedy                string
+	previewFeatureFlag    string
+	manifestMatcherLabel  string
+	manifestMatcherNeedle string
+	manifestMatcher       func(repoPath, dir string) (bool, error)
 }
 
 type lockfileGitContext struct {
@@ -91,22 +92,24 @@ var lockfileRules = []lockfileRule{
 	{manager: "Go modules", manifest: "go.mod", lockfiles: []string{"go.sum"}, remedy: "run go mod tidy and commit the updated files"},
 	{manager: "Pipenv", manifest: "Pipfile", lockfiles: []string{"Pipfile.lock"}, remedy: "run pipenv lock and commit the updated files"},
 	{
-		manager:              "Poetry",
-		manifest:             pyprojectManifestName,
-		manifestLabel:        "Poetry configuration in pyproject.toml",
-		lockfiles:            []string{"poetry.lock"},
-		remedy:               "run poetry lock and commit the updated files",
-		manifestMatcherLabel: "tool.poetry",
-		manifestMatcher:      pyprojectSectionMatcher("tool.poetry"),
+		manager:               "Poetry",
+		manifest:              pyprojectManifestName,
+		manifestLabel:         "Poetry configuration in pyproject.toml",
+		lockfiles:             []string{"poetry.lock"},
+		remedy:                "run poetry lock and commit the updated files",
+		manifestMatcherLabel:  "tool.poetry",
+		manifestMatcherNeedle: pyprojectSectionNeedle("tool.poetry"),
+		manifestMatcher:       pyprojectSectionMatcher("tool.poetry"),
 	},
 	{
-		manager:              "uv",
-		manifest:             pyprojectManifestName,
-		manifestLabel:        "uv configuration in pyproject.toml",
-		lockfiles:            []string{"uv.lock"},
-		remedy:               "run uv lock and commit the updated files",
-		manifestMatcherLabel: "tool.uv",
-		manifestMatcher:      pyprojectSectionMatcher("tool.uv"),
+		manager:               "uv",
+		manifest:              pyprojectManifestName,
+		manifestLabel:         "uv configuration in pyproject.toml",
+		lockfiles:             []string{"uv.lock"},
+		remedy:                "run uv lock and commit the updated files",
+		manifestMatcherLabel:  "tool.uv",
+		manifestMatcherNeedle: pyprojectSectionNeedle("tool.uv"),
+		manifestMatcher:       pyprojectSectionMatcher("tool.uv"),
 	},
 	{
 		manager:            ".NET",
@@ -300,7 +303,6 @@ func readLockfileDirSnapshot(repoPath, dir string) (lockfileDirSnapshot, error) 
 func newLockfileManifestCache(snapshot lockfileDirSnapshot) *lockfileManifestCache {
 	return &lockfileManifestCache{
 		snapshot: snapshot,
-		reads:    make(map[string]cachedManifestRead),
 	}
 }
 
@@ -308,11 +310,16 @@ func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error
 	if c == nil {
 		return nil, errors.New("nil lockfile manifest cache")
 	}
-	cached, ok := c.reads[manifestName]
-	if ok {
-		return cached.content, cached.err
+	if c.reads != nil {
+		cached, ok := c.reads[manifestName]
+		if ok {
+			return cached.content, cached.err
+		}
 	}
 	content, err := readFileUnderFn(c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
+	if c.reads == nil {
+		c.reads = make(map[string]cachedManifestRead)
+	}
 	c.reads[manifestName] = cachedManifestRead{
 		content: content,
 		err:     err,
@@ -357,10 +364,10 @@ func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot,
 	if err != nil {
 		return false, err
 	}
-	section := strings.TrimSpace(rule.manifestMatcherLabel)
+	sectionNeedle := manifestMatcherNeedle(rule)
 	switch {
-	case section != "":
-		if !pyprojectSectionMatchesContent(section, content) {
+	case sectionNeedle != "":
+		if !pyprojectSectionNeedleMatchesContent(sectionNeedle, content) {
 			return true, nil
 		}
 	case rule.manifestMatcher != nil:
@@ -487,12 +494,13 @@ func evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot lockfileDirSnap
 
 func manifestMatchesRuleWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, error) {
 	section := strings.TrimSpace(rule.manifestMatcherLabel)
-	if section != "" {
+	sectionNeedle := manifestMatcherNeedle(rule)
+	if sectionNeedle != "" {
 		content, err := readManifestForLockfileDrift(snapshot, manifestName, section, cache)
 		if err != nil {
 			return false, err
 		}
-		return pyprojectSectionMatchesContent(section, content), nil
+		return pyprojectSectionNeedleMatchesContent(sectionNeedle, content), nil
 	}
 	if rule.manifestMatcher == nil {
 		return true, nil
@@ -764,17 +772,32 @@ func manifestDescription(rule lockfileRule) string {
 }
 
 func pyprojectSectionMatcher(section string) func(repoPath, dir string) (bool, error) {
+	needle := pyprojectSectionNeedle(section)
 	return func(repoPath, dir string) (bool, error) {
 		content, err := readFileUnderFn(repoPath, filepath.Join(dir, pyprojectManifestName))
 		if err != nil {
 			return false, fmt.Errorf("read %s for %s lockfile drift detection: %w", pyprojectManifestName, section, err)
 		}
-		return pyprojectSectionMatchesContent(section, content), nil
+		return pyprojectSectionNeedleMatchesContent(needle, content), nil
 	}
 }
 
-func pyprojectSectionMatchesContent(section string, content []byte) bool {
-	needle := "[" + strings.ToLower(strings.TrimSpace(section)) + "]"
+func pyprojectSectionNeedle(section string) string {
+	return "[" + strings.ToLower(strings.TrimSpace(section)) + "]"
+}
+
+func manifestMatcherNeedle(rule lockfileRule) string {
+	if rule.manifestMatcherNeedle != "" {
+		return rule.manifestMatcherNeedle
+	}
+	section := strings.TrimSpace(rule.manifestMatcherLabel)
+	if section == "" {
+		return ""
+	}
+	return pyprojectSectionNeedle(section)
+}
+
+func pyprojectSectionNeedleMatchesContent(needle string, content []byte) bool {
 	return strings.Contains(strings.ToLower(string(content)), needle)
 }
 

@@ -787,6 +787,9 @@ func TestLockfileManifestCacheDirectBranches(t *testing.T) {
 	}
 
 	cache := newLockfileManifestCache(snapshot)
+	if cache.reads != nil {
+		t.Fatalf("expected manifest reads map to be allocated lazily")
+	}
 	if _, err := cache.readManifest(pyprojectManifestName); err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
