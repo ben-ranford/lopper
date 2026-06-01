@@ -78,7 +78,10 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	return discoverNestedModulesFromDirs(repoPath, nestedDirs)
+}
 
+func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, error) {
 	modules := make([]string, 0, len(nestedDirs))
 	dependencies := make([]string, 0)
 	replacements := make(map[string]string)
@@ -99,6 +102,31 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 	}
 
 	return uniqueStrings(modules), uniqueStrings(dependencies), replacements, nil
+}
+
+func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {
+	if dirs == nil {
+		return nil
+	}
+	normalized := make(map[string]struct{}, len(dirs))
+	for dir := range dirs {
+		normalized[filepath.Clean(dir)] = struct{}{}
+	}
+	return normalized
+}
+
+func unionDirSet(primary map[string]struct{}, extra map[string]struct{}) map[string]struct{} {
+	if len(primary) == 0 && len(extra) == 0 {
+		return nil
+	}
+	union := make(map[string]struct{}, len(primary)+len(extra))
+	for dir := range primary {
+		union[dir] = struct{}{}
+	}
+	for dir := range extra {
+		union[dir] = struct{}{}
+	}
+	return union
 }
 
 func parseGoMod(content []byte) (string, []string, map[string]string) {
