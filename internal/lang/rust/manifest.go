@@ -200,40 +200,58 @@ func resolveWorkspaceMembers(repoPath, pattern string) []string {
 	if pattern == "" {
 		return nil
 	}
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !entry.IsDir() {
-			return nil
-		}
-		if shouldSkipDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-
-		rel, relErr := filepath.Rel(repoPath, path)
-		if relErr != nil {
-			return relErr
-		}
-		matched, matchErr := workspaceMemberPatternMatches(pattern, rel)
-		if matchErr != nil {
-			return matchErr
-		}
-		if !matched {
-			return nil
-		}
-
-		manifest := filepath.Join(path, cargoTomlName)
-		if _, manifestErr := os.Stat(manifest); manifestErr != nil {
-			return nil
-		}
-		roots[path] = struct{}{}
-		return nil
-	})
+	collector := workspaceMemberCollector{
+		repoPath: repoPath,
+		pattern:  pattern,
+		roots:    roots,
+	}
+	err := filepath.WalkDir(repoPath, collector.walk)
 	if err != nil {
 		return nil
 	}
 	return shared.SortedKeys(roots)
+}
+
+type workspaceMemberCollector struct {
+	repoPath string
+	pattern  string
+	roots    map[string]struct{}
+}
+
+func (c workspaceMemberCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
+	matched, err := c.matchDirectory(path, entry, walkErr)
+	if err != nil || !matched {
+		return err
+	}
+	c.roots[path] = struct{}{}
+	return nil
+}
+
+func (c workspaceMemberCollector) matchDirectory(path string, entry fs.DirEntry, walkErr error) (bool, error) {
+	if walkErr != nil {
+		return false, walkErr
+	}
+	if !entry.IsDir() {
+		return false, nil
+	}
+	if shouldSkipDir(entry.Name()) {
+		return false, filepath.SkipDir
+	}
+
+	rel, err := filepath.Rel(c.repoPath, path)
+	if err != nil {
+		return false, err
+	}
+	matched, err := workspaceMemberPatternMatches(c.pattern, rel)
+	if err != nil || !matched {
+		return false, err
+	}
+
+	manifest := filepath.Join(path, cargoTomlName)
+	if _, err := os.Stat(manifest); err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func workspaceMemberPatternMatches(pattern, candidate string) (bool, error) {
