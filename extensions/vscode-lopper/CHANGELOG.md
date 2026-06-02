@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.5.4](https://github.com/ben-ranford/lopper/compare/v1.5.3...v1.5.4) (2026-06-01)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/pelletier/go-toml/v2 to v2.3.1 ([#928](https://github.com/ben-ranford/lopper/issues/928)) ([b01524c](https://github.com/ben-ranford/lopper/commit/b01524c19d6b6011ca49ef1be07bd310a2e6a13d))
+
+
+### Performance Improvements
+
+* **analysis:** memoize cache input digests ([83f602b](https://github.com/ben-ranford/lopper/commit/83f602bbb5d301c067c7f4dd1c4439dd767b224e))
+* **app:** cache lockfile manifest reads ([630008a](https://github.com/ben-ranford/lopper/commit/630008af79f4d560437a49d60304d986edb70d86))
+* **dotnet:** combine scan input discovery ([aa07543](https://github.com/ben-ranford/lopper/commit/aa07543b973ab89c4768d3be6d1b3863ebc2887b))
+* **go:** reuse nested module discovery ([c326baa](https://github.com/ben-ranford/lopper/commit/c326baa8908973dfb93268ff96decade90f98f34))
+* **rust:** collapse overlapping scan roots ([f1e613a](https://github.com/ben-ranford/lopper/commit/f1e613acca44c7f6772a8e745edfae34144df6e1))
+
+
+### Code Refactoring
+
+* **analysis:** split final report merge by report family ([56944db](https://github.com/ben-ranford/lopper/commit/56944db3b6951529e991195c3c2a95ec962cbf85))
+* **app:** split dashboard request planning, execution, and materialization ([7a7211f](https://github.com/ben-ranford/lopper/commit/7a7211fd6fc93068fb976106b1585db1332e020b))
+* **app:** split dashboard scenario tests ([626b27d](https://github.com/ben-ranford/lopper/commit/626b27d623b100c22196ea8ee0648dddcd438eb9))
+* **prcheck:** reduce main flow complexity ([17a808b](https://github.com/ben-ranford/lopper/commit/17a808bcb8cc795c76d337ccff90343d17c696aa))
+* **runtime:** reduce capture command complexity ([af8bddd](https://github.com/ben-ranford/lopper/commit/af8bddda4da7053bcc5b3dc226d9a9c5acd3a58d))
+* **scoring:** consolidate removal weight validation ([73bcf8f](https://github.com/ben-ranford/lopper/commit/73bcf8fba6903c9ddbbc60b50cb656fc15c46347))
+* **vscode:** clear managed binary sonar findings ([b27a575](https://github.com/ben-ranford/lopper/commit/b27a5753d78440a2d2d7fa57b8f7150e99fe9348))
+
 ## [1.5.3](https://github.com/ben-ranford/lopper/compare/v1.5.2...v1.5.3) (2026-05-25)
 
 
