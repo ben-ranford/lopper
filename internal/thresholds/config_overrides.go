@@ -22,7 +22,8 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		LicenseIncludeRegistryProvenance:  c.LicenseIncludeRegistryProvenance,
 	}
 	if c.LicenseDeny != nil {
-		overrides.LicenseDenyList = append([]string{}, c.LicenseDeny...)
+		overrides.LicenseDenyList = cloneStrings(*c.LicenseDeny)
+		overrides.licenseDenyListSet = true
 	}
 	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, c.Thresholds.FailOnIncreasePercent); err != nil {
 		return Overrides{}, err
@@ -48,7 +49,7 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 	if err := applyNestedStringOverride("lockfile_drift_policy", &overrides.LockfileDriftPolicy, c.Thresholds.LockfileDriftPolicy); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedListOverride("license_deny", &overrides.LicenseDenyList, c.Thresholds.LicenseDeny); err != nil {
+	if err := applyNestedListOverride("license_deny", &overrides.LicenseDenyList, &overrides.licenseDenyListSet, c.Thresholds.LicenseDeny); err != nil {
 		return Overrides{}, err
 	}
 	if err := applyNestedBoolOverride("license_fail_on_deny", &overrides.LicenseFailOnDeny, c.Thresholds.LicenseFailOnDeny); err != nil {
@@ -93,14 +94,15 @@ func applyNestedStringOverride(name string, target **string, nested *string) err
 	return nil
 }
 
-func applyNestedListOverride(name string, target *[]string, nested []string) error {
+func applyNestedListOverride(name string, target *[]string, targetSet *bool, nested *[]string) error {
 	if nested == nil {
 		return nil
 	}
-	if *target != nil {
+	if *targetSet {
 		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
-	*target = append([]string{}, nested...)
+	*target = cloneStrings(*nested)
+	*targetSet = true
 	return nil
 }
 
@@ -141,8 +143,9 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	if higher.LockfileDriftPolicy != nil {
 		merged.LockfileDriftPolicy = higher.LockfileDriftPolicy
 	}
-	if higher.LicenseDenyList != nil {
-		merged.LicenseDenyList = append([]string{}, higher.LicenseDenyList...)
+	if higher.licenseDenyListSet || len(higher.LicenseDenyList) > 0 {
+		merged.LicenseDenyList = cloneStrings(higher.LicenseDenyList)
+		merged.licenseDenyListSet = true
 	}
 	if higher.LicenseFailOnDeny != nil {
 		merged.LicenseFailOnDeny = higher.LicenseFailOnDeny
@@ -154,22 +157,25 @@ func mergeOverrides(base, higher Overrides) Overrides {
 }
 
 func (s *rawScope) toPathScope() PathScope {
+	scope := PathScope{
+		Include: make([]string, 0),
+		Exclude: make([]string, 0),
+	}
 	if s == nil {
-		return PathScope{}
+		return scope
 	}
-	return PathScope{
-		Include: normalizePathPatterns(s.Include),
-		Exclude: normalizePathPatterns(s.Exclude),
+	if s.Include != nil {
+		scope.Include = normalizePathPatterns(*s.Include)
+		scope.includeSet = true
 	}
+	if s.Exclude != nil {
+		scope.Exclude = normalizePathPatterns(*s.Exclude)
+		scope.excludeSet = true
+	}
+	return scope
 }
 
 func normalizePathPatterns(patterns []string) []string {
-	if patterns == nil {
-		return nil
-	}
-	if len(patterns) == 0 {
-		return []string{}
-	}
 	seen := make(map[string]struct{}, len(patterns))
 	normalized := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
@@ -184,39 +190,44 @@ func normalizePathPatterns(patterns []string) []string {
 		normalized = append(normalized, normalizedPattern)
 	}
 	if len(normalized) == 0 {
-		return []string{}
+		return normalized
 	}
 	return normalized
 }
 
 func mergeScope(base, higher PathScope) PathScope {
 	merged := base
-	if higher.Include != nil {
-		merged.Include = append([]string{}, higher.Include...)
+	if higher.includeSet || len(higher.Include) > 0 {
+		merged.Include = cloneStrings(higher.Include)
+		merged.includeSet = true
 	}
-	if higher.Exclude != nil {
-		merged.Exclude = append([]string{}, higher.Exclude...)
+	if higher.excludeSet || len(higher.Exclude) > 0 {
+		merged.Exclude = cloneStrings(higher.Exclude)
+		merged.excludeSet = true
 	}
 	return merged
 }
 
 func (f *rawFeatures) toFeatureConfig() FeatureConfig {
+	features := FeatureConfig{
+		Enable:  make([]string, 0),
+		Disable: make([]string, 0),
+	}
 	if f == nil {
-		return FeatureConfig{}
+		return features
 	}
-	return FeatureConfig{
-		Enable:  normalizeFeatureRefs(f.Enable),
-		Disable: normalizeFeatureRefs(f.Disable),
+	if f.Enable != nil {
+		features.Enable = normalizeFeatureRefs(*f.Enable)
+		features.enableSet = true
 	}
+	if f.Disable != nil {
+		features.Disable = normalizeFeatureRefs(*f.Disable)
+		features.disableSet = true
+	}
+	return features
 }
 
 func normalizeFeatureRefs(refs []string) []string {
-	if refs == nil {
-		return nil
-	}
-	if len(refs) == 0 {
-		return []string{}
-	}
 	seen := make(map[string]struct{}, len(refs))
 	normalized := make([]string, 0, len(refs))
 	for _, ref := range refs {
@@ -231,20 +242,53 @@ func normalizeFeatureRefs(refs []string) []string {
 		normalized = append(normalized, trimmed)
 	}
 	if len(normalized) == 0 {
-		return []string{}
+		return normalized
 	}
 	return normalized
 }
 
 func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
 	merged := base
-	if higher.Enable != nil {
-		merged.Enable = append([]string{}, higher.Enable...)
+	if higher.enableSet || len(higher.Enable) > 0 {
+		merged.Enable = cloneStrings(higher.Enable)
+		merged.enableSet = true
 	}
-	if higher.Disable != nil {
-		merged.Disable = append([]string{}, higher.Disable...)
+	if higher.disableSet || len(higher.Disable) > 0 {
+		merged.Disable = cloneStrings(higher.Disable)
+		merged.disableSet = true
 	}
 	return merged
+}
+
+func normalizePathScope(scope PathScope) PathScope {
+	if len(scope.Include) == 0 {
+		scope.Include = make([]string, 0)
+	}
+	if len(scope.Exclude) == 0 {
+		scope.Exclude = make([]string, 0)
+	}
+	return scope
+}
+
+func normalizeFeatureConfig(features FeatureConfig) FeatureConfig {
+	if len(features.Enable) == 0 {
+		features.Enable = make([]string, 0)
+	}
+	if len(features.Disable) == 0 {
+		features.Disable = make([]string, 0)
+	}
+	return features
+}
+
+func normalizeOverrides(overrides Overrides) Overrides {
+	if len(overrides.LicenseDenyList) == 0 {
+		overrides.LicenseDenyList = make([]string, 0)
+	}
+	return overrides
+}
+
+func cloneStrings(values []string) []string {
+	return append(make([]string, 0, len(values)), values...)
 }
 
 func dedupeStable(values []string) []string {

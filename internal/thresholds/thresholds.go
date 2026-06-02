@@ -52,6 +52,7 @@ type Overrides struct {
 	RemovalCandidateWeightConfidence  *float64
 	LockfileDriftPolicy               *string
 	LicenseDenyList                   []string
+	licenseDenyListSet                bool
 	LicenseFailOnDeny                 *bool
 	LicenseIncludeRegistryProvenance  *bool
 }
@@ -75,6 +76,7 @@ func Defaults() Values {
 		RemovalCandidateWeightImpact:      defaultWeights.Impact,
 		RemovalCandidateWeightConfidence:  defaultWeights.Confidence,
 		LockfileDriftPolicy:               DefaultLockfileDriftPolicy,
+		LicenseDenyList:                   make([]string, 0),
 		LicenseFailOnDeny:                 DefaultLicenseFailOnDeny,
 		LicenseIncludeRegistryProvenance:  DefaultLicenseIncludeRegistryProvenance,
 	}
@@ -129,8 +131,8 @@ func (o *Overrides) Apply(base Values) Values {
 	if o.LockfileDriftPolicy != nil {
 		resolved.LockfileDriftPolicy = *o.LockfileDriftPolicy
 	}
-	if o.LicenseDenyList != nil {
-		resolved.LicenseDenyList = append([]string{}, o.LicenseDenyList...)
+	if o.licenseDenyListSet || len(o.LicenseDenyList) > 0 {
+		resolved.LicenseDenyList = append(make([]string, 0, len(o.LicenseDenyList)), o.LicenseDenyList...)
 	}
 	if o.LicenseFailOnDeny != nil {
 		resolved.LicenseFailOnDeny = *o.LicenseFailOnDeny
@@ -230,12 +232,6 @@ func validateOptionalWeights(overrides *Overrides) error {
 }
 
 func normalizeDenyList(values []string) []string {
-	if values == nil {
-		return nil
-	}
-	if len(values) == 0 {
-		return []string{}
-	}
 	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -248,9 +244,6 @@ func normalizeDenyList(values []string) []string {
 		}
 		seen[item] = struct{}{}
 		out = append(out, item)
-	}
-	if len(out) == 0 {
-		return []string{}
 	}
 	sort.Strings(out)
 	return out

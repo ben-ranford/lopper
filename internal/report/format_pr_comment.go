@@ -65,7 +65,7 @@ func formatPRComment(report Report) string {
 
 func topDependencyDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
 	if len(deltas) == 0 || limit <= 0 {
-		return nil
+		return make([]DependencyDelta, 0)
 	}
 	copied := append([]DependencyDelta(nil), deltas...)
 	sort.Slice(copied, func(i, j int) bool {
