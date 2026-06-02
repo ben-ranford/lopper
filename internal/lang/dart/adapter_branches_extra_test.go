@@ -43,12 +43,19 @@ func TestParseImportDirectiveAndShowSymbols(t *testing.T) {
 }
 
 func TestParseImportDirectiveAllowsRawStringUri(t *testing.T) {
-	kind, module, clause, ok := parseImportDirective(`import r'package:foo/foo.dart' as foo;`)
-	if !ok {
-		t.Fatalf("expected raw-string import directive to parse")
+	testCases := []string{
+		`import r'package:foo/foo.dart' as foo;`,
+		`import R'package:foo/foo.dart' as foo;`,
 	}
-	if kind != "import" || module != fooPackageModule || clause != "as foo" {
-		t.Fatalf("unexpected raw-string directive parse: kind=%q module=%q clause=%q", kind, module, clause)
+
+	for _, directive := range testCases {
+		kind, module, clause, ok := parseImportDirective(directive)
+		if !ok {
+			t.Fatalf("expected raw-string import directive to parse: %q", directive)
+		}
+		if kind != "import" || module != fooPackageModule || clause != "as foo" {
+			t.Fatalf("unexpected raw-string directive parse for %q: kind=%q module=%q clause=%q", directive, kind, module, clause)
+		}
 	}
 }
 
@@ -70,12 +77,6 @@ void main() {
 	}
 	if imports[0].Location.Line != 1 || imports[0].Location.Column != 1 {
 		t.Fatalf("expected multiline directive location at line 1 column 1, got %#v", imports[0].Location)
-	}
-}
-
-func TestParseImportDirectiveRejectsUppercaseRawPrefix(t *testing.T) {
-	if kind, module, clause, ok := parseImportDirective(`import R'package:foo/foo.dart' as foo;`); ok || kind != "" || module != "" || clause != "" {
-		t.Fatalf("expected uppercase raw prefix to be rejected, got kind=%q module=%q clause=%q ok=%v", kind, module, clause, ok)
 	}
 }
 
