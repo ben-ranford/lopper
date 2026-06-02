@@ -78,8 +78,11 @@ func TestParseCargoDependencies(t *testing.T) {
 	if deps["workspace-serde"].Canonical != serdeJSONDep {
 		t.Fatalf("expected workspace dependency parsing, got %#v", deps["workspace-serde"])
 	}
-	if deps[serdeJSONDep].Canonical != serdeJSONDep {
-		t.Fatalf("expected canonical workspace dependency alias, got %#v", deps[serdeJSONDep])
+	if !deps["workspace-serde"].Renamed {
+		t.Fatalf("expected workspace dependency alias to be marked renamed, got %#v", deps["workspace-serde"])
+	}
+	if deps[serdeJSONDep].Renamed {
+		t.Fatalf("expected canonical workspace dependency entry to remain unrenamed, got %#v", deps[serdeJSONDep])
 	}
 	if !deps["local-dep"].LocalPath {
 		t.Fatalf("expected local path dependency handling, got %#v", deps["local-dep"])
