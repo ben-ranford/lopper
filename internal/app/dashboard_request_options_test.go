@@ -12,7 +12,7 @@ import (
 func TestResolveDashboardRequestConfigRelativeRepo(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "lopper-org.yml")
-	config := "dashboard:\n  repos:\n    - path: ./api\n      name: API Service\n      language: go\n  output: html\n"
+	config := "dashboard:\n  repos:\n    - path: ./api\n      name: API Service\n      language: go\n  baseline_store: ./baselines\n  output: html\n"
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -31,6 +31,9 @@ func TestResolveDashboardRequestConfigRelativeRepo(t *testing.T) {
 	}
 	if resolved.format != dashboard.FormatHTML {
 		t.Fatalf("expected config output format html, got %q", resolved.format)
+	}
+	if resolved.baselineStorePath != filepath.Join(tmpDir, "baselines") {
+		t.Fatalf("expected baseline store to resolve relative to config dir, got %q", resolved.baselineStorePath)
 	}
 }
 

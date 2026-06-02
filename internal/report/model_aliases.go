@@ -46,6 +46,7 @@ type CacheMetadata = model.CacheMetadata
 type CacheInvalidation = model.CacheInvalidation
 type EffectiveThresholds = model.EffectiveThresholds
 type EffectivePolicy = model.EffectivePolicy
+type PolicyMergeTrace = model.PolicyMergeTrace
 type Summary = model.Summary
 type LicensePolicy = model.LicensePolicy
 type UsageUncertainty = model.UsageUncertainty

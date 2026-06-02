@@ -574,6 +574,34 @@ func TestFormatTableIncludesDeniedLicenseBaselineLines(t *testing.T) {
 	assertOutputContains(t, output, "license_delta:", "new denied license js-ts/pkg-a")
 }
 
+func TestFormatTableIncludesPolicyMergeTrace(t *testing.T) {
+	reportData := Report{
+		EffectivePolicy: &EffectivePolicy{
+			Sources: []string{"cli", "repo", "defaults"},
+			MergeTrace: []PolicyMergeTrace{
+				{Field: "thresholds.fail_on_increase_percent", Source: "cli"},
+				{Field: "license.fail_on_deny", Source: "repo"},
+			},
+			Thresholds: EffectiveThresholds{
+				FailOnIncreasePercent: 5,
+			},
+			RemovalCandidateWeights: RemovalCandidateWeights{
+				Usage: 0.5, Impact: 0.3, Confidence: 0.2,
+			},
+			License: LicensePolicy{FailOnDenied: true, IncludeRegistryProvenance: false},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with policy merge trace: %v", err)
+	}
+	assertOutputContains(t, output, "merge_trace:", "thresholds.fail_on_increase_percent <= cli", "license.fail_on_deny <= repo")
+}
+
 func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{

@@ -3,10 +3,13 @@ package thresholds
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const packAPolicySource = "pack-a"
@@ -74,4 +77,54 @@ func TestThresholdConfigRootContainment(t *testing.T) {
 	if isPathUnderRoot("\x00", filepath.Join(t.TempDir(), "policy.yml")) {
 		t.Fatalf("expected invalid root path to fail root containment check")
 	}
+}
+
+func TestThresholdConfigPolicyTraceTracksMergeSources(t *testing.T) {
+	repoDir := t.TempDir()
+	packsDir := filepath.Join(repoDir, "packs")
+	if err := os.MkdirAll(packsDir, 0o750); err != nil {
+		t.Fatalf("mkdir packs dir: %v", err)
+	}
+
+	basePack := filepath.Join(packsDir, "base.yml")
+	if err := os.WriteFile(basePack, []byte("thresholds:\n  fail_on_increase_percent: 7\n  removal_candidate_weight_usage: 0.6\n"), 0o600); err != nil {
+		t.Fatalf("write base pack: %v", err)
+	}
+
+	overlayPack := filepath.Join(packsDir, "overlay.yml")
+	if err := os.WriteFile(overlayPack, []byte("thresholds:\n  removal_candidate_weight_usage: 0.7\n  license_fail_on_deny: true\n"), 0o600); err != nil {
+		t.Fatalf("write overlay pack: %v", err)
+	}
+
+	configPath := filepath.Join(repoDir, ".lopper.yml")
+	config := "policy:\n  packs:\n    - ./packs/base.yml\n    - ./packs/overlay.yml\nthresholds:\n  fail_on_increase_percent: 11\n  license_include_registry_provenance: true\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
+
+	result, err := LoadWithPolicy(repoDir, "")
+	if err != nil {
+		t.Fatalf("load config with policy trace: %v", err)
+	}
+	if got := policyTraceSource(result.PolicyTrace, "thresholds.fail_on_increase_percent"); got != configPath {
+		t.Fatalf("expected repo config to supply fail_on_increase_percent, got %q", got)
+	}
+	if got := policyTraceSource(result.PolicyTrace, "removal_candidate_weights.usage"); got != overlayPack {
+		t.Fatalf("expected overlay pack to supply removal_candidate_weights.usage, got %q", got)
+	}
+	if got := policyTraceSource(result.PolicyTrace, "license.fail_on_deny"); got != overlayPack {
+		t.Fatalf("expected overlay pack to supply license.fail_on_deny, got %q", got)
+	}
+	if got := policyTraceSource(result.PolicyTrace, "license.include_registry_provenance"); got != configPath {
+		t.Fatalf("expected repo config to supply license.include_registry_provenance, got %q", got)
+	}
+}
+
+func policyTraceSource(trace []report.PolicyMergeTrace, field string) string {
+	for _, item := range trace {
+		if item.Field == field {
+			return item.Source
+		}
+	}
+	return ""
 }

@@ -19,7 +19,11 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 		},
 	}
 
-	annotated := Annotate(rep, Trace{DependencyLoads: map[string]int{"alpha": 2, "beta": 1}}, AnnotateOptions{})
+	annotated := Annotate(rep, Trace{
+		DependencyLoads:       map[string]int{"alpha": 2, "beta": 1},
+		DependencyParents:     map[string]map[string]int{"alpha": map[string]int{"src/index.js": 2}},
+		DependencyEntrypoints: map[string]map[string]int{"alpha": map[string]int{"src/main.js": 2}},
+	}, AnnotateOptions{})
 
 	if annotated.Dependencies[0].RuntimeUsage == nil || !annotated.Dependencies[0].RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected alpha to be runtime-only annotated")
@@ -29,6 +33,12 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 	}
 	if len(annotated.Dependencies[0].RuntimeUsage.Modules) != 0 {
 		t.Fatalf("did not expect modules for alpha runtime usage")
+	}
+	if len(annotated.Dependencies[0].RuntimeUsage.ParentModules) != 1 || annotated.Dependencies[0].RuntimeUsage.ParentModules[0].Module != "src/index.js" {
+		t.Fatalf("expected alpha parent module provenance, got %#v", annotated.Dependencies[0].RuntimeUsage.ParentModules)
+	}
+	if len(annotated.Dependencies[0].RuntimeUsage.Entrypoints) != 1 || annotated.Dependencies[0].RuntimeUsage.Entrypoints[0].Module != "src/main.js" {
+		t.Fatalf("expected alpha entrypoint provenance, got %#v", annotated.Dependencies[0].RuntimeUsage.Entrypoints)
 	}
 	if annotated.Dependencies[1].RuntimeUsage == nil || annotated.Dependencies[1].RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected beta to be runtime annotated but not runtime-only")
@@ -97,6 +107,12 @@ func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 		DependencyModules: map[string]map[string]int{
 			"chalk": {"chalk/index.js": 2},
 		},
+		DependencyParents: map[string]map[string]int{
+			"chalk": {"src/index.js": 2},
+		},
+		DependencyEntrypoints: map[string]map[string]int{
+			"chalk": {"src/main.js": 2},
+		},
 		DependencySymbols: map[string]map[string]int{
 			"chalk": {"index": 2},
 		},
@@ -123,6 +139,12 @@ func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 	if len(chalk.RuntimeUsage.Modules) == 0 || chalk.RuntimeUsage.Modules[0].Module != "chalk/index.js" {
 		t.Fatalf("expected runtime modules on runtime-only row, got %#v", chalk.RuntimeUsage.Modules)
 	}
+	if len(chalk.RuntimeUsage.ParentModules) == 0 || chalk.RuntimeUsage.ParentModules[0].Module != "src/index.js" {
+		t.Fatalf("expected runtime parent modules on runtime-only row, got %#v", chalk.RuntimeUsage.ParentModules)
+	}
+	if len(chalk.RuntimeUsage.Entrypoints) == 0 || chalk.RuntimeUsage.Entrypoints[0].Module != "src/main.js" {
+		t.Fatalf("expected runtime entrypoints on runtime-only row, got %#v", chalk.RuntimeUsage.Entrypoints)
+	}
 }
 
 func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
@@ -135,6 +157,12 @@ func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
 		},
 		DependencyModules: map[string]map[string]int{
 			"new": {"new/index.js": 2},
+		},
+		DependencyParents: map[string]map[string]int{
+			"new": {"src/index.js": 2},
+		},
+		DependencyEntrypoints: map[string]map[string]int{
+			"new": {"src/main.js": 2},
 		},
 		DependencySymbols: map[string]map[string]int{
 			"new": {"new/index.js\x00index": 2},

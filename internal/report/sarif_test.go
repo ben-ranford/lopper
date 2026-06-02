@@ -325,7 +325,7 @@ func TestAppendUnusedImportResultsFallsBackToAnchor(t *testing.T) {
 		},
 	}
 
-	results := appendUnusedImportResults(nil, rules, DependencyReport{Name: "pkg", Language: "js-ts", UnusedImports: []ImportUse{{Name: "map", Module: "lodash"}}}, anchor)
+	results := appendUnusedImportResults(nil, rules, DependencyReport{Name: "pkg", Language: "js-ts", UnusedImports: []ImportUse{{Name: "map", Module: "lodash"}}}, anchor, nil)
 	if len(results) != 1 || len(results[0].Locations) != 1 {
 		t.Fatalf("expected fallback anchor location, got %#v", results)
 	}

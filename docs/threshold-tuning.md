@@ -159,6 +159,8 @@ The full merged policy is available as `effectivePolicy` (sources, thresholds, a
 lopper analyse --top 20 --repo . --language all --format json | jq '.effectivePolicy'
 ```
 
+`effectivePolicy.mergeTrace` records which source supplied each effective field, so you can see whether a value came from CLI flags, repo config, imported policy packs, or defaults.
+
 ## CI usage notes
 
 - If `fail_on_increase_percent` is above `0`, you need `--baseline PATH` for compare mode.
@@ -167,5 +169,6 @@ lopper analyse --top 20 --repo . --language all --format json | jq '.effectivePo
   - Save baseline: `--baseline-store DIR --save-baseline` (defaults key to `commit:<sha>`)
   - Save labeled baseline: add `--baseline-label LABEL`
   - Compare baseline: `--baseline-store DIR --baseline-key KEY`
+- The TUI summary also accepts `--baseline`, `--baseline-store`, and `--baseline-key` to show compare-mode deltas in the interactive view.
 - Legacy alias `--fail-on-increase` is supported and maps to `--threshold-fail-on-increase`.
 - Avoid defining the same threshold key twice in config (for example both top-level and under `thresholds`) because that returns a validation error.

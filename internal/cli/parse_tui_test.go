@@ -14,7 +14,7 @@ func TestParseArgsDefault(t *testing.T) {
 }
 
 func TestParseArgsTUIFlags(t *testing.T) {
-	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt"})
+	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt", "--baseline", "baseline.json", "--baseline-store", "./baselines", "--baseline-key", "commit:abc123"})
 	if req.Mode != app.ModeTUI {
 		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
 	}
@@ -32,6 +32,15 @@ func TestParseArgsTUIFlags(t *testing.T) {
 	}
 	if req.TUI.SnapshotPath != "out.txt" {
 		t.Fatalf("expected snapshot out.txt, got %q", req.TUI.SnapshotPath)
+	}
+	if req.TUI.BaselinePath != "baseline.json" {
+		t.Fatalf("expected baseline path baseline.json, got %q", req.TUI.BaselinePath)
+	}
+	if req.TUI.BaselineStorePath != "./baselines" {
+		t.Fatalf("expected baseline store ./baselines, got %q", req.TUI.BaselineStorePath)
+	}
+	if req.TUI.BaselineKey != "commit:abc123" {
+		t.Fatalf("expected baseline key commit:abc123, got %q", req.TUI.BaselineKey)
 	}
 }
 

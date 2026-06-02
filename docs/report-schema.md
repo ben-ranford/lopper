@@ -48,7 +48,7 @@ CSV columns:
 - `usageUncertainty`: JS/TS usage certainty summary (`confirmedImportUses`, `uncertainImportUses`, `samples`).
 - `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`, `powershell`).
 - `effectiveThresholds`: resolved threshold values applied for this run.
-- `effectivePolicy`: resolved policy object, including precedence sources, scoring weights, and license policy controls (`CLI > repo config > imported policy packs > defaults`).
+- `effectivePolicy`: resolved policy object, including precedence sources, merge trace, scoring weights, and license policy controls (`CLI > repo config > imported policy packs > defaults`).
 - `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
 - `dependencies[].language`: language tag for each dependency row.
 - `dependencies[].reachabilityConfidence`: deterministic v2 per-dependency confidence artifact (`model`, `score`, `summary`, `rationaleCodes`, and weighted `signals`).
@@ -57,11 +57,11 @@ CSV columns:
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
 - `dependencies[].codemod`: optional codemod preview/apply data for JS/TS subpath migrations, including deterministic patch previews, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths.
-- `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used).
+- `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used), including `modules`, `parentModules`, `entrypoints`, and `topSymbols` when available.
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
-- `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `newDeniedLicenses`.
+- `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `summaryDelta`, `dependencies`, `added`, `removed`, `regressions`, `progressions`, and `newDeniedLicenses`.
 
 ## Notes
 
