@@ -8,9 +8,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
-var gradleCoordinatePattern = regexp.MustCompile(`(?m)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*(?:platform\()?["']([^:"'\s]+):([^:"'\s]+)(?::([^"'\s]+))?["']\s*\)?\s*\)?`)
+const gradleDependencyConfigurationPattern = `(?:implementation|api|compileOnly|runtimeOnly|annotationProcessor|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly|testCompileOnly|testAnnotationProcessor|debugImplementation|releaseImplementation|kaptTest|kaptAndroidTest|classpath)`
 
-var gradleMapInvocationPattern = regexp.MustCompile(`(?ms)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*((?:[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*["'][^"'\n]+["']\s*,?\s*)+)`)
+var gradleCoordinatePattern = regexp.MustCompile(`(?m)\b` + gradleDependencyConfigurationPattern + `\s*\(?\s*(?:platform\()?["']([^:"'\s]+):([^:"'\s]+)(?::([^"'\s]+))?["']\s*\)?\s*\)?`)
+
+var gradleMapInvocationPattern = regexp.MustCompile(`(?ms)\b` + gradleDependencyConfigurationPattern + `\s*\(?\s*((?:[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*["'][^"'\n]+["']\s*,?\s*)+)`)
 
 var gradleNamedArgPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*["']([^"']+)["']`)
 

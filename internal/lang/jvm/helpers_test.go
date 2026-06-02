@@ -82,6 +82,32 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 	}
 }
 
+func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
+	content := []byte(`package com.example.app;
+import java.util.List;
+import org.junit.jupiter.api.Test; /* trailing block comment */
+/*
+import com.acme.lib.Commented;
+*/
+import com.acme.lib.Widget;
+`)
+
+	pkg := parsePackage(content)
+	prefixes := map[string]string{junitJupiterGroup: junitJupiterAPIName}
+	aliases := map[string]string{"com.acme": acmeLibName}
+
+	imports := parseImports(content, "App.java", pkg, prefixes, aliases)
+	if len(imports) != 2 {
+		t.Fatalf("expected two imports outside block comments, got %#v", imports)
+	}
+	if imports[0].Module != "org.junit.jupiter.api.Test" {
+		t.Fatalf("expected trailing block-comment import to parse, got %#v", imports[0])
+	}
+	if imports[1].Module != "com.acme.lib.Widget" {
+		t.Fatalf("expected non-commented import to parse, got %#v", imports[1])
+	}
+}
+
 func TestJVMIgnoreAndResolveDependencyHelpers(t *testing.T) {
 	pkg := "com.example.app"
 	prefixes := map[string]string{junitJupiterGroup: junitJupiterAPIName}

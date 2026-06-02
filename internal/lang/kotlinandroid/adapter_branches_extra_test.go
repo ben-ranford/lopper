@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -372,6 +373,33 @@ func TestGradleParsingBranches(t *testing.T) {
 	}
 }
 
+func TestGradleDependencyParsingSupportsAdditionalConfigurations(t *testing.T) {
+	content := `
+dependencies {
+  annotationProcessor "org.projectlombok:lombok:1.18.32"
+  debugImplementation("com.android.support:appcompat-v7:28.0.0")
+  releaseImplementation "com.android.support:multidex:1.0.3"
+  kaptTest("com.google.dagger:dagger-compiler:2.52")
+  classpath "com.android.tools.build:gradle:8.7.0"
+}
+`
+
+	descriptors := parseGradleDependencyContent(content)
+	if len(descriptors) != 5 {
+		t.Fatalf("expected five parsed descriptors from extended configurations, got %#v", descriptors)
+	}
+
+	names := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		names = append(names, descriptor.Name)
+	}
+	for _, want := range []string{"lombok", "appcompat-v7", "multidex", "dagger-compiler", "gradle"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("expected parsed gradle dependency %q in %#v", want, descriptors)
+		}
+	}
+}
+
 func TestGradleLockfileBranches(t *testing.T) {
 	repo := t.TempDir()
 	lockLink := filepath.Join(repo, gradleLockfileName)
@@ -534,6 +562,26 @@ func TestScanRepoAndImportBranches(t *testing.T) {
 
 	if imports := parseImports([]byte("import java.util.List\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{}, &scanState); len(imports) != 0 {
 		t.Fatalf("expected ignored framework imports to be dropped, got %#v", imports)
+	}
+	blockCommentLookups := dependencyLookups{
+		Prefixes: map[string]string{"androidx.core": "androidx.core-ktx"},
+		Aliases:  map[string]string{"com.acme": "acme-lib"},
+	}
+	blockCommentImports := parseImports([]byte(`package pkg.demo
+import androidx.core.widget.TextViewCompat /* trailing block comment */
+/*
+import com.acme.lib.Commented
+*/
+import com.acme.lib.Widget
+`), testMainSourceFileName, "pkg.demo", blockCommentLookups, &scanState)
+	if len(blockCommentImports) != 2 {
+		t.Fatalf("expected imports outside block comments, got %#v", blockCommentImports)
+	}
+	if blockCommentImports[0].Module != "androidx.core.widget.TextViewCompat" {
+		t.Fatalf("expected trailing block-comment import to parse, got %#v", blockCommentImports[0])
+	}
+	if blockCommentImports[1].Module != "com.acme.lib.Widget" {
+		t.Fatalf("expected non-commented import to parse, got %#v", blockCommentImports[1])
 	}
 	if _, ok := buildImportRecord([]string{"import", "a.", "", ""}, "a.", "dep"); ok {
 		t.Fatalf("expected import record build to fail for empty symbol")
