@@ -37,9 +37,9 @@ func parseImports(content []byte, relativePath string, mapper dependencyMapper) 
 	}
 	imports := make([]importBinding, 0)
 	inBlockComment := false
-	forEachSourceLine(content, func(lineNo int, raw, line []byte) {
-		var column int
-		line, column, inBlockComment = stripSourceCommentsBytes(raw, inBlockComment)
+	forEachSourceLine(content, func(lineNo int, raw, _ []byte) {
+		line, column, nextBlockComment := stripSourceCommentsBytes(raw, inBlockComment)
+		inBlockComment = nextBlockComment
 		if binding := parseImportLine(line, column, relativePath, lineNo, mapper, &meta); binding != nil {
 			imports = append(imports, *binding)
 		}
