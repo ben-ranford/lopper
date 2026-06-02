@@ -33,26 +33,17 @@ func TestThresholdConfigMergeBranches(t *testing.T) {
 		t.Fatalf("expected max_uncertain_import_count override to merge, got %#v", merged)
 	}
 
-	merged = mergeOverrides(
-		Overrides{LicenseDenyList: []string{"GPL-3.0-ONLY"}, licenseDenyListSet: true},
-		Overrides{LicenseDenyList: make([]string, 0), licenseDenyListSet: true},
-	)
+	merged = mergeOverrides(Overrides{LicenseDenyList: []string{"GPL-3.0-ONLY"}, licenseDenyListSet: true}, Overrides{LicenseDenyList: make([]string, 0), licenseDenyListSet: true})
 	if len(merged.LicenseDenyList) != 0 {
 		t.Fatalf("expected explicit empty deny list to clear inherited deny list, got %#v", merged.LicenseDenyList)
 	}
 
-	scope := mergeScope(
-		PathScope{Include: []string{"src/**"}, Exclude: []string{"vendor/**"}, includeSet: true, excludeSet: true},
-		PathScope{Include: make([]string, 0), Exclude: make([]string, 0), includeSet: true, excludeSet: true},
-	)
+	scope := mergeScope(PathScope{Include: []string{"src/**"}, Exclude: []string{"vendor/**"}, includeSet: true, excludeSet: true}, PathScope{Include: make([]string, 0), Exclude: make([]string, 0), includeSet: true, excludeSet: true})
 	if len(scope.Include) != 0 || len(scope.Exclude) != 0 {
 		t.Fatalf("expected explicit empty scope lists to clear inherited scope, got %#v", scope)
 	}
 
-	features := mergeFeatures(
-		FeatureConfig{Enable: []string{"alpha"}, Disable: []string{"beta"}, enableSet: true, disableSet: true},
-		FeatureConfig{Enable: make([]string, 0), Disable: make([]string, 0), enableSet: true, disableSet: true},
-	)
+	features := mergeFeatures(FeatureConfig{Enable: []string{"alpha"}, Disable: []string{"beta"}, enableSet: true, disableSet: true}, FeatureConfig{Enable: make([]string, 0), Disable: make([]string, 0), enableSet: true, disableSet: true})
 	if len(features.Enable) != 0 || len(features.Disable) != 0 {
 		t.Fatalf("expected explicit empty feature lists to clear inherited features, got %#v", features)
 	}
