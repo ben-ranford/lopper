@@ -119,6 +119,11 @@ func TestParsePowerShellLineHandlesInlineCommentsAndMissingRequiresModules(t *te
 		t.Fatalf("expected static import with comment to parse, imports=%#v warnings=%#v", imports, warnings)
 	}
 
+	imports, warnings = parsePowerShellLine("# Requires -Modules Pester", "run.ps1", 6, declared)
+	if len(imports) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected human comment with spaced hash to be ignored, imports=%#v warnings=%#v", imports, warnings)
+	}
+
 	imports, warnings = parsePowerShellLine("#Requires -Modules", "run.ps1", 8, declared)
 	if len(imports) != 0 || len(warnings) != 1 {
 		t.Fatalf("expected #Requires warning for missing modules, imports=%#v warnings=%#v", imports, warnings)
@@ -279,6 +284,12 @@ func TestParseRequiresLineModuleListParsing(t *testing.T) {
 			line:         "#Requires -Modules Pester, Az.Accounts -RunAsAdministrator",
 			wantDeps:     []string{"az.accounts", "pester"},
 		},
+		{
+			name:         "supports tab-delimited options",
+			requiresBody: " -Modules\tPester\t-Version\t7.0",
+			line:         "#Requires -Modules\tPester\t-Version\t7.0",
+			wantDeps:     []string{"pester"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -339,6 +350,10 @@ func assertParserSplitHelpers(t *testing.T) {
 	parts := splitArguments("-Name 'Pester' -ErrorAction Stop")
 	if !reflect.DeepEqual(parts, []string{"-Name", "'Pester'", "-ErrorAction", "Stop"}) {
 		t.Fatalf("unexpected split arguments output: %#v", parts)
+	}
+	parts = splitArguments("-Name\t'Pester'\t-ErrorAction\tStop")
+	if !reflect.DeepEqual(parts, []string{"-Name", "'Pester'", "-ErrorAction", "Stop"}) {
+		t.Fatalf("unexpected tab-delimited split arguments output: %#v", parts)
 	}
 	parts = splitTopLevel("'a,b',@(1,2),x", ',')
 	if !reflect.DeepEqual(parts, []string{"'a,b'", "@(1,2)", "x"}) {

@@ -601,16 +601,26 @@ func splitTopLevel(value string, separator byte) []string {
 }
 
 func consumeTopLevelSeparator(value string, index int, separator byte, scanner *powerShellExpressionScanner) (int, bool) {
-	if value[index] != separator || !scanner.complete() {
+	if !scanner.complete() {
 		return 0, false
 	}
-	if separator != ' ' {
+	if separator == ' ' {
+		if !isArgumentWhitespace(value[index]) {
+			return 0, false
+		}
+		for index+1 < len(value) && isArgumentWhitespace(value[index+1]) {
+			index++
+		}
 		return index + 1, true
 	}
-	for index+1 < len(value) && value[index+1] == ' ' {
-		index++
+	if value[index] != separator {
+		return 0, false
 	}
 	return index + 1, true
+}
+
+func isArgumentWhitespace(ch byte) bool {
+	return ch == ' ' || ch == '\t'
 }
 
 func flagValue(value, flag string) (string, bool) {
