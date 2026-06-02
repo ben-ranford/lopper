@@ -213,6 +213,17 @@ func TestParseImportsWithCRLFPreservesColumns(t *testing.T) {
 	}
 }
 
+func TestParseImportsIgnoreBlockComments(t *testing.T) {
+	mapper := newDependencyMapper([]string{"foo.bar"})
+	imports, _ := parseImports([]byte("/*\nusing Foo.Bar;\n*/\n"+fooBarImportLine+"\n"), programSourceName, mapper)
+	if len(imports) != 1 {
+		t.Fatalf("expected only one import outside block comments, got %#v", imports)
+	}
+	if imports[0].Location.Line != 4 {
+		t.Fatalf("expected import line 4 after skipping block comment, got %#v", imports[0].Location)
+	}
+}
+
 func TestParseImportsAndBuildFunctionsBranches(t *testing.T) {
 	mapper := newDependencyMapper([]string{acmeBarName, "acme.baz"})
 	content := []byte(`

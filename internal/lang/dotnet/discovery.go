@@ -1,6 +1,7 @@
 package dotnet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -268,7 +269,7 @@ func parseManifestDependencies(repoPath, manifestPath string, pattern *regexp.Re
 	if err != nil {
 		return nil, err
 	}
-	matches := pattern.FindAllSubmatch(content, -1)
+	matches := pattern.FindAllSubmatch(stripXMLCommentsBytes(content), -1)
 	return captureMatches(matches), nil
 }
 
@@ -423,6 +424,41 @@ func isRepoBoundedPath(repoPath, candidatePath string) bool {
 		return false
 	}
 	return relativeToRepo != ".." && !strings.HasPrefix(relativeToRepo, ".."+string(filepath.Separator))
+}
+
+func stripXMLCommentsBytes(content []byte) []byte {
+	if len(content) == 0 {
+		return content
+	}
+
+	out := make([]byte, 0, len(content))
+	inComment := false
+
+	for i := 0; i < len(content); {
+		if inComment {
+			if i+2 < len(content) && content[i] == '-' && content[i+1] == '-' && content[i+2] == '>' {
+				inComment = false
+				i += 3
+				continue
+			}
+			i++
+			continue
+		}
+
+		if i+3 < len(content) && content[i] == '<' && content[i+1] == '!' && content[i+2] == '-' && content[i+3] == '-' {
+			if len(out) > 0 && !isSpaceByte(out[len(out)-1]) {
+				out = append(out, ' ')
+			}
+			inComment = true
+			i += 4
+			continue
+		}
+
+		out = append(out, content[i])
+		i++
+	}
+
+	return bytes.TrimSpace(out)
 }
 
 var (
