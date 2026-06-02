@@ -2,6 +2,7 @@ package rust
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -165,7 +166,7 @@ func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
 		roots:    map[string]struct{}{},
 	}
 
-	if matched, err := collector.matchDirectory("", nil, context.Canceled); err != context.Canceled || matched {
+	if matched, err := collector.matchDirectory("", nil, context.Canceled); !errors.Is(err, context.Canceled) || matched {
 		t.Fatalf("expected walk error to short-circuit collector, matched=%v err=%v", matched, err)
 	}
 
@@ -174,7 +175,7 @@ func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	targetEntry := rustDirEntry(t, repo, "target")
-	if matched, err := collector.matchDirectory(targetDir, targetEntry, nil); err != filepath.SkipDir || matched {
+	if matched, err := collector.matchDirectory(targetDir, targetEntry, nil); !errors.Is(err, filepath.SkipDir) || matched {
 		t.Fatalf("expected target dir to be skipped, matched=%v err=%v", matched, err)
 	}
 
