@@ -42,6 +42,16 @@ func TestParseImportDirectiveAndShowSymbols(t *testing.T) {
 	}
 }
 
+func TestParseImportDirectiveAllowsRawStringUri(t *testing.T) {
+	kind, module, clause, ok := parseImportDirective(`import r'package:foo/foo.dart' as foo;`)
+	if !ok {
+		t.Fatalf("expected raw-string import directive to parse")
+	}
+	if kind != "import" || module != fooPackageModule || clause != "as foo" {
+		t.Fatalf("unexpected raw-string directive parse: kind=%q module=%q clause=%q", kind, module, clause)
+	}
+}
+
 func TestParseDartImportsHandlesMultilineDirective(t *testing.T) {
 	content := []byte(`import 'package:http/http.dart'
     as http;
@@ -60,6 +70,38 @@ void main() {
 	}
 	if imports[0].Location.Line != 1 || imports[0].Location.Column != 1 {
 		t.Fatalf("expected multiline directive location at line 1 column 1, got %#v", imports[0].Location)
+	}
+}
+
+func TestParseDartImportsHandlesRawStringImport(t *testing.T) {
+	content := []byte(`import r'package:http/http.dart' as http;
+
+void main() {
+  http.Client();
+}
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+
+	if len(imports) != 1 {
+		t.Fatalf("expected exactly one import binding, got %#v", imports)
+	}
+	if imports[0].Dependency != "http" || imports[0].Local != "http" {
+		t.Fatalf("expected http raw-string import binding, got %#v", imports[0])
+	}
+}
+
+func TestParseDartImportsIgnoresBlockCommentImports(t *testing.T) {
+	content := []byte(`/*
+import 'package:http/http.dart' as http;
+*/
+
+void main() {
+  http.Client();
+}
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+	if len(imports) != 0 {
+		t.Fatalf("expected block-comment import to be ignored, got %#v", imports)
 	}
 }
 

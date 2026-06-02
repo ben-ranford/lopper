@@ -108,7 +108,7 @@ type scanResult struct {
 }
 
 var (
-	directivePattern                 = regexp.MustCompile(`(?s)^\s*(import|export)\s+['"]([^'"]+)['"]([^;]*);\s*(?://.*)?$`)
+	directivePattern                 = regexp.MustCompile(`(?s)^\s*(import|export)\s+r?['"]([^'"]+)['"]([^;]*);\s*(?://.*)?$`)
 	directiveStartPattern            = regexp.MustCompile(`^\s*(import|export)\b`)
 	directiveAliasClausePattern      = regexp.MustCompile(`^(?:deferred\s+as|as)\s+[A-Za-z_][A-Za-z0-9_]*\b`)
 	directiveCombinatorClausePattern = regexp.MustCompile(`^(?:show|hide)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*`)
