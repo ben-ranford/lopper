@@ -36,8 +36,11 @@ func parseImports(content []byte, relativePath string, mapper dependencyMapper) 
 		undeclaredByDependency: make(map[string]int),
 	}
 	imports := make([]importBinding, 0)
-	forEachSourceLine(content, func(lineNo int, raw, line []byte) {
-		if binding := parseImportLine(line, raw, relativePath, lineNo, mapper, &meta); binding != nil {
+	inBlockComment := false
+	forEachSourceLine(content, func(lineNo int, raw, _ []byte) {
+		line, column, nextBlockComment := stripSourceCommentsBytes(raw, inBlockComment)
+		inBlockComment = nextBlockComment
+		if binding := parseImportLine(line, column, relativePath, lineNo, mapper, &meta); binding != nil {
 			imports = append(imports, *binding)
 		}
 	})
@@ -52,7 +55,7 @@ func forEachSourceLine(content []byte, visit func(lineNo int, raw, line []byte))
 			end++
 		}
 		raw := trimTrailingCarriageReturn(content[start:end])
-		visit(lineNo, raw, stripLineCommentBytes(raw))
+		visit(lineNo, raw, raw)
 		if end == len(content) {
 			break
 		}
@@ -60,11 +63,10 @@ func forEachSourceLine(content []byte, visit func(lineNo int, raw, line []byte))
 	}
 }
 
-func parseImportLine(line, raw []byte, relativePath string, lineNo int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
+func parseImportLine(line []byte, column int, relativePath string, lineNo int, mapper dependencyMapper, meta *mappingMetadata) *importBinding {
 	if len(line) == 0 {
 		return nil
 	}
-	column := firstContentColumnBytes(raw)
 	if binding, handled := parseCSharpImportLine(line, relativePath, lineNo, column, mapper, meta); handled {
 		return binding
 	}
@@ -257,6 +259,62 @@ func stripLineCommentBytes(line []byte) []byte {
 		}
 	}
 	return bytes.TrimSpace(line)
+}
+
+func stripSourceCommentsBytes(line []byte, inBlockComment bool) ([]byte, int, bool) {
+	if len(line) == 0 {
+		return line, 1, inBlockComment
+	}
+	if !inBlockComment && bytes.IndexByte(line, '/') < 0 {
+		return bytes.TrimSpace(line), firstContentColumnBytes(line), false
+	}
+
+	out := make([]byte, 0, len(line))
+	firstColumn := 1
+	sawCode := false
+	column := 1
+
+	for i := 0; i < len(line); {
+		nextIndex, nextColumn, nextBlockComment, stop, handled := advanceSourceCommentState(line, i, column, inBlockComment)
+		if stop {
+			break
+		}
+		if handled {
+			i = nextIndex
+			column = nextColumn
+			inBlockComment = nextBlockComment
+			continue
+		}
+
+		if !sawCode && !isSpaceByte(line[i]) {
+			firstColumn = column
+			sawCode = true
+		}
+		out = append(out, line[i])
+		i++
+		column++
+	}
+
+	return bytes.TrimSpace(out), firstColumn, inBlockComment
+}
+
+func advanceSourceCommentState(line []byte, index, column int, inBlockComment bool) (int, int, bool, bool, bool) {
+	if inBlockComment {
+		if index+1 < len(line) && line[index] == '*' && line[index+1] == '/' {
+			return index + 2, column + 2, false, false, true
+		}
+		return index + 1, column + 1, true, false, true
+	}
+	if index+1 >= len(line) {
+		return index, column, false, false, false
+	}
+	if line[index] == '/' && line[index+1] == '/' {
+		return index, column, false, true, true
+	}
+	if line[index] == '/' && line[index+1] == '*' {
+		return index + 2, column + 2, true, false, true
+	}
+	return index, column, false, false, false
 }
 
 func trimTrailingCarriageReturn(line []byte) []byte {

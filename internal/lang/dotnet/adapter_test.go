@@ -215,6 +215,29 @@ func TestParseManifestReferences(t *testing.T) {
 	}
 }
 
+func TestParseManifestReferencesIgnoreXMLComments(t *testing.T) {
+	repo := t.TempDir()
+	projectPath := filepath.Join(repo, appProjectFileName)
+	writeManifestFixture(t, projectPath, `
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <!-- <PackageReference Include="Commented.Package" Version="1.0.0" /> -->
+    <PackageReference Include="Real.Package" Version="1.0.0" />
+  </ItemGroup>
+</Project>`)
+
+	projectDeps, err := parsePackageReferences(repo, projectPath)
+	if err != nil {
+		t.Fatalf("parse project: %v", err)
+	}
+	if slices.Contains(projectDeps, "commented.package") {
+		t.Fatalf("expected XML-commented package reference to be ignored, got %#v", projectDeps)
+	}
+	if !slices.Contains(projectDeps, "real.package") {
+		t.Fatalf("expected real package reference to remain visible, got %#v", projectDeps)
+	}
+}
+
 func TestAdapterRecommendationsHonorMinUsageThreshold(t *testing.T) {
 	repo := t.TempDir()
 	writeManifestFixture(t, filepath.Join(repo, appProjectFileName), newtonsoftProjectManifest)
