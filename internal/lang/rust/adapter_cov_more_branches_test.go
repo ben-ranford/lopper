@@ -174,7 +174,7 @@ func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatalf("mkdir target: %v", err)
 	}
-	targetEntry := rustDirEntry(t, repo, "target")
+	targetEntry := mustFindDirEntryByName(t, repo, "target")
 	if matched, err := collector.matchDirectory(targetDir, targetEntry, nil); !errors.Is(err, filepath.SkipDir) || matched {
 		t.Fatalf("expected target dir to be skipped, matched=%v err=%v", matched, err)
 	}
@@ -186,7 +186,7 @@ func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("not a manifest"), 0o644); err != nil {
 		t.Fatalf("write file entry: %v", err)
 	}
-	fileEntry := rustDirEntry(t, filepath.Dir(filePath), filepath.Base(filePath))
+	fileEntry := mustFindDirEntryByName(t, filepath.Dir(filePath), filepath.Base(filePath))
 	if matched, err := collector.matchDirectory(filePath, fileEntry, nil); err != nil || matched {
 		t.Fatalf("expected file entry not to match workspace member, matched=%v err=%v", matched, err)
 	}
@@ -195,7 +195,7 @@ func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
 	if err := os.MkdirAll(noManifestDir, 0o755); err != nil {
 		t.Fatalf("mkdir no-manifest dir: %v", err)
 	}
-	noManifestEntry := rustDirEntry(t, filepath.Dir(noManifestDir), filepath.Base(noManifestDir))
+	noManifestEntry := mustFindDirEntryByName(t, filepath.Dir(noManifestDir), filepath.Base(noManifestDir))
 	if matched, err := collector.matchDirectory(noManifestDir, noManifestEntry, nil); err != nil || matched {
 		t.Fatalf("expected directory without Cargo.toml not to match, matched=%v err=%v", matched, err)
 	}
@@ -205,7 +205,7 @@ func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
 		t.Fatalf("mkdir member dir: %v", err)
 	}
 	writeFile(t, filepath.Join(memberDir, cargoManifestFile), "[package]\nname = \"member\"\nversion = \"0.1.0\"\n")
-	memberEntry := rustDirEntry(t, filepath.Dir(memberDir), filepath.Base(memberDir))
+	memberEntry := mustFindDirEntryByName(t, filepath.Dir(memberDir), filepath.Base(memberDir))
 	if matched, err := collector.matchDirectory(memberDir, memberEntry, nil); err != nil || !matched {
 		t.Fatalf("expected directory with Cargo.toml to match, matched=%v err=%v", matched, err)
 	}
@@ -261,20 +261,4 @@ func TestRustHelperBranchCoverage(t *testing.T) {
 	if base != " as de" || local != "" {
 		t.Fatalf("expected malformed alias to round-trip unchanged, got base=%q local=%q", base, local)
 	}
-}
-
-func rustDirEntry(t *testing.T, dir, name string) os.DirEntry {
-	t.Helper()
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir %s: %v", dir, err)
-	}
-	for _, entry := range entries {
-		if entry.Name() == name {
-			return entry
-		}
-	}
-	t.Fatalf("expected dir entry %s in %s", name, dir)
-	return nil
 }
