@@ -3,6 +3,7 @@ package workspace
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -43,7 +44,7 @@ func ChangedFiles(repoPath string) ([]string, error) {
 
 func parseChangedFileLines(output []byte) []string {
 	lines := strings.Split(strings.TrimRight(string(output), "\r\n"), "\n")
-	return collectUniquePaths(lines, func(line string) string { return line })
+	return collectUniquePaths(lines, func(line string) string { return decodeGitQuotedPath(line) })
 }
 
 func collectUniquePaths(lines []string, extractor func(string) string) []string {
@@ -76,6 +77,18 @@ func parsePorcelainChangedFiles(output []byte) []string {
 		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
 			path = path[idx+4:]
 		}
-		return path
+		return decodeGitQuotedPath(path)
 	})
+}
+
+func decodeGitQuotedPath(path string) string {
+	if len(path) < 2 || path[0] != '"' || path[len(path)-1] != '"' {
+		return path
+	}
+
+	decoded, err := strconv.Unquote(path)
+	if err != nil {
+		return path
+	}
+	return decoded
 }

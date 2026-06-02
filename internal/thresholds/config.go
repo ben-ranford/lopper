@@ -64,7 +64,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	}
 
 	resolver := newPackResolver(repoAbs)
-	mergeResult, err := resolver.resolveFile(configPath, initialPackTrust(repoAbs, explicitProvided))
+	mergeResult, err := resolver.resolveFile(configPath, initialPackTrust(repoAbs, configPath, explicitProvided))
 	if err != nil {
 		return LoadResult{}, err
 	}

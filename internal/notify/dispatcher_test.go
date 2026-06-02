@@ -110,6 +110,23 @@ func TestSanitizeErrorMessageVariants(t *testing.T) {
 	if got := sanitizeErrorMessage(encodedErr, webhook); strings.Contains(got, "SECRET") {
 		t.Fatalf("expected encoded webhook to be redacted, got %q", got)
 	}
+
+	path := "/services/T000/B000/SECRET"
+	pathEscaped := url.PathEscape(path)
+	pathErr := fmt.Errorf("delivery failed for %s", pathEscaped)
+	if got := sanitizeErrorMessage(pathErr, webhook); strings.Contains(got, "SECRET") || strings.Contains(got, pathEscaped) {
+		t.Fatalf("expected path-escaped webhook fragment to be redacted, got %q", got)
+	}
+
+	hostPathErr := fmt.Errorf("delivery failed for hooks.slack.com%s", path)
+	if got := sanitizeErrorMessage(hostPathErr, webhook); strings.Contains(got, "SECRET") || strings.Contains(got, path) {
+		t.Fatalf("expected bare host+path webhook fragment to be redacted, got %q", got)
+	}
+
+	tokenErr := fmt.Errorf("delivery failed for SECRET")
+	if got := sanitizeErrorMessage(tokenErr, webhook); strings.Contains(got, "SECRET") {
+		t.Fatalf("expected bare token segment to be redacted, got %q", got)
+	}
 }
 
 func TestDispatcherNilReceiverReturnsNilWarnings(t *testing.T) {
