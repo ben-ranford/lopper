@@ -42,6 +42,23 @@ func TestParseImportDirectiveAndShowSymbols(t *testing.T) {
 	}
 }
 
+func TestParseImportDirectiveAllowsRawStringUri(t *testing.T) {
+	testCases := []string{
+		`import r'package:foo/foo.dart' as foo;`,
+		`import R'package:foo/foo.dart' as foo;`,
+	}
+
+	for _, directive := range testCases {
+		kind, module, clause, ok := parseImportDirective(directive)
+		if !ok {
+			t.Fatalf("expected raw-string import directive to parse: %q", directive)
+		}
+		if kind != "import" || module != fooPackageModule || clause != "as foo" {
+			t.Fatalf("unexpected raw-string directive parse for %q: kind=%q module=%q clause=%q", directive, kind, module, clause)
+		}
+	}
+}
+
 func TestParseDartImportsHandlesMultilineDirective(t *testing.T) {
 	content := []byte(`import 'package:http/http.dart'
     as http;
@@ -60,6 +77,74 @@ void main() {
 	}
 	if imports[0].Location.Line != 1 || imports[0].Location.Column != 1 {
 		t.Fatalf("expected multiline directive location at line 1 column 1, got %#v", imports[0].Location)
+	}
+}
+
+func TestParseDartImportsIgnoresBlockCommentImports(t *testing.T) {
+	content := []byte(`/*
+import 'package:http/http.dart' as http;
+*/
+
+void main() {
+  http.Client();
+}
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+	if len(imports) != 0 {
+		t.Fatalf("expected block-comment import to be ignored, got %#v", imports)
+	}
+}
+
+func TestParseDartImportsSingleBindingCases(t *testing.T) {
+	testCases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "raw string import",
+			body: `import r'package:http/http.dart' as http;
+
+void main() {
+  http.Client();
+}
+`,
+		},
+		{
+			name: "line comment block opener",
+			body: `// block comment opener marker /* should not leak
+import 'package:http/http.dart' as http;
+`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			imports := parseDartImports([]byte(tc.body), "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+			if len(imports) != 1 {
+				t.Fatalf("expected exactly one import binding, got %#v", imports)
+			}
+			if imports[0].Dependency != "http" || imports[0].Local != "http" {
+				t.Fatalf("expected http import binding, got %#v", imports[0])
+			}
+		})
+	}
+}
+
+func TestStripBlockCommentLineBranches(t *testing.T) {
+	if line, depth := stripBlockCommentLine("import 'package:http/http.dart';", 0); line != "import 'package:http/http.dart';" || depth != 0 {
+		t.Fatalf("expected non-comment line to pass through, got stripped=%q depth=%d", line, depth)
+	}
+
+	if commentedLine, depth := stripBlockCommentLine("// block comment opener /* ignored", 0); commentedLine != "// block comment opener /* ignored" || depth != 0 {
+		t.Fatalf("expected line comment opener to stop block-comment scanning, got stripped=%q depth=%d", commentedLine, depth)
+	}
+
+	if blockCommentLine, depth := stripBlockCommentLine("  // still inside block comment", 1); depth != 1 || len(blockCommentLine) != len("  // still inside block comment") || strings.TrimSpace(blockCommentLine) != "" {
+		t.Fatalf("expected line comment inside block comment to stay stripped, got stripped=%q depth=%d", blockCommentLine, depth)
+	}
+
+	if nestedBlockCommentLine, depth := stripBlockCommentLine("/* outer /* inner */ tail */", 0); depth != 0 || len(nestedBlockCommentLine) != len("/* outer /* inner */ tail */") || strings.TrimSpace(nestedBlockCommentLine) != "" {
+		t.Fatalf("expected nested block comment to balance on one line, got stripped=%q depth=%d", nestedBlockCommentLine, depth)
 	}
 }
 
@@ -156,6 +241,24 @@ func TestBuildDirectiveBindingsBranches(t *testing.T) {
 	wildcardBindings := buildDirectiveBindings("import", fooPackageModule, "", "foo", location)
 	if len(wildcardBindings) != 1 || !wildcardBindings[0].Wildcard {
 		t.Fatalf("expected wildcard fallback binding, got %#v", wildcardBindings)
+	}
+}
+
+func TestParseShowSymbolsBranches(t *testing.T) {
+	if symbols := parseShowSymbols("as foo"); len(symbols) != 0 {
+		t.Fatalf("expected missing show clause to return nil, got %#v", symbols)
+	}
+
+	if symbols := parseShowSymbols("show "); len(symbols) != 0 {
+		t.Fatalf("expected empty show clause to return nil, got %#v", symbols)
+	}
+
+	if symbols := parseShowSymbols("show Foo hide Bar"); !slices.Equal(symbols, []string{"Foo"}) {
+		t.Fatalf("expected hide clause to trim trailing symbols, got %#v", symbols)
+	}
+
+	if symbols := parseShowSymbols("show Foo, 2Bad, Foo, Bar"); !slices.Equal(symbols, []string{"Foo", "Bar"}) {
+		t.Fatalf("expected invalid and duplicate symbols to be filtered, got %#v", symbols)
 	}
 }
 
