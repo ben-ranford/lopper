@@ -148,6 +148,35 @@ requests==2.32.0
 	}
 }
 
+func TestParseRequirementsDependenciesIgnoresDirectURLAndVCSReferences(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	testutil.MustWriteFile(t, path, `
+git+https://example.test/demo.git#egg=demo
+https://example.test/packages/demo-1.2.3.tar.gz#sha256=abc
+requests==2.32.0
+`)
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	for _, unexpected := range []string{"git", "https"} {
+		if _, ok := dependencies[unexpected]; ok {
+			t.Fatalf("did not expect phantom dependency %q in %#v", unexpected, dependencies)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one unsupported-format warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "skipped 2 requirements entries with unsupported format") {
+		t.Fatalf(expectedWarningFmt, "skipped 2 requirements entries with unsupported format", warnings)
+	}
+}
+
 func TestParseRequirementsDependenciesAcceptsLongLines(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonRequirementsTxt)

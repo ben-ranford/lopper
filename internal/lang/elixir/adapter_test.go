@@ -291,6 +291,9 @@ func TestDetectUmbrellaAppsPathBranches(t *testing.T) {
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: [apps_path: \"   \"]\n")); !umbrella || appsPath != "apps" {
 		t.Fatalf("expected blank apps_path to fall back to apps, got umbrella=%v appsPath=%q", umbrella, appsPath)
 	}
+	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: [apps_path: [\n")); umbrella || appsPath != "" {
+		t.Fatalf("expected malformed apps_path to be ignored, got umbrella=%v appsPath=%q", umbrella, appsPath)
+	}
 }
 
 func TestAddUmbrellaRootsAndDependencyFallbacks(t *testing.T) {

@@ -86,17 +86,15 @@ func detectFromRootFiles(repoPath string, detection *language.Detection, roots m
 
 func detectUmbrellaAppsPath(content []byte) (bool, string) {
 	raw := stripElixirComments(content)
-	if !strings.Contains(raw, "apps_path:") {
-		return false, ""
-	}
 	matches := appsPathRegex.FindStringSubmatch(raw)
 	if len(matches) >= 2 {
 		path := strings.TrimSpace(matches[1])
 		if path != "" {
 			return true, path
 		}
+		return true, "apps"
 	}
-	return true, "apps"
+	return false, ""
 }
 
 func stripElixirComments(content []byte) string {
