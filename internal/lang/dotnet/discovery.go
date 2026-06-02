@@ -430,6 +430,9 @@ func stripXMLCommentsBytes(content []byte) []byte {
 	if len(content) == 0 {
 		return content
 	}
+	if bytes.Index(content, []byte("<!--")) < 0 {
+		return bytes.TrimSpace(content)
+	}
 
 	out := make([]byte, 0, len(content))
 	inComment := false

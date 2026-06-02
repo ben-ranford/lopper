@@ -265,6 +265,9 @@ func stripSourceCommentsBytes(line []byte, inBlockComment bool) ([]byte, int, bo
 	if len(line) == 0 {
 		return line, 1, inBlockComment
 	}
+	if !inBlockComment && bytes.IndexByte(line, '/') < 0 {
+		return bytes.TrimSpace(line), firstContentColumnBytes(line), false
+	}
 
 	out := make([]byte, 0, len(line))
 	firstColumn := 1

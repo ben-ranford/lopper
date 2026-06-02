@@ -190,6 +190,24 @@ func TestByteWhitespaceAndCommentHelpers(t *testing.T) {
 	}
 }
 
+func TestStripSourceCommentsBytesFastPathAllocations(t *testing.T) {
+	line := []byte("  using Foo.Bar;  ")
+	if allocs := testing.AllocsPerRun(1000, func() {
+		got, column, inBlock := stripSourceCommentsBytes(line, false)
+		if inBlock {
+			t.Fatalf("expected fast path to keep block comment state false")
+		}
+		if column != 3 {
+			t.Fatalf("expected first non-space column 3, got %d", column)
+		}
+		if !bytes.Equal(got, []byte("using Foo.Bar;")) {
+			t.Fatalf("unexpected stripped line: %q", got)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected zero allocations on no-comment fast path, got %f", allocs)
+	}
+}
+
 func TestByteDependencyHelperBranches(t *testing.T) {
 	mapper := newDependencyMapper([]string{"Acme.Core", "", "serilog.aspnetcore"})
 	if len(mapper.declared) != 2 || mapper.declared[0].id != "acme.core" {
@@ -221,6 +239,18 @@ func TestParseImportsIgnoreBlockComments(t *testing.T) {
 	}
 	if imports[0].Location.Line != 4 {
 		t.Fatalf("expected import line 4 after skipping block comment, got %#v", imports[0].Location)
+	}
+}
+
+func TestStripXMLCommentsBytesFastPathAllocations(t *testing.T) {
+	content := []byte("\n  <Project><ItemGroup><PackageReference Include=\"Dapper\" /></ItemGroup></Project>  \n")
+	if allocs := testing.AllocsPerRun(1000, func() {
+		got := stripXMLCommentsBytes(content)
+		if !bytes.Equal(got, []byte("<Project><ItemGroup><PackageReference Include=\"Dapper\" /></ItemGroup></Project>")) {
+			t.Fatalf("unexpected stripped xml: %q", got)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected zero allocations on no-comment fast path, got %f", allocs)
 	}
 }
 
