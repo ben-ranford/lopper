@@ -177,7 +177,7 @@ func normalizePathPatterns(patterns []string) []string {
 }
 
 func mergeScope(base, higher PathScope) PathScope {
-	return scopeFromOptionalStringPair(mergedOptionalStringPair(base.Include, base.includeSet, higher.Include, higher.includeSet, base.Exclude, base.excludeSet, higher.Exclude, higher.excludeSet))
+	return scopeFromOptionalStringPair(mergeOptionalStringPair(pathScopeToOptionalStringPair(base), pathScopeToOptionalStringPair(higher)))
 }
 
 func (f *rawFeatures) toFeatureConfig() FeatureConfig {
@@ -192,7 +192,7 @@ func normalizeFeatureRefs(refs []string) []string {
 }
 
 func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
-	return featureConfigFromOptionalStringPair(mergedOptionalStringPair(base.Enable, base.enableSet, higher.Enable, higher.enableSet, base.Disable, base.disableSet, higher.Disable, higher.disableSet))
+	return featureConfigFromOptionalStringPair(mergeOptionalStringPair(featureConfigToOptionalStringPair(base), featureConfigToOptionalStringPair(higher)))
 }
 
 func normalizePathScope(scope PathScope) PathScope {
@@ -233,10 +233,15 @@ func normalizeOptionalStringList(values *[]string, normalize func([]string) []st
 	return normalize(*values), true
 }
 
-func normalizeOptionalStringPair(first *[]string, normalizeFirst func([]string) []string, second *[]string, normalizeSecond func([]string) []string) ([]string, bool, []string, bool) {
+func normalizeOptionalStringPair(first *[]string, normalizeFirst func([]string) []string, second *[]string, normalizeSecond func([]string) []string) optionalStringPair {
 	firstValues, firstSet := normalizeOptionalStringList(first, normalizeFirst)
 	secondValues, secondSet := normalizeOptionalStringList(second, normalizeSecond)
-	return firstValues, firstSet, secondValues, secondSet
+	return optionalStringPair{
+		first:     firstValues,
+		second:    secondValues,
+		firstSet:  firstSet,
+		secondSet: secondSet,
+	}
 }
 
 func normalizeUniqueStrings(values []string, normalize func(string) string) []string {
@@ -266,12 +271,6 @@ func mergeOptionalStringList(base []string, baseSet bool, higher []string, highe
 	return base, baseSet
 }
 
-func mergeOptionalStringPair(baseFirst []string, baseFirstSet bool, higherFirst []string, higherFirstSet bool, baseSecond []string, baseSecondSet bool, higherSecond []string, higherSecondSet bool) ([]string, bool, []string, bool) {
-	firstValues, firstSet := mergeOptionalStringList(baseFirst, baseFirstSet, higherFirst, higherFirstSet)
-	secondValues, secondSet := mergeOptionalStringList(baseSecond, baseSecondSet, higherSecond, higherSecondSet)
-	return firstValues, firstSet, secondValues, secondSet
-}
-
 func emptyOptionalStringPair() optionalStringPair {
 	return optionalStringPair{
 		first:  make([]string, 0),
@@ -280,17 +279,12 @@ func emptyOptionalStringPair() optionalStringPair {
 }
 
 func rawOptionalStringPair(first *[]string, normalizeFirst func([]string) []string, second *[]string, normalizeSecond func([]string) []string) optionalStringPair {
-	firstValues, firstSet, secondValues, secondSet := normalizeOptionalStringPair(first, normalizeFirst, second, normalizeSecond)
-	return optionalStringPair{
-		first:     firstValues,
-		second:    secondValues,
-		firstSet:  firstSet,
-		secondSet: secondSet,
-	}
+	return normalizeOptionalStringPair(first, normalizeFirst, second, normalizeSecond)
 }
 
-func mergedOptionalStringPair(baseFirst []string, baseFirstSet bool, higherFirst []string, higherFirstSet bool, baseSecond []string, baseSecondSet bool, higherSecond []string, higherSecondSet bool) optionalStringPair {
-	firstValues, firstSet, secondValues, secondSet := mergeOptionalStringPair(baseFirst, baseFirstSet, higherFirst, higherFirstSet, baseSecond, baseSecondSet, higherSecond, higherSecondSet)
+func mergeOptionalStringPair(base, higher optionalStringPair) optionalStringPair {
+	firstValues, firstSet := mergeOptionalStringList(base.first, base.firstSet, higher.first, higher.firstSet)
+	secondValues, secondSet := mergeOptionalStringList(base.second, base.secondSet, higher.second, higher.secondSet)
 	return optionalStringPair{
 		first:     firstValues,
 		second:    secondValues,
@@ -308,12 +302,30 @@ func scopeFromOptionalStringPair(values optionalStringPair) PathScope {
 	}
 }
 
+func pathScopeToOptionalStringPair(scope PathScope) optionalStringPair {
+	return optionalStringPair{
+		first:     scope.Include,
+		second:    scope.Exclude,
+		firstSet:  scope.includeSet,
+		secondSet: scope.excludeSet,
+	}
+}
+
 func featureConfigFromOptionalStringPair(values optionalStringPair) FeatureConfig {
 	return FeatureConfig{
 		Enable:     values.first,
 		Disable:    values.second,
 		enableSet:  values.firstSet,
 		disableSet: values.secondSet,
+	}
+}
+
+func featureConfigToOptionalStringPair(features FeatureConfig) optionalStringPair {
+	return optionalStringPair{
+		first:     features.Enable,
+		second:    features.Disable,
+		firstSet:  features.enableSet,
+		secondSet: features.disableSet,
 	}
 }
 
