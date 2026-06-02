@@ -1,25 +1,21 @@
 package kotlinandroid
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
 
 var gradleLockCoordinatePattern = regexp.MustCompile(`^\s*([^:#=\s]+):([^:#=\s]+):([^=\s]+)(?:\s*=.*)?$`)
 
-func collectLockfileDependencyDescriptors(repoPath string) ([]dependencyDescriptor, bool, []string) {
-	return parseGradleLockfiles(repoPath)
-}
-
 func parseGradleLockfiles(repoPath string) ([]dependencyDescriptor, bool, []string) {
-	discovery, walkErr := discoverGradleLockfiles(repoPath)
-	descriptors := parseGradleLockfileFiles(discovery.Files)
-	warnings := discovery.Warnings
-	if walkErr != nil {
-		warnings = append(warnings, fmt.Sprintf("unable to scan lockfiles: %v", walkErr))
-	}
-	return descriptors, discovery.Matched, warnings
+	return collectGradleFileDescriptorsWithWarnings(
+		repoPath,
+		discoverGradleLockfiles,
+		func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
+			return parseGradleLockfileFiles(files), nil
+		},
+		"lockfiles",
+	)
 }
 
 func parseGradleLockfileFiles(files []discoveredGradleFile) []dependencyDescriptor {

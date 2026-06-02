@@ -113,7 +113,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
-	sanitized := stripBlockComments(content)
+	sanitized := shared.StripBlockComments(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
@@ -168,40 +168,6 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 
 func stripLineComment(line string) string {
 	return shared.StripLineComment(line, "//")
-}
-
-func stripBlockComments(content []byte) []byte {
-	if len(content) == 0 {
-		return content
-	}
-
-	stripped := make([]byte, len(content))
-	copy(stripped, content)
-
-	inBlockComment := false
-	for i := 0; i < len(stripped); i++ {
-		if inBlockComment {
-			if i+1 < len(stripped) && stripped[i] == '*' && stripped[i+1] == '/' {
-				stripped[i] = ' '
-				stripped[i+1] = ' '
-				inBlockComment = false
-				i++
-				continue
-			}
-			if stripped[i] != '\n' && stripped[i] != '\r' {
-				stripped[i] = ' '
-			}
-			continue
-		}
-		if i+1 < len(stripped) && stripped[i] == '/' && stripped[i+1] == '*' {
-			stripped[i] = ' '
-			stripped[i+1] = ' '
-			inBlockComment = true
-			i++
-		}
-	}
-
-	return stripped
 }
 
 func shouldIgnoreImport(module, filePackage string) bool {

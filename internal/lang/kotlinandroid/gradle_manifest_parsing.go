@@ -16,10 +16,6 @@ var gradleMapInvocationPattern = regexp.MustCompile(`(?ms)\b` + gradleDependency
 
 var gradleNamedArgPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*["']([^"']+)["']`)
 
-func collectManifestDependencyDescriptors(repoPath string) ([]dependencyDescriptor, []string) {
-	return parseGradleDependenciesWithWarnings(repoPath)
-}
-
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 	descriptors, _ := parseGradleDependenciesWithWarnings(repoPath)
 	return descriptors
@@ -27,13 +23,17 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
-	discovery, walkErr := discoverBuildFiles(repoPath, buildGradleName, buildGradleKTSName)
-	warnings = append(warnings, discovery.Warnings...)
-	descriptors, parseWarnings := parseGradleManifestFiles(discovery.Files, catalogResolver)
+	descriptors, _, parseWarnings := collectGradleFileDescriptorsWithWarnings(
+		repoPath,
+		func(path string) (gradleFileDiscoveryResult, error) {
+			return discoverBuildFiles(path, buildGradleName, buildGradleKTSName)
+		},
+		func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
+			return parseGradleManifestFiles(files, catalogResolver)
+		},
+		"build files",
+	)
 	warnings = append(warnings, parseWarnings...)
-	if walkErr != nil {
-		warnings = append(warnings, fmt.Sprintf("unable to scan build files: %v", walkErr))
-	}
 	return descriptors, shared.DedupeWarnings(warnings)
 }
 

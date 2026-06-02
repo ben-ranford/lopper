@@ -1,10 +1,12 @@
 package kotlinandroid
 
 import (
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -29,6 +31,22 @@ func discoverGradleLockfiles(repoPath string) (gradleFileDiscoveryResult, error)
 	return discoverGradleFiles(repoPath, func(fileName string) bool {
 		return strings.EqualFold(fileName, gradleLockfileName)
 	})
+}
+
+func collectGradleFileDescriptorsWithWarnings(
+	repoPath string,
+	discover func(string) (gradleFileDiscoveryResult, error),
+	parser func([]discoveredGradleFile) ([]dependencyDescriptor, []string),
+	scanTarget string,
+) ([]dependencyDescriptor, bool, []string) {
+	discovery, walkErr := discover(repoPath)
+	descriptors, parseWarnings := parser(discovery.Files)
+	warnings := append([]string{}, discovery.Warnings...)
+	warnings = append(warnings, parseWarnings...)
+	if walkErr != nil {
+		warnings = append(warnings, fmt.Sprintf("unable to scan %s: %v", scanTarget, walkErr))
+	}
+	return descriptors, discovery.Matched, shared.DedupeWarnings(warnings)
 }
 
 func discoverGradleFiles(repoPath string, matches func(fileName string) bool) (gradleFileDiscoveryResult, error) {
