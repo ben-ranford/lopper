@@ -1,7 +1,7 @@
 {
   "name": "vscode-lopper",
   "displayName": "Lopper",
-  "description": "VS Code diagnostics, hover details, and safe JS/TS quick fixes across Lopper adapters, including Kotlin Android and PowerShell.",
+  "description": "VS Code diagnostics, dependency explorer details, baseline workflows, runtime trace analysis, and safe JS/TS quick fixes across Lopper adapters, including Kotlin Android and PowerShell.",
   "version": "1.5.4",
   "publisher": "BenRanford",
   "license": "MIT",
@@ -43,9 +43,19 @@
     "onStartupFinished",
     "onCommand:lopper.refreshWorkspace",
     "onCommand:lopper.refreshWorkspace.force",
+    "onCommand:lopper.refreshWorkspace.runtime",
     "onCommand:lopper.refreshWorkspace.package",
     "onCommand:lopper.refreshWorkspace.repo",
-    "onCommand:lopper.refreshWorkspace.changedPackages"
+    "onCommand:lopper.refreshWorkspace.changedPackages",
+    "onCommand:lopper.saveBaseline",
+    "onCommand:lopper.compareBaseline",
+    "onCommand:lopper.analyseDependency",
+    "onCommand:lopper.exportAnalysis.json",
+    "onCommand:lopper.exportAnalysis.csv",
+    "onCommand:lopper.exportAnalysis.sarif",
+    "onCommand:lopper.exportAnalysis.prComment",
+    "onCommand:lopper.openLocation",
+    "onView:lopperExplorer"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -59,6 +69,10 @@
         "title": "Lopper: Refresh Diagnostics (Force Fresh)"
       },
       {
+        "command": "lopper.refreshWorkspace.runtime",
+        "title": "Lopper: Refresh Diagnostics (Runtime Trace)"
+      },
+      {
         "command": "lopper.refreshWorkspace.package",
         "title": "Lopper: Refresh Diagnostics (Scope: package)"
       },
@@ -69,8 +83,49 @@
       {
         "command": "lopper.refreshWorkspace.changedPackages",
         "title": "Lopper: Refresh Diagnostics (Scope: changed-packages)"
+      },
+      {
+        "command": "lopper.saveBaseline",
+        "title": "Lopper: Save Baseline Snapshot"
+      },
+      {
+        "command": "lopper.compareBaseline",
+        "title": "Lopper: Compare Baseline"
+      },
+      {
+        "command": "lopper.analyseDependency",
+        "title": "Lopper: Analyse Dependency..."
+      },
+      {
+        "command": "lopper.exportAnalysis.json",
+        "title": "Lopper: Export Analysis as JSON"
+      },
+      {
+        "command": "lopper.exportAnalysis.csv",
+        "title": "Lopper: Export Analysis as CSV"
+      },
+      {
+        "command": "lopper.exportAnalysis.sarif",
+        "title": "Lopper: Export Analysis as SARIF"
+      },
+      {
+        "command": "lopper.exportAnalysis.prComment",
+        "title": "Lopper: Export Analysis as PR Comment"
+      },
+      {
+        "command": "lopper.openLocation",
+        "title": "Lopper: Open Location"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "lopperExplorer",
+          "name": "Lopper",
+          "contextualTitle": "Lopper"
+        }
+      ]
+    },
     "configuration": {
       "title": "Lopper",
       "properties": {
@@ -155,6 +210,60 @@
           "type": "string",
           "default": "",
           "description": "Optional lopper release tag to download for managed installs. Leave empty to use the latest GitHub release."
+        },
+        "lopper.runtimeTracePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional runtime trace file to use for JS/TS runtime-aware analysis."
+        },
+        "lopper.runtimeTestCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Optional command to run while capturing a runtime trace for JS/TS analysis."
+        },
+        "lopper.thresholdFailOnIncreasePercent": {
+          "type": "number",
+          "default": -1,
+          "minimum": -1,
+          "description": "Fail when waste increases by more than this percentage. Use -1 to disable the gate."
+        },
+        "lopper.thresholdLowConfidenceWarningPercent": {
+          "type": "number",
+          "default": 40,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Warn when dependency confidence falls below this percentage."
+        },
+        "lopper.thresholdMinUsagePercentForRecommendations": {
+          "type": "number",
+          "default": 40,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Minimum usage percentage required before recommendation generation is suppressed."
+        },
+        "lopper.thresholdMaxUncertainImportCount": {
+          "type": "number",
+          "default": -1,
+          "minimum": -1,
+          "description": "Fail when uncertain dynamic imports or requires exceed this count. Use -1 to disable the gate."
+        },
+        "lopper.licenseDeny": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "SPDX identifiers to deny during analysis."
+        },
+        "lopper.licenseFailOnDeny": {
+          "type": "boolean",
+          "default": false,
+          "description": "Fail when denied licenses are detected."
+        },
+        "lopper.licenseProvenanceRegistry": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable registry provenance heuristics for JS/TS dependencies."
         }
       }
     }

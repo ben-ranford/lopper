@@ -11,17 +11,20 @@ async function main() {
   const extensionDevelopmentPath = path.resolve(currentDir, "..", "..");
   const extensionTestsPath = path.resolve(extensionDevelopmentPath, "out", "test", "suite", "index");
   const workspaceTemplatePath = path.resolve(extensionDevelopmentPath, "test-fixtures", "smoke-workspace");
-  const repoRoot = path.resolve(extensionDevelopmentPath, "..", "..");
-  const binaryName = process.platform === "win32" ? "lopper.exe" : "lopper";
+  const fixtureBinaryPath = path.resolve(extensionDevelopmentPath, "test-fixtures", "lopper-smoke-binary.mjs");
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-vscode-smoke-"));
   const workspacePath = path.join(tempRoot, "workspace");
+  const workspacePathTwo = path.join(tempRoot, "workspace-two");
   const userDataDir = path.join(tempRoot, "userdata");
   const extensionsDir = path.join(tempRoot, "extensions");
 
   try {
     await cp(workspaceTemplatePath, workspacePath, { recursive: true });
+    await cp(workspaceTemplatePath, workspacePathTwo, { recursive: true });
     await rm(path.join(workspacePath, ".lopper-cache"), { recursive: true, force: true });
+    await rm(path.join(workspacePathTwo, ".lopper-cache"), { recursive: true, force: true });
     await mkdir(path.join(workspacePath, "src"), { recursive: true });
+    await mkdir(path.join(workspacePathTwo, "src"), { recursive: true });
     await writeFile(
       path.join(workspacePath, "src", "index.ts"),
       [
@@ -33,6 +36,17 @@ async function main() {
       ].join("\n"),
       "utf8",
     );
+    await writeFile(
+      path.join(workspacePathTwo, "src", "index.ts"),
+      [
+        'import { chunk } from "scope-lib";',
+        'import { idle } from "scope-lib";',
+        "",
+        'console.log(chunk(["x", "y", "z"], 1));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
 
     await runTests({
       version: vscodeVersion,
@@ -40,6 +54,7 @@ async function main() {
       extensionTestsPath,
       launchArgs: [
         workspacePath,
+        workspacePathTwo,
         "--disable-extensions",
         "--user-data-dir",
         userDataDir,
@@ -48,8 +63,7 @@ async function main() {
       ],
       extensionTestsEnv: {
         ...process.env,
-        LOPPER_BINARY_PATH:
-          process.env.LOPPER_BINARY_PATH ?? path.join(repoRoot, "bin", binaryName),
+        LOPPER_BINARY_PATH: process.env.LOPPER_BINARY_PATH ?? fixtureBinaryPath,
       },
     });
   } finally {
