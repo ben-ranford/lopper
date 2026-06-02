@@ -608,6 +608,52 @@ thresholds:
 	}
 }
 
+func TestLoadWithPolicyExplicitEmptyListsClearInheritedPackValues(t *testing.T) {
+	repo := t.TempDir()
+	basePolicy := `thresholds:
+  license_deny:
+    - gpl-3.0-only
+scope:
+  include:
+    - src/**
+features:
+  enable:
+    - alpha
+`
+	overlayPolicy := `policy:
+  packs:
+    - ` + basePackFileName + `
+thresholds:
+  license_deny: []
+scope:
+  include: []
+features:
+  enable: []
+`
+	rootPolicy := `policy:
+  packs:
+    - packs/overlay.yml
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with policy packs: %v", err)
+	}
+
+	if result.Resolved.LicenseDenyList == nil || len(result.Resolved.LicenseDenyList) != 0 {
+		t.Fatalf("expected explicit empty license deny list to clear inherited pack values, got %#v", result.Resolved.LicenseDenyList)
+	}
+	if result.Scope.Include == nil || len(result.Scope.Include) != 0 {
+		t.Fatalf("expected explicit empty scope include list to clear inherited pack values, got %#v", result.Scope.Include)
+	}
+	if result.Features.Enable == nil || len(result.Features.Enable) != 0 {
+		t.Fatalf("expected explicit empty feature enable list to clear inherited pack values, got %#v", result.Features.Enable)
+	}
+}
+
 func TestLoadWithPolicyScopePrecedence(t *testing.T) {
 	repo := t.TempDir()
 	basePolicy := `scope:

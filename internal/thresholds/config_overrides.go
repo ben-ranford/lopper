@@ -18,9 +18,11 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		RemovalCandidateWeightImpact:      c.RemovalCandidateWeightImpact,
 		RemovalCandidateWeightConfidence:  c.RemovalCandidateWeightConfidence,
 		LockfileDriftPolicy:               c.LockfileDriftPolicy,
-		LicenseDenyList:                   append([]string{}, c.LicenseDeny...),
 		LicenseFailOnDeny:                 c.LicenseFailOnDeny,
 		LicenseIncludeRegistryProvenance:  c.LicenseIncludeRegistryProvenance,
+	}
+	if c.LicenseDeny != nil {
+		overrides.LicenseDenyList = append([]string{}, c.LicenseDeny...)
 	}
 	if err := applyNestedOverride("fail_on_increase_percent", &overrides.FailOnIncreasePercent, c.Thresholds.FailOnIncreasePercent); err != nil {
 		return Overrides{}, err
@@ -92,10 +94,10 @@ func applyNestedStringOverride(name string, target **string, nested *string) err
 }
 
 func applyNestedListOverride(name string, target *[]string, nested []string) error {
-	if len(nested) == 0 {
+	if nested == nil {
 		return nil
 	}
-	if len(*target) > 0 {
+	if *target != nil {
 		return fmt.Errorf(duplicateThresholdErrFmt, name)
 	}
 	*target = append([]string{}, nested...)
@@ -139,7 +141,7 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	if higher.LockfileDriftPolicy != nil {
 		merged.LockfileDriftPolicy = higher.LockfileDriftPolicy
 	}
-	if len(higher.LicenseDenyList) > 0 {
+	if higher.LicenseDenyList != nil {
 		merged.LicenseDenyList = append([]string{}, higher.LicenseDenyList...)
 	}
 	if higher.LicenseFailOnDeny != nil {
@@ -162,8 +164,11 @@ func (s *rawScope) toPathScope() PathScope {
 }
 
 func normalizePathPatterns(patterns []string) []string {
-	if len(patterns) == 0 {
+	if patterns == nil {
 		return nil
+	}
+	if len(patterns) == 0 {
+		return []string{}
 	}
 	seen := make(map[string]struct{}, len(patterns))
 	normalized := make([]string, 0, len(patterns))
@@ -179,17 +184,17 @@ func normalizePathPatterns(patterns []string) []string {
 		normalized = append(normalized, normalizedPattern)
 	}
 	if len(normalized) == 0 {
-		return nil
+		return []string{}
 	}
 	return normalized
 }
 
 func mergeScope(base, higher PathScope) PathScope {
 	merged := base
-	if len(higher.Include) > 0 {
+	if higher.Include != nil {
 		merged.Include = append([]string{}, higher.Include...)
 	}
-	if len(higher.Exclude) > 0 {
+	if higher.Exclude != nil {
 		merged.Exclude = append([]string{}, higher.Exclude...)
 	}
 	return merged
@@ -206,8 +211,11 @@ func (f *rawFeatures) toFeatureConfig() FeatureConfig {
 }
 
 func normalizeFeatureRefs(refs []string) []string {
-	if len(refs) == 0 {
+	if refs == nil {
 		return nil
+	}
+	if len(refs) == 0 {
+		return []string{}
 	}
 	seen := make(map[string]struct{}, len(refs))
 	normalized := make([]string, 0, len(refs))
@@ -223,17 +231,17 @@ func normalizeFeatureRefs(refs []string) []string {
 		normalized = append(normalized, trimmed)
 	}
 	if len(normalized) == 0 {
-		return nil
+		return []string{}
 	}
 	return normalized
 }
 
 func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
 	merged := base
-	if len(higher.Enable) > 0 {
+	if higher.Enable != nil {
 		merged.Enable = append([]string{}, higher.Enable...)
 	}
-	if len(higher.Disable) > 0 {
+	if higher.Disable != nil {
 		merged.Disable = append([]string{}, higher.Disable...)
 	}
 	return merged

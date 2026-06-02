@@ -129,7 +129,7 @@ func (o *Overrides) Apply(base Values) Values {
 	if o.LockfileDriftPolicy != nil {
 		resolved.LockfileDriftPolicy = *o.LockfileDriftPolicy
 	}
-	if len(o.LicenseDenyList) > 0 {
+	if o.LicenseDenyList != nil {
 		resolved.LicenseDenyList = append([]string{}, o.LicenseDenyList...)
 	}
 	if o.LicenseFailOnDeny != nil {
@@ -230,8 +230,11 @@ func validateOptionalWeights(overrides *Overrides) error {
 }
 
 func normalizeDenyList(values []string) []string {
-	if len(values) == 0 {
+	if values == nil {
 		return nil
+	}
+	if len(values) == 0 {
+		return []string{}
 	}
 	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
@@ -247,7 +250,7 @@ func normalizeDenyList(values []string) []string {
 		out = append(out, item)
 	}
 	if len(out) == 0 {
-		return nil
+		return []string{}
 	}
 	sort.Strings(out)
 	return out

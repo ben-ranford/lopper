@@ -22,12 +22,6 @@ func NormalizeDependencyLicenses(dependencies []DependencyReport) {
 func ApplyLicensePolicy(dependencies []DependencyReport, denyList []string) {
 	normalizedDeny := normalizeDenyList(denyList)
 	if len(normalizedDeny) == 0 {
-		for i := range dependencies {
-			if dependencies[i].License == nil {
-				continue
-			}
-			dependencies[i].License.Denied = false
-		}
 		return
 	}
 
