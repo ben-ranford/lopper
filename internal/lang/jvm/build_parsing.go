@@ -66,19 +66,37 @@ var (
 )
 
 func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[string]string, map[string]string, []string) {
-	descriptors := make([]dependencyDescriptor, 0)
-	warnings := make([]string, 0)
-
-	pomDescriptors, pomWarnings := parsePomDependenciesWithWarnings(repoPath)
-	gradleDescriptors, gradleWarnings := parseGradleDependenciesWithWarnings(repoPath)
-	descriptors = append(descriptors, pomDescriptors...)
-	descriptors = append(descriptors, gradleDescriptors...)
-	warnings = append(warnings, pomWarnings...)
-	warnings = append(warnings, gradleWarnings...)
-
+	descriptors, warnings := collectBuildDescriptors(repoPath)
 	descriptors = dedupeAndSortDescriptors(descriptors)
 	prefixes, aliases := buildDescriptorLookups(descriptors)
 	return descriptors, prefixes, aliases, warnings
+}
+
+func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string) {
+	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
+	buildParser := func(path, content string) ([]dependencyDescriptor, []string) {
+		switch strings.ToLower(filepath.Base(path)) {
+		case pomXMLName:
+			return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
+		case buildGradleName, buildGradleKTSName:
+			descriptors := parseGradleMatches(content, gradleDependencyPattern)
+			catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
+			for _, descriptor := range catalogDescriptors {
+				descriptors = append(descriptors, dependencyDescriptor{
+					Name:     descriptor.Artifact,
+					Group:    descriptor.Group,
+					Artifact: descriptor.Artifact,
+				})
+			}
+			return dedupeAndSortDescriptors(descriptors), catalogWarnings
+		default:
+			return nil, nil
+		}
+	}
+
+	descriptors, parseWarnings := parseBuildFilesWithWarnings(repoPath, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
+	warnings = append(warnings, parseWarnings...)
+	return descriptors, shared.DedupeWarnings(warnings)
 }
 
 func dedupeAndSortDescriptors(descriptors []dependencyDescriptor) []dependencyDescriptor {

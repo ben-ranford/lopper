@@ -185,7 +185,8 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
-	return shared.ParseImportLines(content, filePath, func(line string, _ int) []shared.ImportRecord {
+	sanitized := shared.StripBlockComments(content)
+	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
 		matches := importPattern.FindStringSubmatch(line)
 		if len(matches) != importPatternMatchGroups {
