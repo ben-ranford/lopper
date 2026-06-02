@@ -75,6 +75,12 @@ func TestParseCargoDependencies(t *testing.T) {
 	if deps[serdeJSONDep].Canonical != serdeJSONDep {
 		t.Fatalf("expected canonical serde-json mapping, got %#v", deps[serdeJSONDep])
 	}
+	if deps["workspace-serde"].Canonical != serdeJSONDep {
+		t.Fatalf("expected workspace dependency parsing, got %#v", deps["workspace-serde"])
+	}
+	if deps[serdeJSONDep].Canonical != serdeJSONDep {
+		t.Fatalf("expected canonical workspace dependency alias, got %#v", deps[serdeJSONDep])
+	}
 	if !deps["local-dep"].LocalPath {
 		t.Fatalf("expected local path dependency handling, got %#v", deps["local-dep"])
 	}
@@ -135,6 +141,9 @@ func manifestParsingHelpersFixture() string {
 		"",
 		"[target.'cfg(unix)'.dependencies]",
 		`clap = "4"`,
+		"",
+		"[workspace.dependencies]",
+		fmt.Sprintf(`workspace_serde = { package = %q, version = "1.0" }`, serdeJSONDep),
 		"",
 	}
 	return strings.Join(lines, "\n")
@@ -221,6 +230,9 @@ func TestUseClauseAndImportHelpers(t *testing.T) {
 	}
 	if lastPathSegment("a::b::c") != "c" {
 		t.Fatalf("unexpected last path segment")
+	}
+	if base, local := parseUseLocalAlias("serde::de::DeserializeOwned\tas\tserde_owned"); base != "serde::de::DeserializeOwned" || local != "serde_owned" {
+		t.Fatalf("expected tab-delimited alias parsing, got base=%q local=%q", base, local)
 	}
 
 	content := "line1\nline2\nline3"
@@ -1046,6 +1058,38 @@ func TestWorkspaceResolutionAndParsingEdgeBranches(t *testing.T) {
 	}
 	if fields := parseInlineFields("{ version = \"1.0\" }"); fields["version"] != "1.0" {
 		t.Fatalf("expected inline field extraction for version, got %#v", fields)
+	}
+}
+
+func TestWorkspaceMemberRecursiveGlobResolution(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoManifestFile), fmt.Sprintf("%s\nmembers = [\"crates/**\"]\n", workspaceSection))
+	writeFile(t, filepath.Join(repo, "crates", "direct", cargoManifestFile), "[package]\nname=\"direct\"\nversion=\"0.1.0\"\n")
+	writeFile(t, filepath.Join(repo, "crates", "nested", "deep", cargoManifestFile), "[package]\nname=\"deep\"\nversion=\"0.1.0\"\n")
+	if err := os.WriteFile(filepath.Join(repo, "crates", "nested", "ignored"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+
+	roots := resolveWorkspaceMembers(repo, "crates/**")
+	if len(roots) != 2 {
+		t.Fatalf("expected recursive glob to resolve two roots, got %#v", roots)
+	}
+	if !strings.HasSuffix(roots[0], filepath.Join("crates", "direct")) && !strings.HasSuffix(roots[1], filepath.Join("crates", "direct")) {
+		t.Fatalf("expected direct member root in %#v", roots)
+	}
+	if !strings.HasSuffix(roots[0], filepath.Join("crates", "nested", "deep")) && !strings.HasSuffix(roots[1], filepath.Join("crates", "nested", "deep")) {
+		t.Fatalf("expected nested member root in %#v", roots)
+	}
+
+	paths, warnings, err := discoverManifestPaths(repo)
+	if err != nil {
+		t.Fatalf("discover manifests recursive glob: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected recursive glob manifest discovery, got %#v", paths)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for recursive glob members, got %#v", warnings)
 	}
 }
 
