@@ -226,11 +226,34 @@ func addDependencyGroups(dependencies map[string]struct{}, groups map[string]any
 }
 
 func dependencyNameFromRequirement(spec string) string {
+	if isDirectReferenceRequirement(spec) {
+		return ""
+	}
 	matches := pythonRequirementNamePattern.FindStringSubmatch(spec)
 	if len(matches) != 2 {
 		return ""
 	}
 	return normalizeDependencyID(matches[1])
+}
+
+func isDirectReferenceRequirement(spec string) bool {
+	trimmed := strings.TrimSpace(spec)
+	if trimmed == "" {
+		return false
+	}
+	head := trimmed
+	if cut := strings.IndexAny(head, " \t"); cut >= 0 {
+		head = head[:cut]
+	}
+	head = strings.ToLower(head)
+	switch {
+	case strings.Contains(head, "://"):
+		return true
+	case strings.HasPrefix(head, "git+"), strings.HasPrefix(head, "hg+"), strings.HasPrefix(head, "svn+"), strings.HasPrefix(head, "bzr+"):
+		return true
+	default:
+		return false
+	}
 }
 
 func poetryDependencyOptional(value any) bool {
