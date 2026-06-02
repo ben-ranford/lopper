@@ -111,8 +111,8 @@ func TestRawScopeToPathScope(t *testing.T) {
 	}
 
 	scope := &rawScope{
-		Include: []string{" src\\**\\*.ts ", "src/**/*.ts"},
-		Exclude: []string{" " + vendorGlob + " ", "vendor\\**"},
+		Include: stringList(" src\\**\\*.ts ", "src/**/*.ts"),
+		Exclude: stringList(" "+vendorGlob+" ", "vendor\\**"),
 	}
 	got := scope.toPathScope()
 	if strings.Join(got.Include, ",") != "src/**/*.ts" {
@@ -125,8 +125,10 @@ func TestRawScopeToPathScope(t *testing.T) {
 
 func TestMergeScope(t *testing.T) {
 	base := PathScope{
-		Include: []string{"src/**"},
-		Exclude: []string{vendorGlob},
+		Include:    []string{"src/**"},
+		Exclude:    []string{vendorGlob},
+		includeSet: true,
+		excludeSet: true,
 	}
 
 	if got := mergeScope(base, PathScope{}); strings.Join(got.Include, ",") != "src/**" || strings.Join(got.Exclude, ",") != vendorGlob {
@@ -134,8 +136,10 @@ func TestMergeScope(t *testing.T) {
 	}
 
 	higher := PathScope{
-		Include: []string{"packages/**"},
-		Exclude: []string{"dist/**"},
+		Include:    []string{"packages/**"},
+		Exclude:    []string{"dist/**"},
+		includeSet: true,
+		excludeSet: true,
 	}
 	got := mergeScope(base, higher)
 	if strings.Join(got.Include, ",") != "packages/**" || strings.Join(got.Exclude, ",") != "dist/**" {
@@ -262,8 +266,8 @@ func TestLoadConfigLicensePolicyFields(t *testing.T) {
 }
 
 func TestRawConfigToOverridesDuplicateNestedLicensePolicyFields(t *testing.T) {
-	rootDeny := []string{"gpl-3.0-only"}
-	nestedDeny := []string{"agpl-3.0-only"}
+	rootDeny := stringList("gpl-3.0-only")
+	nestedDeny := stringList("agpl-3.0-only")
 	cfg := rawConfig{
 		LicenseDeny: rootDeny,
 		Thresholds: rawThresholds{
@@ -605,6 +609,52 @@ thresholds:
 	}
 	if result.PolicySources[3] != defaultPolicySource {
 		t.Fatalf("expected defaults source, got %#v", result.PolicySources)
+	}
+}
+
+func TestLoadWithPolicyExplicitEmptyListsClearInheritedPackValues(t *testing.T) {
+	repo := t.TempDir()
+	basePolicy := `thresholds:
+  license_deny:
+    - gpl-3.0-only
+scope:
+  include:
+    - src/**
+features:
+  enable:
+    - alpha
+`
+	overlayPolicy := `policy:
+  packs:
+    - ` + basePackFileName + `
+thresholds:
+  license_deny: []
+scope:
+  include: []
+features:
+  enable: []
+`
+	rootPolicy := `policy:
+  packs:
+    - packs/overlay.yml
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with policy packs: %v", err)
+	}
+
+	if len(result.Resolved.LicenseDenyList) != 0 {
+		t.Fatalf("expected explicit empty license deny list to clear inherited pack values, got %#v", result.Resolved.LicenseDenyList)
+	}
+	if len(result.Scope.Include) != 0 {
+		t.Fatalf("expected explicit empty scope include list to clear inherited pack values, got %#v", result.Scope.Include)
+	}
+	if len(result.Features.Enable) != 0 {
+		t.Fatalf("expected explicit empty feature enable list to clear inherited pack values, got %#v", result.Features.Enable)
 	}
 }
 
@@ -1057,9 +1107,9 @@ func TestRemotePolicyURLValidationAndFetchErrors(t *testing.T) {
 	t.Cleanup(func() {
 		remotePolicyHTTPClient = originalClient
 	})
-	remotePolicyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	remotePolicyHTTPClient = &http.Client{Transport: &roundTripFunc{fn: func(*http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("boom")
-	})}
+	}}}
 	if _, err := readRemotePolicyFile("https://example.com/policy.yml#sha256=" + strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "fetch remote policy") {
 		t.Fatalf("expected fetch remote policy error, got %v", err)
 	}
@@ -1093,8 +1143,15 @@ func assertLoadConfigErrorContains(t *testing.T, config string, expectedText str
 	}
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
+func stringList(values ...string) *[]string {
+	out := append(make([]string, 0, len(values)), values...)
+	return &out
+}
 
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
+type roundTripFunc struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (rt *roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return rt.fn(req)
 }

@@ -70,12 +70,12 @@ func TestThresholdConfigAdditionalRemotePolicyBranches(t *testing.T) {
 		t.Cleanup(func() {
 			remotePolicyHTTPClient = originalClient
 		})
-		remotePolicyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		remotePolicyHTTPClient = &http.Client{Transport: &roundTripFunc{fn: func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       &staticReadCloser{data: body, closeErr: closeErr},
 			}, nil
-		})}
+		}}}
 
 		location := "https://example.com/policy.yml#sha256=" + hex.EncodeToString(sum[:])
 		if _, err := readRemotePolicyFile(location); err == nil || !strings.Contains(err.Error(), closeErr.Error()) {
@@ -90,12 +90,12 @@ func TestThresholdConfigAdditionalRemotePolicyBranches(t *testing.T) {
 		t.Cleanup(func() {
 			remotePolicyHTTPClient = originalClient
 		})
-		remotePolicyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		remotePolicyHTTPClient = &http.Client{Transport: &roundTripFunc{fn: func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       &errReadCloser{readErr: readErr},
 			}, nil
-		})}
+		}}}
 
 		location := "https://example.com/policy.yml#sha256=" + strings.Repeat("a", 64)
 		if _, err := readRemotePolicyFile(location); err == nil || !strings.Contains(err.Error(), "read remote policy response") {
