@@ -73,23 +73,6 @@ void main() {
 	}
 }
 
-func TestParseDartImportsHandlesRawStringImport(t *testing.T) {
-	content := []byte(`import r'package:http/http.dart' as http;
-
-void main() {
-  http.Client();
-}
-`)
-	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
-
-	if len(imports) != 1 {
-		t.Fatalf("expected exactly one import binding, got %#v", imports)
-	}
-	if imports[0].Dependency != "http" || imports[0].Local != "http" {
-		t.Fatalf("expected http raw-string import binding, got %#v", imports[0])
-	}
-}
-
 func TestParseImportDirectiveRejectsUppercaseRawPrefix(t *testing.T) {
 	if kind, module, clause, ok := parseImportDirective(`import R'package:foo/foo.dart' as foo;`); ok || kind != "" || module != "" || clause != "" {
 		t.Fatalf("expected uppercase raw prefix to be rejected, got kind=%q module=%q clause=%q ok=%v", kind, module, clause, ok)
@@ -111,16 +94,38 @@ void main() {
 	}
 }
 
-func TestParseDartImportsIgnoresBlockCommentOpenerInsideLineComment(t *testing.T) {
-	content := []byte(`// block comment opener marker /* should not leak
+func TestParseDartImportsSingleBindingCases(t *testing.T) {
+	testCases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "raw string import",
+			body: `import r'package:http/http.dart' as http;
+
+void main() {
+  http.Client();
+}
+`,
+		},
+		{
+			name: "line comment block opener",
+			body: `// block comment opener marker /* should not leak
 import 'package:http/http.dart' as http;
-`)
-	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
-	if len(imports) != 1 {
-		t.Fatalf("expected real import after line comment to be preserved, got %#v", imports)
+`,
+		},
 	}
-	if imports[0].Dependency != "http" || imports[0].Local != "http" {
-		t.Fatalf("expected http binding after line comment, got %#v", imports[0])
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			imports := parseDartImports([]byte(tc.body), "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+			if len(imports) != 1 {
+				t.Fatalf("expected exactly one import binding, got %#v", imports)
+			}
+			if imports[0].Dependency != "http" || imports[0].Local != "http" {
+				t.Fatalf("expected http import binding, got %#v", imports[0])
+			}
+		})
 	}
 }
 
