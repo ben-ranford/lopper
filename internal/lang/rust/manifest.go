@@ -218,7 +218,7 @@ type workspaceMemberCollector struct {
 	roots    map[string]struct{}
 }
 
-func (c workspaceMemberCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
+func (c *workspaceMemberCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
 	matched, err := c.matchDirectory(path, entry, walkErr)
 	if err != nil || !matched {
 		return err
@@ -227,7 +227,7 @@ func (c workspaceMemberCollector) walk(path string, entry fs.DirEntry, walkErr e
 	return nil
 }
 
-func (c workspaceMemberCollector) matchDirectory(path string, entry fs.DirEntry, walkErr error) (bool, error) {
+func (c *workspaceMemberCollector) matchDirectory(path string, entry fs.DirEntry, walkErr error) (bool, error) {
 	if walkErr != nil {
 		return false, walkErr
 	}
