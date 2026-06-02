@@ -125,20 +125,20 @@ import 'package:http/http.dart' as http;
 }
 
 func TestStripBlockCommentLineBranches(t *testing.T) {
-	if stripped, depth := stripBlockCommentLine("import 'package:http/http.dart';", 0); stripped != "import 'package:http/http.dart';" || depth != 0 {
-		t.Fatalf("expected non-comment line to pass through, got stripped=%q depth=%d", stripped, depth)
+	if line, depth := stripBlockCommentLine("import 'package:http/http.dart';", 0); line != "import 'package:http/http.dart';" || depth != 0 {
+		t.Fatalf("expected non-comment line to pass through, got stripped=%q depth=%d", line, depth)
 	}
 
-	if stripped, depth := stripBlockCommentLine("// block comment opener /* ignored", 0); stripped != "// block comment opener /* ignored" || depth != 0 {
-		t.Fatalf("expected line comment opener to stop block-comment scanning, got stripped=%q depth=%d", stripped, depth)
+	if commentedLine, depth := stripBlockCommentLine("// block comment opener /* ignored", 0); commentedLine != "// block comment opener /* ignored" || depth != 0 {
+		t.Fatalf("expected line comment opener to stop block-comment scanning, got stripped=%q depth=%d", commentedLine, depth)
 	}
 
-	if stripped, depth := stripBlockCommentLine("  // still inside block comment", 1); depth != 1 || len(stripped) != len("  // still inside block comment") || strings.TrimSpace(stripped) != "" {
-		t.Fatalf("expected line comment inside block comment to stay stripped, got stripped=%q depth=%d", stripped, depth)
+	if blockCommentLine, depth := stripBlockCommentLine("  // still inside block comment", 1); depth != 1 || len(blockCommentLine) != len("  // still inside block comment") || strings.TrimSpace(blockCommentLine) != "" {
+		t.Fatalf("expected line comment inside block comment to stay stripped, got stripped=%q depth=%d", blockCommentLine, depth)
 	}
 
-	if stripped, depth := stripBlockCommentLine("/* outer /* inner */ tail */", 0); depth != 0 || len(stripped) != len("/* outer /* inner */ tail */") || strings.TrimSpace(stripped) != "" {
-		t.Fatalf("expected nested block comment to balance on one line, got stripped=%q depth=%d", stripped, depth)
+	if nestedBlockCommentLine, depth := stripBlockCommentLine("/* outer /* inner */ tail */", 0); depth != 0 || len(nestedBlockCommentLine) != len("/* outer /* inner */ tail */") || strings.TrimSpace(nestedBlockCommentLine) != "" {
+		t.Fatalf("expected nested block comment to balance on one line, got stripped=%q depth=%d", nestedBlockCommentLine, depth)
 	}
 }
 
@@ -239,11 +239,11 @@ func TestBuildDirectiveBindingsBranches(t *testing.T) {
 }
 
 func TestParseShowSymbolsBranches(t *testing.T) {
-	if symbols := parseShowSymbols("as foo"); symbols != nil {
+	if symbols := parseShowSymbols("as foo"); len(symbols) != 0 {
 		t.Fatalf("expected missing show clause to return nil, got %#v", symbols)
 	}
 
-	if symbols := parseShowSymbols("show "); symbols != nil {
+	if symbols := parseShowSymbols("show "); len(symbols) != 0 {
 		t.Fatalf("expected empty show clause to return nil, got %#v", symbols)
 	}
 
