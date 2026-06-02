@@ -258,6 +258,11 @@ func stripBlockCommentLine(line string, commentDepth int) (string, int) {
 	builder.Grow(len(line))
 
 	for i := 0; i < len(line); i++ {
+		if commentDepth == 0 && i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
+			builder.WriteString(line[i:])
+			break
+		}
+
 		if commentDepth == 0 {
 			if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
 				commentDepth++

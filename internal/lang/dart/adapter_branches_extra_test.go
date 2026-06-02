@@ -90,6 +90,12 @@ void main() {
 	}
 }
 
+func TestParseImportDirectiveRejectsUppercaseRawPrefix(t *testing.T) {
+	if kind, module, clause, ok := parseImportDirective(`import R'package:foo/foo.dart' as foo;`); ok || kind != "" || module != "" || clause != "" {
+		t.Fatalf("expected uppercase raw prefix to be rejected, got kind=%q module=%q clause=%q ok=%v", kind, module, clause, ok)
+	}
+}
+
 func TestParseDartImportsIgnoresBlockCommentImports(t *testing.T) {
 	content := []byte(`/*
 import 'package:http/http.dart' as http;
@@ -102,6 +108,37 @@ void main() {
 	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
 	if len(imports) != 0 {
 		t.Fatalf("expected block-comment import to be ignored, got %#v", imports)
+	}
+}
+
+func TestParseDartImportsIgnoresBlockCommentOpenerInsideLineComment(t *testing.T) {
+	content := []byte(`// block comment opener marker /* should not leak
+import 'package:http/http.dart' as http;
+`)
+	imports := parseDartImports(content, "lib/main.dart", map[string]dependencyInfo{"http": {}}, map[string]int{})
+	if len(imports) != 1 {
+		t.Fatalf("expected real import after line comment to be preserved, got %#v", imports)
+	}
+	if imports[0].Dependency != "http" || imports[0].Local != "http" {
+		t.Fatalf("expected http binding after line comment, got %#v", imports[0])
+	}
+}
+
+func TestStripBlockCommentLineBranches(t *testing.T) {
+	if stripped, depth := stripBlockCommentLine("import 'package:http/http.dart';", 0); stripped != "import 'package:http/http.dart';" || depth != 0 {
+		t.Fatalf("expected non-comment line to pass through, got stripped=%q depth=%d", stripped, depth)
+	}
+
+	if stripped, depth := stripBlockCommentLine("// block comment opener /* ignored", 0); stripped != "// block comment opener /* ignored" || depth != 0 {
+		t.Fatalf("expected line comment opener to stop block-comment scanning, got stripped=%q depth=%d", stripped, depth)
+	}
+
+	if stripped, depth := stripBlockCommentLine("  // still inside block comment", 1); depth != 1 || len(stripped) != len("  // still inside block comment") || strings.TrimSpace(stripped) != "" {
+		t.Fatalf("expected line comment inside block comment to stay stripped, got stripped=%q depth=%d", stripped, depth)
+	}
+
+	if stripped, depth := stripBlockCommentLine("/* outer /* inner */ tail */", 0); depth != 0 || len(stripped) != len("/* outer /* inner */ tail */") || strings.TrimSpace(stripped) != "" {
+		t.Fatalf("expected nested block comment to balance on one line, got stripped=%q depth=%d", stripped, depth)
 	}
 }
 
@@ -198,6 +235,24 @@ func TestBuildDirectiveBindingsBranches(t *testing.T) {
 	wildcardBindings := buildDirectiveBindings("import", fooPackageModule, "", "foo", location)
 	if len(wildcardBindings) != 1 || !wildcardBindings[0].Wildcard {
 		t.Fatalf("expected wildcard fallback binding, got %#v", wildcardBindings)
+	}
+}
+
+func TestParseShowSymbolsBranches(t *testing.T) {
+	if symbols := parseShowSymbols("as foo"); symbols != nil {
+		t.Fatalf("expected missing show clause to return nil, got %#v", symbols)
+	}
+
+	if symbols := parseShowSymbols("show "); symbols != nil {
+		t.Fatalf("expected empty show clause to return nil, got %#v", symbols)
+	}
+
+	if symbols := parseShowSymbols("show Foo hide Bar"); !slices.Equal(symbols, []string{"Foo"}) {
+		t.Fatalf("expected hide clause to trim trailing symbols, got %#v", symbols)
+	}
+
+	if symbols := parseShowSymbols("show Foo, 2Bad, Foo, Bar"); !slices.Equal(symbols, []string{"Foo", "Bar"}) {
+		t.Fatalf("expected invalid and duplicate symbols to be filtered, got %#v", symbols)
 	}
 }
 
