@@ -8,6 +8,13 @@ import (
 
 const duplicateThresholdErrFmt = "threshold %s is defined more than once"
 
+type optionalStringPair struct {
+	first     []string
+	second    []string
+	firstSet  bool
+	secondSet bool
+}
+
 func (c *rawConfig) toOverrides() (Overrides, error) {
 	overrides := Overrides{
 		FailOnIncreasePercent:             c.FailOnIncreasePercent,
@@ -157,107 +164,35 @@ func mergeOverrides(base, higher Overrides) Overrides {
 }
 
 func (s *rawScope) toPathScope() PathScope {
-	scope := PathScope{
-		Include: make([]string, 0),
-		Exclude: make([]string, 0),
-	}
 	if s == nil {
-		return scope
+		return scopeFromOptionalStringPair(emptyOptionalStringPair())
 	}
-	if s.Include != nil {
-		scope.Include = normalizePathPatterns(*s.Include)
-		scope.includeSet = true
-	}
-	if s.Exclude != nil {
-		scope.Exclude = normalizePathPatterns(*s.Exclude)
-		scope.excludeSet = true
-	}
-	return scope
+	return scopeFromOptionalStringPair(rawOptionalStringPair(s.Include, normalizePathPatterns, s.Exclude, normalizePathPatterns))
 }
 
 func normalizePathPatterns(patterns []string) []string {
-	seen := make(map[string]struct{}, len(patterns))
-	normalized := make([]string, 0, len(patterns))
-	for _, pattern := range patterns {
-		normalizedPattern := filepath.ToSlash(strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/"))
-		if normalizedPattern == "" {
-			continue
-		}
-		if _, exists := seen[normalizedPattern]; exists {
-			continue
-		}
-		seen[normalizedPattern] = struct{}{}
-		normalized = append(normalized, normalizedPattern)
-	}
-	if len(normalized) == 0 {
-		return normalized
-	}
-	return normalized
+	return normalizeUniqueStrings(patterns, func(pattern string) string {
+		return filepath.ToSlash(strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/"))
+	})
 }
 
 func mergeScope(base, higher PathScope) PathScope {
-	merged := base
-	if higher.includeSet || len(higher.Include) > 0 {
-		merged.Include = cloneStrings(higher.Include)
-		merged.includeSet = true
-	}
-	if higher.excludeSet || len(higher.Exclude) > 0 {
-		merged.Exclude = cloneStrings(higher.Exclude)
-		merged.excludeSet = true
-	}
-	return merged
+	return scopeFromOptionalStringPair(mergedOptionalStringPair(base.Include, base.includeSet, higher.Include, higher.includeSet, base.Exclude, base.excludeSet, higher.Exclude, higher.excludeSet))
 }
 
 func (f *rawFeatures) toFeatureConfig() FeatureConfig {
-	features := FeatureConfig{
-		Enable:  make([]string, 0),
-		Disable: make([]string, 0),
-	}
 	if f == nil {
-		return features
+		return featureConfigFromOptionalStringPair(emptyOptionalStringPair())
 	}
-	if f.Enable != nil {
-		features.Enable = normalizeFeatureRefs(*f.Enable)
-		features.enableSet = true
-	}
-	if f.Disable != nil {
-		features.Disable = normalizeFeatureRefs(*f.Disable)
-		features.disableSet = true
-	}
-	return features
+	return featureConfigFromOptionalStringPair(rawOptionalStringPair(f.Enable, normalizeFeatureRefs, f.Disable, normalizeFeatureRefs))
 }
 
 func normalizeFeatureRefs(refs []string) []string {
-	seen := make(map[string]struct{}, len(refs))
-	normalized := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		trimmed := strings.TrimSpace(ref)
-		if trimmed == "" {
-			continue
-		}
-		if _, exists := seen[trimmed]; exists {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		normalized = append(normalized, trimmed)
-	}
-	if len(normalized) == 0 {
-		return normalized
-	}
-	return normalized
+	return normalizeUniqueStrings(refs, strings.TrimSpace)
 }
 
 func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
-	merged := base
-	if higher.enableSet || len(higher.Enable) > 0 {
-		merged.Enable = cloneStrings(higher.Enable)
-		merged.enableSet = true
-	}
-	if higher.disableSet || len(higher.Disable) > 0 {
-		merged.Disable = cloneStrings(higher.Disable)
-		merged.disableSet = true
-	}
-	return merged
+	return featureConfigFromOptionalStringPair(mergedOptionalStringPair(base.Enable, base.enableSet, higher.Enable, higher.enableSet, base.Disable, base.disableSet, higher.Disable, higher.disableSet))
 }
 
 func normalizePathScope(scope PathScope) PathScope {
@@ -289,6 +224,97 @@ func normalizeOverrides(overrides Overrides) Overrides {
 
 func cloneStrings(values []string) []string {
 	return append(make([]string, 0, len(values)), values...)
+}
+
+func normalizeOptionalStringList(values *[]string, normalize func([]string) []string) ([]string, bool) {
+	if values == nil {
+		return make([]string, 0), false
+	}
+	return normalize(*values), true
+}
+
+func normalizeOptionalStringPair(first *[]string, normalizeFirst func([]string) []string, second *[]string, normalizeSecond func([]string) []string) ([]string, bool, []string, bool) {
+	firstValues, firstSet := normalizeOptionalStringList(first, normalizeFirst)
+	secondValues, secondSet := normalizeOptionalStringList(second, normalizeSecond)
+	return firstValues, firstSet, secondValues, secondSet
+}
+
+func normalizeUniqueStrings(values []string, normalize func(string) string) []string {
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		normalizedValue := normalize(value)
+		if normalizedValue == "" {
+			continue
+		}
+		if _, exists := seen[normalizedValue]; exists {
+			continue
+		}
+		seen[normalizedValue] = struct{}{}
+		normalized = append(normalized, normalizedValue)
+	}
+	if len(normalized) == 0 {
+		return normalized
+	}
+	return normalized
+}
+
+func mergeOptionalStringList(base []string, baseSet bool, higher []string, higherSet bool) ([]string, bool) {
+	if higherSet || len(higher) > 0 {
+		return cloneStrings(higher), true
+	}
+	return base, baseSet
+}
+
+func mergeOptionalStringPair(baseFirst []string, baseFirstSet bool, higherFirst []string, higherFirstSet bool, baseSecond []string, baseSecondSet bool, higherSecond []string, higherSecondSet bool) ([]string, bool, []string, bool) {
+	firstValues, firstSet := mergeOptionalStringList(baseFirst, baseFirstSet, higherFirst, higherFirstSet)
+	secondValues, secondSet := mergeOptionalStringList(baseSecond, baseSecondSet, higherSecond, higherSecondSet)
+	return firstValues, firstSet, secondValues, secondSet
+}
+
+func emptyOptionalStringPair() optionalStringPair {
+	return optionalStringPair{
+		first:  make([]string, 0),
+		second: make([]string, 0),
+	}
+}
+
+func rawOptionalStringPair(first *[]string, normalizeFirst func([]string) []string, second *[]string, normalizeSecond func([]string) []string) optionalStringPair {
+	firstValues, firstSet, secondValues, secondSet := normalizeOptionalStringPair(first, normalizeFirst, second, normalizeSecond)
+	return optionalStringPair{
+		first:     firstValues,
+		second:    secondValues,
+		firstSet:  firstSet,
+		secondSet: secondSet,
+	}
+}
+
+func mergedOptionalStringPair(baseFirst []string, baseFirstSet bool, higherFirst []string, higherFirstSet bool, baseSecond []string, baseSecondSet bool, higherSecond []string, higherSecondSet bool) optionalStringPair {
+	firstValues, firstSet, secondValues, secondSet := mergeOptionalStringPair(baseFirst, baseFirstSet, higherFirst, higherFirstSet, baseSecond, baseSecondSet, higherSecond, higherSecondSet)
+	return optionalStringPair{
+		first:     firstValues,
+		second:    secondValues,
+		firstSet:  firstSet,
+		secondSet: secondSet,
+	}
+}
+
+func scopeFromOptionalStringPair(values optionalStringPair) PathScope {
+	return PathScope{
+		Include:    values.first,
+		Exclude:    values.second,
+		includeSet: values.firstSet,
+		excludeSet: values.secondSet,
+	}
+}
+
+func featureConfigFromOptionalStringPair(values optionalStringPair) FeatureConfig {
+	return FeatureConfig{
+		Enable:     values.first,
+		Disable:    values.second,
+		enableSet:  values.firstSet,
+		disableSet: values.secondSet,
+	}
 }
 
 func dedupeStable(values []string) []string {
