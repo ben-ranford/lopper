@@ -33,12 +33,7 @@ func discoverGradleLockfiles(repoPath string) (gradleFileDiscoveryResult, error)
 	})
 }
 
-func collectGradleFileDescriptorsWithWarnings(
-	repoPath string,
-	discover func(string) (gradleFileDiscoveryResult, error),
-	parser func([]discoveredGradleFile) ([]dependencyDescriptor, []string),
-	scanTarget string,
-) ([]dependencyDescriptor, bool, []string) {
+func collectGradleFileDescriptorsWithWarnings(repoPath string, discover func(string) (gradleFileDiscoveryResult, error), parser func([]discoveredGradleFile) ([]dependencyDescriptor, []string), scanTarget string) ([]dependencyDescriptor, bool, []string) {
 	discovery, walkErr := discover(repoPath)
 	descriptors, parseWarnings := parser(discovery.Files)
 	warnings := append([]string{}, discovery.Warnings...)

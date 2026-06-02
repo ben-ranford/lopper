@@ -8,14 +8,10 @@ import (
 var gradleLockCoordinatePattern = regexp.MustCompile(`^\s*([^:#=\s]+):([^:#=\s]+):([^=\s]+)(?:\s*=.*)?$`)
 
 func parseGradleLockfiles(repoPath string) ([]dependencyDescriptor, bool, []string) {
-	return collectGradleFileDescriptorsWithWarnings(
-		repoPath,
-		discoverGradleLockfiles,
-		func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
-			return parseGradleLockfileFiles(files), nil
-		},
-		"lockfiles",
-	)
+	parser := func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
+		return parseGradleLockfileFiles(files), nil
+	}
+	return collectGradleFileDescriptorsWithWarnings(repoPath, discoverGradleLockfiles, parser, "lockfiles")
 }
 
 func parseGradleLockfileFiles(files []discoveredGradleFile) []dependencyDescriptor {

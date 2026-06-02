@@ -23,16 +23,13 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
-	descriptors, _, parseWarnings := collectGradleFileDescriptorsWithWarnings(
-		repoPath,
-		func(path string) (gradleFileDiscoveryResult, error) {
-			return discoverBuildFiles(path, buildGradleName, buildGradleKTSName)
-		},
-		func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
-			return parseGradleManifestFiles(files, catalogResolver)
-		},
-		"build files",
-	)
+	discover := func(path string) (gradleFileDiscoveryResult, error) {
+		return discoverBuildFiles(path, buildGradleName, buildGradleKTSName)
+	}
+	parser := func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
+		return parseGradleManifestFiles(files, catalogResolver)
+	}
+	descriptors, _, parseWarnings := collectGradleFileDescriptorsWithWarnings(repoPath, discover, parser, "build files")
 	warnings = append(warnings, parseWarnings...)
 	return descriptors, shared.DedupeWarnings(warnings)
 }

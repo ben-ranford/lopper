@@ -567,13 +567,14 @@ func TestScanRepoAndImportBranches(t *testing.T) {
 		Prefixes: map[string]string{"androidx.core": "androidx.core-ktx"},
 		Aliases:  map[string]string{"com.acme": "acme-lib"},
 	}
-	blockCommentImports := parseImports([]byte(`package pkg.demo
+	blockCommentContent := []byte(`package pkg.demo
 import androidx.core.widget.TextViewCompat /* trailing block comment */
 /*
 import com.acme.lib.Commented
 */
 import com.acme.lib.Widget
-`), testMainSourceFileName, "pkg.demo", blockCommentLookups, &scanState)
+`)
+	blockCommentImports := parseImports(blockCommentContent, testMainSourceFileName, "pkg.demo", blockCommentLookups, &scanState)
 	if len(blockCommentImports) != 2 {
 		t.Fatalf("expected imports outside block comments, got %#v", blockCommentImports)
 	}
