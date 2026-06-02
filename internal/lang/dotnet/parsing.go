@@ -272,25 +272,14 @@ func stripSourceCommentsBytes(line []byte, inBlockComment bool) ([]byte, int, bo
 	column := 1
 
 	for i := 0; i < len(line); {
-		if inBlockComment {
-			if i+1 < len(line) && line[i] == '*' && line[i+1] == '/' {
-				inBlockComment = false
-				i += 2
-				column += 2
-				continue
-			}
-			i++
-			column++
-			continue
-		}
-
-		if i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
+		nextIndex, nextColumn, nextBlockComment, stop, handled := advanceSourceCommentState(line, i, column, inBlockComment)
+		if stop {
 			break
 		}
-		if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
-			inBlockComment = true
-			i += 2
-			column += 2
+		if handled {
+			i = nextIndex
+			column = nextColumn
+			inBlockComment = nextBlockComment
 			continue
 		}
 
@@ -304,6 +293,25 @@ func stripSourceCommentsBytes(line []byte, inBlockComment bool) ([]byte, int, bo
 	}
 
 	return bytes.TrimSpace(out), firstColumn, inBlockComment
+}
+
+func advanceSourceCommentState(line []byte, index, column int, inBlockComment bool) (int, int, bool, bool, bool) {
+	if inBlockComment {
+		if index+1 < len(line) && line[index] == '*' && line[index+1] == '/' {
+			return index + 2, column + 2, false, false, true
+		}
+		return index + 1, column + 1, true, false, true
+	}
+	if index+1 >= len(line) {
+		return index, column, false, false, false
+	}
+	if line[index] == '/' && line[index+1] == '/' {
+		return index, column, false, true, true
+	}
+	if line[index] == '/' && line[index+1] == '*' {
+		return index + 2, column + 2, true, false, true
+	}
+	return index, column, false, false, false
 }
 
 func trimTrailingCarriageReturn(line []byte) []byte {
