@@ -44,7 +44,7 @@ func ChangedFiles(repoPath string) ([]string, error) {
 
 func parseChangedFileLines(output []byte) []string {
 	lines := strings.Split(strings.TrimRight(string(output), "\r\n"), "\n")
-	return collectUniquePaths(lines, func(line string) string { return decodeGitQuotedPath(line) })
+	return collectUniquePaths(lines, decodeGitQuotedPath)
 }
 
 func collectUniquePaths(lines []string, extractor func(string) string) []string {
