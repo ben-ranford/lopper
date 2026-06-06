@@ -33,5 +33,11 @@
     "description": "Enable vendored dependency provenance for Go using vendor/modules.txt metadata.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
+  },
+  {
+    "code": "LOP-FEAT-0007",
+    "name": "vscode-multi-root-workflows-preview",
+    "description": "Enable multi-root VS Code analysis workflows, dependency explorer detail views, baseline commands, and export commands.",
+    "lifecycle": "preview"
   }
 ]
