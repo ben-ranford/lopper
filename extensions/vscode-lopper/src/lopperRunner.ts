@@ -183,7 +183,7 @@ export class LopperRunner {
     const installResult = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: "Installing lopper CLI",
+        cancellable: true,
       },
       async (progress) => {
         progress.report({
@@ -191,7 +191,7 @@ export class LopperRunner {
             ? `Downloading ${releaseTag} for ${process.platform}/${process.arch}`
             : `Downloading latest release for ${process.platform}/${process.arch}`,
         });
-        return this.installer.ensureInstalled(releaseTag);
+        return this.installer.ensureInstalled(releaseTag, undefined);
       },
     );
 

@@ -42,9 +42,9 @@ interface ManagedBinaryMetadata {
   tag: string;
 }
 
-interface ManagedBinaryDeps {
-  downloadAsset?: (asset: GitHubReleaseAsset, destinationPath: string) => Promise<void>;
-  fetchRelease?: (releaseTag?: string) => Promise<GitHubRelease>;
+export interface ManagedBinaryDeps {
+  downloadAsset?: (asset: GitHubReleaseAsset, destinationPath: string, signal?: AbortSignal) => Promise<void>;
+  fetchRelease?: (releaseTag?: string, signal?: AbortSignal) => Promise<GitHubRelease>;
   host?: HostPlatform;
 }
 
@@ -81,7 +81,7 @@ export class ManagedBinaryInstaller {
     return (await fileExists(metadata.binaryPath)) ? metadata.binaryPath : undefined;
   }
 
-  async ensureInstalled(releaseTag?: string): Promise<ManagedBinaryInstallResult> {
+  async ensureInstalled(releaseTag?: string, signal?: AbortSignal): Promise<ManagedBinaryInstallResult> {
     const cachedBinary = await this.findInstalledBinary(releaseTag);
     if (cachedBinary) {
       const tag = normalizeReleaseTag(releaseTag) ?? (await this.readMetadata())?.tag ?? "unknown";
@@ -89,7 +89,7 @@ export class ManagedBinaryInstaller {
     }
 
     const requestedTag = normalizeReleaseTag(releaseTag);
-    const release = await this.deps.fetchRelease(requestedTag);
+    const release = await this.deps.fetchRelease(requestedTag, signal);
     const asset = selectReleaseAsset(release, this.deps.host);
     const binaryPath = this.binaryPathFor(release.tag_name);
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-"));
@@ -100,7 +100,7 @@ export class ManagedBinaryInstaller {
 
     try {
       await mkdir(extractDir, { recursive: true });
-      await this.deps.downloadAsset(asset, archivePath);
+      await this.deps.downloadAsset(asset, archivePath, signal);
       await extractArchive(archivePath, extractDir);
 
       const extractedBinary = await findBinaryInDirectory(extractDir, binaryFileName(this.deps.host.platform));
@@ -188,7 +188,7 @@ function normalizeReleaseTag(releaseTag?: string): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
-async function fetchRelease(releaseTag?: string): Promise<GitHubRelease> {
+async function fetchRelease(releaseTag?: string, signal?: AbortSignal): Promise<GitHubRelease> {
   const normalizedTag = normalizeReleaseTag(releaseTag);
   const endpoint = normalizedTag
     ? `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/tags/${encodeURIComponent(normalizedTag)}`
@@ -199,6 +199,7 @@ async function fetchRelease(releaseTag?: string): Promise<GitHubRelease> {
       Accept: "application/vnd.github+json",
       "User-Agent": "lopper-vscode-extension",
     },
+    signal,
   });
   if (!response.ok) {
     throw new Error(`release lookup failed (${response.status})`);
@@ -221,11 +222,12 @@ function isAssetLike(asset: unknown): asset is GitHubReleaseAsset {
     typeof (asset as Partial<GitHubReleaseAsset>).browser_download_url === "string";
 }
 
-async function downloadAsset(asset: GitHubReleaseAsset, destinationPath: string): Promise<void> {
+async function downloadAsset(asset: GitHubReleaseAsset, destinationPath: string, signal?: AbortSignal): Promise<void> {
   const response = await fetch(asset.browser_download_url, {
     headers: {
       "User-Agent": "lopper-vscode-extension",
     },
+    signal,
   });
   if (!response.ok) {
     throw new Error(`asset download failed (${response.status})`);
