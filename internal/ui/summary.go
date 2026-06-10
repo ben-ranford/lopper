@@ -94,6 +94,7 @@ func readSummaryInput(reader *bufio.Reader) (string, error) {
 }
 
 func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, reportView summaryReportView, state *summaryState, input string) (bool, error) {
+	_ = ctx
 	if input == "" || input == "refresh" {
 		return false, nil
 	}
@@ -102,7 +103,7 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, reportVi
 	}
 	if dependency, ok := isDetailCommand(input); ok {
 		detail := NewDetail(s.Out, s.Analyzer, opts.RepoPath, opts.Language)
-		if err := detail.Show(ctx, dependency); err != nil {
+		if err := detail.showLoadedSummary(dependency, reportView); err != nil {
 			return false, err
 		}
 		return false, nil

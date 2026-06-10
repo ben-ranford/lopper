@@ -326,6 +326,65 @@ func TestSummaryStartAndSnapshotBranches(t *testing.T) {
 	}
 }
 
+type countingAnalyzer struct {
+	report        report.Report
+	calls         int
+	errAfterFirst error
+}
+
+func (a *countingAnalyzer) Analyse(context.Context, analysis.Request) (report.Report, error) {
+	a.calls++
+	if a.calls > 1 && a.errAfterFirst != nil {
+		return report.Report{}, a.errAfterFirst
+	}
+	return a.report, nil
+}
+
+func TestSummaryOpenDetailReusesLoadedSummaryReport(t *testing.T) {
+	unexpectedAnalysis := errors.New("unexpected detail analysis")
+	analyzer := &countingAnalyzer{
+		errAfterFirst: unexpectedAnalysis,
+		report: report.Report{
+			Warnings: []string{"summary warning"},
+			Dependencies: []report.DependencyReport{
+				{
+					Name:              "dep",
+					Language:          "js-ts",
+					UsedExportsCount:  1,
+					TotalExportsCount: 2,
+					UsedPercent:       50,
+					UsedImports: []report.ImportUse{
+						{Name: "map", Module: "dep", Locations: []report.Location{{File: indexJSFile, Line: 1}}},
+					},
+					Recommendations: []report.Recommendation{
+						{Code: "prefer-subpath-imports", Priority: "medium", Message: "Prefer subpath imports."},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	summary := NewSummary(&out, strings.NewReader(openDepCommand+"\nq\n"), analyzer, report.NewFormatter())
+	if err := summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}); err != nil {
+		t.Fatalf("summary start: %v", err)
+	}
+	if analyzer.calls != 1 {
+		t.Fatalf("expected summary open to reuse loaded report without re-analysis, got %d analyzer calls", analyzer.calls)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Dependency detail: dep") {
+		t.Fatalf("expected detail view output, got %q", output)
+	}
+	if !strings.Contains(output, "Used imports (1)") || !strings.Contains(output, "map from dep") {
+		t.Fatalf("expected detail-only import data from loaded report, got %q", output)
+	}
+	if !strings.Contains(output, "Warnings:") || !strings.Contains(output, "summary warning") {
+		t.Fatalf("expected loaded report warnings in detail output, got %q", output)
+	}
+}
+
 func TestReadSummaryInputError(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader(""))
 	if _, err := readSummaryInput(reader); err == nil {
@@ -541,11 +600,15 @@ func TestClampSummaryPageHandlesNilAndLowerBound(t *testing.T) {
 }
 
 func TestSummaryHandleDetailErrorBranch(t *testing.T) {
-	summary := NewSummary(io.Discard, strings.NewReader(""), &errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
+	var out bytes.Buffer
+	summary := NewSummary(&out, strings.NewReader(""), &errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
 	state := summaryState{}
-	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, summaryReportView{}, &state, openDepCommand)
-	if err == nil {
-		t.Fatalf("expected detail error to propagate")
+	quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, summaryReportView{}, &state, openDepCommand)
+	if err != nil || quit {
+		t.Fatalf("expected missing loaded detail to continue without analyzer error, quit=%v err=%v", quit, err)
+	}
+	if !strings.Contains(out.String(), `No data for dependency "dep"`) {
+		t.Fatalf("expected no-data detail message, got %q", out.String())
 	}
 }
 
@@ -582,11 +645,14 @@ func TestSummaryStartErrorBranches(t *testing.T) {
 		t.Fatalf("expected EOF from input reader, got %v", err)
 	}
 
-	// handleSummaryInput failure path via open detail command.
+	// Open detail uses the already-loaded summary report instead of calling the analyzer again.
 	seqAnalyzer := &sequenceErrorAnalyzer{}
-	summary = NewSummary(io.Discard, strings.NewReader(openDepCommand+"\n"), seqAnalyzer, report.NewFormatter())
-	if summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}) == nil {
-		t.Fatalf("expected detail-open error from handleSummaryInput")
+	summary = NewSummary(io.Discard, strings.NewReader(openDepCommand+"\nq\n"), seqAnalyzer, report.NewFormatter())
+	if err := summary.Start(context.Background(), Options{RepoPath: ".", TopN: 1, PageSize: 1, Language: "auto"}); err != nil {
+		t.Fatalf("expected detail-open to reuse loaded report, got %v", err)
+	}
+	if seqAnalyzer.calls != 1 {
+		t.Fatalf("expected one analyzer call for summary load only, got %d", seqAnalyzer.calls)
 	}
 }
 
