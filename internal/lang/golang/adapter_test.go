@@ -373,7 +373,7 @@ func TestAdapterAnalyseSkipsGeneratedAndBuildTaggedFiles(t *testing.T) {
 	}
 }
 
-func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
+func TestAdapterAnalyseScansNestedModulesFromRootScan(t *testing.T) {
 	repo := t.TempDir()
 	writeRootUUIDModule(t, repo)
 	writeNestedLoModule(t, repo, "services", "api")
@@ -386,13 +386,13 @@ func TestAdapterAnalyseSkipsNestedModulesFromRootScan(t *testing.T) {
 	if !slices.Contains(names, depUUID) {
 		t.Fatalf("expected root dependency uuid in %#v", names)
 	}
-	if slices.Contains(names, depLo) {
-		t.Fatalf("did not expect nested module dependency lo in root scan %#v", names)
+	if !slices.Contains(names, depLo) {
+		t.Fatalf("expected nested module dependency lo in root scan %#v", names)
 	}
 
 	warningsText := strings.ToLower(strings.Join(reportData.Warnings, "\n"))
-	if !strings.Contains(warningsText, "nested module directories") {
-		t.Fatalf("expected nested-module warning, got %#v", reportData.Warnings)
+	if strings.Contains(warningsText, "nested module directories") {
+		t.Fatalf("did not expect nested-module skip warning, got %#v", reportData.Warnings)
 	}
 }
 
@@ -416,7 +416,7 @@ func TestAdapterAnalyseWorkspaceGoWorkScansMembers(t *testing.T) {
 	}
 }
 
-func TestScanRepoReusesLoadedNestedModuleDirs(t *testing.T) {
+func TestScanRepoScansLoadedNestedModuleDirs(t *testing.T) {
 	repo := t.TempDir()
 	writeRootUUIDModule(t, repo)
 	nestedDir := writeNestedLoModule(t, repo, "services", "api")
@@ -438,15 +438,15 @@ func TestScanRepoReusesLoadedNestedModuleDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanRepo: %v", err)
 	}
-	if scan.SkippedNestedModuleDirs != 1 {
-		t.Fatalf("expected one cached nested module skip, got %d", scan.SkippedNestedModuleDirs)
+	if scan.SkippedNestedModuleDirs != 0 {
+		t.Fatalf("expected no nested module skips, got %d", scan.SkippedNestedModuleDirs)
 	}
 
 	requireScannedDependency(t, scan, depUUID)
-	requireSkippedDependency(t, scan, depLo)
+	requireScannedDependency(t, scan, depLo)
 }
 
-func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
+func TestScanRepoScansWorkspaceAndNestedModules(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
 	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
@@ -477,12 +477,12 @@ func TestScanRepoReusesWorkspaceNestedModuleExclusions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanRepo: %v", err)
 	}
-	if scan.SkippedNestedModuleDirs != 2 {
-		t.Fatalf("expected two nested module skips, got %d", scan.SkippedNestedModuleDirs)
+	if scan.SkippedNestedModuleDirs != 0 {
+		t.Fatalf("expected no nested module skips, got %d", scan.SkippedNestedModuleDirs)
 	}
 
 	requireScannedDependency(t, scan, depUUID)
-	requireSkippedDependency(t, scan, depLo)
+	requireScannedDependency(t, scan, depLo)
 }
 
 func TestBuildRequestedGoDependenciesNoInputWarning(t *testing.T) {
@@ -1245,14 +1245,6 @@ func requireScannedDependency(t *testing.T, scan scanResult, dependency string) 
 	}
 }
 
-func requireSkippedDependency(t *testing.T, scan scanResult, dependency string) {
-	t.Helper()
-	deps := dependencySetFromScan(scan)
-	if _, ok := deps[dependency]; ok {
-		t.Fatalf("did not expect dependency %q in %#v", dependency, deps)
-	}
-}
-
 func TestUtilityCoverageBranches(t *testing.T) {
 	if stripInlineComment("value // comment") != "value " {
 		t.Fatalf("expected inline comment to be stripped")
@@ -1309,7 +1301,7 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 	}
 	entry := fs.FileInfoToDirEntry(info)
 
-	if err := handleScanDirEntry(repo, repo, entry, nil, nil); err != nil {
+	if err := handleScanDirEntry(entry); err != nil {
 		t.Fatalf("expected nil scan dir err for repo root, got %v", err)
 	}
 	vendorInfo, err := os.Stat(vendor)
@@ -1317,22 +1309,18 @@ func TestHandleScanDirAndWarningHelpers(t *testing.T) {
 		t.Fatalf("stat vendor: %v", err)
 	}
 	vendorEntry := fs.FileInfoToDirEntry(vendorInfo)
-	if err := handleScanDirEntry(vendor, repo, vendorEntry, nil, nil); !errors.Is(err, filepath.SkipDir) {
+	if err := handleScanDirEntry(vendorEntry); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected vendor skip dir, got %v", err)
 	}
-	nested := map[string]struct{}{child: {}}
-	result := newScanResult()
-	if err := handleScanDirEntry(child, repo, entry, nested, &result); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected nested module skip, got %v", err)
-	}
-	if err := handleScanDirEntry(child, repo, entry, nested, nil); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected nested module skip with nil result, got %v", err)
+	if err := handleScanDirEntry(entry); err != nil {
+		t.Fatalf("expected nested module dir to be scanned, got %v", err)
 	}
 
 	appendScanWarnings(nil, moduleInfo{})
 	appendSkipWarnings(nil)
 	appendUndeclaredDependencyWarnings(nil)
 
+	result := newScanResult()
 	result.UndeclaredImportsByDependency[exampleModuleX] = 2
 	appendUndeclaredDependencyWarnings(&result)
 	if len(result.Warnings) == 0 {

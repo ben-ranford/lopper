@@ -66,33 +66,11 @@ func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scan
 	if repoPath == "" {
 		return result, fs.ErrInvalid
 	}
-	nestedModules, err := nestedModuleDirsForScan(repoPath, moduleInfo)
-	if err != nil {
-		return result, err
-	}
-
-	err = walkGoFiles(ctx, repoPath, nestedModules, moduleInfo, &result)
-	if err != nil {
+	if err := walkGoFiles(ctx, repoPath, moduleInfo, &result); err != nil {
 		return result, err
 	}
 	appendScanWarnings(&result, moduleInfo)
 	return result, nil
-}
-
-func nestedModuleDirsForScan(repoPath string, info moduleInfo) (map[string]struct{}, error) {
-	if info.NestedModuleDirs != nil {
-		return info.NestedModuleDirs, nil
-	}
-
-	workspaceModuleExclusions := info.WorkspaceModuleExclusions
-	if workspaceModuleExclusions == nil {
-		var err error
-		workspaceModuleExclusions, err = workspaceRootModuleDirs(repoPath, info)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return nestedModuleDirs(repoPath, workspaceModuleExclusions)
 }
 
 func newScanResult() scanResult {
@@ -103,7 +81,7 @@ func newScanResult() scanResult {
 	}
 }
 
-func walkGoFiles(ctx context.Context, repoPath string, nestedModules map[string]struct{}, moduleInfo moduleInfo, result *scanResult) error {
+func walkGoFiles(ctx context.Context, repoPath string, moduleInfo moduleInfo, result *scanResult) error {
 	return filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -112,7 +90,7 @@ func walkGoFiles(ctx context.Context, repoPath string, nestedModules map[string]
 			return ctx.Err()
 		}
 		if entry.IsDir() {
-			return handleScanDirEntry(path, repoPath, entry, nestedModules, result)
+			return handleScanDirEntry(entry)
 		}
 		if !strings.EqualFold(filepath.Ext(path), ".go") {
 			return nil
@@ -121,17 +99,9 @@ func walkGoFiles(ctx context.Context, repoPath string, nestedModules map[string]
 	})
 }
 
-func handleScanDirEntry(path, repoPath string, entry fs.DirEntry, nestedModules map[string]struct{}, result *scanResult) error {
+func handleScanDirEntry(entry fs.DirEntry) error {
 	if shouldSkipDir(entry.Name()) {
 		return filepath.SkipDir
-	}
-	if path != repoPath {
-		if _, ok := nestedModules[path]; ok {
-			if result != nil {
-				result.SkippedNestedModuleDirs++
-			}
-			return filepath.SkipDir
-		}
 	}
 	return nil
 }
