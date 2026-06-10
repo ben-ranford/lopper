@@ -41,13 +41,9 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 		return req, fmt.Errorf("--top must be > 0")
 	}
 
-	outputPath := strings.TrimSpace(*outputFlag)
-	shortOutputPath := strings.TrimSpace(*outputShortFlag)
-	if outputPath != "" && shortOutputPath != "" && outputPath != shortOutputPath {
-		return req, fmt.Errorf("--output and -o must match when both are provided")
-	}
-	if outputPath == "" {
-		outputPath = shortOutputPath
+	outputPath, err := resolveOutputPath(*outputFlag, *outputShortFlag)
+	if err != nil {
+		return req, err
 	}
 
 	repos := splitRepoList(*reposFlag)

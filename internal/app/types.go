@@ -38,6 +38,7 @@ type AnalyseRequest struct {
 	ApplyCodemod       bool
 	AllowDirty         bool
 	Format             report.Format
+	OutputPath         string
 	Language           string
 	CacheEnabled       bool
 	CachePath          string
@@ -93,9 +94,10 @@ type DashboardRequest struct {
 }
 
 type FeaturesRequest struct {
-	Format  string
-	Channel string
-	Release string
+	Format     string
+	OutputPath string
+	Channel    string
+	Release    string
 }
 
 func DefaultRequest() Request {

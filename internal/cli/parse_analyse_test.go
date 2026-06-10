@@ -141,6 +141,18 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseOutputFlags(t *testing.T) {
+	req := mustParseArgs(t, []string{"analyse", "--top", "5", "--output", "report.json", "-o", "report.json"})
+	if req.Analyse.OutputPath != "report.json" {
+		t.Fatalf("expected analyse output path, got %q", req.Analyse.OutputPath)
+	}
+
+	err := expectParseArgsError(t, []string{"analyse", "--top", "5", "--output", "one.json", "-o", "two.json"}, "expected output conflict")
+	if !strings.Contains(err.Error(), "--output and -o must match") {
+		t.Fatalf("expected output conflict, got %v", err)
+	}
+}
+
 func TestParseArgsAnalyseLanguage(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "lodash", languageFlagName, "js-ts"})
 	if req.Analyse.Language != "js-ts" {

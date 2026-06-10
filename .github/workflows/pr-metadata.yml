@@ -40,25 +40,16 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const data = await github.graphql(
-              `query($owner: String!, $repo: String!) {
-                repository(owner: $owner, name: $repo) {
-                  mergeCommitAllowed
-                  rebaseMergeAllowed
-                  squashMergeAllowed
-                  squashMergeCommitTitle
-                }
-              }`,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-              },
-            );
-            const repo = data.repository;
-            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(repo.mergeCommitAllowed));
-            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(repo.rebaseMergeAllowed));
-            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(repo.squashMergeAllowed));
-            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(repo.squashMergeCommitTitle || ''));
+            const { data: repo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const eventRepo = context.payload.repository || {};
+            const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null);
+            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(firstDefined(repo.allow_merge_commit, repo.allowMergeCommit, eventRepo.allow_merge_commit, eventRepo.allowMergeCommit, false)));
+            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(firstDefined(repo.allow_rebase_merge, repo.allowRebaseMerge, eventRepo.allow_rebase_merge, eventRepo.allowRebaseMerge, false)));
+            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(firstDefined(repo.allow_squash_merge, repo.allowSquashMerge, eventRepo.allow_squash_merge, eventRepo.allowSquashMerge, true)));
+            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(firstDefined(repo.squash_merge_commit_title, repo.squashMergeCommitTitle, eventRepo.squash_merge_commit_title, eventRepo.squashMergeCommitTitle, 'PR_TITLE')));
 
       - name: Validate PR title and template
         env:

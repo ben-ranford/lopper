@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,6 +24,32 @@ func TestExecuteFeaturesJSON(t *testing.T) {
 	}
 	if !strings.Contains(output, `"code": "LOP-FEAT-0001"`) || !strings.Contains(output, `"enabledByDefault": true`) {
 		t.Fatalf("unexpected feature manifest output: %s", output)
+	}
+}
+
+func TestExecuteFeaturesOutputFile(t *testing.T) {
+	registry := mustFeatureRegistry(t)
+	application := &App{Features: registry}
+	outputPath := filepath.Join(t.TempDir(), "features.json")
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.OutputPath = outputPath
+	req.Features.Channel = "dev"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute features with output path: %v", err)
+	}
+	if !strings.Contains(output, outputPath) {
+		t.Fatalf("expected output file confirmation, got %q", output)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read feature output file: %v", err)
+	}
+	if !strings.Contains(string(data), `"code": "LOP-FEAT-0001"`) {
+		t.Fatalf("expected feature JSON content, got %q", string(data))
 	}
 }
 
@@ -72,6 +100,23 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 		!strings.Contains(emptyOutput, "go-vendored-provenance-preview") ||
 		!strings.Contains(emptyOutput, "true") {
 		t.Fatalf("expected default feature table to include embedded graduated flags enabled by default, got %q", emptyOutput)
+	}
+}
+
+func TestExecuteFeaturesDefaultReleaseAndStdoutOutputPath(t *testing.T) {
+	application := &App{Features: mustFeatureRegistry(t)}
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.Channel = "release"
+	req.Features.OutputPath = "-"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute release features with stdout output path: %v", err)
+	}
+	if !strings.Contains(output, `"code": "LOP-FEAT-0001"`) || strings.Contains(output, "written to") {
+		t.Fatalf("expected feature JSON on stdout, got %q", output)
 	}
 }
 
