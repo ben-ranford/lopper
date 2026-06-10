@@ -28,7 +28,7 @@ on:
       milestone:
         description: Milestone to assign to the graduation PR
         required: false
-        default: "v1.4.2"
+        default: "v1.6.0"
         type: string
 
 permissions:
@@ -119,7 +119,7 @@ jobs:
             --title "feat(flags): graduate ${FEATURE} to stable"
             --body-file .artifacts/graduate-feature-pr.md
             --label enhancement
-            --label target-series:1.4.x
+            --label target-series:1.6.x
           )
           if [ -n "${MILESTONE}" ]; then
             pr_args+=(--milestone "${MILESTONE}")

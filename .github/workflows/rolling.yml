@@ -75,6 +75,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Assert Darwin amd64 host
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_goarch="$(go env GOARCH)"
+          if [ "${host_goarch}" != "amd64" ]; then
+            echo "::error::Expected darwin/amd64 runner, got darwin/${host_goarch}."
+            exit 1
+          fi
+
       - name: Install shellcheck
         run: brew install shellcheck
 
