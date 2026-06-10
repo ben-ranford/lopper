@@ -50,15 +50,8 @@ func formatRuntimeUsage(usage *RuntimeUsage) string {
 		return "-"
 	}
 	correlation := string(usage.Correlation)
-	if correlation == "" {
-		switch {
-		case usage.RuntimeOnly:
-			correlation = string(RuntimeCorrelationRuntimeOnly)
-		case usage.LoadCount > 0:
-			correlation = string(RuntimeCorrelationOverlap)
-		default:
-			correlation = string(RuntimeCorrelationStaticOnly)
-		}
+	if strings.TrimSpace(correlation) == "" {
+		correlation = "-"
 	}
 	parts := []string{fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)}
 	if len(usage.ParentModules) > 0 {

@@ -32,6 +32,7 @@ func TestFormatCSV(t *testing.T) {
 				Name:                 "alpha",
 				UsedExportsCount:     2,
 				TotalExportsCount:    4,
+				UsedPercent:          50,
 				EstimatedUnusedBytes: 2048,
 				TopUsedSymbols: []SymbolUsage{
 					{Name: "Println", Module: "fmt", Count: 2},
@@ -301,12 +302,12 @@ func TestFormatCSVSortingHelpers(t *testing.T) {
 	}
 }
 
-func TestRuntimeCorrelationValue(t *testing.T) {
-	assertRuntimeCorrelationValue(t, nil, "")
-	assertRuntimeCorrelationValue(t, &RuntimeUsage{Correlation: RuntimeCorrelationRuntimeOnly}, string(RuntimeCorrelationRuntimeOnly))
-	assertRuntimeCorrelationValue(t, &RuntimeUsage{RuntimeOnly: true}, string(RuntimeCorrelationRuntimeOnly))
-	assertRuntimeCorrelationValue(t, &RuntimeUsage{LoadCount: 2}, string(RuntimeCorrelationOverlap))
-	assertRuntimeCorrelationValue(t, &RuntimeUsage{}, string(RuntimeCorrelationStaticOnly))
+func TestFormatCSVRuntimeCorrelationUsesModelField(t *testing.T) {
+	assertCSVRuntimeCorrelation(t, nil, "")
+	assertCSVRuntimeCorrelation(t, &RuntimeUsage{Correlation: RuntimeCorrelationRuntimeOnly}, string(RuntimeCorrelationRuntimeOnly))
+	assertCSVRuntimeCorrelation(t, &RuntimeUsage{RuntimeOnly: true}, "")
+	assertCSVRuntimeCorrelation(t, &RuntimeUsage{LoadCount: 2}, "")
+	assertCSVRuntimeCorrelation(t, &RuntimeUsage{}, "")
 }
 
 func TestFormatCSVRemovalCandidateMetric(t *testing.T) {
@@ -351,9 +352,9 @@ func assertCSVRowHasValues(t *testing.T, got map[string]string, expected map[str
 	}
 }
 
-func assertRuntimeCorrelationValue(t *testing.T, usage *RuntimeUsage, want string) {
+func assertCSVRuntimeCorrelation(t *testing.T, usage *RuntimeUsage, want string) {
 	t.Helper()
-	if got := runtimeCorrelationValue(usage); got != want {
-		t.Fatalf("runtimeCorrelationValue(%#v)=%q want %q", usage, got, want)
+	if got := formatCSVRuntimeCorrelation(usage); got != want {
+		t.Fatalf("formatCSVRuntimeCorrelation(%#v)=%q want %q", usage, got, want)
 	}
 }

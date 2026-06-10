@@ -451,11 +451,11 @@ func TestFormattingHelpersProvenanceFields(t *testing.T) {
 }
 
 func TestFormatRuntimeUsageBranches(t *testing.T) {
-	if got := formatRuntimeUsage(&RuntimeUsage{RuntimeOnly: true}); !strings.Contains(got, "runtime-only") {
-		t.Fatalf("expected runtime-only fallback correlation, got %q", got)
+	if got := formatRuntimeUsage(&RuntimeUsage{Correlation: RuntimeCorrelationRuntimeOnly}); !strings.Contains(got, "runtime-only") {
+		t.Fatalf("expected runtime-only correlation, got %q", got)
 	}
-	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
-		t.Fatalf("expected static-only fallback correlation, got %q", got)
+	if got := formatRuntimeUsage(&RuntimeUsage{}); !strings.Contains(got, "- (0 loads)") {
+		t.Fatalf("expected missing correlation placeholder, got %q", got)
 	}
 }
 
@@ -465,14 +465,14 @@ func TestFormatUnknownFormat(t *testing.T) {
 	}
 }
 
-func TestFormatTableUsedPercentFallbackAndNoLanguageColumn(t *testing.T) {
+func TestFormatTableUsesModelUsedPercentAndNoLanguageColumn(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{
 			{
 				Name:              "dep",
 				UsedExportsCount:  1,
 				TotalExportsCount: 4,
-				UsedPercent:       0,
+				UsedPercent:       25,
 			},
 		},
 	}
@@ -484,7 +484,7 @@ func TestFormatTableUsedPercentFallbackAndNoLanguageColumn(t *testing.T) {
 		t.Fatalf("did not expect language column for single-language anonymous rows")
 	}
 	if !strings.Contains(output, "25.0") {
-		t.Fatalf("expected used-percent fallback calculation in output, got %q", output)
+		t.Fatalf("expected model used percent in output, got %q", output)
 	}
 }
 
@@ -722,11 +722,11 @@ func TestFormatRuntimeUsageFallbacks(t *testing.T) {
 	if got := formatRuntimeUsage(nil); got != "-" {
 		t.Fatalf("expected runtime dash for nil usage, got %q", got)
 	}
-	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 1, RuntimeOnly: true}); !strings.Contains(got, "runtime-only") {
-		t.Fatalf("expected runtime-only fallback, got %q", got)
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 1, Correlation: RuntimeCorrelationOverlap}); !strings.Contains(got, "overlap") {
+		t.Fatalf("expected explicit overlap correlation, got %q", got)
 	}
-	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "static-only") {
-		t.Fatalf("expected static-only fallback, got %q", got)
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 0}); !strings.Contains(got, "- (0 loads)") {
+		t.Fatalf("expected missing correlation placeholder, got %q", got)
 	}
 }
 

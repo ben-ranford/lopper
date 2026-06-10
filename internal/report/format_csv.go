@@ -94,10 +94,9 @@ func formatDependencyCSVRow(reportData Report, dep DependencyReport) []string {
 		scopePackages = joinSortedStrings(reportData.Scope.Packages)
 	}
 
-	usedPercent := effectiveUsedPercent(dep)
 	wastePercent := 0.0
 	if dep.TotalExportsCount > 0 {
-		wastePercent = 100 - usedPercent
+		wastePercent = 100 - dep.UsedPercent
 	}
 	license := normalizedDependencyLicenseCSV(dep.License)
 
@@ -111,7 +110,7 @@ func formatDependencyCSVRow(reportData Report, dep DependencyReport) []string {
 		dep.Name,
 		strconv.Itoa(dep.UsedExportsCount),
 		strconv.Itoa(dep.TotalExportsCount),
-		formatCSVFloat(usedPercent),
+		formatCSVFloat(dep.UsedPercent),
 		formatCSVFloat(wastePercent),
 		strconv.FormatInt(dep.EstimatedUnusedBytes, 10),
 		formatCSVTopUsedSymbols(dep.TopUsedSymbols),
@@ -145,13 +144,6 @@ func formatDependencyCSVRow(reportData Report, dep DependencyReport) []string {
 		formatCSVProvenanceConfidence(dep.Provenance),
 		formatCSVProvenanceSignals(dep.Provenance),
 	}
-}
-
-func effectiveUsedPercent(dep DependencyReport) float64 {
-	if dep.UsedPercent > 0 || dep.TotalExportsCount == 0 {
-		return dep.UsedPercent
-	}
-	return (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
 }
 
 func normalizedDependencyLicenseCSV(license *DependencyLicense) DependencyLicense {
@@ -342,23 +334,6 @@ func formatCSVRecommendations(recommendations []Recommendation) string {
 	return formatCSVCodeValues(recommendations, recommendationCode, recommendationPriority)
 }
 
-func runtimeCorrelationValue(usage *RuntimeUsage) string {
-	if usage == nil {
-		return ""
-	}
-	if usage.Correlation != "" {
-		return string(usage.Correlation)
-	}
-	switch {
-	case usage.RuntimeOnly:
-		return string(RuntimeCorrelationRuntimeOnly)
-	case usage.LoadCount > 0:
-		return string(RuntimeCorrelationOverlap)
-	default:
-		return string(RuntimeCorrelationStaticOnly)
-	}
-}
-
 func formatCSVRuntimeLoadCount(usage *RuntimeUsage) string {
 	if usage == nil {
 		return ""
@@ -367,7 +342,10 @@ func formatCSVRuntimeLoadCount(usage *RuntimeUsage) string {
 }
 
 func formatCSVRuntimeCorrelation(usage *RuntimeUsage) string {
-	return runtimeCorrelationValue(usage)
+	if usage == nil {
+		return ""
+	}
+	return string(usage.Correlation)
 }
 
 func formatCSVRuntimeOnly(usage *RuntimeUsage) string {

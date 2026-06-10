@@ -101,16 +101,11 @@ func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime, showR
 }
 
 func formatTableRow(dep DependencyReport, showLanguage, showRuntime, showReachability bool) string {
-	usedPercent := dep.UsedPercent
-	if usedPercent <= 0 && dep.TotalExportsCount > 0 {
-		usedPercent = (float64(dep.UsedExportsCount) / float64(dep.TotalExportsCount)) * 100
-	}
-
 	columns := make([]string, 0, 12)
 	if showLanguage {
 		columns = append(columns, sanitizeTerminalString(dep.Language))
 	}
-	columns = append(columns, sanitizeTerminalString(dep.Name), fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount), fmt.Sprintf("%.1f", usedPercent))
+	columns = append(columns, sanitizeTerminalString(dep.Name), fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount), fmt.Sprintf("%.1f", dep.UsedPercent))
 	if showRuntime {
 		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
 	}
