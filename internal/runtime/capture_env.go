@@ -142,10 +142,14 @@ func runtimeHookSearchRoots() []string {
 		addSearchPath(filepath.Join(executableDir, "..", "share", "lopper"))
 	}
 	if _, filename, _, ok := runtimeCaller(0); ok {
-		addSearchPath(filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..")))
+		addSearchPath(runtimeHookSourceCheckoutRoot(filename))
 	}
 
 	return roots
+}
+
+func runtimeHookSourceCheckoutRoot(filename string) string {
+	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
 }
 
 func isRegularFile(path string) bool {

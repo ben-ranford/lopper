@@ -125,7 +125,7 @@ func TestRuntimeHookSearchRootsAreAnchored(t *testing.T) {
 	roots := runtimeHookSearchRoots()
 	want := []string{
 		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
-		filepath.Clean(filepath.Join("/tmp", "source", "internal", "runtime", "..", "..")),
+		filepath.Clean(filepath.Join("/tmp", "source")),
 	}
 	if !reflect.DeepEqual(roots, want) {
 		t.Fatalf("expected anchored runtime hook roots %v, got %v", want, roots)
