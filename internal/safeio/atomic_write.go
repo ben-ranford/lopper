@@ -6,13 +6,13 @@ import (
 )
 
 type atomicWriteSession struct {
-	root      *os.Root
+	root      Root
 	targetRel string
 	tempRel   string
-	tempFile  *os.File
+	tempFile  File
 }
 
-func newAtomicWriteSession(root *os.Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
+func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
 	if err != nil {
 		return nil, err
@@ -27,16 +27,16 @@ func newAtomicWriteSession(root *os.Root, targetRel string, perm os.FileMode) (*
 }
 
 func (s *atomicWriteSession) writeAndCommit(data []byte, perm os.FileMode) error {
-	if _, err := writeFileFn(s.tempFile, data); err != nil {
+	if _, err := s.tempFile.Write(data); err != nil {
 		return err
 	}
-	if err := chmodFileFn(s.tempFile, perm); err != nil {
+	if err := s.tempFile.Chmod(perm); err != nil {
 		return err
 	}
 	if err := s.closeTempFile(); err != nil {
 		return err
 	}
-	if err := renameFileFn(s.root, s.tempRel, s.targetRel); err != nil {
+	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
 		return err
 	}
 	s.tempRel = ""
@@ -47,7 +47,7 @@ func (s *atomicWriteSession) closeTempFile() error {
 	if s.tempFile == nil {
 		return nil
 	}
-	if err := closeFileFn(s.tempFile); err != nil {
+	if err := s.tempFile.Close(); err != nil {
 		return err
 	}
 	s.tempFile = nil
@@ -55,5 +55,5 @@ func (s *atomicWriteSession) closeTempFile() error {
 }
 
 func (s *atomicWriteSession) cleanup() error {
-	return cleanupTempFileFn(s.root, s.tempRel, s.tempFile)
+	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }

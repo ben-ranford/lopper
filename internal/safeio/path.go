@@ -36,7 +36,7 @@ func resolveRootedTarget(rootDir, targetPath string, policy rootedTargetPolicy) 
 		return rootedTarget{}, err
 	}
 
-	rel, err := relPathFn(rootAbs, targetAbs)
+	rel, err := fileSystem.Rel(rootAbs, targetAbs)
 	if err != nil {
 		return rootedTarget{}, fmt.Errorf("compute relative path: %w", err)
 	}
@@ -61,7 +61,7 @@ func resolveExactFileTarget(targetPath string) (exactFileTarget, error) {
 }
 
 func resolveAbsolutePath(kind, path string) (string, error) {
-	absPath, err := absPathFn(path)
+	absPath, err := fileSystem.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s path: %w", kind, err)
 	}
