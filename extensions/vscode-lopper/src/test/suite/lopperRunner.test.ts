@@ -169,6 +169,7 @@ suite("lopper runner", () => {
     let resolvedRequest: BinaryResolutionRequest | undefined;
 
     const reportExecutor: ReportCommandExecutor = {
+      runCommand: async () => "",
       runReport: async (binaryPath, args, cwd): Promise<LopperReport> => {
         calls.push({ binaryPath, args, cwd });
         if (args.includes("--suggest-only")) {
@@ -255,6 +256,7 @@ suite("lopper runner", () => {
           resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
         },
         reportExecutor: {
+          runCommand: async () => "",
           runReport: async (_binaryPath, args): Promise<LopperReport> => {
             calls.push({ args });
             if (args.includes("--suggest-only")) {
@@ -293,6 +295,82 @@ suite("lopper runner", () => {
       assert.ok(call.args.includes("--scope-mode"), "expected --scope-mode for every analysis call");
       assert.equal(call.args[call.args.indexOf("--scope-mode") + 1], "repo");
     }
+  });
+
+  test("threads runtime, baseline, and export format flags through the runner", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const analysisCalls: string[][] = [];
+    const exportCalls: string[][] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async (_binaryPath, args): Promise<string> => {
+            exportCalls.push(args);
+            return "dependency_name,used_percent\nscope-lib,50\n";
+          },
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            analysisCalls.push(args);
+            return {
+              dependencies: [
+                {
+                  name: "scope-lib",
+                  language: "js-ts",
+                  usedExportsCount: 1,
+                  totalExportsCount: 2,
+                  usedPercent: 50,
+                },
+              ],
+            };
+          },
+        },
+      },
+    );
+
+    await runner.analyseWorkspace(folder, {
+      runtimeTracePath: "trace.ndjson",
+      runtimeTestCommand: "npm test",
+      baselinePath: "baseline.json",
+      baselineStorePath: ".artifacts/lopper-baselines",
+      baselineKey: "commit:abc123",
+      baselineLabel: "release-candidate",
+      saveBaseline: true,
+    });
+
+    const analysisArgs = analysisCalls[0];
+    assert.ok(analysisArgs, "expected analysis command invocation");
+    assert.ok(analysisArgs.includes("--runtime-trace"));
+    assert.equal(analysisArgs[analysisArgs.indexOf("--runtime-trace") + 1], "trace.ndjson");
+    assert.ok(analysisArgs.includes("--runtime-test-command"));
+    assert.equal(analysisArgs[analysisArgs.indexOf("--runtime-test-command") + 1], "npm test");
+    assert.ok(analysisArgs.includes("--baseline"));
+    assert.equal(analysisArgs[analysisArgs.indexOf("--baseline") + 1], "baseline.json");
+    assert.ok(analysisArgs.includes("--baseline-store"));
+    assert.equal(analysisArgs[analysisArgs.indexOf("--baseline-store") + 1], ".artifacts/lopper-baselines");
+    assert.ok(analysisArgs.includes("--baseline-key"));
+    assert.equal(analysisArgs[analysisArgs.indexOf("--baseline-key") + 1], "commit:abc123");
+    assert.ok(analysisArgs.includes("--baseline-label"));
+    assert.equal(analysisArgs[analysisArgs.indexOf("--baseline-label") + 1], "release-candidate");
+    assert.ok(analysisArgs.includes("--save-baseline"));
+
+    const exportOutput = await runner.exportWorkspace(folder, "sarif", {
+      runtimeTracePath: "trace.ndjson",
+      baselineStorePath: ".artifacts/lopper-baselines",
+      baselineKey: "commit:abc123",
+    });
+    assert.match(exportOutput, /dependency_name/);
+    const exportArgs = exportCalls[0];
+    assert.ok(exportArgs, "expected export command invocation");
+    assert.ok(exportArgs.includes("--format"));
+    assert.equal(exportArgs[exportArgs.indexOf("--format") + 1], "sarif");
+    assert.ok(exportArgs.includes("--runtime-trace"));
+    assert.ok(exportArgs.includes("--baseline-key"));
   });
 });
 

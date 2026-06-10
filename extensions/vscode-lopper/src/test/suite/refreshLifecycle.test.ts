@@ -41,6 +41,7 @@ suite("refresh lifecycle", () => {
             analyseCalls += 1;
             return pendingAnalysis.promise;
           },
+          exportWorkspace: async (): Promise<string> => "",
         },
         async (controller) => {
           const firstRefresh = refresh(controller, harness);
@@ -67,6 +68,7 @@ suite("refresh lifecycle", () => {
             analyseCalls += 1;
             return makeAnalysis(harness, { dependencyCount: 2, usedPercent: 66.6 });
           },
+          exportWorkspace: async (): Promise<string> => "",
         },
         async (controller) => {
           await refresh(controller, harness);
@@ -92,6 +94,7 @@ suite("refresh lifecycle", () => {
             deferredAnalyses.push(next);
             return next.promise;
           },
+          exportWorkspace: async (): Promise<string> => "",
         },
         async (controller) => {
           const firstRefresh = refresh(controller, harness, { forceFresh: true });
@@ -135,6 +138,7 @@ suite("refresh lifecycle", () => {
             analyseCalls += 1;
             return makeAnalysis(harness, { dependencyCount: 1, usedPercent: 75 });
           },
+          exportWorkspace: async (): Promise<string> => "",
         },
         async (controller) => {
           await refresh(controller, harness);
@@ -162,6 +166,7 @@ suite("refresh lifecycle", () => {
               unusedImportLocations: [{ file: escapedPath, line: 1, column: 1 }],
             });
           },
+          exportWorkspace: async (): Promise<string> => "",
         },
         async (controller) => {
           await refresh(controller, harness);
@@ -218,6 +223,7 @@ suite("refresh lifecycle", () => {
             ]);
             return analysis;
           },
+          exportWorkspace: async (): Promise<string> => "",
         },
         async (controller) => {
           await refresh(controller, harness);
