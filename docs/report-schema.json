@@ -142,6 +142,10 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "mergeTrace": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/policyMergeTrace" }
+        },
         "thresholds": { "$ref": "#/$defs/effectiveThresholds" },
         "removalCandidateWeights": { "$ref": "#/$defs/removalCandidateWeights" },
         "license": { "$ref": "#/$defs/licensePolicy" }
@@ -229,6 +233,15 @@
           "type": "array",
           "items": { "type": "string" }
         }
+      }
+    },
+    "policyMergeTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "source"],
+      "properties": {
+        "field": { "type": "string" },
+        "source": { "type": "string" }
       }
     },
     "symbolUsage": {
@@ -405,6 +418,14 @@
         },
         "runtimeOnly": { "type": "boolean" },
         "modules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleUsage" }
+        },
+        "parentModules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleUsage" }
+        },
+        "entrypoints": {
           "type": "array",
           "items": { "$ref": "#/$defs/runtimeModuleUsage" }
         },

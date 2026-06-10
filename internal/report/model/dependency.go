@@ -138,11 +138,13 @@ type Recommendation struct {
 }
 
 type RuntimeUsage struct {
-	LoadCount   int                  `json:"loadCount"`
-	Correlation RuntimeCorrelation   `json:"correlation,omitempty"`
-	RuntimeOnly bool                 `json:"runtimeOnly,omitempty"`
-	Modules     []RuntimeModuleUsage `json:"modules,omitempty"`
-	TopSymbols  []RuntimeSymbolUsage `json:"topSymbols,omitempty"`
+	LoadCount     int                  `json:"loadCount"`
+	Correlation   RuntimeCorrelation   `json:"correlation,omitempty"`
+	RuntimeOnly   bool                 `json:"runtimeOnly,omitempty"`
+	Modules       []RuntimeModuleUsage `json:"modules,omitempty"`
+	ParentModules []RuntimeModuleUsage `json:"parentModules,omitempty"`
+	Entrypoints   []RuntimeModuleUsage `json:"entrypoints,omitempty"`
+	TopSymbols    []RuntimeSymbolUsage `json:"topSymbols,omitempty"`
 }
 
 type RuntimeCorrelation string

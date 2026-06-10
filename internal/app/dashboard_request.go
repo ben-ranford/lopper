@@ -9,9 +9,13 @@ import (
 )
 
 type resolvedDashboardRequest struct {
-	repos      []dashboard.RepoInput
-	format     dashboard.Format
-	outputPath string
+	repos             []dashboard.RepoInput
+	format            dashboard.Format
+	outputPath        string
+	baselineStorePath string
+	baselineKey       string
+	baselineLabel     string
+	saveBaseline      bool
 }
 
 func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, error) {
@@ -23,6 +27,9 @@ func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, er
 	}
 	if hasConfig {
 		configFormat = loadedConfig.Dashboard.Output
+		if strings.TrimSpace(req.BaselineStorePath) == "" {
+			req.BaselineStorePath = resolveDashboardConfigPath(loadedConfig.ConfigDir, loadedConfig.Dashboard.BaselineStore)
+		}
 		if len(repos) == 0 {
 			repos, err = reposFromDashboardConfig(loadedConfig)
 			if err != nil {
@@ -41,9 +48,13 @@ func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, er
 	}
 
 	return resolvedDashboardRequest{
-		repos:      repos,
-		format:     format,
-		outputPath: strings.TrimSpace(req.OutputPath),
+		repos:             repos,
+		format:            format,
+		outputPath:        strings.TrimSpace(req.OutputPath),
+		baselineStorePath: strings.TrimSpace(req.BaselineStorePath),
+		baselineKey:       strings.TrimSpace(req.BaselineKey),
+		baselineLabel:     strings.TrimSpace(req.BaselineLabel),
+		saveBaseline:      req.SaveBaseline,
 	}, nil
 }
 
@@ -132,4 +143,15 @@ func inferDashboardRepoName(path string) string {
 		return strings.TrimSpace(path)
 	}
 	return base
+}
+
+func resolveDashboardConfigPath(configDir, value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if filepath.IsAbs(trimmed) {
+		return trimmed
+	}
+	return filepath.Join(configDir, trimmed)
 }

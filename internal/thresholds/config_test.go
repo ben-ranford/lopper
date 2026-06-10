@@ -741,7 +741,7 @@ func TestLoadWithPolicyRepoDiscoveredConfigRejectsRemotePackWithoutFetching(t *t
 	if err == nil {
 		t.Fatalf("expected repo-discovered config to reject remote pack")
 	}
-	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs require an explicit config path")
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
 	if got := atomic.LoadInt32(requests); got != 0 {
 		t.Fatalf("expected no remote fetches for repo-discovered config, got %d", got)
 	}
@@ -772,7 +772,7 @@ func TestLoadWithPolicyExplicitConfigTreatsRepoOverlayAsUntrustedForRemotePack(t
 	if err == nil {
 		t.Fatalf("expected explicit config to reject remote packs introduced by repo overlay")
 	}
-	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs require an explicit config path")
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
 	if got := atomic.LoadInt32(requests); got != 0 {
 		t.Fatalf("expected no remote fetches for rejected overlay remote pack, got %d", got)
 	}
@@ -786,33 +786,18 @@ func TestLoadWithPolicyRemotePackWithPinFromExplicitConfig(t *testing.T) {
   removal_candidate_weight_impact: 0.2
   removal_candidate_weight_confidence: 0.2
 `
-	sum := sha256.Sum256([]byte(packBody))
-	pin := hex.EncodeToString(sum[:])
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/org.yml" {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := w.Write([]byte(packBody)); err != nil {
-			t.Fatalf("write remote pack response: %v", err)
-		}
-	}))
+	server, pin, requests := newPinnedRemotePolicyServer(t, packBody)
 	defer server.Close()
 
 	policy := fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin)
 	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), policy)
 	result, err := LoadWithPolicy(repo, customConfigName)
-	if err != nil {
-		t.Fatalf("load explicit config with pinned remote pack: %v", err)
+	if err == nil {
+		t.Fatalf("expected explicit config to reject pinned remote pack")
 	}
-	if result.Resolved.FailOnIncreasePercent != 3 {
-		t.Fatalf("expected repo override, got %d", result.Resolved.FailOnIncreasePercent)
-	}
-	if result.Resolved.LowConfidenceWarningPercent != 19 {
-		t.Fatalf("expected remote pack threshold low_confidence_warning_percent=19, got %d", result.Resolved.LowConfidenceWarningPercent)
-	}
-	if len(result.PolicySources) < 3 || !strings.Contains(result.PolicySources[1], server.URL+"/org.yml#sha256="+pin) {
-		t.Fatalf("expected remote policy source in precedence output, got %#v", result.PolicySources)
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
+	if got := atomic.LoadInt32(requests); got != 0 {
+		t.Fatalf("expected no remote fetches for explicit config remote pack, got %d", got)
 	}
 }
 
@@ -851,7 +836,7 @@ func TestLoadWithExplicitConfigRejectsSpecialFilePolicyPack(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected explicit config non-regular policy pack error")
 		}
-		if !strings.Contains(err.Error(), "file exceeds size limit") {
+		if !strings.Contains(err.Error(), "local policy packs must remain under") {
 			t.Fatalf("unexpected policy pack read error: %v", err)
 		}
 		return
@@ -892,7 +877,9 @@ func assertRejectedPolicyLoadResult(t *testing.T, result LoadResult, err error, 
 
 func TestLoadWithPolicyRemotePackPinMismatchFromExplicitConfig(t *testing.T) {
 	repo := t.TempDir()
+	var requests int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
 		if _, err := w.Write([]byte("thresholds:\n  low_confidence_warning_percent: 12\n")); err != nil {
 			t.Fatalf("write mismatch response: %v", err)
 		}
@@ -900,12 +887,13 @@ func TestLoadWithPolicyRemotePackPinMismatchFromExplicitConfig(t *testing.T) {
 	defer server.Close()
 	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
 
-	_, err := LoadWithPolicy(repo, customConfigName)
+	result, err := LoadWithPolicy(repo, customConfigName)
 	if err == nil {
-		t.Fatalf("expected remote pin mismatch error")
+		t.Fatalf("expected explicit config to reject remote pack before mismatch fetch")
 	}
-	if !strings.Contains(err.Error(), "sha256 mismatch") {
-		t.Fatalf("expected sha256 mismatch error, got %v", err)
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("expected no remote fetches for explicit config remote pack, got %d", got)
 	}
 }
 

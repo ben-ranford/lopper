@@ -10,6 +10,8 @@ The SARIF output includes:
 
 - stable rule IDs for waste, risk cues, and recommendations
 - finding metadata (dependency, language, module/symbol when available)
+- dependency provenance and runtime context, including parent modules and entrypoints when runtime traces are present
+- baseline context for compare-mode findings, including per-dependency deltas and overall waste delta
 - source locations for findings when location data exists
 
 ## Upload to GitHub code scanning

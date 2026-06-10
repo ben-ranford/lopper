@@ -47,7 +47,9 @@ dashboard:
 Notes:
 
 - Relative `path` values are resolved relative to the config file directory.
-- `baseline_store` is reserved for future dashboard support and is not yet applied during dashboard execution.
+- `baseline_store` enables dashboard baseline snapshots and compare mode. Relative values are resolved against the config file directory.
+- `baseline_key` selects a stored baseline snapshot when comparing. `baseline_label` is used when saving a labeled snapshot.
+- `save_baseline` writes the current dashboard report to the baseline store without changing the normal report output.
 - `repoUrl` entries are reserved for future support and are not yet executable by `lopper dashboard`.
 - CLI flags take precedence over config for `--format` and `--output`; `--language` only fills missing repo language values, and `--top` is CLI-only.
 
@@ -57,6 +59,7 @@ Dashboard JSON emits:
 
 - `generated_at`
 - `repos[]` (per-repo metrics and any analysis errors)
+- `baseline_comparison` when a dashboard baseline is loaded and compared
 - `summary`:
   - `total_repos`
   - `total_deps`

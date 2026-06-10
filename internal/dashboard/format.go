@@ -11,6 +11,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/csvsanitize"
 )
 
+const (
+	htmlTableBodyOpen  = "</tr></thead><tbody>"
+	htmlTableBodyClose = "</tbody></table>"
+)
+
 func FormatReport(reportData Report, format Format) (string, error) {
 	switch format {
 	case FormatJSON:
@@ -39,6 +44,9 @@ func formatCSV(reportData Report) (string, error) {
 		return "", err
 	}
 	if err := writeDashboardCrossRepoRowsCSV(writer.Write, reportData.CrossRepoDeps); err != nil {
+		return "", err
+	}
+	if err := writeDashboardBaselineRowsCSV(writer.Write, reportData.BaselineComparison); err != nil {
 		return "", err
 	}
 
@@ -127,6 +135,72 @@ func writeDashboardCrossRepoRowsCSV(write func([]string) error, dependencies []C
 	return nil
 }
 
+func writeDashboardBaselineRowsCSV(write func([]string) error, comparison *BaselineComparison) error {
+	if comparison == nil {
+		return nil
+	}
+	if err := write(nil); err != nil {
+		return err
+	}
+	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{"baseline_key", comparison.BaselineKey})); err != nil {
+		return err
+	}
+	if comparison.CurrentKey != "" {
+		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{"current_key", comparison.CurrentKey})); err != nil {
+			return err
+		}
+	}
+	summaryRows := [][]string{
+		{"total_repos_delta", fmt.Sprintf("%d", comparison.SummaryDelta.TotalReposDelta)},
+		{"total_deps_delta", fmt.Sprintf("%d", comparison.SummaryDelta.TotalDepsDelta)},
+		{"total_waste_candidates_delta", fmt.Sprintf("%d", comparison.SummaryDelta.TotalWasteCandidatesDelta)},
+		{"cross_repo_duplicates_delta", fmt.Sprintf("%d", comparison.SummaryDelta.CrossRepoDuplicatesDelta)},
+		{"critical_cves_delta", fmt.Sprintf("%d", comparison.SummaryDelta.CriticalCVEsDelta)},
+	}
+	for _, row := range summaryRows {
+		if err := write(csvsanitize.EscapeLeadingFormulaRow(row)); err != nil {
+			return err
+		}
+	}
+	if len(comparison.RepoDeltas) == 0 {
+		return nil
+	}
+	if err := write(nil); err != nil {
+		return err
+	}
+	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
+		"repo_name",
+		"repo_path",
+		"kind",
+		"dependency_count_delta",
+		"waste_candidate_count_delta",
+		"waste_candidate_percent_delta",
+		"critical_cves_delta",
+		"denied_license_count_delta",
+		"current_error",
+		"baseline_error",
+	})); err != nil {
+		return err
+	}
+	for _, delta := range comparison.RepoDeltas {
+		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
+			delta.Name,
+			delta.Path,
+			string(delta.Kind),
+			fmt.Sprintf("%d", delta.DependencyCountDelta),
+			fmt.Sprintf("%d", delta.WasteCandidateCountDelta),
+			fmt.Sprintf("%.2f", delta.WasteCandidatePercentDelta),
+			fmt.Sprintf("%d", delta.CriticalCVEsDelta),
+			fmt.Sprintf("%d", delta.DeniedLicenseCountDelta),
+			delta.CurrentError,
+			delta.BaselineError,
+		})); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func formatHTML(reportData Report) string {
 	var buffer strings.Builder
 	buffer.WriteString("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
@@ -178,7 +252,7 @@ func formatHTML(reportData Report) string {
 	if len(reportData.CrossRepoDeps) > 0 {
 		buffer.WriteString("<h2>Cross-Repo Duplicate Dependencies (3+ repos)</h2><table><thead><tr>")
 		buffer.WriteString("<th>Dependency</th><th>Repo Count</th><th>Repos</th>")
-		buffer.WriteString("</tr></thead><tbody>")
+		buffer.WriteString(htmlTableBodyOpen)
 		for _, dependency := range reportData.CrossRepoDeps {
 			buffer.WriteString("<tr>")
 			buffer.WriteString("<td>" + html.EscapeString(dependency.Name) + "</td>")
@@ -186,10 +260,51 @@ func formatHTML(reportData Report) string {
 			buffer.WriteString("<td>" + html.EscapeString(strings.Join(dependency.Repositories, ", ")) + "</td>")
 			buffer.WriteString("</tr>")
 		}
-		buffer.WriteString("</tbody></table>")
+		buffer.WriteString(htmlTableBodyClose)
 	}
 
+	buffer.WriteString(formatDashboardBaselineHTML(reportData.BaselineComparison))
+
 	buffer.WriteString("</body></html>\n")
+	return buffer.String()
+}
+
+func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
+	if comparison == nil {
+		return ""
+	}
+	var buffer strings.Builder
+	buffer.WriteString("<h2>Baseline Comparison</h2>")
+	buffer.WriteString("<section class=\"card\"><div class=\"grid\">")
+	buffer.WriteString(metricHTML("Baseline", comparison.BaselineKey))
+	buffer.WriteString(metricHTML("Repos Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.TotalReposDelta)))
+	buffer.WriteString(metricHTML("Deps Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.TotalDepsDelta)))
+	buffer.WriteString(metricHTML("Waste Candidates Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.TotalWasteCandidatesDelta)))
+	buffer.WriteString(metricHTML("Cross-Repo Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.CrossRepoDuplicatesDelta)))
+	buffer.WriteString(metricHTML("Critical CVEs Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.CriticalCVEsDelta)))
+	buffer.WriteString("</div></section>")
+
+	if len(comparison.RepoDeltas) > 0 {
+		buffer.WriteString("<table><thead><tr>")
+		buffer.WriteString("<th>Repo</th><th>Path</th><th>Kind</th><th>Deps Δ</th><th>Waste Δ</th><th>Waste % Δ</th><th>Critical CVEs Δ</th><th>Denied Licenses Δ</th><th>Current Error</th><th>Baseline Error</th>")
+		buffer.WriteString(htmlTableBodyOpen)
+		for _, delta := range comparison.RepoDeltas {
+			buffer.WriteString("<tr>")
+			buffer.WriteString("<td>" + html.EscapeString(delta.Name) + "</td>")
+			buffer.WriteString("<td>" + html.EscapeString(delta.Path) + "</td>")
+			buffer.WriteString("<td>" + html.EscapeString(string(delta.Kind)) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.DependencyCountDelta) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.WasteCandidateCountDelta) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+0.2f%%", delta.WasteCandidatePercentDelta) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.CriticalCVEsDelta) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.DeniedLicenseCountDelta) + "</td>")
+			buffer.WriteString("<td>" + html.EscapeString(delta.CurrentError) + "</td>")
+			buffer.WriteString("<td>" + html.EscapeString(delta.BaselineError) + "</td>")
+			buffer.WriteString("</tr>")
+		}
+		buffer.WriteString(htmlTableBodyClose)
+	}
+
 	return buffer.String()
 }
 

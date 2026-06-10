@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -203,5 +205,136 @@ func TestIsBootstrapableMissingBaseline(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestSaveDashboardBaselineIfNeededBranches(t *testing.T) {
+	application := &App{}
+	base := dashboard.Report{
+		GeneratedAt: testTime(),
+		Repos: []dashboard.RepoResult{
+			{Name: "api", Path: "./api", DependencyCount: 1},
+		},
+		Summary: dashboard.Summary{TotalRepos: 1, TotalDeps: 1},
+	}
+
+	unchanged, err := application.saveDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{}, testTime())
+	if err != nil {
+		t.Fatalf("save dashboard baseline noop: %v", err)
+	}
+	if len(unchanged.SourceWarnings) != 0 {
+		t.Fatalf("expected no save warning when disabled, got %#v", unchanged.SourceWarnings)
+	}
+
+	_, err = application.saveDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{saveBaseline: true}, testTime())
+	if err == nil || !strings.Contains(err.Error(), saveBaselineStoreErr) {
+		t.Fatalf("expected missing dashboard baseline store error, got %v", err)
+	}
+
+	store := t.TempDir()
+	saveResolved := resolvedDashboardRequest{
+		baselineStorePath: store,
+		baselineLabel:     "nightly",
+		saveBaseline:      true,
+	}
+	saved, err := application.saveDashboardBaselineIfNeeded(base, ".", saveResolved, testTime())
+	if err != nil {
+		t.Fatalf("save dashboard baseline: %v", err)
+	}
+	if len(saved.SourceWarnings) != 1 || !strings.Contains(saved.SourceWarnings[0], "saved immutable dashboard baseline snapshot:") {
+		t.Fatalf("expected dashboard save warning, got %#v", saved.SourceWarnings)
+	}
+
+	duplicateResolved := resolvedDashboardRequest{
+		baselineStorePath: store,
+		baselineLabel:     "nightly",
+		saveBaseline:      true,
+	}
+	_, err = application.saveDashboardBaselineIfNeeded(base, ".", duplicateResolved, testTime())
+	if err == nil || !strings.Contains(err.Error(), dashboard.ErrBaselineAlreadyExists.Error()) {
+		t.Fatalf("expected duplicate dashboard baseline save error, got %v", err)
+	}
+}
+
+func TestApplyDashboardBaselineIfNeededBranches(t *testing.T) {
+	application := &App{}
+	base := dashboard.Report{
+		GeneratedAt: testTime(),
+		Repos: []dashboard.RepoResult{
+			{Name: "api", Path: "./api", DependencyCount: 1},
+		},
+		Summary: dashboard.Summary{TotalRepos: 1, TotalDeps: 1},
+	}
+
+	store := t.TempDir()
+	if _, err := dashboard.SaveSnapshot(store, "label:nightly", base, testTime()); err != nil {
+		t.Fatalf("seed dashboard baseline: %v", err)
+	}
+
+	applied, err := application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
+		baselineStorePath: store,
+		baselineKey:       "label:nightly",
+	})
+	if err != nil {
+		t.Fatalf("apply dashboard baseline: %v", err)
+	}
+	if applied.BaselineComparison == nil || applied.BaselineComparison.BaselineKey != "label:nightly" {
+		t.Fatalf("expected applied dashboard baseline comparison, got %#v", applied.BaselineComparison)
+	}
+
+	missingStore := t.TempDir()
+	bootstrapped, err := application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
+		baselineStorePath: missingStore,
+		baselineKey:       "label:missing",
+		saveBaseline:      true,
+	})
+	if err != nil {
+		t.Fatalf("expected missing dashboard baseline to bootstrap when saving: %v", err)
+	}
+	if bootstrapped.BaselineComparison != nil {
+		t.Fatalf("expected missing bootstrap baseline to leave report unchanged, got %#v", bootstrapped.BaselineComparison)
+	}
+
+	_, err = application.applyDashboardBaselineIfNeeded(base, filepath.Join(t.TempDir(), "missing", "repo"), resolvedDashboardRequest{
+		baselineStorePath: t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "baseline key is required") {
+		t.Fatalf("expected dashboard baseline resolution error, got %v", err)
+	}
+
+	_, err = application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
+		baselineStorePath: t.TempDir(),
+		baselineKey:       "label:not-found",
+	})
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing dashboard baseline load error, got %v", err)
+	}
+}
+
+func TestExecuteDashboardBaselineErrorBranches(t *testing.T) {
+	application := &App{
+		Analyzer: &mapAnalyzer{
+			reports: map[string]report.Report{
+				singleRepoPath: {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+			},
+			errs: map[string]error{},
+		},
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.RepoPath = filepath.Join(t.TempDir(), "missing", "repo")
+	req.Dashboard.Repos = []DashboardRepo{{Name: "api", Path: singleRepoPath}}
+	req.Dashboard.BaselineStorePath = t.TempDir()
+	if _, err := application.Execute(context.Background(), req); err == nil || !strings.Contains(err.Error(), "baseline key is required") {
+		t.Fatalf("expected execute dashboard baseline resolution error, got %v", err)
+	}
+
+	req = DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Repos = []DashboardRepo{{Name: "api", Path: singleRepoPath}}
+	req.Dashboard.SaveBaseline = true
+	if _, err := application.Execute(context.Background(), req); err == nil || !strings.Contains(err.Error(), saveBaselineStoreErr) {
+		t.Fatalf("expected execute dashboard save-baseline error, got %v", err)
 	}
 }

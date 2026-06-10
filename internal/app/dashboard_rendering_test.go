@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -230,5 +231,43 @@ func TestExecuteDashboardInvalidFormatReturnsError(t *testing.T) {
 	_, err := application.Execute(context.Background(), req)
 	if err == nil {
 		t.Fatalf("expected invalid format error")
+	}
+}
+
+func TestExecuteDashboardAppliesBaselineComparison(t *testing.T) {
+	tmp := t.TempDir()
+	baselineStore := filepath.Join(tmp, "baselines")
+	baseline := dashboard.Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		Repos: []dashboard.RepoResult{
+			{Name: "api", Path: singleRepoPath, DependencyCount: 1, WasteCandidateCount: 0, WasteCandidatePercent: 0, CriticalCVEs: 0, DeniedLicenseCount: 0},
+		},
+		Summary: dashboard.Summary{TotalRepos: 1, TotalDeps: 1, TotalWasteCandidates: 0, CrossRepoDuplicates: 0, CriticalCVEs: 0},
+	}
+	if _, err := dashboard.SaveSnapshot(baselineStore, "label:baseline", baseline, time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("save dashboard baseline snapshot: %v", err)
+	}
+
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			singleRepoPath: {Dependencies: []report.DependencyReport{{Name: "dep"}, {Name: "dep-2"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{{Name: "api", Path: singleRepoPath}}
+	req.Dashboard.BaselineStorePath = baselineStore
+	req.Dashboard.BaselineKey = "label:baseline"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute dashboard baseline compare: %v", err)
+	}
+	if !strings.Contains(output, "baseline_comparison") {
+		t.Fatalf("expected baseline comparison in dashboard output, got %q", output)
 	}
 }

@@ -61,12 +61,15 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 
 func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 	opts := ui.Options{
-		RepoPath: req.RepoPath,
-		Language: req.TUI.Language,
-		TopN:     req.TUI.TopN,
-		Filter:   req.TUI.Filter,
-		Sort:     req.TUI.Sort,
-		PageSize: req.TUI.PageSize,
+		RepoPath:          req.RepoPath,
+		Language:          req.TUI.Language,
+		TopN:              req.TUI.TopN,
+		Filter:            req.TUI.Filter,
+		Sort:              req.TUI.Sort,
+		PageSize:          req.TUI.PageSize,
+		BaselinePath:      req.TUI.BaselinePath,
+		BaselineStorePath: req.TUI.BaselineStorePath,
+		BaselineKey:       req.TUI.BaselineKey,
 	}
 	if req.TUI.SnapshotPath != "" {
 		return "", a.TUI.Snapshot(ctx, opts, req.TUI.SnapshotPath)
