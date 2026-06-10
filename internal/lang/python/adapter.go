@@ -2,7 +2,6 @@ package python
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -25,75 +24,6 @@ func NewAdapter() *Adapter {
 	adapter := &Adapter{}
 	adapter.AdapterLifecycle = language.NewAdapterLifecycle("python", []string{"py"}, adapter.DetectWithConfidence)
 	return adapter
-}
-
-func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
-	_ = ctx
-	repoPath = shared.DefaultRepoPath(repoPath)
-
-	detection := language.Detection{}
-	roots := make(map[string]struct{})
-
-	if err := applyPythonRootSignals(repoPath, &detection, roots); err != nil {
-		return language.Detection{}, err
-	}
-
-	const maxFiles = 512
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		return walkPythonDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
-	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return language.Detection{}, err
-	}
-
-	detection = shared.FinalizeDetection(repoPath, detection, roots)
-	return detection, nil
-}
-
-func walkPythonDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
-	if entry.IsDir() {
-		if shouldSkipDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-		return nil
-	}
-	(*visited)++
-	if *visited > maxFiles {
-		return fs.SkipAll
-	}
-	updateDetectionFromPythonFile(path, entry, roots, detection)
-	return nil
-}
-
-func applyPythonRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	return shared.ApplyRootSignals(repoPath, pythonRootSignals, detection, roots)
-}
-
-var pythonRootSignals = []shared.RootSignal{
-	{Name: "pyproject.toml", Confidence: 50},
-	{Name: "Pipfile", Confidence: 45},
-	{Name: "Pipfile.lock", Confidence: 25},
-	{Name: "poetry.lock", Confidence: 25},
-	{Name: "uv.lock", Confidence: 25},
-	{Name: "requirements.txt", Confidence: 35},
-	{Name: "setup.py", Confidence: 35},
-}
-
-func updateDetectionFromPythonFile(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
-	switch strings.ToLower(entry.Name()) {
-	case "pyproject.toml", "pipfile", "pipfile.lock", "poetry.lock", "uv.lock", "requirements.txt", "setup.py":
-		detection.Matched = true
-		detection.Confidence += 10
-		roots[filepath.Dir(path)] = struct{}{}
-	}
-	if strings.HasSuffix(strings.ToLower(path), ".py") {
-		detection.Matched = true
-		detection.Confidence += 2
-	}
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
@@ -119,22 +49,6 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Rep
 	result.Summary = report.ComputeSummary(result.Dependencies)
 
 	return result, nil
-}
-
-func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopPythonDependencies)
-}
-
-func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
-	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
-		return buildDependencyReport(dependency, scan)
-	}
-	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 type importBinding = shared.ImportRecord
@@ -460,56 +374,6 @@ func parseImportPart(value string) (string, string) {
 
 func stripComment(line string) string {
 	return shared.StripLineComment(line, "#")
-}
-
-func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, pythonFileUsages(scan), normalizeDependencyID)
-	warnings := make([]string, 0)
-	if !stats.HasImports {
-		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))
-	}
-
-	dep := report.DependencyReport{
-		Language:             "python",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
-	if stats.WildcardImports > 0 {
-		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-			Code:     "wildcard-import",
-			Severity: "medium",
-			Message:  fmt.Sprintf("found %d wildcard import(s) for this dependency", stats.WildcardImports),
-		})
-	}
-	dep.Recommendations = buildRecommendations(dep)
-	return dep, warnings
-}
-
-func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
-	recs := make([]report.Recommendation, 0, 2)
-	if len(dep.UsedImports) == 0 && len(dep.UnusedImports) > 0 {
-		recs = append(recs, report.Recommendation{
-			Code:      "remove-unused-dependency",
-			Priority:  "high",
-			Message:   fmt.Sprintf("No used imports were detected for %q; consider removing it.", dep.Name),
-			Rationale: "Unused dependencies increase attack and maintenance surface.",
-		})
-	}
-	if shared.HasWildcardImport(dep.UsedImports) || shared.HasWildcardImport(dep.UnusedImports) {
-		recs = append(recs, report.Recommendation{
-			Code:      "avoid-star-imports",
-			Priority:  "medium",
-			Message:   "Wildcard imports were detected; prefer explicit symbol imports.",
-			Rationale: "Explicit imports improve readability and analysis precision.",
-		})
-	}
-	return recs
 }
 
 func dependencyFromModule(repoPath, moduleName string) string {
