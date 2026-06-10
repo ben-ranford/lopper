@@ -16,7 +16,7 @@ func NewAdapter() *Adapter {
 	return adapter
 }
 
-func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
+func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Result, error) {
 	repoPath, result, err := a.newReport(req.RepoPath)
 	if err != nil {
 		return report.Report{}, err

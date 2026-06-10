@@ -102,7 +102,7 @@ type ConfidenceProvider interface {
 }
 
 type Analyser interface {
-	Analyse(ctx context.Context, req Request) (report.Report, error)
+	Analyse(ctx context.Context, req Request) (report.Result, error)
 }
 
 type Adapter interface {

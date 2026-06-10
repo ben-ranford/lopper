@@ -45,7 +45,7 @@ func NewAdapter() *Adapter {
 	return adapter
 }
 
-func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
+func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Result, error) {
 	repoPath, result, err := shared.NewReport(req.RepoPath, a.Clock)
 	if err != nil {
 		return report.Report{}, err

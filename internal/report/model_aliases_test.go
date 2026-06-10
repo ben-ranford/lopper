@@ -9,6 +9,7 @@ import (
 
 func TestReportModelAliasesExposeModelTypes(t *testing.T) {
 	assertSameType[Report, model.Report](t)
+	assertSameType[Result, model.Report](t)
 	assertSameType[DependencyReport, model.DependencyReport](t)
 	assertSameType[Summary, model.Summary](t)
 	assertSameType[BaselineComparison, model.BaselineComparison](t)

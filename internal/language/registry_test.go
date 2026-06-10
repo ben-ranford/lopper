@@ -54,7 +54,7 @@ func (a *testAdapter) DetectWithConfidence(ctx context.Context, repoPath string)
 	return a.detection, nil
 }
 
-func (a *testAdapter) Analyse(ctx context.Context, req Request) (report.Report, error) {
+func (a *testAdapter) Analyse(ctx context.Context, req Request) (report.Result, error) {
 	return report.Report{}, nil
 }
 

@@ -5,6 +5,7 @@ import "github.com/ben-ranford/lopper/internal/report/model"
 const SchemaVersion = model.SchemaVersion
 
 type Report = model.Report
+type Result = model.Report
 
 type DependencyReport = model.DependencyReport
 type DependencyLicense = model.DependencyLicense
