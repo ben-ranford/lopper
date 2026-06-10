@@ -15,7 +15,7 @@ type analysisPipelineState struct {
 	warnings []string
 }
 
-func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
+func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Result, error) {
 	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
 	if err != nil {
 		return report.Report{}, err
