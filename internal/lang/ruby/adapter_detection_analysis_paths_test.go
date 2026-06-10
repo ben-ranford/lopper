@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -57,13 +58,13 @@ func TestRubyAdapterHelperBranches(t *testing.T) {
 		t.Fatalf("did not expect src to be skipped")
 	}
 
-	weights := resolveRemovalCandidateWeights(nil)
+	weights := shared.ResolveRemovalCandidateWeights(nil)
 	if weights != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default weights")
 	}
 
 	custom := report.RemovalCandidateWeights{Usage: 0.1, Impact: 0.2, Confidence: 0.7}
-	normalized := resolveRemovalCandidateWeights(&custom)
+	normalized := shared.ResolveRemovalCandidateWeights(&custom)
 	if normalized.Confidence == 0 {
 		t.Fatalf("expected non-zero normalized confidence weight")
 	}

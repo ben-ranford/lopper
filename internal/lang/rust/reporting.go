@@ -11,7 +11,7 @@ import (
 
 func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	minUsageThreshold := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
-	weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
+	weights := shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 	switch {
 	case req.Dependency != "":
 		dependency := normalizeDependencyID(req.Dependency)
@@ -31,10 +31,6 @@ func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, 
 		return buildDependencyReport(dependency, scan, minUsageThreshold), nil
 	}
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int) report.DependencyReport {

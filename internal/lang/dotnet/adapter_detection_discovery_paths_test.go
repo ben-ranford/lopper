@@ -86,13 +86,6 @@ func TestDotNetMarkDetectionZeroConfidence(t *testing.T) {
 	}
 }
 
-func TestDotNetResolveRemovalCandidateWeightsNormalizes(t *testing.T) {
-	normalized := resolveRemovalCandidateWeights(&report.RemovalCandidateWeights{Usage: 2, Impact: 1, Confidence: 1})
-	if normalized.Usage <= 0 || normalized.Impact <= 0 || normalized.Confidence <= 0 {
-		t.Fatalf("expected normalized weights, got %#v", normalized)
-	}
-}
-
 func TestDotNetAddAncestorCentralPackagesParseError(t *testing.T) {
 	parent := t.TempDir()
 	repo := filepath.Join(parent, "src", "service")

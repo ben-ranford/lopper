@@ -18,7 +18,7 @@ func buildRequestedSwiftDependencies(req language.Request, scan scanResult, cata
 		}
 		return buildDependencyReport(dependency, scan, catalog, minUsagePercent)
 	}
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, resolveRemovalCandidateWeights, buildTopSwiftDependencies(scan, catalog, minUsagePercent))
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, buildTopSwiftDependencies(scan, catalog, minUsagePercent))
 }
 
 func buildTopSwiftDependencies(scan scanResult, catalog dependencyCatalog, minUsagePercent int) func(int, scanResult, report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
@@ -181,8 +181,4 @@ func usesManagerSpecificMetadata(meta dependencyMeta) bool {
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
 	return shared.ResolveMinUsageRecommendationThreshold(value)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }

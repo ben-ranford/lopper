@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -199,7 +200,7 @@ func testCPPIncludeMappingFallbackBranches(t *testing.T) {
 	}
 
 	custom := &report.RemovalCandidateWeights{Usage: 1, Impact: 2, Confidence: 3}
-	got := resolveRemovalCandidateWeights(custom)
+	got := shared.ResolveRemovalCandidateWeights(custom)
 	if got == report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected non-nil weights to normalize instead of using defaults")
 	}

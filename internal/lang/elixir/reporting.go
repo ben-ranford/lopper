@@ -40,9 +40,5 @@ func buildRequestedDependencies(req language.Request, scan scanResult) ([]report
 	buildDependency := func(dep string, _ scanResult) (report.DependencyReport, []string) {
 		return buildReport(dep)
 	}
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, resolveWeights, topBuilder)
-}
-
-func resolveWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, topBuilder)
 }

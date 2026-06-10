@@ -19,9 +19,9 @@ func BuildRequestedDependencies[S any](req language.Request, scan S, normalizeDe
 	return []report.DependencyReport{depReport}, warnings
 }
 
-func BuildRequestedDependenciesWithWeights[S any](req language.Request, scan S, normalizeDependencyID func(string) string, buildDependency func(string, S) (report.DependencyReport, []string), resolveWeights func(*report.RemovalCandidateWeights) report.RemovalCandidateWeights, buildTop func(int, S, report.RemovalCandidateWeights) ([]report.DependencyReport, []string)) ([]report.DependencyReport, []string) {
+func BuildRequestedDependenciesWithWeights[S any](req language.Request, scan S, normalizeDependencyID func(string) string, buildDependency func(string, S) (report.DependencyReport, []string), buildTop func(int, S, report.RemovalCandidateWeights) ([]report.DependencyReport, []string)) ([]report.DependencyReport, []string) {
 	buildTopWithWeights := func(topN int, current S) ([]report.DependencyReport, []string) {
-		return buildTop(topN, current, resolveWeights(req.RemovalCandidateWeights))
+		return buildTop(topN, current, ResolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	}
 	return BuildRequestedDependencies(req, scan, normalizeDependencyID, buildDependency, buildTopWithWeights)
 }

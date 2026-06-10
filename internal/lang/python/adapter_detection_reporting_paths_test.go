@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -143,11 +144,11 @@ func testPythonSkipDirHelpersAndDefaultWeights(t *testing.T) {
 	if err := scanPythonRepoEntry(repo, skipDir, dirEntry, &scanResult{}); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected python scanner to skip .venv, got %v", err)
 	}
-	if got := resolveRemovalCandidateWeights(nil); got != report.DefaultRemovalCandidateWeights() {
+	if got := shared.ResolveRemovalCandidateWeights(nil); got != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default weights, got %#v", got)
 	}
 	customWeights := &report.RemovalCandidateWeights{Usage: 4, Impact: 2, Confidence: 2}
-	if got := resolveRemovalCandidateWeights(customWeights); got != report.NormalizeRemovalCandidateWeights(*customWeights) {
+	if got := shared.ResolveRemovalCandidateWeights(customWeights); got != report.NormalizeRemovalCandidateWeights(*customWeights) {
 		t.Fatalf("expected custom weights to be normalized, got %#v", got)
 	}
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func buildRequestedCPPDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
+	weights := shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 	switch {
 	case req.Dependency != "":
 		dependency := shared.NormalizeDependencyID(req.Dependency)
@@ -45,10 +45,6 @@ func buildTopCPPDependencies(topN int, scan scanResult, weights report.RemovalCa
 		return buildDependencyReport(dependency, scan, false)
 	}
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage bool) (report.DependencyReport, []string) {

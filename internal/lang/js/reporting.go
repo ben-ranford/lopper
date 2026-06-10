@@ -466,7 +466,3 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 func resolveMinUsageRecommendationThreshold(value *int) int {
 	return shared.ResolveMinUsageRecommendationThreshold(value)
 }
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
-}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -132,7 +133,7 @@ func assertRustPathAndWeightsHelpers(t *testing.T) {
 	if isLocalRustModuleWithCache(nil, repo, "missing_mod") {
 		t.Fatalf("expected missing local module to be false")
 	}
-	if resolveRemovalCandidateWeights(nil) != report.DefaultRemovalCandidateWeights() {
+	if shared.ResolveRemovalCandidateWeights(nil) != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default removal weights when nil")
 	}
 	if !isSubPath(repo, repo) {
@@ -141,7 +142,7 @@ func assertRustPathAndWeightsHelpers(t *testing.T) {
 	if samePath(filepath.Join(repo, "a"), filepath.Join(repo, "b")) {
 		t.Fatalf("expected different paths not to be same")
 	}
-	if got := resolveRemovalCandidateWeights(&report.RemovalCandidateWeights{Usage: 2, Impact: 1, Confidence: 1}); got.Usage <= 0 {
+	if got := shared.ResolveRemovalCandidateWeights(&report.RemovalCandidateWeights{Usage: 2, Impact: 1, Confidence: 1}); got.Usage <= 0 {
 		t.Fatalf("expected normalized non-nil removal weights")
 	}
 }

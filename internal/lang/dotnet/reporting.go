@@ -11,7 +11,7 @@ import (
 
 func buildRequestedDotNetDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	minUsagePercentForRecommendations := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
-	weights := resolveRemovalCandidateWeights(req.RemovalCandidateWeights)
+	weights := shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights)
 	switch {
 	case req.Dependency != "":
 		dependency := normalizeDependencyID(req.Dependency)
@@ -131,8 +131,4 @@ func buildRecommendations(dep report.DependencyReport, ambiguousCount int, undec
 
 func resolveMinUsageRecommendationThreshold(threshold *int) int {
 	return shared.ResolveMinUsageRecommendationThreshold(threshold)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
