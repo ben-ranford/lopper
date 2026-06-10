@@ -215,6 +215,9 @@ func TestDeclarationAndMaskingHelpers(t *testing.T) {
 	if declarationLineContainsToken(content, lineStarts, 1, "bar") {
 		t.Fatalf("expected missing token to return false")
 	}
+	if declarationLineContainsToken([]byte("x"), []int{1, 1}, 1, "x") {
+		t.Fatalf("expected malformed line offsets to be rejected")
+	}
 
 	escaped := []byte("\\\"")
 	next, state := scanQuoted(escaped, 0, '"', scannerStateDoubleQuote)
@@ -533,6 +536,14 @@ func TestSortReportsByWasteAndHelpers(t *testing.T) {
 	SortReportsByWaste(reports)
 	if reports[0].Name != "a" {
 		t.Fatalf("expected alpha tie-break on name, got %q", reports[0].Name)
+	}
+	scoreOrdered := []report.DependencyReport{
+		{Name: "low-waste", UsedPercent: 90, TotalExportsCount: 10},
+		{Name: "high-waste", UsedPercent: 10, TotalExportsCount: 10},
+	}
+	SortReportsByWaste(scoreOrdered)
+	if scoreOrdered[0].Name != "high-waste" {
+		t.Fatalf("expected higher waste score to sort first, got %#v", scoreOrdered)
 	}
 
 	if score, ok := WasteScore(report.DependencyReport{TotalExportsCount: 0}); ok || score != -1 {

@@ -2,19 +2,9 @@ package kotlinandroid
 
 import (
 	"fmt"
-	"regexp"
-	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
-
-const gradleDependencyConfigurationPattern = `(?:implementation|api|compileOnly|runtimeOnly|annotationProcessor|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly|testCompileOnly|testAnnotationProcessor|debugImplementation|releaseImplementation|kaptTest|kaptAndroidTest|classpath)`
-
-var gradleCoordinatePattern = regexp.MustCompile(`(?m)\b` + gradleDependencyConfigurationPattern + `\s*\(?\s*(?:platform\()?["']([^:"'\s]+):([^:"'\s]+)(?::([^"'\s]+))?["']\s*\)?\s*\)?`)
-
-var gradleMapInvocationPattern = regexp.MustCompile(`(?ms)\b` + gradleDependencyConfigurationPattern + `\s*\(?\s*((?:[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*["'][^"'\n]+["']\s*,?\s*)+)`)
-
-var gradleNamedArgPattern = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*["']([^"']+)["']`)
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 	descriptors, _ := parseGradleDependenciesWithWarnings(repoPath)
@@ -41,14 +31,27 @@ func parseGradleManifestFiles(files []discoveredGradleFile, catalogResolver shar
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
+	descriptors := parseGradleDependencyContentForPath(buildGradleName, content)
+	descriptors = append(descriptors, parseGradleDependencyContentForPath(buildGradleKTSName, content)...)
+	return dedupeDescriptors(descriptors)
+}
+
+func parseGradleDependencyContentForPath(path, content string) []dependencyDescriptor {
+	coordinates := shared.ParseGradleDependencyCoordinatesForFile(path, content)
 	descriptors := make([]dependencyDescriptor, 0)
-	descriptors = append(descriptors, parseGradleDependencyMatches(content, gradleCoordinatePattern)...)
-	descriptors = append(descriptors, parseGradleMapDependencies(content)...)
+	for _, coordinate := range coordinates {
+		descriptors = append(descriptors, dependencyDescriptor{
+			Name:     coordinate.Artifact,
+			Group:    coordinate.Group,
+			Artifact: coordinate.Artifact,
+			Version:  coordinate.Version,
+		})
+	}
 	return dedupeDescriptors(descriptors)
 }
 
 func parseGradleDependencyContentWithCatalog(path string, content string, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
-	descriptors := parseGradleDependencyContent(content)
+	descriptors := parseGradleDependencyContentForPath(path, content)
 	catalogDescriptors, warnings := catalogResolver.ParseDependencyReferences(path, content)
 	for _, descriptor := range catalogDescriptors {
 		descriptors = append(descriptors, dependencyDescriptor{
@@ -59,71 +62,6 @@ func parseGradleDependencyContentWithCatalog(path string, content string, catalo
 		})
 	}
 	return dedupeDescriptors(descriptors), warnings
-}
-
-func parseGradleMapDependencies(content string) []dependencyDescriptor {
-	matches := gradleMapInvocationPattern.FindAllStringSubmatch(content, -1)
-	descriptors := make([]dependencyDescriptor, 0, len(matches))
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
-		args := match[1]
-		group := ""
-		artifact := ""
-		version := ""
-		for _, pair := range gradleNamedArgPattern.FindAllStringSubmatch(args, -1) {
-			if len(pair) != 3 {
-				continue
-			}
-			key := strings.ToLower(strings.TrimSpace(pair[1]))
-			value := strings.TrimSpace(pair[2])
-			switch key {
-			case "group":
-				group = value
-			case "name":
-				artifact = value
-			case "version":
-				version = value
-			}
-		}
-		if group == "" || artifact == "" {
-			continue
-		}
-		descriptors = append(descriptors, dependencyDescriptor{
-			Name:     artifact,
-			Group:    group,
-			Artifact: artifact,
-			Version:  version,
-		})
-	}
-	return descriptors
-}
-
-func parseGradleDependencyMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
-	matches := pattern.FindAllStringSubmatch(content, -1)
-	descriptors := make([]dependencyDescriptor, 0, len(matches))
-	for _, match := range matches {
-		if len(match) < 3 {
-			continue
-		}
-		group := strings.TrimSpace(match[1])
-		artifact := strings.TrimSpace(match[2])
-		version := ""
-		if len(match) > 3 {
-			version = strings.TrimSpace(match[3])
-		}
-		if group == "" || artifact == "" {
-			continue
-		}
-		descriptors = append(descriptors, dependencyDescriptor{
-			Name:     artifact,
-			Group:    group,
-			Artifact: artifact,
-			Version:  version,
-		})
-	}
-	return descriptors
 }
 
 func parseBuildFiles(repoPath string, parser func(content string) []dependencyDescriptor, names ...string) []dependencyDescriptor {

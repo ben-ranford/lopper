@@ -50,6 +50,10 @@ func TestStripLineCommentAndLocationHelpers(t *testing.T) {
 }
 
 func TestStripBlockComments(t *testing.T) {
+	if stripped := StripBlockComments(nil); len(stripped) != 0 {
+		t.Fatalf("expected nil block-comment input to stay nil, got %#v", stripped)
+	}
+
 	content := []byte("import a\n/* comment\nimport b\n*/\nimport c /* tail */\n")
 
 	stripped := StripBlockComments(content)

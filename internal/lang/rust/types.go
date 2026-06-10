@@ -66,8 +66,6 @@ type usePathEntry struct {
 }
 
 var (
-	tablePattern       = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
-	stringFieldPattern = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*("(?:[^"]*)"|'(?:[^']*)')`)
 	macroInvokePattern = regexp.MustCompile(`(?m)\b[A-Za-z_][A-Za-z0-9_]*!\s*(?:\(|\{|\[)`)
 )
 

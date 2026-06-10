@@ -62,7 +62,6 @@ const (
 
 var (
 	pomPropertyTokenPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
-	gradleDependencyPattern = regexp.MustCompile(`(?m)(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt|annotationProcessor|testAnnotationProcessor|testCompileOnly|debugImplementation|releaseImplementation|kaptTest|kaptAndroidTest|classpath)\s*\(?\s*["']([^:"'\s]+):([^:"'\s]+):[^"'\s]+["']\s*\)?`)
 )
 
 func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[string]string, map[string]string, []string) {
@@ -79,7 +78,7 @@ func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string)
 		case pomXMLName:
 			return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
 		case buildGradleName, buildGradleKTSName:
-			descriptors := parseGradleMatches(content, gradleDependencyPattern)
+			descriptors := parseGradleDependencyContent(path, content)
 			catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
 			for _, descriptor := range catalogDescriptors {
 				descriptors = append(descriptors, dependencyDescriptor{
@@ -379,7 +378,7 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
 	gradleParser := func(path, content string) ([]dependencyDescriptor, []string) {
-		descriptors := parseGradleMatches(content, gradleDependencyPattern)
+		descriptors := parseGradleDependencyContent(path, content)
 		catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
 		for _, descriptor := range catalogDescriptors {
 			descriptors = append(descriptors, dependencyDescriptor{
@@ -395,8 +394,17 @@ func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescripto
 	return descriptors, shared.DedupeWarnings(warnings)
 }
 
-func parseGradleMatches(content string, pattern *regexp.Regexp) []dependencyDescriptor {
-	return parseDependencyDescriptorsFromMatches(pattern.FindAllStringSubmatch(content, -1))
+func parseGradleDependencyContent(path, content string) []dependencyDescriptor {
+	coordinates := shared.ParseGradleDependencyCoordinatesForFile(path, content)
+	descriptors := make([]dependencyDescriptor, 0, len(coordinates))
+	for _, coordinate := range coordinates {
+		descriptors = append(descriptors, dependencyDescriptor{
+			Name:     coordinate.Artifact,
+			Group:    coordinate.Group,
+			Artifact: coordinate.Artifact,
+		})
+	}
+	return descriptors
 }
 
 func parseDependencyDescriptorsFromMatches(matches [][]string) []dependencyDescriptor {

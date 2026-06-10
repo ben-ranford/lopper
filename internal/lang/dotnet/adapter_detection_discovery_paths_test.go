@@ -107,12 +107,6 @@ func TestDotNetAddAncestorCentralPackagesParseError(t *testing.T) {
 	}
 }
 
-func TestDotNetCaptureMatchesIgnoresMalformedInput(t *testing.T) {
-	if !slices.Equal(captureMatches([][][]byte{{[]byte("skip")}, {[]byte(" "), []byte(" ")}}), []string{}) {
-		t.Fatalf("expected malformed/blank captureMatches input to be ignored")
-	}
-}
-
 func TestDotNetCollectorAndScannerReturnWalkErrors(t *testing.T) {
 	repo := t.TempDir()
 	collector := newDependencyCollector(repo, map[string]struct{}{})

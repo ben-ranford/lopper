@@ -44,23 +44,28 @@ shared = "1.2.3"
 
 [libraries]
 compose-bom = "androidx.compose:compose-bom:2024.05.00"
-retrofit = { module = "com.squareup.retrofit2:retrofit",
-  version = "2.11.0" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "shared" }
-multiline = { group = "org.sample",
-  name = "artifact",
-  version = { ref = "AGP" } }
-pending-lib = { group = "org.pending",
-  name = "pending-lib",
-  version = "1.0.0" }
 broken = "not-a-coordinate"
 bad-module = { module = "missing-artifact", version = "1.0.0" }
 missing-fields = { version = "1.0.0" }
 
+[libraries.retrofit]
+module = "com.squareup.retrofit2:retrofit"
+version = "2.11.0"
+
+[libraries.multiline]
+group = "org.sample"
+name = "artifact"
+version = { ref = "AGP" }
+
+[libraries.pending-lib]
+group = "org.pending"
+name = "pending-lib"
+version = "1.0.0"
+
 [bundles]
 networking = ["retrofit", "okhttp", "retrofit", "missing"]
 unsupported = []
-broken-tail = { group = "org.tail"
 `
 	parsed, warnings := parseGradleCatalogFile(content, gradleCatalogName, gradleDefaultCatalogPath)
 
@@ -84,9 +89,16 @@ broken-tail = { group = "org.tail"
 		`unsupported Gradle version catalog library "missing-fields" in ` + gradleDefaultCatalogPath,
 		`unsupported Gradle version catalog bundle "unsupported" in ` + gradleDefaultCatalogPath,
 		`unable to resolve Gradle version catalog bundle member "missing" in ` + gradleDefaultCatalogPath,
-		`unterminated Gradle version catalog entry "broken-tail" in ` + gradleDefaultCatalogPath,
 	}
 	assertGradleCatalogWarningsContain(t, warnings, expectedWarnings...)
+}
+
+func TestGradleCatalogParserReportsInvalidTOML(t *testing.T) {
+	parsed, warnings := parseGradleCatalogFile("[libraries]\nbroken = { group = \"org.tail\"\n", gradleCatalogName, gradleDefaultCatalogPath)
+	if len(parsed.libraries) != 0 || len(parsed.bundles) != 0 {
+		t.Fatalf("expected invalid TOML to leave catalog empty, got %#v", parsed)
+	}
+	assertGradleCatalogWarningsContain(t, warnings, "unable to parse Gradle version catalog "+gradleDefaultCatalogPath)
 }
 
 func TestGradleCatalogResolverCollectsAllReferenceForms(t *testing.T) {
@@ -303,116 +315,76 @@ dependencyResolutionManagement {
 	if resolver.scopes[0].root != filepath.Join(repo, "module", "nested") || resolver.scopes[1].root != filepath.Join(repo, "aa") || resolver.scopes[2].root != filepath.Join(repo, "zz") {
 		t.Fatalf("expected resolver scopes sorted by depth then lexical order, got %#v", resolver.scopes)
 	}
-}
 
-func TestGradleCatalogStringAndAssignmentHelpers(t *testing.T) {
-	if got, ok := parseGradleCatalogStringValue(`'1.2.3'`); !ok || got != "1.2.3" {
-		t.Fatalf("expected single-quoted value to parse, got %q %t", got, ok)
+	var nilIndex *gradleCatalogLookupIndex
+	if nilIndex.resolve(testBuildFile) != nil {
+		t.Fatalf("expected nil catalog lookup index to miss")
 	}
-	if got, ok := parseGradleCatalogStringValue("oops"); ok || got != "" {
-		t.Fatalf("expected unquoted value to be rejected, got %q %t", got, ok)
+	emptyIndex := gradleCatalogLookupIndex{}
+	if emptyIndex.resolve(testBuildFile) != nil {
+		t.Fatalf("expected empty catalog lookup index to miss")
 	}
-	if got, ok := parseGradleCatalogSection("[Libraries]"); !ok || got != "libraries" {
-		t.Fatalf("expected section header to normalize, got %q %t", got, ok)
+	index := newGradleCatalogLookupIndex([]gradleCatalogScope{{root: testAppRoot}})
+	firstMatch := index.resolve(testBuildFile)
+	secondMatch := index.resolve(testBuildFile)
+	if firstMatch == nil || secondMatch == nil {
+		t.Fatalf("expected catalog lookup index to cache matched scopes")
 	}
-	if _, ok := parseGradleCatalogSection("libraries"); ok {
-		t.Fatalf("expected invalid section to be rejected")
-	}
-	if key, value, ok := parseGradleCatalogAssignment(` "demo-lib" = "org.example:demo:1.0.0" `); !ok || key != "demo-lib" || value != `"org.example:demo:1.0.0"` {
-		t.Fatalf("expected assignment to parse, got %q %q %t", key, value, ok)
-	}
-	if _, _, ok := parseGradleCatalogAssignment("missing-equals"); ok {
-		t.Fatalf("expected malformed assignment to be rejected")
-	}
-	if _, _, ok := parseGradleCatalogAssignment("name = "); ok {
-		t.Fatalf("expected assignment missing a value to be rejected")
-	}
-}
-
-func TestGradleCatalogCommentAndDelimiterHelpers(t *testing.T) {
-	if got := stripGradleCatalogComment(`group = "org.example#demo" # comment`); got != `group = "org.example#demo" ` {
-		t.Fatalf("expected inline comment to be stripped without touching quoted hash, got %q", got)
-	}
-	if got := stripGradleCatalogComment(`group = 'org.example#demo' # comment`); got != `group = 'org.example#demo' ` {
-		t.Fatalf("expected single-quoted hash to be preserved, got %q", got)
-	}
-	if got := extractGradleCatalogQuotedStrings(`["one", 'two', "three"]`); strings.Join(got, ",") != "one,two,three" {
-		t.Fatalf("expected quoted members to be extracted, got %#v", got)
-	}
-
-	if !gradleCatalogValueBalanced(`{ module = "org.example:demo", version = { ref = "v" } }`) {
-		t.Fatalf("expected balanced inline table to be treated as complete")
-	}
-	if gradleCatalogValueBalanced(`{ module = "org.example:demo"`) {
-		t.Fatalf("expected unbalanced inline table to be treated as incomplete")
-	}
-	state := gradleCatalogDelimiterState{}
-	state.consume('"')
-	state.consume('{')
-	state.consume('"')
-	state.consume('{')
-	state.consume('}')
-	if !state.balanced() {
-		t.Fatalf("expected delimiter state to ignore braces inside quotes and balance real braces")
-	}
-	if delta, ok := gradleCatalogBraceDelta('{'); !ok || delta != 1 {
-		t.Fatalf("expected opening brace to increment depth, got %d %t", delta, ok)
-	}
-	if delta, ok := gradleCatalogBracketDelta(']'); !ok || delta != -1 {
-		t.Fatalf("expected closing bracket to decrement depth, got %d %t", delta, ok)
-	}
-	quoteState := gradleCatalogDelimiterState{inSingle: true}
-	if quoteState.toggleQuote('"') {
-		t.Fatalf("expected double quote inside single-quoted string to be ignored")
-	}
-	if !quoteState.toggleQuote('\'') || quoteState.inQuoted() {
-		t.Fatalf("expected matching single quote to toggle single-quoted state off")
-	}
-	quoteState = gradleCatalogDelimiterState{inDouble: true}
-	if quoteState.toggleQuote('\'') {
-		t.Fatalf("expected single quote inside double-quoted string to be ignored")
+	firstMiss := index.resolve(testOtherBuildFile)
+	secondMiss := index.resolve(testOtherBuildFile)
+	if firstMiss != nil || secondMiss != nil {
+		t.Fatalf("expected catalog lookup index to cache unmatched scopes")
 	}
 }
 
 func TestGradleCatalogLibraryEntryHelpers(t *testing.T) {
-	library, warnings := parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "cli", `"dev.example:cli:1.0.0"`, nil, gradleToolsCatalogPath)
+	library, warnings := parseGradleCatalogLibraryValue(gradleToolsCatalogName, "cli", "dev.example:cli:1.0.0", nil, gradleToolsCatalogPath)
 	if len(warnings) != 0 || library.Group != "dev.example" || library.Artifact != "cli" || library.Version != "1.0.0" {
 		t.Fatalf("expected string catalog dependency to parse, got %#v %#v", library, warnings)
 	}
 	pluginVersions := map[string]string{"plugin": "2.0.0"}
-	library, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "plugin", `{ module = "dev.example:plugin", version = { ref = "PLUGIN" } }`, pluginVersions, gradleToolsCatalogPath)
+	pluginValue := map[string]any{
+		"module":  "dev.example:plugin",
+		"version": map[string]any{"ref": "PLUGIN"},
+	}
+	library, warnings = parseGradleCatalogLibraryValue(gradleToolsCatalogName, "plugin", pluginValue, pluginVersions, gradleToolsCatalogPath)
 	if len(warnings) != 0 || library.Version != "2.0.0" {
 		t.Fatalf("expected nested version ref to resolve case-insensitively, got %#v %#v", library, warnings)
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "broken", `"not-a-coordinate"`, nil, gradleToolsCatalogPath); len(warnings) == 0 {
+	namedValue := map[string]any{
+		"group":   "dev.example",
+		"name":    "named",
+		"version": "1.2.3",
+	}
+	library, warnings = parseGradleCatalogLibraryValue(gradleToolsCatalogName, "named", namedValue, nil, gradleToolsCatalogPath)
+	if len(warnings) != 0 || library.Group != "dev.example" || library.Artifact != "named" || library.Version != "1.2.3" {
+		t.Fatalf("expected group/name catalog dependency to parse, got %#v %#v", library, warnings)
+	}
+	if _, warnings = parseGradleCatalogLibraryValue(gradleToolsCatalogName, "broken", "not-a-coordinate", nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected invalid string library to emit a warning")
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "bad-module", `{ module = "bad-module", version = "1.0.0" }`, nil, gradleToolsCatalogPath); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryValue(gradleToolsCatalogName, "bad-module", map[string]any{"module": "bad-module"}, nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected invalid module field to emit a warning")
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "missing-fields", `{ version = "1.0.0" }`, nil, gradleToolsCatalogPath); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryValue(gradleToolsCatalogName, "missing-fields", map[string]any{"version": "1.0.0"}, nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected missing coordinates to emit a warning")
 	}
-	if _, warnings = parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "invalid", "provider(\"coords\")", nil, gradleToolsCatalogPath); len(warnings) == 0 {
+	if _, warnings = parseGradleCatalogLibraryValue(gradleToolsCatalogName, "invalid", 42, nil, gradleToolsCatalogPath); len(warnings) == 0 {
 		t.Fatalf("expected unsupported library format to emit a warning")
-	}
-	emptyLibrary, warnings := parseGradleCatalogLibraryEntry(gradleToolsCatalogName, "empty", "   ", nil, gradleToolsCatalogPath)
-	if len(warnings) != 0 || emptyLibrary.Group != "" || emptyLibrary.Artifact != "" || emptyLibrary.Alias != "empty" {
-		t.Fatalf("expected blank library value to be ignored, got %#v %#v", emptyLibrary, warnings)
 	}
 }
 
 func TestGradleCatalogVersionAndCoordinateHelpers(t *testing.T) {
-	if version := resolveGradleCatalogVersion(map[string]string{"version": "1.0.0"}, "", nil); version != "1.0.0" {
+	if version := resolveGradleCatalogVersionFields(map[string]any{"version": "1.0.0"}, nil); version != "1.0.0" {
 		t.Fatalf("expected explicit version field to win, got %q", version)
 	}
-	if version := resolveGradleCatalogVersion(map[string]string{"version.ref": "shared"}, "", map[string]string{"shared": "2.0.0"}); version != "2.0.0" {
+	if version := resolveGradleCatalogVersionFields(map[string]any{"version.ref": "shared"}, map[string]string{"shared": "2.0.0"}); version != "2.0.0" {
 		t.Fatalf("expected version ref lookup to resolve, got %q", version)
 	}
-	if version := resolveGradleCatalogVersion(nil, `{ version = { ref = "SHARED" } }`, map[string]string{"shared": "3.0.0"}); version != "3.0.0" {
+	if version := resolveGradleCatalogVersionFields(map[string]any{"version": map[string]any{"ref": "SHARED"}}, map[string]string{"shared": "3.0.0"}); version != "3.0.0" {
 		t.Fatalf("expected nested version ref to resolve, got %q", version)
 	}
-	if version := resolveGradleCatalogVersion(nil, "", nil); version != "" {
+	if version := resolveGradleCatalogVersionFields(nil, nil); version != "" {
 		t.Fatalf("expected missing version to stay empty, got %q", version)
 	}
 
@@ -428,23 +400,32 @@ func TestGradleCatalogVersionAndCoordinateHelpers(t *testing.T) {
 	if _, _, _, ok := parseGradleCatalogCoordinates(":artifact:1.0.0"); ok {
 		t.Fatalf("expected coordinates missing a group to be rejected")
 	}
-	if got := parseGradleCatalogNestedVersionRef(`{ version = { ref = "shared" } }`); got != "shared" {
-		t.Fatalf("expected nested version ref to parse, got %q", got)
-	}
-	if got := parseGradleCatalogNestedVersionRef(`{ version = "1.0.0" }`); got != "" {
-		t.Fatalf("expected missing nested version ref to return empty, got %q", got)
-	}
 }
 
-func TestGradleCatalogParserInputHelpers(t *testing.T) {
+func TestGradleCatalogDecodedParserDefensiveBranches(t *testing.T) {
 	parser := newGradleCatalogFileParser(gradleCatalogName, gradleDefaultCatalogPath)
-	parser.consumeLine("not an assignment")
-	parser.consumeVersionEntry("bad", "nope")
-	if len(parser.versions) != 0 {
-		t.Fatalf("expected invalid parser inputs to leave version table empty, got %#v", parser.versions)
+	parser.consumeDocument(map[string]any{
+		"versions":  "not-a-table",
+		"libraries": "not-a-table",
+		"bundles":   "not-a-table",
+	})
+	parsed, warnings := parser.finalize()
+	if len(parsed.libraries) != 0 || len(parsed.bundles) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected non-table decoded sections to be ignored, got %#v %#v", parsed, warnings)
 	}
-	if got, ok := parseGradleCatalogStringValue(`"`); ok || got != "" {
-		t.Fatalf("expected short quoted value to be rejected, got %q %t", got, ok)
+
+	parser.consumeVersionTable(map[string]any{"empty": "", "bad": 12})
+	if len(parser.versions) != 0 {
+		t.Fatalf("expected invalid decoded versions to be ignored, got %#v", parser.versions)
+	}
+	if got := parseGradleCatalogBundleValue([]any{"okhttp", "", 12}); len(got) != 1 || got[0] != "okhttp" {
+		t.Fatalf("expected decoded bundle values to keep only strings, got %#v", got)
+	}
+	if got := parseGradleCatalogBundleValue("bad"); len(got) != 0 {
+		t.Fatalf("expected non-array bundle value to be ignored, got %#v", got)
+	}
+	if version := resolveGradleCatalogVersionFields(map[string]any{"version": 12, "version.ref": 13}, nil); version != "" {
+		t.Fatalf("expected non-string version fields to be ignored, got %q", version)
 	}
 }
 
@@ -514,9 +495,13 @@ func TestGradleCatalogLookupIndexCachesScopeMatches(t *testing.T) {
 func TestGradleCatalogReferenceCollectorIgnoresUnknownInputs(t *testing.T) {
 	resolver := GradleCatalogResolver{knownCatalogs: map[string]struct{}{gradleCatalogName: {}}}
 	collector := newGradleCatalogReferenceCollector(&resolver, testBuildFile)
-	collector.collectFinderMatches(`implementation(unknownCatalog.findLibrary("missing").get())`)
-	collector.collectBracketMatches(`implementation(unknownCatalog["missing"])`)
-	collector.handlePropertyExpression(gradleCatalogName)
+	collector.collectReferences(`
+dependencies {
+  implementation(unknownCatalog.findLibrary("missing").get())
+  implementation(unknownCatalog["missing"])
+  implementation(libs)
+}
+`)
 	if len(collector.dependencies) != 0 || len(collector.warnings) != 0 {
 		t.Fatalf("expected unmatched collector inputs to be ignored, got %#v %#v", collector.dependencies, collector.warnings)
 	}

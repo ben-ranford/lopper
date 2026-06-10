@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -358,11 +357,7 @@ func TestLookupBuilderBranches(t *testing.T) {
 }
 
 func TestGradleParsingBranches(t *testing.T) {
-	if descriptors := parseGradleDependencyMatches("anything", regexp.MustCompile(`anything`)); len(descriptors) != 0 {
-		t.Fatalf("expected no descriptors for regex with insufficient capture groups, got %#v", descriptors)
-	}
-	pattern := regexp.MustCompile(`(?m)^\s*([^:]*):([^:\n]*)`)
-	if descriptors := parseGradleDependencyMatches(" :artifact\n", pattern); len(descriptors) != 0 {
+	if descriptors := parseGradleDependencyContent(`implementation(":artifact")`); len(descriptors) != 0 {
 		t.Fatalf("expected no descriptors when group/artifact values are empty, got %#v", descriptors)
 	}
 	if descriptors := parseGradleLockfileContent("# comment\nbad-line\n:artifact:1.0.0\n"); len(descriptors) != 0 {
