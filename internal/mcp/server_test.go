@@ -64,22 +64,64 @@ func TestHandleToolsListRegistersExpectedTools(t *testing.T) {
 
 	result := response.Result.(map[string]any)
 	tools := result["tools"].([]toolSpec)
+	assertToolOrder(t, tools)
+	assertStrictToolSchemas(t, tools)
+	byName := toolSpecsByName(tools)
+	assertTopDependencySchema(t, byName[toolAnalyseTop])
+	assertDependencySchema(t, byName[toolAnalyseDependency])
+	assertBaselineSchema(t, byName[toolCompareBaseline])
+}
+
+func assertToolOrder(t *testing.T, tools []toolSpec) {
+	t.Helper()
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Name)
-		if tool.InputSchema["additionalProperties"] != false {
-			t.Fatalf("expected strict input schema for %s", tool.Name)
-		}
-		if tool.Name == toolAnalyseTop {
-			properties := tool.InputSchema["properties"].(map[string]any)
-			if _, ok := properties["dependency"]; ok {
-				t.Fatalf("top dependency schema should not advertise dependency input")
-			}
-		}
 	}
 	want := []string{toolAnalyseTop, toolAnalyseDependency, toolCompareBaseline, toolListLanguages}
 	if !slices.Equal(names, want) {
 		t.Fatalf("unexpected tools: %#v", names)
+	}
+}
+
+func assertStrictToolSchemas(t *testing.T, tools []toolSpec) {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.InputSchema["additionalProperties"] != false {
+			t.Fatalf("expected strict input schema for %s", tool.Name)
+		}
+	}
+}
+
+func toolSpecsByName(tools []toolSpec) map[string]toolSpec {
+	byName := make(map[string]toolSpec, len(tools))
+	for _, tool := range tools {
+		byName[tool.Name] = tool
+	}
+	return byName
+}
+
+func assertTopDependencySchema(t *testing.T, tool toolSpec) {
+	t.Helper()
+	properties := tool.InputSchema["properties"].(map[string]any)
+	if _, ok := properties["dependency"]; ok {
+		t.Fatalf("top dependency schema should not advertise dependency input")
+	}
+}
+
+func assertDependencySchema(t *testing.T, tool toolSpec) {
+	t.Helper()
+	properties := tool.InputSchema["properties"].(map[string]any)
+	if _, ok := properties["topN"]; !ok {
+		t.Fatalf("dependency schema should advertise topN as accepted input")
+	}
+}
+
+func assertBaselineSchema(t *testing.T, tool toolSpec) {
+	t.Helper()
+	anyOf, ok := tool.InputSchema["anyOf"].([]map[string]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("baseline schema should describe baselinePath or baselineStorePath alternatives, got %#v", tool.InputSchema["anyOf"])
 	}
 }
 
