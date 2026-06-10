@@ -31,7 +31,7 @@ func testGoHelperGuardBranches(t *testing.T) {
 		t.Fatalf("expected removal weights to be normalized, got %#v", weights)
 	}
 
-	if walkGoFiles(context.Background(), filepath.Join(t.TempDir(), "missing"), nil, moduleInfo{}, &scanResult{}) == nil {
+	if walkGoFiles(context.Background(), filepath.Join(t.TempDir(), "missing"), moduleInfo{}, &scanResult{}) == nil {
 		t.Fatalf("expected walkGoFiles to fail for missing repo")
 	}
 
