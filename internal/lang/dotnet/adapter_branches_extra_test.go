@@ -190,6 +190,116 @@ func TestByteWhitespaceAndCommentHelpers(t *testing.T) {
 	}
 }
 
+func TestStripSourceCommentsBytesFastPathAllocations(t *testing.T) {
+	line := []byte("  using Foo.Bar;  ")
+	if allocs := testing.AllocsPerRun(1000, func() {
+		got, column, inBlock := stripSourceCommentsBytes(line, false)
+		if inBlock {
+			t.Fatalf("expected fast path to keep block comment state false")
+		}
+		if column != 3 {
+			t.Fatalf("expected first non-space column 3, got %d", column)
+		}
+		if !bytes.Equal(got, []byte("using Foo.Bar;")) {
+			t.Fatalf("unexpected stripped line: %q", got)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected zero allocations on no-comment fast path, got %f", allocs)
+	}
+}
+
+func TestStripSourceCommentsBytesAdditionalBranches(t *testing.T) {
+	if got, column, inBlock := stripSourceCommentsBytes(nil, false); len(got) != 0 || column != 1 || inBlock {
+		t.Fatalf("expected nil input to remain empty, got %q column=%d inBlock=%v", got, column, inBlock)
+	}
+
+	if got, column, inBlock := stripSourceCommentsBytes([]byte("// comment only"), false); len(got) != 0 || column != 1 || inBlock {
+		t.Fatalf("expected line comment to strip to empty, got %q column=%d inBlock=%v", got, column, inBlock)
+	}
+
+	got, column, inBlock := stripSourceCommentsBytes([]byte("/* comment */ using Foo.Bar;"), false)
+	if !bytes.Equal(got, []byte("using Foo.Bar;")) || column <= 1 || inBlock {
+		t.Fatalf("expected closed block comment prefix to preserve trailing import, got %q column=%d inBlock=%v", got, column, inBlock)
+	}
+
+	got, column, inBlock = stripSourceCommentsBytes([]byte("using /* comment */ Foo.Bar;"), false)
+	if !bytes.Contains(got, []byte("using")) || !bytes.Contains(got, []byte("Foo.Bar;")) || column != 1 || inBlock {
+		t.Fatalf("expected inline block comment to preserve import fragments, got %q column=%d inBlock=%v", got, column, inBlock)
+	}
+
+	if got, column, inBlock := stripSourceCommentsBytes([]byte("/* unterminated"), false); len(got) != 0 || column != 1 || !inBlock {
+		t.Fatalf("expected unterminated block comment to carry state forward, got %q column=%d inBlock=%v", got, column, inBlock)
+	}
+
+	got, column, inBlock = stripSourceCommentsBytes([]byte("still hidden */ using Foo.Bar;"), true)
+	if !bytes.Equal(got, []byte("using Foo.Bar;")) || column <= 1 || inBlock {
+		t.Fatalf("expected closing block comment to resume parsing, got %q column=%d inBlock=%v", got, column, inBlock)
+	}
+}
+
+func TestAdvanceSourceCommentStateBranches(t *testing.T) {
+	if next, column, inBlock, stop, handled := advanceSourceCommentState([]byte("x"), 0, 1, false); next != 0 || column != 1 || inBlock || stop || handled {
+		t.Fatalf("expected single-byte non-comment to be ignored, got next=%d column=%d inBlock=%v stop=%v handled=%v", next, column, inBlock, stop, handled)
+	}
+
+	if next, column, inBlock, stop, handled := advanceSourceCommentState([]byte("// comment"), 0, 1, false); next != 0 || column != 1 || inBlock || !stop || !handled {
+		t.Fatalf("expected line comment to stop parsing, got next=%d column=%d inBlock=%v stop=%v handled=%v", next, column, inBlock, stop, handled)
+	}
+
+	if next, column, inBlock, stop, handled := advanceSourceCommentState([]byte("/* comment"), 0, 1, false); next != 2 || column != 3 || !inBlock || stop || !handled {
+		t.Fatalf("expected block comment opener to advance state, got next=%d column=%d inBlock=%v stop=%v handled=%v", next, column, inBlock, stop, handled)
+	}
+
+	if next, column, inBlock, stop, handled := advanceSourceCommentState([]byte("*/"), 0, 1, true); next != 2 || column != 3 || inBlock || stop || !handled {
+		t.Fatalf("expected block comment closer to clear state, got next=%d column=%d inBlock=%v stop=%v handled=%v", next, column, inBlock, stop, handled)
+	}
+
+	if next, column, inBlock, stop, handled := advanceSourceCommentState([]byte("x"), 0, 1, true); next != 1 || column != 2 || !inBlock || stop || !handled {
+		t.Fatalf("expected in-block content to advance one byte, got next=%d column=%d inBlock=%v stop=%v handled=%v", next, column, inBlock, stop, handled)
+	}
+}
+
+func TestIsRepoBoundedPathAdditionalBranches(t *testing.T) {
+	repo := t.TempDir()
+	if !isRepoBoundedPath(repo, repo) {
+		t.Fatalf("expected repo root itself to be repo-bounded")
+	}
+	if !isRepoBoundedPath(repo, filepath.Join(repo, ".", "src", "..", "src")) {
+		t.Fatalf("expected cleaned in-repo candidate to remain repo-bounded")
+	}
+	if isRepoBoundedPath(repo, filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-sibling")) {
+		t.Fatalf("expected sibling path not to be repo-bounded")
+	}
+}
+
+func TestStripXMLCommentsBytesAdditionalBranches(t *testing.T) {
+	got := stripXMLCommentsBytes([]byte("<Project><!-- comment --><ItemGroup /></Project>"))
+	if !bytes.Equal(got, []byte("<Project> <ItemGroup /></Project>")) {
+		t.Fatalf("expected inline XML comment to be stripped with spacing preserved, got %q", got)
+	}
+
+	got = stripXMLCommentsBytes([]byte("<Project><ItemGroup /></Project><!-- trailing"))
+	if !bytes.Equal(got, []byte("<Project><ItemGroup /></Project>")) {
+		t.Fatalf("expected unterminated trailing XML comment to be stripped, got %q", got)
+	}
+}
+
+func TestAnalyseDeclaredDependenciesWithoutTarget(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, appProjectName), `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo})
+	if err != nil {
+		t.Fatalf("analyse declared dependency without target: %v", err)
+	}
+	if !slices.Contains(reportData.Warnings, "no dependency or top-N target provided") {
+		t.Fatalf("expected missing target warning, got %#v", reportData.Warnings)
+	}
+	if slices.Contains(reportData.Warnings, "no .NET package dependencies discovered from project manifests") {
+		t.Fatalf("did not expect missing manifest warning when dependency is declared, got %#v", reportData.Warnings)
+	}
+}
+
 func TestByteDependencyHelperBranches(t *testing.T) {
 	mapper := newDependencyMapper([]string{"Acme.Core", "", "serilog.aspnetcore"})
 	if len(mapper.declared) != 2 || mapper.declared[0].id != "acme.core" {
@@ -210,6 +320,29 @@ func TestParseImportsWithCRLFPreservesColumns(t *testing.T) {
 	imports, _ := parseImports([]byte("\t"+fooBarImportLine+"\r\n// comment only\r\n"), programSourceName, newDependencyMapper([]string{"foo.bar"}))
 	if len(imports) != 1 || imports[0].Location.Column != 2 {
 		t.Fatalf("expected CRLF import parse with preserved column, got %#v", imports)
+	}
+}
+
+func TestParseImportsIgnoreBlockComments(t *testing.T) {
+	mapper := newDependencyMapper([]string{"foo.bar"})
+	imports, _ := parseImports([]byte("/*\nusing Foo.Bar;\n*/\n"+fooBarImportLine+"\n"), programSourceName, mapper)
+	if len(imports) != 1 {
+		t.Fatalf("expected only one import outside block comments, got %#v", imports)
+	}
+	if imports[0].Location.Line != 4 {
+		t.Fatalf("expected import line 4 after skipping block comment, got %#v", imports[0].Location)
+	}
+}
+
+func TestStripXMLCommentsBytesFastPathAllocations(t *testing.T) {
+	content := []byte("\n  <Project><ItemGroup><PackageReference Include=\"Dapper\" /></ItemGroup></Project>  \n")
+	if allocs := testing.AllocsPerRun(1000, func() {
+		got := stripXMLCommentsBytes(content)
+		if !bytes.Equal(got, []byte("<Project><ItemGroup><PackageReference Include=\"Dapper\" /></ItemGroup></Project>")) {
+			t.Fatalf("unexpected stripped xml: %q", got)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected zero allocations on no-comment fast path, got %f", allocs)
 	}
 }
 

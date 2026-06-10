@@ -195,28 +195,103 @@ func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
 }
 
 func resolveWorkspaceMembers(repoPath, pattern string) []string {
-	glob := filepath.Join(repoPath, pattern)
-	matches, err := filepath.Glob(glob)
+	roots := make(map[string]struct{})
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil
+	}
+	collector := workspaceMemberCollector{
+		repoPath: repoPath,
+		pattern:  pattern,
+		roots:    roots,
+	}
+	err := filepath.WalkDir(repoPath, collector.walk)
 	if err != nil {
 		return nil
 	}
-	roots := make(map[string]struct{})
-	for _, match := range matches {
-		match = filepath.Clean(match)
-		info, statErr := os.Stat(match)
-		if statErr != nil || !info.IsDir() {
-			continue
-		}
-		if !isSubPath(repoPath, match) {
-			continue
-		}
-		manifest := filepath.Join(match, cargoTomlName)
-		if _, manifestErr := os.Stat(manifest); manifestErr != nil {
-			continue
-		}
-		roots[match] = struct{}{}
-	}
 	return shared.SortedKeys(roots)
+}
+
+type workspaceMemberCollector struct {
+	repoPath string
+	pattern  string
+	roots    map[string]struct{}
+}
+
+func (c *workspaceMemberCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
+	matched, err := c.matchDirectory(path, entry, walkErr)
+	if err != nil || !matched {
+		return err
+	}
+	c.roots[path] = struct{}{}
+	return nil
+}
+
+func (c *workspaceMemberCollector) matchDirectory(path string, entry fs.DirEntry, walkErr error) (bool, error) {
+	if walkErr != nil {
+		return false, walkErr
+	}
+	if !entry.IsDir() {
+		return false, nil
+	}
+	if shouldSkipDir(entry.Name()) {
+		return false, filepath.SkipDir
+	}
+
+	rel, err := filepath.Rel(c.repoPath, path)
+	if err != nil {
+		return false, err
+	}
+	matched, err := workspaceMemberPatternMatches(c.pattern, rel)
+	if err != nil || !matched {
+		return false, err
+	}
+
+	manifest := filepath.Join(path, cargoTomlName)
+	if _, err := os.Stat(manifest); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+func workspaceMemberPatternMatches(pattern, candidate string) (bool, error) {
+	pattern = filepath.ToSlash(filepath.Clean(strings.TrimSpace(pattern)))
+	candidate = filepath.ToSlash(filepath.Clean(strings.TrimSpace(candidate)))
+	if pattern == "" || candidate == "" {
+		return false, nil
+	}
+	patternParts := strings.Split(pattern, "/")
+	candidateParts := strings.Split(candidate, "/")
+	return matchWorkspaceMemberPatternParts(patternParts, candidateParts)
+}
+
+func matchWorkspaceMemberPatternParts(patternParts, candidateParts []string) (bool, error) {
+	if len(patternParts) == 0 {
+		return len(candidateParts) == 0, nil
+	}
+	if patternParts[0] == "**" {
+		if len(patternParts) == 1 {
+			return true, nil
+		}
+		for index := 0; index <= len(candidateParts); index++ {
+			matched, err := matchWorkspaceMemberPatternParts(patternParts[1:], candidateParts[index:])
+			if err != nil {
+				return false, err
+			}
+			if matched {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if len(candidateParts) == 0 {
+		return false, nil
+	}
+	matched, err := filepath.Match(patternParts[0], candidateParts[0])
+	if err != nil || !matched {
+		return false, err
+	}
+	return matchWorkspaceMemberPatternParts(patternParts[1:], candidateParts[1:])
 }
 
 func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string]dependencyInfo, error) {
@@ -361,7 +436,7 @@ func ensureCanonicalDependencyAlias(deps map[string]dependencyInfo, info depende
 
 func isDependencySection(section string) bool {
 	section = strings.ToLower(strings.TrimSpace(section))
-	if section == "dependencies" || section == "dev-dependencies" || section == "build-dependencies" {
+	if section == "dependencies" || section == "dev-dependencies" || section == "build-dependencies" || section == "workspace.dependencies" {
 		return true
 	}
 	if strings.HasPrefix(section, "target.") {

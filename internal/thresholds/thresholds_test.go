@@ -253,8 +253,13 @@ func TestNormalizeDenyListEmptyAndInvalid(t *testing.T) {
 		t.Fatalf("expected empty deny list when unset, got %#v", gotEmpty.LicenseDenyList)
 	}
 
+	gotCleared := (&Overrides{LicenseDenyList: make([]string, 0), licenseDenyListSet: true}).Apply(Defaults())
+	if len(gotCleared.LicenseDenyList) != 0 {
+		t.Fatalf("expected explicit empty deny list to remain allocated, got %#v", gotCleared.LicenseDenyList)
+	}
+
 	gotInvalid := (&Overrides{LicenseDenyList: []string{"", "   ", "!!!", "@@@", "()"}}).Apply(Defaults())
 	if len(gotInvalid.LicenseDenyList) != 0 {
-		t.Fatalf("expected empty deny list when all entries normalize away, got %#v", gotInvalid.LicenseDenyList)
+		t.Fatalf("expected explicit deny list to survive normalization even when entries drop away, got %#v", gotInvalid.LicenseDenyList)
 	}
 }

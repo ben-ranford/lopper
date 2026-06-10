@@ -69,7 +69,7 @@ func scanRustImportStatements(content []byte, includeUse bool, visit func(rustIm
 		for lineEnd < len(content) && content[lineEnd] != '\n' {
 			lineEnd++
 		}
-		if !state.insideRawString() {
+		if !state.insideRawString() && state.blockCommentDepth == 0 && !state.inString {
 			if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line, includeUse); ok {
 				visit(kind, stmt)
 			}

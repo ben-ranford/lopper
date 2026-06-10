@@ -180,3 +180,51 @@ func testRustAdditionalExactBranchCoverageOffsets(t *testing.T) {
 		t.Fatalf("expected offset before base offset to clamp to base position, got %d:%d", line, col)
 	}
 }
+
+func TestRustAdditionalUncoveredCoverageBranches(t *testing.T) {
+	repo := t.TempDir()
+	badManifest := filepath.Join(repo, cargoTomlName)
+	if err := os.MkdirAll(badManifest, 0o755); err != nil {
+		t.Fatalf("mkdir bad manifest dir: %v", err)
+	}
+
+	if _, _, _, err := extractManifestDependencies(repo, manifestDiscoveryResult{
+		ManifestPaths:      []string{badManifest},
+		ParsedDependencies: map[string]map[string]dependencyInfo{},
+	}); err == nil {
+		t.Fatalf("expected manifest extraction to fail for directory manifest path")
+	}
+
+	if roots := resolveWorkspaceMembers(repo, "   "); len(roots) != 0 {
+		t.Fatalf("expected blank workspace pattern to produce no roots, got %#v", roots)
+	}
+
+	if matched, err := workspaceMemberPatternMatches(" ", "crate"); err != nil || matched {
+		t.Fatalf("expected blank workspace pattern match to be false without error, matched=%v err=%v", matched, err)
+	}
+
+	if matched, err := matchWorkspaceMemberPatternParts([]string{"**", "["}, []string{"crate"}); err == nil || matched {
+		t.Fatalf("expected invalid recursive workspace pattern to error, matched=%v err=%v", matched, err)
+	}
+
+	if _, _, ok := parseDependencyInfo(`" " = "1"`); ok {
+		t.Fatalf("expected whitespace-only dependency alias to be rejected")
+	}
+
+	if got := resolveDependency(" ::serde", "", nil, nil); got != "" {
+		t.Fatalf("expected empty normalized dependency root to be ignored, got %q", got)
+	}
+
+	if _, _, ok := parseRustRawStringStart([]byte("abc"), len("abc")); ok {
+		t.Fatalf("expected raw string start parse to fail at end of line")
+	}
+
+	lookup := map[string]dependencyInfo{"serde": {Canonical: "serde"}}
+	if _, ok := parseExternCrateClause([]byte("serde as serde_alias extra"), srcLibRS, "", lookup, nil, 1, 1); ok {
+		t.Fatalf("expected extern crate alias with trailing tokens to fail")
+	}
+
+	if index := findRustUseAliasIndex("serde as"); index != -1 {
+		t.Fatalf("expected incomplete use alias marker to be ignored, got %d", index)
+	}
+}

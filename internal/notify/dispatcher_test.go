@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -109,6 +110,41 @@ func TestSanitizeErrorMessageVariants(t *testing.T) {
 	encodedErr := fmt.Errorf("delivery failed for %s", encodedWebhook)
 	if got := sanitizeErrorMessage(encodedErr, webhook); strings.Contains(got, "SECRET") {
 		t.Fatalf("expected encoded webhook to be redacted, got %q", got)
+	}
+
+	path := "/services/T000/B000/SECRET"
+	pathEscaped := url.PathEscape(path)
+	pathErr := fmt.Errorf("delivery failed for %s", pathEscaped)
+	if got := sanitizeErrorMessage(pathErr, webhook); strings.Contains(got, "SECRET") || strings.Contains(got, pathEscaped) {
+		t.Fatalf("expected path-escaped webhook fragment to be redacted, got %q", got)
+	}
+
+	hostPathErr := fmt.Errorf("delivery failed for hooks.slack.com%s", path)
+	if got := sanitizeErrorMessage(hostPathErr, webhook); strings.Contains(got, "SECRET") || strings.Contains(got, path) {
+		t.Fatalf("expected bare host+path webhook fragment to be redacted, got %q", got)
+	}
+
+	tokenErr := fmt.Errorf("delivery failed for SECRET")
+	if got := sanitizeErrorMessage(tokenErr, webhook); strings.Contains(got, "SECRET") {
+		t.Fatalf("expected bare token segment to be redacted, got %q", got)
+	}
+
+	invalidWebhook := "https://%zz"
+	invalidErr := fmt.Errorf("delivery failed for %s", url.QueryEscape(invalidWebhook))
+	if got := sanitizeErrorMessage(invalidErr, invalidWebhook); strings.Contains(got, "%25zz") {
+		t.Fatalf("expected encoded invalid webhook to be redacted, got %q", got)
+	}
+}
+
+func TestWebhookRedactionHelperBranches(t *testing.T) {
+	if got := lastWebhookPathSegment("/"); got != "" {
+		t.Fatalf("expected empty final segment for root path, got %q", got)
+	}
+
+	got := uniqueStrings([]string{"", "one", "one", "two"})
+	want := []string{"one", "two"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("uniqueStrings() = %#v, want %#v", got, want)
 	}
 }
 
