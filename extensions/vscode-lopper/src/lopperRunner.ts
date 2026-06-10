@@ -91,27 +91,7 @@ class LopperCliReportExecutor implements ReportCommandExecutor {
       }
       return stdout;
     } catch (error) {
-      const execError = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
-      if (execError.code === "ENOENT") {
-        throw new BinaryResolutionError(
-          "Lopper binary not found. Set lopper.binaryPath or LOPPER_BINARY_PATH before running the extension.",
-        );
-      }
-
-      const stdout = execError.stdout ?? "";
-      const trimmedStdout = stdout.trim();
-      const requestedFormat = this.requestedFormat(args);
-      if (trimmedStdout.length > 0) {
-        if (requestedFormat && requestedFormat !== "json") {
-          return stdout;
-        }
-        if (this.looksLikeJsonPayload(trimmedStdout)) {
-          return stdout;
-        }
-      }
-
-      const stderr = execError.stderr?.trim();
-      throw new Error(stderr && stderr.length > 0 ? stderr : `lopper command failed for ${binaryPath}`);
+      return this.handleRunCommandError(error as NodeJS.ErrnoException & { stdout?: string; stderr?: string }, args, binaryPath);
     }
   }
 
@@ -128,6 +108,40 @@ class LopperCliReportExecutor implements ReportCommandExecutor {
         `failed to parse JSON from ${binaryPath}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  private handleRunCommandError(
+    execError: NodeJS.ErrnoException & { stdout?: string; stderr?: string },
+    args: string[],
+    binaryPath: string,
+  ): string {
+    if (execError.code === "ENOENT") {
+      throw new BinaryResolutionError(
+        "Lopper binary not found. Set lopper.binaryPath or LOPPER_BINARY_PATH before running the extension.",
+      );
+    }
+
+    const stdout = execError.stdout ?? "";
+    if (this.shouldReturnStdout(stdout, args)) {
+      return stdout;
+    }
+
+    const stderr = execError.stderr?.trim();
+    throw new Error(stderr && stderr.length > 0 ? stderr : `lopper command failed for ${binaryPath}`);
+  }
+
+  private shouldReturnStdout(stdout: string, args: string[]): boolean {
+    const trimmedStdout = stdout.trim();
+    if (trimmedStdout.length === 0) {
+      return false;
+    }
+
+    const requestedFormat = this.requestedFormat(args);
+    if (requestedFormat && requestedFormat !== "json") {
+      return true;
+    }
+
+    return this.looksLikeJsonPayload(trimmedStdout);
   }
 
   private requestedFormat(args: string[]): string | undefined {

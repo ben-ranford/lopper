@@ -1916,7 +1916,10 @@ function renderDependencyOverviewSection(dependency: LopperDependencyReport): st
       `<div class="stat-grid">`,
       renderStat("Used exports", `${dependency.usedExportsCount}/${dependency.totalExportsCount}`),
       renderStat("Used percent", `${dependency.usedPercent.toFixed(1)}%`),
-      renderStat("Estimated unused bytes", dependency.estimatedUnusedBytes !== undefined ? String(dependency.estimatedUnusedBytes) : "n/a"),
+      renderStat(
+        "Estimated unused bytes",
+        typeof dependency.estimatedUnusedBytes === "number" ? String(dependency.estimatedUnusedBytes) : "n/a",
+      ),
       renderStat("Risk cues", String(dependency.riskCues?.length ?? 0)),
       renderStat("Recommendations", String(dependency.recommendations?.length ?? 0)),
       `</div>`,
@@ -1944,7 +1947,9 @@ function renderDependencyContextSection(
     report.effectiveThresholds ? `<p><strong>Thresholds:</strong> ${escapeHtml(effectiveThresholdsText(report.effectiveThresholds))}</p>` : "",
     report.effectivePolicy ? `<p><strong>Policy:</strong> ${escapeHtml(effectivePolicyText(report.effectivePolicy))}</p>` : "",
     report.warnings?.length ? `<p><strong>Warnings:</strong> ${escapeHtml(report.warnings.join(" | "))}</p>` : "",
-    report.wasteIncreasePercent !== undefined ? `<p><strong>Waste increase vs baseline:</strong> ${escapeHtml(report.wasteIncreasePercent.toFixed(1))}%</p>` : "",
+    typeof report.wasteIncreasePercent === "number"
+      ? `<p><strong>Waste increase vs baseline:</strong> ${escapeHtml(report.wasteIncreasePercent.toFixed(1))}%</p>`
+      : "",
     baseline ? renderBaselineHtml(baseline, baselineDependency) : "",
   ];
   return renderHtmlSection("Context", lines.join(""));
