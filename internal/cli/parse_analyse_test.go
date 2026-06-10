@@ -525,6 +525,16 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 	if len(req.Analyse.PolicySources) == 0 || req.Analyse.PolicySources[0] != "cli" {
 		t.Fatalf("expected cli source precedence, got %#v", req.Analyse.PolicySources)
 	}
+	var traceSource string
+	for _, item := range req.Analyse.PolicyTrace {
+		if item.Field == "thresholds.low_confidence_warning_percent" {
+			traceSource = item.Source
+			break
+		}
+	}
+	if traceSource != "cli" {
+		t.Fatalf("expected CLI policy trace to win for low confidence warning, got %q", traceSource)
+	}
 }
 
 func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {

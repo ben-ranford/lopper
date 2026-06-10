@@ -7,6 +7,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/version"
 )
@@ -19,28 +20,41 @@ var (
 	featureReleaseLockProvider = featureflags.DefaultReleaseLock
 )
 
-func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, thresholds.FeatureConfig, string, error) {
+func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, []report.PolicyMergeTrace, thresholds.FeatureConfig, string, error) {
 	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, thresholds.FeatureConfig{}, "", err
 	}
 
 	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visited, values)
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, thresholds.FeatureConfig{}, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, thresholds.FeatureConfig{}, "", err
 	}
 
 	policySources := append([]string{}, loadResult.PolicySources...)
+	policyTrace := append([]report.PolicyMergeTrace{}, loadResult.PolicyTrace...)
 	if hasThresholdOverrides(cliOverrides) {
 		policySources = append([]string{"cli"}, policySources...)
+		traceIndex := make(map[string]int, len(policyTrace))
+		for i, item := range policyTrace {
+			traceIndex[item.Field] = i
+		}
+		for _, item := range cliPolicyTrace(cliOverrides) {
+			if index, ok := traceIndex[item.Field]; ok {
+				policyTrace[index].Source = item.Source
+				continue
+			}
+			traceIndex[item.Field] = len(policyTrace)
+			policyTrace = append(policyTrace, item)
+		}
 	}
 
-	return resolvedThresholds, loadResult.Scope, policySources, loadResult.Features, loadResult.ConfigPath, nil
+	return resolvedThresholds, loadResult.Scope, policySources, policyTrace, loadResult.Features, loadResult.ConfigPath, nil
 }
 
 func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
@@ -208,4 +222,42 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.LicenseFailOnDeny != nil ||
 		overrides.LicenseIncludeRegistryProvenance != nil ||
 		overrides.LockfileDriftPolicy != nil
+}
+
+func cliPolicyTrace(overrides thresholds.Overrides) []report.PolicyMergeTrace {
+	trace := make([]report.PolicyMergeTrace, 0, 11)
+	if overrides.FailOnIncreasePercent != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.fail_on_increase_percent", Source: "cli"})
+	}
+	if overrides.LowConfidenceWarningPercent != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.low_confidence_warning_percent", Source: "cli"})
+	}
+	if overrides.MinUsagePercentForRecommendations != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.min_usage_percent_for_recommendations", Source: "cli"})
+	}
+	if overrides.MaxUncertainImportCount != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.max_uncertain_import_count", Source: "cli"})
+	}
+	if overrides.LockfileDriftPolicy != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.lockfile_drift_policy", Source: "cli"})
+	}
+	if overrides.RemovalCandidateWeightUsage != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.usage", Source: "cli"})
+	}
+	if overrides.RemovalCandidateWeightImpact != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.impact", Source: "cli"})
+	}
+	if overrides.RemovalCandidateWeightConfidence != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.confidence", Source: "cli"})
+	}
+	if len(overrides.LicenseDenyList) > 0 {
+		trace = append(trace, report.PolicyMergeTrace{Field: "license.deny", Source: "cli"})
+	}
+	if overrides.LicenseFailOnDeny != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "license.fail_on_deny", Source: "cli"})
+	}
+	if overrides.LicenseIncludeRegistryProvenance != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "license.include_registry_provenance", Source: "cli"})
+	}
+	return trace
 }

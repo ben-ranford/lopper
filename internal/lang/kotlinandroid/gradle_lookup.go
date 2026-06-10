@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 const gradleReadWarningFormat = "unable to read %s: %v"
@@ -27,13 +29,45 @@ type dependencyLookups struct {
 }
 
 func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, dependencyLookups, []string) {
-	manifestDescriptors, manifestWarnings := collectManifestDependencyDescriptors(repoPath)
-	lockfileDescriptors, hasLockfile, lockWarnings := collectLockfileDependencyDescriptors(repoPath)
-
+	manifestDescriptors, lockfileDescriptors, hasLockfile, warnings := collectGradleDeclaredDependencyDescriptors(repoPath)
 	descriptors := mergeDescriptors(manifestDescriptors, lockfileDescriptors)
 	lookups := buildDependencyLookupIndex(descriptors)
 	lookups.HasLockfile = hasLockfile
-	return descriptors, lookups, append(manifestWarnings, lockWarnings...)
+	return descriptors, lookups, warnings
+}
+
+func collectGradleDeclaredDependencyDescriptors(repoPath string) ([]dependencyDescriptor, []dependencyDescriptor, bool, []string) {
+	lockfileMatched := false
+	discovery, walkErr := discoverGradleFiles(repoPath, func(fileName string) bool {
+		if strings.EqualFold(fileName, gradleLockfileName) {
+			lockfileMatched = true
+		}
+		return matchesBuildFile(fileName, []string{buildGradleName, buildGradleKTSName}) || strings.EqualFold(fileName, gradleLockfileName)
+	})
+
+	catalogResolver, catalogWarnings := shared.LoadGradleCatalogResolver(repoPath)
+	manifestFiles := make([]discoveredGradleFile, 0, len(discovery.Files))
+	lockfileFiles := make([]discoveredGradleFile, 0, len(discovery.Files))
+	for _, file := range discovery.Files {
+		switch {
+		case strings.EqualFold(filepath.Base(file.Path), gradleLockfileName):
+			lockfileFiles = append(lockfileFiles, file)
+		default:
+			manifestFiles = append(manifestFiles, file)
+		}
+	}
+
+	manifestDescriptors, manifestWarnings := parseGradleManifestFiles(manifestFiles, catalogResolver)
+	lockfileDescriptors := parseGradleLockfileFiles(lockfileFiles)
+
+	warnings := append([]string{}, discovery.Warnings...)
+	warnings = append(warnings, catalogWarnings...)
+	warnings = append(warnings, manifestWarnings...)
+	if walkErr != nil {
+		warnings = append(warnings, fmt.Sprintf("unable to scan build files: %v", walkErr))
+	}
+
+	return manifestDescriptors, lockfileDescriptors, lockfileMatched, shared.DedupeWarnings(warnings)
 }
 
 func mergeDescriptors(manifest, lockfile []dependencyDescriptor) []dependencyDescriptor {

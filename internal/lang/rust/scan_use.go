@@ -127,13 +127,33 @@ func expandUseSegments(inner, prefix string, out *[]usePathEntry) {
 }
 
 func parseUseLocalAlias(part string) (string, string) {
-	idx := strings.LastIndex(part, " as ")
+	idx := findRustUseAliasIndex(part)
 	if idx <= 0 {
 		return part, ""
 	}
-	local := strings.TrimSpace(part[idx+4:])
+	local := strings.TrimSpace(part[idx+2:])
 	base := strings.TrimSpace(part[:idx])
+	if base == "" || local == "" {
+		return part, ""
+	}
 	return base, local
+}
+
+func findRustUseAliasIndex(part string) int {
+	for index := 0; index+1 < len(part); index++ {
+		if part[index] != 'a' || part[index+1] != 's' {
+			continue
+		}
+		if index == 0 || !isRustWhitespace(part[index-1]) {
+			continue
+		}
+		next := index + 2
+		if next >= len(part) || !isRustWhitespace(part[next]) {
+			continue
+		}
+		return index
+	}
+	return -1
 }
 
 func normalizeUseWildcard(part, prefix string) (string, string, bool) {

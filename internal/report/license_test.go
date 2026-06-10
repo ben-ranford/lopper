@@ -40,14 +40,21 @@ func TestApplyLicensePolicyAndCountDenied(t *testing.T) {
 	}
 }
 
-func TestApplyLicensePolicyClearsDeniedWhenNoDenyList(t *testing.T) {
+func TestApplyLicensePolicyPreservesDeniedWhenNoDenyList(t *testing.T) {
 	deps := []DependencyReport{
 		{Name: "x", License: &DependencyLicense{SPDX: reportTestGPL30OnlyLower, Denied: true}},
-		{Name: "y", License: nil},
+		{Name: "y", License: &DependencyLicense{SPDX: "MIT", Denied: false}},
+		{Name: "z", License: nil},
 	}
 	ApplyLicensePolicy(deps, nil)
-	if deps[0].License.Denied {
-		t.Fatalf("expected denied flag to clear when denylist is empty")
+	if !deps[0].License.Denied {
+		t.Fatalf("expected upstream denied flag to remain set when denylist is empty")
+	}
+	if deps[1].License.Denied {
+		t.Fatalf("expected non-denied licenses to remain unchanged")
+	}
+	if deps[2].License != nil {
+		t.Fatalf("expected nil license to remain untouched")
 	}
 }
 
@@ -79,8 +86,8 @@ func TestLicenseAdditionalBranches(t *testing.T) {
 		{Name: "set", License: &DependencyLicense{Denied: true}},
 	}
 	ApplyLicensePolicy(deps, nil)
-	if deps[1].License.Denied {
-		t.Fatalf("expected deny flag to clear when deny list is empty")
+	if !deps[1].License.Denied {
+		t.Fatalf("expected deny flag to remain set when deny list is empty")
 	}
 
 	if got := SortedDenyList([]string{"###"}); len(got) != 0 {

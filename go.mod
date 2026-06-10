@@ -1,6 +1,6 @@
 module github.com/ben-ranford/lopper
 
-go 1.26.2
+go 1.26.4
 
 require github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 
@@ -10,7 +10,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/mod v0.36.0
+	golang.org/x/mod v0.37.0
 )
 
 require (

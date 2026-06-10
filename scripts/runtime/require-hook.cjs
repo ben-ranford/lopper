@@ -25,6 +25,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
     module: request,
     resolved,
     parent: parent?.filename ?? "",
+    entrypoint: isMain ? resolved || request : "",
     isMain: Boolean(isMain),
   });
   return loaded;

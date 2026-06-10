@@ -210,6 +210,16 @@ Launch TUI:
 lopper tui --repo . --language all
 ```
 
+Compare the TUI summary against a stored baseline:
+
+```bash
+lopper tui \
+  --repo . \
+  --language all \
+  --baseline-store .artifacts/lopper-baselines \
+  --baseline-key commit:abc123
+```
+
 ## Runtime trace annotations (JS/TS)
 
 Capture a runtime trace:
@@ -239,6 +249,8 @@ With runtime traces enabled:
 
 - `runtimeUsage.correlation` marks each JS/TS dependency as `static-only`, `runtime-only`, or `overlap`.
 - `runtimeUsage.modules` includes runtime-loaded module paths.
+- `runtimeUsage.parentModules` includes parent module paths that triggered the load.
+- `runtimeUsage.entrypoints` includes entrypoint modules seen in the runtime trace.
 - `runtimeUsage.topSymbols` includes best-effort runtime symbol hits.
 
 If `--runtime-trace` points to a missing file, analysis continues with static results and adds a warning.
