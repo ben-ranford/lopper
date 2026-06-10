@@ -19,11 +19,12 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 		},
 	}
 
-	annotated := Annotate(rep, Trace{
+	trace := Trace{
 		DependencyLoads:       map[string]int{"alpha": 2, "beta": 1},
 		DependencyParents:     map[string]map[string]int{"alpha": map[string]int{"src/index.js": 2}},
 		DependencyEntrypoints: map[string]map[string]int{"alpha": map[string]int{"src/main.js": 2}},
-	}, AnnotateOptions{})
+	}
+	annotated := Annotate(rep, trace, AnnotateOptions{})
 
 	if annotated.Dependencies[0].RuntimeUsage == nil || !annotated.Dependencies[0].RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected alpha to be runtime-only annotated")

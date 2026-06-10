@@ -1,6 +1,8 @@
 package thresholds
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -170,5 +172,75 @@ func TestThresholdConfigAdditionalPackAndFeatureBranches(t *testing.T) {
 	features := (&rawFeatures{Enable: &enable, Disable: &disable}).toFeatureConfig()
 	if !reflect.DeepEqual(features.Enable, []string{"alpha"}) || !reflect.DeepEqual(features.Disable, []string{"beta"}) {
 		t.Fatalf("unexpected normalized features: %#v", features)
+	}
+}
+
+func TestThresholdConfigPolicyTraceHelperBranches(t *testing.T) {
+	if got := policyTraceFromMap(nil); len(got) != 0 {
+		t.Fatalf("expected nil policy trace for empty map, got %#v", got)
+	}
+
+	baseTrace := map[string]string{
+		"thresholds.fail_on_increase_percent": "defaults",
+		"custom.z":                            "base",
+	}
+	higherTrace := map[string]string{
+		"thresholds.fail_on_increase_percent": "repo",
+		"custom.a":                            "pack",
+		"custom.blank":                        " ",
+	}
+	merged := mergePolicyTrace(baseTrace, higherTrace)
+	if merged["thresholds.fail_on_increase_percent"] != "repo" {
+		t.Fatalf("expected higher trace source to win, got %#v", merged)
+	}
+	if _, ok := merged["custom.blank"]; ok {
+		t.Fatalf("expected blank trace source to be ignored, got %#v", merged)
+	}
+
+	trace := policyTraceFromMap(merged)
+	if len(trace) != 3 {
+		t.Fatalf("expected known field plus sorted extras, got %#v", trace)
+	}
+	if trace[0].Field != "thresholds.fail_on_increase_percent" || trace[1].Field != "custom.a" || trace[2].Field != "custom.z" {
+		t.Fatalf("unexpected policy trace ordering: %#v", trace)
+	}
+}
+
+func TestThresholdConfigReadPolicyLocationBranches(t *testing.T) {
+	localPolicy := filepath.Join(t.TempDir(), "policy.yml")
+	policyData := []byte("thresholds:\n  fail_on_increase_percent: 3\n")
+	if err := os.WriteFile(localPolicy, policyData, 0o600); err != nil {
+		t.Fatalf("write local policy: %v", err)
+	}
+	if data, err := readPolicyLocation(localPolicy, packTrust{}, false); err != nil || string(data) != string(policyData) {
+		t.Fatalf("expected untrusted local read to succeed, data=%q err=%v", data, err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := w.Write(policyData); err != nil {
+			t.Errorf("write remote policy response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	sum := sha256.Sum256(policyData)
+	remotePolicy := server.URL + "/policy.yml#sha256=" + hex.EncodeToString(sum[:])
+	if data, err := readPolicyLocation(remotePolicy, packTrust{}, true); err != nil || string(data) != string(policyData) {
+		t.Fatalf("expected pinned remote policy read to succeed, data=%q err=%v", data, err)
+	}
+}
+
+func TestThresholdConfigResolvePackErrorBranches(t *testing.T) {
+	repo := t.TempDir()
+	current := filepath.Join(repo, ".lopper.yml")
+	resolver := newPackResolver(repo)
+
+	if _, err := resolver.resolvePack(current, packTrust{localRoot: repo}, 0, " "); err == nil || !strings.Contains(err.Error(), "pack reference must not be empty") {
+		t.Fatalf("expected empty pack reference error, got %v", err)
+	}
+
+	remotePack := "https://example.com/policy.yml#sha256=" + strings.Repeat("a", 64)
+	if _, err := resolver.resolvePack(current, packTrust{localRoot: repo}, 1, remotePack); err == nil || !strings.Contains(err.Error(), "remote policy packs are disabled") {
+		t.Fatalf("expected remote pack disabled error, got %v", err)
 	}
 }

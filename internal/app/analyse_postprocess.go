@@ -59,22 +59,7 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 		return strings.TrimSpace(req.BaselinePath), "", resolveCurrentBaselineKey(repoPath), true, nil
 	}
 
-	storePath := strings.TrimSpace(req.BaselineStorePath)
-	if storePath == "" {
-		return "", "", "", false, nil
-	}
-
-	baselineKey := strings.TrimSpace(req.BaselineKey)
-	if baselineKey == "" {
-		baselineKey = resolveCurrentBaselineKey(repoPath)
-	}
-	if baselineKey == "" {
-		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
-	}
-
-	baselinePath := report.BaselineSnapshotPath(storePath, baselineKey)
-	currentKey := resolveCurrentBaselineKey(repoPath)
-	return baselinePath, baselineKey, currentKey, true, nil
+	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.BaselineSnapshotPath)
 }
 
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
@@ -82,11 +67,7 @@ func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, re
 		return reportData, nil
 	}
 
-	storePath := strings.TrimSpace(req.BaselineStorePath)
-	if storePath == "" {
-		return reportData, fmt.Errorf("--save-baseline requires --baseline-store")
-	}
-	saveKey, err := resolveSaveBaselineKey(repoPath, req)
+	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, baselineKeyRequestFromAnalyse(req), "baseline")
 	if err != nil {
 		return reportData, err
 	}
@@ -100,18 +81,72 @@ func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, re
 }
 
 func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
-	if label := strings.TrimSpace(req.BaselineLabel); label != "" {
+	return resolveBaselineSaveKey(repoPath, baselineKeyRequestFromAnalyse(req), "baseline")
+}
+
+type baselineKeyRequest struct {
+	storePath string
+	key       string
+	label     string
+}
+
+func baselineKeyRequestFromAnalyse(req AnalyseRequest) baselineKeyRequest {
+	return baselineKeyRequest{
+		storePath: req.BaselineStorePath,
+		key:       req.BaselineKey,
+		label:     req.BaselineLabel,
+	}
+}
+
+func baselineKeyRequestFromDashboard(resolved resolvedDashboardRequest) baselineKeyRequest {
+	return baselineKeyRequest{
+		storePath: resolved.baselineStorePath,
+		key:       resolved.baselineKey,
+		label:     resolved.baselineLabel,
+	}
+}
+
+func resolveBaselineStoreComparisonPaths(repoPath string, req baselineKeyRequest, snapshotPath func(string, string) string) (string, string, string, bool, error) {
+	storePath := strings.TrimSpace(req.storePath)
+	if storePath == "" {
+		return "", "", "", false, nil
+	}
+
+	baselineKey := strings.TrimSpace(req.key)
+	if baselineKey == "" {
+		baselineKey = resolveCurrentBaselineKey(repoPath)
+	}
+	if baselineKey == "" {
+		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
+	}
+
+	return snapshotPath(storePath, baselineKey), baselineKey, resolveCurrentBaselineKey(repoPath), true, nil
+}
+
+func resolveBaselineSaveTarget(repoPath string, req baselineKeyRequest, keyName string) (string, string, error) {
+	storePath := strings.TrimSpace(req.storePath)
+	if storePath == "" {
+		return "", "", fmt.Errorf("--save-baseline requires --baseline-store")
+	}
+	saveKey, err := resolveBaselineSaveKey(repoPath, req, keyName)
+	if err != nil {
+		return "", "", err
+	}
+	return storePath, saveKey, nil
+}
+
+func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName string) (string, error) {
+	if label := strings.TrimSpace(req.label); label != "" {
 		return "label:" + label, nil
 	}
-	if key := strings.TrimSpace(req.BaselineKey); key != "" {
+	if key := strings.TrimSpace(req.key); key != "" {
 		return key, nil
 	}
 
 	key := resolveCurrentBaselineKey(repoPath)
 	if key == "" {
-		return "", fmt.Errorf("unable to resolve git commit for baseline key; pass --baseline-label or --baseline-key")
+		return "", fmt.Errorf("unable to resolve git commit for %s key; pass --baseline-label or --baseline-key", keyName)
 	}
-
 	return key, nil
 }
 

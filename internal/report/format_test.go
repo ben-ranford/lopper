@@ -95,6 +95,33 @@ func TestFormatTable(t *testing.T) {
 	assertOutputContains(t, output, expected...)
 }
 
+func TestFormatTableRuntimeUsageIncludesModuleContext(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Language: "js-ts",
+				Name:     "lodash",
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   2,
+					Correlation: RuntimeCorrelationOverlap,
+					ParentModules: []RuntimeModuleUsage{
+						{Module: "src/app.ts", Count: 2},
+					},
+					Entrypoints: []RuntimeModuleUsage{
+						{Module: "src/main.ts", Count: 1},
+					},
+				},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	assertOutputContains(t, output, "overlap (2 loads); parents: src/app.ts (2); entrypoints: src/main.ts")
+}
+
 func TestFormatJSON(t *testing.T) {
 	reportData := Report{RepoPath: "."}
 	output, err := NewFormatter().Format(reportData, FormatJSON)

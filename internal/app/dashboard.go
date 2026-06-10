@@ -69,11 +69,7 @@ func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPat
 		return reportData, nil
 	}
 
-	storePath := strings.TrimSpace(resolved.baselineStorePath)
-	if storePath == "" {
-		return reportData, fmt.Errorf("--save-baseline requires --baseline-store")
-	}
-	saveKey, err := resolveDashboardSaveBaselineKey(repoPath, resolved)
+	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, baselineKeyRequestFromDashboard(resolved), "dashboard baseline")
 	if err != nil {
 		return reportData, err
 	}
@@ -86,32 +82,5 @@ func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPat
 }
 
 func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
-	storePath := strings.TrimSpace(resolved.baselineStorePath)
-	if storePath == "" {
-		return "", "", "", false, nil
-	}
-
-	baselineKey := strings.TrimSpace(resolved.baselineKey)
-	if baselineKey == "" {
-		baselineKey = resolveCurrentBaselineKey(repoPath)
-	}
-	if baselineKey == "" {
-		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
-	}
-
-	return dashboard.BaselineSnapshotPath(storePath, baselineKey), baselineKey, resolveCurrentBaselineKey(repoPath), true, nil
-}
-
-func resolveDashboardSaveBaselineKey(repoPath string, resolved resolvedDashboardRequest) (string, error) {
-	if label := strings.TrimSpace(resolved.baselineLabel); label != "" {
-		return "label:" + label, nil
-	}
-	if key := strings.TrimSpace(resolved.baselineKey); key != "" {
-		return key, nil
-	}
-	key := resolveCurrentBaselineKey(repoPath)
-	if key == "" {
-		return "", fmt.Errorf("unable to resolve git commit for dashboard baseline key; pass --baseline-label or --baseline-key")
-	}
-	return key, nil
+	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromDashboard(resolved), dashboard.BaselineSnapshotPath)
 }

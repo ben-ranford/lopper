@@ -92,6 +92,104 @@ func TestFormatSARIFWasteOnlyReport(t *testing.T) {
 	}
 }
 
+func TestFormatSARIFIncludesRuntimeAndBaselineContext(t *testing.T) {
+	wasteIncrease := 1.5
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Language: "go",
+				Name:     "github.com/acme/pkg",
+				UnusedExports: []SymbolRef{
+					{Name: "Unused", Module: "github.com/acme/pkg"},
+				},
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   4,
+					Correlation: RuntimeCorrelationOverlap,
+					RuntimeOnly: true,
+					Modules: []RuntimeModuleUsage{
+						{Module: "pkg/runtime", Count: 4},
+					},
+					ParentModules: []RuntimeModuleUsage{
+						{Module: "cmd/api", Count: 2},
+					},
+					Entrypoints: []RuntimeModuleUsage{
+						{Module: "cmd/server", Count: 1},
+					},
+					TopSymbols: []RuntimeSymbolUsage{
+						{Symbol: "Serve", Module: "pkg/runtime", Count: 3},
+					},
+				},
+			},
+		},
+		WasteIncreasePercent: &wasteIncrease,
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "base",
+			CurrentKey:  "head",
+			SummaryDelta: SummaryDelta{
+				DependencyCountDelta: 1,
+			},
+			Dependencies: []DependencyDelta{
+				{
+					Kind:                      DependencyDeltaChanged,
+					Language:                  "go",
+					Name:                      "github.com/acme/pkg",
+					UsedExportsCountDelta:     -1,
+					TotalExportsCountDelta:    0,
+					UsedPercentDelta:          -10,
+					EstimatedUnusedBytesDelta: 512,
+					WastePercentDelta:         10,
+					DeniedIntroduced:          true,
+				},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf("format sarif with runtime context: %v", err)
+	}
+
+	var payload sarifLog
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf(errParseSARIFOutput, err)
+	}
+	if len(payload.Runs) != 1 || len(payload.Runs[0].Results) == 0 {
+		t.Fatalf("expected sarif results, got %#v", payload.Runs)
+	}
+
+	var dependencyProps map[string]any
+	var wasteProps map[string]any
+	for _, result := range payload.Runs[0].Results {
+		if result.RuleID == "lopper/waste/unused-export" {
+			dependencyProps = result.Properties
+		}
+		if result.RuleID == "lopper/waste/increase" {
+			wasteProps = result.Properties
+		}
+	}
+	if dependencyProps == nil {
+		t.Fatalf("expected unused-export sarif result, got %#v", payload.Runs[0].Results)
+	}
+	runtimeProps, ok := dependencyProps["runtime"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected runtime properties, got %#v", dependencyProps)
+	}
+	for _, key := range []string{"modules", "parentModules", "entrypoints", "topSymbols"} {
+		if values, ok := runtimeProps[key].([]any); !ok || len(values) != 1 {
+			t.Fatalf("expected one runtime %s entry, got %#v", key, runtimeProps[key])
+		}
+	}
+	if baselineContext, ok := dependencyProps["baselineContext"].(map[string]any); !ok || baselineContext["deniedIntroduced"] != true {
+		t.Fatalf("expected dependency baseline context, got %#v", dependencyProps["baselineContext"])
+	}
+	if wasteProps == nil {
+		t.Fatalf("expected waste-increase sarif result")
+	}
+	if _, ok := wasteProps["baselineContext"].(map[string]any); !ok {
+		t.Fatalf("expected waste baseline context, got %#v", wasteProps)
+	}
+}
+
 func assertWasteOnlySARIFWithoutResult(t *testing.T, wasteIncrease float64) {
 	t.Helper()
 
