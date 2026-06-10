@@ -44,8 +44,5 @@ func buildRequestedDependencies(req language.Request, scan scanResult) ([]report
 }
 
 func resolveWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }

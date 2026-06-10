@@ -58,14 +58,24 @@ func (a *testAdapter) Analyse(ctx context.Context, req Request) (report.Report, 
 	return report.Report{}, nil
 }
 
-func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
+func registryWithTestAdapters(t *testing.T, adapters ...*testAdapter) *Registry {
+	t.Helper()
 	registry := NewRegistry()
-	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
-		t.Fatalf(registerJSErrFmt, err)
+	for _, adapter := range adapters {
+		if err := registry.Register(adapter); err != nil {
+			t.Fatalf("register %s: %v", adapter.id, err)
+		}
 	}
-	if err := registry.Register(&testAdapter{id: "python", detection: Detection{Matched: true, Confidence: 85}}); err != nil {
-		t.Fatalf(registerPythonErrFmt, err)
-	}
+	return registry
+}
+
+func registryForResolve(t *testing.T, js Detection, python Detection) *Registry {
+	t.Helper()
+	return registryWithTestAdapters(t, &testAdapter{id: "js-ts", detection: js}, &testAdapter{id: "python", detection: python})
+}
+
+func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
+	registry := registryForResolve(t, Detection{Matched: true, Confidence: 70}, Detection{Matched: true, Confidence: 85})
 
 	candidates, err := registry.Resolve(context.Background(), ".", Auto)
 	if err != nil {
@@ -80,13 +90,7 @@ func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
 }
 
 func TestResolveAllReturnsMatches(t *testing.T) {
-	registry := NewRegistry()
-	if err := registry.Register(&testAdapter{id: "js-ts", detection: Detection{Matched: true, Confidence: 70}}); err != nil {
-		t.Fatalf(registerJSErrFmt, err)
-	}
-	if err := registry.Register(&testAdapter{id: "python", detection: Detection{Matched: false, Confidence: 0}}); err != nil {
-		t.Fatalf(registerPythonErrFmt, err)
-	}
+	registry := registryForResolve(t, Detection{Matched: true, Confidence: 70}, Detection{Matched: false, Confidence: 0})
 
 	candidates, err := registry.Resolve(context.Background(), ".", All)
 	if err != nil {
