@@ -21,6 +21,7 @@ type analyseParseState struct {
 	thresholds    thresholds.Values
 	scope         thresholds.PathScope
 	policySources []string
+	policyTrace   []report.PolicyMergeTrace
 	configPath    string
 	features      featureflags.Set
 	notifications notify.Config
@@ -71,7 +72,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	}
 
 	visited := visitedFlags(fs)
-	resolvedThresholds, resolvedScope, policySources, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
+	resolvedThresholds, resolvedScope, policySources, policyTrace, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
 	if err != nil {
 		return analyseParseState{}, err
 	}
@@ -92,6 +93,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 		thresholds:    resolvedThresholds,
 		scope:         resolvedScope,
 		policySources: policySources,
+		policyTrace:   policyTrace,
 		configPath:    resolvedConfigPath,
 		features:      resolvedFeatures,
 		notifications: resolvedNotifications,
@@ -125,6 +127,7 @@ func buildAnalyseRequest(req app.Request, flags analyseFlagValues, state analyse
 		ExcludePatterns:    resolveScopePatterns(state.visited, "exclude", flags.excludePatterns.Values(), state.scope.Exclude),
 		ConfigPath:         state.configPath,
 		PolicySources:      state.policySources,
+		PolicyTrace:        state.policyTrace,
 		Features:           state.features,
 		Thresholds:         state.thresholds,
 		Notifications:      state.notifications,

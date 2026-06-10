@@ -16,6 +16,7 @@ export async function resolve(specifier, context, nextResolve) {
     module: specifier,
     resolved: resolved.url || "",
     parent: context.parentURL || "",
+    entrypoint: context.parentURL ? "" : resolved.url || "",
   });
   return resolved;
 }

@@ -95,6 +95,33 @@ func TestFormatTable(t *testing.T) {
 	assertOutputContains(t, output, expected...)
 }
 
+func TestFormatTableRuntimeUsageIncludesModuleContext(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Language: "js-ts",
+				Name:     "lodash",
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   2,
+					Correlation: RuntimeCorrelationOverlap,
+					ParentModules: []RuntimeModuleUsage{
+						{Module: "src/app.ts", Count: 2},
+					},
+					Entrypoints: []RuntimeModuleUsage{
+						{Module: "src/main.ts", Count: 1},
+					},
+				},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	assertOutputContains(t, output, "overlap (2 loads); parents: src/app.ts (2); entrypoints: src/main.ts")
+}
+
 func TestFormatJSON(t *testing.T) {
 	reportData := Report{RepoPath: "."}
 	output, err := NewFormatter().Format(reportData, FormatJSON)
@@ -291,6 +318,79 @@ func TestFormatTableEscapesMultilineWarnings(t *testing.T) {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
 	assertOutputContains(t, output, "- warning-line-1\\nwarning-line-2", "- warning-line-3\\nwarning-line-4", "- warning\\twith\\ttab")
+}
+
+func TestFormatTableSanitizesTerminalControlCharacters(t *testing.T) {
+	reportData := Report{
+		Scope: &ScopeMetadata{
+			Mode:     "repo\x1b[31m",
+			Packages: []string{"pkg\x1b[31m", "safe"},
+		},
+		Cache: &CacheMetadata{
+			Enabled: true,
+			Path:    "cache\x1b[31m",
+			Invalidations: []CacheInvalidation{
+				{Key: "key\x1b[31m", Reason: "reason\x1b[31m"},
+			},
+		},
+		EffectivePolicy: &EffectivePolicy{
+			Sources: []string{"policy\x1b[31m"},
+			Thresholds: EffectiveThresholds{
+				FailOnIncreasePercent:             1,
+				LowConfidenceWarningPercent:       2,
+				MinUsagePercentForRecommendations: 3,
+				MaxUncertainImportCount:           4,
+			},
+			RemovalCandidateWeights: RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2},
+			License: LicensePolicy{
+				Deny: []string{"GPL\x1b[31m"},
+			},
+		},
+		LanguageBreakdown: []LanguageSummary{
+			{Language: "js\x1b[31m", DependencyCount: 1, UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "base\x1b[31m",
+			CurrentKey:  "cur\x1b[31m",
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{Language: "lang\x1b[31m", Name: "dep\x1b[31m", SPDX: "MIT\x1b[31m"},
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "delta\x1b[31m", Name: "dep\x1b[31m"},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{
+				Language:             "go\x1b[31m",
+				Name:                 "dep\x1b[31m",
+				UsedExportsCount:     1,
+				TotalExportsCount:    2,
+				UsedPercent:          50,
+				EstimatedUnusedBytes: 1024,
+				License:              &DependencyLicense{SPDX: "MIT\x1b[31m", Denied: true},
+				Provenance:           &DependencyProvenance{Source: "manifest\x1b[31m", Signals: []string{"signal\x1b[31m"}},
+				TopUsedSymbols:       []SymbolUsage{{Name: "sym\x1b[31m", Count: 2}},
+				Codemod: &CodemodReport{
+					Apply: &CodemodApplyReport{
+						BackupPath: "backup\x1b[31m",
+						Results: []CodemodApplyResult{
+							{Status: "applied", File: "file\x1b[31m", Message: "msg\x1b[31m", PatchCount: 1},
+						},
+					},
+				},
+			},
+		},
+		Warnings: []string{"warn\x1b[31m"},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if strings.Contains(output, "\x1b") {
+		t.Fatalf("expected table output to strip terminal control characters, got %q", output)
+	}
+	assertOutputContains(t, output, `\x1b[31m`, "pkg\\x1b[31m", "cache\\x1b[31m", "warn\\x1b[31m")
 }
 
 func TestFormattingHelpersBytesAndSymbols(t *testing.T) {
@@ -572,6 +672,34 @@ func TestFormatTableIncludesDeniedLicenseBaselineLines(t *testing.T) {
 		t.Fatalf("format table denied baseline lines: %v", err)
 	}
 	assertOutputContains(t, output, "license_delta:", "new denied license js-ts/pkg-a")
+}
+
+func TestFormatTableIncludesPolicyMergeTrace(t *testing.T) {
+	reportData := Report{
+		EffectivePolicy: &EffectivePolicy{
+			Sources: []string{"cli", "repo", "defaults"},
+			MergeTrace: []PolicyMergeTrace{
+				{Field: "thresholds.fail_on_increase_percent", Source: "cli"},
+				{Field: "license.fail_on_deny", Source: "repo"},
+			},
+			Thresholds: EffectiveThresholds{
+				FailOnIncreasePercent: 5,
+			},
+			RemovalCandidateWeights: RemovalCandidateWeights{
+				Usage: 0.5, Impact: 0.3, Confidence: 0.2,
+			},
+			License: LicensePolicy{FailOnDenied: true, IncludeRegistryProvenance: false},
+		},
+		Dependencies: []DependencyReport{
+			{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf("format table with policy merge trace: %v", err)
+	}
+	assertOutputContains(t, output, "merge_trace:", "thresholds.fail_on_increase_percent <= cli", "license.fail_on_deny <= repo")
 }
 
 func TestFormatJSONReturnsMarshalErrorForNonFiniteValue(t *testing.T) {

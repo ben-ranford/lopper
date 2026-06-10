@@ -94,15 +94,60 @@ func sanitizeErrorMessage(err error, webhookURL string) string {
 	}
 
 	redacted := RedactWebhookURL(webhookURL)
-	replacements := []string{
-		webhookURL,
-		url.QueryEscape(webhookURL),
-	}
-	for _, candidate := range replacements {
+	for _, candidate := range webhookRedactionCandidates(webhookURL) {
 		if candidate == "" {
 			continue
 		}
 		message = strings.ReplaceAll(message, candidate, redacted)
 	}
 	return message
+}
+
+func webhookRedactionCandidates(webhookURL string) []string {
+	parsed, err := url.Parse(strings.TrimSpace(webhookURL))
+	if err != nil {
+		return []string{webhookURL, url.QueryEscape(webhookURL)}
+	}
+
+	candidates := []string{
+		webhookURL,
+		url.QueryEscape(webhookURL),
+		parsed.Host + parsed.Path,
+		parsed.Host + parsed.EscapedPath(),
+		url.PathEscape(parsed.Host + parsed.Path),
+		parsed.Path,
+		parsed.EscapedPath(),
+		url.PathEscape(parsed.Path),
+	}
+
+	if token := lastWebhookPathSegment(parsed.Path); token != "" {
+		candidates = append(candidates, token, url.PathEscape(token))
+	}
+
+	return uniqueStrings(candidates)
+}
+
+func lastWebhookPathSegment(path string) string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.Split(trimmed, "/")
+	return parts[len(parts)-1]
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
 }

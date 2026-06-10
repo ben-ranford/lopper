@@ -111,8 +111,8 @@ func TestRawScopeToPathScope(t *testing.T) {
 	}
 
 	scope := &rawScope{
-		Include: []string{" src\\**\\*.ts ", "src/**/*.ts"},
-		Exclude: []string{" " + vendorGlob + " ", "vendor\\**"},
+		Include: stringList(" src\\**\\*.ts ", "src/**/*.ts"),
+		Exclude: stringList(" "+vendorGlob+" ", "vendor\\**"),
 	}
 	got := scope.toPathScope()
 	if strings.Join(got.Include, ",") != "src/**/*.ts" {
@@ -125,8 +125,10 @@ func TestRawScopeToPathScope(t *testing.T) {
 
 func TestMergeScope(t *testing.T) {
 	base := PathScope{
-		Include: []string{"src/**"},
-		Exclude: []string{vendorGlob},
+		Include:    []string{"src/**"},
+		Exclude:    []string{vendorGlob},
+		includeSet: true,
+		excludeSet: true,
 	}
 
 	if got := mergeScope(base, PathScope{}); strings.Join(got.Include, ",") != "src/**" || strings.Join(got.Exclude, ",") != vendorGlob {
@@ -134,8 +136,10 @@ func TestMergeScope(t *testing.T) {
 	}
 
 	higher := PathScope{
-		Include: []string{"packages/**"},
-		Exclude: []string{"dist/**"},
+		Include:    []string{"packages/**"},
+		Exclude:    []string{"dist/**"},
+		includeSet: true,
+		excludeSet: true,
 	}
 	got := mergeScope(base, higher)
 	if strings.Join(got.Include, ",") != "packages/**" || strings.Join(got.Exclude, ",") != "dist/**" {
@@ -262,8 +266,8 @@ func TestLoadConfigLicensePolicyFields(t *testing.T) {
 }
 
 func TestRawConfigToOverridesDuplicateNestedLicensePolicyFields(t *testing.T) {
-	rootDeny := []string{"gpl-3.0-only"}
-	nestedDeny := []string{"agpl-3.0-only"}
+	rootDeny := stringList("gpl-3.0-only")
+	nestedDeny := stringList("agpl-3.0-only")
 	cfg := rawConfig{
 		LicenseDeny: rootDeny,
 		Thresholds: rawThresholds{
@@ -608,6 +612,52 @@ thresholds:
 	}
 }
 
+func TestLoadWithPolicyExplicitEmptyListsClearInheritedPackValues(t *testing.T) {
+	repo := t.TempDir()
+	basePolicy := `thresholds:
+  license_deny:
+    - gpl-3.0-only
+scope:
+  include:
+    - src/**
+features:
+  enable:
+    - alpha
+`
+	overlayPolicy := `policy:
+  packs:
+    - ` + basePackFileName + `
+thresholds:
+  license_deny: []
+scope:
+  include: []
+features:
+  enable: []
+`
+	rootPolicy := `policy:
+  packs:
+    - packs/overlay.yml
+`
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", basePackFileName), basePolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, "packs", overlayPackName), overlayPolicy)
+	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), rootPolicy)
+
+	result, err := LoadWithPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("load with policy packs: %v", err)
+	}
+
+	if len(result.Resolved.LicenseDenyList) != 0 {
+		t.Fatalf("expected explicit empty license deny list to clear inherited pack values, got %#v", result.Resolved.LicenseDenyList)
+	}
+	if len(result.Scope.Include) != 0 {
+		t.Fatalf("expected explicit empty scope include list to clear inherited pack values, got %#v", result.Scope.Include)
+	}
+	if len(result.Features.Enable) != 0 {
+		t.Fatalf("expected explicit empty feature enable list to clear inherited pack values, got %#v", result.Features.Enable)
+	}
+}
+
 func TestLoadWithPolicyScopePrecedence(t *testing.T) {
 	repo := t.TempDir()
 	basePolicy := `scope:
@@ -691,7 +741,7 @@ func TestLoadWithPolicyRepoDiscoveredConfigRejectsRemotePackWithoutFetching(t *t
 	if err == nil {
 		t.Fatalf("expected repo-discovered config to reject remote pack")
 	}
-	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs require an explicit config path")
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
 	if got := atomic.LoadInt32(requests); got != 0 {
 		t.Fatalf("expected no remote fetches for repo-discovered config, got %d", got)
 	}
@@ -722,7 +772,7 @@ func TestLoadWithPolicyExplicitConfigTreatsRepoOverlayAsUntrustedForRemotePack(t
 	if err == nil {
 		t.Fatalf("expected explicit config to reject remote packs introduced by repo overlay")
 	}
-	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs require an explicit config path")
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
 	if got := atomic.LoadInt32(requests); got != 0 {
 		t.Fatalf("expected no remote fetches for rejected overlay remote pack, got %d", got)
 	}
@@ -736,33 +786,18 @@ func TestLoadWithPolicyRemotePackWithPinFromExplicitConfig(t *testing.T) {
   removal_candidate_weight_impact: 0.2
   removal_candidate_weight_confidence: 0.2
 `
-	sum := sha256.Sum256([]byte(packBody))
-	pin := hex.EncodeToString(sum[:])
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/org.yml" {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := w.Write([]byte(packBody)); err != nil {
-			t.Fatalf("write remote pack response: %v", err)
-		}
-	}))
+	server, pin, requests := newPinnedRemotePolicyServer(t, packBody)
 	defer server.Close()
 
 	policy := fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\nthresholds:\n  fail_on_increase_percent: 3\n", server.URL, pin)
 	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), policy)
 	result, err := LoadWithPolicy(repo, customConfigName)
-	if err != nil {
-		t.Fatalf("load explicit config with pinned remote pack: %v", err)
+	if err == nil {
+		t.Fatalf("expected explicit config to reject pinned remote pack")
 	}
-	if result.Resolved.FailOnIncreasePercent != 3 {
-		t.Fatalf("expected repo override, got %d", result.Resolved.FailOnIncreasePercent)
-	}
-	if result.Resolved.LowConfidenceWarningPercent != 19 {
-		t.Fatalf("expected remote pack threshold low_confidence_warning_percent=19, got %d", result.Resolved.LowConfidenceWarningPercent)
-	}
-	if len(result.PolicySources) < 3 || !strings.Contains(result.PolicySources[1], server.URL+"/org.yml#sha256="+pin) {
-		t.Fatalf("expected remote policy source in precedence output, got %#v", result.PolicySources)
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
+	if got := atomic.LoadInt32(requests); got != 0 {
+		t.Fatalf("expected no remote fetches for explicit config remote pack, got %d", got)
 	}
 }
 
@@ -801,7 +836,7 @@ func TestLoadWithExplicitConfigRejectsSpecialFilePolicyPack(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected explicit config non-regular policy pack error")
 		}
-		if !strings.Contains(err.Error(), "file exceeds size limit") {
+		if !strings.Contains(err.Error(), "local policy packs must remain under") {
 			t.Fatalf("unexpected policy pack read error: %v", err)
 		}
 		return
@@ -842,7 +877,9 @@ func assertRejectedPolicyLoadResult(t *testing.T, result LoadResult, err error, 
 
 func TestLoadWithPolicyRemotePackPinMismatchFromExplicitConfig(t *testing.T) {
 	repo := t.TempDir()
+	var requests int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
 		if _, err := w.Write([]byte("thresholds:\n  low_confidence_warning_percent: 12\n")); err != nil {
 			t.Fatalf("write mismatch response: %v", err)
 		}
@@ -850,12 +887,13 @@ func TestLoadWithPolicyRemotePackPinMismatchFromExplicitConfig(t *testing.T) {
 	defer server.Close()
 	testutil.MustWriteFile(t, filepath.Join(repo, customConfigName), fmt.Sprintf("policy:\n  packs:\n    - %s/org.yml#sha256=%s\n", server.URL, strings.Repeat("a", 64)))
 
-	_, err := LoadWithPolicy(repo, customConfigName)
+	result, err := LoadWithPolicy(repo, customConfigName)
 	if err == nil {
-		t.Fatalf("expected remote pin mismatch error")
+		t.Fatalf("expected explicit config to reject remote pack before mismatch fetch")
 	}
-	if !strings.Contains(err.Error(), "sha256 mismatch") {
-		t.Fatalf("expected sha256 mismatch error, got %v", err)
+	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("expected no remote fetches for explicit config remote pack, got %d", got)
 	}
 }
 
@@ -1057,9 +1095,9 @@ func TestRemotePolicyURLValidationAndFetchErrors(t *testing.T) {
 	t.Cleanup(func() {
 		remotePolicyHTTPClient = originalClient
 	})
-	remotePolicyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	remotePolicyHTTPClient = &http.Client{Transport: &roundTripFunc{fn: func(*http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("boom")
-	})}
+	}}}
 	if _, err := readRemotePolicyFile("https://example.com/policy.yml#sha256=" + strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "fetch remote policy") {
 		t.Fatalf("expected fetch remote policy error, got %v", err)
 	}
@@ -1093,8 +1131,15 @@ func assertLoadConfigErrorContains(t *testing.T, config string, expectedText str
 	}
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
+func stringList(values ...string) *[]string {
+	out := append(make([]string, 0, len(values)), values...)
+	return &out
+}
 
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
+type roundTripFunc struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (rt *roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return rt.fn(req)
 }

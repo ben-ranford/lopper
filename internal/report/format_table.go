@@ -45,8 +45,21 @@ func formatTable(report Report) (string, error) {
 }
 
 func writef(buffer *bytes.Buffer, format string, args ...any) {
-	formatted := fmt.Sprintf(format, args...)
+	formatted := fmt.Sprintf(format, sanitizeOutputArgs(args)...)
 	buffer.WriteString(formatted)
+}
+
+func sanitizeOutputArgs(args []any) []any {
+	sanitizedArgs := make([]any, len(args))
+	for i, arg := range args {
+		switch value := arg.(type) {
+		case string:
+			sanitizedArgs[i] = sanitizeTerminalString(value)
+		default:
+			sanitizedArgs[i] = arg
+		}
+	}
+	return sanitizedArgs
 }
 
 func formatEmpty(report Report) string {
@@ -87,9 +100,9 @@ func formatTableRow(dep DependencyReport, showLanguage, showRuntime, showReachab
 
 	columns := make([]string, 0, 12)
 	if showLanguage {
-		columns = append(columns, dep.Language)
+		columns = append(columns, sanitizeTerminalString(dep.Language))
 	}
-	columns = append(columns, dep.Name, fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount), fmt.Sprintf("%.1f", usedPercent))
+	columns = append(columns, sanitizeTerminalString(dep.Name), fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount), fmt.Sprintf("%.1f", usedPercent))
 	if showRuntime {
 		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
 	}

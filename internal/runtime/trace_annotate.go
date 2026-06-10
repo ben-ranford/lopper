@@ -37,11 +37,13 @@ func annotateDependency(dep *report.DependencyReport, trace Trace) {
 	}
 	correlation := runtimeCorrelation(hasStatic, loads > 0)
 	dep.RuntimeUsage = &report.RuntimeUsage{
-		LoadCount:   loads,
-		Correlation: correlation,
-		RuntimeOnly: correlation == report.RuntimeCorrelationRuntimeOnly,
-		Modules:     runtimeModules(trace.DependencyModules[dep.Name]),
-		TopSymbols:  runtimeSymbols(trace.DependencySymbols[dep.Name]),
+		LoadCount:     loads,
+		Correlation:   correlation,
+		RuntimeOnly:   correlation == report.RuntimeCorrelationRuntimeOnly,
+		Modules:       runtimeModules(trace.DependencyModules[dep.Name]),
+		ParentModules: runtimeModules(trace.DependencyParents[dep.Name]),
+		Entrypoints:   runtimeModules(trace.DependencyEntrypoints[dep.Name]),
+		TopSymbols:    runtimeSymbols(trace.DependencySymbols[dep.Name]),
 	}
 }
 
@@ -57,11 +59,13 @@ func appendRuntimeOnlyDependencies(rep *report.Report, trace Trace, seen map[str
 			Language: "js-ts",
 			Name:     dependency,
 			RuntimeUsage: &report.RuntimeUsage{
-				LoadCount:   loads,
-				Correlation: report.RuntimeCorrelationRuntimeOnly,
-				RuntimeOnly: true,
-				Modules:     runtimeModules(trace.DependencyModules[dependency]),
-				TopSymbols:  runtimeSymbols(trace.DependencySymbols[dependency]),
+				LoadCount:     loads,
+				Correlation:   report.RuntimeCorrelationRuntimeOnly,
+				RuntimeOnly:   true,
+				Modules:       runtimeModules(trace.DependencyModules[dependency]),
+				ParentModules: runtimeModules(trace.DependencyParents[dependency]),
+				Entrypoints:   runtimeModules(trace.DependencyEntrypoints[dependency]),
+				TopSymbols:    runtimeSymbols(trace.DependencySymbols[dependency]),
 			},
 		})
 	}

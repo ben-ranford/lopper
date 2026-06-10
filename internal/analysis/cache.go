@@ -60,6 +60,9 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 }
 
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
+	if info, err := os.Lstat(cachePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return true
+	}
 	resolvedCachePath, err := filepath.EvalSymlinks(cachePath)
 	if err != nil {
 		return false

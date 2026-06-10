@@ -9,7 +9,7 @@ import (
 )
 
 func TestLoadTrace(t *testing.T) {
-	trace, err := loadTraceFromContent(t, `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js"}`+"\n")
+	trace, err := loadTraceFromContent(t, `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js","parent":"file:///repo/src/index.js","entrypoint":"file:///repo/src/main.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js","parent":"/repo/src/index.cjs","entrypoint":"/repo/src/start.cjs"}`+"\n")
 
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
@@ -22,6 +22,12 @@ func TestLoadTrace(t *testing.T) {
 	}
 	if got := trace.DependencyModules["lodash"][lodashMapModule]; got != 1 {
 		t.Fatalf("expected lodash module count 1, got %d", got)
+	}
+	if got := trace.DependencyParents["lodash"]["/repo/src/index.js"]; got != 1 {
+		t.Fatalf("expected lodash parent count 1, got %d", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["/repo/src/main.js"]; got != 1 {
+		t.Fatalf("expected lodash entrypoint count 1, got %d", got)
 	}
 	if got := trace.DependencySymbols["lodash"][lodashMapModule+"\x00map"]; got != 1 {
 		t.Fatalf("expected lodash symbol count 1, got %d", got)

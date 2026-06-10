@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,6 +155,48 @@ func TestBuildSlackPayloadBackticksInRepoPathAndTrigger(t *testing.T) {
 	expected := "Repository: " + repoPath + "\nTrigger: " + string(trigger)
 	if decoded.Blocks[1].Text.Text != expected {
 		t.Fatalf("expected repository/trigger text %q, got %q", expected, decoded.Blocks[1].Text.Text)
+	}
+}
+
+func TestBuildSlackPayloadEscapesFallbackText(t *testing.T) {
+	cases := []struct {
+		name     string
+		repoPath string
+		want     string
+	}{
+		{name: "asterisk", repoPath: filepath.Join("repo", "star*name"), want: "[Lopper] Dependency analysis for star\\*name"},
+		{name: "underscore", repoPath: filepath.Join("repo", "under_name"), want: "[Lopper] Dependency analysis for under\\_name"},
+		{name: "tilde", repoPath: filepath.Join("repo", "til~de"), want: "[Lopper] Dependency analysis for til\\~de"},
+		{name: "backtick", repoPath: filepath.Join("repo", "tick`name"), want: "[Lopper] Dependency analysis for tick\\`name"},
+		{name: "lt", repoPath: filepath.Join("repo", "left<name"), want: "[Lopper] Dependency analysis for left&lt;name"},
+		{name: "gt", repoPath: filepath.Join("repo", "right>name"), want: "[Lopper] Dependency analysis for right&gt;name"},
+		{name: "amp", repoPath: filepath.Join("repo", "rock&roll"), want: "[Lopper] Dependency analysis for rock&amp;roll"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := buildSlackPayload(Delivery{
+				Channel: ChannelSlack,
+				Report: report.Report{
+					RepoPath: tc.repoPath,
+					Summary:  &report.Summary{DependencyCount: 1, UsedPercent: 10},
+				},
+			})
+			if err != nil {
+				t.Fatalf("build payload: %v", err)
+			}
+
+			var decoded map[string]any
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			if got := decoded["text"]; got != tc.want {
+				t.Fatalf("expected fallback text %q, got %#v", tc.want, got)
+			}
+			if strings.Contains(decoded["text"].(string), "*") && tc.name != "asterisk" {
+				t.Fatalf("expected slack fallback text to escape mrkdwn, got %q", decoded["text"])
+			}
+		})
 	}
 }
 

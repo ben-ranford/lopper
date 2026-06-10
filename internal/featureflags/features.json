@@ -33,5 +33,11 @@
     "description": "Enable vendored dependency provenance for Go using vendor/modules.txt metadata.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
+  },
+  {
+    "code": "LOP-FEAT-0006",
+    "name": "baseline-provenance-runtime-context-preview",
+    "description": "Enable baseline comparison, policy provenance, and runtime parent/entrypoint context in reports and dashboard views.",
+    "lifecycle": "preview"
   }
 ]

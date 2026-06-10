@@ -57,6 +57,11 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  printf '%s\\n' \"packages/a/committed.go\" \"packages/a/kept.go\"\n  exit 0\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"M  packages/a/committed.go\"\n  echo \"?? packages/b/new.go\"\n  exit 0\nfi\nexit 1\n",
 			want:   []string{"packages/a/committed.go", "packages/a/kept.go", "packages/b/new.go"},
 		},
+		{
+			name:   "quoted_non_ascii",
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  printf '%s\\n' '\"\\303\\261ame.go\"'\n  exit 0\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo 'M  \"\\303\\261ame.go\"'\n  exit 0\nfi\nexit 1\n",
+			want:   []string{"ñame.go"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -160,9 +165,19 @@ func TestParseChangedFileHelpers(t *testing.T) {
 		t.Fatalf("expected deduped changed lines, got %#v", changed)
 	}
 
+	quoted := parseChangedFileLines([]byte("\"\\303\\261ame.go\"\n"))
+	if len(quoted) != 1 || quoted[0] != "ñame.go" {
+		t.Fatalf("expected quoted diff path to decode, got %#v", quoted)
+	}
+
 	porcelain := parsePorcelainChangedFiles([]byte("M   packages/a/file.ts\nR  old.ts ->  packages/b/new.ts\n"))
 	if len(porcelain) != 2 || porcelain[0] != " packages/a/file.ts" || porcelain[1] != " packages/b/new.ts" {
 		t.Fatalf("expected parsed porcelain paths, got %#v", porcelain)
+	}
+
+	quotedPorcelain := parsePorcelainChangedFiles([]byte("M  \"\\303\\261ame.go\"\n"))
+	if len(quotedPorcelain) != 1 || quotedPorcelain[0] != "ñame.go" {
+		t.Fatalf("expected quoted porcelain path to decode, got %#v", quotedPorcelain)
 	}
 
 	unstaged := parsePorcelainChangedFiles([]byte(" M main.go\n"))

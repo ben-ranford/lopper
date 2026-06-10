@@ -80,9 +80,15 @@ type EffectiveThresholds struct {
 
 type EffectivePolicy struct {
 	Sources                 []string                `json:"sources,omitempty"`
+	MergeTrace              []PolicyMergeTrace      `json:"mergeTrace,omitempty"`
 	Thresholds              EffectiveThresholds     `json:"thresholds"`
 	RemovalCandidateWeights RemovalCandidateWeights `json:"removalCandidateWeights"`
 	License                 LicensePolicy           `json:"license"`
+}
+
+type PolicyMergeTrace struct {
+	Field  string `json:"field"`
+	Source string `json:"source"`
 }
 
 type Summary struct {

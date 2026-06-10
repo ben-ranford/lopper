@@ -21,6 +21,7 @@ type gitConfigOverride struct {
 
 var forcedGitConfigOverrides = []gitConfigOverride{
 	{key: "core.fsmonitor", value: "false"},
+	{key: "core.quotePath", value: "false"},
 	{key: "diff.external", value: ""},
 	{key: "interactive.diffFilter", value: ""},
 	{key: "core.pager", value: "cat"},

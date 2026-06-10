@@ -59,12 +59,54 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 		return strings.TrimSpace(req.BaselinePath), "", resolveCurrentBaselineKey(repoPath), true, nil
 	}
 
-	storePath := strings.TrimSpace(req.BaselineStorePath)
+	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.BaselineSnapshotPath)
+}
+
+func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
+	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[report.Report]{
+		enabled:       req.SaveBaseline,
+		repoPath:      repoPath,
+		req:           baselineKeyRequestFromAnalyse(req),
+		keyName:       "baseline",
+		now:           now,
+		save:          report.SaveSnapshot,
+		appendWarning: appendBaselineSaveWarning,
+	})
+}
+
+func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
+	return resolveBaselineSaveKey(repoPath, baselineKeyRequestFromAnalyse(req), "baseline")
+}
+
+type baselineKeyRequest struct {
+	storePath string
+	key       string
+	label     string
+}
+
+func baselineKeyRequestFromAnalyse(req AnalyseRequest) baselineKeyRequest {
+	return baselineKeyRequest{
+		storePath: req.BaselineStorePath,
+		key:       req.BaselineKey,
+		label:     req.BaselineLabel,
+	}
+}
+
+func baselineKeyRequestFromDashboard(resolved resolvedDashboardRequest) baselineKeyRequest {
+	return baselineKeyRequest{
+		storePath: resolved.baselineStorePath,
+		key:       resolved.baselineKey,
+		label:     resolved.baselineLabel,
+	}
+}
+
+func resolveBaselineStoreComparisonPaths(repoPath string, req baselineKeyRequest, snapshotPath func(string, string) string) (string, string, string, bool, error) {
+	storePath := strings.TrimSpace(req.storePath)
 	if storePath == "" {
 		return "", "", "", false, nil
 	}
 
-	baselineKey := strings.TrimSpace(req.BaselineKey)
+	baselineKey := strings.TrimSpace(req.key)
 	if baselineKey == "" {
 		baselineKey = resolveCurrentBaselineKey(repoPath)
 	}
@@ -72,47 +114,65 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
 	}
 
-	baselinePath := report.BaselineSnapshotPath(storePath, baselineKey)
-	currentKey := resolveCurrentBaselineKey(repoPath)
-	return baselinePath, baselineKey, currentKey, true, nil
+	return snapshotPath(storePath, baselineKey), baselineKey, resolveCurrentBaselineKey(repoPath), true, nil
 }
 
-func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
-	if !req.SaveBaseline {
-		return reportData, nil
-	}
-
-	storePath := strings.TrimSpace(req.BaselineStorePath)
+func resolveBaselineSaveTarget(repoPath string, req baselineKeyRequest, keyName string) (string, string, error) {
+	storePath := strings.TrimSpace(req.storePath)
 	if storePath == "" {
-		return reportData, fmt.Errorf("--save-baseline requires --baseline-store")
+		return "", "", fmt.Errorf("--save-baseline requires --baseline-store")
 	}
-	saveKey, err := resolveSaveBaselineKey(repoPath, req)
+	saveKey, err := resolveBaselineSaveKey(repoPath, req, keyName)
 	if err != nil {
-		return reportData, err
+		return "", "", err
 	}
-	savedPath, err := report.SaveSnapshot(storePath, saveKey, reportData, now)
-	if err != nil {
-		return reportData, err
-	}
-	reportData.Warnings = append(reportData.Warnings, "saved immutable baseline snapshot: "+savedPath)
-
-	return reportData, nil
+	return storePath, saveKey, nil
 }
 
-func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
-	if label := strings.TrimSpace(req.BaselineLabel); label != "" {
+func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName string) (string, error) {
+	if label := strings.TrimSpace(req.label); label != "" {
 		return "label:" + label, nil
 	}
-	if key := strings.TrimSpace(req.BaselineKey); key != "" {
+	if key := strings.TrimSpace(req.key); key != "" {
 		return key, nil
 	}
 
 	key := resolveCurrentBaselineKey(repoPath)
 	if key == "" {
-		return "", fmt.Errorf("unable to resolve git commit for baseline key; pass --baseline-label or --baseline-key")
+		return "", fmt.Errorf("unable to resolve git commit for %s key; pass --baseline-label or --baseline-key", keyName)
+	}
+	return key, nil
+}
+
+type immutableBaselineSaveConfig[T any] struct {
+	enabled       bool
+	repoPath      string
+	req           baselineKeyRequest
+	keyName       string
+	now           time.Time
+	save          func(string, string, T, time.Time) (string, error)
+	appendWarning func(T, string) T
+}
+
+func saveImmutableBaselineSnapshot[T any](reportData T, cfg immutableBaselineSaveConfig[T]) (T, error) {
+	if !cfg.enabled {
+		return reportData, nil
 	}
 
-	return key, nil
+	storePath, saveKey, err := resolveBaselineSaveTarget(cfg.repoPath, cfg.req, cfg.keyName)
+	if err != nil {
+		return reportData, err
+	}
+	savedPath, err := cfg.save(storePath, saveKey, reportData, cfg.now)
+	if err != nil {
+		return reportData, err
+	}
+	return cfg.appendWarning(reportData, savedPath), nil
+}
+
+func appendBaselineSaveWarning(reportData report.Report, savedPath string) report.Report {
+	reportData.Warnings = append(reportData.Warnings, "saved immutable baseline snapshot: "+savedPath)
+	return reportData
 }
 
 func resolveCurrentBaselineKey(repoPath string) string {
