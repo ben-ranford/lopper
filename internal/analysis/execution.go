@@ -60,7 +60,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			continue
 		}
 
-		current, err := candidate.Adapter.Analyse(ctx, language.Request{
+		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,

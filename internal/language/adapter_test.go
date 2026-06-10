@@ -33,6 +33,17 @@ func TestAdapterContractIDAndNilAliases(t *testing.T) {
 	}
 }
 
+func TestRequestAliasMatchesAnalysisOptions(t *testing.T) {
+	opts := requireAnalysisOptions(Request{RepoPath: "/repo", Dependency: "dep", TopN: 3})
+	if opts.RepoPath != "/repo" || opts.Dependency != "dep" || opts.TopN != 3 {
+		t.Fatalf("unexpected analysis options alias value: %#v", opts)
+	}
+}
+
+func requireAnalysisOptions(opts AnalysisOptions) AnalysisOptions {
+	return opts
+}
+
 func TestAdapterLifecycleDetectUsesSharedConfidenceHandler(t *testing.T) {
 	lifecycle := NewAdapterLifecycle("go", []string{"golang"}, func(ctx context.Context, repoPath string) (Detection, error) {
 		if repoPath != "/repo" {
