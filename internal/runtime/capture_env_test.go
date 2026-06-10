@@ -132,6 +132,30 @@ func TestRuntimeHookSearchRootsAreAnchored(t *testing.T) {
 	}
 }
 
+func TestRuntimeHookSearchRootsResolveRelativeCallerPaths(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, "capture_env.go", 0, true
+	}
+
+	roots := runtimeHookSearchRoots()
+	wantRepoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("abs repo root: %v", err)
+	}
+	want := []string{
+		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
+		wantRepoRoot,
+	}
+	if !reflect.DeepEqual(roots, want) {
+		t.Fatalf("expected relative runtime hook roots %v, got %v", want, roots)
+	}
+}
+
 func TestMergeEnvAndReadEnvValue(t *testing.T) {
 	base := []string{"A=1", "BADENTRY", "NODE_OPTIONS=--max-old-space-size=2048"}
 	merged := mergeEnv(base, map[string]string{"A": "2", "B": "3"})

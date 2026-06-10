@@ -124,7 +124,11 @@ func runtimeHookSearchRoots() []string {
 		}
 		dir := filepath.Clean(path)
 		if !filepath.IsAbs(dir) {
-			return
+			absDir, err := filepath.Abs(dir)
+			if err != nil {
+				return
+			}
+			dir = filepath.Clean(absDir)
 		}
 		if _, ok := seen[dir]; ok {
 			return
