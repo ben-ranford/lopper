@@ -40,18 +40,20 @@ func (a *App) executeFeatures(req Request) (string, error) {
 		return "", err
 	}
 
+	var output string
 	switch strings.ToLower(strings.TrimSpace(req.Features.Format)) {
 	case "", "table":
-		return formatFeatureTable(manifest), nil
+		output = formatFeatureTable(manifest)
 	case "json":
 		data, err := featureflags.FormatManifest(manifest)
 		if err != nil {
 			return "", err
 		}
-		return string(data), nil
+		output = string(data)
 	default:
 		return "", fmt.Errorf("invalid features format: %s", req.Features.Format)
 	}
+	return persistCommandOutput(output, req.Features.OutputPath, "feature manifest")
 }
 
 func formatFeatureTable(manifest []featureflags.ManifestEntry) string {

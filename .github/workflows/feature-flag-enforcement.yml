@@ -136,6 +136,7 @@ jobs:
 
       - name: Sync feature flag enforcement comment on PR
         if: ${{ always() && !env.ACT }}
+        continue-on-error: true
         uses: actions/github-script@v9
         env:
           ENFORCEMENT_FAILED: ${{ steps.enforce_flags.outcome == 'failure' }}
@@ -214,6 +215,7 @@ jobs:
 
       - name: Sync release feature guidance comment on PR
         if: ${{ always() && !env.ACT }}
+        continue-on-error: true
         uses: actions/github-script@v9
         env:
           RELEASE_PR: ${{ steps.classify_pr.outputs.release_pr }}
