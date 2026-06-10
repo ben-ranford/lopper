@@ -16,6 +16,7 @@ import (
 type analyseParseState struct {
 	dependency    string
 	format        report.Format
+	outputPath    string
 	scopeMode     string
 	visited       map[string]bool
 	thresholds    thresholds.Values
@@ -66,6 +67,10 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	if err != nil {
 		return analyseParseState{}, err
 	}
+	outputPath, err := resolveOutputPath(*flags.outputFlag, *flags.outputShortFlag)
+	if err != nil {
+		return analyseParseState{}, err
+	}
 	scopeMode, err := parseScopeMode(*flags.scopeMode)
 	if err != nil {
 		return analyseParseState{}, err
@@ -88,6 +93,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	return analyseParseState{
 		dependency:    dependency,
 		format:        format,
+		outputPath:    outputPath,
 		scopeMode:     scopeMode,
 		visited:       visited,
 		thresholds:    resolvedThresholds,
@@ -111,6 +117,7 @@ func buildAnalyseRequest(req app.Request, flags analyseFlagValues, state analyse
 		ApplyCodemod:       *flags.applyCodemod,
 		AllowDirty:         *flags.allowDirty,
 		Format:             state.format,
+		OutputPath:         state.outputPath,
 		Language:           strings.TrimSpace(*flags.languageFlag),
 		CacheEnabled:       *flags.cacheEnabled,
 		CachePath:          strings.TrimSpace(*flags.cachePath),

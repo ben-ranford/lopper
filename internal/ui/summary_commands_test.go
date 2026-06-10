@@ -411,13 +411,14 @@ func TestSummaryRenderAndInputBranches(t *testing.T) {
 		t.Fatalf("render summary with negative page: %v", err)
 	}
 
-	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, &state, ""); err != nil || quit {
+	reportView := mapSummaryReportView(rep)
+	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, reportView, &state, ""); err != nil || quit {
 		t.Fatalf("expected empty input to continue, quit=%v err=%v", quit, err)
 	}
-	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, &state, "refresh"); err != nil || quit {
+	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, reportView, &state, "refresh"); err != nil || quit {
 		t.Fatalf("expected refresh input to continue, quit=%v err=%v", quit, err)
 	}
-	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, &state, "quit"); err != nil || !quit {
+	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, reportView, &state, "quit"); err != nil || !quit {
 		t.Fatalf("expected quit input to terminate, quit=%v err=%v", quit, err)
 	}
 }
@@ -498,10 +499,51 @@ func TestSummaryCommandValidationBranches(t *testing.T) {
 	}
 }
 
+func TestSummaryHandleInputClampsNextToRenderedPageCount(t *testing.T) {
+	reportView := summaryReportView{
+		Dependencies: []summaryDependencyView{
+			{Name: "dep-a"},
+			{Name: "dep-b"},
+		},
+	}
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
+	state := summaryState{page: 2, pageSize: 1, sortMode: sortByWaste}
+
+	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, reportView, &state, "next"); err != nil || quit {
+		t.Fatalf("expected next input to continue, quit=%v err=%v", quit, err)
+	}
+	if state.page != 2 {
+		t.Fatalf("expected next to clamp at final page, got %d", state.page)
+	}
+	if quit, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, reportView, &state, "prev"); err != nil || quit {
+		t.Fatalf("expected prev input to continue, quit=%v err=%v", quit, err)
+	}
+	if state.page != 1 {
+		t.Fatalf("expected prev to move from final page after clamp, got %d", state.page)
+	}
+}
+
+func TestClampSummaryPageHandlesNilAndLowerBound(t *testing.T) {
+	clampSummaryPage(summaryReportView{}, nil)
+
+	reportView := summaryReportView{
+		Dependencies: []summaryDependencyView{
+			{Name: "dep-a"},
+			{Name: "dep-b"},
+		},
+	}
+	state := summaryState{page: 0, pageSize: 1, filter: "dep-b"}
+
+	clampSummaryPage(reportView, &state)
+	if state.page != 1 {
+		t.Fatalf("expected lower-bound clamp to page 1, got %d", state.page)
+	}
+}
+
 func TestSummaryHandleDetailErrorBranch(t *testing.T) {
 	summary := NewSummary(io.Discard, strings.NewReader(""), &errorAnalyzer{err: errors.New("detail failed")}, report.NewFormatter())
 	state := summaryState{}
-	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, &state, openDepCommand)
+	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: ".", Language: "auto"}, summaryReportView{}, &state, openDepCommand)
 	if err == nil {
 		t.Fatalf("expected detail error to propagate")
 	}

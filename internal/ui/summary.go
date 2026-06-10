@@ -63,7 +63,7 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		quit, err := s.handleSummaryInput(ctx, opts, &state, input)
+		quit, err := s.handleSummaryInput(ctx, opts, reportView, &state, input)
 		if err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func readSummaryInput(reader *bufio.Reader) (string, error) {
 	return strings.TrimSpace(input), nil
 }
 
-func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, state *summaryState, input string) (bool, error) {
+func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, reportView summaryReportView, state *summaryState, input string) (bool, error) {
 	if input == "" || input == "refresh" {
 		return false, nil
 	}
@@ -111,6 +111,8 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, state *s
 		if _, err := fmt.Fprintln(s.Out, "Unknown command. Type 'help' for options."); err != nil {
 			return false, err
 		}
+	} else {
+		clampSummaryPage(reportView, state)
 	}
 	return false, nil
 }
@@ -246,6 +248,19 @@ func handleToggleSortCommand(state *summaryState) bool {
 func setSortMode(state *summaryState, mode sortMode) {
 	state.sortMode = mode
 	state.page = 1
+}
+
+func clampSummaryPage(reportView summaryReportView, state *summaryState) {
+	if state == nil {
+		return
+	}
+	if state.page < 1 {
+		state.page = 1
+	}
+	totalPages := pageCount(len(filterDependencies(reportView.Dependencies, state.filter)), state.pageSize)
+	if state.page > totalPages {
+		state.page = totalPages
+	}
 }
 
 func supportsScreenRefresh(out io.Writer) bool {
