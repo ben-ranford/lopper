@@ -216,6 +216,7 @@ gh workflow run graduate-feature.yml \
 
 The workflow changes only the registry lifecycle and opens a PR.
 It does not merge the PR, remove release locks automatically, or infer stability from release-please.
+It defaults the graduation PR to the `v1.6.0` milestone and `target-series:1.6.x` label.
 Use the optional `issue` and `milestone` inputs when the graduation belongs somewhere other than the current feature flagging rollout issue.
 
 After graduation, future release builds enable the feature by default through `lifecycle: "stable"`.
