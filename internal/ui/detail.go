@@ -87,7 +87,7 @@ func parseDependencyLanguage(defaultLanguage, dependency string) (string, string
 	return defaultLanguage, dependency
 }
 
-func findSummaryDependencyDetail(dependencies []summaryDependencyView, languageID string, dependency string) (detailDependencyView, bool) {
+func findSummaryDependencyDetail(dependencies []summaryDependencyView, languageID, dependency string) (detailDependencyView, bool) {
 	for _, dep := range dependencies {
 		if dep.Name != dependency {
 			continue
