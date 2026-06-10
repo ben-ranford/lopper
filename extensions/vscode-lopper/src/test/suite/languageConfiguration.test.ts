@@ -5,36 +5,38 @@ import * as assert from "node:assert/strict";
 import { suite, test } from "mocha";
 
 import {
+  clearAndroidModuleSignalCache,
+  invalidateAndroidModuleSignalCacheForPath,
   inferLopperLanguageForDocument,
   resolveLopperLanguage,
   shouldAutoRefreshForDocument,
 } from "../../languageConfiguration";
 
 suite("language configuration", () => {
-  test("infers adapters from VS Code language ids and file extensions", () => {
-    assert.equal(inferLopperLanguageForDocument({ fileName: "/repo/src/main.go", languageId: "go" }), "go");
+  test("infers adapters from VS Code language ids and file extensions", async () => {
+    assert.equal(await inferLopperLanguageForDocument({ fileName: "/repo/src/main.go", languageId: "go" }), "go");
     assert.equal(
-      inferLopperLanguageForDocument({ fileName: "/repo/src/app.tsx", languageId: "typescriptreact" }),
+      await inferLopperLanguageForDocument({ fileName: "/repo/src/app.tsx", languageId: "typescriptreact" }),
       "js-ts",
     );
     assert.equal(
-      inferLopperLanguageForDocument({ fileName: "/repo/src/program.kt", languageId: "plaintext" }, "/repo"),
+      await inferLopperLanguageForDocument({ fileName: "/repo/src/program.kt", languageId: "plaintext" }, "/repo"),
       "jvm",
     );
     assert.equal(
-      inferLopperLanguageForDocument({ fileName: "/repo/src/service.exs", languageId: "plaintext" }),
+      await inferLopperLanguageForDocument({ fileName: "/repo/src/service.exs", languageId: "plaintext" }),
       "elixir",
     );
     assert.equal(
-      inferLopperLanguageForDocument({ fileName: "/repo/src/lib.cs", languageId: "csharp" }),
+      await inferLopperLanguageForDocument({ fileName: "/repo/src/lib.cs", languageId: "csharp" }),
       "dotnet",
     );
     assert.equal(
-      inferLopperLanguageForDocument({ fileName: "/repo/scripts/bootstrap.ps1", languageId: "powershell" }),
+      await inferLopperLanguageForDocument({ fileName: "/repo/scripts/bootstrap.ps1", languageId: "powershell" }),
       "powershell",
     );
     assert.equal(
-      inferLopperLanguageForDocument({ fileName: "/repo/modules/demo.psd1", languageId: "plaintext" }),
+      await inferLopperLanguageForDocument({ fileName: "/repo/modules/demo.psd1", languageId: "plaintext" }),
       "powershell",
     );
   });
@@ -59,41 +61,76 @@ suite("language configuration", () => {
       await writeFile(javaSource, "class MainActivity {}", "utf8");
 
       assert.equal(
-        inferLopperLanguageForDocument({ fileName: kotlinSource, languageId: "kotlin" }, tempRoot),
+        await inferLopperLanguageForDocument({ fileName: kotlinSource, languageId: "kotlin" }, tempRoot),
         "kotlin-android",
       );
       assert.equal(
-        inferLopperLanguageForDocument({ fileName: javaSource, languageId: "java" }, tempRoot),
+        await inferLopperLanguageForDocument({ fileName: javaSource, languageId: "java" }, tempRoot),
         "kotlin-android",
       );
-      assert.equal(resolveLopperLanguage("auto", { fileName: kotlinSource, languageId: "kotlin" }, tempRoot), "kotlin-android");
-      assert.equal(shouldAutoRefreshForDocument("kotlin-android", { fileName: kotlinSource, languageId: "kotlin" }, tempRoot), true);
+      assert.equal(await resolveLopperLanguage("auto", { fileName: kotlinSource, languageId: "kotlin" }, tempRoot), "kotlin-android");
+      assert.equal(await shouldAutoRefreshForDocument("kotlin-android", { fileName: kotlinSource, languageId: "kotlin" }, tempRoot), true);
     } finally {
+      clearAndroidModuleSignalCache();
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
 
-  test("resolves auto to the current document adapter and preserves explicit modes", () => {
-    const pythonDocument = { fileName: "/repo/app/main.py", languageId: "python" };
+  test("invalidates cached Android module signals for Gradle file changes", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-vscode-language-cache-"));
+    const androidModule = path.join(tempRoot, "app");
+    const kotlinSource = path.join(androidModule, "src", "main", "kotlin", "MainActivity.kt");
+    const buildFile = path.join(androidModule, "build.gradle.kts");
 
-    assert.equal(resolveLopperLanguage("auto", pythonDocument), "python");
-    assert.equal(resolveLopperLanguage("auto", { fileName: "/repo/README.md", languageId: "markdown" }), "auto");
-    assert.equal(resolveLopperLanguage("all", pythonDocument), "all");
-    assert.equal(resolveLopperLanguage("kotlin-android", pythonDocument), "kotlin-android");
-    assert.equal(resolveLopperLanguage("powershell", pythonDocument), "powershell");
-    assert.equal(resolveLopperLanguage("rust", pythonDocument), "rust");
+    try {
+      await mkdir(path.dirname(kotlinSource), { recursive: true });
+      await writeFile(kotlinSource, "class MainActivity", "utf8");
+      await writeFile(buildFile, "plugins { kotlin(\"jvm\") }", "utf8");
+
+      assert.equal(
+        await inferLopperLanguageForDocument({ fileName: kotlinSource, languageId: "kotlin" }, tempRoot),
+        "jvm",
+      );
+
+      await writeFile(buildFile, 'plugins { id("com.android.application") }', "utf8");
+      assert.equal(
+        await inferLopperLanguageForDocument({ fileName: kotlinSource, languageId: "kotlin" }, tempRoot),
+        "jvm",
+        "cached module signal should be reused until a relevant path is invalidated",
+      );
+
+      invalidateAndroidModuleSignalCacheForPath(buildFile, tempRoot);
+      assert.equal(
+        await inferLopperLanguageForDocument({ fileName: kotlinSource, languageId: "kotlin" }, tempRoot),
+        "kotlin-android",
+      );
+    } finally {
+      clearAndroidModuleSignalCache();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
-  test("auto refresh only reacts to files that match the selected mode", () => {
+  test("resolves auto to the current document adapter and preserves explicit modes", async () => {
+    const pythonDocument = { fileName: "/repo/app/main.py", languageId: "python" };
+
+    assert.equal(await resolveLopperLanguage("auto", pythonDocument), "python");
+    assert.equal(await resolveLopperLanguage("auto", { fileName: "/repo/README.md", languageId: "markdown" }), "auto");
+    assert.equal(await resolveLopperLanguage("all", pythonDocument), "all");
+    assert.equal(await resolveLopperLanguage("kotlin-android", pythonDocument), "kotlin-android");
+    assert.equal(await resolveLopperLanguage("powershell", pythonDocument), "powershell");
+    assert.equal(await resolveLopperLanguage("rust", pythonDocument), "rust");
+  });
+
+  test("auto refresh only reacts to files that match the selected mode", async () => {
     const goDocument = { fileName: "/repo/main.go", languageId: "go" };
     const jsDocument = { fileName: "/repo/src/index.ts", languageId: "typescript" };
     const markdownDocument = { fileName: "/repo/README.md", languageId: "markdown" };
 
-    assert.equal(shouldAutoRefreshForDocument("auto", goDocument), true);
-    assert.equal(shouldAutoRefreshForDocument("all", jsDocument), true);
-    assert.equal(shouldAutoRefreshForDocument("go", goDocument), true);
-    assert.equal(shouldAutoRefreshForDocument("go", jsDocument), false);
-    assert.equal(shouldAutoRefreshForDocument("kotlin-android", jsDocument), false);
-    assert.equal(shouldAutoRefreshForDocument("auto", markdownDocument), false);
+    assert.equal(await shouldAutoRefreshForDocument("auto", goDocument), true);
+    assert.equal(await shouldAutoRefreshForDocument("all", jsDocument), true);
+    assert.equal(await shouldAutoRefreshForDocument("go", goDocument), true);
+    assert.equal(await shouldAutoRefreshForDocument("go", jsDocument), false);
+    assert.equal(await shouldAutoRefreshForDocument("kotlin-android", jsDocument), false);
+    assert.equal(await shouldAutoRefreshForDocument("auto", markdownDocument), false);
   });
 });

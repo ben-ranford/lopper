@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -30,9 +30,14 @@ interface DocumentLike {
   languageId: string;
 }
 
+interface AndroidModuleSignalProvider {
+  hasAndroidModuleSignals(fileName: string, workspaceFolderPath?: string): Promise<boolean>;
+}
+
 const knownLanguages = new Set<LopperLanguage>(lopperLanguageValues);
 const jvmLikeLanguageIds = new Set(["java", "kotlin"]);
 const jvmLikeExtensions = new Set([".java", ".kt", ".kts"]);
+const androidManifestRelativePath = path.join("src", "main", "AndroidManifest.xml");
 const androidBuildPluginMarkers = [
   "com.android.application",
   "com.android.dynamic-feature",
@@ -122,17 +127,77 @@ export function configuredLopperLanguage(folder?: vscode.WorkspaceFolder): Loppe
   return normalizeLopperLanguage(configured);
 }
 
-export function inferLopperLanguageForDocument(
+export class AndroidModuleSignalCache implements AndroidModuleSignalProvider {
+  private readonly moduleSignalsByRoot = new Map<string, Promise<boolean>>();
+
+  async hasAndroidModuleSignals(fileName: string, workspaceFolderPath?: string): Promise<boolean> {
+    if (!workspaceFolderPath) {
+      return false;
+    }
+
+    const workspaceRoot = path.resolve(workspaceFolderPath);
+    const resolvedFile = path.resolve(fileName);
+    const relativeFile = path.relative(workspaceRoot, resolvedFile);
+    if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) {
+      return false;
+    }
+
+    let currentDir = path.dirname(resolvedFile);
+    while (currentDir.startsWith(workspaceRoot)) {
+      if (await this.moduleSignalsAndroid(currentDir)) {
+        return true;
+      }
+      if (currentDir === workspaceRoot) {
+        break;
+      }
+      const parentDir = path.dirname(currentDir);
+      if (parentDir === currentDir) {
+        break;
+      }
+      currentDir = parentDir;
+    }
+
+    return false;
+  }
+
+  invalidateForPath(filePath: string, workspaceFolderPath?: string): void {
+    const moduleRoot = androidSignalModuleRoot(filePath, workspaceFolderPath);
+    if (moduleRoot) {
+      this.moduleSignalsByRoot.delete(moduleRoot);
+    }
+  }
+
+  clear(): void {
+    this.moduleSignalsByRoot.clear();
+  }
+
+  private moduleSignalsAndroid(moduleRoot: string): Promise<boolean> {
+    const cacheKey = path.resolve(moduleRoot);
+    const cached = this.moduleSignalsByRoot.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const result = readAndroidModuleSignals(cacheKey);
+    this.moduleSignalsByRoot.set(cacheKey, result);
+    return result;
+  }
+}
+
+const defaultAndroidModuleSignalCache = new AndroidModuleSignalCache();
+
+export async function inferLopperLanguageForDocument(
   document?: DocumentLike,
   workspaceFolderPath?: string,
-): ConcreteLopperLanguage | undefined {
+  androidSignals: AndroidModuleSignalProvider = defaultAndroidModuleSignalCache,
+): Promise<ConcreteLopperLanguage | undefined> {
   if (!document || document.isUntitled) {
     return undefined;
   }
 
   const languageId = document.languageId.trim().toLowerCase();
   if (jvmLikeLanguageIds.has(languageId)) {
-    return inferJvmFamilyAdapter(document.fileName, workspaceFolderPath);
+    return inferJvmFamilyAdapter(document.fileName, workspaceFolderPath, androidSignals);
   }
   if (adapterByLanguageId.has(languageId)) {
     return adapterByLanguageId.get(languageId);
@@ -140,7 +205,7 @@ export function inferLopperLanguageForDocument(
 
   const extension = path.extname(document.fileName).toLowerCase();
   if (jvmLikeExtensions.has(extension)) {
-    return inferJvmFamilyAdapter(document.fileName, workspaceFolderPath);
+    return inferJvmFamilyAdapter(document.fileName, workspaceFolderPath, androidSignals);
   }
   if (adapterByExtension.has(extension)) {
     return adapterByExtension.get(extension);
@@ -149,24 +214,26 @@ export function inferLopperLanguageForDocument(
   return undefined;
 }
 
-export function resolveLopperLanguage(
+export async function resolveLopperLanguage(
   configuredLanguage: LopperLanguage,
   document?: DocumentLike,
   workspaceFolderPath?: string,
-): LopperLanguage {
+  androidSignals: AndroidModuleSignalProvider = defaultAndroidModuleSignalCache,
+): Promise<LopperLanguage> {
   if (configuredLanguage !== "auto") {
     return configuredLanguage;
   }
 
-  return inferLopperLanguageForDocument(document, workspaceFolderPath) ?? "auto";
+  return await inferLopperLanguageForDocument(document, workspaceFolderPath, androidSignals) ?? "auto";
 }
 
-export function shouldAutoRefreshForDocument(
+export async function shouldAutoRefreshForDocument(
   configuredLanguage: LopperLanguage,
   document: DocumentLike,
   workspaceFolderPath?: string,
-): boolean {
-  const inferred = inferLopperLanguageForDocument(document, workspaceFolderPath);
+  androidSignals: AndroidModuleSignalProvider = defaultAndroidModuleSignalCache,
+): Promise<boolean> {
+  const inferred = await inferLopperLanguageForDocument(document, workspaceFolderPath, androidSignals);
   if (!inferred) {
     return false;
   }
@@ -186,59 +253,86 @@ function normalizeLopperLanguage(value: string | undefined): LopperLanguage {
   return normalized;
 }
 
-function inferJvmFamilyAdapter(fileName: string, workspaceFolderPath?: string): ConcreteLopperLanguage {
-  return hasAndroidModuleSignals(fileName, workspaceFolderPath) ? "kotlin-android" : "jvm";
+export function invalidateAndroidModuleSignalCacheForPath(filePath: string, workspaceFolderPath?: string): void {
+  defaultAndroidModuleSignalCache.invalidateForPath(filePath, workspaceFolderPath);
 }
 
-function hasAndroidModuleSignals(fileName: string, workspaceFolderPath?: string): boolean {
-  if (!workspaceFolderPath) {
-    return false;
-  }
-
-  const workspaceRoot = path.resolve(workspaceFolderPath);
-  const resolvedFile = path.resolve(fileName);
-  const relativeFile = path.relative(workspaceRoot, resolvedFile);
-  if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) {
-    return false;
-  }
-
-  let currentDir = path.dirname(resolvedFile);
-  while (currentDir.startsWith(workspaceRoot)) {
-    if (moduleSignalsAndroid(currentDir)) {
-      return true;
-    }
-    if (currentDir === workspaceRoot) {
-      break;
-    }
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) {
-      break;
-    }
-    currentDir = parentDir;
-  }
-
-  return false;
+export function clearAndroidModuleSignalCache(): void {
+  defaultAndroidModuleSignalCache.clear();
 }
 
-function moduleSignalsAndroid(moduleRoot: string): boolean {
-  if (fs.existsSync(path.join(moduleRoot, "src", "main", "AndroidManifest.xml"))) {
+async function inferJvmFamilyAdapter(
+  fileName: string,
+  workspaceFolderPath: string | undefined,
+  androidSignals: AndroidModuleSignalProvider,
+): Promise<ConcreteLopperLanguage> {
+  return await androidSignals.hasAndroidModuleSignals(fileName, workspaceFolderPath) ? "kotlin-android" : "jvm";
+}
+
+async function readAndroidModuleSignals(moduleRoot: string): Promise<boolean> {
+  if (await pathExists(path.join(moduleRoot, androidManifestRelativePath))) {
     return true;
   }
 
   for (const buildFileName of ["build.gradle", "build.gradle.kts"]) {
     const buildFilePath = path.join(moduleRoot, buildFileName);
-    if (!fs.existsSync(buildFilePath)) {
-      continue;
-    }
-    try {
-      const buildFile = fs.readFileSync(buildFilePath, "utf8").toLowerCase();
-      if (androidBuildPluginMarkers.some((marker) => buildFile.includes(marker))) {
-        return true;
-      }
-    } catch {
-      continue;
+    const buildFile = await readTextFile(buildFilePath);
+    if (buildFile && androidBuildPluginMarkers.some((marker) => buildFile.toLowerCase().includes(marker))) {
+      return true;
     }
   }
 
   return false;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readTextFile(filePath: string): Promise<string | undefined> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function androidSignalModuleRoot(filePath: string, workspaceFolderPath?: string): string | undefined {
+  const resolvedFile = path.resolve(filePath);
+  const baseName = path.basename(resolvedFile);
+  const moduleRoot = moduleRootForAndroidSignal(resolvedFile, baseName);
+  if (!moduleRoot) {
+    return undefined;
+  }
+  if (!workspaceFolderPath) {
+    return moduleRoot;
+  }
+
+  const workspaceRoot = path.resolve(workspaceFolderPath);
+  const relativeModuleRoot = path.relative(workspaceRoot, moduleRoot);
+  if (relativeModuleRoot.startsWith("..") || path.isAbsolute(relativeModuleRoot)) {
+    return undefined;
+  }
+  return moduleRoot;
+}
+
+function moduleRootForAndroidSignal(resolvedFile: string, baseName: string): string | undefined {
+  if (baseName === "build.gradle" || baseName === "build.gradle.kts") {
+    return path.dirname(resolvedFile);
+  }
+
+  if (baseName !== "AndroidManifest.xml") {
+    return undefined;
+  }
+
+  const relativeManifestPath = path.join(path.basename(path.dirname(path.dirname(resolvedFile))), path.basename(path.dirname(resolvedFile)), baseName);
+  if (relativeManifestPath !== androidManifestRelativePath) {
+    return undefined;
+  }
+  return path.dirname(path.dirname(path.dirname(resolvedFile)));
 }

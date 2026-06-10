@@ -48,7 +48,7 @@ suite("refresh lifecycle", () => {
           const firstRefresh = refresh(controller, harness);
           const secondRefresh = refresh(controller, harness);
 
-          assert.equal(analyseCalls, 1);
+          await waitForAssertion(() => assert.equal(analyseCalls, 1));
 
           pendingAnalysis.resolve(makeAnalysis(harness, { dependencyCount: 1, usedPercent: 50 }));
           await Promise.all([firstRefresh, secondRefresh]);
@@ -101,7 +101,9 @@ suite("refresh lifecycle", () => {
           const firstRefresh = refresh(controller, harness, { forceFresh: true });
           const secondRefresh = refresh(controller, harness, { forceFresh: true });
 
-          assert.equal(deferredAnalyses.length, 2, "expected two independent fresh runs");
+          await waitForAssertion(() => {
+            assert.equal(deferredAnalyses.length, 2, "expected two independent fresh runs");
+          });
 
           deferredAnalyses[1].resolve(
             makeAnalysis(harness, {
@@ -150,7 +152,9 @@ suite("refresh lifecycle", () => {
           const firstRefresh = refresh(controller, harness, { forceFresh: true });
           const secondRefresh = refresh(controller, harness, { forceFresh: true });
 
-          assert.equal(deferredAnalyses.length, 2, "expected two independent fresh runs");
+          await waitForAssertion(() => {
+            assert.equal(deferredAnalyses.length, 2, "expected two independent fresh runs");
+          });
           assert.equal(signals[0].aborted, true, "superseded run should be aborted");
           assert.equal(signals[1].aborted, false, "latest run should remain active");
 
@@ -358,6 +362,24 @@ function deferred<T>(): Deferred<T> {
     reject = rejecter;
   });
   return { promise, resolve, reject };
+}
+
+async function waitForAssertion(assertion: () => void, timeoutMs = 1_000): Promise<void> {
+  const started = Date.now();
+  let lastError: unknown;
+  while (Date.now() - started < timeoutMs) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  assertion();
 }
 
 function makeAnalysis(
