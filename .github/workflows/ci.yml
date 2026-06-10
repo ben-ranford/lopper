@@ -106,6 +106,7 @@ jobs:
 
       - name: Comment memory benchmark report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() }}
+        continue-on-error: true
         uses: actions/github-script@v9
         with:
           script: |
@@ -197,6 +198,7 @@ jobs:
 
       - name: Comment lopper report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
+        continue-on-error: true
         uses: actions/github-script@v9
         env:
           LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
@@ -448,6 +450,7 @@ jobs:
 
       - name: Comment on coverage failure
         if: ${{ github.event_name == 'pull_request' && steps.cov.outcome == 'failure' && !env.ACT }}
+        continue-on-error: true
         uses: actions/github-script@v9
         env:
           COVERAGE_MIN: 98
