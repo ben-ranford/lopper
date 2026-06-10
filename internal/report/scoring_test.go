@@ -144,6 +144,35 @@ func TestDependencyUsageSignalAndRawImpactBranches(t *testing.T) {
 	}
 }
 
+func TestDependencyImpactSignalIsNonRelative(t *testing.T) {
+	target := DependencyReport{Name: "target", UsedExportsCount: 0, TotalExportsCount: 10}
+	alone := []DependencyReport{target}
+	withLargePeer := []DependencyReport{
+		target,
+		{Name: "large", UsedExportsCount: 0, TotalExportsCount: 1000},
+	}
+
+	AnnotateRemovalCandidateScores(alone)
+	AnnotateRemovalCandidateScores(withLargePeer)
+
+	if alone[0].RemovalCandidate.Impact != withLargePeer[0].RemovalCandidate.Impact {
+		t.Fatalf("expected target impact to be independent of peer dependencies, alone=%f withPeer=%f", alone[0].RemovalCandidate.Impact, withLargePeer[0].RemovalCandidate.Impact)
+	}
+}
+
+func TestDependencyImpactSignalUsesFixedLogScale(t *testing.T) {
+	small := dependencyImpactSignal(DependencyReport{UsedExportsCount: 0, TotalExportsCount: 1})
+	large := dependencyImpactSignal(DependencyReport{UsedExportsCount: 0, TotalExportsCount: 100})
+	huge := dependencyImpactSignal(DependencyReport{UsedExportsCount: 0, TotalExportsCount: 10000})
+
+	if small <= 0 || small >= large {
+		t.Fatalf("expected positive impact to grow with unused exports, small=%f large=%f", small, large)
+	}
+	if large != 100 || huge != 100 {
+		t.Fatalf("expected impact to saturate at 100, large=%f huge=%f", large, huge)
+	}
+}
+
 func TestNormalizeRemovalCandidateWeightsFallback(t *testing.T) {
 	defaults := DefaultRemovalCandidateWeights()
 	got := NormalizeRemovalCandidateWeights(RemovalCandidateWeights{Usage: -1, Impact: 0.5, Confidence: 0.5})

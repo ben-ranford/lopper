@@ -16,6 +16,7 @@ const (
 	removalCandidateWeightUsageField      = "removal_candidate_weight_usage"
 	removalCandidateWeightImpactField     = "removal_candidate_weight_impact"
 	removalCandidateWeightConfidenceField = "removal_candidate_weight_confidence"
+	removalCandidateImpactSaturation      = 100.0
 )
 
 func AnnotateRemovalCandidateScores(dependencies []DependencyReport) {
@@ -27,16 +28,9 @@ func AnnotateRemovalCandidateScoresWithWeights(dependencies []DependencyReport, 
 		return
 	}
 	weights = NormalizeRemovalCandidateWeights(weights)
-	maxImpactRaw := 0.0
-	for _, dep := range dependencies {
-		impactRaw := rawImpact(dep)
-		if impactRaw > maxImpactRaw {
-			maxImpactRaw = impactRaw
-		}
-	}
 
 	for i := range dependencies {
-		dependencies[i].RemovalCandidate = buildRemovalCandidate(dependencies[i], maxImpactRaw, weights)
+		dependencies[i].RemovalCandidate = buildRemovalCandidate(dependencies[i], weights)
 	}
 }
 
@@ -99,9 +93,9 @@ func RemovalCandidateScore(dep DependencyReport) (float64, bool) {
 	return dep.RemovalCandidate.Score, true
 }
 
-func buildRemovalCandidate(dep DependencyReport, maxImpactRaw float64, weights RemovalCandidateWeights) *RemovalCandidate {
+func buildRemovalCandidate(dep DependencyReport, weights RemovalCandidateWeights) *RemovalCandidate {
 	usage, usageKnown := dependencyUsageSignal(dep)
-	impact := dependencyImpactSignal(dep, maxImpactRaw)
+	impact := dependencyImpactSignal(dep)
 	confidence, rationale := dependencyConfidenceSignal(dep)
 
 	if !usageKnown {
@@ -143,11 +137,12 @@ func rawImpact(dep DependencyReport) float64 {
 	return float64(unused)
 }
 
-func dependencyImpactSignal(dep DependencyReport, maxImpactRaw float64) float64 {
-	if maxImpactRaw <= 0 {
+func dependencyImpactSignal(dep DependencyReport) float64 {
+	impact := rawImpact(dep)
+	if impact <= 0 {
 		return 0
 	}
-	return clamp((rawImpact(dep)/maxImpactRaw)*100, 0, 100)
+	return clamp((math.Log1p(impact)/math.Log1p(removalCandidateImpactSaturation))*100, 0, 100)
 }
 
 func clamp(value, minValue, maxValue float64) float64 {
