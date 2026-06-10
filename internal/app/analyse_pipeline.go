@@ -75,23 +75,18 @@ func analyseValidationStage(validate func(report.Report) error) analyseReportSta
 
 func (a *App) completeAnalyseExecution(ctx context.Context, req AnalyseRequest, reportData report.Report, runErr error) (string, error) {
 	a.appendNotificationWarnings(ctx, req.Notifications, &reportData, buildNotificationOutcome(reportData, runErr))
-	if runErr != nil {
-		return a.formatReportWithOriginalError(reportData, req.Format, runErr)
+	formatted, err := a.Formatter.Format(reportData, req.Format)
+	if err != nil {
+		if runErr != nil {
+			return "", runErr
+		}
+		return "", err
 	}
 
-	formatted, err := a.Formatter.Format(reportData, req.Format)
+	output, err := persistCommandOutput(formatted, req.OutputPath, "analyse report")
 	if err != nil {
 		return "", err
 	}
 
-	return formatted, nil
-}
-
-func (a *App) formatReportWithOriginalError(reportData report.Report, format report.Format, originalErr error) (string, error) {
-	formatted, formatErr := a.Formatter.Format(reportData, format)
-	if formatErr != nil {
-		return "", originalErr
-	}
-
-	return formatted, originalErr
+	return output, runErr
 }

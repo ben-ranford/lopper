@@ -98,12 +98,24 @@ func TestAnalyseFormatterKeepsOriginalErrorWhenFallbackFormattingFails(t *testin
 
 	application := &App{Formatter: report.NewFormatter()}
 	originalErr := errors.New("original failure")
-	formatted, err := application.formatReportWithOriginalError(report.Report{}, report.Format("bogus"), originalErr)
+	formatted, err := application.completeAnalyseExecution(context.Background(), AnalyseRequest{Format: report.Format("bogus")}, report.Report{}, originalErr)
 	if formatted != "" {
 		t.Fatalf("expected empty formatted output on formatter failure, got %q", formatted)
 	}
 	if !errors.Is(err, originalErr) {
 		t.Fatalf("expected original error to be preserved, got %v", err)
+	}
+}
+
+func TestAnalyseFormatterReturnsFormatterErrorWithoutOriginalError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+
+	formatted, err := application.completeAnalyseExecution(context.Background(), AnalyseRequest{Format: report.Format("bogus")}, report.Report{}, nil)
+	if formatted != "" {
+		t.Fatalf("expected empty formatted output on formatter failure, got %q", formatted)
+	}
+	if err == nil || !strings.Contains(err.Error(), "unknown format") {
+		t.Fatalf("expected formatter error, got %v", err)
 	}
 }
 

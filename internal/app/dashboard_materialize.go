@@ -7,8 +7,12 @@ import (
 )
 
 func persistDashboardOutput(formatted, outputPath string) (string, error) {
+	return persistCommandOutput(formatted, outputPath, "dashboard report")
+}
+
+func persistCommandOutput(formatted, outputPath, label string) (string, error) {
 	trimmedOutputPath := strings.TrimSpace(outputPath)
-	if trimmedOutputPath == "" {
+	if trimmedOutputPath == "" || trimmedOutputPath == "-" {
 		return formatted, nil
 	}
 
@@ -18,5 +22,5 @@ func persistDashboardOutput(formatted, outputPath string) (string, error) {
 	if err := os.WriteFile(trimmedOutputPath, []byte(formatted), 0o600); err != nil {
 		return "", err
 	}
-	return "dashboard report written to " + trimmedOutputPath, nil
+	return label + " written to " + trimmedOutputPath, nil
 }

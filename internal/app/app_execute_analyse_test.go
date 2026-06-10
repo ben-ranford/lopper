@@ -88,6 +88,40 @@ func TestExecuteAnalyseAnalyzerError(t *testing.T) {
 	}
 }
 
+func TestExecuteAnalyseOutputFile(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	outputPath := filepath.Join(t.TempDir(), "reports", "analyse.json")
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.OutputPath = outputPath
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf(executeAnalyseErrFmt, err)
+	}
+	if !strings.Contains(output, outputPath) {
+		t.Fatalf("expected output file confirmation, got %q", output)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read analyse output file: %v", err)
+	}
+	if !strings.Contains(string(data), `"name": "lodash"`) {
+		t.Fatalf("expected analyse JSON content, got %q", string(data))
+	}
+}
+
 func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
