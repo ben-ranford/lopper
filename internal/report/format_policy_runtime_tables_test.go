@@ -47,8 +47,8 @@ func TestAppendEffectivePolicyAndBaselineComparisonMoreBranches(t *testing.T) {
 }
 
 func TestFormatRuntimeUsageAndLicenseMoreBranches(t *testing.T) {
-	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 1}); !strings.Contains(got, "overlap (1 loads)") {
-		t.Fatalf("expected overlap fallback correlation, got %q", got)
+	if got := formatRuntimeUsage(&RuntimeUsage{LoadCount: 1, Correlation: RuntimeCorrelationOverlap}); !strings.Contains(got, "overlap (1 loads)") {
+		t.Fatalf("expected overlap correlation, got %q", got)
 	}
 	if got := formatDependencyLicense(&DependencyLicense{Unknown: true}); got != "unknown" {
 		t.Fatalf("expected unknown license fallback, got %q", got)

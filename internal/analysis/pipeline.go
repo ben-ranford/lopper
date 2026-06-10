@@ -123,6 +123,7 @@ func finalizeReport(req Request, repoPath string, analyzedRoots []string, report
 	}
 
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
+	annotateDerivedDependencyMetrics(reportData.Dependencies)
 	report.AnnotateReachabilityConfidence(&reportData)
 	report.AnnotateFindingConfidence(reportData.Dependencies)
 	report.FilterFindingsByConfidence(reportData.Dependencies, lowConfidenceThreshold)
