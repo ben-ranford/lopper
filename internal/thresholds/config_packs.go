@@ -17,7 +17,6 @@ type packResolver struct {
 }
 
 type packTrust struct {
-	explicit  bool
 	localRoot string
 }
 
@@ -50,17 +49,14 @@ func newPackResolver(repoPath string) *packResolver {
 	}
 }
 
-func initialPackTrust(repoPath string, explicitProvided bool) packTrust {
-	if explicitProvided {
-		return packTrust{explicit: true}
+func initialPackTrust(repoPath, configPath string, explicitProvided bool) packTrust {
+	if explicitProvided && !isPathUnderRoot(repoPath, configPath) {
+		return packTrust{localRoot: filepath.Dir(configPath)}
 	}
 	return packTrust{localRoot: repoPath}
 }
 
-func (r *packResolver) nestedPackTrust(path string, remote bool) packTrust {
-	if remote {
-		return packTrust{}
-	}
+func (r *packResolver) nestedPackTrust(path string) packTrust {
 	if isPathUnderRoot(r.repoPath, path) {
 		return packTrust{localRoot: r.repoPath}
 	}
@@ -129,14 +125,14 @@ func (r *packResolver) resolvePack(canonical string, trust packTrust, idx int, p
 	if err != nil {
 		return resolveMergeResult{}, fmt.Errorf(invalidPolicyPackErrFmt, canonical, idx, err)
 	}
-	if childRemote && !trust.explicit {
-		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs require an explicit config path", canonical, idx)
+	if childRemote {
+		return resolveMergeResult{}, fmt.Errorf("parse config file %s: invalid policy.packs[%d]: remote policy packs are disabled", canonical, idx)
 	}
 	if err := validatePackBoundary(childCanonical, childRemote, trust); err != nil {
 		return resolveMergeResult{}, fmt.Errorf(invalidPolicyPackErrFmt, canonical, idx, err)
 	}
 
-	return r.resolveFile(childCanonical, r.nestedPackTrust(childCanonical, childRemote))
+	return r.resolveFile(childCanonical, r.nestedPackTrust(childCanonical))
 }
 
 func validatePackBoundary(path string, remote bool, trust packTrust) error {
