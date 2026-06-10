@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"reflect"
 	"strings"
 	"testing"
@@ -91,6 +92,18 @@ func TestNormalizeArgsMissingFlagValueReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "flag needs an argument: -config") {
 		t.Fatalf(unexpectedValidationErrFmt, err)
+	}
+}
+
+func TestParseFlagSetHelpAndBlankMissingValueError(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	if err := parseFlagSet(fs, []string{"-h"}); !errors.Is(err, ErrHelpRequested) {
+		t.Fatalf("expected parseFlagSet help to map to ErrHelpRequested, got %v", err)
+	}
+
+	err := missingFlagValueError("-")
+	if err == nil || !strings.Contains(err.Error(), "flag needs an argument: --") {
+		t.Fatalf("expected blank flag name to be preserved in missing value error, got %v", err)
 	}
 }
 

@@ -2,8 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/dashboard"
 )
 
 func (a *App) executeDashboard(ctx context.Context, req Request) (string, error) {
@@ -18,7 +23,64 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 
 	executionPlan := planDashboardExecution(req.Dashboard, resolved.repos)
 	analyses := a.executeDashboardAnalysisPlan(ctx, executionPlan)
+	now := time.Now()
+	reportData := dashboard.Aggregate(now, analyses)
 
-	materializationPlan := planDashboardMaterialization(resolved)
-	return materializeDashboardReport(analyses, materializationPlan, time.Now())
+	reportData, err = a.applyDashboardBaselineIfNeeded(reportData, req.RepoPath, resolved)
+	if err != nil {
+		return "", err
+	}
+	reportData, err = a.saveDashboardBaselineIfNeeded(reportData, req.RepoPath, resolved, now)
+	if err != nil {
+		return "", err
+	}
+
+	formatted, err := dashboard.FormatReport(reportData, resolved.format)
+	if err != nil {
+		return "", err
+	}
+	return persistDashboardOutput(formatted, resolved.outputPath)
+}
+
+func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest) (dashboard.Report, error) {
+	baselinePath, baselineKey, currentKey, shouldApply, err := resolveDashboardBaselinePaths(repoPath, resolved)
+	if err != nil {
+		return reportData, err
+	}
+	if !shouldApply {
+		return reportData, nil
+	}
+
+	baseline, loadedKey, err := dashboard.LoadWithKey(baselinePath)
+	if err != nil {
+		if resolved.saveBaseline && errors.Is(err, os.ErrNotExist) {
+			return reportData, nil
+		}
+		return reportData, err
+	}
+	if strings.TrimSpace(baselineKey) == "" {
+		baselineKey = loadedKey
+	}
+	return dashboard.ApplyBaselineWithKeys(reportData, baseline, baselineKey, currentKey)
+}
+
+func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, now time.Time) (dashboard.Report, error) {
+	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[dashboard.Report]{
+		enabled:       resolved.saveBaseline,
+		repoPath:      repoPath,
+		req:           baselineKeyRequestFromDashboard(resolved),
+		keyName:       "dashboard baseline",
+		now:           now,
+		save:          dashboard.SaveSnapshot,
+		appendWarning: appendDashboardBaselineSaveWarning,
+	})
+}
+
+func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
+	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromDashboard(resolved), dashboard.BaselineSnapshotPath)
+}
+
+func appendDashboardBaselineSaveWarning(reportData dashboard.Report, savedPath string) dashboard.Report {
+	reportData.SourceWarnings = append(reportData.SourceWarnings, "saved immutable dashboard baseline snapshot: "+savedPath)
+	return reportData
 }

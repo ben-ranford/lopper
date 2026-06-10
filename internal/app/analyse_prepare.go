@@ -16,6 +16,7 @@ type preparedAnalyseExecution struct {
 	removalCandidateWeights report.RemovalCandidateWeights
 	licensePolicy           report.LicensePolicy
 	policySources           []string
+	policyTrace             []report.PolicyMergeTrace
 }
 
 func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseExecution, error) {
@@ -74,6 +75,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 			IncludeRegistryProvenance: req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
 		},
 		policySources: append([]string{}, req.Analyse.PolicySources...),
+		policyTrace:   append([]report.PolicyMergeTrace{}, req.Analyse.PolicyTrace...),
 	}, nil
 }
 
@@ -99,6 +101,7 @@ func decorateAnalyseReport(reportData *report.Report, prepared preparedAnalyseEx
 	reportData.EffectiveThresholds = &effectiveThresholds
 	reportData.EffectivePolicy = &report.EffectivePolicy{
 		Sources:                 append([]string{}, prepared.policySources...),
+		MergeTrace:              append([]report.PolicyMergeTrace{}, prepared.policyTrace...),
 		Thresholds:              effectiveThresholds,
 		RemovalCandidateWeights: prepared.removalCandidateWeights,
 		License:                 licensePolicy,

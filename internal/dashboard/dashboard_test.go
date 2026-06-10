@@ -389,6 +389,55 @@ func TestDashboardCSVHelpersPropagateWriteErrors(t *testing.T) {
 	if writeDashboardCrossRepoRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}).Write, reportData.CrossRepoDeps) == nil {
 		t.Fatalf("expected cross-repo CSV writer error")
 	}
+	if writeDashboardBaselineRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}).Write, &BaselineComparison{BaselineKey: "base"}) == nil {
+		t.Fatalf("expected baseline CSV writer error")
+	}
+}
+
+func TestDashboardBaselineSnapshotAndComparison(t *testing.T) {
+	tmp := t.TempDir()
+	baseline := Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		Repos: []RepoResult{
+			{Name: "api", Path: "./api", DependencyCount: 1, WasteCandidateCount: 0, WasteCandidatePercent: 0, CriticalCVEs: 0, DeniedLicenseCount: 0},
+		},
+		Summary: Summary{TotalRepos: 1, TotalDeps: 1, TotalWasteCandidates: 0, CrossRepoDuplicates: 0, CriticalCVEs: 0},
+	}
+
+	snapshotPath, err := SaveSnapshot(filepath.Join(tmp, "baselines"), "label:weekly", baseline, time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("save baseline snapshot: %v", err)
+	}
+	loaded, key, err := LoadWithKey(snapshotPath)
+	if err != nil {
+		t.Fatalf("load baseline snapshot: %v", err)
+	}
+	if key != "label:weekly" {
+		t.Fatalf("expected loaded key label:weekly, got %q", key)
+	}
+
+	current := Report{
+		GeneratedAt: time.Date(2026, time.March, 12, 0, 0, 0, 0, time.UTC),
+		Repos: []RepoResult{
+			{Name: "api", Path: "./api", DependencyCount: 2, WasteCandidateCount: 1, WasteCandidatePercent: 50, CriticalCVEs: 1, DeniedLicenseCount: 1},
+			{Name: "worker", Path: "./worker", DependencyCount: 1, WasteCandidateCount: 0, WasteCandidatePercent: 0, CriticalCVEs: 0, DeniedLicenseCount: 0},
+		},
+		Summary: Summary{TotalRepos: 2, TotalDeps: 3, TotalWasteCandidates: 1, CrossRepoDuplicates: 1, CriticalCVEs: 1},
+	}
+
+	updated, err := ApplyBaselineWithKeys(current, loaded, key, "commit:head")
+	if err != nil {
+		t.Fatalf("apply baseline: %v", err)
+	}
+	if updated.BaselineComparison == nil {
+		t.Fatalf("expected baseline comparison on dashboard report")
+	}
+	if updated.BaselineComparison.SummaryDelta.TotalReposDelta != 1 {
+		t.Fatalf("expected total repos delta 1, got %+v", updated.BaselineComparison.SummaryDelta)
+	}
+	if len(updated.BaselineComparison.Added) != 1 || updated.BaselineComparison.Added[0].Name != "worker" {
+		t.Fatalf("expected worker repo to be marked added, got %#v", updated.BaselineComparison.Added)
+	}
 }
 
 func poisonedDashboardCSVWriter(t *testing.T, writer *failingDashboardWriter) *csv.Writer {

@@ -227,11 +227,13 @@ type detailCodemodSkipView struct {
 }
 
 type detailRuntimeUsageView struct {
-	LoadCount   int
-	Correlation string
-	RuntimeOnly bool
-	Modules     []detailRuntimeModuleView
-	TopSymbols  []detailRuntimeSymbolView
+	LoadCount     int
+	Correlation   string
+	RuntimeOnly   bool
+	Modules       []detailRuntimeModuleView
+	ParentModules []detailRuntimeModuleView
+	Entrypoints   []detailRuntimeModuleView
+	TopSymbols    []detailRuntimeSymbolView
 }
 
 type detailRuntimeModuleView struct {
@@ -378,11 +380,13 @@ func mapDetailRuntimeUsage(usage *report.RuntimeUsage) *detailRuntimeUsageView {
 		return nil
 	}
 	return &detailRuntimeUsageView{
-		LoadCount:   usage.LoadCount,
-		Correlation: string(usage.Correlation),
-		RuntimeOnly: usage.RuntimeOnly,
-		Modules:     mapDetailRuntimeModules(usage.Modules),
-		TopSymbols:  mapDetailRuntimeSymbols(usage.TopSymbols),
+		LoadCount:     usage.LoadCount,
+		Correlation:   string(usage.Correlation),
+		RuntimeOnly:   usage.RuntimeOnly,
+		Modules:       mapDetailRuntimeModules(usage.Modules),
+		ParentModules: mapDetailRuntimeModules(usage.ParentModules),
+		Entrypoints:   mapDetailRuntimeModules(usage.Entrypoints),
+		TopSymbols:    mapDetailRuntimeSymbols(usage.TopSymbols),
 	}
 }
 

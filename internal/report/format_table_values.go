@@ -60,7 +60,14 @@ func formatRuntimeUsage(usage *RuntimeUsage) string {
 			correlation = string(RuntimeCorrelationStaticOnly)
 		}
 	}
-	return sanitizeTerminalString(fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount))
+	parts := []string{fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)}
+	if len(usage.ParentModules) > 0 {
+		parts = append(parts, "parents: "+formatRuntimeModuleUsageList(usage.ParentModules))
+	}
+	if len(usage.Entrypoints) > 0 {
+		parts = append(parts, "entrypoints: "+formatRuntimeModuleUsageList(usage.Entrypoints))
+	}
+	return sanitizeTerminalString(strings.Join(parts, "; "))
 }
 
 func formatDependencyLicense(license *DependencyLicense) string {
@@ -90,4 +97,19 @@ func formatDependencyProvenance(provenance *DependencyProvenance) string {
 		return sanitizeTerminalString(provenance.Source)
 	}
 	return sanitizeTerminalString(provenance.Source + " (" + strings.Join(provenance.Signals, ", ") + ")")
+}
+
+func formatRuntimeModuleUsageList(items []RuntimeModuleUsage) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Count > 1 {
+			parts = append(parts, fmt.Sprintf("%s (%d)", item.Module, item.Count))
+			continue
+		}
+		parts = append(parts, item.Module)
+	}
+	return strings.Join(parts, ", ")
 }

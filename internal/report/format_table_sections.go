@@ -97,6 +97,12 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	}
 	writef(buffer, "- license_fail_on_deny: %t\n", report.EffectivePolicy.License.FailOnDenied)
 	writef(buffer, "- license_include_registry_provenance: %t\n", report.EffectivePolicy.License.IncludeRegistryProvenance)
+	if len(report.EffectivePolicy.MergeTrace) > 0 {
+		buffer.WriteString("- merge_trace:\n")
+		for _, item := range report.EffectivePolicy.MergeTrace {
+			writef(buffer, "  - %s <= %s\n", item.Field, item.Source)
+		}
+	}
 	buffer.WriteString("\n")
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
@@ -19,6 +21,7 @@ type LoadResult struct {
 	Features      FeatureConfig
 	ConfigPath    string
 	PolicySources []string
+	PolicyTrace   []report.PolicyMergeTrace
 }
 
 type PathScope struct {
@@ -60,6 +63,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 			Scope:         normalizePathScope(PathScope{}),
 			Features:      normalizeFeatureConfig(FeatureConfig{}),
 			PolicySources: []string{defaultPolicySource},
+			PolicyTrace:   policyTraceFromMap(defaultPolicyTrace()),
 		}, nil
 	}
 
@@ -84,6 +88,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 		Features:      normalizeFeatureConfig(mergeResult.features),
 		ConfigPath:    configPath,
 		PolicySources: mergeResult.policySourcesHighToLow(),
+		PolicyTrace:   policyTraceFromMap(mergeResult.policyTrace),
 	}, nil
 }
 

@@ -46,29 +46,30 @@ func reportVersion(rep Report) string {
 
 func buildSARIFResults(rep Report, rules *sarifRuleBuilder) []sarifResult {
 	results := make([]sarifResult, 0)
+	baselineDeltas := baselineDeltaIndex(rep.BaselineComparison)
 
 	for _, dep := range rep.Dependencies {
-		results = append(results, dependencySARIFResults(dep, rules)...)
+		results = append(results, dependencySARIFResults(dep, rules, baselineDeltas[dependencyKey(dep)])...)
 	}
 
-	appendWasteIncreaseResult(&results, rules, rep.WasteIncreasePercent)
+	appendWasteIncreaseResult(&results, rules, rep.WasteIncreasePercent, rep.BaselineComparison)
 	sortSARIFResults(results)
 
 	return results
 }
 
-func dependencySARIFResults(dep DependencyReport, rules *sarifRuleBuilder) []sarifResult {
+func dependencySARIFResults(dep DependencyReport, rules *sarifRuleBuilder, baselineDelta *DependencyDelta) []sarifResult {
 	anchor := dependencyAnchorLocation(dep)
 	results := make([]sarifResult, 0, len(dep.UnusedImports)+len(dep.UnusedExports)+len(dep.RiskCues)+len(dep.Recommendations))
-	results = appendUnusedImportResults(results, rules, dep, anchor)
-	results = appendUnusedExportResults(results, rules, dep, anchor)
+	results = appendUnusedImportResults(results, rules, dep, anchor, baselineDelta)
+	results = appendUnusedExportResults(results, rules, dep, anchor, baselineDelta)
 	for _, signal := range dependencySignals(dep) {
-		results = appendSignalResult(results, rules, dep, anchor, signal)
+		results = appendSignalResult(results, rules, dep, anchor, signal, baselineDelta)
 	}
 	return results
 }
 
-func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation) []sarifResult {
+func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, baselineDelta *DependencyDelta) []sarifResult {
 	for _, imp := range dep.UnusedImports {
 		ruleID := "lopper/waste/unused-import"
 		rules.add(sarifRule{
@@ -90,18 +91,16 @@ func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, d
 			Level:     "warning",
 			Message:   sarifMessage{Text: fmt.Sprintf("%s imports %q from %q but it is unused.", dep.Name, imp.Name, imp.Module)},
 			Locations: locations,
-			Properties: map[string]any{
-				"dependency": dep.Name,
-				"language":   dep.Language,
-				"module":     imp.Module,
-				"symbol":     imp.Name,
-			},
+			Properties: sarifDependencyProperties(dep, baselineDelta, map[string]any{
+				"module": imp.Module,
+				"symbol": imp.Name,
+			}),
 		})
 	}
 	return results
 }
 
-func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation) []sarifResult {
+func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, baselineDelta *DependencyDelta) []sarifResult {
 	for _, sym := range dep.UnusedExports {
 		ruleID := "lopper/waste/unused-export"
 		rules.add(sarifRule{
@@ -118,12 +117,10 @@ func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, d
 			RuleID:  ruleID,
 			Level:   "warning",
 			Message: sarifMessage{Text: fmt.Sprintf("%s does not appear to use export %q from %q.", dep.Name, sym.Name, sym.Module)},
-			Properties: map[string]any{
-				"dependency": dep.Name,
-				"language":   dep.Language,
-				"module":     sym.Module,
-				"symbol":     sym.Name,
-			},
+			Properties: sarifDependencyProperties(dep, baselineDelta, map[string]any{
+				"module": sym.Module,
+				"symbol": sym.Name,
+			}),
 		}
 		if anchor != nil {
 			result.Locations = []sarifLocation{*anchor}
@@ -133,7 +130,7 @@ func appendUnusedExportResults(results []sarifResult, rules *sarifRuleBuilder, d
 	return results
 }
 
-func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, wasteIncreasePercent *float64) {
+func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, wasteIncreasePercent *float64, comparison *BaselineComparison) {
 	if wasteIncreasePercent == nil {
 		return
 	}
@@ -151,12 +148,10 @@ func appendWasteIncreaseResult(results *[]sarifResult, rules *sarifRuleBuilder, 
 		},
 	})
 	*results = append(*results, sarifResult{
-		RuleID:  ruleID,
-		Level:   "warning",
-		Message: sarifMessage{Text: fmt.Sprintf("Overall dependency waste increased by %.1f%% compared with baseline.", *wasteIncreasePercent)},
-		Properties: map[string]any{
-			"wasteIncreasePercent": *wasteIncreasePercent,
-		},
+		RuleID:     ruleID,
+		Level:      "warning",
+		Message:    sarifMessage{Text: fmt.Sprintf("Overall dependency waste increased by %.1f%% compared with baseline.", *wasteIncreasePercent)},
+		Properties: sarifWasteIncreaseProperties(wasteIncreasePercent, comparison),
 	})
 }
 
@@ -172,7 +167,7 @@ func sortSARIFResults(results []sarifResult) {
 	})
 }
 
-func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, signal sarifSignal) []sarifResult {
+func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, signal sarifSignal, baselineDelta *DependencyDelta) []sarifResult {
 	rules.add(sarifRule{
 		ID:               signal.RuleID,
 		Name:             signal.RuleName,
@@ -184,10 +179,7 @@ func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep Depe
 		},
 	})
 
-	props := map[string]any{
-		"dependency": dep.Name,
-		"language":   dep.Language,
-	}
+	props := sarifDependencyProperties(dep, baselineDelta, nil)
 	props[signal.MessageFieldName] = signal.MessageFieldVal
 
 	result := sarifResult{
@@ -200,4 +192,128 @@ func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep Depe
 		result.Locations = []sarifLocation{*anchor}
 	}
 	return append(results, result)
+}
+
+func baselineDeltaIndex(comparison *BaselineComparison) map[string]*DependencyDelta {
+	if comparison == nil || len(comparison.Dependencies) == 0 {
+		return nil
+	}
+	index := make(map[string]*DependencyDelta, len(comparison.Dependencies))
+	for i := range comparison.Dependencies {
+		delta := comparison.Dependencies[i]
+		copyDelta := delta
+		index[dependencyKey(DependencyReport{Language: delta.Language, Name: delta.Name})] = &copyDelta
+	}
+	return index
+}
+
+func sarifDependencyProperties(dep DependencyReport, baselineDelta *DependencyDelta, extra map[string]any) map[string]any {
+	props := map[string]any{
+		"dependency": dep.Name,
+		"language":   dep.Language,
+	}
+	if dep.License != nil {
+		props["license"] = map[string]any{
+			"spdx":       dep.License.SPDX,
+			"source":     dep.License.Source,
+			"confidence": dep.License.Confidence,
+			"unknown":    dep.License.Unknown,
+			"denied":     dep.License.Denied,
+			"evidence":   append([]string(nil), dep.License.Evidence...),
+		}
+	}
+	if dep.Provenance != nil {
+		props["provenance"] = map[string]any{
+			"source":     dep.Provenance.Source,
+			"confidence": dep.Provenance.Confidence,
+			"signals":    append([]string(nil), dep.Provenance.Signals...),
+		}
+	}
+	if dep.RuntimeUsage != nil {
+		props["runtime"] = map[string]any{
+			"loadCount":     dep.RuntimeUsage.LoadCount,
+			"correlation":   dep.RuntimeUsage.Correlation,
+			"runtimeOnly":   dep.RuntimeUsage.RuntimeOnly,
+			"modules":       runtimeModulePropertyBag(dep.RuntimeUsage.Modules),
+			"parentModules": runtimeModulePropertyBag(dep.RuntimeUsage.ParentModules),
+			"entrypoints":   runtimeModulePropertyBag(dep.RuntimeUsage.Entrypoints),
+			"topSymbols":    runtimeSymbolPropertyBag(dep.RuntimeUsage.TopSymbols),
+		}
+	}
+	if dep.ReachabilityConfidence != nil {
+		props["reachability"] = map[string]any{
+			"model":          dep.ReachabilityConfidence.Model,
+			"score":          dep.ReachabilityConfidence.Score,
+			"summary":        dep.ReachabilityConfidence.Summary,
+			"rationaleCodes": append([]string(nil), dep.ReachabilityConfidence.RationaleCodes...),
+		}
+	}
+	if baselineDelta != nil {
+		props["baselineContext"] = map[string]any{
+			"kind":                      baselineDelta.Kind,
+			"usedExportsCountDelta":     baselineDelta.UsedExportsCountDelta,
+			"totalExportsCountDelta":    baselineDelta.TotalExportsCountDelta,
+			"usedPercentDelta":          baselineDelta.UsedPercentDelta,
+			"estimatedUnusedBytesDelta": baselineDelta.EstimatedUnusedBytesDelta,
+			"wastePercentDelta":         baselineDelta.WastePercentDelta,
+			"deniedIntroduced":          baselineDelta.DeniedIntroduced,
+		}
+	}
+	for key, value := range extra {
+		props[key] = value
+	}
+	return props
+}
+
+func sarifWasteIncreaseProperties(wasteIncreasePercent *float64, comparison *BaselineComparison) map[string]any {
+	props := map[string]any{
+		"wasteIncreasePercent": *wasteIncreasePercent,
+	}
+	if comparison != nil {
+		props["baselineContext"] = map[string]any{
+			"baselineKey": comparison.BaselineKey,
+			"currentKey":  comparison.CurrentKey,
+			"summaryDelta": map[string]any{
+				"dependencyCountDelta":     comparison.SummaryDelta.DependencyCountDelta,
+				"usedExportsCountDelta":    comparison.SummaryDelta.UsedExportsCountDelta,
+				"totalExportsCountDelta":   comparison.SummaryDelta.TotalExportsCountDelta,
+				"usedPercentDelta":         comparison.SummaryDelta.UsedPercentDelta,
+				"wastePercentDelta":        comparison.SummaryDelta.WastePercentDelta,
+				"unusedBytesDelta":         comparison.SummaryDelta.UnusedBytesDelta,
+				"knownLicenseCountDelta":   comparison.SummaryDelta.KnownLicenseCountDelta,
+				"unknownLicenseCountDelta": comparison.SummaryDelta.UnknownLicenseCountDelta,
+				"deniedLicenseCountDelta":  comparison.SummaryDelta.DeniedLicenseCountDelta,
+			},
+		}
+	}
+	return props
+}
+
+func runtimeModulePropertyBag(items []RuntimeModuleUsage) []map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	values := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		values = append(values, map[string]any{
+			"module": item.Module,
+			"count":  item.Count,
+		})
+	}
+	return values
+}
+
+func runtimeSymbolPropertyBag(items []RuntimeSymbolUsage) []map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	values := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		values = append(values, map[string]any{
+			"symbol": item.Symbol,
+			"module": item.Module,
+			"count":  item.Count,
+		})
+	}
+	return values
 }
