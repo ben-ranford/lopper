@@ -12,7 +12,7 @@ import (
 const Auto = "auto"
 const All = "all"
 
-type Request struct {
+type AnalysisOptions struct {
 	RepoPath                          string
 	Dependency                        string
 	TopN                              int
@@ -23,6 +23,9 @@ type Request struct {
 	RemovalCandidateWeights           *report.RemovalCandidateWeights
 	IncludeRegistryProvenance         bool
 }
+
+// Request is kept as a compatibility alias for older adapter tests and callers.
+type Request = AnalysisOptions
 
 type Detection struct {
 	Matched    bool
@@ -102,7 +105,7 @@ type ConfidenceProvider interface {
 }
 
 type Analyser interface {
-	Analyse(ctx context.Context, req Request) (report.Result, error)
+	Analyse(ctx context.Context, opts AnalysisOptions) (report.Result, error)
 }
 
 type Adapter interface {
