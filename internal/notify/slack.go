@@ -117,15 +117,7 @@ func buildSlackPayload(delivery Delivery) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-var slackFallbackTextReplacer = strings.NewReplacer(
-	"&", "&amp;",
-	"<", "&lt;",
-	">", "&gt;",
-	"*", `\*`,
-	"_", `\_`,
-	"~", `\~`,
-	"`", "\\`",
-)
+var slackFallbackTextReplacer = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "*", `\*`, "_", `\_`, "~", `\~`, "`", "\\`")
 
 func escapeSlackFallbackText(value string) string {
 	return slackFallbackTextReplacer.Replace(value)

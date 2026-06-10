@@ -102,30 +102,18 @@ func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
 func TestNewAnalysisCacheRejectsSymlinkedDefaultPathOutsideRepo(t *testing.T) {
 	repo := t.TempDir()
 	outside := t.TempDir()
-	symlinkPath := filepath.Join(repo, cacheDirName)
-	if err := os.Symlink(outside, symlinkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
-	}
-
-	cache := newAnalysisCache(Request{}, repo)
-	if cache.cacheable {
-		t.Fatalf("expected symlinked default cache path to be rejected")
-	}
-	warnings := cache.takeWarnings()
-	if len(warnings) == 0 || !strings.Contains(warnings[0], "cache path escapes repository root") {
-		t.Fatalf("expected symlink escape warning, got %#v", warnings)
-	}
-	if _, err := os.Stat(filepath.Join(outside, cacheKeysDirName)); !os.IsNotExist(err) {
-		t.Fatalf("expected no keys dir to be created outside repo, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(outside, cacheObjectsDirName)); !os.IsNotExist(err) {
-		t.Fatalf("expected no objects dir to be created outside repo, stat err=%v", err)
-	}
+	assertSymlinkedDefaultCachePathRejected(t, repo, outside, "symlinked")
 }
 
 func TestNewAnalysisCacheRejectsBrokenSymlinkedDefaultPathOutsideRepo(t *testing.T) {
 	repo := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "missing-target")
+	assertSymlinkedDefaultCachePathRejected(t, repo, outside, "broken symlinked")
+}
+
+func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {
+	t.Helper()
+
 	symlinkPath := filepath.Join(repo, cacheDirName)
 	if err := os.Symlink(outside, symlinkPath); err != nil {
 		t.Skipf("symlink not supported: %v", err)
@@ -133,11 +121,11 @@ func TestNewAnalysisCacheRejectsBrokenSymlinkedDefaultPathOutsideRepo(t *testing
 
 	cache := newAnalysisCache(Request{}, repo)
 	if cache.cacheable {
-		t.Fatalf("expected broken symlinked default cache path to be rejected")
+		t.Fatalf("expected %s default cache path to be rejected", description)
 	}
 	warnings := cache.takeWarnings()
 	if len(warnings) == 0 || !strings.Contains(warnings[0], "cache path escapes repository root") {
-		t.Fatalf("expected broken symlink escape warning, got %#v", warnings)
+		t.Fatalf("expected %s cache path warning, got %#v", description, warnings)
 	}
 	if _, err := os.Stat(filepath.Join(outside, cacheKeysDirName)); !os.IsNotExist(err) {
 		t.Fatalf("expected no keys dir to be created outside repo, stat err=%v", err)
