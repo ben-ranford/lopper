@@ -181,15 +181,19 @@ func missingFlagValueError(arg string) error {
 }
 
 func resolveOutputPath(outputPath, shortOutputPath string) (string, error) {
-	outputPath = strings.TrimSpace(outputPath)
-	shortOutputPath = strings.TrimSpace(shortOutputPath)
-	if outputPath != "" && shortOutputPath != "" && outputPath != shortOutputPath {
-		return "", fmt.Errorf("--output and -o must match when both are provided")
+	return resolveMatchingPath(outputPath, shortOutputPath, "--output", "-o")
+}
+
+func resolveMatchingPath(primaryPath, secondaryPath, primaryFlag, secondaryFlag string) (string, error) {
+	primaryPath = strings.TrimSpace(primaryPath)
+	secondaryPath = strings.TrimSpace(secondaryPath)
+	if primaryPath != "" && secondaryPath != "" && primaryPath != secondaryPath {
+		return "", fmt.Errorf("%s and %s must match when both are provided", primaryFlag, secondaryFlag)
 	}
-	if outputPath != "" {
-		return outputPath, nil
+	if primaryPath != "" {
+		return primaryPath, nil
 	}
-	return shortOutputPath, nil
+	return secondaryPath, nil
 }
 
 func flagNeedsValue(arg string) bool {

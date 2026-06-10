@@ -71,13 +71,5 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 }
 
 func resolveTUISnapshotPath(snapshotPath, outputPath string) (string, error) {
-	snapshotPath = strings.TrimSpace(snapshotPath)
-	outputPath = strings.TrimSpace(outputPath)
-	if snapshotPath != "" && outputPath != "" && snapshotPath != outputPath {
-		return "", fmt.Errorf("--snapshot and --output must match when both are provided")
-	}
-	if snapshotPath != "" {
-		return snapshotPath, nil
-	}
-	return outputPath, nil
+	return resolveMatchingPath(snapshotPath, outputPath, "--snapshot", "--output")
 }

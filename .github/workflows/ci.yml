@@ -106,6 +106,7 @@ jobs:
 
       - name: Comment memory benchmark report on PR
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() }}
+        continue-on-error: true
         uses: actions/github-script@v9
         with:
           script: |
