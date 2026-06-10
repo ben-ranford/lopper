@@ -135,7 +135,7 @@ func (s *Server) tools() []toolSpec {
 		{
 			Name:        toolAnalyseDependency,
 			Description: "Analyse one dependency in a local repository and return the report schema plus a concise summary.",
-			InputSchema: analysisInputSchema(true, true, false, false),
+			InputSchema: analysisInputSchema(true, true, true, false),
 		},
 		{
 			Name:        toolCompareBaseline,
@@ -636,7 +636,7 @@ func licensePolicy(values thresholds.Values) report.LicensePolicy {
 }
 
 func decodeStrict(data json.RawMessage, target any) error {
-	if len(data) == 0 {
+	if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		data = []byte("{}")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -819,12 +819,19 @@ func analysisInputSchema(requireDependency, allowDependency, allowTopN, requireB
 		properties["baselineStorePath"] = map[string]any{"type": "string", "description": "Immutable baseline snapshot directory."}
 		properties["baselineKey"] = map[string]any{"type": "string", "description": "Snapshot key to load from baselineStorePath."}
 	}
-	return map[string]any{
+	schema := map[string]any{
 		"type":                 "object",
 		"properties":           properties,
 		"required":             required,
 		"additionalProperties": false,
 	}
+	if requireBaseline {
+		schema["anyOf"] = []map[string]any{
+			{"required": []string{"baselinePath"}},
+			{"required": []string{"baselineStorePath", "baselineKey"}},
+		}
+	}
+	return schema
 }
 
 func commonAnalysisProperties() map[string]any {

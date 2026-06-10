@@ -443,6 +443,9 @@ func TestDecodeStrictBranches(t *testing.T) {
 	if err := decodeStrict(nil, &target); err != nil {
 		t.Fatalf("expected empty args decode success, got %v", err)
 	}
+	if err := decodeStrict(json.RawMessage(` null `), &target); err != nil {
+		t.Fatalf("expected null args decode success, got %v", err)
+	}
 	if err := decodeStrict(json.RawMessage(`{} {}`), &target); err == nil {
 		t.Fatalf("expected trailing JSON error")
 	}
