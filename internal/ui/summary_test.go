@@ -105,6 +105,57 @@ func TestSummaryRenderBuildsDisplayViewFromBoundary(t *testing.T) {
 	}
 }
 
+func TestSummarySnapshotIncludesBaselineComparison(t *testing.T) {
+	tmp := t.TempDir()
+	baselineStore := filepath.Join(tmp, "baselines")
+	baselineReport := report.Report{
+		SchemaVersion: report.SchemaVersion,
+		GeneratedAt:   mustParseTime(t, "2024-01-01T00:00:00Z"),
+		RepoPath:      "/repo",
+		Dependencies: []report.DependencyReport{
+			{Name: "alpha", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10.0},
+		},
+	}
+	if _, err := report.SaveSnapshot(baselineStore, "label:baseline", baselineReport, mustParseTime(t, "2024-01-02T00:00:00Z")); err != nil {
+		t.Fatalf("save baseline snapshot: %v", err)
+	}
+
+	reportData := report.Report{
+		SchemaVersion: report.SchemaVersion,
+		GeneratedAt:   mustParseTime(t, "2024-02-01T00:00:00Z"),
+		RepoPath:      "/repo",
+		Dependencies: []report.DependencyReport{
+			{Name: "alpha", UsedExportsCount: 2, TotalExportsCount: 10, UsedPercent: 20.0},
+		},
+	}
+
+	analyzer := &stubAnalyzer{report: reportData}
+	summary := NewSummary(io.Discard, strings.NewReader(""), analyzer, report.NewFormatter())
+	opts := Options{
+		RepoPath:          ".",
+		Sort:              "name",
+		PageSize:          10,
+		BaselineStorePath: baselineStore,
+		BaselineKey:       "label:baseline",
+	}
+
+	outputPath := filepath.Join(tmp, "summary-baseline.txt")
+	if err := summary.Snapshot(context.Background(), opts, outputPath); err != nil {
+		t.Fatalf("snapshot with baseline: %v", err)
+	}
+
+	output, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.Contains(string(output), "Baseline comparison:") {
+		t.Fatalf("expected baseline comparison section, got %q", string(output))
+	}
+	if !strings.Contains(string(output), "baseline_key: label:baseline") {
+		t.Fatalf("expected baseline key in output, got %q", string(output))
+	}
+}
+
 func mustParseTime(t *testing.T, value string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339, value)

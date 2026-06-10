@@ -13,6 +13,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 type Summary struct {
@@ -405,6 +406,10 @@ func (s *Summary) analyseSummaryView(ctx context.Context, opts Options) (summary
 	if err != nil {
 		return summaryReportView{}, err
 	}
+	reportData, err = applySummaryBaselineIfNeeded(reportData, opts)
+	if err != nil {
+		return summaryReportView{}, err
+	}
 	return mapSummaryReportView(reportData), nil
 }
 
@@ -443,6 +448,54 @@ func parseSortMode(value string) sortMode {
 		return sortByWaste
 	}
 	return mode
+}
+
+func applySummaryBaselineIfNeeded(reportData report.Report, opts Options) (report.Report, error) {
+	baselinePath, baselineKey, currentKey, shouldApply, err := resolveSummaryBaselinePaths(opts.RepoPath, opts)
+	if err != nil {
+		return reportData, err
+	}
+	if !shouldApply {
+		return reportData, nil
+	}
+
+	baseline, loadedKey, err := report.LoadWithKey(baselinePath)
+	if err != nil {
+		return reportData, err
+	}
+	if strings.TrimSpace(baselineKey) == "" {
+		baselineKey = loadedKey
+	}
+	return report.ApplyBaselineWithKeys(reportData, baseline, baselineKey, currentKey)
+}
+
+func resolveSummaryBaselinePaths(repoPath string, opts Options) (string, string, string, bool, error) {
+	if strings.TrimSpace(opts.BaselinePath) != "" {
+		return strings.TrimSpace(opts.BaselinePath), "", resolveSummaryCurrentBaselineKey(repoPath), true, nil
+	}
+
+	storePath := strings.TrimSpace(opts.BaselineStorePath)
+	if storePath == "" {
+		return "", "", "", false, nil
+	}
+
+	baselineKey := strings.TrimSpace(opts.BaselineKey)
+	if baselineKey == "" {
+		baselineKey = resolveSummaryCurrentBaselineKey(repoPath)
+	}
+	if baselineKey == "" {
+		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
+	}
+
+	return report.BaselineSnapshotPath(storePath, baselineKey), baselineKey, resolveSummaryCurrentBaselineKey(repoPath), true, nil
+}
+
+func resolveSummaryCurrentBaselineKey(repoPath string) string {
+	sha, err := workspace.CurrentCommitSHA(repoPath)
+	if err != nil || strings.TrimSpace(sha) == "" {
+		return ""
+	}
+	return "commit:" + sha
 }
 
 func parseSortModeStrict(value string) (sortMode, bool) {

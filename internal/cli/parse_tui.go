@@ -26,6 +26,9 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	sortMode := fs.String("sort", req.TUI.Sort, "sort mode")
 	pageSize := fs.Int("page-size", req.TUI.PageSize, "page size")
 	snapshot := fs.String("snapshot", req.TUI.SnapshotPath, "snapshot output path")
+	baselinePath := fs.String("baseline", req.TUI.BaselinePath, "baseline report path")
+	baselineStorePath := fs.String("baseline-store", req.TUI.BaselineStorePath, "baseline snapshot directory")
+	baselineKey := fs.String("baseline-key", req.TUI.BaselineKey, "baseline snapshot key for comparison")
 
 	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
@@ -43,12 +46,15 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	req.Mode = app.ModeTUI
 	req.RepoPath = *repoPath
 	req.TUI = app.TUIRequest{
-		Language:     strings.TrimSpace(*languageFlag),
-		SnapshotPath: strings.TrimSpace(*snapshot),
-		Filter:       strings.TrimSpace(*filter),
-		Sort:         strings.TrimSpace(*sortMode),
-		TopN:         *top,
-		PageSize:     *pageSize,
+		Language:          strings.TrimSpace(*languageFlag),
+		SnapshotPath:      strings.TrimSpace(*snapshot),
+		Filter:            strings.TrimSpace(*filter),
+		Sort:              strings.TrimSpace(*sortMode),
+		TopN:              *top,
+		PageSize:          *pageSize,
+		BaselinePath:      strings.TrimSpace(*baselinePath),
+		BaselineStorePath: strings.TrimSpace(*baselineStorePath),
+		BaselineKey:       strings.TrimSpace(*baselineKey),
 	}
 
 	return req, nil

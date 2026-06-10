@@ -2,11 +2,11 @@ package cli
 
 const usage = `Usage:
   lopper [--version] [tui]
-  lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH]
+  lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY]
   lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--suggest-only | (--apply-codemod --apply-codemod-confirm [--allow-dirty])]
   lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--fail-on-increase PERCENT]
-  lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH]
-  lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH]
+  lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline]
+  lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline]
   lopper features [--format table|json] [--channel dev|rolling|release] [--release VERSION]
 
 Options:
@@ -29,6 +29,10 @@ Options:
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
   --runtime-test-command CMD Run command with JS/TS runtime hooks to capture trace before analysis
   --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
+  --baseline-store DIR       Directory for immutable keyed dashboard baseline snapshots
+  --baseline-key KEY         Baseline snapshot key for dashboard comparison
+  --baseline-label LABEL     Label key to use when saving dashboard baselines
+  --save-baseline            Save current dashboard run as an immutable baseline snapshot
   --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
   --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
   --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)
@@ -63,6 +67,9 @@ Options:
   --filter TEXT              Filter dependency names (TUI)
   --sort name|waste          Sort TUI output (default: waste)
   --page-size N              TUI page size (default: 10)
+  --baseline PATH            Baseline report (JSON) for TUI comparison
+  --baseline-store DIR       Directory for immutable keyed TUI baseline snapshots
+  --baseline-key KEY         Baseline snapshot key for TUI comparison
   --fail-on-increase PERCENT Legacy alias for --threshold-fail-on-increase
   --version                  Show CLI version metadata
   -h, --help                 Show this help text

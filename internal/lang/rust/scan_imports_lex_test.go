@@ -45,6 +45,20 @@ func TestRustImportLexStateTracksCommentsAndStrings(t *testing.T) {
 	}
 }
 
+func TestParseRustImportsSkipsBlockComments(t *testing.T) {
+	lookup := map[string]dependencyInfo{"serde": {Canonical: "serde"}}
+	scan := &scanResult{UnresolvedImports: map[string]int{}}
+
+	content := "/*\nuse serde::Deserialize;\n*/\nuse serde::Serialize;\n"
+	imports := parseRustImports(content, srcLibRS, "", lookup, scan)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import to be parsed, got %#v", imports)
+	}
+	if imports[0].Name != "Serialize" {
+		t.Fatalf("expected trailing import outside block comment, got %#v", imports[0])
+	}
+}
+
 func TestRustRawStringHelpers(t *testing.T) {
 	hashCount, consumed, ok := parseRustRawStringStart([]byte(`br##"`), 0)
 	if !ok || hashCount != 2 || consumed != len(`br##"`) {

@@ -19,6 +19,9 @@ var (
 	runtimeHookPathsErr    error
 )
 
+var runtimeExecutablePath = os.Executable
+var runtimeCaller = goruntime.Caller
+
 func withRuntimeTraceEnv(base []string, tracePath string) ([]string, error) {
 	required, err := runtimeNodeHookOptions()
 	if err != nil {
@@ -119,28 +122,27 @@ func runtimeHookSearchRoots() []string {
 		if path == "" {
 			return
 		}
-		for dir := filepath.Clean(path); ; dir = filepath.Dir(dir) {
-			if !filepath.IsAbs(dir) {
-				break
+		dir := filepath.Clean(path)
+		if !filepath.IsAbs(dir) {
+			absDir, err := filepath.Abs(dir)
+			if err != nil {
+				return
 			}
-			if _, ok := seen[dir]; !ok {
-				seen[dir] = struct{}{}
-				roots = append(roots, dir)
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
+			dir = filepath.Clean(absDir)
 		}
+		if _, ok := seen[dir]; ok {
+			return
+		}
+		seen[dir] = struct{}{}
+		roots = append(roots, dir)
 	}
 
-	if executablePath, err := os.Executable(); err == nil {
+	if executablePath, err := runtimeExecutablePath(); err == nil {
 		executableDir := filepath.Dir(executablePath)
-		addSearchPath(executableDir)
 		addSearchPath(filepath.Join(executableDir, "..", "share", "lopper"))
 	}
-	if _, filename, _, ok := goruntime.Caller(0); ok {
-		addSearchPath(filepath.Dir(filename))
+	if _, filename, _, ok := runtimeCaller(0); ok {
+		addSearchPath(filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..")))
 	}
 
 	return roots

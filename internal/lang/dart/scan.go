@@ -208,6 +208,7 @@ func parseDartImports(content []byte, filePath string, depLookup map[string]depe
 
 func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int, includeLocalPathImports bool) []importBinding {
 	lines := strings.Split(string(content), "\n")
+	lines = stripBlockCommentLines(lines)
 	imports := make([]importBinding, 0)
 	for i := 0; i < len(lines); i++ {
 		directive, consumed, ok := collectDirective(lines[i:])
@@ -233,6 +234,65 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 		imports = append(imports, buildDirectiveBindings(kind, module, clause, dependency, location)...)
 	}
 	return imports
+}
+
+func stripBlockCommentLines(lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+
+	stripped := make([]string, len(lines))
+	commentDepth := 0
+	for i, line := range lines {
+		stripped[i], commentDepth = stripBlockCommentLine(line, commentDepth)
+	}
+	return stripped
+}
+
+func stripBlockCommentLine(line string, commentDepth int) (string, int) {
+	if commentDepth == 0 && !strings.Contains(line, "/*") {
+		return line, 0
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(line))
+
+	for i := 0; i < len(line); i++ {
+		if commentDepth == 0 && i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
+			builder.WriteString(line[i:])
+			break
+		}
+
+		if commentDepth == 0 {
+			if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
+				commentDepth++
+				builder.WriteByte(' ')
+				builder.WriteByte(' ')
+				i++
+				continue
+			}
+			builder.WriteByte(line[i])
+			continue
+		}
+
+		if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
+			commentDepth++
+			builder.WriteByte(' ')
+			builder.WriteByte(' ')
+			i++
+			continue
+		}
+		if i+1 < len(line) && line[i] == '*' && line[i+1] == '/' {
+			commentDepth--
+			builder.WriteByte(' ')
+			builder.WriteByte(' ')
+			i++
+			continue
+		}
+		builder.WriteByte(' ')
+	}
+
+	return builder.String(), commentDepth
 }
 
 func collectDirective(lines []string) (string, int, bool) {

@@ -43,10 +43,19 @@ func TestParseArgsDashboardRepos(t *testing.T) {
 	}
 }
 
-func TestParseArgsDashboardRejectsBaselineStore(t *testing.T) {
-	err := expectParseArgsError(t, []string{"dashboard", dashboardReposFlagName, "./api", "--baseline-store", "./baselines"}, "expected dashboard baseline-store rejection")
-	if !strings.Contains(err.Error(), "flag provided but not defined") {
-		t.Fatalf("expected unknown flag error for baseline-store, got %v", err)
+func TestParseArgsDashboardBaselineFlags(t *testing.T) {
+	req := mustParseArgs(t, []string{"dashboard", dashboardReposFlagName, "./api", "--baseline-store", "./baselines", "--baseline-key", "commit:abc123", "--baseline-label", "weekly", "--save-baseline"})
+	if req.Dashboard.BaselineStorePath != "./baselines" {
+		t.Fatalf("expected dashboard baseline store ./baselines, got %q", req.Dashboard.BaselineStorePath)
+	}
+	if req.Dashboard.BaselineKey != "commit:abc123" {
+		t.Fatalf("expected dashboard baseline key commit:abc123, got %q", req.Dashboard.BaselineKey)
+	}
+	if req.Dashboard.BaselineLabel != "weekly" {
+		t.Fatalf("expected dashboard baseline label weekly, got %q", req.Dashboard.BaselineLabel)
+	}
+	if !req.Dashboard.SaveBaseline {
+		t.Fatalf("expected dashboard save-baseline flag to be true")
 	}
 }
 
