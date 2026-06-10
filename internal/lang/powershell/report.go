@@ -96,10 +96,7 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func sortedDependencyUnion(values ...map[string]struct{}) []string {
