@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,12 +15,15 @@ async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-vscode-smoke-"));
   const workspacePath = path.join(tempRoot, "workspace");
   const workspacePathTwo = path.join(tempRoot, "workspace-two");
+  const fixtureBinaryCopyPath = path.join(tempRoot, "lopper-smoke-binary.mjs");
   const userDataDir = path.join(tempRoot, "userdata");
   const extensionsDir = path.join(tempRoot, "extensions");
 
   try {
     await cp(workspaceTemplatePath, workspacePath, { recursive: true });
     await cp(workspaceTemplatePath, workspacePathTwo, { recursive: true });
+    await cp(fixtureBinaryPath, fixtureBinaryCopyPath);
+    await chmod(fixtureBinaryCopyPath, 0o755);
     await rm(path.join(workspacePath, ".lopper-cache"), { recursive: true, force: true });
     await rm(path.join(workspacePathTwo, ".lopper-cache"), { recursive: true, force: true });
     await mkdir(path.join(workspacePath, "src"), { recursive: true });
@@ -63,7 +66,7 @@ async function main() {
       ],
       extensionTestsEnv: {
         ...process.env,
-        LOPPER_BINARY_PATH: process.env.LOPPER_BINARY_PATH ?? fixtureBinaryPath,
+        LOPPER_BINARY_PATH: process.env.LOPPER_BINARY_PATH ?? fixtureBinaryCopyPath,
       },
     });
   } finally {

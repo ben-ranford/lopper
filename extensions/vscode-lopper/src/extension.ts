@@ -14,14 +14,12 @@ import {
   type LopperOutputFormat,
   type WorkspaceAnalysis,
   type WorkspaceAnalysisRequest,
-  type WorkspaceExportRequest,
   type WorkspaceAnalysisRunner,
 } from "./lopperRunner";
 import { RefreshSessionStore } from "./refreshSession";
 import { lopperScopeModeValues } from "./types";
 import type {
   LopperBaselineComparison,
-  LopperCacheMetadata,
   LopperDependencyLicense,
   LopperDependencyDelta,
   LopperEffectivePolicy,
@@ -32,11 +30,7 @@ import type {
   LopperImportUse,
   LopperLocation,
   LopperReachabilityConfidence,
-  LopperRemovalCandidate,
   LopperRuntimeUsage,
-  LopperSummaryDelta,
-  LopperSymbolUsage,
-  LopperUsageUncertainty,
   LopperScopeMode,
 } from "./types";
 
@@ -314,34 +308,17 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     const workspaceKey = folder.uri.toString();
     const sessionKey = this.sessionKey(workspaceKey, requestedLanguage, scopeMode);
 
-    if (!forceFresh) {
-      const inFlight = this.refreshSessions.inFlight(workspaceKey, sessionKey);
-      if (inFlight) {
-        this.output.appendLine(
-          `[refresh:reused-running] ${folder.name} (${requestedLanguage}, ${scopeMode}) trigger=${trigger}`,
-        );
-        this.updateStatus(
-          `Lopper: analysing (${scopeMode})`,
-          `Reusing in-flight analysis for ${folder.name} (${requestedLanguage}, scope ${scopeMode}).`,
-        );
-        await inFlight.promise;
-        return;
-      }
-
-      const cached = this.refreshSessions.getCache(workspaceKey, sessionKey);
-      if (cached && await this.canReuseCachedAnalysis(cached.value)) {
-        const runId = this.refreshSessions.reserveRun(workspaceKey);
-        this.output.appendLine(
-          `[refresh:reused-cache] ${folder.name} (${requestedLanguage}, ${scopeMode}) trigger=${trigger}`,
-        );
-        this.applyAnalysisIfCurrent(workspaceKey, runId, cached.value, "cache");
-        return;
-      }
-      if (cached) {
-        this.output.appendLine(
-          `[refresh:cache-invalidated] ${folder.name} (${requestedLanguage}, ${scopeMode}) binary changed`,
-        );
-      }
+    const reuse = this.tryReuseAnalysis({
+      folder,
+      workspaceKey,
+      sessionKey,
+      requestedLanguage,
+      scopeMode,
+      forceFresh,
+      trigger,
+    });
+    if (reuse === true || (reuse instanceof Promise && await reuse)) {
+      return;
     }
 
     const runId = this.refreshSessions.reserveRun(workspaceKey);
@@ -372,6 +349,53 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     });
     this.refreshSessions.setInFlight(workspaceKey, sessionKey, runId, refreshPromise);
     await refreshPromise;
+  }
+
+  private tryReuseAnalysis(options: {
+    folder: vscode.WorkspaceFolder;
+    workspaceKey: string;
+    sessionKey: string;
+    requestedLanguage: string;
+    scopeMode: LopperScopeMode;
+    forceFresh: boolean;
+    trigger: RefreshTrigger;
+  }): boolean | Promise<boolean> {
+    if (options.forceFresh) {
+      return false;
+    }
+
+    const inFlight = this.refreshSessions.inFlight(options.workspaceKey, options.sessionKey);
+    if (inFlight) {
+      this.output.appendLine(
+        `[refresh:reused-running] ${options.folder.name} (${options.requestedLanguage}, ${options.scopeMode}) trigger=${options.trigger}`,
+      );
+      this.updateStatus(
+        `Lopper: analysing (${options.scopeMode})`,
+        `Reusing in-flight analysis for ${options.folder.name} (${options.requestedLanguage}, scope ${options.scopeMode}).`,
+      );
+      return inFlight.promise.then(() => true);
+    }
+
+    const cached = this.refreshSessions.getCache(options.workspaceKey, options.sessionKey);
+    if (cached) {
+      return this.canReuseCachedAnalysis(cached.value).then((canReuse) => {
+        if (canReuse) {
+          const runId = this.refreshSessions.reserveRun(options.workspaceKey);
+          this.output.appendLine(
+            `[refresh:reused-cache] ${options.folder.name} (${options.requestedLanguage}, ${options.scopeMode}) trigger=${options.trigger}`,
+          );
+          this.applyAnalysisIfCurrent(options.workspaceKey, runId, cached.value, "cache");
+          return true;
+        }
+
+        this.output.appendLine(
+          `[refresh:cache-invalidated] ${options.folder.name} (${options.requestedLanguage}, ${options.scopeMode}) binary changed`,
+        );
+        return false;
+      });
+    }
+
+    return false;
   }
 
   private async executeFreshRefresh(options: {
@@ -855,6 +879,11 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
 
   private async openLocation(filePath: string, line = 1, column = 1): Promise<void> {
     const uri = vscode.Uri.file(filePath);
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!workspaceFolder || !isPathInsideWorkspace(uri.fsPath, workspaceFolder.uri.fsPath)) {
+      this.output.appendLine(`[open-location:skipped] refusing to open outside workspace: ${filePath}`);
+      return;
+    }
     const document = await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(document, { preview: true });
     const targetLine = Math.max(0, line - 1);
@@ -1032,14 +1061,14 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   ): void {
     for (const importUse of dependency.unusedImports ?? []) {
       for (const location of importUse.locations ?? []) {
-        const uri = this.resolveWorkspacePath(analysis.folder, location.file);
-        if (!uri) {
+        const resolvedLocation = this.resolveLocation(analysis.folder, location, importUse);
+        if (!resolvedLocation) {
           this.output.appendLine(
             `[refresh:skipped] ignoring out-of-workspace unused-import location for ${dependency.name}: ${location.file}`,
           );
           continue;
         }
-        const { range } = this.resolveLocation(analysis.folder, location, importUse);
+        const { uri, range } = resolvedLocation;
         const key = this.metadataKey(dependency.name, "unused-import", location.file, location.line, importUse.name);
         const diagnostic = new vscode.Diagnostic(
           range,
@@ -1066,13 +1095,14 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   ): void {
     const codemod = analysis.codemodsByDependency.get(dependency.name);
     for (const suggestion of codemod?.suggestions ?? []) {
-      const uri = this.resolveWorkspacePath(analysis.folder, suggestion.file);
-      if (!uri) {
+      const resolvedFilePath = resolveWorkspaceFilePath(analysis.folder.uri.fsPath, suggestion.file);
+      if (!resolvedFilePath) {
         this.output.appendLine(
           `[refresh:skipped] ignoring out-of-workspace codemod suggestion for ${dependency.name}: ${suggestion.file}`,
         );
         continue;
       }
+      const uri = vscode.Uri.file(resolvedFilePath);
       const lineIndex = Math.max(0, suggestion.line - 1);
       const range = new vscode.Range(lineIndex, 0, lineIndex, suggestion.original.length);
       const key = this.metadataKey(dependency.name, "codemod", suggestion.file, suggestion.line, suggestion.importName);
@@ -1097,8 +1127,12 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     folder: vscode.WorkspaceFolder,
     location: LopperLocation,
     importUse: LopperImportUse,
-  ): { uri: vscode.Uri; range: vscode.Range } {
-    const uri = vscode.Uri.file(path.resolve(folder.uri.fsPath, location.file));
+  ): { uri: vscode.Uri; range: vscode.Range } | undefined {
+    const resolvedFilePath = resolveWorkspaceFilePath(folder.uri.fsPath, location.file);
+    if (!resolvedFilePath) {
+      return undefined;
+    }
+    const uri = vscode.Uri.file(resolvedFilePath);
     const line = Math.max(0, location.line - 1);
     const startColumn = Math.max(0, location.column - 1);
     const endColumn = startColumn + Math.max(importUse.name.length, 1);
@@ -1108,15 +1142,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     };
   }
 
-  private resolveWorkspacePath(folder: vscode.WorkspaceFolder, relativePath: string): vscode.Uri | undefined {
-    const workspaceRoot = path.resolve(folder.uri.fsPath);
-    const candidatePath = path.resolve(workspaceRoot, relativePath);
-    return this.isPathInsideWorkspace(candidatePath, workspaceRoot) ? vscode.Uri.file(candidatePath) : undefined;
-  }
-
-  private isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
-    const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
-    return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  private findWorkspaceFolder(folderPath: string): vscode.WorkspaceFolder | undefined {
+    const resolved = path.resolve(folderPath);
+    return (vscode.workspace.workspaceFolders ?? []).find((folder) => path.resolve(folder.uri.fsPath) === resolved);
   }
 
   private pushDiagnostic(
@@ -1387,7 +1415,7 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
   }
 
   private async getFolderChildren(folderPath: string): Promise<LopperExplorerTreeItem[]> {
-    const folder = this.findWorkspaceFolder(folderPath);
+    const folder = findWorkspaceFolder(folderPath);
     if (!folder) {
       return [];
     }
@@ -1496,7 +1524,7 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
   }
 
   private getDependencyChildren(folderPath: string, dependencyName: string): LopperExplorerTreeItem[] {
-    const folder = this.findWorkspaceFolder(folderPath);
+    const folder = findWorkspaceFolder(folderPath);
     if (!folder) {
       return [];
     }
@@ -1585,7 +1613,7 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     dependencyName: string,
     groupKind: "usedImports" | "unusedImports",
   ): LopperExplorerTreeItem[] {
-    const folder = this.findWorkspaceFolder(folderPath);
+    const folder = findWorkspaceFolder(folderPath);
     if (!folder) {
       return [];
     }
@@ -1599,13 +1627,14 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     for (const importUse of imports) {
       const locations = importUse.locations ?? [];
       const firstLocation = locations[0];
+      const resolvedFilePath = firstLocation ? resolveWorkspaceFilePath(folder.uri.fsPath, firstLocation.file) : undefined;
       const item = new LopperExplorerTreeItem(
         importUse.name,
         {
           kind: "import",
           folderPath: folder.uri.fsPath,
           dependencyName,
-          filePath: firstLocation ? path.resolve(folder.uri.fsPath, firstLocation.file) : undefined,
+          filePath: resolvedFilePath,
           line: firstLocation?.line,
           column: firstLocation?.column,
         },
@@ -1613,13 +1642,13 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
       );
       item.description = importUse.module ?? firstLocation?.file ?? "import";
       item.tooltip = importUse.locations
-        ? `${importUse.name}\n${importUse.locations.map((location) => `${location.file}:${location.line}:${location.column}`).join("\n")}`
+        ? `${importUse.name}\n${importUse.locations.map(formatLocationSummary).join("\n")}`
         : importUse.name;
-      if (firstLocation) {
+      if (firstLocation && resolvedFilePath) {
         item.command = {
           command: "lopper.openLocation",
           title: `Open ${importUse.name}`,
-          arguments: [path.resolve(folder.uri.fsPath, firstLocation.file), firstLocation.line, firstLocation.column],
+          arguments: [resolvedFilePath, firstLocation.line, firstLocation.column],
         };
       }
       item.iconPath = new vscode.ThemeIcon(groupKind === "usedImports" ? "symbol-method" : "trash");
@@ -1627,13 +1656,26 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     }
     return items;
   }
+}
 
-  private findWorkspaceFolder(folderPath: string): vscode.WorkspaceFolder | undefined {
-    const resolved = path.resolve(folderPath);
-    return (vscode.workspace.workspaceFolders ?? []).find(
-      (folder) => path.resolve(folder.uri.fsPath) === resolved,
-    );
-  }
+function resolveWorkspaceFilePath(workspaceRoot: string, relativePath: string): string | undefined {
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const candidatePath = path.resolve(resolvedWorkspaceRoot, relativePath);
+  return isPathInsideWorkspace(candidatePath, resolvedWorkspaceRoot) ? candidatePath : undefined;
+}
+
+function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
+  const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function formatLocationSummary(location: LopperLocation): string {
+  return `${location.file}:${location.line}:${location.column}`;
+}
+
+function findWorkspaceFolder(folderPath: string): vscode.WorkspaceFolder | undefined {
+  const resolved = path.resolve(folderPath);
+  return (vscode.workspace.workspaceFolders ?? []).find((folder) => path.resolve(folder.uri.fsPath) === resolved);
 }
 
 function dependencySummaryText(dependency: LopperDependencyReport, analysis: WorkspaceAnalysis): string {
@@ -1770,85 +1812,19 @@ function renderDependencyDetailHtml(
 ): string {
   const report = analysis.report;
   const selectedDependency = dependency.name === dependencyName ? dependency : report.dependencies.find((item) => item.name === dependencyName) ?? dependency;
-  const runtime = selectedDependency.runtimeUsage;
   const baseline = report.baselineComparison;
   const baselineDependency = baseline?.dependencies?.find((item) => item.name === dependencyName);
-  const usedImports = selectedDependency.usedImports ?? [];
-  const unusedImports = selectedDependency.unusedImports ?? [];
-  const htmlSections: string[] = [];
-
-  htmlSections.push(renderHtmlSection(
-    "Overview",
-    [
-      `<div class="stat-grid">`,
-      renderStat("Used exports", `${selectedDependency.usedExportsCount}/${selectedDependency.totalExportsCount}`),
-      renderStat("Used percent", `${selectedDependency.usedPercent.toFixed(1)}%`),
-      renderStat("Estimated unused bytes", selectedDependency.estimatedUnusedBytes !== undefined ? String(selectedDependency.estimatedUnusedBytes) : "n/a"),
-      renderStat("Risk cues", String(selectedDependency.riskCues?.length ?? 0)),
-      renderStat("Recommendations", String(selectedDependency.recommendations?.length ?? 0)),
-      `</div>`,
-    ].join(""),
-  ));
-
-  htmlSections.push(renderHtmlSection(
-    "Actions",
-    [
-      `<a class="button" href="${commandUri("lopper.refreshWorkspace", [folder.uri.fsPath])}">Refresh folder</a>`,
-      `<a class="button" href="${commandUri("lopper.analyseDependency", [dependencyName, folder.uri.fsPath])}">Re-run detail analysis</a>`,
-    ].join(" "),
-  ));
-
-  htmlSections.push(renderHtmlSection(
-    "Context",
-    [
-      report.scope?.mode ? `<p><strong>Scope:</strong> ${escapeHtml(report.scope.mode)}</p>` : "",
-      report.effectiveThresholds ? `<p><strong>Thresholds:</strong> ${escapeHtml(effectiveThresholdsText(report.effectiveThresholds))}</p>` : "",
-      report.effectivePolicy ? `<p><strong>Policy:</strong> ${escapeHtml(effectivePolicyText(report.effectivePolicy))}</p>` : "",
-      report.warnings?.length ? `<p><strong>Warnings:</strong> ${escapeHtml(report.warnings.join(" | "))}</p>` : "",
-      report.wasteIncreasePercent !== undefined ? `<p><strong>Waste increase vs baseline:</strong> ${escapeHtml(report.wasteIncreasePercent.toFixed(1))}%</p>` : "",
-      baseline ? renderBaselineHtml(baseline, baselineDependency) : "",
-    ].join(""),
-  ));
-
-  htmlSections.push(renderHtmlSection(
-    "License and provenance",
-    [
-      selectedDependency.license ? renderKeyValueList([
-        ["License", formatDependencyLicense(selectedDependency.license) ?? "n/a"],
-      ]) : "",
-      selectedDependency.provenance ? renderKeyValueList([
-        ["Provenance", formatDependencyProvenance(selectedDependency.provenance) ?? "n/a"],
-      ]) : "",
-      selectedDependency.reachabilityConfidence ? renderKeyValueList([
-        ["Reachability", reachabilitySummary(selectedDependency.reachabilityConfidence) ?? "n/a"],
-      ]) : "",
-    ].join(""),
-  ));
-
-  if (runtime) {
-    htmlSections.push(renderHtmlSection("Runtime usage", renderRuntimeUsage(runtime)));
-  }
-
-  if (usedImports.length > 0) {
-    htmlSections.push(renderHtmlSection("Used imports", renderImports(folder, usedImports)));
-  }
-  if (unusedImports.length > 0) {
-    htmlSections.push(renderHtmlSection("Unused imports", renderImports(folder, unusedImports)));
-  }
-
-  if (selectedDependency.recommendations?.length) {
-    htmlSections.push(renderHtmlSection(
-      "Recommendations",
-      `<ul>${selectedDependency.recommendations.map((item) => `<li><strong>${escapeHtml(item.priority)}</strong> ${escapeHtml(item.message)}</li>`).join("")}</ul>`,
-    ));
-  }
-
-  if (selectedDependency.riskCues?.length) {
-    htmlSections.push(renderHtmlSection(
-      "Risk cues",
-      `<ul>${selectedDependency.riskCues.map((item) => `<li><strong>${escapeHtml(item.severity)}</strong> ${escapeHtml(item.message)}</li>`).join("")}</ul>`,
-    ));
-  }
+  const sections = [
+    renderDependencyOverviewSection(selectedDependency),
+    renderDependencyActionsSection(folder, dependencyName),
+    renderDependencyContextSection(report, baseline, baselineDependency),
+    renderDependencyMetadataSection(selectedDependency),
+    selectedDependency.runtimeUsage ? renderHtmlSection("Runtime usage", renderRuntimeUsage(selectedDependency.runtimeUsage)) : "",
+    (selectedDependency.usedImports?.length ?? 0) > 0 ? renderHtmlSection("Used imports", renderImports(folder, selectedDependency.usedImports ?? [])) : "",
+    (selectedDependency.unusedImports?.length ?? 0) > 0 ? renderHtmlSection("Unused imports", renderImports(folder, selectedDependency.unusedImports ?? [])) : "",
+    (selectedDependency.recommendations?.length ?? 0) > 0 ? renderDependencyRecommendationsSection(selectedDependency.recommendations ?? []) : "",
+    (selectedDependency.riskCues?.length ?? 0) > 0 ? renderDependencyRiskCuesSection(selectedDependency.riskCues ?? []) : "",
+  ].filter((section): section is string => section.length > 0);
 
   return `<!doctype html>
   <html lang="en">
@@ -1928,13 +1904,93 @@ function renderDependencyDetailHtml(
   <body>
     <h1>${escapeHtml(dependencyName)}</h1>
     <div class="subtitle">${escapeHtml(folder.name)} • ${escapeHtml(analysis.scopeMode)} • ${escapeHtml(analysis.requestedLanguage)}</div>
-    ${htmlSections.join("")}
+    ${sections.join("")}
   </body>
   </html>`;
 }
 
+function renderDependencyOverviewSection(dependency: LopperDependencyReport): string {
+  return renderHtmlSection(
+    "Overview",
+    [
+      `<div class="stat-grid">`,
+      renderStat("Used exports", `${dependency.usedExportsCount}/${dependency.totalExportsCount}`),
+      renderStat("Used percent", `${dependency.usedPercent.toFixed(1)}%`),
+      renderStat("Estimated unused bytes", dependency.estimatedUnusedBytes !== undefined ? String(dependency.estimatedUnusedBytes) : "n/a"),
+      renderStat("Risk cues", String(dependency.riskCues?.length ?? 0)),
+      renderStat("Recommendations", String(dependency.recommendations?.length ?? 0)),
+      `</div>`,
+    ].join(""),
+  );
+}
+
+function renderDependencyActionsSection(folder: vscode.WorkspaceFolder, dependencyName: string): string {
+  return renderHtmlSection(
+    "Actions",
+    [
+      `<a class="button" href="${commandUri("lopper.refreshWorkspace", [folder.uri.fsPath])}">Refresh folder</a>`,
+      `<a class="button" href="${commandUri("lopper.analyseDependency", [dependencyName, folder.uri.fsPath])}">Re-run detail analysis</a>`,
+    ].join(" "),
+  );
+}
+
+function renderDependencyContextSection(
+  report: WorkspaceAnalysis["report"],
+  baseline: LopperBaselineComparison | undefined,
+  baselineDependency: LopperDependencyDelta | undefined,
+): string {
+  const lines = [
+    report.scope?.mode ? `<p><strong>Scope:</strong> ${escapeHtml(report.scope.mode)}</p>` : "",
+    report.effectiveThresholds ? `<p><strong>Thresholds:</strong> ${escapeHtml(effectiveThresholdsText(report.effectiveThresholds))}</p>` : "",
+    report.effectivePolicy ? `<p><strong>Policy:</strong> ${escapeHtml(effectivePolicyText(report.effectivePolicy))}</p>` : "",
+    report.warnings?.length ? `<p><strong>Warnings:</strong> ${escapeHtml(report.warnings.join(" | "))}</p>` : "",
+    report.wasteIncreasePercent !== undefined ? `<p><strong>Waste increase vs baseline:</strong> ${escapeHtml(report.wasteIncreasePercent.toFixed(1))}%</p>` : "",
+    baseline ? renderBaselineHtml(baseline, baselineDependency) : "",
+  ];
+  return renderHtmlSection("Context", lines.join(""));
+}
+
+function renderDependencyMetadataSection(dependency: LopperDependencyReport): string {
+  const parts = [
+    dependency.license
+      ? renderKeyValueList([["License", formatDependencyLicense(dependency.license) ?? "n/a"]])
+      : "",
+    dependency.provenance
+      ? renderKeyValueList([["Provenance", formatDependencyProvenance(dependency.provenance) ?? "n/a"]])
+      : "",
+    dependency.reachabilityConfidence
+      ? renderKeyValueList([["Reachability", reachabilitySummary(dependency.reachabilityConfidence) ?? "n/a"]])
+      : "",
+  ];
+  return renderHtmlSection("License and provenance", parts.join(""));
+}
+
+function renderDependencyRecommendationsSection(recommendations: NonNullable<LopperDependencyReport["recommendations"]>): string {
+  return renderHtmlSection("Recommendations", renderHtmlList(recommendations.map(renderRecommendationItem)));
+}
+
+function renderDependencyRiskCuesSection(riskCues: NonNullable<LopperDependencyReport["riskCues"]>): string {
+  return renderHtmlSection("Risk cues", renderHtmlList(riskCues.map(renderRiskCueItem)));
+}
+
 function renderHtmlSection(title: string, body: string): string {
   return `<section class="panel"><h2>${escapeHtml(title)}</h2>${body}</section>`;
+}
+
+function renderHtmlList(items: string[]): string {
+  return `<ul>${items.join("")}</ul>`;
+}
+
+function renderListItem(content: string): string {
+  return `<li>${content}</li>`;
+}
+
+function renderRecommendationItem(item: { priority: string; message: string }): string {
+  return renderListItem(`<strong>${escapeHtml(item.priority)}</strong> ${escapeHtml(item.message)}`);
+}
+
+function renderRiskCueItem(item: { severity: string; message: string }): string {
+  return renderListItem(`<strong>${escapeHtml(item.severity)}</strong> ${escapeHtml(item.message)}`);
 }
 
 function renderStat(label: string, value: string): string {
@@ -1942,7 +1998,11 @@ function renderStat(label: string, value: string): string {
 }
 
 function renderKeyValueList(entries: Array<[string, string]>): string {
-  return `<div class="kv">${entries.map(([key, value]) => `<div class="key">${escapeHtml(key)}</div><div class="value">${escapeHtml(value)}</div>`).join("")}</div>`;
+  return `<div class="kv">${entries.map(([key, value]) => renderKeyValueEntry(key, value)).join("")}</div>`;
+}
+
+function renderKeyValueEntry(key: string, value: string): string {
+  return `<div class="key">${escapeHtml(key)}</div><div class="value">${escapeHtml(value)}</div>`;
 }
 
 function renderBaselineHtml(baseline: LopperBaselineComparison, dependencyDelta?: LopperDependencyDelta): string {
@@ -1975,26 +2035,43 @@ function renderRuntimeUsage(runtime: LopperRuntimeUsage): string {
     ]),
   ];
   if (runtime.modules?.length) {
-    parts.push(`<p><strong>Modules:</strong></p><ul>${runtime.modules.map((module) => `<li><code>${escapeHtml(module.module)}</code> x ${module.count}</li>`).join("")}</ul>`);
+    parts.push(renderHtmlSection("Modules", renderHtmlList(runtime.modules.map(renderRuntimeModuleItem))));
   }
   if (runtime.topSymbols?.length) {
-    parts.push(`<p><strong>Top symbols:</strong></p><ul>${runtime.topSymbols.map((symbol) => `<li><code>${escapeHtml(symbol.symbol)}</code>${symbol.module ? ` in <code>${escapeHtml(symbol.module)}</code>` : ""} x ${symbol.count}</li>`).join("")}</ul>`);
+    parts.push(renderHtmlSection("Top symbols", renderHtmlList(runtime.topSymbols.map(renderRuntimeTopSymbolItem))));
   }
   return parts.join("");
 }
 
+function renderRuntimeModuleItem(module: { module: string; count: number }): string {
+  return renderListItem(`<code>${escapeHtml(module.module)}</code> x ${module.count}`);
+}
+
+function renderRuntimeTopSymbolItem(symbol: { symbol: string; module?: string; count: number }): string {
+  const parts = [`<code>${escapeHtml(symbol.symbol)}</code>`];
+  if (symbol.module) {
+    parts.push(` in <code>${escapeHtml(symbol.module)}</code>`);
+  }
+  parts.push(` x ${symbol.count}`);
+  return renderListItem(parts.join(""));
+}
+
 function renderImports(folder: vscode.WorkspaceFolder, imports: LopperImportUse[]): string {
-  return `<ul>${imports.map((importUse) => {
+  return renderHtmlList(imports.map((importUse) => {
     const location = importUse.locations?.[0];
-    const target = location ? commandUri("lopper.openLocation", [path.resolve(folder.uri.fsPath, location.file), location.line, location.column]) : undefined;
-    const label = target
-      ? `<a href="${target}">${escapeHtml(importUse.name)}</a>`
-      : escapeHtml(importUse.name);
+    const filePath = location ? resolveWorkspaceFilePath(folder.uri.fsPath, location.file) : undefined;
+    const labelParts = [escapeHtml(importUse.name)];
+    if (importUse.module) {
+      labelParts.push(` <code>${escapeHtml(importUse.module)}</code>`);
+    }
+    const label = filePath && location
+      ? `<a href="${commandUri("lopper.openLocation", [filePath, location.line, location.column])}">${labelParts.join("")}</a>`
+      : labelParts.join("");
     const locationText = importUse.locations?.length
-      ? importUse.locations.map((item) => `${item.file}:${item.line}:${item.column}`).join(", ")
+      ? importUse.locations.map(formatLocationSummary).join(", ")
       : "n/a";
-    return `<li>${label}${importUse.module ? ` <code>${escapeHtml(importUse.module)}</code>` : ""} <span style="color:#94a3b8">${escapeHtml(locationText)}</span></li>`;
-  }).join("")}</ul>`;
+    return renderListItem(`${label} <span style="color:#94a3b8">${escapeHtml(locationText)}</span>`);
+  }));
 }
 
 function commandUri(command: string, args: unknown[]): string {

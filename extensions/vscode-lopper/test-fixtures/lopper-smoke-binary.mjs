@@ -6,8 +6,14 @@ const args = process.argv.slice(2);
 const command = args[0];
 const options = parseArgs(args.slice(1));
 const cwd = process.cwd();
+const format = options.format ?? "json";
 
 if (command !== "analyse") {
+  process.stdout.write(renderExport(command, options, cwd));
+  process.exit(0);
+}
+
+if (format !== "json") {
   process.stdout.write(renderExport(command, options, cwd));
   process.exit(0);
 }

@@ -98,9 +98,16 @@ class LopperCliReportExecutor implements ReportCommandExecutor {
         );
       }
 
-      const stdout = execError.stdout?.trim() ?? "";
-      if (stdout.length > 0) {
-        return stdout;
+      const stdout = execError.stdout ?? "";
+      const trimmedStdout = stdout.trim();
+      const requestedFormat = this.requestedFormat(args);
+      if (trimmedStdout.length > 0) {
+        if (requestedFormat && requestedFormat !== "json") {
+          return stdout;
+        }
+        if (this.looksLikeJsonPayload(trimmedStdout)) {
+          return stdout;
+        }
       }
 
       const stderr = execError.stderr?.trim();
@@ -121,6 +128,15 @@ class LopperCliReportExecutor implements ReportCommandExecutor {
         `failed to parse JSON from ${binaryPath}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  private requestedFormat(args: string[]): string | undefined {
+    const formatIndex = args.indexOf("--format");
+    return formatIndex >= 0 ? args[formatIndex + 1] : undefined;
+  }
+
+  private looksLikeJsonPayload(stdout: string): boolean {
+    return stdout.startsWith("{") || stdout.startsWith("[");
   }
 }
 
@@ -340,19 +356,20 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     const licenseFailOnDeny = configuration.get<boolean>("licenseFailOnDeny", false);
     const licenseIncludeRegistryProvenance = configuration.get<boolean>("licenseProvenanceRegistry", false);
 
-    args.push("--threshold-fail-on-increase", String(thresholdFailOnIncrease));
-    args.push("--threshold-low-confidence-warning", String(lowConfidenceWarning));
-    args.push("--threshold-min-usage-percent", String(minUsagePercent));
-    args.push("--threshold-max-uncertain-imports", String(maxUncertainImports));
-    if (licenseDeny.length > 0) {
-      args.push("--license-deny", licenseDeny.join(","));
-    }
-    if (licenseFailOnDeny) {
-      args.push("--license-fail-on-deny");
-    }
-    if (licenseIncludeRegistryProvenance) {
-      args.push("--license-provenance-registry");
-    }
+    const thresholdArgs = [
+      "--threshold-fail-on-increase",
+      String(thresholdFailOnIncrease),
+      "--threshold-low-confidence-warning",
+      String(lowConfidenceWarning),
+      "--threshold-min-usage-percent",
+      String(minUsagePercent),
+      "--threshold-max-uncertain-imports",
+      String(maxUncertainImports),
+      ...(licenseDeny.length > 0 ? ["--license-deny", licenseDeny.join(",")] : []),
+      ...(licenseFailOnDeny ? ["--license-fail-on-deny"] : []),
+      ...(licenseIncludeRegistryProvenance ? ["--license-provenance-registry"] : []),
+    ];
+    args.push(...thresholdArgs);
   }
 
   private appendRuntimeArgs(args: string[], runtimeTracePath?: string, runtimeTestCommand?: string): void {

@@ -7,10 +7,6 @@ import { deactivate } from "../../extension";
 
 suite("vscode-lopper smoke", () => {
   const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
-  const primaryFolder = workspaceFolders[0];
-    const secondaryFolder = workspaceFolders[1];
-    const primaryFixtureUri = vscode.Uri.file(path.join(primaryFolder?.uri.fsPath ?? "", "src", "index.ts"));
-    const secondaryFixtureUri = vscode.Uri.file(path.join(secondaryFolder?.uri.fsPath ?? "", "src", "index.ts"));
 
   teardown(() => {
     deactivate();
@@ -18,11 +14,13 @@ suite("vscode-lopper smoke", () => {
 
   test("refreshes diagnostics, hover details, and quick fixes", async function () {
     this.timeout(240_000);
+    assert.ok(workspaceFolders.length >= 2, "expected a multi-root workspace");
+    const primaryFolder = workspaceFolders[0];
+    const secondaryFolder = workspaceFolders[1];
     assert.ok(primaryFolder, "expected primary workspace folder");
     assert.ok(secondaryFolder, "expected secondary workspace folder");
-    assert.ok(workspaceFolders.length >= 2, "expected a multi-root workspace");
-    const primary = primaryFolder!;
-    const secondary = secondaryFolder!;
+    const primaryFixtureUri = vscode.Uri.file(path.join(primaryFolder.uri.fsPath, "src", "index.ts"));
+    const secondaryFixtureUri = vscode.Uri.file(path.join(secondaryFolder.uri.fsPath, "src", "index.ts"));
     const extension = vscode.extensions.getExtension("BenRanford.vscode-lopper");
     assert.ok(extension, "expected vscode-lopper extension");
     const api = await extension.activate();
