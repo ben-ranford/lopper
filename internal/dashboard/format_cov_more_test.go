@@ -58,3 +58,24 @@ func TestDashboardAggregateSkipsBlankDependencyNames(t *testing.T) {
 		t.Fatalf("expected blank dependency names to be excluded from cross-repo index, got %#v", reportData.CrossRepoDeps)
 	}
 }
+
+func TestCrossRepoRepositoryIdentityAndLabelFallbacks(t *testing.T) {
+	counts := countRepoNames([]RepoAnalysis{
+		{Input: RepoInput{Path: "./nameless"}},
+		{Input: RepoInput{Name: "api", Path: "./platform/api"}},
+		{Input: RepoInput{Name: "api", Path: "./services/api"}},
+	})
+
+	if counts["./nameless"] != 1 || counts["api"] != 2 {
+		t.Fatalf("unexpected repo name counts: %#v", counts)
+	}
+	if got := repoIdentity(RepoInput{Name: "api"}); got != "api" {
+		t.Fatalf("expected name fallback identity, got %q", got)
+	}
+	if got := crossRepoRepositoryLabel(RepoInput{Path: "./nameless"}, counts); got != "./nameless" {
+		t.Fatalf("expected path fallback label, got %q", got)
+	}
+	if got := crossRepoRepositoryLabel(RepoInput{Name: "api", Path: "./platform/api"}, counts); got != "api (./platform/api)" {
+		t.Fatalf("expected duplicate repo name label to include path, got %q", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -139,6 +140,42 @@ func TestAggregate(t *testing.T) {
 	}
 	if len(data.SourceWarnings) != 1 || !strings.Contains(data.SourceWarnings[0], "failed") {
 		t.Fatalf("expected source warning from failed repo analysis, got %#v", data.SourceWarnings)
+	}
+}
+
+func TestAggregateCrossRepoDuplicatesDistinguishesSameInferredRepoNames(t *testing.T) {
+	reportData := Aggregate(time.Date(2026, time.March, 10, 1, 2, 3, 0, time.UTC), []RepoAnalysis{
+		{
+			Input: RepoInput{Name: "api", Path: "./platform/api"},
+			Report: report.Report{
+				Dependencies: []report.DependencyReport{{Name: "shared"}},
+			},
+		},
+		{
+			Input: RepoInput{Name: "api", Path: "./services/api"},
+			Report: report.Report{
+				Dependencies: []report.DependencyReport{{Name: "shared"}},
+			},
+		},
+		{
+			Input: RepoInput{Name: "worker", Path: "./worker"},
+			Report: report.Report{
+				Dependencies: []report.DependencyReport{{Name: "shared"}},
+			},
+		},
+	})
+
+	if reportData.Summary.CrossRepoDuplicates != 1 {
+		t.Fatalf("expected same-name repos to count as distinct duplicate participants, got %+v", reportData.Summary)
+	}
+	if len(reportData.CrossRepoDeps) != 1 {
+		t.Fatalf("expected one cross-repo dependency, got %#v", reportData.CrossRepoDeps)
+	}
+
+	dependency := reportData.CrossRepoDeps[0]
+	wantRepos := []string{"api (./platform/api)", "api (./services/api)", "worker"}
+	if dependency.Name != "shared" || dependency.Count != 3 || !reflect.DeepEqual(dependency.Repositories, wantRepos) {
+		t.Fatalf("unexpected cross-repo dependency payload: %#v", dependency)
 	}
 }
 
@@ -307,11 +344,11 @@ func TestCountDeniedLicensesFallbackFromDependencies(t *testing.T) {
 }
 
 func TestBuildCrossRepoDependenciesSortOrder(t *testing.T) {
-	dependencies := buildCrossRepoDependencies(map[string]map[string]struct{}{
-		"zeta":  {testRepoA: {}, testRepoB: {}, testRepoC: {}},
-		"alpha": {testRepoD: {}, "repo-e": {}, "repo-f": {}},
-		"omega": {testRepoA: {}, testRepoB: {}, testRepoC: {}, testRepoD: {}},
-		"skip":  {testRepoA: {}, testRepoB: {}},
+	dependencies := buildCrossRepoDependencies(map[string]map[string]crossRepoRepository{
+		"zeta":  crossRepoTestRepos(testRepoA, testRepoB, testRepoC),
+		"alpha": crossRepoTestRepos(testRepoD, "repo-e", "repo-f"),
+		"omega": crossRepoTestRepos(testRepoA, testRepoB, testRepoC, testRepoD),
+		"skip":  crossRepoTestRepos(testRepoA, testRepoB),
 	})
 	if len(dependencies) != 3 {
 		t.Fatalf("expected three cross-repo dependencies, got %#v", dependencies)
@@ -322,6 +359,14 @@ func TestBuildCrossRepoDependenciesSortOrder(t *testing.T) {
 	if dependencies[1].Name != "alpha" || dependencies[2].Name != "zeta" {
 		t.Fatalf("expected alphabetical order for equal counts, got %#v", dependencies)
 	}
+}
+
+func crossRepoTestRepos(labels ...string) map[string]crossRepoRepository {
+	repos := make(map[string]crossRepoRepository, len(labels))
+	for _, label := range labels {
+		repos[label] = crossRepoRepository{Label: label}
+	}
+	return repos
 }
 
 func TestFormatHTMLIncludesCrossRepoSectionAndEscapes(t *testing.T) {

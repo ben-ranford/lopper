@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,54 @@ func TestExecuteDashboardJSON(t *testing.T) {
 	}
 	if len(reportData.CrossRepoDeps) != 1 || reportData.CrossRepoDeps[0].Name != sharedDependencyName {
 		t.Fatalf("unexpected cross-repo duplicate payload: %#v", reportData.CrossRepoDeps)
+	}
+}
+
+func TestExecuteDashboardJSONDistinguishesSameBasenameRepos(t *testing.T) {
+	const (
+		platformAPI = "./platform/api"
+		servicesAPI = "./services/api"
+		worker      = "./worker"
+	)
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			platformAPI: {Dependencies: []report.DependencyReport{{Name: sharedDependencyName}}},
+			servicesAPI: {Dependencies: []report.DependencyReport{{Name: sharedDependencyName}}},
+			worker:      {Dependencies: []report.DependencyReport{{Name: sharedDependencyName}}},
+		},
+		errs: map[string]error{},
+	}
+
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Repos = []DashboardRepo{
+		{Path: platformAPI},
+		{Path: servicesAPI},
+		{Path: worker},
+	}
+	req.Dashboard.Format = "json"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute dashboard: %v", err)
+	}
+
+	reportData := dashboard.Report{}
+	if err := json.Unmarshal([]byte(output), &reportData); err != nil {
+		t.Fatalf("unmarshal dashboard output: %v", err)
+	}
+
+	if reportData.Summary.CrossRepoDuplicates != 1 {
+		t.Fatalf("expected same-basename repos to count as distinct duplicate participants, got %+v", reportData.Summary)
+	}
+	if len(reportData.CrossRepoDeps) != 1 {
+		t.Fatalf("expected one cross-repo dependency, got %#v", reportData.CrossRepoDeps)
+	}
+	wantRepos := []string{"api (./platform/api)", "api (./services/api)", "worker"}
+	if reportData.CrossRepoDeps[0].Count != 3 || !reflect.DeepEqual(reportData.CrossRepoDeps[0].Repositories, wantRepos) {
+		t.Fatalf("unexpected cross-repo duplicate payload: %#v", reportData.CrossRepoDeps[0])
 	}
 }
 
