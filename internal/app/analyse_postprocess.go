@@ -63,7 +63,15 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 }
 
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
-	return saveImmutableBaselineSnapshot(reportData, req.SaveBaseline, repoPath, baselineKeyRequestFromAnalyse(req), "baseline", now, report.SaveSnapshot, appendBaselineSaveWarning)
+	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[report.Report]{
+		enabled:       req.SaveBaseline,
+		repoPath:      repoPath,
+		req:           baselineKeyRequestFromAnalyse(req),
+		keyName:       "baseline",
+		now:           now,
+		save:          report.SaveSnapshot,
+		appendWarning: appendBaselineSaveWarning,
+	})
 }
 
 func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
@@ -136,20 +144,30 @@ func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName str
 	return key, nil
 }
 
-func saveImmutableBaselineSnapshot[T any](reportData T, enabled bool, repoPath string, req baselineKeyRequest, keyName string, now time.Time, save func(string, string, T, time.Time) (string, error), appendWarning func(T, string) T) (T, error) {
-	if !enabled {
+type immutableBaselineSaveConfig[T any] struct {
+	enabled       bool
+	repoPath      string
+	req           baselineKeyRequest
+	keyName       string
+	now           time.Time
+	save          func(string, string, T, time.Time) (string, error)
+	appendWarning func(T, string) T
+}
+
+func saveImmutableBaselineSnapshot[T any](reportData T, cfg immutableBaselineSaveConfig[T]) (T, error) {
+	if !cfg.enabled {
 		return reportData, nil
 	}
 
-	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, req, keyName)
+	storePath, saveKey, err := resolveBaselineSaveTarget(cfg.repoPath, cfg.req, cfg.keyName)
 	if err != nil {
 		return reportData, err
 	}
-	savedPath, err := save(storePath, saveKey, reportData, now)
+	savedPath, err := cfg.save(storePath, saveKey, reportData, cfg.now)
 	if err != nil {
 		return reportData, err
 	}
-	return appendWarning(reportData, savedPath), nil
+	return cfg.appendWarning(reportData, savedPath), nil
 }
 
 func appendBaselineSaveWarning(reportData report.Report, savedPath string) report.Report {

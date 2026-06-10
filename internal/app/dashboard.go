@@ -65,7 +65,15 @@ func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPa
 }
 
 func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, now time.Time) (dashboard.Report, error) {
-	return saveImmutableBaselineSnapshot(reportData, resolved.saveBaseline, repoPath, baselineKeyRequestFromDashboard(resolved), "dashboard baseline", now, dashboard.SaveSnapshot, appendDashboardBaselineSaveWarning)
+	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[dashboard.Report]{
+		enabled:       resolved.saveBaseline,
+		repoPath:      repoPath,
+		req:           baselineKeyRequestFromDashboard(resolved),
+		keyName:       "dashboard baseline",
+		now:           now,
+		save:          dashboard.SaveSnapshot,
+		appendWarning: appendDashboardBaselineSaveWarning,
+	})
 }
 
 func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
