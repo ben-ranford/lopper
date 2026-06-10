@@ -12,6 +12,7 @@ import type { WorkspaceAnalysis, WorkspaceAnalysisRunner } from "../../lopperRun
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (error: Error) => void;
 }
 
 interface LifecycleHarness {
@@ -121,6 +122,45 @@ suite("refresh lifecycle", () => {
           await firstRefresh;
 
           assert.match(controller.getLatestSummary(), /0 deps/);
+        },
+      );
+    });
+  });
+
+  test("aborts superseded fresh refreshes", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const deferredAnalyses: Array<Deferred<WorkspaceAnalysis>> = [];
+      const signals: AbortSignal[] = [];
+
+      await withController(
+        {
+          analyseWorkspace: async (_folder, options): Promise<WorkspaceAnalysis> => {
+            const next = deferred<WorkspaceAnalysis>();
+            deferredAnalyses.push(next);
+            assert.ok(options?.signal, "expected refresh signal to be forwarded");
+            signals.push(options.signal);
+            options.signal.addEventListener("abort", () => next.reject(new Error("aborted")), { once: true });
+            return next.promise;
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          const firstRefresh = refresh(controller, harness, { forceFresh: true });
+          const secondRefresh = refresh(controller, harness, { forceFresh: true });
+
+          assert.equal(deferredAnalyses.length, 2, "expected two independent fresh runs");
+          assert.equal(signals[0].aborted, true, "superseded run should be aborted");
+          assert.equal(signals[1].aborted, false, "latest run should remain active");
+
+          deferredAnalyses[1].resolve(
+            makeAnalysis(harness, {
+              dependencyCount: 1,
+              usedPercent: 80,
+            }),
+          );
+          await Promise.all([firstRefresh, secondRefresh]);
         },
       );
     });
@@ -312,10 +352,12 @@ async function binarySignature(binaryPath: string): Promise<string> {
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolver) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolver, rejecter) => {
     resolve = resolver;
+    reject = rejecter;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function makeAnalysis(

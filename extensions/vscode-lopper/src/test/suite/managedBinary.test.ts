@@ -11,9 +11,12 @@ import {
   BinaryResolutionError,
   archiveDestinationPath,
   assetNameForRelease,
+  downloadAsset,
+  fetchRelease,
   LopperBinaryLifecycleManager,
   ManagedBinaryInstaller,
   type GitHubRelease,
+  type GitHubReleaseAsset,
   selectReleaseAsset,
 } from "../../managedBinary";
 
@@ -244,6 +247,20 @@ suite("managed binary installer", () => {
     });
   });
 
+  test("skips workspace-local bin directories in untrusted workspaces", async () => {
+    await withPathFallbackFixture("directory-untrusted", async ({ workspaceRoot, localBinaryPath, fallbackBinary, lifecycle }) => {
+      await mkdir(localBinaryPath, { recursive: true });
+
+      const resolvedPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot,
+        workspaceTrusted: false,
+        autoDownloadBinary: false,
+      });
+
+      assert.equal(resolvedPath, fallbackBinary);
+    });
+  });
+
   test("rejects non-executable workspace-local bin binaries on unix hosts", async function () {
     if (process.platform === "win32") {
       this.skip();
@@ -266,6 +283,142 @@ suite("managed binary installer", () => {
           error.message.includes(localBinaryPath),
       );
     });
+  });
+
+  test("skips non-executable workspace-local bin binaries in untrusted workspaces", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    await withPathFallbackFixture("nonexec-untrusted", async ({ workspaceRoot, localBinaryPath, fallbackBinary, lifecycle }) => {
+      await mkdir(path.dirname(localBinaryPath), { recursive: true });
+      await writeFile(localBinaryPath, "#!/bin/sh\nexit 0\n", "utf8");
+      await chmod(localBinaryPath, 0o644);
+
+      const resolvedPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot,
+        workspaceTrusted: false,
+        autoDownloadBinary: false,
+      });
+
+      assert.equal(resolvedPath, fallbackBinary);
+    });
+  });
+
+  test("forwards progress cancellation signals to managed installer", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-signal-"));
+    const controller = new AbortController();
+    const previousPath = process.env.PATH;
+    let observedSignal: AbortSignal | undefined;
+
+    try {
+      process.env.PATH = "";
+      const lifecycle = new LopperBinaryLifecycleManager(
+        {
+          findInstalledBinary: async () => undefined,
+          ensureInstalled: async (_releaseTag, signal) => {
+            observedSignal = signal;
+            return {
+              binaryPath: path.join(tempRoot, "managed", "lopper"),
+              tag: "latest",
+              downloaded: true,
+            };
+          },
+        },
+        { appendLine: () => undefined },
+        {
+          install: async (_releaseTag, install) => install(controller.signal),
+        },
+        "linux",
+      );
+
+      const binaryPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot: tempRoot,
+        workspaceTrusted: true,
+        autoDownloadBinary: true,
+      });
+
+      assert.equal(binaryPath, path.join(tempRoot, "managed", "lopper"));
+      assert.equal(observedSignal, controller.signal);
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("forwards abort signals to release lookup and asset download", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-signal-"));
+    const controller = new AbortController();
+    let fetchSignal: AbortSignal | undefined;
+    let downloadSignal: AbortSignal | undefined;
+
+    try {
+      const releaseTag = "v9.8.7";
+      const host = { platform: "linux" as const, arch: "x64" };
+      const archivePath = await createTarballFixture(tempRoot, releaseTag, host, "linux binary");
+      const binaryDigest = await sha256File(archivePath);
+      const release: GitHubRelease = {
+        tag_name: releaseTag,
+        assets: [
+          {
+            name: assetNameForRelease(releaseTag, host),
+            digest: `sha256:${binaryDigest}`,
+            browser_download_url: `file://${archivePath}`,
+          },
+        ],
+      };
+      const installer = new ManagedBinaryInstaller(
+        path.join(tempRoot, "storage"),
+        { appendLine: () => undefined },
+        {
+          host,
+          fetchRelease: async (_releaseTag, signal) => {
+            fetchSignal = signal;
+            return release;
+          },
+          downloadAsset: async (_asset, destinationPath, signal) => {
+            downloadSignal = signal;
+            await copyFile(archivePath, destinationPath);
+          },
+        },
+      );
+
+      await installer.ensureInstalled(undefined, controller.signal);
+
+      assert.equal(fetchSignal, controller.signal);
+      assert.equal(downloadSignal, controller.signal);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("times out release lookup fetches", async () => {
+    await withHangingFetch(async () => {
+      await assert.rejects(
+        fetchRelease(undefined, undefined, 10),
+        /release lookup timed out after 10ms/,
+      );
+    });
+  });
+
+  test("times out managed asset downloads", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-download-timeout-"));
+    const asset: GitHubReleaseAsset = {
+      name: "lopper_v9.8.7_linux_amd64.tar.gz",
+      browser_download_url: "https://example.test/lopper.tar.gz",
+      digest: `sha256:${"0".repeat(64)}`,
+    };
+
+    try {
+      await withHangingFetch(async () => {
+        await assert.rejects(
+          downloadAsset(asset, path.join(tempRoot, asset.name), undefined, 10),
+          /asset download timed out after 10ms/,
+        );
+      });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test("fails when auto-download is disabled and no binaries resolve", async () => {
@@ -516,6 +669,38 @@ async function withPathFallbackFixture(
     await rm(workspaceRoot, { recursive: true, force: true });
     await rm(pathRoot, { recursive: true, force: true });
   }
+}
+
+async function withHangingFetch(run: () => Promise<void>): Promise<void> {
+  const previousFetch = globalThis.fetch;
+  const hangingFetch: typeof fetch = async (_input, init) => {
+    const signal = init?.signal ?? undefined;
+    return new Promise<Response>((_resolve, reject) => {
+      if (!signal) {
+        reject(new Error("expected fetch signal"));
+        return;
+      }
+      const abort = () => reject(abortFetchError());
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      signal.addEventListener("abort", abort, { once: true });
+    });
+  };
+
+  try {
+    globalThis.fetch = hangingFetch;
+    await run();
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
+
+function abortFetchError(): Error {
+  const error = new Error("This operation was aborted");
+  error.name = "AbortError";
+  return error;
 }
 
 function createPathFallbackLifecycle(): LopperBinaryLifecycleManager {

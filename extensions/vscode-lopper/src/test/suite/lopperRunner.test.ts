@@ -6,7 +6,7 @@ import { suite, test } from "mocha";
 import * as vscode from "vscode";
 
 import type { BinaryResolutionRequest } from "../../managedBinary";
-import { BinaryResolutionError, LopperRunner, type ReportCommandExecutor } from "../../lopperRunner";
+import { BinaryResolutionError, LopperCliReportExecutor, LopperRunner, type ReportCommandExecutor } from "../../lopperRunner";
 import type { LopperReport } from "../../types";
 
 suite("lopper runner", () => {
@@ -237,10 +237,54 @@ suite("lopper runner", () => {
     assert.equal(firstCall.args[firstCall.args.indexOf("--scope-mode") + 1], "package");
     assert.ok(secondCall.args.includes("--scope-mode"), "expected scope mode arg in codemod command");
     assert.equal(secondCall.args[secondCall.args.indexOf("--scope-mode") + 1], "package");
-    assert.equal(secondCall.args.at(-1), "--suggest-only");
+    assert.ok(secondCall.args.includes("--suggest-only"), "expected codemod command to request suggest-only mode");
+    assert.deepEqual(secondCall.args.slice(-2), ["--", "scope-lib"]);
     assert.equal(analysis.scopeMode, "package");
     assert.equal(analysis.codemodsByDependency.get("scope-lib")?.suggestions?.[0]?.toModule, "scope-lib/chunk");
     assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
+  });
+
+  test("skips codemod analysis for flag-shaped dependency names", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const calls: string[][] = [];
+    const outputLines: string[] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: (value) => outputLines.push(value) },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            calls.push(args);
+            return {
+              dependencies: [
+                {
+                  name: "--cache-path=/tmp/lopper-escape",
+                  language: "js-ts",
+                  usedExportsCount: 1,
+                  totalExportsCount: 2,
+                  usedPercent: 50,
+                },
+              ],
+            };
+          },
+        },
+      },
+    );
+
+    const analysis = await runner.analyseWorkspace(folder);
+
+    assert.equal(calls.length, 1, "flag-shaped dependency must not be forwarded to a child process");
+    assert.equal(analysis.codemodsByDependency.size, 0);
+    assert.ok(
+      outputLines.some((line) => line.includes("unsafe dependency name rejected")),
+      "expected unsafe dependency skip to be logged",
+    );
   });
 
   test("passes explicit scope mode to primary and codemod analysis commands", async () => {
@@ -372,6 +416,54 @@ suite("lopper runner", () => {
     assert.ok(exportArgs.includes("--runtime-trace"));
     assert.ok(exportArgs.includes("--baseline-key"));
   });
+
+  test("times out hung lopper commands", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-runner-timeout-"));
+    const binaryPath = path.join(tempRoot, "lopper");
+
+    try {
+      await writeSleepingExecutable(binaryPath);
+      const executor = new LopperCliReportExecutor({ appendLine: () => undefined });
+
+      await assert.rejects(
+        executor.runCommand(binaryPath, [], tempRoot, { timeoutMs: 50 }),
+        /lopper command timed out after 50ms/,
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("aborts lopper commands when the caller cancels", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-runner-abort-"));
+    const binaryPath = path.join(tempRoot, "lopper");
+    const controller = new AbortController();
+
+    try {
+      await writeSleepingExecutable(binaryPath);
+      const executor = new LopperCliReportExecutor({ appendLine: () => undefined });
+      const abortTimer = setTimeout(() => controller.abort(), 50);
+
+      try {
+        await assert.rejects(
+          executor.runCommand(binaryPath, [], tempRoot, { signal: controller.signal, timeoutMs: 5_000 }),
+          /lopper command was cancelled/,
+        );
+      } finally {
+        clearTimeout(abortTimer);
+      }
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 function workspaceFolder(): vscode.WorkspaceFolder {
@@ -391,6 +483,12 @@ async function writeExecutable(binaryPath: string): Promise<void> {
   if (process.platform !== "win32") {
     await chmod(binaryPath, 0o755);
   }
+}
+
+async function writeSleepingExecutable(binaryPath: string): Promise<void> {
+  await mkdir(path.dirname(binaryPath), { recursive: true });
+  await writeFile(binaryPath, "#!/bin/sh\nsleep 10\n", "utf8");
+  await chmod(binaryPath, 0o755);
 }
 
 function joinPathEntries(entries: Array<string | undefined>): string {
