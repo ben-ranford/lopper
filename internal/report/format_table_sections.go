@@ -4,19 +4,39 @@ import (
 	"bytes"
 	"sort"
 	"strings"
+	"text/template"
 )
 
 var tableWarningReplacer = strings.NewReplacer("\r\n", "\\n", "\r", "\\n", "\n", "\\n", "\t", "\\t")
 
-func appendSummary(buffer *bytes.Buffer, summary *Summary) {
+var (
+	summarySectionTemplate = template.Must(template.New("summary-section").Parse(`Summary: {{.DependencyCount}} deps, Used/Total: {{.UsedExportsCount}}/{{.TotalExportsCount}} ({{printf "%.1f" .UsedPercent}}%)
+
+Licenses: known={{.KnownLicenseCount}}, unknown={{.UnknownLicenseCount}}, denied={{.DeniedLicenseCount}}
+
+{{if .Reachability}}Reachability confidence: avg={{printf "%.1f" .Reachability.AverageScore}} range={{printf "%.1f" .Reachability.LowestScore}}-{{printf "%.1f" .Reachability.HighestScore}} ({{.Reachability.Model}})
+
+{{end}}`))
+
+	effectiveThresholdsSectionTemplate = template.Must(template.New("effective-thresholds-section").Parse(`Effective thresholds:
+- fail_on_increase_percent: {{.FailOnIncreasePercent}}
+- low_confidence_warning_percent: {{.LowConfidenceWarningPercent}}
+- min_usage_percent_for_recommendations: {{.MinUsagePercentForRecommendations}}
+- max_uncertain_import_count: {{.MaxUncertainImportCount}}
+
+`))
+
+	languageBreakdownSectionTemplate = template.Must(template.New("language-breakdown-section").Parse(`Languages:
+{{range .Items}}- {{.Language}}: {{.DependencyCount}} deps, Used/Total: {{.UsedExportsCount}}/{{.TotalExportsCount}} ({{printf "%.1f" .UsedPercent}}%)
+{{end}}
+`))
+)
+
+func appendSummary(buffer *bytes.Buffer, summary *Summary) error {
 	if summary == nil {
-		return
+		return nil
 	}
-	writef(buffer, "Summary: %d deps, Used/Total: %d/%d (%.1f%%)\n\n", summary.DependencyCount, summary.UsedExportsCount, summary.TotalExportsCount, summary.UsedPercent)
-	writef(buffer, "Licenses: known=%d, unknown=%d, denied=%d\n\n", summary.KnownLicenseCount, summary.UnknownLicenseCount, summary.DeniedLicenseCount)
-	if summary.Reachability != nil {
-		writef(buffer, "Reachability confidence: avg=%.1f range=%.1f-%.1f (%s)\n\n", summary.Reachability.AverageScore, summary.Reachability.LowestScore, summary.Reachability.HighestScore, summary.Reachability.Model)
-	}
+	return executeReportTemplate(buffer, summarySectionTemplate, newSummarySectionData(summary))
 }
 
 func appendUsageUncertainty(buffer *bytes.Buffer, usage *UsageUncertainty) {
@@ -61,16 +81,11 @@ func appendCacheMetadata(buffer *bytes.Buffer, cache *CacheMetadata) {
 	buffer.WriteString("\n")
 }
 
-func appendEffectiveThresholds(buffer *bytes.Buffer, report Report) {
+func appendEffectiveThresholds(buffer *bytes.Buffer, report Report) error {
 	if report.EffectiveThresholds == nil {
-		return
+		return nil
 	}
-	buffer.WriteString("Effective thresholds:\n")
-	writef(buffer, "- fail_on_increase_percent: %d\n", report.EffectiveThresholds.FailOnIncreasePercent)
-	writef(buffer, "- low_confidence_warning_percent: %d\n", report.EffectiveThresholds.LowConfidenceWarningPercent)
-	writef(buffer, "- min_usage_percent_for_recommendations: %d\n", report.EffectiveThresholds.MinUsagePercentForRecommendations)
-	writef(buffer, "- max_uncertain_import_count: %d\n", report.EffectiveThresholds.MaxUncertainImportCount)
-	buffer.WriteString("\n")
+	return executeReportTemplate(buffer, effectiveThresholdsSectionTemplate, report.EffectiveThresholds)
 }
 
 func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
@@ -106,18 +121,80 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString("\n")
 }
 
-func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) {
+func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) error {
 	if len(breakdown) == 0 {
-		return
+		return nil
 	}
-	buffer.WriteString("Languages:\n")
+	return executeReportTemplate(buffer, languageBreakdownSectionTemplate, newLanguageBreakdownSectionData(breakdown))
+}
+
+type summarySectionData struct {
+	DependencyCount     int
+	UsedExportsCount    int
+	TotalExportsCount   int
+	UsedPercent         float64
+	KnownLicenseCount   int
+	UnknownLicenseCount int
+	DeniedLicenseCount  int
+	Reachability        *reachabilitySectionData
+}
+
+type reachabilitySectionData struct {
+	AverageScore float64
+	LowestScore  float64
+	HighestScore float64
+	Model        string
+}
+
+type languageBreakdownSectionData struct {
+	Items []languageBreakdownSectionItem
+}
+
+type languageBreakdownSectionItem struct {
+	Language          string
+	DependencyCount   int
+	UsedExportsCount  int
+	TotalExportsCount int
+	UsedPercent       float64
+}
+
+func newSummarySectionData(summary *Summary) summarySectionData {
+	data := summarySectionData{
+		DependencyCount:     summary.DependencyCount,
+		UsedExportsCount:    summary.UsedExportsCount,
+		TotalExportsCount:   summary.TotalExportsCount,
+		UsedPercent:         summary.UsedPercent,
+		KnownLicenseCount:   summary.KnownLicenseCount,
+		UnknownLicenseCount: summary.UnknownLicenseCount,
+		DeniedLicenseCount:  summary.DeniedLicenseCount,
+	}
+	if summary.Reachability != nil {
+		data.Reachability = &reachabilitySectionData{
+			AverageScore: summary.Reachability.AverageScore,
+			LowestScore:  summary.Reachability.LowestScore,
+			HighestScore: summary.Reachability.HighestScore,
+			Model:        sanitizeTerminalString(summary.Reachability.Model),
+		}
+	}
+	return data
+}
+
+func newLanguageBreakdownSectionData(breakdown []LanguageSummary) languageBreakdownSectionData {
+	items := make([]languageBreakdownSectionItem, 0, len(breakdown))
 	for _, item := range breakdown {
-		buffer.WriteString("- ")
-		buffer.WriteString(sanitizeTerminalString(item.Language))
-		buffer.WriteString(": ")
-		writef(buffer, "%d deps, Used/Total: %d/%d (%.1f%%)\n", item.DependencyCount, item.UsedExportsCount, item.TotalExportsCount, item.UsedPercent)
+		items = append(items, languageBreakdownSectionItem{
+			Language:          sanitizeTerminalString(item.Language),
+			DependencyCount:   item.DependencyCount,
+			UsedExportsCount:  item.UsedExportsCount,
+			TotalExportsCount: item.TotalExportsCount,
+			UsedPercent:       item.UsedPercent,
+		})
 	}
-	buffer.WriteString("\n")
+	return languageBreakdownSectionData{Items: items}
+}
+
+func executeReportTemplate(buffer *bytes.Buffer, tmpl *template.Template, data any) error {
+	return tmpl.Execute(buffer, data)
 }
 
 func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparison) {

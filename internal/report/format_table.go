@@ -9,17 +9,23 @@ import (
 
 func formatTable(report Report) (string, error) {
 	if len(report.Dependencies) == 0 {
-		return formatEmpty(report), nil
+		return formatEmpty(report)
 	}
 
 	var buffer bytes.Buffer
-	appendSummary(&buffer, report.Summary)
+	if err := appendSummary(&buffer, report.Summary); err != nil {
+		return "", err
+	}
 	appendUsageUncertainty(&buffer, report.UsageUncertainty)
 	appendScopeMetadata(&buffer, report.Scope)
 	appendCacheMetadata(&buffer, report.Cache)
-	appendEffectiveThresholds(&buffer, report)
+	if err := appendEffectiveThresholds(&buffer, report); err != nil {
+		return "", err
+	}
 	appendEffectivePolicy(&buffer, report)
-	appendLanguageBreakdown(&buffer, report.LanguageBreakdown)
+	if err := appendLanguageBreakdown(&buffer, report.LanguageBreakdown); err != nil {
+		return "", err
+	}
 	appendBaselineComparison(&buffer, report.BaselineComparison)
 	appendCodemodApply(&buffer, report.Dependencies)
 
@@ -62,16 +68,18 @@ func sanitizeOutputArgs(args []any) []any {
 	return sanitizedArgs
 }
 
-func formatEmpty(report Report) string {
+func formatEmpty(report Report) (string, error) {
 	var buffer bytes.Buffer
 	buffer.WriteString("No dependencies to report.\n")
 	appendUsageUncertainty(&buffer, report.UsageUncertainty)
 	appendScopeMetadata(&buffer, report.Scope)
-	appendEffectiveThresholds(&buffer, report)
+	if err := appendEffectiveThresholds(&buffer, report); err != nil {
+		return "", err
+	}
 	appendEffectivePolicy(&buffer, report)
 	appendCodemodApply(&buffer, report.Dependencies)
 	appendWarnings(&buffer, report)
-	return buffer.String()
+	return buffer.String(), nil
 }
 
 func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime, showReachability bool) error {
