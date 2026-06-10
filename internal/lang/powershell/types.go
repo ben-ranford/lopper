@@ -28,7 +28,7 @@ var (
 	requiredModulesAssignmentPattern = regexp.MustCompile(`(?i)\brequiredmodules\b\s*=`)
 	importModulePattern              = regexp.MustCompile(`(?i)^\s*import-module\b(.*)$`)
 	usingModulePattern               = regexp.MustCompile(`(?i)^\s*using\s+module\s+(.+)$`)
-	requiresDirectivePattern         = regexp.MustCompile(`(?i)^\s*#requires\b(.*)$`)
+	requiresDirectivePattern         = regexp.MustCompile(`(?i)^\s*#requires(?:[ \t]+(.*)|)$`)
 	moduleNamePattern                = regexp.MustCompile(`(?is)\bmodulename\b\s*=\s*([^;\r\n}]+)`)
 	powerShellSkippedDirs            = map[string]bool{}
 )
