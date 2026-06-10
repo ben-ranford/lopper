@@ -88,6 +88,13 @@ interface LopperControllerOptions {
   registerWithVSCode?: boolean;
 }
 
+interface RefreshAbortHandle {
+  workspaceKey: string;
+  folderName: string;
+  runId: number;
+  controller: AbortController;
+}
+
 class LopperController implements LopperControllerContract, vscode.HoverProvider, vscode.CodeActionProvider {
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("lopper");
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -97,6 +104,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   private readonly documentUrisByWorkspace = new Map<string, Set<string>>();
   private readonly refreshTimers = new Map<string, NodeJS.Timeout>();
   private readonly refreshSessions = new RefreshSessionStore<WorkspaceAnalysis>();
+  private readonly refreshAbortHandles = new Map<string, RefreshAbortHandle>();
   private readonly analysisByWorkspace = new Map<string, WorkspaceAnalysis>();
   private readonly detailPanels = new Map<string, vscode.WebviewPanel>();
   private readonly explorer: LopperExplorerTreeDataProvider;
@@ -135,6 +143,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
             forceFresh: true,
             trigger: "command",
           });
+        }),
+        vscode.commands.registerCommand("lopper.cancelRefresh", () => {
+          this.cancelActiveRefreshes("user requested cancellation");
         }),
         vscode.commands.registerCommand("lopper.refreshWorkspace.runtime", async (folderPath?: string) => {
           await this.refreshRuntimeWorkspace(folderPath);
@@ -322,9 +333,19 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     }
 
     const runId = this.refreshSessions.reserveRun(workspaceKey);
+    this.abortSupersededRefreshes(workspaceKey, runId);
+    const abortController = new AbortController();
+    const abortKey = this.refreshAbortKey(workspaceKey, runId);
+    this.refreshAbortHandles.set(abortKey, {
+      workspaceKey,
+      folderName: folder.name,
+      runId,
+      controller: abortController,
+    });
     this.updateStatus(
       `Lopper: analysing (${scopeMode})`,
       `Running lopper for ${folder.name} (${requestedLanguage}, scope ${scopeMode}).`,
+      "lopper.cancelRefresh",
     );
     this.output.appendLine(
       `[refresh:running] ${folder.name} (${requestedLanguage}, ${scopeMode}) trigger=${trigger}${forceFresh ? " force-fresh" : ""}`,
@@ -346,6 +367,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       baselineKey: options.baselineKey,
       baselineLabel: options.baselineLabel,
       saveBaseline: options.saveBaseline,
+      signal: abortController.signal,
+      abortKey,
     });
     this.refreshSessions.setInFlight(workspaceKey, sessionKey, runId, refreshPromise);
     await refreshPromise;
@@ -372,6 +395,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       this.updateStatus(
         `Lopper: analysing (${options.scopeMode})`,
         `Reusing in-flight analysis for ${options.folder.name} (${options.requestedLanguage}, scope ${options.scopeMode}).`,
+        "lopper.cancelRefresh",
       );
       return inFlight.promise.then(() => true);
     }
@@ -381,6 +405,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       return this.canReuseCachedAnalysis(cached.value).then((canReuse) => {
         if (canReuse) {
           const runId = this.refreshSessions.reserveRun(options.workspaceKey);
+          this.abortSupersededRefreshes(options.workspaceKey, runId);
           this.output.appendLine(
             `[refresh:reused-cache] ${options.folder.name} (${options.requestedLanguage}, ${options.scopeMode}) trigger=${options.trigger}`,
           );
@@ -414,6 +439,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     baselineKey?: string;
     baselineLabel?: string;
     saveBaseline?: boolean;
+    signal?: AbortSignal;
+    abortKey?: string;
   }): Promise<void> {
     const {
       folder,
@@ -431,6 +458,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       baselineKey,
       baselineLabel,
       saveBaseline,
+      signal,
+      abortKey,
     } = options;
     try {
       const request: WorkspaceAnalysisRequest = {
@@ -443,6 +472,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
         baselineKey,
         baselineLabel,
         saveBaseline,
+        signal,
       };
       const analysis = await this.runner.analyseWorkspace(folder, request);
       if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
@@ -482,6 +512,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       }
     } finally {
       this.refreshSessions.clearInFlight(workspaceKey, sessionKey, runId);
+      if (abortKey) {
+        this.refreshAbortHandles.delete(abortKey);
+      }
     }
   }
 
@@ -635,6 +668,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   }
 
   dispose(): void {
+    this.cancelActiveRefreshes("extension disposed");
+    this.refreshAbortHandles.clear();
     for (const timer of this.refreshTimers.values()) {
       clearTimeout(timer);
     }
@@ -1211,10 +1246,42 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     );
   }
 
-  private updateStatus(text: string, tooltip: string): void {
+  private abortSupersededRefreshes(workspaceKey: string, latestRunId: number): void {
+    for (const handle of this.refreshAbortHandles.values()) {
+      if (handle.workspaceKey !== workspaceKey || handle.runId === latestRunId || handle.controller.signal.aborted) {
+        continue;
+      }
+      this.output.appendLine(
+        `[refresh:abort] ${handle.folderName} run=${handle.runId} superseded by run=${latestRunId}`,
+      );
+      handle.controller.abort();
+    }
+  }
+
+  private cancelActiveRefreshes(reason: string): void {
+    let cancelled = 0;
+    for (const handle of this.refreshAbortHandles.values()) {
+      if (handle.controller.signal.aborted) {
+        continue;
+      }
+      cancelled += 1;
+      this.output.appendLine(`[refresh:abort] ${handle.folderName} run=${handle.runId}: ${reason}`);
+      handle.controller.abort();
+    }
+    if (cancelled > 0) {
+      this.updateStatus("Lopper: cancelling", "Cancelling active Lopper analysis.");
+    }
+  }
+
+  private refreshAbortKey(workspaceKey: string, runId: number): string {
+    return `${workspaceKey}|${runId}`;
+  }
+
+  private updateStatus(text: string, tooltip: string, command = "lopper.refreshWorkspace"): void {
     this.latestSummary = text;
     this.statusBar.text = text;
     this.statusBar.tooltip = tooltip;
+    this.statusBar.command = command;
   }
 }
 

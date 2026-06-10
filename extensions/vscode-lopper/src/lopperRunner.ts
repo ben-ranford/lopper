@@ -22,6 +22,8 @@ import {
 
 export type LopperOutputFormat = "json" | "csv" | "sarif" | "pr-comment";
 
+export const defaultLopperRunTimeoutMs = 120_000;
+
 const execFileAsync = promisify(execFile);
 
 export interface WorkspaceAnalysis {
@@ -44,6 +46,7 @@ export interface WorkspaceAnalysisRequest {
   scopeMode?: LopperScopeMode;
   dependencyName?: string;
   suggestOnly?: boolean;
+  signal?: AbortSignal;
   runtimeTracePath?: string;
   runtimeTestCommand?: string;
   baselinePath?: string;
@@ -56,6 +59,7 @@ export interface WorkspaceAnalysisRequest {
 export interface WorkspaceExportRequest {
   document?: vscode.TextDocument;
   scopeMode?: LopperScopeMode;
+  signal?: AbortSignal;
   runtimeTracePath?: string;
   runtimeTestCommand?: string;
   baselinePath?: string;
@@ -66,8 +70,8 @@ export interface WorkspaceExportRequest {
 }
 
 export interface ReportCommandExecutor {
-  runCommand(binaryPath: string, args: string[], cwd: string): Promise<string>;
-  runReport(binaryPath: string, args: string[], cwd: string): Promise<LopperReport>;
+  runCommand(binaryPath: string, args: string[], cwd: string, options?: LopperExecutionOptions): Promise<string>;
+  runReport(binaryPath: string, args: string[], cwd: string, options?: LopperExecutionOptions): Promise<LopperReport>;
 }
 
 export interface LopperRunnerDeps {
@@ -75,28 +79,50 @@ export interface LopperRunnerDeps {
   reportExecutor?: ReportCommandExecutor;
 }
 
-class LopperCliReportExecutor implements ReportCommandExecutor {
+export interface LopperExecutionOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export class LopperCliReportExecutor implements ReportCommandExecutor {
   constructor(private readonly output: Pick<vscode.OutputChannel, "appendLine">) {}
 
-  async runCommand(binaryPath: string, args: string[], cwd: string): Promise<string> {
+  async runCommand(
+    binaryPath: string,
+    args: string[],
+    cwd: string,
+    options: LopperExecutionOptions = {},
+  ): Promise<string> {
     this.output.appendLine(`running: ${binaryPath} ${args.join(" ")}`);
     try {
       const { stdout, stderr } = await execFileAsync(binaryPath, args, {
         cwd,
         env: process.env,
         maxBuffer: 10 * 1024 * 1024,
+        signal: options.signal,
+        timeout: options.timeoutMs,
       });
       if (stderr.trim().length > 0) {
         this.output.appendLine(stderr.trim());
       }
       return stdout;
     } catch (error) {
-      return this.handleRunCommandError(error as NodeJS.ErrnoException & { stdout?: string; stderr?: string }, args, binaryPath);
+      return this.handleRunCommandError(
+        error as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals; stdout?: string; stderr?: string },
+        args,
+        binaryPath,
+        options,
+      );
     }
   }
 
-  async runReport(binaryPath: string, args: string[], cwd: string): Promise<LopperReport> {
-    const stdout = await this.runCommand(binaryPath, args, cwd);
+  async runReport(
+    binaryPath: string,
+    args: string[],
+    cwd: string,
+    options: LopperExecutionOptions = {},
+  ): Promise<LopperReport> {
+    const stdout = await this.runCommand(binaryPath, args, cwd, options);
     return this.parseReport(stdout, binaryPath);
   }
 
@@ -111,14 +137,23 @@ class LopperCliReportExecutor implements ReportCommandExecutor {
   }
 
   private handleRunCommandError(
-    execError: NodeJS.ErrnoException & { stdout?: string; stderr?: string },
+    execError: NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals; stdout?: string; stderr?: string },
     args: string[],
     binaryPath: string,
+    options: LopperExecutionOptions,
   ): string {
     if (execError.code === "ENOENT") {
       throw new BinaryResolutionError(
         "Lopper binary not found. Set lopper.binaryPath or LOPPER_BINARY_PATH before running the extension.",
       );
+    }
+
+    if (isAbortError(execError) || options.signal?.aborted) {
+      throw new Error("lopper command was cancelled");
+    }
+
+    if (isExecTimeout(execError, options.timeoutMs)) {
+      throw new Error(`lopper command timed out after ${options.timeoutMs}ms`);
     }
 
     const stdout = execError.stdout ?? "";
@@ -172,14 +207,24 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
             {
               location: vscode.ProgressLocation.Notification,
               title: "Installing lopper CLI",
+              cancellable: true,
             },
-            async (progress) => {
+            async (progress, token) => {
               progress.report({
                 message: releaseTag
                   ? `Downloading ${releaseTag} for ${process.platform}/${process.arch}`
                   : `Downloading latest release for ${process.platform}/${process.arch}`,
               });
-              return install();
+              const abortController = new AbortController();
+              const cancellation = token.onCancellationRequested(() => abortController.abort());
+              try {
+                if (token.isCancellationRequested) {
+                  abortController.abort();
+                }
+                return install(abortController.signal);
+              } finally {
+                cancellation.dispose();
+              }
             },
           );
         },
@@ -197,6 +242,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     const binarySignature = await this.binarySignature(binaryPath);
     const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const scopeMode = normalizeScopeMode(scopeModeOption);
+    const timeoutMs = this.runTimeoutMs(folder);
     const report = await this.executeReport(binaryPath, folder, {
       format: "json",
       requestedLanguage,
@@ -204,6 +250,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       document,
       dependencyName,
       suggestOnly: options.suggestOnly,
+      signal: options.signal,
+      timeoutMs,
       runtimeTracePath: options.runtimeTracePath,
       runtimeTestCommand: options.runtimeTestCommand,
       baselinePath: options.baselinePath,
@@ -218,7 +266,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       if (!shouldFetchCodemod(dependency, requestedLanguage)) {
         continue;
       }
-      const codemod = await this.fetchCodemod(binaryPath, folder, dependency, scopeMode, options);
+      const codemod = await this.fetchCodemod(binaryPath, folder, dependency, scopeMode, options, timeoutMs);
       if (codemod) {
         codemodsByDependency.set(dependency.name, codemod);
       }
@@ -236,11 +284,14 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     const binaryPath = await this.resolveBinaryPath(folder);
     const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const scopeMode = normalizeScopeMode(scopeModeOption);
+    const timeoutMs = this.runTimeoutMs(folder);
     return this.executeText(binaryPath, folder, {
       format,
       requestedLanguage,
       scopeMode,
       document,
+      signal: options.signal,
+      timeoutMs,
       runtimeTracePath: options.runtimeTracePath,
       runtimeTestCommand: options.runtimeTestCommand,
       baselinePath: options.baselinePath,
@@ -272,6 +323,18 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20;
   }
 
+  private runTimeoutMs(folder: vscode.WorkspaceFolder): number | undefined {
+    const configured = vscode.workspace.getConfiguration("lopper", folder.uri).get<number>(
+      "runTimeoutMs",
+      defaultLopperRunTimeoutMs,
+    );
+    if (!Number.isFinite(configured)) {
+      return defaultLopperRunTimeoutMs;
+    }
+    const timeoutMs = Math.floor(configured);
+    return timeoutMs > 0 ? timeoutMs : undefined;
+  }
+
   private async executeReport(
     binaryPath: string,
     folder: vscode.WorkspaceFolder,
@@ -282,6 +345,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       document?: vscode.TextDocument;
       dependencyName?: string;
       suggestOnly?: boolean;
+      signal?: AbortSignal;
+      timeoutMs?: number;
       runtimeTracePath?: string;
       runtimeTestCommand?: string;
       baselinePath?: string;
@@ -292,7 +357,10 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     },
   ): Promise<LopperReport> {
     const args = this.buildAnalysisArgs(folder, options);
-    return this.reportExecutor.runReport(binaryPath, args, folder.uri.fsPath);
+    return this.reportExecutor.runReport(binaryPath, args, folder.uri.fsPath, {
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
   }
 
   private async executeText(
@@ -303,6 +371,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       requestedLanguage: string;
       scopeMode: LopperScopeMode;
       document?: vscode.TextDocument;
+      signal?: AbortSignal;
+      timeoutMs?: number;
       runtimeTracePath?: string;
       runtimeTestCommand?: string;
       baselinePath?: string;
@@ -313,7 +383,10 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     },
   ): Promise<string> {
     const args = this.buildAnalysisArgs(folder, options);
-    return this.reportExecutor.runCommand(binaryPath, args, folder.uri.fsPath);
+    return this.reportExecutor.runCommand(binaryPath, args, folder.uri.fsPath, {
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
   }
 
   private buildAnalysisArgs(
@@ -325,6 +398,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       document?: vscode.TextDocument;
       dependencyName?: string;
       suggestOnly?: boolean;
+      signal?: AbortSignal;
+      timeoutMs?: number;
       runtimeTracePath?: string;
       runtimeTestCommand?: string;
       baselinePath?: string;
@@ -335,9 +410,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     },
   ): string[] {
     const args = ["analyse"];
-    if (options.dependencyName) {
-      args.push(options.dependencyName);
-    } else {
+    const dependencyName = normalizeDependencyArgument(options.dependencyName);
+    if (!dependencyName) {
       args.push("--top", String(this.topN(folder)));
     }
     args.push(
@@ -356,6 +430,9 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     this.appendBaselineArgs(args, options.baselinePath, options.baselineStorePath, options.baselineKey, options.baselineLabel, options.saveBaseline);
     if (options.suggestOnly) {
       args.push("--suggest-only");
+    }
+    if (dependencyName) {
+      args.push("--", dependencyName);
     }
     return args;
   }
@@ -426,6 +503,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     dependency: LopperDependencyReport,
     scopeMode: LopperScopeMode,
     options: WorkspaceAnalysisRequest,
+    timeoutMs: number | undefined,
   ): Promise<LopperCodemodReport | undefined> {
     if (!dependency.name) {
       return undefined;
@@ -438,6 +516,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
           requestedLanguage: "js-ts",
           scopeMode,
           dependencyName: dependency.name,
+          signal: options.signal,
+          timeoutMs,
           runtimeTracePath: options.runtimeTracePath,
           runtimeTestCommand: options.runtimeTestCommand,
           baselinePath: options.baselinePath,
@@ -448,6 +528,10 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
           suggestOnly: true,
         }),
         folder.uri.fsPath,
+        {
+          signal: options.signal,
+          timeoutMs,
+        },
       );
       return report.dependencies[0]?.codemod;
     } catch (error) {
@@ -481,4 +565,26 @@ function normalizeScopeMode(scopeMode: LopperScopeMode | undefined): LopperScope
     return scopeMode;
   }
   return "package";
+}
+
+function normalizeDependencyArgument(dependencyName: string | undefined): string | undefined {
+  const normalized = dependencyName?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.startsWith("-")) {
+    throw new Error(`unsafe dependency name rejected before lopper execution: ${normalized}`);
+  }
+  return normalized;
+}
+
+function isAbortError(error: NodeJS.ErrnoException): boolean {
+  return error.name === "AbortError" || error.code === "ABORT_ERR";
+}
+
+function isExecTimeout(
+  error: NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals },
+  timeoutMs: number | undefined,
+): boolean {
+  return timeoutMs !== undefined && error.killed === true && error.signal === "SIGTERM";
 }

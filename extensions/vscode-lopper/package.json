@@ -47,6 +47,7 @@
     "onCommand:lopper.refreshWorkspace.package",
     "onCommand:lopper.refreshWorkspace.repo",
     "onCommand:lopper.refreshWorkspace.changedPackages",
+    "onCommand:lopper.cancelRefresh",
     "onCommand:lopper.saveBaseline",
     "onCommand:lopper.compareBaseline",
     "onCommand:lopper.analyseDependency",
@@ -83,6 +84,10 @@
       {
         "command": "lopper.refreshWorkspace.changedPackages",
         "title": "Lopper: Refresh Diagnostics (Scope: changed-packages)"
+      },
+      {
+        "command": "lopper.cancelRefresh",
+        "title": "Lopper: Cancel Refresh"
       },
       {
         "command": "lopper.saveBaseline",
@@ -210,6 +215,12 @@
           "type": "string",
           "default": "",
           "description": "Optional lopper release tag to download for managed installs. Leave empty to use the latest GitHub release."
+        },
+        "lopper.runTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 0,
+          "description": "Maximum time in milliseconds to allow each lopper CLI run before cancelling it. Set to 0 to disable the timeout."
         },
         "lopper.runtimeTracePath": {
           "type": "string",

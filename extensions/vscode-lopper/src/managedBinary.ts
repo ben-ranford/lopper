@@ -40,6 +40,8 @@ export interface ManagedBinaryInstallResult {
   downloaded: boolean;
 }
 
+export const defaultManagedBinaryHttpTimeoutMs = 30_000;
+
 export class BinaryResolutionError extends Error {
   constructor(message: string) {
     super(message);
@@ -66,13 +68,13 @@ export interface BinaryLifecycleManager {
 
 export interface ManagedBinaryInstallerClient {
   findInstalledBinary(releaseTag?: string): Promise<string | undefined>;
-  ensureInstalled(releaseTag?: string): Promise<ManagedBinaryInstallResult>;
+  ensureInstalled(releaseTag?: string, signal?: AbortSignal): Promise<ManagedBinaryInstallResult>;
 }
 
 export interface ManagedBinaryInstallProgress {
   install(
     releaseTag: string | undefined,
-    install: () => Promise<ManagedBinaryInstallResult>,
+    install: (signal?: AbortSignal) => Promise<ManagedBinaryInstallResult>,
   ): Promise<ManagedBinaryInstallResult>;
 }
 
@@ -82,9 +84,9 @@ interface ManagedBinaryMetadata {
   binaryDigest?: string;
 }
 
-interface ManagedBinaryDeps {
-  downloadAsset?: (asset: GitHubReleaseAsset, destinationPath: string) => Promise<void>;
-  fetchRelease?: (releaseTag?: string) => Promise<GitHubRelease>;
+export interface ManagedBinaryDeps {
+  downloadAsset?: (asset: GitHubReleaseAsset, destinationPath: string, signal?: AbortSignal) => Promise<void>;
+  fetchRelease?: (releaseTag?: string, signal?: AbortSignal) => Promise<GitHubRelease>;
   host?: HostPlatform;
 }
 
@@ -136,7 +138,8 @@ export class ManagedBinaryInstaller {
     return binaryPath;
   }
 
-  async ensureInstalled(releaseTag?: string): Promise<ManagedBinaryInstallResult> {
+  async ensureInstalled(releaseTag?: string, signal?: AbortSignal): Promise<ManagedBinaryInstallResult> {
+    throwIfAborted(signal);
     const cachedBinary = await this.findInstalledBinary(releaseTag);
     if (cachedBinary) {
       const tag = normalizeReleaseTag(releaseTag) ?? (await this.readMetadata())?.tag ?? "unknown";
@@ -144,7 +147,8 @@ export class ManagedBinaryInstaller {
     }
 
     const requestedTag = normalizeReleaseTag(releaseTag);
-    const release = await this.deps.fetchRelease(requestedTag);
+    const release = await this.deps.fetchRelease(requestedTag, signal);
+    throwIfAborted(signal);
     const asset = selectReleaseAsset(release, this.deps.host);
     const binaryPath = this.binaryPathFor(release.tag_name);
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-"));
@@ -156,9 +160,12 @@ export class ManagedBinaryInstaller {
     try {
       const expectedArchiveDigest = parseAssetDigest(asset);
       await mkdir(extractDir, { recursive: true });
-      await this.deps.downloadAsset(asset, archivePath);
+      await this.deps.downloadAsset(asset, archivePath, signal);
+      throwIfAborted(signal);
       await verifyBinaryArchive(archivePath, expectedArchiveDigest, asset.name);
+      throwIfAborted(signal);
       await extractArchive(archivePath, extractDir);
+      throwIfAborted(signal);
 
       const extractedBinary = await findBinaryInDirectory(extractDir, binaryFileName(this.deps.host.platform));
       if (!extractedBinary) {
@@ -271,16 +278,16 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       return this.resolvePathBinary(request);
     }
 
+    if (!request.workspaceTrusted) {
+      this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
+      return this.resolvePathBinary(request);
+    }
+
     if (!localBinaryStats.isFile()) {
       throw new BinaryResolutionError(`workspace-local lopper binary must point to a file: ${localBinary}`);
     }
 
     await this.ensureWorkspaceLocalBinaryExecutable(localBinary);
-
-    if (!request.workspaceTrusted) {
-      this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
-      return this.resolvePathBinary(request);
-    }
 
     return localBinary;
   }
@@ -313,7 +320,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       return cachedBinary;
     }
 
-    const installResult = await this.progress.install(releaseTag, async () => this.installer.ensureInstalled(releaseTag));
+    const installResult = await this.progress.install(releaseTag, async (signal) => this.installer.ensureInstalled(releaseTag, signal));
     if (installResult.downloaded) {
       this.output.appendLine(`managed lopper binary installed: ${installResult.binaryPath} (${installResult.tag})`);
     }
@@ -465,30 +472,42 @@ function normalizeReleaseTag(releaseTag?: string): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
-async function fetchRelease(releaseTag?: string): Promise<GitHubRelease> {
+export async function fetchRelease(
+  releaseTag?: string,
+  signal?: AbortSignal,
+  timeoutMs = defaultManagedBinaryHttpTimeoutMs,
+): Promise<GitHubRelease> {
   const normalizedTag = normalizeReleaseTag(releaseTag);
   const endpoint = normalizedTag
     ? `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/tags/${encodeURIComponent(normalizedTag)}`
     : `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/latest`;
 
-  const response = await fetch(endpoint, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "lopper-vscode-extension",
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`release lookup failed (${response.status})`);
-  }
+  const abortable = abortSignalWithTimeout(signal, timeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "lopper-vscode-extension",
+      },
+      signal: abortable.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`release lookup failed (${response.status})`);
+    }
 
-  const payload = (await response.json()) as Partial<GitHubRelease>;
-  if (typeof payload.tag_name !== "string" || !Array.isArray(payload.assets)) {
-    throw new TypeError("release lookup returned an unexpected payload");
+    const payload = (await response.json()) as Partial<GitHubRelease>;
+    if (typeof payload.tag_name !== "string" || !Array.isArray(payload.assets)) {
+      throw new TypeError("release lookup returned an unexpected payload");
+    }
+    return {
+      tag_name: payload.tag_name,
+      assets: payload.assets.filter(isAssetLike),
+    };
+  } catch (error) {
+    throw managedBinaryHttpError(error, abortable, "release lookup");
+  } finally {
+    abortable.dispose();
   }
-  return {
-    tag_name: payload.tag_name,
-    assets: payload.assets.filter(isAssetLike),
-  };
 }
 
 function isAssetLike(asset: unknown): asset is GitHubReleaseAsset {
@@ -527,18 +546,90 @@ async function sha256File(filePath: string): Promise<string> {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-async function downloadAsset(asset: GitHubReleaseAsset, destinationPath: string): Promise<void> {
-  const response = await fetch(asset.browser_download_url, {
-    headers: {
-      "User-Agent": "lopper-vscode-extension",
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`asset download failed (${response.status})`);
+export async function downloadAsset(
+  asset: GitHubReleaseAsset,
+  destinationPath: string,
+  signal?: AbortSignal,
+  timeoutMs = defaultManagedBinaryHttpTimeoutMs,
+): Promise<void> {
+  const abortable = abortSignalWithTimeout(signal, timeoutMs);
+  try {
+    const response = await fetch(asset.browser_download_url, {
+      headers: {
+        "User-Agent": "lopper-vscode-extension",
+      },
+      signal: abortable.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`asset download failed (${response.status})`);
+    }
+
+    const archiveBytes = Buffer.from(await response.arrayBuffer());
+    await writeFile(destinationPath, archiveBytes);
+  } catch (error) {
+    throw managedBinaryHttpError(error, abortable, "asset download");
+  } finally {
+    abortable.dispose();
+  }
+}
+
+interface AbortableSignal {
+  readonly signal: AbortSignal;
+  readonly timeoutMs: number | undefined;
+  didTimeout(): boolean;
+  dispose(): void;
+}
+
+function abortSignalWithTimeout(parentSignal: AbortSignal | undefined, timeoutMs: number | undefined): AbortableSignal {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const abortFromParent = () => controller.abort();
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   }
 
-  const archiveBytes = Buffer.from(await response.arrayBuffer());
-  await writeFile(destinationPath, archiveBytes);
+  if (timeoutMs !== undefined && timeoutMs > 0) {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    timeoutMs,
+    didTimeout: () => timedOut,
+    dispose: () => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+
+function managedBinaryHttpError(error: unknown, abortable: AbortableSignal, operation: string): Error {
+  if (abortable.didTimeout()) {
+    return new Error(`${operation} timed out after ${abortable.timeoutMs}ms`);
+  }
+  if (abortable.signal.aborted || isAbortError(error)) {
+    return new Error(`${operation} cancelled`);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("managed binary install cancelled");
+  }
 }
 
 async function extractArchive(archivePath: string, extractDir: string): Promise<void> {
