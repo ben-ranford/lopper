@@ -159,15 +159,7 @@ func TestWriteFileUnderRejectsExistingDirectoryTarget(t *testing.T) {
 
 func TestCreateAtomicTempFileInRootDir(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf(closeRootErrFmt, closeErr)
-		}
-	})
+	root := openTestRoot(t, rootDir)
 
 	tempRel, tempFile, err := createAtomicTempFile(root, ".", 0o600)
 	if err != nil {
@@ -186,15 +178,7 @@ func TestCreateAtomicTempFileInRootDir(t *testing.T) {
 
 func TestCreateAtomicTempFileReturnsErrorForMissingDir(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf(closeRootErrFmt, closeErr)
-		}
-	})
+	root := openTestRoot(t, rootDir)
 
 	_, tempFile, err := createAtomicTempFile(root, "missing", 0o600)
 	if tempFile != nil {
@@ -209,15 +193,7 @@ func TestCreateAtomicTempFileReturnsErrorForMissingDir(t *testing.T) {
 
 func TestCreateAtomicTempFilePropagatesRandomNameError(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf(closeRootErrFmt, closeErr)
-		}
-	})
+	root := openTestRoot(t, rootDir)
 
 	originalRandomTempNameFn := randomTempNameFn
 	randomTempNameFn = func() (string, error) { return "", errors.New("boom") }
@@ -225,7 +201,7 @@ func TestCreateAtomicTempFilePropagatesRandomNameError(t *testing.T) {
 		randomTempNameFn = originalRandomTempNameFn
 	}()
 
-	_, _, err = createAtomicTempFile(root, ".", 0o600)
+	_, _, err := createAtomicTempFile(root, ".", 0o600)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected random temp name error, got %v", err)
 	}
@@ -233,18 +209,19 @@ func TestCreateAtomicTempFilePropagatesRandomNameError(t *testing.T) {
 
 func TestCreateAtomicTempFileFailsAfterRepeatedCollisions(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
+
+	seedFile, err := os.OpenFile(filepath.Join(rootDir, "fixed"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
+		t.Fatalf("create colliding temp file: %v", err)
 	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf(closeRootErrFmt, closeErr)
-		}
-	})
-	if err := root.WriteFile("fixed", []byte("x"), 0o600); err != nil {
+	if _, err := seedFile.Write([]byte("x")); err != nil {
 		t.Fatalf("seed colliding temp file: %v", err)
 	}
+	if err := seedFile.Close(); err != nil {
+		t.Fatalf("close colliding temp file: %v", err)
+	}
+
+	root := openTestRoot(t, rootDir)
 
 	originalRandomTempNameFn := randomTempNameFn
 	randomTempNameFn = func() (string, error) { return "fixed", nil }
@@ -260,15 +237,7 @@ func TestCreateAtomicTempFileFailsAfterRepeatedCollisions(t *testing.T) {
 
 func TestCleanupAtomicTempFileIgnoresClosedFileAndMissingTempPath(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Fatalf(closeRootErrFmt, closeErr)
-		}
-	})
+	root := openTestRoot(t, rootDir)
 
 	tempFile, err := root.OpenFile("temp", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -288,10 +257,7 @@ func TestCleanupAtomicTempFileIgnoresClosedFileAndMissingTempPath(t *testing.T) 
 
 func TestCleanupAtomicTempFileReturnsRootRemoveError(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
+	root := openTestRoot(t, rootDir)
 
 	tempFile, err := root.OpenFile("temp", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -309,15 +275,12 @@ func TestCleanupAtomicTempFileReturnsRootRemoveError(t *testing.T) {
 
 func TestCleanupAtomicTempFileJoinsCloseAndRemoveErrors(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
+	root := openTestRoot(t, rootDir)
 	if err := root.Close(); err != nil {
 		t.Fatalf("close root: %v", err)
 	}
 
-	err = cleanupAtomicTempFile(root, "temp", &os.File{})
+	err := cleanupAtomicTempFile(root, "temp", &os.File{})
 	if err == nil {
 		t.Fatal("expected cleanupAtomicTempFile to join close and remove errors")
 	}
@@ -364,22 +327,32 @@ func TestRandomTempNamePropagatesReadError(t *testing.T) {
 	}
 }
 
+func withAtomicWriteFileSystem(t *testing.T, tempFile File, remove func(string) error) {
+	t.Helper()
+	if remove == nil {
+		remove = func(string) error {
+			return nil
+		}
+	}
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		return &fakeRoot{
+			openFile: func(string, int, os.FileMode) (File, error) {
+				return tempFile, nil
+			},
+			remove: remove,
+			close: func() error {
+				return nil
+			},
+		}, nil
+	}})
+}
+
 func TestWriteFileUnderCloseRootError(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 
 	expectedErr := errors.New("close root failure")
-	originalCloseRoot := closeRootFn
-	closeRootFn = func(root *os.Root) error {
-		err := originalCloseRoot(root)
-		if err != nil {
-			return err
-		}
-		return expectedErr
-	}
-	t.Cleanup(func() {
-		closeRootFn = originalCloseRoot
-	})
+	withRootCloseError(t, expectedErr)
 
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {
@@ -390,28 +363,33 @@ func TestWriteFileUnderCloseRootError(t *testing.T) {
 	}
 }
 
-func TestWriteFileUnderCleanupError(t *testing.T) {
+func TestWriteFileUnderKeepsPrimaryErrorWhenCleanupFails(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
-	if err := os.MkdirAll(rootDir, 0o755); err != nil {
-		t.Fatalf(openRootErrFmt, err)
-	}
-
+	writeErr := errors.New("write failure")
 	cleanupErr := errors.New("cleanup failure")
-	originalCleanup := cleanupTempFileFn
-	cleanupTempFileFn = func(*os.Root, string, *os.File) error {
+	tempFile := &fakeFile{
+		write: func([]byte) (int, error) {
+			return 0, writeErr
+		},
+		close: func() error {
+			return nil
+		},
+	}
+	remove := func(string) error {
 		return cleanupErr
 	}
-	t.Cleanup(func() {
-		cleanupTempFileFn = originalCleanup
-	})
+	withAtomicWriteFileSystem(t, tempFile, remove)
 
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {
-		t.Fatal("expected cleanup error")
+		t.Fatal("expected write error")
 	}
-	if !errors.Is(err, cleanupErr) {
-		t.Fatalf("expected cleanup error, got %v", err)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected write error, got %v", err)
+	}
+	if errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to stay secondary, got %v", err)
 	}
 }
 
@@ -420,13 +398,15 @@ func TestWriteFileUnderWriteError(t *testing.T) {
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 
 	writeErr := errors.New("write failure")
-	originalWriteFn := writeFileFn
-	writeFileFn = func(*os.File, []byte) (int, error) {
-		return 0, writeErr
+	tempFile := &fakeFile{
+		write: func([]byte) (int, error) {
+			return 0, writeErr
+		},
+		close: func() error {
+			return nil
+		},
 	}
-	t.Cleanup(func() {
-		writeFileFn = originalWriteFn
-	})
+	withAtomicWriteFileSystem(t, tempFile, nil)
 
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {
@@ -437,51 +417,71 @@ func TestWriteFileUnderWriteError(t *testing.T) {
 	}
 }
 
-func TestWriteFileUnderChmodError(t *testing.T) {
-	rootDir := t.TempDir()
-	targetPath := filepath.Join(rootDir, writeTestFileName)
+func TestWriteFileUnderTempFileOperationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*fakeFile, error)
+		assertion string
+		expected  error
+	}{
+		{
+			name:      "chmod",
+			assertion: "expected chmod error",
+			expected:  errors.New("chmod failure"),
+			configure: configureTempChmodError,
+		},
+		{
+			name:      "close",
+			assertion: "expected temp close error",
+			expected:  errors.New("temp close failure"),
+			configure: configureTempCloseError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rootDir := t.TempDir()
+			targetPath := filepath.Join(rootDir, writeTestFileName)
+			tempFile := &fakeFile{
+				write: func(data []byte) (int, error) {
+					return len(data), nil
+				},
+			}
+			tc.configure(tempFile, tc.expected)
+			withAtomicWriteFileSystem(t, tempFile, nil)
 
-	chmodErr := errors.New("chmod failure")
-	originalChmodFn := chmodFileFn
-	chmodFileFn = func(*os.File, os.FileMode) error {
-		return chmodErr
-	}
-	t.Cleanup(func() {
-		chmodFileFn = originalChmodFn
-	})
-
-	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
-	if err == nil {
-		t.Fatal("expected chmod error")
-	}
-	if !errors.Is(err, chmodErr) {
-		t.Fatalf("expected chmod error, got %v", err)
-	}
-}
-
-func TestWriteFileUnderTempCloseError(t *testing.T) {
-	rootDir := t.TempDir()
-	targetPath := filepath.Join(rootDir, writeTestFileName)
-
-	closeErr := errors.New("temp close failure")
-	originalCloseFn := closeFileFn
-	closeFileFn = func(*os.File) error {
-		return closeErr
-	}
-	t.Cleanup(func() {
-		closeFileFn = originalCloseFn
-	})
-
-	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
-	if err == nil {
-		t.Fatal("expected temp close error")
-	}
-	if !errors.Is(err, closeErr) {
-		t.Fatalf("expected temp close error, got %v", err)
+			err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+			if err == nil {
+				t.Fatal(tc.assertion)
+			}
+			if !errors.Is(err, tc.expected) {
+				t.Fatalf("%s, got %v", tc.assertion, err)
+			}
+		})
 	}
 }
 
-func TestResolveWriteTargetAbsFailuresViaHook(t *testing.T) {
+func configureTempChmodError(file *fakeFile, err error) {
+	file.chmod = func(os.FileMode) error {
+		return err
+	}
+	file.close = closeWithoutError
+}
+
+func configureTempCloseError(file *fakeFile, err error) {
+	file.chmod = chmodWithoutError
+	file.close = func() error {
+		return err
+	}
+}
+
+func chmodWithoutError(os.FileMode) error {
+	return nil
+}
+
+func closeWithoutError() error {
+	return nil
+}
+
+func TestResolveWriteTargetAbsFailuresViaFileSystem(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		hookPath func(rootDir, targetPath string) string
@@ -509,16 +509,12 @@ func TestResolveWriteTargetAbsFailuresViaHook(t *testing.T) {
 			rootDir := t.TempDir()
 			targetPath := filepath.Join(rootDir, writeTestFileName)
 
-			originalAbs := absPathFn
-			absPathFn = func(path string) (string, error) {
+			withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
 				if path == tc.hookPath(rootDir, targetPath) {
 					return "", tc.hookErr
 				}
-				return originalAbs(path)
-			}
-			t.Cleanup(func() {
-				absPathFn = originalAbs
-			})
+				return (&osFileSystem{}).Abs(path)
+			}})
 
 			err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 			if err == nil {
@@ -531,17 +527,13 @@ func TestResolveWriteTargetAbsFailuresViaHook(t *testing.T) {
 	}
 }
 
-func TestResolveWriteTargetRelFailureViaHook(t *testing.T) {
+func TestResolveWriteTargetRelFailureViaFileSystem(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 
-	originalRel := relPathFn
-	relPathFn = func(_, _ string) (string, error) {
+	withFileSystem(t, &fakeFileSystem{rel: func(_, _ string) (string, error) {
 		return "", errors.New("rel failure")
-	}
-	t.Cleanup(func() {
-		relPathFn = originalRel
-	})
+	}})
 
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {

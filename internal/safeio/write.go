@@ -11,21 +11,8 @@ import (
 const atomicTempPrefix = ".safeio-atomic-"
 
 var (
-	randomTempNameFn  = randomTempName
-	randReadFn        = rand.Read
-	cleanupTempFileFn = cleanupAtomicTempFile
-	chmodFileFn       = func(file *os.File, perm os.FileMode) error {
-		return file.Chmod(perm)
-	}
-	openFileFn = func(root *os.Root, rel string, perm os.FileMode) (*os.File, error) {
-		return root.OpenFile(rel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
-	}
-	renameFileFn = func(root *os.Root, oldName, newName string) error {
-		return root.Rename(oldName, newName)
-	}
-	writeFileFn = func(file *os.File, data []byte) (int, error) {
-		return file.Write(data)
-	}
+	randomTempNameFn = randomTempName
+	randReadFn       = rand.Read
 )
 
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.
@@ -35,12 +22,12 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		return err
 	}
 
-	root, err := openRootFn(target.rootAbs)
+	root, err := fileSystem.OpenRoot(target.rootAbs)
 	if err != nil {
 		return fmt.Errorf("open root: %w", err)
 	}
 	defer func() {
-		if closeErr := closeRootFn(root); closeErr != nil {
+		if closeErr := root.Close(); closeErr != nil {
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
@@ -50,7 +37,8 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		return err
 	}
 	defer func() {
-		if cleanupErr := session.cleanup(); cleanupErr != nil && returnErr == nil {
+		cleanupErr := session.cleanup()
+		if returnErr == nil {
 			returnErr = cleanupErr
 		}
 	}()
@@ -58,7 +46,7 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	return session.writeAndCommit(data, perm)
 }
 
-func cleanupAtomicTempFile(root *os.Root, tempRel string, tempFile *os.File) error {
+func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 	var cleanupErr error
 	if tempFile != nil {
 		if err := tempFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
@@ -76,7 +64,7 @@ func cleanupAtomicTempFile(root *os.Root, tempRel string, tempFile *os.File) err
 	return cleanupErr
 }
 
-func createAtomicTempFile(root *os.Root, dir string, perm os.FileMode) (string, *os.File, error) {
+func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {
 	tempDir := filepath.Clean(dir)
 	if tempDir == "." {
 		tempDir = ""
@@ -88,7 +76,7 @@ func createAtomicTempFile(root *os.Root, dir string, perm os.FileMode) (string, 
 			return "", nil, err
 		}
 		tempRel := filepath.Join(tempDir, name)
-		file, err := openFileFn(root, tempRel, perm)
+		file, err := root.OpenFile(tempRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}

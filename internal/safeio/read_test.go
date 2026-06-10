@@ -103,6 +103,24 @@ func TestReadFileLimitRejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestReadFileLimitTargetAbsFailureViaFileSystem(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
+	withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
+		if path == targetPath {
+			return "", errors.New("target abs failure")
+		}
+		return (&osFileSystem{}).Abs(path)
+	}})
+
+	_, err := ReadFileLimit(targetPath, 1)
+	if err == nil {
+		t.Fatal("expected target path absolute resolution error")
+	}
+	if !strings.Contains(err.Error(), resolveTargetPathErr) {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
 func TestReadFileLimitRejectsMissingParentDirectory(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "missing", "file.txt")
 
@@ -121,6 +139,44 @@ func TestReadFileLimitRejectsMissingFile(t *testing.T) {
 	_, err := ReadFileLimit(targetPath, 1)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing file error, got %v", err)
+	}
+}
+
+func TestReadFileLimitCloseRootError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("hi"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	expectedErr := errors.New("read limit root close failure")
+	withRootCloseError(t, expectedErr)
+
+	_, err := ReadFileLimit(targetPath, 0)
+	if err == nil {
+		t.Fatal("expected root close error to be returned")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf(rootCloseErrFmt, err)
+	}
+}
+
+func TestReadFileLimitCloseFileError(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("hi"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	expectedErr := errors.New("read limit file close failure")
+	withOpenedFileCloseError(t, expectedErr)
+
+	_, err := ReadFileLimit(targetPath, 0)
+	if err == nil {
+		t.Fatal("expected file close error to be returned")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected file close error, got %v", err)
 	}
 }
 
@@ -384,20 +440,16 @@ func TestReadFileTargetAbsFailureWhenCWDRemoved(t *testing.T) {
 	}
 }
 
-func TestReadFileUnderRootAbsFailureViaHook(t *testing.T) {
+func TestReadFileUnderRootAbsFailureViaFileSystem(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 
-	originalAbs := absPathFn
-	absPathFn = func(path string) (string, error) {
+	withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
 		if path == rootDir {
 			return "", errors.New("root abs failure")
 		}
-		return originalAbs(path)
-	}
-	t.Cleanup(func() {
-		absPathFn = originalAbs
-	})
+		return (&osFileSystem{}).Abs(path)
+	}})
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -408,20 +460,16 @@ func TestReadFileUnderRootAbsFailureViaHook(t *testing.T) {
 	}
 }
 
-func TestReadFileUnderTargetAbsFailureViaHook(t *testing.T) {
+func TestReadFileUnderTargetAbsFailureViaFileSystem(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 
-	originalAbs := absPathFn
-	absPathFn = func(path string) (string, error) {
+	withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
 		if path == targetPath {
 			return "", errors.New("target abs failure")
 		}
-		return originalAbs(path)
-	}
-	t.Cleanup(func() {
-		absPathFn = originalAbs
-	})
+		return (&osFileSystem{}).Abs(path)
+	}})
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -432,20 +480,16 @@ func TestReadFileUnderTargetAbsFailureViaHook(t *testing.T) {
 	}
 }
 
-func TestReadFileUnderRelFailureViaHook(t *testing.T) {
+func TestReadFileUnderRelFailureViaFileSystem(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 	if err := os.WriteFile(targetPath, []byte("hi"), 0o600); err != nil {
 		t.Fatalf(writeFileErrFmt, err)
 	}
 
-	originalRel := relPathFn
-	relPathFn = func(_, _ string) (string, error) {
+	withFileSystem(t, &fakeFileSystem{rel: func(_, _ string) (string, error) {
 		return "", errors.New("rel failure")
-	}
-	t.Cleanup(func() {
-		relPathFn = originalRel
-	})
+	}})
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -456,6 +500,53 @@ func TestReadFileUnderRelFailureViaHook(t *testing.T) {
 	}
 }
 
+func withRootCloseError(t *testing.T, expectedErr error) {
+	t.Helper()
+	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeRoot{
+			Root: root,
+			close: func() error {
+				if err := root.Close(); err != nil {
+					return err
+				}
+				return expectedErr
+			},
+		}, nil
+	}})
+}
+
+func withOpenedFileCloseError(t *testing.T, expectedErr error) {
+	t.Helper()
+	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeRoot{
+			Root: root,
+			open: func(name string) (File, error) {
+				file, err := root.Open(name)
+				if err != nil {
+					return nil, err
+				}
+				return &fakeFile{
+					File: file,
+					close: func() error {
+						if err := file.Close(); err != nil {
+							return err
+						}
+						return expectedErr
+					},
+				}, nil
+			},
+		}, nil
+	}})
+}
+
 func TestReadFileUnderCloseRootError(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
@@ -464,17 +555,7 @@ func TestReadFileUnderCloseRootError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("root close failure")
-	originalCloseRoot := closeRootFn
-	closeRootFn = func(root *os.Root) error {
-		err := originalCloseRoot(root)
-		if err != nil {
-			return err
-		}
-		return expectedErr
-	}
-	t.Cleanup(func() {
-		closeRootFn = originalCloseRoot
-	})
+	withRootCloseError(t, expectedErr)
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -493,17 +574,7 @@ func TestReadFileUnderCloseFileError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("file close failure")
-	originalCloseFile := closeFileFn
-	closeFileFn = func(file *os.File) error {
-		err := originalCloseFile(file)
-		if err != nil {
-			return err
-		}
-		return expectedErr
-	}
-	t.Cleanup(func() {
-		closeFileFn = originalCloseFile
-	})
+	withOpenedFileCloseError(t, expectedErr)
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -522,17 +593,7 @@ func TestReadFileCloseError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("read closer close failure")
-	originalCloseReadCloser := closeReadCloserFn
-	closeReadCloserFn = func(reader io.ReadCloser) error {
-		err := originalCloseReadCloser(reader)
-		if err != nil {
-			return err
-		}
-		return expectedErr
-	}
-	t.Cleanup(func() {
-		closeReadCloserFn = originalCloseReadCloser
-	})
+	withOpenedFileCloseError(t, expectedErr)
 
 	_, err := ReadFile(targetPath)
 	if err == nil {
@@ -543,19 +604,15 @@ func TestReadFileCloseError(t *testing.T) {
 	}
 }
 
-func TestOpenFileTargetAbsFailureViaHook(t *testing.T) {
+func TestOpenFileTargetAbsFailureViaFileSystem(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
 
-	originalAbs := absPathFn
-	absPathFn = func(path string) (string, error) {
+	withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
 		if path == targetPath {
 			return "", errors.New("openfile target abs failure")
 		}
-		return originalAbs(path)
-	}
-	t.Cleanup(func() {
-		absPathFn = originalAbs
-	})
+		return (&osFileSystem{}).Abs(path)
+	}})
 
 	_, err := OpenFile(targetPath)
 	if err == nil {
@@ -569,26 +626,25 @@ func TestOpenFileTargetAbsFailureViaHook(t *testing.T) {
 func TestOpenFileMissingFileCloseRootError(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), missingFileName)
 
-	originalRootOpen := openRootOpenFn
-	openRootOpenFn = func(_ *os.Root, _ string) (*os.File, error) {
-		return nil, os.ErrNotExist
-	}
-	t.Cleanup(func() {
-		openRootOpenFn = originalRootOpen
-	})
-
 	expectedErr := errors.New("open parent root close failure")
-	originalCloseRoot := closeRootFn
-	closeRootFn = func(root *os.Root) error {
-		err := originalCloseRoot(root)
+	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return expectedErr
-	}
-	t.Cleanup(func() {
-		closeRootFn = originalCloseRoot
-	})
+		return &fakeRoot{
+			Root: root,
+			open: func(string) (File, error) {
+				return nil, os.ErrNotExist
+			},
+			close: func() error {
+				if err := root.Close(); err != nil {
+					return err
+				}
+				return expectedErr
+			},
+		}, nil
+	}})
 
 	_, err := OpenFile(targetPath)
 	if err == nil {
@@ -609,27 +665,26 @@ func TestOpenFileOpenErrorCloseRootError(t *testing.T) {
 		t.Fatalf(writeFileErrFmt, err)
 	}
 
-	originalRootOpen := openRootOpenFn
 	openErr := errors.New("open child failure")
-	openRootOpenFn = func(_ *os.Root, _ string) (*os.File, error) {
-		return nil, openErr
-	}
-	t.Cleanup(func() {
-		openRootOpenFn = originalRootOpen
-	})
-
 	expectedErr := errors.New("open root close failure")
-	originalCloseRoot := closeRootFn
-	closeRootFn = func(root *os.Root) error {
-		err := originalCloseRoot(root)
+	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return expectedErr
-	}
-	t.Cleanup(func() {
-		closeRootFn = originalCloseRoot
-	})
+		return &fakeRoot{
+			Root: root,
+			open: func(string) (File, error) {
+				return nil, openErr
+			},
+			close: func() error {
+				if err := root.Close(); err != nil {
+					return err
+				}
+				return expectedErr
+			},
+		}, nil
+	}})
 
 	_, err := OpenFile(targetPath)
 	if err == nil {

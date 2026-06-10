@@ -5,33 +5,14 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"path/filepath"
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
 
-var (
-	absPathFn      = filepath.Abs
-	relPathFn      = filepath.Rel
-	openRootFn     = os.OpenRoot
-	openRootOpenFn = func(root *os.Root, name string) (*os.File, error) {
-		return root.Open(name)
-	}
-	closeFileFn = func(file *os.File) error {
-		return file.Close()
-	}
-	closeRootFn = func(root *os.Root) error {
-		return root.Close()
-	}
-	closeReadCloserFn = func(reader io.ReadCloser) error {
-		return reader.Close()
-	}
-)
-
 type rootedReadCloser struct {
-	file *os.File
-	root *os.Root
+	file File
+	root Root
 }
 
 func (r *rootedReadCloser) Read(p []byte) (int, error) {
@@ -55,22 +36,22 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 		return nil, err
 	}
 
-	root, err := openRootFn(target.rootAbs)
+	root, err := fileSystem.OpenRoot(target.rootAbs)
 	if err != nil {
 		return nil, fmt.Errorf("open root: %w", err)
 	}
 	defer func() {
-		if closeErr := closeRootFn(root); closeErr != nil {
+		if closeErr := root.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
 
-	file, err := openRootOpenFn(root, filepath.Clean(target.rel))
+	file, err := root.Open(filepath.Clean(target.rel))
 	if err != nil {
 		return nil, translateOpenNotExist(err, targetPath)
 	}
 	defer func() {
-		if closeErr := closeFileFn(file); closeErr != nil {
+		if closeErr := file.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
@@ -85,22 +66,22 @@ func ReadFileLimit(targetPath string, maxBytes int64) (data []byte, err error) {
 		return nil, err
 	}
 
-	root, err := openRootFn(target.parentDir)
+	root, err := fileSystem.OpenRoot(target.parentDir)
 	if err != nil {
 		return nil, fmt.Errorf("open parent root: %w", err)
 	}
 	defer func() {
-		if closeErr := closeRootFn(root); closeErr != nil {
+		if closeErr := root.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
 
-	file, err := openRootOpenFn(root, target.fileName)
+	file, err := root.Open(target.fileName)
 	if err != nil {
 		return nil, translateOpenNotExist(err, targetPath)
 	}
 	defer func() {
-		if closeErr := closeFileFn(file); closeErr != nil {
+		if closeErr := file.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
@@ -115,7 +96,7 @@ func ReadFile(targetPath string) (data []byte, err error) {
 		return nil, err
 	}
 	defer func() {
-		if closeErr := closeReadCloserFn(file); closeErr != nil {
+		if closeErr := file.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
@@ -130,15 +111,15 @@ func OpenFile(targetPath string) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	root, err := openRootFn(target.parentDir)
+	root, err := fileSystem.OpenRoot(target.parentDir)
 	if err != nil {
 		return nil, fmt.Errorf("open parent root: %w", err)
 	}
 
-	file, err := openRootOpenFn(root, target.fileName)
+	file, err := root.Open(target.fileName)
 	if err != nil {
 		err = translateOpenNotExist(err, targetPath)
-		if closeErr := closeRootFn(root); closeErr != nil {
+		if closeErr := root.Close(); closeErr != nil {
 			return nil, errors.Join(err, closeErr)
 		}
 		return nil, err
@@ -146,7 +127,7 @@ func OpenFile(targetPath string) (io.ReadCloser, error) {
 	return &rootedReadCloser{file: file, root: root}, nil
 }
 
-func readOpenedFile(file *os.File, maxBytes int64) ([]byte, error) {
+func readOpenedFile(file File, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		return io.ReadAll(file)
 	}
