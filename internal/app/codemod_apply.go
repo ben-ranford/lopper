@@ -58,6 +58,11 @@ type codemodApplyMutation struct {
 	failedResults  []report.CodemodApplyResult
 }
 
+type codemodContentLine struct {
+	text      string
+	separator string
+}
+
 func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
 	if !req.ApplyCodemod {
 		return reportData, nil
@@ -275,21 +280,50 @@ func prepareCodemodFiles(repoPath string, suggestions []report.CodemodSuggestion
 }
 
 func applySuggestionsToContent(content string, suggestions []report.CodemodSuggestion) (string, error) {
-	lineSeparator := "\n"
-	if strings.Contains(content, "\r\n") {
-		lineSeparator = "\r\n"
-	}
-	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	lines := splitCodemodContentLines(content)
 	for _, suggestion := range suggestions {
 		if suggestion.Line <= 0 || suggestion.Line > len(lines) {
 			return "", fmt.Errorf("line %d is out of range for %s", suggestion.Line, suggestion.File)
 		}
-		if lines[suggestion.Line-1] != suggestion.Original {
+		if lines[suggestion.Line-1].text != suggestion.Original {
 			return "", fmt.Errorf("source line mismatch at %s:%d", suggestion.File, suggestion.Line)
 		}
-		lines[suggestion.Line-1] = suggestion.Replacement
+		lines[suggestion.Line-1].text = suggestion.Replacement
 	}
-	return strings.Join(lines, lineSeparator), nil
+	return joinCodemodContentLines(lines), nil
+}
+
+func splitCodemodContentLines(content string) []codemodContentLine {
+	lines := make([]codemodContentLine, 0, strings.Count(content, "\n")+1)
+	start := 0
+	for i := 0; i < len(content); i++ {
+		if content[i] != '\n' {
+			continue
+		}
+
+		textEnd := i
+		separator := "\n"
+		if i > start && content[i-1] == '\r' {
+			textEnd = i - 1
+			separator = "\r\n"
+		}
+		lines = append(lines, codemodContentLine{
+			text:      content[start:textEnd],
+			separator: separator,
+		})
+		start = i + 1
+	}
+	lines = append(lines, codemodContentLine{text: content[start:]})
+	return lines
+}
+
+func joinCodemodContentLines(lines []codemodContentLine) string {
+	var builder strings.Builder
+	for _, line := range lines {
+		builder.WriteString(line.text)
+		builder.WriteString(line.separator)
+	}
+	return builder.String()
 }
 
 func applyPreparedCodemodFiles(repoPath string, prepared []preparedCodemodFile, failures []report.CodemodApplyResult) ([]report.CodemodApplyResult, []report.CodemodApplyResult) {

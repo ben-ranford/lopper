@@ -71,8 +71,28 @@ func TestApplySuggestionsToContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply suggestions with CRLF: %v", err)
 	}
-	if !strings.Contains(updated, "\r\n") || !strings.Contains(updated, importLodashMapLine) {
-		t.Fatalf("expected CRLF-preserving updated content, got %q", updated)
+	if want := importLodashMapLine + "\r\nmap()\r\n"; updated != want {
+		t.Fatalf("expected CRLF-preserving updated content %q, got %q", want, updated)
+	}
+
+	mixedLFLine := importLodashLine + "\nconst untouchedCRLF = true;\r\nconst untouchedLF = true;\n"
+	updated, err = applySuggestionsToContent(mixedLFLine, suggestions)
+	if err != nil {
+		t.Fatalf("apply suggestions to LF line in mixed-newline content: %v", err)
+	}
+	if want := importLodashMapLine + "\nconst untouchedCRLF = true;\r\nconst untouchedLF = true;\n"; updated != want {
+		t.Fatalf("expected mixed newline content to preserve surrounding separators %q, got %q", want, updated)
+	}
+
+	mixedCRLFLine := "const untouchedLF = true;\n" + importLodashLine + "\r\nconst stillLF = true;\n"
+	updated, err = applySuggestionsToContent(mixedCRLFLine, []report.CodemodSuggestion{
+		{File: indexJSFile, Line: 2, Original: importLodashLine, Replacement: importLodashMapLine},
+	})
+	if err != nil {
+		t.Fatalf("apply suggestions to CRLF line in mixed-newline content: %v", err)
+	}
+	if want := "const untouchedLF = true;\n" + importLodashMapLine + "\r\nconst stillLF = true;\n"; updated != want {
+		t.Fatalf("expected changed line to keep its separator without rewriting LF neighbors %q, got %q", want, updated)
 	}
 
 	_, err = applySuggestionsToContent(importLodashLineWithLF, []report.CodemodSuggestion{{File: indexJSFile, Line: 3, Original: "x", Replacement: "y"}})
