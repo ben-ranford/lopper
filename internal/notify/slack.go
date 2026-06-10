@@ -84,7 +84,7 @@ func buildSlackPayload(delivery Delivery) ([]byte, error) {
 		})
 	}
 
-	mainText := fmt.Sprintf("[Lopper] Dependency analysis for %s", repoName)
+	mainText := fmt.Sprintf("[Lopper] Dependency analysis for %s", escapeSlackFallbackText(repoName))
 	payload := slackPayload{
 		Text: mainText,
 		Blocks: []slackBlock{
@@ -115,4 +115,10 @@ func buildSlackPayload(delivery Delivery) ([]byte, error) {
 	}
 
 	return json.Marshal(payload)
+}
+
+var slackFallbackTextReplacer = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "*", `\*`, "_", `\_`, "~", `\~`, "`", "\\`")
+
+func escapeSlackFallbackText(value string) string {
+	return slackFallbackTextReplacer.Replace(value)
 }

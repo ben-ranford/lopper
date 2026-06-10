@@ -34,7 +34,7 @@ func appendScopeMetadata(buffer *bytes.Buffer, scope *ScopeMetadata) {
 	writef(buffer, "- mode: %s\n", scope.Mode)
 	if len(scope.Packages) > 0 {
 		buffer.WriteString("- packages: ")
-		buffer.WriteString(strings.Join(scope.Packages, ", "))
+		buffer.WriteString(strings.Join(sanitizeTerminalStrings(scope.Packages), ", "))
 		buffer.WriteString("\n")
 	}
 	buffer.WriteString("\n")
@@ -80,7 +80,7 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	buffer.WriteString("Effective policy:\n")
 	if len(report.EffectivePolicy.Sources) > 0 {
 		buffer.WriteString("- sources: ")
-		buffer.WriteString(strings.Join(report.EffectivePolicy.Sources, " > "))
+		buffer.WriteString(strings.Join(sanitizeTerminalStrings(report.EffectivePolicy.Sources), " > "))
 		buffer.WriteString("\n")
 	}
 	writef(buffer, "- fail_on_increase_percent: %d\n", report.EffectivePolicy.Thresholds.FailOnIncreasePercent)
@@ -92,7 +92,7 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	writef(buffer, "- removal_candidate_weight_confidence: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Confidence)
 	if len(report.EffectivePolicy.License.Deny) > 0 {
 		buffer.WriteString("- license_deny: ")
-		buffer.WriteString(strings.Join(report.EffectivePolicy.License.Deny, ", "))
+		buffer.WriteString(strings.Join(sanitizeTerminalStrings(report.EffectivePolicy.License.Deny), ", "))
 		buffer.WriteString("\n")
 	}
 	writef(buffer, "- license_fail_on_deny: %t\n", report.EffectivePolicy.License.FailOnDenied)
@@ -107,7 +107,7 @@ func appendLanguageBreakdown(buffer *bytes.Buffer, breakdown []LanguageSummary) 
 	buffer.WriteString("Languages:\n")
 	for _, item := range breakdown {
 		buffer.WriteString("- ")
-		buffer.WriteString(item.Language)
+		buffer.WriteString(sanitizeTerminalString(item.Language))
 		buffer.WriteString(": ")
 		writef(buffer, "%d deps, Used/Total: %d/%d (%.1f%%)\n", item.DependencyCount, item.UsedExportsCount, item.TotalExportsCount, item.UsedPercent)
 	}
@@ -121,12 +121,12 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 	buffer.WriteString("Baseline comparison:\n")
 	if strings.TrimSpace(comparison.BaselineKey) != "" {
 		buffer.WriteString("- baseline_key: ")
-		buffer.WriteString(comparison.BaselineKey)
+		buffer.WriteString(sanitizeTerminalString(comparison.BaselineKey))
 		buffer.WriteString("\n")
 	}
 	if strings.TrimSpace(comparison.CurrentKey) != "" {
 		buffer.WriteString("- current_key: ")
-		buffer.WriteString(comparison.CurrentKey)
+		buffer.WriteString(sanitizeTerminalString(comparison.CurrentKey))
 		buffer.WriteString("\n")
 	}
 	writef(buffer, "- summary_delta: deps %+d, used %% %+0.1f, waste %% %+0.1f, unused bytes %+d\n", comparison.SummaryDelta.DependencyCountDelta, comparison.SummaryDelta.UsedPercentDelta, comparison.SummaryDelta.WastePercentDelta, comparison.SummaryDelta.UnusedBytesDelta)
@@ -155,21 +155,21 @@ func appendCodemodApply(buffer *bytes.Buffer, dependencies []DependencyReport) {
 	buffer.WriteString("Codemod apply:\n")
 	for _, entry := range entries {
 		buffer.WriteString("- dependency: ")
-		buffer.WriteString(entry.name)
+		buffer.WriteString(sanitizeTerminalString(entry.name))
 		buffer.WriteString("\n")
 		writef(buffer, "  applied: %d file(s), %d patch(es)\n", entry.apply.AppliedFiles, entry.apply.AppliedPatches)
 		writef(buffer, "  skipped: %d file(s), %d patch(es)\n", entry.apply.SkippedFiles, entry.apply.SkippedPatches)
 		writef(buffer, "  failed: %d file(s), %d patch(es)\n", entry.apply.FailedFiles, entry.apply.FailedPatches)
 		if entry.apply.BackupPath != "" {
 			buffer.WriteString("  backup: ")
-			buffer.WriteString(entry.apply.BackupPath)
+			buffer.WriteString(sanitizeTerminalString(entry.apply.BackupPath))
 			buffer.WriteString("\n")
 		}
 		for _, result := range entry.apply.Results {
 			writef(buffer, "  %s %s (%d patch(es))", result.Status, result.File, result.PatchCount)
 			if strings.TrimSpace(result.Message) != "" {
 				buffer.WriteString(": ")
-				buffer.WriteString(result.Message)
+				buffer.WriteString(sanitizeTerminalString(result.Message))
 			}
 			buffer.WriteString("\n")
 		}
@@ -206,7 +206,7 @@ func appendWarnings(buffer *bytes.Buffer, report Report) {
 }
 
 func escapeTableWarning(warning string) string {
-	return tableWarningReplacer.Replace(warning)
+	return sanitizeTerminalString(tableWarningReplacer.Replace(warning))
 }
 
 func topWasteDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
