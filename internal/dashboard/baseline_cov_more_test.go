@@ -126,30 +126,8 @@ func TestDashboardBaselineCSVAndHTMLRendering(t *testing.T) {
 			{Name: "shared", Count: 3, Repositories: []string{"api", "web", "worker"}},
 		},
 		Summary: Summary{TotalRepos: 1, TotalDeps: 2, TotalWasteCandidates: 1, CrossRepoDuplicates: 1, CriticalCVEs: 1},
-		BaselineComparison: &BaselineComparison{
-			BaselineKey: "label:base",
-			CurrentKey:  "commit:head",
-			SummaryDelta: SummaryDelta{
-				TotalReposDelta:           1,
-				TotalDepsDelta:            2,
-				TotalWasteCandidatesDelta: 1,
-				CrossRepoDuplicatesDelta:  1,
-				CriticalCVEsDelta:         1,
-			},
-			RepoDeltas: []RepoDelta{{
-				Kind:                       RepoDeltaChanged,
-				Name:                       "api",
-				Path:                       "./api",
-				DependencyCountDelta:       1,
-				WasteCandidateCountDelta:   1,
-				WasteCandidatePercentDelta: 50,
-				CriticalCVEsDelta:          1,
-				DeniedLicenseCountDelta:    1,
-				CurrentError:               "<current>",
-				BaselineError:              "<baseline>",
-			}},
-		},
 	}
+	reportData.BaselineComparison = newBaselineComparison("label:base", "commit:head", SummaryDelta{TotalReposDelta: 1, TotalDepsDelta: 2, TotalWasteCandidatesDelta: 1, CrossRepoDuplicatesDelta: 1, CriticalCVEsDelta: 1}, RepoDelta{Kind: RepoDeltaChanged, Name: "api", Path: "./api", DependencyCountDelta: 1, WasteCandidateCountDelta: 1, WasteCandidatePercentDelta: 50, CriticalCVEsDelta: 1, DeniedLicenseCountDelta: 1, CurrentError: "<current>", BaselineError: "<baseline>"})
 
 	csvOutput, err := FormatReport(reportData, FormatCSV)
 	if err != nil {
@@ -175,29 +153,7 @@ func TestDashboardBaselineCSVAndHTMLRendering(t *testing.T) {
 func TestWriteDashboardBaselineRowsCSVBranches(t *testing.T) {
 	t.Parallel()
 
-	comparison := &BaselineComparison{
-		BaselineKey: "base",
-		CurrentKey:  "head",
-		SummaryDelta: SummaryDelta{
-			TotalReposDelta:           1,
-			TotalDepsDelta:            2,
-			TotalWasteCandidatesDelta: 3,
-			CrossRepoDuplicatesDelta:  4,
-			CriticalCVEsDelta:         5,
-		},
-		RepoDeltas: []RepoDelta{{
-			Kind:                       RepoDeltaChanged,
-			Name:                       "api",
-			Path:                       "./api",
-			DependencyCountDelta:       1,
-			WasteCandidateCountDelta:   1,
-			WasteCandidatePercentDelta: 10,
-			CriticalCVEsDelta:          1,
-			DeniedLicenseCountDelta:    1,
-			CurrentError:               "current",
-			BaselineError:              "baseline",
-		}},
-	}
+	comparison := newBaselineComparison("base", "head", SummaryDelta{TotalReposDelta: 1, TotalDepsDelta: 2, TotalWasteCandidatesDelta: 3, CrossRepoDuplicatesDelta: 4, CriticalCVEsDelta: 5}, RepoDelta{Kind: RepoDeltaChanged, Name: "api", Path: "./api", DependencyCountDelta: 1, WasteCandidateCountDelta: 1, WasteCandidatePercentDelta: 10, CriticalCVEsDelta: 1, DeniedLicenseCountDelta: 1, CurrentError: "current", BaselineError: "baseline"})
 
 	if err := writeDashboardBaselineRowsCSV((&failOnCSVWrite{failOn: 0}).Write, nil); err != nil {
 		t.Fatalf("nil comparison should be ignored, got %v", err)
@@ -211,5 +167,14 @@ func TestWriteDashboardBaselineRowsCSVBranches(t *testing.T) {
 		if err := writeDashboardBaselineRowsCSV(writer.Write, comparison); err == nil {
 			t.Fatalf("expected baseline csv write failure on call %d", failOn)
 		}
+	}
+}
+
+func newBaselineComparison(baselineKey, currentKey string, summary SummaryDelta, repoDelta RepoDelta) *BaselineComparison {
+	return &BaselineComparison{
+		BaselineKey:  baselineKey,
+		CurrentKey:   currentKey,
+		SummaryDelta: summary,
+		RepoDeltas:   []RepoDelta{repoDelta},
 	}
 }

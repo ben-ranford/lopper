@@ -230,21 +230,14 @@ func TestFormatSARIFWasteOnlyReportNonPositiveDelta(t *testing.T) {
 }
 
 func TestNormalizeRuleToken(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "empty", input: "", want: "unknown"},
-		{name: "special chars", input: "rule id / with\\special*chars?", want: "rule-id-with-special-chars"},
-		{name: "unicode", input: "unicodé-✓", want: "unicod"},
+	if got := normalizeRuleToken(""); got != "unknown" {
+		t.Fatalf("normalizeRuleToken(%q) = %q, want %q", "", got, "unknown")
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := normalizeRuleToken(tc.input); got != tc.want {
-				t.Fatalf("normalizeRuleToken(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
+	if got := normalizeRuleToken("rule id / with\\special*chars?"); got != "rule-id-with-special-chars" {
+		t.Fatalf("normalizeRuleToken(%q) = %q, want %q", "rule id / with\\special*chars?", got, "rule-id-with-special-chars")
+	}
+	if got := normalizeRuleToken("unicodé-✓"); got != "unicod" {
+		t.Fatalf("normalizeRuleToken(%q) = %q, want %q", "unicodé-✓", got, "unicod")
 	}
 }
 

@@ -208,7 +208,7 @@ func TestIsBootstrapableMissingBaseline(t *testing.T) {
 	}
 }
 
-func TestDashboardBaselineSaveAndApplyBranches(t *testing.T) {
+func TestSaveDashboardBaselineIfNeededBranches(t *testing.T) {
 	application := &App{}
 	base := dashboard.Report{
 		GeneratedAt: testTime(),
@@ -243,6 +243,32 @@ func TestDashboardBaselineSaveAndApplyBranches(t *testing.T) {
 	}
 	if len(saved.SourceWarnings) != 1 || !strings.Contains(saved.SourceWarnings[0], "saved immutable dashboard baseline snapshot:") {
 		t.Fatalf("expected dashboard save warning, got %#v", saved.SourceWarnings)
+	}
+
+	duplicateResolved := resolvedDashboardRequest{
+		baselineStorePath: store,
+		baselineLabel:     "nightly",
+		saveBaseline:      true,
+	}
+	_, err = application.saveDashboardBaselineIfNeeded(base, ".", duplicateResolved, testTime())
+	if err == nil || !strings.Contains(err.Error(), dashboard.ErrBaselineAlreadyExists.Error()) {
+		t.Fatalf("expected duplicate dashboard baseline save error, got %v", err)
+	}
+}
+
+func TestApplyDashboardBaselineIfNeededBranches(t *testing.T) {
+	application := &App{}
+	base := dashboard.Report{
+		GeneratedAt: testTime(),
+		Repos: []dashboard.RepoResult{
+			{Name: "api", Path: "./api", DependencyCount: 1},
+		},
+		Summary: dashboard.Summary{TotalRepos: 1, TotalDeps: 1},
+	}
+
+	store := t.TempDir()
+	if _, err := dashboard.SaveSnapshot(store, "label:nightly", base, testTime()); err != nil {
+		t.Fatalf("seed dashboard baseline: %v", err)
 	}
 
 	applied, err := application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
@@ -282,16 +308,6 @@ func TestDashboardBaselineSaveAndApplyBranches(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing dashboard baseline load error, got %v", err)
-	}
-
-	duplicateResolved := resolvedDashboardRequest{
-		baselineStorePath: store,
-		baselineLabel:     "nightly",
-		saveBaseline:      true,
-	}
-	_, err = application.saveDashboardBaselineIfNeeded(base, ".", duplicateResolved, testTime())
-	if err == nil || !strings.Contains(err.Error(), dashboard.ErrBaselineAlreadyExists.Error()) {
-		t.Fatalf("expected duplicate dashboard baseline save error, got %v", err)
 	}
 }
 

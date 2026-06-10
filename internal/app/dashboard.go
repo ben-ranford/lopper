@@ -65,22 +65,14 @@ func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPa
 }
 
 func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, now time.Time) (dashboard.Report, error) {
-	if !resolved.saveBaseline {
-		return reportData, nil
-	}
-
-	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, baselineKeyRequestFromDashboard(resolved), "dashboard baseline")
-	if err != nil {
-		return reportData, err
-	}
-	savedPath, err := dashboard.SaveSnapshot(storePath, saveKey, reportData, now)
-	if err != nil {
-		return reportData, err
-	}
-	reportData.SourceWarnings = append(reportData.SourceWarnings, "saved immutable dashboard baseline snapshot: "+savedPath)
-	return reportData, nil
+	return saveImmutableBaselineSnapshot(reportData, resolved.saveBaseline, repoPath, baselineKeyRequestFromDashboard(resolved), "dashboard baseline", now, dashboard.SaveSnapshot, appendDashboardBaselineSaveWarning)
 }
 
 func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
 	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromDashboard(resolved), dashboard.BaselineSnapshotPath)
+}
+
+func appendDashboardBaselineSaveWarning(reportData dashboard.Report, savedPath string) dashboard.Report {
+	reportData.SourceWarnings = append(reportData.SourceWarnings, "saved immutable dashboard baseline snapshot: "+savedPath)
+	return reportData
 }

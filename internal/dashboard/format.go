@@ -11,6 +11,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/csvsanitize"
 )
 
+const (
+	htmlTableBodyOpen  = "</tr></thead><tbody>"
+	htmlTableBodyClose = "</tbody></table>"
+)
+
 func FormatReport(reportData Report, format Format) (string, error) {
 	switch format {
 	case FormatJSON:
@@ -247,7 +252,7 @@ func formatHTML(reportData Report) string {
 	if len(reportData.CrossRepoDeps) > 0 {
 		buffer.WriteString("<h2>Cross-Repo Duplicate Dependencies (3+ repos)</h2><table><thead><tr>")
 		buffer.WriteString("<th>Dependency</th><th>Repo Count</th><th>Repos</th>")
-		buffer.WriteString("</tr></thead><tbody>")
+		buffer.WriteString(htmlTableBodyOpen)
 		for _, dependency := range reportData.CrossRepoDeps {
 			buffer.WriteString("<tr>")
 			buffer.WriteString("<td>" + html.EscapeString(dependency.Name) + "</td>")
@@ -255,7 +260,7 @@ func formatHTML(reportData Report) string {
 			buffer.WriteString("<td>" + html.EscapeString(strings.Join(dependency.Repositories, ", ")) + "</td>")
 			buffer.WriteString("</tr>")
 		}
-		buffer.WriteString("</tbody></table>")
+		buffer.WriteString(htmlTableBodyClose)
 	}
 
 	buffer.WriteString(formatDashboardBaselineHTML(reportData.BaselineComparison))
@@ -282,7 +287,7 @@ func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 	if len(comparison.RepoDeltas) > 0 {
 		buffer.WriteString("<table><thead><tr>")
 		buffer.WriteString("<th>Repo</th><th>Path</th><th>Kind</th><th>Deps Δ</th><th>Waste Δ</th><th>Waste % Δ</th><th>Critical CVEs Δ</th><th>Denied Licenses Δ</th><th>Current Error</th><th>Baseline Error</th>")
-		buffer.WriteString("</tr></thead><tbody>")
+		buffer.WriteString(htmlTableBodyOpen)
 		for _, delta := range comparison.RepoDeltas {
 			buffer.WriteString("<tr>")
 			buffer.WriteString("<td>" + html.EscapeString(delta.Name) + "</td>")
@@ -297,7 +302,7 @@ func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 			buffer.WriteString("<td>" + html.EscapeString(delta.BaselineError) + "</td>")
 			buffer.WriteString("</tr>")
 		}
-		buffer.WriteString("</tbody></table>")
+		buffer.WriteString(htmlTableBodyClose)
 	}
 
 	return buffer.String()

@@ -63,21 +63,7 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 }
 
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
-	if !req.SaveBaseline {
-		return reportData, nil
-	}
-
-	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, baselineKeyRequestFromAnalyse(req), "baseline")
-	if err != nil {
-		return reportData, err
-	}
-	savedPath, err := report.SaveSnapshot(storePath, saveKey, reportData, now)
-	if err != nil {
-		return reportData, err
-	}
-	reportData.Warnings = append(reportData.Warnings, "saved immutable baseline snapshot: "+savedPath)
-
-	return reportData, nil
+	return saveImmutableBaselineSnapshot(reportData, req.SaveBaseline, repoPath, baselineKeyRequestFromAnalyse(req), "baseline", now, report.SaveSnapshot, appendBaselineSaveWarning)
 }
 
 func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
@@ -148,6 +134,27 @@ func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName str
 		return "", fmt.Errorf("unable to resolve git commit for %s key; pass --baseline-label or --baseline-key", keyName)
 	}
 	return key, nil
+}
+
+func saveImmutableBaselineSnapshot[T any](reportData T, enabled bool, repoPath string, req baselineKeyRequest, keyName string, now time.Time, save func(string, string, T, time.Time) (string, error), appendWarning func(T, string) T) (T, error) {
+	if !enabled {
+		return reportData, nil
+	}
+
+	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, req, keyName)
+	if err != nil {
+		return reportData, err
+	}
+	savedPath, err := save(storePath, saveKey, reportData, now)
+	if err != nil {
+		return reportData, err
+	}
+	return appendWarning(reportData, savedPath), nil
+}
+
+func appendBaselineSaveWarning(reportData report.Report, savedPath string) report.Report {
+	reportData.Warnings = append(reportData.Warnings, "saved immutable baseline snapshot: "+savedPath)
+	return reportData
 }
 
 func resolveCurrentBaselineKey(repoPath string) string {
