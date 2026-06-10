@@ -26,6 +26,10 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 	languageFlag := fs.String("language", "", "default language adapter for repos")
 	outputFlag := fs.String("output", req.Dashboard.OutputPath, "output file path")
 	outputShortFlag := fs.String("o", req.Dashboard.OutputPath, "output file path")
+	baselineStoreFlag := fs.String("baseline-store", req.Dashboard.BaselineStorePath, "baseline snapshot directory")
+	baselineKeyFlag := fs.String("baseline-key", req.Dashboard.BaselineKey, "baseline snapshot key for comparison")
+	baselineLabelFlag := fs.String("baseline-label", req.Dashboard.BaselineLabel, "label to use when saving a baseline snapshot")
+	saveBaselineFlag := fs.Bool("save-baseline", req.Dashboard.SaveBaseline, "save current dashboard run as an immutable baseline snapshot")
 
 	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
@@ -62,13 +66,17 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 
 	req.Mode = app.ModeDashboard
 	req.Dashboard = app.DashboardRequest{
-		Repos:           dashboardRepos,
-		ConfigPath:      strings.TrimSpace(*configFlag),
-		Format:          strings.TrimSpace(*formatFlag),
-		OutputPath:      outputPath,
-		TopN:            *topFlag,
-		DefaultLanguage: strings.TrimSpace(*languageFlag),
-		Features:        resolvedFeatures,
+		Repos:             dashboardRepos,
+		ConfigPath:        strings.TrimSpace(*configFlag),
+		Format:            strings.TrimSpace(*formatFlag),
+		OutputPath:        outputPath,
+		TopN:              *topFlag,
+		DefaultLanguage:   strings.TrimSpace(*languageFlag),
+		BaselineStorePath: strings.TrimSpace(*baselineStoreFlag),
+		BaselineKey:       strings.TrimSpace(*baselineKeyFlag),
+		BaselineLabel:     strings.TrimSpace(*baselineLabelFlag),
+		SaveBaseline:      *saveBaselineFlag,
+		Features:          resolvedFeatures,
 	}
 
 	return req, nil

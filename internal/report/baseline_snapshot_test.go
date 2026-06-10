@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	baselineutil "github.com/ben-ranford/lopper/internal/baseline"
 )
 
 const testLabelX = "label:x"
@@ -167,8 +169,8 @@ func TestSanitizeBaselineKey(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sanitizeBaselineKey(tc.key); got != tc.want {
-				t.Fatalf("sanitizeBaselineKey(%q) = %q, want %q", tc.key, got, tc.want)
+			if got := baselineutil.SanitizeKey(tc.key); got != tc.want {
+				t.Fatalf("SanitizeKey(%q) = %q, want %q", tc.key, got, tc.want)
 			}
 		})
 	}

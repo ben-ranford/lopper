@@ -54,18 +54,22 @@ type AnalyseRequest struct {
 	ExcludePatterns    []string
 	ConfigPath         string
 	PolicySources      []string
+	PolicyTrace        []report.PolicyMergeTrace
 	Features           featureflags.Set
 	Thresholds         thresholds.Values
 	Notifications      notify.Config
 }
 
 type TUIRequest struct {
-	Language     string
-	SnapshotPath string
-	Filter       string
-	Sort         string
-	TopN         int
-	PageSize     int
+	Language          string
+	SnapshotPath      string
+	Filter            string
+	Sort              string
+	TopN              int
+	PageSize          int
+	BaselinePath      string
+	BaselineStorePath string
+	BaselineKey       string
 }
 
 type DashboardRepo struct {
@@ -75,13 +79,17 @@ type DashboardRepo struct {
 }
 
 type DashboardRequest struct {
-	Repos           []DashboardRepo
-	ConfigPath      string
-	Format          string
-	OutputPath      string
-	TopN            int
-	DefaultLanguage string
-	Features        featureflags.Set
+	Repos             []DashboardRepo
+	ConfigPath        string
+	Format            string
+	OutputPath        string
+	TopN              int
+	DefaultLanguage   string
+	BaselineStorePath string
+	BaselineKey       string
+	BaselineLabel     string
+	SaveBaseline      bool
+	Features          featureflags.Set
 }
 
 type FeaturesRequest struct {

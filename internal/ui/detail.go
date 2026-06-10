@@ -238,6 +238,12 @@ func printRuntimeUsage(out io.Writer, usage *detailRuntimeUsageView) error {
 	if len(usage.Modules) > 0 {
 		lines = append(lines, fmt.Sprintf("  - modules: %s", formatRuntimeModules(usage.Modules)))
 	}
+	if len(usage.ParentModules) > 0 {
+		lines = append(lines, fmt.Sprintf("  - parent modules: %s", formatRuntimeModules(usage.ParentModules)))
+	}
+	if len(usage.Entrypoints) > 0 {
+		lines = append(lines, fmt.Sprintf("  - entrypoints: %s", formatRuntimeModules(usage.Entrypoints)))
+	}
 	if len(usage.TopSymbols) > 0 {
 		lines = append(lines, fmt.Sprintf("  - top symbols: %s", formatRuntimeSymbols(usage.TopSymbols)))
 	}
