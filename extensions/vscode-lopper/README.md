@@ -7,9 +7,11 @@ Lopper brings dependency-surface analysis into VS Code with inline diagnostics a
 
 - Flags unused dependency imports directly in editors covered by supported Lopper adapters.
 - Shows dependency usage, license, provenance, risk cues, and recommendation context in hovers.
+- Surfaces a dependency explorer sidebar with folder summaries, dependency drilldown, and source-navigation links.
+- Supports multi-root workspaces by analyzing each workspace folder independently.
 - Offers deterministic quick fixes for safe `--suggest-only` JS/TS subpath rewrites.
 - Supports `package`, `repo`, and `changed-packages` analysis scope modes directly in VS Code.
-- Keeps a status-bar summary and manual refresh commands, including a force-fresh option.
+- Keeps a status-bar summary and manual refresh commands, including force-fresh, runtime-aware, baseline, and export workflows.
 
 ## Adapter mode
 
@@ -52,12 +54,26 @@ code --install-extension lopper-vscode-<version>.vsix
 - `lopper.autoRefresh`: refresh on saves that match the selected adapter mode
 - `lopper.autoDownloadBinary`: enable or disable managed binary downloads
 - `lopper.managedBinaryTag`: optional release tag override for managed installs
+- `lopper.runtimeTracePath`: optional runtime trace file for JS/TS runtime-aware analysis
+- `lopper.runtimeTestCommand`: optional command to run while capturing a runtime trace
+- `lopper.thresholdFailOnIncreasePercent`: waste increase gate threshold, default `-1`
+- `lopper.thresholdLowConfidenceWarningPercent`: warning threshold for low-confidence dependencies
+- `lopper.thresholdMinUsagePercentForRecommendations`: recommendation threshold for usage
+- `lopper.thresholdMaxUncertainImportCount`: uncertain import gate threshold, default `-1`
+- `lopper.licenseDeny`: SPDX identifiers to deny during analysis
+- `lopper.licenseFailOnDeny`: fail when denied licenses are detected
+- `lopper.licenseProvenanceRegistry`: enable registry provenance heuristics for JS/TS dependencies
 
 ## Commands
 
 - `Lopper: Refresh Diagnostics`: refresh using the configured scope and session cache.
 - `Lopper: Refresh Diagnostics (Force Fresh)`: bypass cache and re-run analysis.
+- `Lopper: Refresh Diagnostics (Runtime Trace)`: run runtime-aware analysis for JS/TS workspaces.
 - `Lopper: Refresh Diagnostics (Scope: package|repo|changed-packages)`: run using an explicit scope mode.
+- `Lopper: Save Baseline Snapshot`: save the current workspace analysis as a baseline snapshot.
+- `Lopper: Compare Baseline`: compare the current workspace analysis against a saved baseline key or file.
+- `Lopper: Analyse Dependency...`: open a focused dependency analysis and detail view.
+- `Lopper: Export Analysis as JSON|CSV|SARIF|PR Comment`: export the current analysis in a machine-readable format.
 
 The extension deduplicates in-flight refreshes per folder/language/scope, prevents stale runs from overwriting newer diagnostics, and logs refresh lifecycle states to the `Lopper` output channel.
 

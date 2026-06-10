@@ -17,6 +17,8 @@ type analyseFlagValues struct {
 	allowDirty                    *bool
 	scopeMode                     *string
 	formatFlag                    *string
+	outputFlag                    *string
+	outputShortFlag               *string
 	cacheEnabled                  *bool
 	cachePath                     *string
 	cacheReadOnly                 *bool
@@ -68,6 +70,8 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		allowDirty:                    fs.Bool("allow-dirty", req.Analyse.AllowDirty, "allow codemod apply mode to run in a dirty git worktree"),
 		scopeMode:                     fs.String("scope-mode", req.Analyse.ScopeMode, "analysis scope mode"),
 		formatFlag:                    fs.String("format", string(req.Analyse.Format), "output format"),
+		outputFlag:                    fs.String("output", req.Analyse.OutputPath, "output file path"),
+		outputShortFlag:               fs.String("o", req.Analyse.OutputPath, "output file path"),
 		cacheEnabled:                  fs.Bool("cache", req.Analyse.CacheEnabled, "enable incremental analysis cache"),
 		cachePath:                     fs.String("cache-path", req.Analyse.CachePath, "analysis cache directory path"),
 		cacheReadOnly:                 fs.Bool("cache-readonly", req.Analyse.CacheReadOnly, "read cache without writing new entries"),
