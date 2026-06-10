@@ -240,7 +240,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     const { document, scopeMode: scopeModeOption, dependencyName } = options;
     const binaryPath = await this.resolveBinaryPath(folder);
     const binarySignature = await this.binarySignature(binaryPath);
-    const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
+    const requestedLanguage = await resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const scopeMode = normalizeScopeMode(scopeModeOption);
     const timeoutMs = this.runTimeoutMs(folder);
     const report = await this.executeReport(binaryPath, folder, {
@@ -282,7 +282,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
   ): Promise<string> {
     const { document, scopeMode: scopeModeOption } = options;
     const binaryPath = await this.resolveBinaryPath(folder);
-    const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
+    const requestedLanguage = await resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const scopeMode = normalizeScopeMode(scopeModeOption);
     const timeoutMs = this.runTimeoutMs(folder);
     return this.executeText(binaryPath, folder, {

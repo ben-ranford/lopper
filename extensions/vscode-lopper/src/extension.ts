@@ -4,6 +4,8 @@ import * as vscode from "vscode";
 
 import {
   configuredLopperLanguage,
+  clearAndroidModuleSignalCache,
+  invalidateAndroidModuleSignalCacheForPath,
   resolveLopperLanguage,
   shouldAutoRefreshForDocument,
   supportedDocumentSelectors,
@@ -201,23 +203,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
         }),
         vscode.window.registerTreeDataProvider("lopperExplorer", this.explorer),
         vscode.workspace.onDidSaveTextDocument((document) => {
-          const folder = vscode.workspace.getWorkspaceFolder(document.uri);
-          if (!folder) {
-            return;
-          }
-          this.invalidateWorkspaceSession(folder, `document saved: ${path.basename(document.fileName)}`);
-          if (!this.shouldAutoRefresh(document)) {
-            return;
-          }
-          const timerKey = folder.uri.toString();
-          this.clearRefreshTimer(timerKey);
-          this.refreshTimers.set(
-            timerKey,
-            setTimeout(() => {
-              this.refreshTimers.delete(timerKey);
-              void this.refreshWorkspace({ folder, revealErrors: false, document, trigger: "auto-save" });
-            }, 400),
-          );
+          void this.handleDidSaveTextDocument(document);
         }),
         vscode.workspace.onDidChangeConfiguration((event) => {
           for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -271,6 +257,15 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
           }
         }),
       );
+      for (const watcherPattern of ["**/build.gradle", "**/build.gradle.kts", "**/AndroidManifest.xml"]) {
+        const watcher = vscode.workspace.createFileSystemWatcher(watcherPattern);
+        disposables.push(
+          watcher,
+          watcher.onDidChange((uri) => this.invalidateLanguageInferenceCache(uri)),
+          watcher.onDidCreate((uri) => this.invalidateLanguageInferenceCache(uri)),
+          watcher.onDidDelete((uri) => this.invalidateLanguageInferenceCache(uri)),
+        );
+      }
     }
     this.disposable = vscode.Disposable.from(...disposables);
   }
@@ -315,7 +310,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     }
 
     const scopeMode = this.requestedScopeMode(folder, options.scopeModeOverride);
-    const requestedLanguage = resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
+    const requestedLanguage = await resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const workspaceKey = folder.uri.toString();
     const sessionKey = this.sessionKey(workspaceKey, requestedLanguage, scopeMode);
 
@@ -670,6 +665,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   dispose(): void {
     this.cancelActiveRefreshes("extension disposed");
     this.refreshAbortHandles.clear();
+    clearAndroidModuleSignalCache();
     for (const timer of this.refreshTimers.values()) {
       clearTimeout(timer);
     }
@@ -720,7 +716,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     return activeFolder?.uri.toString() === folder.uri.toString() ? document : undefined;
   }
 
-  private shouldAutoRefresh(document: vscode.TextDocument): boolean {
+  private async shouldAutoRefresh(document: vscode.TextDocument): Promise<boolean> {
     if (document.isUntitled) {
       return false;
     }
@@ -734,6 +730,31 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     return shouldAutoRefreshForDocument(configuredLopperLanguage(folder), document, folder.uri.fsPath);
   }
 
+  private async handleDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!folder) {
+      return;
+    }
+    this.invalidateLanguageInferenceCache(document.uri, folder);
+    this.invalidateWorkspaceSession(folder, `document saved: ${path.basename(document.fileName)}`);
+    if (!await this.shouldAutoRefresh(document)) {
+      return;
+    }
+    const timerKey = folder.uri.toString();
+    this.clearRefreshTimer(timerKey);
+    this.refreshTimers.set(
+      timerKey,
+      setTimeout(() => {
+        this.refreshTimers.delete(timerKey);
+        void this.refreshWorkspace({ folder, revealErrors: false, document, trigger: "auto-save" });
+      }, 400),
+    );
+  }
+
+  private invalidateLanguageInferenceCache(uri: vscode.Uri, folder = vscode.workspace.getWorkspaceFolder(uri)): void {
+    invalidateAndroidModuleSignalCacheForPath(uri.fsPath, folder?.uri.fsPath);
+  }
+
   private async refreshRuntimeWorkspace(folderPath?: string): Promise<void> {
     const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
     if (!folder) {
@@ -741,7 +762,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       return;
     }
 
-    const requestedLanguage = resolveLopperLanguage(
+    const requestedLanguage = await resolveLopperLanguage(
       configuredLopperLanguage(folder),
       this.activeDocumentForFolder(folder),
       folder.uri.fsPath,
