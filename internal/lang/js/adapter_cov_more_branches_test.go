@@ -35,6 +35,21 @@ func testJSDetectHelpersReturnRealErrors(t *testing.T) {
 	if addRootSignalDetection(repoFile, &detection, roots) == nil {
 		t.Fatalf("expected non-directory repo path to fail root signal detection")
 	}
+
+	rootSignalDirRepo := t.TempDir()
+	for _, name := range []string{jsPackageFile, "tsconfig.json"} {
+		if err := os.Mkdir(filepath.Join(rootSignalDirRepo, name), 0o755); err != nil {
+			t.Fatalf("mkdir root signal dir %s: %v", name, err)
+		}
+	}
+	detection = language.Detection{}
+	roots = map[string]struct{}{}
+	if err := addRootSignalDetection(rootSignalDirRepo, &detection, roots); err != nil {
+		t.Fatalf("add root signal detection for directories: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 || len(roots) != 0 {
+		t.Fatalf("expected directory-shaped root signals to be ignored, detection=%#v roots=%#v", detection, roots)
+	}
 }
 
 func testJSDetectHandlesEOFCapAndSkippedDirs(t *testing.T) {

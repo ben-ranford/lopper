@@ -69,31 +69,22 @@ func manifestPathExists(path string) (bool, error) {
 }
 
 func applyGoRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	rootSignals := []struct {
-		name       string
-		confidence int
-	}{
-		{name: goModName, confidence: 55},
-		{name: goWorkName, confidence: 45},
+	if err := shared.ApplyRootSignals(repoPath, goRootSignals, detection, roots); err != nil {
+		return err
 	}
-	for _, signal := range rootSignals {
-		candidate := filepath.Join(repoPath, signal.name)
-		exists, err := manifestPathExists(candidate)
-		if err != nil {
-			return err
-		}
-		if exists {
-			detection.Matched = true
-			detection.Confidence += signal.confidence
-			roots[repoPath] = struct{}{}
-			if signal.name == goWorkName {
-				if err := addGoWorkRoots(repoPath, roots); err != nil {
-					return err
-				}
-			}
-		}
+	goWorkExists, err := manifestPathExists(filepath.Join(repoPath, goWorkName))
+	if err != nil {
+		return err
+	}
+	if goWorkExists {
+		return addGoWorkRoots(repoPath, roots)
 	}
 	return nil
+}
+
+var goRootSignals = []shared.RootSignal{
+	{Name: goModName, Confidence: 55},
+	{Name: goWorkName, Confidence: 45},
 }
 
 func addGoWorkRoots(repoPath string, roots map[string]struct{}) error {

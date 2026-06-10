@@ -70,29 +70,17 @@ func walkPythonDetectionEntry(path string, entry fs.DirEntry, roots map[string]s
 }
 
 func applyPythonRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	rootSignals := []struct {
-		name       string
-		confidence int
-	}{
-		{name: "pyproject.toml", confidence: 50},
-		{name: "Pipfile", confidence: 45},
-		{name: "Pipfile.lock", confidence: 25},
-		{name: "poetry.lock", confidence: 25},
-		{name: "uv.lock", confidence: 25},
-		{name: "requirements.txt", confidence: 35},
-		{name: "setup.py", confidence: 35},
-	}
-	for _, signal := range rootSignals {
-		path := filepath.Join(repoPath, signal.name)
-		if _, err := os.Stat(path); err == nil {
-			detection.Matched = true
-			detection.Confidence += signal.confidence
-			roots[repoPath] = struct{}{}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
+	return shared.ApplyRootSignals(repoPath, pythonRootSignals, detection, roots)
+}
+
+var pythonRootSignals = []shared.RootSignal{
+	{Name: "pyproject.toml", Confidence: 50},
+	{Name: "Pipfile", Confidence: 45},
+	{Name: "Pipfile.lock", Confidence: 25},
+	{Name: "poetry.lock", Confidence: 25},
+	{Name: "uv.lock", Confidence: 25},
+	{Name: "requirements.txt", Confidence: 35},
+	{Name: "setup.py", Confidence: 35},
 }
 
 func updateDetectionFromPythonFile(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {

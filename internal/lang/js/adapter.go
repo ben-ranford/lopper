@@ -59,22 +59,19 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func addRootSignalDetection(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	candidates := []string{jsPackageFile, "tsconfig.json", "jsconfig.json"}
-	for _, name := range candidates {
-		path := filepath.Join(repoPath, name)
-		if _, err := os.Stat(path); err == nil {
-			detection.Matched = true
-			if name == jsPackageFile {
-				detection.Confidence += 45
-				roots[repoPath] = struct{}{}
-				continue
-			}
-			detection.Confidence += 20
-		} else if !os.IsNotExist(err) {
-			return err
-		}
+	if err := shared.ApplyRootSignals(repoPath, jsPackageRootSignals, detection, roots); err != nil {
+		return err
 	}
-	return nil
+	return shared.ApplyRootSignals(repoPath, jsConfigRootSignals, detection, nil)
+}
+
+var jsPackageRootSignals = []shared.RootSignal{
+	{Name: jsPackageFile, Confidence: 45},
+}
+
+var jsConfigRootSignals = []shared.RootSignal{
+	{Name: "tsconfig.json", Confidence: 20},
+	{Name: "jsconfig.json", Confidence: 20},
 }
 
 func scanFilesForJSDetection(repoPath string, detection *language.Detection, roots map[string]struct{}) error {

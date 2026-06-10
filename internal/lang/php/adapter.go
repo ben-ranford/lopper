@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -57,24 +56,12 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func applyPHPRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	signals := []struct {
-		name       string
-		confidence int
-	}{
-		{name: composerJSONName, confidence: 60},
-		{name: composerLockName, confidence: 30},
-	}
-	for _, signal := range signals {
-		candidate := filepath.Join(repoPath, signal.name)
-		if _, err := os.Stat(candidate); err == nil {
-			detection.Matched = true
-			detection.Confidence += signal.confidence
-			roots[repoPath] = struct{}{}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
+	return shared.ApplyRootSignals(repoPath, phpRootSignals, detection, roots)
+}
+
+var phpRootSignals = []shared.RootSignal{
+	{Name: composerJSONName, Confidence: 60},
+	{Name: composerLockName, Confidence: 30},
 }
 
 func walkPHPDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
