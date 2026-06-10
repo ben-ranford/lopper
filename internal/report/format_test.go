@@ -293,6 +293,79 @@ func TestFormatTableEscapesMultilineWarnings(t *testing.T) {
 	assertOutputContains(t, output, "- warning-line-1\\nwarning-line-2", "- warning-line-3\\nwarning-line-4", "- warning\\twith\\ttab")
 }
 
+func TestFormatTableSanitizesTerminalControlCharacters(t *testing.T) {
+	reportData := Report{
+		Scope: &ScopeMetadata{
+			Mode:     "repo\x1b[31m",
+			Packages: []string{"pkg\x1b[31m", "safe"},
+		},
+		Cache: &CacheMetadata{
+			Enabled: true,
+			Path:    "cache\x1b[31m",
+			Invalidations: []CacheInvalidation{
+				{Key: "key\x1b[31m", Reason: "reason\x1b[31m"},
+			},
+		},
+		EffectivePolicy: &EffectivePolicy{
+			Sources: []string{"policy\x1b[31m"},
+			Thresholds: EffectiveThresholds{
+				FailOnIncreasePercent:             1,
+				LowConfidenceWarningPercent:       2,
+				MinUsagePercentForRecommendations: 3,
+				MaxUncertainImportCount:           4,
+			},
+			RemovalCandidateWeights: RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2},
+			License: LicensePolicy{
+				Deny: []string{"GPL\x1b[31m"},
+			},
+		},
+		LanguageBreakdown: []LanguageSummary{
+			{Language: "js\x1b[31m", DependencyCount: 1, UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "base\x1b[31m",
+			CurrentKey:  "cur\x1b[31m",
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{Language: "lang\x1b[31m", Name: "dep\x1b[31m", SPDX: "MIT\x1b[31m"},
+			},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Language: "delta\x1b[31m", Name: "dep\x1b[31m"},
+			},
+		},
+		Dependencies: []DependencyReport{
+			{
+				Language:             "go\x1b[31m",
+				Name:                 "dep\x1b[31m",
+				UsedExportsCount:     1,
+				TotalExportsCount:    2,
+				UsedPercent:          50,
+				EstimatedUnusedBytes: 1024,
+				License:              &DependencyLicense{SPDX: "MIT\x1b[31m", Denied: true},
+				Provenance:           &DependencyProvenance{Source: "manifest\x1b[31m", Signals: []string{"signal\x1b[31m"}},
+				TopUsedSymbols:       []SymbolUsage{{Name: "sym\x1b[31m", Count: 2}},
+				Codemod: &CodemodReport{
+					Apply: &CodemodApplyReport{
+						BackupPath: "backup\x1b[31m",
+						Results: []CodemodApplyResult{
+							{Status: "applied", File: "file\x1b[31m", Message: "msg\x1b[31m", PatchCount: 1},
+						},
+					},
+				},
+			},
+		},
+		Warnings: []string{"warn\x1b[31m"},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatTable)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if strings.Contains(output, "\x1b") {
+		t.Fatalf("expected table output to strip terminal control characters, got %q", output)
+	}
+	assertOutputContains(t, output, `\x1b[31m`, "pkg\\x1b[31m", "cache\\x1b[31m", "warn\\x1b[31m")
+}
+
 func TestFormattingHelpersBytesAndSymbols(t *testing.T) {
 	if got := formatBytes(0); got != "0 B" {
 		t.Fatalf("unexpected 0-byte format: %q", got)

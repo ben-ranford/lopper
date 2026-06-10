@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -111,6 +112,26 @@ func TestRuntimeSearchDirsDefault(t *testing.T) {
 	_ = runtimeSearchDirs()
 }
 
+func TestRuntimeHookSearchRootsAreAnchored(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, filepath.Join("/tmp", "source", "internal", "runtime", "capture_env.go"), 0, true
+	}
+
+	roots := runtimeHookSearchRoots()
+	want := []string{
+		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
+		filepath.Clean(filepath.Join("/tmp", "source", "internal", "runtime", "..", "..")),
+	}
+	if !reflect.DeepEqual(roots, want) {
+		t.Fatalf("expected anchored runtime hook roots %v, got %v", want, roots)
+	}
+}
+
 func TestMergeEnvAndReadEnvValue(t *testing.T) {
 	base := []string{"A=1", "BADENTRY", "NODE_OPTIONS=--max-old-space-size=2048"}
 	merged := mergeEnv(base, map[string]string{"A": "2", "B": "3"})
@@ -149,6 +170,18 @@ func TestRuntimeNodeHookOptionsReturnsCachedError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected cached runtime hook error, got %v", err)
 	}
+}
+
+func restoreRuntimeHookPathProviders(t *testing.T) {
+	t.Helper()
+
+	originalExecutable := runtimeExecutablePath
+	originalCaller := runtimeCaller
+
+	t.Cleanup(func() {
+		runtimeExecutablePath = originalExecutable
+		runtimeCaller = originalCaller
+	})
 }
 
 func TestRuntimeNodeHookOptionsQuotesPathsWithSpaces(t *testing.T) {

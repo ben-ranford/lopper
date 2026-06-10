@@ -128,3 +128,47 @@ func policyTraceSource(trace []report.PolicyMergeTrace, field string) string {
 	}
 	return ""
 }
+
+func TestThresholdConfigAdditionalPackAndFeatureBranches(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	resolver := newPackResolver(repo)
+
+	if got := resolver.nestedPackTrust(filepath.Join(repo, "policy.yml")).localRoot; got != repo {
+		t.Fatalf("expected nested repo policy trust root %q, got %q", repo, got)
+	}
+	if got := resolver.nestedPackTrust(filepath.Join(outside, "policy.yml")).localRoot; got != "" {
+		t.Fatalf("expected outside policy to have no local trust root, got %q", got)
+	}
+	if err := validatePackBoundary(filepath.Join(outside, "policy.yml"), true, packTrust{localRoot: repo}); err != nil {
+		t.Fatalf("expected remote pack boundary to skip local root check: %v", err)
+	}
+	if err := validatePackBoundary(filepath.Join(outside, "policy.yml"), false, packTrust{}); err != nil {
+		t.Fatalf("expected empty trust root to skip local boundary check: %v", err)
+	}
+
+	policyPath := filepath.Join(repo, "policy.yml")
+	if err := os.WriteFile(policyPath, []byte("fail_on_increase_percent: 1\n"), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if data, err := readPolicyLocation(policyPath, packTrust{localRoot: repo}, false); err != nil || !strings.Contains(string(data), "fail_on_increase_percent") {
+		t.Fatalf("expected trusted local policy read, data=%q err=%v", data, err)
+	}
+	if _, err := readPolicyLocation(policyPath, packTrust{localRoot: outside}, false); err == nil {
+		t.Fatalf("expected local policy outside trust root to fail")
+	}
+	if _, err := readPolicyLocation(filepath.Join(outside, "missing.yml"), packTrust{}, false); err == nil {
+		t.Fatalf("expected untrusted missing local policy read to fail")
+	}
+
+	var nilFeatures *rawFeatures
+	if got := nilFeatures.toFeatureConfig(); len(got.Enable) != 0 || len(got.Disable) != 0 {
+		t.Fatalf("expected nil raw features to normalize empty slices, got %#v", got)
+	}
+	enable := []string{" alpha ", "", "alpha"}
+	disable := []string{" beta "}
+	features := (&rawFeatures{Enable: &enable, Disable: &disable}).toFeatureConfig()
+	if !reflect.DeepEqual(features.Enable, []string{"alpha"}) || !reflect.DeepEqual(features.Disable, []string{"beta"}) {
+		t.Fatalf("unexpected normalized features: %#v", features)
+	}
+}
