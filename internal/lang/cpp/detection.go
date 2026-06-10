@@ -7,8 +7,6 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
-	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 const (
@@ -16,6 +14,18 @@ const (
 	cmakeListsFile      = "CMakeLists.txt"
 	maxDetectFiles      = 2048
 )
+
+var cppRootSignals = []shared.RootSignal{
+	{Name: compileCommandsFile, Confidence: 60},
+	{Name: cmakeListsFile, Confidence: 45},
+	{Name: "Makefile", Confidence: 35},
+	{Name: "makefile", Confidence: 35},
+	{Name: "GNUmakefile", Confidence: 35},
+	{Name: vcpkgManifestFile, Confidence: 35},
+	{Name: vcpkgLockFile, Confidence: 20},
+	{Name: conanManifestFile, Confidence: 35},
+	{Name: conanLockFile, Confidence: 20},
+}
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
 	repoPath = shared.DefaultRepoPath(repoPath)
@@ -62,52 +72,4 @@ func markDetection(detection *language.Detection, roots map[string]struct{}, roo
 	if root != "" {
 		roots[root] = struct{}{}
 	}
-}
-
-func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
-	repoPath, err := workspace.NormalizeRepoPath(req.RepoPath)
-	if err != nil {
-		return report.Report{}, err
-	}
-
-	result := report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    repoPath,
-	}
-
-	compileInfo, err := loadCompileContext(repoPath)
-	if err != nil {
-		return report.Report{}, err
-	}
-	result.Warnings = append(result.Warnings, compileInfo.Warnings...)
-
-	catalog, catalogWarnings, err := loadDependencyCatalog(repoPath)
-	if err != nil {
-		return report.Report{}, err
-	}
-	result.Warnings = append(result.Warnings, catalogWarnings...)
-
-	scan, err := scanRepo(ctx, repoPath, compileInfo, catalog)
-	if err != nil {
-		return report.Report{}, err
-	}
-	result.Warnings = append(result.Warnings, scan.Warnings...)
-
-	dependencies, warnings := buildRequestedCPPDependencies(req, scan)
-	result.Dependencies = dependencies
-	result.Warnings = append(result.Warnings, warnings...)
-	result.Summary = report.ComputeSummary(result.Dependencies)
-	return result, nil
-}
-
-var cppRootSignals = []shared.RootSignal{
-	{Name: compileCommandsFile, Confidence: 60},
-	{Name: cmakeListsFile, Confidence: 45},
-	{Name: "Makefile", Confidence: 35},
-	{Name: "makefile", Confidence: 35},
-	{Name: "GNUmakefile", Confidence: 35},
-	{Name: vcpkgManifestFile, Confidence: 35},
-	{Name: vcpkgLockFile, Confidence: 20},
-	{Name: conanManifestFile, Confidence: 35},
-	{Name: conanLockFile, Confidence: 20},
 }
