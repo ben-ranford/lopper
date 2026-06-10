@@ -44,6 +44,8 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+	// PowerShell root detection is extension based, not exact manifest-name
+	// based, so shared.RootSignal would not preserve the existing behavior.
 	entries, err := os.ReadDir(repoPath)
 	if err != nil {
 		return err

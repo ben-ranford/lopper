@@ -13,6 +13,12 @@ import (
 )
 
 func TestPythonAdditionalHelperBranches(t *testing.T) {
+	t.Run("root signals", testPythonRootSignalHelperBranches)
+	t.Run("invalid analysis paths", testPythonInvalidAnalysisPathBranches)
+	t.Run("import and dependency helpers", testPythonImportAndDependencyHelperBranches)
+}
+
+func testPythonRootSignalHelperBranches(t *testing.T) {
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
 	if err := os.WriteFile(repoFile, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write repo file: %v", err)
@@ -20,13 +26,32 @@ func TestPythonAdditionalHelperBranches(t *testing.T) {
 	if applyPythonRootSignals(repoFile, &language.Detection{}, map[string]struct{}{}) == nil {
 		t.Fatalf("expected root signal stat error for non-directory repo path")
 	}
+	rootSignalDirRepo := t.TempDir()
+	for _, name := range []string{"pyproject.toml", "requirements.txt"} {
+		if err := os.Mkdir(filepath.Join(rootSignalDirRepo, name), 0o755); err != nil {
+			t.Fatalf("mkdir root signal dir %s: %v", name, err)
+		}
+	}
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	if err := applyPythonRootSignals(rootSignalDirRepo, &detection, roots); err != nil {
+		t.Fatalf("apply root signals for directories: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 || len(roots) != 0 {
+		t.Fatalf("expected directory-shaped root signals to be ignored, detection=%#v roots=%#v", detection, roots)
+	}
+}
+
+func testPythonInvalidAnalysisPathBranches(t *testing.T) {
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00"}); err == nil {
 		t.Fatalf("expected analyse to fail on invalid repo path")
 	}
 	if _, err := scanRepo(context.Background(), ""); err == nil {
 		t.Fatalf("expected scanRepo to reject empty repo path")
 	}
+}
 
+func testPythonImportAndDependencyHelperBranches(t *testing.T) {
 	if module, local := parseImportPart("   "); module != "" || local != "" {
 		t.Fatalf("expected blank import part to stay empty, got module=%q local=%q", module, local)
 	}

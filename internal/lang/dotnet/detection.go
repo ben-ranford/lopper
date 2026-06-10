@@ -71,6 +71,8 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+	// .NET root detection is extension/pattern based and solution files can add
+	// extra roots, so it cannot be represented as exact shared.RootSignal names.
 	entries, err := os.ReadDir(repoPath)
 	if err != nil {
 		return err

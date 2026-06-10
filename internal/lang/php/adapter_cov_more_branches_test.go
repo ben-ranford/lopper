@@ -30,6 +30,20 @@ func testPHPRootSignalsAndHelperBranches(t *testing.T) {
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatalf("expected missing repo to fail detection")
 	}
+	rootSignalDirRepo := t.TempDir()
+	for _, name := range []string{composerJSONName, composerLockName} {
+		if err := os.Mkdir(filepath.Join(rootSignalDirRepo, name), 0o755); err != nil {
+			t.Fatalf("mkdir root signal dir %s: %v", name, err)
+		}
+	}
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	if err := applyPHPRootSignals(rootSignalDirRepo, &detection, roots); err != nil {
+		t.Fatalf("apply root signals for directories: %v", err)
+	}
+	if detection.Matched || detection.Confidence != 0 || len(roots) != 0 {
+		t.Fatalf("expected directory-shaped root signals to be ignored, detection=%#v roots=%#v", detection, roots)
+	}
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: "\x00"}); err == nil {
 		t.Fatalf("expected analyse to fail on invalid repo path")
 	}

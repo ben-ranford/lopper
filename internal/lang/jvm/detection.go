@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -53,29 +52,13 @@ func walkJVMDetectionEntry(path string, entry fs.DirEntry, roots map[string]stru
 }
 
 func applyJVMRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	rootSignals := []struct {
-		name       string
-		confidence int
-	}{
-		{name: pomXMLName, confidence: 55},
-		{name: buildGradleName, confidence: 45},
-		{name: buildGradleKTSName, confidence: 45},
-	}
-	for _, signal := range rootSignals {
-		path := filepath.Join(repoPath, signal.name)
-		info, err := os.Stat(path)
-		if err == nil {
-			if info.IsDir() {
-				continue
-			}
-			detection.Matched = true
-			detection.Confidence += signal.confidence
-			roots[repoPath] = struct{}{}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
+	return shared.ApplyRootSignals(repoPath, jvmRootSignals, detection, roots)
+}
+
+var jvmRootSignals = []shared.RootSignal{
+	{Name: pomXMLName, Confidence: 55},
+	{Name: buildGradleName, Confidence: 45},
+	{Name: buildGradleKTSName, Confidence: 45},
 }
 
 func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
