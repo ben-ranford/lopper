@@ -44,10 +44,10 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
-            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(repo.allow_merge_commit));
-            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(repo.allow_rebase_merge));
-            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(repo.allow_squash_merge));
-            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(repo.squash_merge_commit_title || ''));
+            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(repo.allow_merge_commit ?? repo.allowMergeCommit));
+            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(repo.allow_rebase_merge ?? repo.allowRebaseMerge));
+            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(repo.allow_squash_merge ?? repo.allowSquashMerge));
+            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(repo.squash_merge_commit_title ?? repo.squashMergeCommitTitle ?? ''));
 
       - name: Validate PR title and template
         env:
