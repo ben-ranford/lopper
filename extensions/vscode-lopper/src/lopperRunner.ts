@@ -23,6 +23,7 @@ import {
 export type LopperOutputFormat = "json" | "csv" | "sarif" | "pr-comment";
 
 export const defaultLopperRunTimeoutMs = 120_000;
+export const defaultCodemodAnalysisConcurrency = 4;
 
 const execFileAsync = promisify(execFile);
 
@@ -261,16 +262,16 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       saveBaseline: options.saveBaseline,
     });
 
-    const codemodsByDependency = new Map<string, LopperCodemodReport>();
-    for (const dependency of report.dependencies) {
-      if (!shouldFetchCodemod(dependency, requestedLanguage)) {
-        continue;
-      }
-      const codemod = await this.fetchCodemod(binaryPath, folder, dependency, scopeMode, options, timeoutMs);
-      if (codemod) {
-        codemodsByDependency.set(dependency.name, codemod);
-      }
-    }
+    const codemodsByDependency = await this.fetchCodemods(
+      binaryPath,
+      binarySignature,
+      folder,
+      report.dependencies,
+      requestedLanguage,
+      scopeMode,
+      options,
+      timeoutMs,
+    );
 
     return { folder, binaryPath, binarySignature, requestedLanguage, scopeMode, report, codemodsByDependency };
   }
@@ -541,6 +542,58 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     }
   }
 
+  private async fetchCodemods(
+    binaryPath: string,
+    binarySignature: string,
+    folder: vscode.WorkspaceFolder,
+    dependencies: LopperDependencyReport[],
+    requestedLanguage: LopperLanguage,
+    scopeMode: LopperScopeMode,
+    options: WorkspaceAnalysisRequest,
+    timeoutMs: number | undefined,
+  ): Promise<Map<string, LopperCodemodReport>> {
+    const dependencyByCacheKey = new Map<string, LopperDependencyReport>();
+    const cacheKeys: string[] = [];
+    for (const dependency of dependencies) {
+      if (!shouldFetchCodemod(dependency, requestedLanguage)) {
+        continue;
+      }
+
+      const cacheKey = codemodCacheKey(binarySignature, scopeMode, dependency.name);
+      if (dependencyByCacheKey.has(cacheKey)) {
+        continue;
+      }
+
+      dependencyByCacheKey.set(cacheKey, dependency);
+      cacheKeys.push(cacheKey);
+    }
+
+    const codemodByCacheKey = new Map<string, LopperCodemodReport | undefined>();
+    await runWithConcurrency(cacheKeys, codemodAnalysisConcurrency(options), async (cacheKey) => {
+      const dependency = dependencyByCacheKey.get(cacheKey);
+      if (!dependency) {
+        return;
+      }
+
+      const codemod = await this.fetchCodemod(binaryPath, folder, dependency, scopeMode, options, timeoutMs);
+      codemodByCacheKey.set(cacheKey, codemod);
+    });
+
+    const codemodsByDependency = new Map<string, LopperCodemodReport>();
+    for (const dependency of dependencies) {
+      if (!shouldFetchCodemod(dependency, requestedLanguage)) {
+        continue;
+      }
+
+      const codemod = codemodByCacheKey.get(codemodCacheKey(binarySignature, scopeMode, dependency.name));
+      if (codemod) {
+        codemodsByDependency.set(dependency.name, codemod);
+      }
+    }
+
+    return codemodsByDependency;
+  }
+
   private async binarySignature(binaryPath: string): Promise<string> {
     try {
       const resolvedPath = await realpath(binaryPath);
@@ -550,6 +603,40 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       return `${binaryPath}:unknown`;
     }
   }
+}
+
+function codemodCacheKey(binarySignature: string, scopeMode: LopperScopeMode, dependencyName: string): string {
+  return [binarySignature, scopeMode, dependencyName].join("\0");
+}
+
+function codemodAnalysisConcurrency(options: WorkspaceAnalysisRequest): number {
+  if (hasValue(options.runtimeTestCommand) || options.saveBaseline) {
+    return 1;
+  }
+  return defaultCodemodAnalysisConcurrency;
+}
+
+function hasValue(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex];
+        nextIndex += 1;
+        await worker(item);
+      }
+    }),
+  );
 }
 
 function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguage: LopperLanguage): boolean {

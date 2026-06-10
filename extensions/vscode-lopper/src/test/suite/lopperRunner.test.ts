@@ -6,7 +6,13 @@ import { suite, test } from "mocha";
 import * as vscode from "vscode";
 
 import type { BinaryResolutionRequest } from "../../managedBinary";
-import { BinaryResolutionError, LopperCliReportExecutor, LopperRunner, type ReportCommandExecutor } from "../../lopperRunner";
+import {
+  BinaryResolutionError,
+  defaultCodemodAnalysisConcurrency,
+  LopperCliReportExecutor,
+  LopperRunner,
+  type ReportCommandExecutor,
+} from "../../lopperRunner";
 import type { LopperReport } from "../../types";
 
 suite("lopper runner", () => {
@@ -242,6 +248,137 @@ suite("lopper runner", () => {
     assert.equal(analysis.scopeMode, "package");
     assert.equal(analysis.codemodsByDependency.get("scope-lib")?.suggestions?.[0]?.toModule, "scope-lib/chunk");
     assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
+  });
+
+  test("fetches codemods with bounded concurrency and reuses duplicate dependencies", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const codemodNames: string[] = [];
+    let activeCodemods = 0;
+    let maxActiveCodemods = 0;
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            if (args.includes("--suggest-only")) {
+              const dependencyName = args[args.length - 1];
+              assert.ok(dependencyName, "expected dependency name in codemod command");
+              codemodNames.push(dependencyName);
+              activeCodemods += 1;
+              maxActiveCodemods = Math.max(maxActiveCodemods, activeCodemods);
+              try {
+                await delay(20);
+              } finally {
+                activeCodemods -= 1;
+              }
+
+              return {
+                dependencies: [
+                  {
+                    name: dependencyName,
+                    usedExportsCount: 1,
+                    totalExportsCount: 2,
+                    usedPercent: 50,
+                    codemod: { mode: "suggest-only", suggestions: [] },
+                  },
+                ],
+              };
+            }
+
+            return {
+              dependencies: ["scope-a", "scope-b", "scope-a", "scope-c", "scope-d", "scope-e"].map((name) => ({
+                name,
+                language: "js-ts",
+                usedExportsCount: 1,
+                totalExportsCount: 2,
+                usedPercent: 50,
+              })),
+            };
+          },
+        },
+      },
+    );
+
+    const analysis = await runner.analyseWorkspace(folder);
+
+    assert.equal(codemodNames.length, 5);
+    assert.equal(codemodNames.filter((name) => name === "scope-a").length, 1);
+    assert.ok(maxActiveCodemods > 1, "expected codemod analyses to run concurrently");
+    assert.ok(
+      maxActiveCodemods <= defaultCodemodAnalysisConcurrency,
+      "codemod concurrency must stay below the default cap",
+    );
+    assert.deepEqual([...analysis.codemodsByDependency.keys()], [
+      "scope-a",
+      "scope-b",
+      "scope-c",
+      "scope-d",
+      "scope-e",
+    ]);
+  });
+
+  test("keeps side-effecting codemod refreshes serial", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    let activeCodemods = 0;
+    let maxActiveCodemods = 0;
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            if (args.includes("--suggest-only")) {
+              activeCodemods += 1;
+              maxActiveCodemods = Math.max(maxActiveCodemods, activeCodemods);
+              try {
+                await delay(20);
+              } finally {
+                activeCodemods -= 1;
+              }
+
+              return {
+                dependencies: [
+                  {
+                    name: args[args.length - 1] ?? "unknown",
+                    usedExportsCount: 1,
+                    totalExportsCount: 2,
+                    usedPercent: 50,
+                    codemod: { mode: "suggest-only", suggestions: [] },
+                  },
+                ],
+              };
+            }
+
+            return {
+              dependencies: ["scope-a", "scope-b", "scope-c"].map((name) => ({
+                name,
+                language: "js-ts",
+                usedExportsCount: 1,
+                totalExportsCount: 2,
+                usedPercent: 50,
+              })),
+            };
+          },
+        },
+      },
+    );
+
+    await runner.analyseWorkspace(folder, { runtimeTestCommand: "npm test" });
+
+    assert.equal(maxActiveCodemods, 1);
   });
 
   test("skips codemod analysis for flag-shaped dependency names", async () => {
@@ -495,6 +632,12 @@ function joinPathEntries(entries: Array<string | undefined>): string {
   return entries
     .filter((entry): entry is string => entry !== undefined && entry.length > 0)
     .join(path.delimiter);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function platformBinaryName(): string {
