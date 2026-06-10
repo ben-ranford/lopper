@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -58,7 +59,7 @@ func testPHPRootSignalsAndHelperBranches(t *testing.T) {
 	if err := contextErr(context.TODO()); err != nil {
 		t.Fatalf("expected nil context error, got %v", err)
 	}
-	weights := resolveRemovalCandidateWeights(&report.RemovalCandidateWeights{Usage: -1, Impact: 2, Confidence: 3})
+	weights := shared.ResolveRemovalCandidateWeights(&report.RemovalCandidateWeights{Usage: -1, Impact: 2, Confidence: 3})
 	if weights.Usage < 0 || weights.Impact > 1 || weights.Confidence > 1 {
 		t.Fatalf("expected removal candidate weights to normalize, got %#v", weights)
 	}

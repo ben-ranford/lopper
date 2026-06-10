@@ -173,13 +173,6 @@ func TestApplyImportSourceAttributionNilAndMissingSourceBranches(t *testing.T) {
 	}
 }
 
-func TestResolveRemovalCandidateWeightsCustomBranch(t *testing.T) {
-	weights := resolveRemovalCandidateWeights(&report.RemovalCandidateWeights{Usage: 2, Impact: 3, Confidence: 5})
-	if weights.Usage != 0.2 || weights.Impact != 0.3 || weights.Confidence != 0.5 {
-		t.Fatalf("expected normalized custom weights, got %#v", weights)
-	}
-}
-
 func TestAdapterAnalyseAndScanRepoErrorBranches(t *testing.T) {
 	adapter := NewAdapter()
 	if _, err := adapter.Analyse(context.Background(), language.Request{RepoPath: string([]byte{'b', 'a', 'd', 0x00}), TopN: 1}); err == nil {

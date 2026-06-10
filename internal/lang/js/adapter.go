@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
@@ -58,7 +59,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
-		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), resolveRemovalCandidateWeights(req.RemovalCandidateWeights), req.IncludeRegistryProvenance)
+		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights), req.IncludeRegistryProvenance)
 		result.Dependencies = deps
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(deps) == 0 {

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -22,7 +23,7 @@ func TestGoAdditionalBranchCoverage(t *testing.T) {
 func testGoHelperGuardBranches(t *testing.T) {
 	t.Helper()
 
-	weights := resolveRemovalCandidateWeights(&report.RemovalCandidateWeights{
+	weights := shared.ResolveRemovalCandidateWeights(&report.RemovalCandidateWeights{
 		Usage:      -1,
 		Impact:     2,
 		Confidence: 3,

@@ -10,7 +10,7 @@ import (
 )
 
 func buildRequestedPowerShellDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopPowerShellDependencies)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, buildTopPowerShellDependencies)
 }
 
 func buildTopPowerShellDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
@@ -93,10 +93,6 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 		})
 	}
 	return recs
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func sortedDependencyUnion(values ...map[string]struct{}) []string {

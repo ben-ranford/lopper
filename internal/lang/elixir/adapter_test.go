@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -270,12 +271,12 @@ func TestParseImportsIgnoresAliasLikeTextInMultilineStrings(t *testing.T) {
 }
 
 func TestResolveWeights(t *testing.T) {
-	defaults := resolveWeights(nil)
+	defaults := shared.ResolveRemovalCandidateWeights(nil)
 	if defaults != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default weights, got %#v", defaults)
 	}
 	custom := report.RemovalCandidateWeights{Usage: 0.6, Impact: 0.2, Confidence: 0.2}
-	got := resolveWeights(&custom)
+	got := shared.ResolveRemovalCandidateWeights(&custom)
 	if got != report.NormalizeRemovalCandidateWeights(custom) {
 		t.Fatalf("expected normalized custom weights, got %#v", got)
 	}

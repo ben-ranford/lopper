@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -159,11 +160,11 @@ func TestSwiftThresholdAndNormalizationHelpers(t *testing.T) {
 	}
 
 	defaultWeights := report.DefaultRemovalCandidateWeights()
-	if got := resolveRemovalCandidateWeights(nil); got != defaultWeights {
+	if got := shared.ResolveRemovalCandidateWeights(nil); got != defaultWeights {
 		t.Fatalf("expected default weights, got %#v", got)
 	}
 	customWeights := report.RemovalCandidateWeights{Usage: 0.2, Impact: 0.3, Confidence: 0.5}
-	if got := resolveRemovalCandidateWeights(&customWeights); got != customWeights {
+	if got := shared.ResolveRemovalCandidateWeights(&customWeights); got != customWeights {
 		t.Fatalf("expected provided weights to remain unchanged, got %#v", got)
 	}
 

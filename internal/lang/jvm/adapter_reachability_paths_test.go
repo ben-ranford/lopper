@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -74,7 +75,7 @@ func testJVMRootlessSourceLayoutAndCustomWeights(t *testing.T) {
 		t.Fatalf("expected absolute rootless source layout to stay empty, got %q", got)
 	}
 	custom := &report.RemovalCandidateWeights{Usage: 1, Impact: 2, Confidence: 3}
-	got := resolveRemovalCandidateWeights(custom)
+	got := shared.ResolveRemovalCandidateWeights(custom)
 	if got == report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected non-nil removal weights to normalize instead of using defaults")
 	}

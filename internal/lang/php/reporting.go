@@ -15,7 +15,7 @@ func buildRequestedPHPDependencies(req language.Request, scan scanResult) ([]rep
 		depReport, warnings := buildDependencyReport(dependency, scan, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations))
 		return []report.DependencyReport{depReport}, warnings
 	case req.TopN > 0:
-		return buildTopPHPDependencies(req.TopN, scan, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
+		return buildTopPHPDependencies(req.TopN, scan, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights))
 	default:
 		return nil, []string{"no dependency or top-N target provided"}
 	}
@@ -127,10 +127,6 @@ func buildRecommendations(dep report.DependencyReport, minUsagePercent int) []re
 		})
 	}
 	return recs
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func hasRiskCue(cues []report.RiskCue, code string) bool {

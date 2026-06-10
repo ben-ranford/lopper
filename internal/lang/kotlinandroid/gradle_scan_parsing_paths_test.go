@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -347,7 +348,7 @@ func TestLookupBuilderBranches(t *testing.T) {
 	}
 
 	weights := report.RemovalCandidateWeights{Usage: 2, Impact: 3, Confidence: 5}
-	normalized := resolveRemovalCandidateWeights(&weights)
+	normalized := shared.ResolveRemovalCandidateWeights(&weights)
 	if normalized.Usage <= 0 || normalized.Impact <= 0 || normalized.Confidence <= 0 {
 		t.Fatalf("expected normalized positive weights, got %#v", normalized)
 	}

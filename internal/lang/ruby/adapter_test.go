@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -430,7 +431,7 @@ func testRubyRequireParsingAndRiskRecommendations(t *testing.T) {
 	if len(warnings) != 0 || len(dep.RiskCues) == 0 || len(dep.Recommendations) == 0 {
 		t.Fatalf("expected runtime-require risk cues and recommendations, got dep=%#v warnings=%#v", dep, warnings)
 	}
-	if got := resolveRemovalCandidateWeights(nil); got != report.DefaultRemovalCandidateWeights() {
+	if got := shared.ResolveRemovalCandidateWeights(nil); got != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default removal weights, got %#v", got)
 	}
 }

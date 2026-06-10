@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -109,7 +110,7 @@ func TestPowerShellReportHelpersCoverNilAndEmptyBranches(t *testing.T) {
 		t.Fatalf("expected remove-unused-module recommendation, got %#v", dep.Recommendations)
 	}
 
-	if weights := resolveRemovalCandidateWeights(nil); weights != report.DefaultRemovalCandidateWeights() {
+	if weights := shared.ResolveRemovalCandidateWeights(nil); weights != report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected default removal-candidate weights, got %#v", weights)
 	}
 }

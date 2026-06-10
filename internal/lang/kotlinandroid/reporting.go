@@ -7,7 +7,7 @@ import (
 )
 
 func buildRequestedKotlinAndroidDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopKotlinAndroidDependencies)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, buildTopKotlinAndroidDependencies)
 }
 
 func buildTopKotlinAndroidDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
@@ -22,10 +22,6 @@ func kotlinAndroidFileUsages(scan scanResult) []shared.FileUsage {
 	importsOf := func(file fileScan) []shared.ImportRecord { return file.Imports }
 	usageOf := func(file fileScan) map[string]int { return file.Usage }
 	return shared.MapFileUsages(scan.Files, importsOf, usageOf)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {

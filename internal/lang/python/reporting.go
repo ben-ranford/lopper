@@ -9,7 +9,7 @@ import (
 )
 
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, resolveRemovalCandidateWeights, buildTopPythonDependencies)
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, buildTopPythonDependencies)
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
@@ -18,10 +18,6 @@ func buildTopPythonDependencies(topN int, scan scanResult, weights report.Remova
 		return buildDependencyReport(dependency, scan)
 	}
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
-}
-
-func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
