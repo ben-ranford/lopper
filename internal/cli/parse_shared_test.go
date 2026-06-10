@@ -119,6 +119,9 @@ func TestParseArgsErrorsAndHelp(t *testing.T) {
 	if _, err := ParseArgs([]string{"tui", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected tui help request error, got %v", err)
 	}
+	if _, err := ParseArgs([]string{"mcp", helpFlag}); !errors.Is(err, ErrHelpRequested) {
+		t.Fatalf("expected mcp help request error, got %v", err)
+	}
 	if _, err := ParseArgs([]string{"unknown"}); err == nil {
 		t.Fatalf("expected unknown command error")
 	}

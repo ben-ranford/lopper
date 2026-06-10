@@ -15,8 +15,15 @@ var (
 	ErrMultipleLanguages = errors.New("multiple language adapters matched")
 )
 
+var absPath = filepath.Abs
+
 type Registry struct {
 	adapters map[string]Adapter
+}
+
+type AdapterMetadata struct {
+	ID      string
+	Aliases []string
 }
 
 type AdapterFilter func(Adapter) bool
@@ -127,6 +134,31 @@ func (r *Registry) IDs() []string {
 	return ids
 }
 
+func (r *Registry) Metadata() []AdapterMetadata {
+	if r == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	items := make([]AdapterMetadata, 0, len(r.adapters))
+	for _, adapter := range r.adapters {
+		adapterID := adapter.ID()
+		if _, ok := seen[adapterID]; ok {
+			continue
+		}
+		seen[adapterID] = struct{}{}
+		items = append(items, AdapterMetadata{
+			ID:      adapterID,
+			Aliases: append([]string{}, adapter.Aliases()...),
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].ID < items[j].ID
+	})
+	return items
+}
+
 func (r *Registry) resolveAuto(ctx context.Context, repoPath string, filter AdapterFilter) ([]Candidate, error) {
 	matches, err := r.detectMatches(ctx, repoPath, filter)
 	if err != nil {
@@ -211,7 +243,7 @@ func normalizeDetection(repoPath string, detection Detection) Detection {
 		detection.Confidence = 1
 	}
 	if len(detection.Roots) == 0 && repoPath != "" {
-		if abs, err := filepath.Abs(repoPath); err == nil {
+		if abs, err := absPath(repoPath); err == nil {
 			detection.Roots = []string{abs}
 		} else {
 			detection.Roots = []string{repoPath}

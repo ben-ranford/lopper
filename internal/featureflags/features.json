@@ -45,5 +45,11 @@
     "name": "vscode-multi-root-workflows-preview",
     "description": "Enable multi-root VS Code analysis workflows, dependency explorer detail views, baseline commands, and export commands.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0008",
+    "name": "mcp-server-preview",
+    "description": "Enable the local stdio MCP server for read-only dependency analysis workflows.",
+    "lifecycle": "preview"
   }
 ]

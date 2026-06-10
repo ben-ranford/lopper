@@ -90,6 +90,14 @@ Launch the interactive TUI:
 lopper tui --repo . --language all
 ```
 
+Run the local MCP server for agent workflows:
+
+```bash
+lopper mcp --enable-feature mcp-server-preview
+```
+
+See [docs/mcp.md](docs/mcp.md) for tool names, input schemas, client configuration, and safety behavior.
+
 Tune thresholds and score weights:
 
 ```bash
@@ -267,6 +275,7 @@ For watched hotspot packages, run `make mem-profiles` to capture alloc-space sum
 - Memory profiling workflow: `docs/memory-profiling.md`
 - SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`
+- MCP server integration: `docs/mcp.md`
 - Runtime trace annotations: `scripts/runtime/`
 - Adapter and architecture extensibility: `docs/extensibility.md`
 - CI and release workflow: `docs/ci-usage.md`

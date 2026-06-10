@@ -66,6 +66,10 @@ func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, c
 }
 
 func resolveDefaultFeatureSet() (featureflags.Set, error) {
+	return resolveFeatureRefs(nil, nil)
+}
+
+func resolveFeatureRefs(enable, disable []string) (featureflags.Set, error) {
 	channel, lock, err := resolveFeatureBuildContext()
 	if err != nil {
 		return featureflags.Set{}, err
@@ -73,6 +77,8 @@ func resolveDefaultFeatureSet() (featureflags.Set, error) {
 	return featureRegistryProvider().Resolve(featureflags.ResolveOptions{
 		Channel: channel,
 		Lock:    lock,
+		Enable:  append([]string{}, enable...),
+		Disable: append([]string{}, disable...),
 	})
 }
 

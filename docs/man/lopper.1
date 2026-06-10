@@ -1,6 +1,20 @@
-package cli
-
-const usage = `Usage:
+.TH LOPPER 1 "2026-06-10" "lopper" "User Commands"
+.SH NAME
+lopper \- local-first CLI/TUI for dependency surface analysis
+.SH SYNOPSIS
+.nf
+lopper [--version] [tui]
+lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart]
+lopper analyse --top N [options]
+lopper analyse <dependency> [options]
+lopper dashboard [--repos PATH1,PATH2 | --config PATH]
+lopper mcp [--enable-feature mcp-server-preview]
+.fi
+.SH DESCRIPTION
+This man page is generated from the built-in command usage output.
+.PP
+Usage and options:
+.nf
   lopper [--version] [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY]
   lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--suggest-only | (--apply-codemod --apply-codemod-confirm [--allow-dirty])]
@@ -75,8 +89,10 @@ Options:
   --version                  Show CLI version metadata
   mcp                        Run a local stdio MCP server with read-only dependency analysis tools
   -h, --help                 Show this help text
-`
-
-func Usage() string {
-	return usage
-}
+.fi
+.SH SEE ALSO
+The lopper project homepage and release notes are published at:
+.I https://github.com/ben-ranford/lopper
+.SH BUGS
+Report issues at:
+.I https://github.com/ben-ranford/lopper/issues
