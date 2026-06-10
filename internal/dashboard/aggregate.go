@@ -14,9 +14,14 @@ type RepoAnalysis struct {
 	Err    error
 }
 
+type crossRepoRepository struct {
+	Label string
+}
+
 func Aggregate(generatedAt time.Time, analyses []RepoAnalysis) Report {
 	results := make([]RepoResult, 0, len(analyses))
-	crossRepoIndex := make(map[string]map[string]struct{})
+	crossRepoIndex := make(map[string]map[string]crossRepoRepository)
+	repoNameCounts := countRepoNames(analyses)
 	sourceWarnings := make([]string, 0)
 	summary := Summary{
 		TotalRepos: len(analyses),
@@ -54,16 +59,17 @@ func Aggregate(generatedAt time.Time, analyses []RepoAnalysis) Report {
 		summary.TotalWasteCandidates += wasteCandidateCount
 		summary.CriticalCVEs += criticalCVEs
 
-		repoName := repoResult.Name
+		repoID := repoIdentity(analysis.Input)
+		repoLabel := crossRepoRepositoryLabel(analysis.Input, repoNameCounts)
 		for _, dependency := range analysis.Report.Dependencies {
 			name := strings.TrimSpace(dependency.Name)
 			if name == "" {
 				continue
 			}
 			if _, ok := crossRepoIndex[name]; !ok {
-				crossRepoIndex[name] = make(map[string]struct{})
+				crossRepoIndex[name] = make(map[string]crossRepoRepository)
 			}
-			crossRepoIndex[name][repoName] = struct{}{}
+			crossRepoIndex[name][repoID] = crossRepoRepository{Label: repoLabel}
 		}
 
 		results = append(results, repoResult)
@@ -160,15 +166,47 @@ func countDeniedLicenses(reportData report.Report) int {
 	return count
 }
 
-func buildCrossRepoDependencies(index map[string]map[string]struct{}) []CrossRepoDependency {
+func countRepoNames(analyses []RepoAnalysis) map[string]int {
+	counts := make(map[string]int, len(analyses))
+	for _, analysis := range analyses {
+		name := strings.TrimSpace(analysis.Input.Name)
+		if name == "" {
+			name = strings.TrimSpace(analysis.Input.Path)
+		}
+		counts[name]++
+	}
+	return counts
+}
+
+func repoIdentity(input RepoInput) string {
+	path := strings.TrimSpace(input.Path)
+	if path != "" {
+		return path
+	}
+	return strings.TrimSpace(input.Name)
+}
+
+func crossRepoRepositoryLabel(input RepoInput, repoNameCounts map[string]int) string {
+	name := strings.TrimSpace(input.Name)
+	path := strings.TrimSpace(input.Path)
+	if name == "" {
+		return path
+	}
+	if repoNameCounts[name] > 1 && path != "" {
+		return name + " (" + path + ")"
+	}
+	return name
+}
+
+func buildCrossRepoDependencies(index map[string]map[string]crossRepoRepository) []CrossRepoDependency {
 	items := make([]CrossRepoDependency, 0)
 	for dependencyName, repoSet := range index {
 		if len(repoSet) < 3 {
 			continue
 		}
 		repositories := make([]string, 0, len(repoSet))
-		for repoName := range repoSet {
-			repositories = append(repositories, repoName)
+		for _, repo := range repoSet {
+			repositories = append(repositories, repo.Label)
 		}
 		sort.Strings(repositories)
 		items = append(items, CrossRepoDependency{
