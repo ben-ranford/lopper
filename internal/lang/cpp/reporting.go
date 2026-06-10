@@ -48,10 +48,7 @@ func buildTopCPPDependencies(topN int, scan scanResult, weights report.RemovalCa
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage bool) (report.DependencyReport, []string) {

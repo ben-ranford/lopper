@@ -6,7 +6,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 func buildRequestedPHPDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
@@ -23,10 +22,7 @@ func buildRequestedPHPDependencies(req language.Request, scan scanResult) ([]rep
 }
 
 func resolveMinUsageRecommendationThreshold(threshold *int) int {
-	if threshold != nil {
-		return *threshold
-	}
-	return thresholds.Defaults().MinUsagePercentForRecommendations
+	return shared.ResolveMinUsageRecommendationThreshold(threshold)
 }
 
 func buildTopPHPDependencies(topN int, scan scanResult, minUsagePercent int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
@@ -134,10 +130,7 @@ func buildRecommendations(dep report.DependencyReport, minUsagePercent int) []re
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func hasRiskCue(cues []report.RiskCue, code string) bool {

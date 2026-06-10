@@ -146,10 +146,7 @@ func buildTopPythonDependencies(topN int, scan scanResult, weights report.Remova
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 type importBinding = shared.ImportRecord

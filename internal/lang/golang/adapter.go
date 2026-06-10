@@ -81,10 +81,7 @@ func buildTopGoReports(topN int, dependencies []string, scan scanResult, weights
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scanResult, error) {

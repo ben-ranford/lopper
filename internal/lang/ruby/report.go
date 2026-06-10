@@ -35,10 +35,7 @@ func collectRubyDependencyStats(dependency string, files []fileScan) shared.Depe
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 func sortedDependencyUnion(values ...map[string]struct{}) []string {
