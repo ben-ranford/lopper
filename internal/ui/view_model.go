@@ -16,6 +16,7 @@ type summaryDependencyView struct {
 	License                *report.DependencyLicense
 	Provenance             *report.DependencyProvenance
 	CodemodApply           *report.CodemodApplyReport
+	detail                 detailDependencyView
 }
 
 type summaryReportView struct {
@@ -83,9 +84,17 @@ func mapSummaryDependencies(dependencies []report.DependencyReport) []summaryDep
 			License:                dep.License,
 			Provenance:             dep.Provenance,
 			CodemodApply:           summaryCodemodApplyView(dep.Codemod),
+			detail:                 mapDetailDependencyView(dep),
 		})
 	}
 	return views
+}
+
+func summaryDependencyDetailView(dep summaryDependencyView) detailDependencyView {
+	if dep.detail.Name != "" || dep.detail.Language != "" {
+		return dep.detail
+	}
+	return mapDetailDependencyView(summaryDependencyToReport(dep))
 }
 
 func buildSummaryDisplayView(base summaryReportView, sorted []summaryDependencyView, paged []summaryDependencyView) summaryDisplayView {

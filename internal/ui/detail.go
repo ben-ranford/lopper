@@ -47,17 +47,37 @@ func (d *Detail) Show(ctx context.Context, dependency string) error {
 		return err
 	}
 	if len(reportData.Dependencies) == 0 {
-		return writef(d.Out, "No data for dependency %q\n", dependency)
+		return d.printNoData(dependency)
 	}
 
-	dep := mapDetailDependencyView(reportData.Dependencies[0])
+	return d.printDependency(mapDetailDependencyView(reportData.Dependencies[0]), reportData.Warnings)
+}
+
+func (d *Detail) showLoadedSummary(dependency string, reportView summaryReportView) error {
+	if dependency == "" {
+		return fmt.Errorf("dependency name is required")
+	}
+
+	languageID, dependency := parseDependencyLanguage(d.Language, dependency)
+	dep, ok := findSummaryDependencyDetail(reportView.Dependencies, languageID, dependency)
+	if !ok {
+		return d.printNoData(dependency)
+	}
+	return d.printDependency(dep, reportView.Warnings)
+}
+
+func (d *Detail) printNoData(dependency string) error {
+	return writef(d.Out, "No data for dependency %q\n", dependency)
+}
+
+func (d *Detail) printDependency(dep detailDependencyView, warnings []string) error {
 	if err := printDependencyHeader(d.Out, dep); err != nil {
 		return err
 	}
 	if err := printDependencySections(d.Out, dep); err != nil {
 		return err
 	}
-	return printWarnings(d.Out, reportData.Warnings)
+	return printWarnings(d.Out, warnings)
 }
 
 func parseDependencyLanguage(defaultLanguage, dependency string) (string, string) {
@@ -65,6 +85,28 @@ func parseDependencyLanguage(defaultLanguage, dependency string) (string, string
 		return parts[0], parts[1]
 	}
 	return defaultLanguage, dependency
+}
+
+func findSummaryDependencyDetail(dependencies []summaryDependencyView, languageID string, dependency string) (detailDependencyView, bool) {
+	for _, dep := range dependencies {
+		if dep.Name != dependency {
+			continue
+		}
+		if !summaryDependencyLanguageMatches(languageID, dep.Language) {
+			continue
+		}
+		return summaryDependencyDetailView(dep), true
+	}
+	return detailDependencyView{}, false
+}
+
+func summaryDependencyLanguageMatches(languageID string, dependencyLanguage string) bool {
+	switch strings.TrimSpace(languageID) {
+	case "", "auto", "all":
+		return true
+	default:
+		return dependencyLanguage == "" || dependencyLanguage == languageID
+	}
 }
 
 func printDependencyHeader(out io.Writer, dep detailDependencyView) error {

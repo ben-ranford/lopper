@@ -130,6 +130,51 @@ func TestDetailParsesLanguagePrefix(t *testing.T) {
 	}
 }
 
+func TestDetailShowLoadedSummaryBranches(t *testing.T) {
+	reportView := mapSummaryReportView(report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "other", Language: "python", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+			{Name: "dep", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		},
+	})
+
+	var out bytes.Buffer
+	detail := NewDetail(&out, nil, ".", "auto")
+	if err := detail.showLoadedSummary("js-ts:dep", reportView); err != nil {
+		t.Fatalf("show loaded detail: %v", err)
+	}
+	if !strings.Contains(out.String(), "Language: js-ts") {
+		t.Fatalf("expected loaded detail language output, got %q", out.String())
+	}
+
+	out.Reset()
+	if err := detail.showLoadedSummary("python:dep", reportView); err != nil {
+		t.Fatalf("show missing language detail: %v", err)
+	}
+	if !strings.Contains(out.String(), `No data for dependency "dep"`) {
+		t.Fatalf("expected no-data output for language mismatch, got %q", out.String())
+	}
+
+	if err := detail.showLoadedSummary("", reportView); err == nil {
+		t.Fatalf("expected empty dependency to fail")
+	}
+}
+
+func TestSummaryDependencyDetailViewFallback(t *testing.T) {
+	dep := summaryDependencyView{
+		Name:              "fallback",
+		Language:          "js-ts",
+		UsedExportsCount:  1,
+		TotalExportsCount: 2,
+		UsedPercent:       50,
+	}
+
+	detail := summaryDependencyDetailView(dep)
+	if detail.Name != "fallback" || detail.Language != "js-ts" || detail.UsedPercent != 50 {
+		t.Fatalf("expected fallback detail to be mapped from summary fields, got %#v", detail)
+	}
+}
+
 func TestDetailRejectsEmptyDependency(t *testing.T) {
 	var out bytes.Buffer
 	detail := NewDetail(&out, &stubAnalyzer{report: report.Report{}}, ".", "")
@@ -254,6 +299,12 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 		Modules: []detailRuntimeModuleView{
 			{Module: "pkg/index", Count: 2},
 		},
+		ParentModules: []detailRuntimeModuleView{
+			{Module: "pkg/parent", Count: 1},
+		},
+		Entrypoints: []detailRuntimeModuleView{
+			{Module: "pkg/main", Count: 1},
+		},
 		TopSymbols: []detailRuntimeSymbolView{
 			{Symbol: "index", Count: 2},
 		},
@@ -269,6 +320,9 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 	}
 	if !strings.Contains(text, "modules: pkg/index (2)") || !strings.Contains(text, "top symbols: index (2)") {
 		t.Fatalf("expected runtime evidence output, got %q", text)
+	}
+	if !strings.Contains(text, "parent modules: pkg/parent (1)") || !strings.Contains(text, "entrypoints: pkg/main (1)") {
+		t.Fatalf("expected runtime parent and entrypoint output, got %q", text)
 	}
 }
 
