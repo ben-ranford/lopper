@@ -74,34 +74,28 @@ func registryForResolve(t *testing.T, js Detection, python Detection) *Registry 
 	return registryWithTestAdapters(t, &testAdapter{id: "js-ts", detection: js}, &testAdapter{id: "python", detection: python})
 }
 
-func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
-	registry := registryForResolve(t, Detection{Matched: true, Confidence: 70}, Detection{Matched: true, Confidence: 85})
-
-	candidates, err := registry.Resolve(context.Background(), ".", Auto)
+func requireResolvedAdapterID(t *testing.T, registry *Registry, mode string, want string) {
+	t.Helper()
+	candidates, err := registry.Resolve(context.Background(), ".", mode)
 	if err != nil {
-		t.Fatalf("resolve auto: %v", err)
+		t.Fatalf("resolve %v: %v", mode, err)
 	}
 	if len(candidates) != 1 {
 		t.Fatalf("expected one candidate, got %d", len(candidates))
 	}
-	if candidates[0].Adapter.ID() != "python" {
-		t.Fatalf("expected python adapter, got %q", candidates[0].Adapter.ID())
+	if candidates[0].Adapter.ID() != want {
+		t.Fatalf("expected %s adapter, got %q", want, candidates[0].Adapter.ID())
 	}
+}
+
+func TestResolveAutoSelectsHighestConfidence(t *testing.T) {
+	registry := registryForResolve(t, Detection{Matched: true, Confidence: 70}, Detection{Matched: true, Confidence: 85})
+	requireResolvedAdapterID(t, registry, Auto, "python")
 }
 
 func TestResolveAllReturnsMatches(t *testing.T) {
 	registry := registryForResolve(t, Detection{Matched: true, Confidence: 70}, Detection{Matched: false, Confidence: 0})
-
-	candidates, err := registry.Resolve(context.Background(), ".", All)
-	if err != nil {
-		t.Fatalf("resolve all: %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("expected one matched candidate, got %d", len(candidates))
-	}
-	if candidates[0].Adapter.ID() != "js-ts" {
-		t.Fatalf("expected js-ts adapter, got %q", candidates[0].Adapter.ID())
-	}
+	requireResolvedAdapterID(t, registry, All, "js-ts")
 }
 
 func TestResolveAutoTieReturnsError(t *testing.T) {
