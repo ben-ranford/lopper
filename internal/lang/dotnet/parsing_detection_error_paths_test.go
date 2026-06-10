@@ -272,18 +272,6 @@ func TestIsRepoBoundedPathAdditionalBranches(t *testing.T) {
 	}
 }
 
-func TestStripXMLCommentsBytesAdditionalBranches(t *testing.T) {
-	got := stripXMLCommentsBytes([]byte("<Project><!-- comment --><ItemGroup /></Project>"))
-	if !bytes.Equal(got, []byte("<Project> <ItemGroup /></Project>")) {
-		t.Fatalf("expected inline XML comment to be stripped with spacing preserved, got %q", got)
-	}
-
-	got = stripXMLCommentsBytes([]byte("<Project><ItemGroup /></Project><!-- trailing"))
-	if !bytes.Equal(got, []byte("<Project><ItemGroup /></Project>")) {
-		t.Fatalf("expected unterminated trailing XML comment to be stripped, got %q", got)
-	}
-}
-
 func TestAnalyseDeclaredDependenciesWithoutTarget(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, appProjectName), `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`)
@@ -331,18 +319,6 @@ func TestParseImportsIgnoreBlockComments(t *testing.T) {
 	}
 	if imports[0].Location.Line != 4 {
 		t.Fatalf("expected import line 4 after skipping block comment, got %#v", imports[0].Location)
-	}
-}
-
-func TestStripXMLCommentsBytesFastPathAllocations(t *testing.T) {
-	content := []byte("\n  <Project><ItemGroup><PackageReference Include=\"Dapper\" /></ItemGroup></Project>  \n")
-	if allocs := testing.AllocsPerRun(1000, func() {
-		got := stripXMLCommentsBytes(content)
-		if !bytes.Equal(got, []byte("<Project><ItemGroup><PackageReference Include=\"Dapper\" /></ItemGroup></Project>")) {
-			t.Fatalf("unexpected stripped xml: %q", got)
-		}
-	}); allocs != 0 {
-		t.Fatalf("expected zero allocations on no-comment fast path, got %f", allocs)
 	}
 }
 
@@ -441,13 +417,6 @@ func assertRiskyDependencyReport(t *testing.T) {
 }
 
 func TestCaptureMatchesAndSolutionRootsBranches(t *testing.T) {
-	if len(captureMatches(nil)) != 0 {
-		t.Fatalf("expected nil matches result")
-	}
-	if got := captureMatches([][][]byte{{[]byte("only-one-element")}}); len(got) != 0 {
-		t.Fatalf("expected empty result for malformed match set, got %#v", got)
-	}
-
 	repo := t.TempDir()
 	sln := filepath.Join(repo, "App.sln")
 	testutil.MustWriteFile(t, sln, `

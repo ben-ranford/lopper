@@ -84,7 +84,7 @@ func TestKotlinAndroidLookupAndGradleMoreBranches(t *testing.T) {
 		t.Fatalf("unexpected artifact lookup strategy result: prefixes=%#v aliases=%#v", prefixes, aliases)
 	}
 
-	if descriptors := parseGradleMapDependencies(`implementation(group: "com.example")`); len(descriptors) != 0 {
+	if descriptors := parseGradleDependencyContent(`implementation(group = "com.example")`); len(descriptors) != 0 {
 		t.Fatalf("expected incomplete map-style gradle dependency to be ignored, got %#v", descriptors)
 	}
 

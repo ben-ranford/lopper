@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 type manifestDiscoveryResult struct {
@@ -299,36 +300,19 @@ func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string
 	if err != nil {
 		return manifestMeta{}, nil, err
 	}
-	return parseCargoManifestContent(string(content)), parseCargoDependencies(string(content)), nil
+	document, err := parseCargoManifestDocument(content)
+	if err != nil {
+		return manifestMeta{}, nil, fmt.Errorf("parse Cargo manifest %s: %w", relativeManifestPath(repoPath, manifestPath), err)
+	}
+	return cargoManifestMeta(document), cargoManifestDependencies(document), nil
 }
 
 func parseCargoManifestContent(content string) manifestMeta {
-	meta := manifestMeta{}
-	inWorkspaceMembers := false
-	onSection := func(section string) {
-		inWorkspaceMembers = false
-		markManifestPackageSection(section, &meta)
+	document, err := parseCargoManifestDocument([]byte(content))
+	if err != nil {
+		return manifestMeta{}
 	}
-	onLine := func(section, clean string) {
-		inWorkspaceMembers = parseWorkspaceMembersLine(clean, section, inWorkspaceMembers, &meta)
-	}
-	consumeTomlContent(content, onSection, onLine)
-	meta.WorkspaceMembers = dedupeStrings(meta.WorkspaceMembers)
-	return meta
-}
-
-func parseTomlSectionName(clean string) (string, bool) {
-	match := tablePattern.FindStringSubmatch(clean)
-	if len(match) != 2 {
-		return "", false
-	}
-	return strings.ToLower(strings.TrimSpace(match[1])), true
-}
-
-func markManifestPackageSection(section string, meta *manifestMeta) {
-	if section == "package" {
-		meta.HasPackage = true
-	}
+	return cargoManifestMeta(document)
 }
 
 func parseWorkspaceMembersLine(clean, section string, inWorkspaceMembers bool, meta *manifestMeta) bool {
@@ -360,29 +344,11 @@ func workspaceMembersAssignmentValue(clean string) (string, bool) {
 }
 
 func parseCargoDependencies(content string) map[string]dependencyInfo {
-	deps := make(map[string]dependencyInfo)
-	consumeTomlContent(content, nil, func(section, clean string) {
-		addDependencyFromLine(deps, section, clean)
-	})
-	return deps
-}
-
-func consumeTomlContent(content string, onSection func(string), onLine func(section, clean string)) {
-	section := ""
-	for _, line := range strings.Split(content, "\n") {
-		clean := strings.TrimSpace(stripTomlComment(line))
-		if clean == "" {
-			continue
-		}
-		if nextSection, isSection := parseTomlSectionName(clean); isSection {
-			section = nextSection
-			if onSection != nil {
-				onSection(section)
-			}
-			continue
-		}
-		onLine(section, clean)
+	document, err := parseCargoManifestDocument([]byte(content))
+	if err != nil {
+		return map[string]dependencyInfo{}
 	}
+	return cargoManifestDependencies(document)
 }
 
 func addDependencyFromLine(deps map[string]dependencyInfo, section, clean string) {
@@ -460,15 +426,176 @@ func parseTomlAssignment(line string) (string, string, bool) {
 }
 
 func parseInlineFields(value string) map[string]string {
+	document, err := parseInlineTomlFields(value)
+	if err == nil {
+		return flattenTomlStringFields(document)
+	}
+
 	fields := make(map[string]string)
-	for _, match := range stringFieldPattern.FindAllStringSubmatch(value, -1) {
-		if len(match) != 3 {
+	for _, item := range strings.Split(strings.Trim(value, "{}"), ",") {
+		key, raw, ok := parseTomlAssignment(item)
+		if !ok {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(match[1]))
-		fields[key] = strings.Trim(strings.TrimSpace(match[2]), `"'`)
+		unquoted, ok := parseTomlStringLiteral(raw)
+		if !ok {
+			continue
+		}
+		fields[strings.ToLower(key)] = unquoted
 	}
 	return fields
+}
+
+func parseCargoManifestDocument(content []byte) (map[string]any, error) {
+	document := make(map[string]any)
+	if err := toml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	return document, nil
+}
+
+func cargoManifestMeta(document map[string]any) manifestMeta {
+	meta := manifestMeta{}
+	if _, ok := document["package"].(map[string]any); ok {
+		meta.HasPackage = true
+	}
+	workspace, _ := document["workspace"].(map[string]any)
+	meta.WorkspaceMembers = dedupeStrings(tomlStringSlice(workspace["members"]))
+	return meta
+}
+
+func cargoManifestDependencies(document map[string]any) map[string]dependencyInfo {
+	deps := make(map[string]dependencyInfo)
+	addTomlDependencyTable(deps, document["dependencies"])
+	addTomlDependencyTable(deps, document["dev-dependencies"])
+	addTomlDependencyTable(deps, document["build-dependencies"])
+	if workspace, ok := document["workspace"].(map[string]any); ok {
+		addTomlDependencyTable(deps, workspace["dependencies"])
+	}
+	if target, ok := document["target"].(map[string]any); ok {
+		addTargetTomlDependencyTables(deps, target)
+	}
+	return deps
+}
+
+func addTargetTomlDependencyTables(deps map[string]dependencyInfo, target map[string]any) {
+	for _, value := range target {
+		targetTable, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		addTomlDependencyTable(deps, targetTable["dependencies"])
+		addTomlDependencyTable(deps, targetTable["dev-dependencies"])
+		addTomlDependencyTable(deps, targetTable["build-dependencies"])
+	}
+}
+
+func addTomlDependencyTable(deps map[string]dependencyInfo, value any) {
+	table, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for alias, raw := range table {
+		addTomlDependency(deps, alias, raw)
+	}
+}
+
+func addTomlDependency(deps map[string]dependencyInfo, alias string, raw any) {
+	alias = normalizeDependencyID(alias)
+	if alias == "" {
+		return
+	}
+	info := dependencyInfo{Canonical: alias}
+	if fields, ok := raw.(map[string]any); ok {
+		if pkg := tomlString(fields["package"]); pkg != "" {
+			info.Canonical = normalizeDependencyID(pkg)
+			info.Renamed = info.Canonical != alias
+		}
+		if tomlString(fields["path"]) != "" {
+			info.LocalPath = true
+		}
+	}
+	deps[alias] = info
+	ensureCanonicalDependencyAlias(deps, info)
+}
+
+func tomlString(value any) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func tomlStringSlice(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		text := tomlString(item)
+		if text != "" {
+			values = append(values, text)
+		}
+	}
+	return values
+}
+
+func parseInlineTomlFields(value string) (map[string]any, error) {
+	document := make(map[string]any)
+	content := []byte("value = " + strings.TrimSpace(value))
+	if err := toml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	fields, ok := document["value"].(map[string]any)
+	if !ok {
+		return map[string]any{}, nil
+	}
+	return fields, nil
+}
+
+func flattenTomlStringFields(document map[string]any) map[string]string {
+	fields := make(map[string]string)
+	flattenTomlStringFieldsInto(fields, "", document)
+	return fields
+}
+
+func flattenTomlStringFieldsInto(fields map[string]string, prefix string, document map[string]any) {
+	for key, value := range document {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if prefix != "" {
+			key = prefix + "." + key
+		}
+		switch typed := value.(type) {
+		case string:
+			fields[key] = strings.TrimSpace(typed)
+		case map[string]any:
+			flattenTomlStringFieldsInto(fields, key, typed)
+		}
+	}
+}
+
+func parseTomlStringLiteral(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 {
+		return "", false
+	}
+	if (value[0] != '"' || value[len(value)-1] != '"') && (value[0] != '\'' || value[len(value)-1] != '\'') {
+		return "", false
+	}
+	return strings.Trim(value, `"'`), true
+}
+
+func relativeManifestPath(repoPath, manifestPath string) string {
+	relative, err := filepath.Rel(repoPath, manifestPath)
+	if err != nil {
+		return manifestPath
+	}
+	return relative
 }
 
 func stripTomlComment(line string) string {

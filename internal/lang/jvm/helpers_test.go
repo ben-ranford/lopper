@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -525,11 +524,6 @@ func TestJVMParseHelpersEdgeBranches(t *testing.T) {
 	descriptors := parseDependencyDescriptorsFromMatches(matches)
 	if len(descriptors) != 1 || descriptors[0].Name != "lib" {
 		t.Fatalf("unexpected descriptor parse result: %#v", descriptors)
-	}
-
-	pattern := regexp.MustCompile(`does-not-match`)
-	if got := parseGradleMatches("", pattern); len(got) != 0 {
-		t.Fatalf("expected no gradle matches for nil pattern, got %#v", got)
 	}
 
 	if got := fallbackDependency(""); got != "" {

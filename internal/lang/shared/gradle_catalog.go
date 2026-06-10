@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 const gradleCatalogScopeKeySeparator = "\x00"
@@ -84,34 +85,17 @@ type gradleCatalogReferenceCollector struct {
 }
 
 type gradleCatalogFileParser struct {
-	catalogName    string
-	relativePath   string
-	versions       map[string]string
-	libraries      map[string]GradleCatalogLibrary
-	bundleSpecs    map[string][]string
-	warnings       []string
-	section        string
-	pendingSection string
-	pendingKey     string
-	pendingValue   strings.Builder
-}
-
-type gradleCatalogDelimiterState struct {
-	braceDepth   int
-	bracketDepth int
-	inDouble     bool
-	inSingle     bool
+	catalogName  string
+	relativePath string
+	versions     map[string]string
+	libraries    map[string]GradleCatalogLibrary
+	bundleSpecs  map[string][]string
+	warnings     []string
 }
 
 var (
 	gradleCatalogCreateBlockPattern    = regexp.MustCompile(`(?ms)\bcreate\s*\(\s*["']([^"']+)["']\s*\)\s*\{(.*?)\}`)
 	gradleCatalogQuotedFilePathPattern = regexp.MustCompile(`["']([^"']+\.toml)["']`)
-	gradleCatalogSectionPattern        = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
-	gradleCatalogInlineFieldPattern    = regexp.MustCompile(`\b([A-Za-z0-9_.-]+)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
-	gradleCatalogNestedVersionRefRegex = regexp.MustCompile(`\bversion\s*=\s*\{\s*ref\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
-	gradleCatalogPropertyPattern       = regexp.MustCompile(`(?ms)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*(?:platform\s*\(\s*)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)`)
-	gradleCatalogBracketPattern        = regexp.MustCompile(`(?ms)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*(?:platform\s*\(\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*["']([^"']+)["']\s*\]`)
-	gradleCatalogFinderPattern         = regexp.MustCompile(`(?ms)\b(?:implementation|api|compileOnly|runtimeOnly|kapt|ksp|testImplementation|androidTestImplementation|testRuntimeOnly)\s*\(?\s*(?:platform\s*\(\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(findLibrary|findBundle)\s*\(\s*["']([^"']+)["']\s*\)\s*\.get\s*\(\s*\)`)
 	gradleCatalogAliasSeparatorPattern = regexp.MustCompile(`[-_.]+`)
 	gradleCatalogCollapsedSpacePattern = regexp.MustCompile(`\s+`)
 )
@@ -321,9 +305,7 @@ func (r *GradleCatalogResolver) ParseDependencyReferences(buildFilePath, content
 		return nil, nil
 	}
 	collector := newGradleCatalogReferenceCollector(r, buildFilePath)
-	collector.collectFinderMatches(content)
-	collector.collectBracketMatches(content)
-	collector.collectPropertyMatches(content)
+	collector.collectReferences(content)
 	return collector.dependencies, dedupeGradleCatalogWarnings(collector.warnings)
 }
 
@@ -335,67 +317,21 @@ func newGradleCatalogReferenceCollector(resolver *GradleCatalogResolver, buildFi
 	}
 }
 
-func (c *gradleCatalogReferenceCollector) collectFinderMatches(content string) {
-	for _, match := range gradleCatalogFinderPattern.FindAllStringSubmatch(content, -1) {
-		if len(match) != 4 {
+func (c *gradleCatalogReferenceCollector) collectReferences(content string) {
+	for _, reference := range parseGradleCatalogReferencesForFile(c.buildFilePath, content) {
+		if !c.resolver.shouldProcessCatalogReference(reference.catalogName) {
 			continue
 		}
-		catalogName := normalizeGradleCatalogName(match[1])
-		if !c.resolver.shouldProcessCatalogReference(catalogName) {
+		if reference.unsupportedExpression != "" {
+			c.warnings = append(c.warnings, fmt.Sprintf(unsupportedGradleCatalogReferenceFormat, reference.unsupportedExpression, relativeGradleCatalogPathFromFile(c.buildFilePath)))
 			continue
 		}
-		alias := normalizeGradleCatalogAccessor(match[3])
-		if strings.EqualFold(strings.TrimSpace(match[2]), "findBundle") {
-			c.addBundleReference(catalogName, alias)
+		if reference.bundle {
+			c.addBundleReference(reference.catalogName, reference.alias)
 			continue
 		}
-		c.addLibraryReference(catalogName, alias)
+		c.addLibraryReference(reference.catalogName, reference.alias)
 	}
-}
-
-func (c *gradleCatalogReferenceCollector) collectBracketMatches(content string) {
-	for _, match := range gradleCatalogBracketPattern.FindAllStringSubmatch(content, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		catalogName := normalizeGradleCatalogName(match[1])
-		if !c.resolver.shouldProcessCatalogReference(catalogName) {
-			continue
-		}
-		c.addLibraryReference(catalogName, normalizeGradleCatalogAccessor(match[2]))
-	}
-}
-
-func (c *gradleCatalogReferenceCollector) collectPropertyMatches(content string) {
-	for _, match := range gradleCatalogPropertyPattern.FindAllStringSubmatch(content, -1) {
-		if len(match) != 2 {
-			continue
-		}
-		c.handlePropertyExpression(normalizeGradleCatalogExpression(match[1]))
-	}
-}
-
-func (c *gradleCatalogReferenceCollector) handlePropertyExpression(expression string) {
-	if expression == "" || strings.Contains(expression, ".findlibrary") || strings.Contains(expression, ".findbundle") {
-		return
-	}
-	segments := strings.Split(expression, ".")
-	if len(segments) < 2 {
-		return
-	}
-	catalogName := normalizeGradleCatalogName(segments[0])
-	if !c.resolver.shouldProcessCatalogReference(catalogName) {
-		return
-	}
-	if len(segments) >= 3 && segments[1] == "bundles" {
-		c.addBundleReference(catalogName, normalizeGradleCatalogAccessor(strings.Join(segments[2:], ".")))
-		return
-	}
-	if len(segments) >= 3 && (segments[1] == "versions" || segments[1] == "plugins") {
-		c.warnings = append(c.warnings, fmt.Sprintf(unsupportedGradleCatalogReferenceFormat, expression, relativeGradleCatalogPathFromFile(c.buildFilePath)))
-		return
-	}
-	c.addLibraryReference(catalogName, normalizeGradleCatalogAccessor(strings.Join(segments[1:], ".")))
 }
 
 func (c *gradleCatalogReferenceCollector) addLibraryReference(catalogName, alias string) {
@@ -557,7 +493,12 @@ func parseGradleSettingsCatalogRefs(content, relativePath string) ([]gradleCatal
 
 func parseGradleCatalogFile(content, catalogName, relativePath string) (gradleCatalogFile, []string) {
 	parser := newGradleCatalogFileParser(catalogName, relativePath)
-	parser.parse(content)
+	document := make(map[string]any)
+	if err := toml.Unmarshal([]byte(content), &document); err != nil {
+		parser.warnings = append(parser.warnings, fmt.Sprintf("unable to parse Gradle version catalog %s: %v", relativePath, err))
+		return parser.finalize()
+	}
+	parser.consumeDocument(document)
 	return parser.finalize()
 }
 
@@ -571,106 +512,60 @@ func newGradleCatalogFileParser(catalogName, relativePath string) *gradleCatalog
 	}
 }
 
-func (p *gradleCatalogFileParser) parse(content string) {
-	for _, line := range strings.Split(content, "\n") {
-		p.consumeLine(line)
-	}
-	if p.pendingKey != "" {
-		p.warnings = append(p.warnings, fmt.Sprintf("unterminated Gradle version catalog entry %q in %s", p.pendingKey, p.relativePath))
-	}
+func (p *gradleCatalogFileParser) consumeDocument(document map[string]any) {
+	p.consumeVersionTable(document["versions"])
+	p.consumeLibraryTable(document["libraries"])
+	p.consumeBundleTable(document["bundles"])
 }
 
-func (p *gradleCatalogFileParser) consumeLine(line string) {
-	clean := strings.TrimSpace(stripGradleCatalogComment(line))
-	if clean == "" {
-		return
-	}
-	if p.appendPending(clean) {
-		return
-	}
-	if nextSection, ok := parseGradleCatalogSection(clean); ok {
-		p.section = nextSection
-		return
-	}
-	key, value, ok := parseGradleCatalogAssignment(clean)
+func (p *gradleCatalogFileParser) consumeVersionTable(value any) {
+	table, ok := value.(map[string]any)
 	if !ok {
 		return
 	}
-	if gradleCatalogValueBalanced(value) {
-		p.consumeAssignment(p.section, key, value)
+	for key, raw := range table {
+		version, ok := raw.(string)
+		if !ok || strings.TrimSpace(version) == "" {
+			continue
+		}
+		trimmedKey := strings.TrimSpace(key)
+		p.versions[trimmedKey] = version
+		p.versions[strings.ToLower(trimmedKey)] = version
+	}
+}
+
+func (p *gradleCatalogFileParser) consumeLibraryTable(value any) {
+	table, ok := value.(map[string]any)
+	if !ok {
 		return
 	}
-	p.startPendingAssignment(key, value)
-}
-
-func (p *gradleCatalogFileParser) appendPending(clean string) bool {
-	if p.pendingKey == "" {
-		return false
-	}
-	p.pendingValue.WriteByte('\n')
-	p.pendingValue.WriteString(clean)
-	if !gradleCatalogValueBalanced(p.pendingValue.String()) {
-		return true
-	}
-	p.consumeAssignment(p.pendingSection, p.pendingKey, p.pendingValue.String())
-	p.clearPendingAssignment()
-	return true
-}
-
-func (p *gradleCatalogFileParser) startPendingAssignment(key, value string) {
-	p.pendingKey = key
-	p.pendingSection = p.section
-	p.pendingValue.Reset()
-	p.pendingValue.WriteString(value)
-}
-
-func (p *gradleCatalogFileParser) clearPendingAssignment() {
-	p.pendingKey = ""
-	p.pendingSection = ""
-	p.pendingValue.Reset()
-}
-
-func (p *gradleCatalogFileParser) consumeAssignment(section, key, value string) {
-	switch section {
-	case "versions":
-		p.consumeVersionEntry(key, value)
-	case "libraries":
-		p.consumeLibraryEntry(key, value)
-	case "bundles":
-		p.consumeBundleEntry(key, value)
+	for alias, raw := range table {
+		library, warnings := parseGradleCatalogLibraryValue(p.catalogName, alias, raw, p.versions, p.relativePath)
+		p.warnings = append(p.warnings, warnings...)
+		if library.Group == "" || library.Artifact == "" {
+			continue
+		}
+		p.libraries[normalizeGradleCatalogAccessor(alias)] = library
 	}
 }
 
-func (p *gradleCatalogFileParser) consumeVersionEntry(key, value string) {
-	version, ok := parseGradleCatalogStringValue(value)
-	if !ok || version == "" {
+func (p *gradleCatalogFileParser) consumeBundleTable(value any) {
+	table, ok := value.(map[string]any)
+	if !ok {
 		return
 	}
-	trimmedKey := strings.TrimSpace(key)
-	p.versions[trimmedKey] = version
-	p.versions[strings.ToLower(trimmedKey)] = version
-}
-
-func (p *gradleCatalogFileParser) consumeLibraryEntry(key, value string) {
-	library, libraryWarnings := parseGradleCatalogLibraryEntry(p.catalogName, key, value, p.versions, p.relativePath)
-	p.warnings = append(p.warnings, libraryWarnings...)
-	if library.Group == "" || library.Artifact == "" {
-		return
+	for alias, raw := range table {
+		members := parseGradleCatalogBundleValue(raw)
+		if len(members) == 0 {
+			p.warnings = append(p.warnings, fmt.Sprintf(unsupportedGradleCatalogBundleFormat, alias, p.relativePath))
+			continue
+		}
+		normalizedMembers := make([]string, 0, len(members))
+		for _, member := range members {
+			normalizedMembers = append(normalizedMembers, normalizeGradleCatalogAccessor(member))
+		}
+		p.bundleSpecs[normalizeGradleCatalogAccessor(alias)] = normalizedMembers
 	}
-	p.libraries[normalizeGradleCatalogAccessor(key)] = library
-}
-
-func (p *gradleCatalogFileParser) consumeBundleEntry(key, value string) {
-	members := parseGradleCatalogBundleMembers(value)
-	if len(members) == 0 {
-		p.warnings = append(p.warnings, fmt.Sprintf(unsupportedGradleCatalogBundleFormat, key, p.relativePath))
-		return
-	}
-	normalizedMembers := make([]string, 0, len(members))
-	for _, member := range members {
-		normalizedMembers = append(normalizedMembers, normalizeGradleCatalogAccessor(member))
-	}
-	p.bundleSpecs[normalizeGradleCatalogAccessor(key)] = normalizedMembers
 }
 
 func (p *gradleCatalogFileParser) finalize() (gradleCatalogFile, []string) {
@@ -705,25 +600,19 @@ func (p *gradleCatalogFileParser) resolveBundles() map[string][]GradleCatalogLib
 	return bundles
 }
 
-func parseGradleCatalogLibraryEntry(catalogName, alias, value string, versions map[string]string, relativePath string) (GradleCatalogLibrary, []string) {
+func parseGradleCatalogLibraryValue(catalogName, alias string, value any, versions map[string]string, relativePath string) (GradleCatalogLibrary, []string) {
 	library := GradleCatalogLibrary{
 		Alias:   normalizeGradleCatalogAccessor(alias),
 		Catalog: normalizeGradleCatalogName(catalogName),
 	}
-
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return library, nil
-	}
-
-	if coords, ok := parseGradleCatalogStringValue(trimmed); ok {
-		return parseGradleCatalogStringLibrary(library, alias, coords, relativePath)
-	}
-
-	if !strings.HasPrefix(trimmed, "{") {
+	switch typed := value.(type) {
+	case string:
+		return parseGradleCatalogStringLibrary(library, alias, typed, relativePath)
+	case map[string]any:
+		return parseGradleCatalogInlineLibraryFields(library, alias, typed, versions, relativePath)
+	default:
 		return GradleCatalogLibrary{}, unsupportedGradleCatalogLibraryWarning(alias, relativePath)
 	}
-	return parseGradleCatalogInlineLibrary(library, alias, trimmed, versions, relativePath)
 }
 
 func parseGradleCatalogStringLibrary(library GradleCatalogLibrary, alias, coords, relativePath string) (GradleCatalogLibrary, []string) {
@@ -737,9 +626,8 @@ func parseGradleCatalogStringLibrary(library GradleCatalogLibrary, alias, coords
 	return library, nil
 }
 
-func parseGradleCatalogInlineLibrary(library GradleCatalogLibrary, alias, value string, versions map[string]string, relativePath string) (GradleCatalogLibrary, []string) {
-	fields := parseGradleCatalogInlineFields(value)
-	if module := fields["module"]; module != "" {
+func parseGradleCatalogInlineLibraryFields(library GradleCatalogLibrary, alias string, fields map[string]any, versions map[string]string, relativePath string) (GradleCatalogLibrary, []string) {
+	if module := gradleCatalogStringField(fields, "module"); module != "" {
 		group, artifact, _, ok := parseGradleCatalogCoordinates(module)
 		if !ok {
 			return GradleCatalogLibrary{}, unsupportedGradleCatalogModuleWarning(alias, relativePath)
@@ -747,32 +635,61 @@ func parseGradleCatalogInlineLibrary(library GradleCatalogLibrary, alias, value 
 		library.Group = group
 		library.Artifact = artifact
 	} else {
-		library.Group = fields["group"]
-		library.Artifact = fields["name"]
+		library.Group = gradleCatalogStringField(fields, "group")
+		library.Artifact = gradleCatalogStringField(fields, "name")
 	}
-	library.Version = resolveGradleCatalogVersion(fields, value, versions)
+	library.Version = resolveGradleCatalogVersionFields(fields, versions)
 	if library.Group == "" || library.Artifact == "" {
 		return GradleCatalogLibrary{}, unsupportedGradleCatalogLibraryWarning(alias, relativePath)
 	}
 	return library, nil
 }
 
-func resolveGradleCatalogVersion(fields map[string]string, value string, versions map[string]string) string {
-	version := fields["version"]
-	if version != "" {
+func resolveGradleCatalogVersionFields(fields map[string]any, versions map[string]string) string {
+	if version := gradleCatalogStringField(fields, "version"); version != "" {
 		return version
 	}
-	versionRef := fields["version.ref"]
+	versionRef := gradleCatalogStringField(fields, "version.ref")
 	if versionRef == "" {
-		versionRef = parseGradleCatalogNestedVersionRef(value)
+		if versionTable, ok := fields["version"].(map[string]any); ok {
+			versionRef = gradleCatalogStringField(versionTable, "ref")
+		}
 	}
 	if versionRef == "" {
 		return ""
 	}
-	if version = versions[versionRef]; version != "" {
+	if version := versions[versionRef]; version != "" {
 		return version
 	}
 	return versions[strings.ToLower(versionRef)]
+}
+
+func gradleCatalogStringField(fields map[string]any, key string) string {
+	value, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func parseGradleCatalogBundleValue(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	members := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		members = append(members, strings.TrimSpace(text))
+	}
+	return members
 }
 
 func unsupportedGradleCatalogLibraryWarning(alias, relativePath string) []string {
@@ -798,178 +715,6 @@ func parseGradleCatalogCoordinates(value string) (string, string, string, bool) 
 		return "", "", "", false
 	}
 	return group, artifact, version, true
-}
-
-func parseGradleCatalogInlineFields(value string) map[string]string {
-	fields := make(map[string]string)
-	for _, match := range gradleCatalogInlineFieldPattern.FindAllStringSubmatch(value, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(match[1]))
-		fields[key] = trimGradleCatalogQuotes(strings.TrimSpace(match[2]))
-	}
-	return fields
-}
-
-func parseGradleCatalogNestedVersionRef(value string) string {
-	match := gradleCatalogNestedVersionRefRegex.FindStringSubmatch(value)
-	if len(match) != 2 {
-		return ""
-	}
-	return trimGradleCatalogQuotes(strings.TrimSpace(match[1]))
-}
-
-func parseGradleCatalogBundleMembers(value string) []string {
-	return extractGradleCatalogQuotedStrings(value)
-}
-
-func parseGradleCatalogStringValue(value string) (string, bool) {
-	value = strings.TrimSpace(value)
-	if len(value) < 2 {
-		return "", false
-	}
-	if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
-		return trimGradleCatalogQuotes(value), true
-	}
-	return "", false
-}
-
-func parseGradleCatalogSection(line string) (string, bool) {
-	match := gradleCatalogSectionPattern.FindStringSubmatch(line)
-	if len(match) != 2 {
-		return "", false
-	}
-	return strings.ToLower(strings.TrimSpace(match[1])), true
-}
-
-func parseGradleCatalogAssignment(line string) (string, string, bool) {
-	parts := strings.SplitN(line, "=", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	key := strings.Trim(strings.TrimSpace(parts[0]), `"'`)
-	value := strings.TrimSpace(parts[1])
-	if key == "" || value == "" {
-		return "", "", false
-	}
-	return key, value, true
-}
-
-func stripGradleCatalogComment(line string) string {
-	inDouble := false
-	inSingle := false
-	for index, r := range line {
-		switch r {
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-			}
-		case '#':
-			if !inDouble && !inSingle {
-				return line[:index]
-			}
-		}
-	}
-	return line
-}
-
-func extractGradleCatalogQuotedStrings(value string) []string {
-	values := make([]string, 0)
-	current := strings.Builder{}
-	inString := false
-	quote := byte(0)
-	for index := 0; index < len(value); index++ {
-		ch := value[index]
-		if !inString {
-			if ch == '"' || ch == '\'' {
-				inString = true
-				quote = ch
-				current.Reset()
-			}
-			continue
-		}
-		if ch == quote {
-			inString = false
-			values = append(values, current.String())
-			continue
-		}
-		current.WriteByte(ch)
-	}
-	return values
-}
-
-func gradleCatalogValueBalanced(value string) bool {
-	state := gradleCatalogDelimiterState{}
-	for _, r := range value {
-		state.consume(r)
-	}
-	return state.balanced()
-}
-
-func (s *gradleCatalogDelimiterState) consume(r rune) {
-	if s.toggleQuote(r) || s.inQuoted() {
-		return
-	}
-	if delta, ok := gradleCatalogBraceDelta(r); ok {
-		s.braceDepth += delta
-	}
-	if delta, ok := gradleCatalogBracketDelta(r); ok {
-		s.bracketDepth += delta
-	}
-}
-
-func (s *gradleCatalogDelimiterState) toggleQuote(r rune) bool {
-	switch r {
-	case '"':
-		if s.inSingle {
-			return false
-		}
-		s.inDouble = !s.inDouble
-		return true
-	case '\'':
-		if s.inDouble {
-			return false
-		}
-		s.inSingle = !s.inSingle
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *gradleCatalogDelimiterState) inQuoted() bool {
-	return s.inDouble || s.inSingle
-}
-
-func (s *gradleCatalogDelimiterState) balanced() bool {
-	return s.braceDepth <= 0 && s.bracketDepth <= 0
-}
-
-func gradleCatalogBraceDelta(r rune) (int, bool) {
-	switch r {
-	case '{':
-		return 1, true
-	case '}':
-		return -1, true
-	default:
-		return 0, false
-	}
-}
-
-func gradleCatalogBracketDelta(r rune) (int, bool) {
-	switch r {
-	case '[':
-		return 1, true
-	case ']':
-		return -1, true
-	default:
-		return 0, false
-	}
 }
 
 func normalizeGradleCatalogName(value string) string {
@@ -1020,10 +765,6 @@ func relativeGradleCatalogPathFromFile(path string) string {
 
 func formatGradleCatalogReadWarning(repoPath, path string, err error) string {
 	return fmt.Sprintf(gradleCatalogReadWarningFormat, relativeGradleCatalogPath(repoPath, path), err)
-}
-
-func trimGradleCatalogQuotes(value string) string {
-	return strings.Trim(strings.TrimSpace(value), `"'`)
 }
 
 func DedupeWarnings(warnings []string) []string {

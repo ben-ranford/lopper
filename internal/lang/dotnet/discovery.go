@@ -3,8 +3,10 @@ package dotnet
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -257,43 +259,48 @@ func parseManifestDependenciesForEntry(repoPath, path, name string) ([]string, e
 }
 
 func parsePackageReferences(repoPath, manifestPath string) ([]string, error) {
-	return parseManifestDependencies(repoPath, manifestPath, packageReferencePattern)
+	return parseManifestDependencies(repoPath, manifestPath, "PackageReference")
 }
 
 func parsePackageVersions(repoPath, manifestPath string) ([]string, error) {
-	return parseManifestDependencies(repoPath, manifestPath, packageVersionPattern)
+	return parseManifestDependencies(repoPath, manifestPath, "PackageVersion")
 }
 
-func parseManifestDependencies(repoPath, manifestPath string, pattern *regexp.Regexp) ([]string, error) {
+func parseManifestDependencies(repoPath, manifestPath string, elementName string) ([]string, error) {
 	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
 	if err != nil {
 		return nil, err
 	}
-	matches := pattern.FindAllSubmatch(stripXMLCommentsBytes(content), -1)
-	return captureMatches(matches), nil
+	return parseXMLManifestIncludes(content, elementName)
 }
 
-func captureMatches(matches [][][]byte) []string {
-	if len(matches) == 0 {
-		return nil
-	}
+func parseXMLManifestIncludes(content []byte, elementName string) ([]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(content))
 	set := make(map[string]struct{})
-	for _, match := range matches {
-		if len(match) < 2 {
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || !strings.EqualFold(start.Name.Local, elementName) {
 			continue
 		}
-		value := normalizeDependencyID(string(match[1]))
-		if value == "" {
-			continue
+		for _, attr := range start.Attr {
+			if !strings.EqualFold(attr.Name.Local, "Include") {
+				continue
+			}
+			value := normalizeDependencyID(attr.Value)
+			if value != "" {
+				set[value] = struct{}{}
+			}
+			break
 		}
-		set[value] = struct{}{}
 	}
-	items := make([]string, 0, len(set))
-	for value := range set {
-		items = append(items, value)
-	}
-	sort.Strings(items)
-	return items
+	return sortedDependencies(set), nil
 }
 
 func readSourceFile(repoPath, sourcePath string) ([]byte, string, error) {
@@ -426,46 +433,6 @@ func isRepoBoundedPath(repoPath, candidatePath string) bool {
 	return relativeToRepo != ".." && !strings.HasPrefix(relativeToRepo, ".."+string(filepath.Separator))
 }
 
-func stripXMLCommentsBytes(content []byte) []byte {
-	if len(content) == 0 {
-		return content
-	}
-	if !bytes.Contains(content, []byte("<!--")) {
-		return bytes.TrimSpace(content)
-	}
-
-	out := make([]byte, 0, len(content))
-	inComment := false
-
-	for i := 0; i < len(content); {
-		if inComment {
-			if i+2 < len(content) && content[i] == '-' && content[i+1] == '-' && content[i+2] == '>' {
-				inComment = false
-				i += 3
-				continue
-			}
-			i++
-			continue
-		}
-
-		if i+3 < len(content) && content[i] == '<' && content[i+1] == '!' && content[i+2] == '-' && content[i+3] == '-' {
-			if len(out) > 0 && !isSpaceByte(out[len(out)-1]) {
-				out = append(out, ' ')
-			}
-			inComment = true
-			i += 4
-			continue
-		}
-
-		out = append(out, content[i])
-		i++
-	}
-
-	return bytes.TrimSpace(out)
-}
-
 var (
-	packageReferencePattern = regexp.MustCompile(`(?is)<PackageReference\b[^>]*\bInclude\s*=\s*["']([^"']+)["']`)
-	packageVersionPattern   = regexp.MustCompile(`(?is)<PackageVersion\b[^>]*\bInclude\s*=\s*["']([^"']+)["']`)
-	solutionProjectPattern  = regexp.MustCompile(`Project\([^\)]*\)\s*=\s*"[^"]+"\s*,\s*"([^"]+\.(?:csproj|fsproj))"`)
+	solutionProjectPattern = regexp.MustCompile(`Project\([^\)]*\)\s*=\s*"[^"]+"\s*,\s*"([^"]+\.(?:csproj|fsproj))"`)
 )
