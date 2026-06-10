@@ -55,7 +55,7 @@ func TestRenderSummaryOutputSuccess(t *testing.T) {
 func TestSummaryUnknownCommandWriteError(t *testing.T) {
 	writeErr := errors.New(uiWriteFailed)
 	summary := NewSummary(&failAfterWriter{failAt: 0, err: writeErr}, strings.NewReader(""), &stubAnalyzer{report: report.Report{}}, report.NewFormatter())
-	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, &summaryState{}, "noop")
+	_, err := summary.handleSummaryInput(context.Background(), Options{RepoPath: "."}, summaryReportView{}, &summaryState{}, "noop")
 	if !errors.Is(err, writeErr) {
 		t.Fatalf("expected unknown-command write failure, got %v", err)
 	}

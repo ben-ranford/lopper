@@ -180,6 +180,18 @@ func missingFlagValueError(arg string) error {
 	return fmt.Errorf("flag needs an argument: -%s", name)
 }
 
+func resolveOutputPath(outputPath, shortOutputPath string) (string, error) {
+	outputPath = strings.TrimSpace(outputPath)
+	shortOutputPath = strings.TrimSpace(shortOutputPath)
+	if outputPath != "" && shortOutputPath != "" && outputPath != shortOutputPath {
+		return "", fmt.Errorf("--output and -o must match when both are provided")
+	}
+	if outputPath != "" {
+		return outputPath, nil
+	}
+	return shortOutputPath, nil
+}
+
 func flagNeedsValue(arg string) bool {
 	if strings.Contains(arg, "=") {
 		return false

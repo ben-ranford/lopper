@@ -14,7 +14,7 @@ func TestParseArgsDefault(t *testing.T) {
 }
 
 func TestParseArgsTUIFlags(t *testing.T) {
-	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt", "--baseline", "baseline.json", "--baseline-store", "./baselines", "--baseline-key", "commit:abc123"})
+	req := mustParseArgs(t, []string{"tui", "--top", "15", "--filter", "lod", "--sort", "name", "--page-size", "5", "--snapshot", "out.txt", "--output", "out.txt", "-o", "out.txt", "--baseline", "baseline.json", "--baseline-store", "./baselines", "--baseline-key", "commit:abc123"})
 	if req.Mode != app.ModeTUI {
 		t.Fatalf(modeMismatchFmt, app.ModeTUI, req.Mode)
 	}
@@ -59,5 +59,17 @@ func TestParseArgsTUIInvalidInputs(t *testing.T) {
 				t.Fatalf("expected parse error")
 			}
 		})
+	}
+}
+
+func TestParseArgsTUIOutputAlias(t *testing.T) {
+	req := mustParseArgs(t, []string{"tui", "-o", "summary.txt"})
+	if req.TUI.SnapshotPath != "summary.txt" {
+		t.Fatalf("expected -o to populate snapshot path, got %q", req.TUI.SnapshotPath)
+	}
+
+	err := expectParseArgsError(t, []string{"tui", "--snapshot", "snapshot.txt", "--output", "other.txt"}, "expected snapshot output conflict")
+	if err == nil || err.Error() != "--snapshot and --output must match when both are provided" {
+		t.Fatalf("expected snapshot/output conflict, got %v", err)
 	}
 }
