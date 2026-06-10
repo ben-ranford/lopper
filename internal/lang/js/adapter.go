@@ -15,7 +15,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -781,17 +780,11 @@ func dependencyFromModule(module string) string {
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
-	if value != nil {
-		return *value
-	}
-	return thresholds.Defaults().MinUsagePercentForRecommendations
+	return shared.ResolveMinUsageRecommendationThreshold(value)
 }
 
 func resolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) report.RemovalCandidateWeights {
-	if value == nil {
-		return report.DefaultRemovalCandidateWeights()
-	}
-	return report.NormalizeRemovalCandidateWeights(*value)
+	return shared.ResolveRemovalCandidateWeights(value)
 }
 
 type dependencyResolutionRequest struct {

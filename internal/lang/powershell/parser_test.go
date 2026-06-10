@@ -133,6 +133,42 @@ func TestParsePowerShellLineHandlesInlineCommentsAndMissingRequiresModules(t *te
 	}
 }
 
+func TestParsePowerShellLineRequiresDirectiveSpacing(t *testing.T) {
+	declared := map[string]struct{}{"pester": {}}
+	validDirectives := []string{
+		"#Requires -Modules Pester",
+		"#Requires\t-Modules Pester",
+		"  #requires -Modules:Pester # trailing comment",
+	}
+	for _, line := range validDirectives {
+		t.Run("valid "+line, func(t *testing.T) {
+			imports, warnings := parsePowerShellLine(line, "run.ps1", 10, declared)
+			if len(warnings) != 0 {
+				t.Fatalf("expected valid #Requires directive to avoid warnings, got %#v", warnings)
+			}
+			if len(imports) != 1 || imports[0].Record.Dependency != "pester" || imports[0].Source != usageSourceRequiresModule {
+				t.Fatalf("expected valid #Requires directive to import pester, got %#v", imports)
+			}
+		})
+	}
+
+	commentLines := []string{
+		"# Requires -Modules Pester",
+		"#\tRequires -Modules Pester",
+		"  # requires -Modules Pester",
+		"# Requires -Modules",
+		"#Requires-Modules Pester",
+	}
+	for _, line := range commentLines {
+		t.Run("comment "+line, func(t *testing.T) {
+			imports, warnings := parsePowerShellLine(line, "run.ps1", 20, declared)
+			if len(imports) != 0 || len(warnings) != 0 {
+				t.Fatalf("expected ordinary comment to be ignored, imports=%#v warnings=%#v", imports, warnings)
+			}
+		})
+	}
+}
+
 func TestParseImportModuleDependencySupportsFlagAndPositionalForms(t *testing.T) {
 	declared := map[string]struct{}{"pester": {}, "az.accounts": {}}
 	cases := []struct {
