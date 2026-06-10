@@ -92,6 +92,21 @@ func TestFormatSARIFWasteOnlyReport(t *testing.T) {
 	}
 }
 
+func TestFormatSARIFIncludesRuntimeAndBaselineContext(t *testing.T) {
+	reportData := sampleSARIFRuntimeAndBaselineReport()
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf("format sarif with runtime context: %v", err)
+	}
+
+	payload := mustSARIFLog(t, output)
+	dependencyProps, wasteProps := mustSARIFProperties(t, payload.Runs[0].Results)
+	assertSARIFRuntimeProperties(t, dependencyProps["runtime"])
+	assertSARIFBaselineContext(t, dependencyProps["baselineContext"], true)
+	assertSARIFBaselineContextPresent(t, wasteProps["baselineContext"])
+}
+
 func assertWasteOnlySARIFWithoutResult(t *testing.T, wasteIncrease float64) {
 	t.Helper()
 
@@ -132,21 +147,139 @@ func TestFormatSARIFWasteOnlyReportNonPositiveDelta(t *testing.T) {
 }
 
 func TestNormalizeRuleToken(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "empty", input: "", want: "unknown"},
-		{name: "special chars", input: "rule id / with\\special*chars?", want: "rule-id-with-special-chars"},
-		{name: "unicode", input: "unicodé-✓", want: "unicod"},
+	if got := normalizeRuleToken(""); got != "unknown" {
+		t.Fatalf("normalizeRuleToken(%q) = %q, want %q", "", got, "unknown")
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := normalizeRuleToken(tc.input); got != tc.want {
-				t.Fatalf("normalizeRuleToken(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
+	if got := normalizeRuleToken("rule id / with\\special*chars?"); got != "rule-id-with-special-chars" {
+		t.Fatalf("normalizeRuleToken(%q) = %q, want %q", "rule id / with\\special*chars?", got, "rule-id-with-special-chars")
+	}
+	if got := normalizeRuleToken("unicodé-✓"); got != "unicod" {
+		t.Fatalf("normalizeRuleToken(%q) = %q, want %q", "unicodé-✓", got, "unicod")
+	}
+}
+
+func sampleSARIFRuntimeAndBaselineReport() Report {
+	wasteIncrease := 1.5
+	return Report{
+		Dependencies: []DependencyReport{
+			{
+				Language: "go",
+				Name:     "github.com/acme/pkg",
+				UnusedExports: []SymbolRef{
+					{Name: "Unused", Module: "github.com/acme/pkg"},
+				},
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   4,
+					Correlation: RuntimeCorrelationOverlap,
+					RuntimeOnly: true,
+					Modules: []RuntimeModuleUsage{
+						{Module: "pkg/runtime", Count: 4},
+					},
+					ParentModules: []RuntimeModuleUsage{
+						{Module: "cmd/api", Count: 2},
+					},
+					Entrypoints: []RuntimeModuleUsage{
+						{Module: "cmd/server", Count: 1},
+					},
+					TopSymbols: []RuntimeSymbolUsage{
+						{Symbol: "Serve", Module: "pkg/runtime", Count: 3},
+					},
+				},
+			},
+		},
+		WasteIncreasePercent: &wasteIncrease,
+		BaselineComparison: &BaselineComparison{
+			BaselineKey: "base",
+			CurrentKey:  "head",
+			SummaryDelta: SummaryDelta{
+				DependencyCountDelta: 1,
+			},
+			Dependencies: []DependencyDelta{
+				{
+					Kind:                      DependencyDeltaChanged,
+					Language:                  "go",
+					Name:                      "github.com/acme/pkg",
+					UsedExportsCountDelta:     -1,
+					TotalExportsCountDelta:    0,
+					UsedPercentDelta:          -10,
+					EstimatedUnusedBytesDelta: 512,
+					WastePercentDelta:         10,
+					DeniedIntroduced:          true,
+				},
+			},
+		},
+	}
+}
+
+func mustSARIFLog(t *testing.T, output string) sarifLog {
+	t.Helper()
+
+	var payload sarifLog
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf(errParseSARIFOutput, err)
+	}
+	if len(payload.Runs) != 1 {
+		t.Fatalf(errExpectedOneRun, len(payload.Runs))
+	}
+	if len(payload.Runs[0].Results) == 0 {
+		t.Fatalf("expected sarif results, got %#v", payload.Runs)
+	}
+	return payload
+}
+
+func mustSARIFProperties(t *testing.T, results []sarifResult) (map[string]any, map[string]any) {
+	t.Helper()
+
+	var dependencyProps map[string]any
+	var wasteProps map[string]any
+	for _, result := range results {
+		switch result.RuleID {
+		case "lopper/waste/unused-export":
+			dependencyProps = result.Properties
+		case "lopper/waste/increase":
+			wasteProps = result.Properties
+		}
+	}
+	if dependencyProps == nil {
+		t.Fatalf("expected unused-export sarif result, got %#v", results)
+	}
+	if wasteProps == nil {
+		t.Fatalf("expected waste-increase sarif result")
+	}
+	return dependencyProps, wasteProps
+}
+
+func assertSARIFRuntimeProperties(t *testing.T, runtimeValue any) {
+	t.Helper()
+
+	runtimeProps, ok := runtimeValue.(map[string]any)
+	if !ok {
+		t.Fatalf("expected runtime properties, got %#v", runtimeValue)
+	}
+	for _, key := range []string{"modules", "parentModules", "entrypoints", "topSymbols"} {
+		if values, ok := runtimeProps[key].([]any); !ok || len(values) != 1 {
+			t.Fatalf("expected one runtime %s entry, got %#v", key, runtimeProps[key])
+		}
+	}
+}
+
+func assertSARIFBaselineContext(t *testing.T, baselineValue any, wantDeniedIntroduced bool) {
+	t.Helper()
+
+	baselineContext, ok := baselineValue.(map[string]any)
+	if !ok {
+		t.Fatalf("expected baseline context, got %#v", baselineValue)
+	}
+	if baselineContext["deniedIntroduced"] != wantDeniedIntroduced {
+		t.Fatalf("expected deniedIntroduced=%v, got %#v", wantDeniedIntroduced, baselineContext["deniedIntroduced"])
+	}
+}
+
+func assertSARIFBaselineContextPresent(t *testing.T, baselineValue any) {
+	t.Helper()
+
+	if _, ok := baselineValue.(map[string]any); !ok {
+		t.Fatalf("expected baseline context, got %#v", baselineValue)
 	}
 }
 
@@ -325,7 +458,7 @@ func TestAppendUnusedImportResultsFallsBackToAnchor(t *testing.T) {
 		},
 	}
 
-	results := appendUnusedImportResults(nil, rules, DependencyReport{Name: "pkg", Language: "js-ts", UnusedImports: []ImportUse{{Name: "map", Module: "lodash"}}}, anchor)
+	results := appendUnusedImportResults(nil, rules, DependencyReport{Name: "pkg", Language: "js-ts", UnusedImports: []ImportUse{{Name: "map", Module: "lodash"}}}, anchor, nil)
 	if len(results) != 1 || len(results[0].Locations) != 1 {
 		t.Fatalf("expected fallback anchor location, got %#v", results)
 	}

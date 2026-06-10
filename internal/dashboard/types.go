@@ -64,10 +64,50 @@ type Summary struct {
 	CriticalCVEs         int `json:"critical_cves"`
 }
 
+type BaselineComparison struct {
+	BaselineKey  string       `json:"baseline_key"`
+	CurrentKey   string       `json:"current_key,omitempty"`
+	SummaryDelta SummaryDelta `json:"summary_delta"`
+	RepoDeltas   []RepoDelta  `json:"repo_deltas,omitempty"`
+	Added        []RepoDelta  `json:"added,omitempty"`
+	Removed      []RepoDelta  `json:"removed,omitempty"`
+	Changed      []RepoDelta  `json:"changed,omitempty"`
+}
+
+type SummaryDelta struct {
+	TotalReposDelta           int `json:"total_repos_delta"`
+	TotalDepsDelta            int `json:"total_deps_delta"`
+	TotalWasteCandidatesDelta int `json:"total_waste_candidates_delta"`
+	CrossRepoDuplicatesDelta  int `json:"cross_repo_duplicates_delta"`
+	CriticalCVEsDelta         int `json:"critical_cves_delta"`
+}
+
+type RepoDeltaKind string
+
+const (
+	RepoDeltaAdded   RepoDeltaKind = "added"
+	RepoDeltaRemoved RepoDeltaKind = "removed"
+	RepoDeltaChanged RepoDeltaKind = "changed"
+)
+
+type RepoDelta struct {
+	Kind                       RepoDeltaKind `json:"kind"`
+	Name                       string        `json:"name"`
+	Path                       string        `json:"path,omitempty"`
+	DependencyCountDelta       int           `json:"dependency_count_delta"`
+	WasteCandidateCountDelta   int           `json:"waste_candidate_count_delta"`
+	WasteCandidatePercentDelta float64       `json:"waste_candidate_percent_delta"`
+	CriticalCVEsDelta          int           `json:"critical_cves_delta"`
+	DeniedLicenseCountDelta    int           `json:"denied_license_count_delta"`
+	CurrentError               string        `json:"current_error,omitempty"`
+	BaselineError              string        `json:"baseline_error,omitempty"`
+}
+
 type Report struct {
-	GeneratedAt    time.Time             `json:"generated_at"`
-	Repos          []RepoResult          `json:"repos"`
-	Summary        Summary               `json:"summary"`
-	CrossRepoDeps  []CrossRepoDependency `json:"cross_repo_deps,omitempty"`
-	SourceWarnings []string              `json:"warnings,omitempty"`
+	GeneratedAt        time.Time             `json:"generated_at"`
+	Repos              []RepoResult          `json:"repos"`
+	Summary            Summary               `json:"summary"`
+	BaselineComparison *BaselineComparison   `json:"baseline_comparison,omitempty"`
+	CrossRepoDeps      []CrossRepoDependency `json:"cross_repo_deps,omitempty"`
+	SourceWarnings     []string              `json:"warnings,omitempty"`
 }

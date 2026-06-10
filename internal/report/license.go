@@ -22,12 +22,6 @@ func NormalizeDependencyLicenses(dependencies []DependencyReport) {
 func ApplyLicensePolicy(dependencies []DependencyReport, denyList []string) {
 	normalizedDeny := normalizeDenyList(denyList)
 	if len(normalizedDeny) == 0 {
-		for i := range dependencies {
-			if dependencies[i].License == nil {
-				continue
-			}
-			dependencies[i].License.Denied = false
-		}
 		return
 	}
 
@@ -51,9 +45,6 @@ func CountDeniedLicenses(dependencies []DependencyReport) int {
 }
 
 func normalizeDenyList(values []string) map[string]struct{} {
-	if len(values) == 0 {
-		return nil
-	}
 	normalized := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		id := normalizeSPDXID(value)
@@ -61,9 +52,6 @@ func normalizeDenyList(values []string) map[string]struct{} {
 			continue
 		}
 		normalized[id] = struct{}{}
-	}
-	if len(normalized) == 0 {
-		return nil
 	}
 	return normalized
 }
@@ -125,9 +113,6 @@ func spdxExpressionContainsDenied(expression string, deny map[string]struct{}) b
 
 func SortedDenyList(values []string) []string {
 	seen := normalizeDenyList(values)
-	if len(seen) == 0 {
-		return nil
-	}
 	items := make([]string, 0, len(seen))
 	for value := range seen {
 		items = append(items, value)

@@ -18,7 +18,7 @@ func formatTopSymbols(symbols []SymbolUsage) string {
 			items = append(items, symbol.Name)
 		}
 	}
-	return strings.Join(items, ", ")
+	return sanitizeTerminalString(strings.Join(items, ", "))
 }
 
 func formatCandidateScore(candidate *RemovalCandidate) string {
@@ -40,9 +40,9 @@ func formatReachabilityConfidence(confidence *ReachabilityConfidence) string {
 		return "-"
 	}
 	if strings.TrimSpace(confidence.Summary) == "" {
-		return fmt.Sprintf("%.1f", confidence.Score)
+		return sanitizeTerminalString(fmt.Sprintf("%.1f", confidence.Score))
 	}
-	return fmt.Sprintf("%.1f (%s)", confidence.Score, confidence.Summary)
+	return sanitizeTerminalString(fmt.Sprintf("%.1f (%s)", confidence.Score, confidence.Summary))
 }
 
 func formatRuntimeUsage(usage *RuntimeUsage) string {
@@ -60,7 +60,14 @@ func formatRuntimeUsage(usage *RuntimeUsage) string {
 			correlation = string(RuntimeCorrelationStaticOnly)
 		}
 	}
-	return fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)
+	parts := []string{fmt.Sprintf("%s (%d loads)", correlation, usage.LoadCount)}
+	if len(usage.ParentModules) > 0 {
+		parts = append(parts, "parents: "+formatRuntimeModuleUsageList(usage.ParentModules))
+	}
+	if len(usage.Entrypoints) > 0 {
+		parts = append(parts, "entrypoints: "+formatRuntimeModuleUsageList(usage.Entrypoints))
+	}
+	return sanitizeTerminalString(strings.Join(parts, "; "))
 }
 
 func formatDependencyLicense(license *DependencyLicense) string {
@@ -74,9 +81,9 @@ func formatDependencyLicense(license *DependencyLicense) string {
 		return "unknown"
 	}
 	if license.Denied {
-		return license.SPDX + " (denied)"
+		return sanitizeTerminalString(license.SPDX + " (denied)")
 	}
-	return license.SPDX
+	return sanitizeTerminalString(license.SPDX)
 }
 
 func formatDependencyProvenance(provenance *DependencyProvenance) string {
@@ -87,7 +94,22 @@ func formatDependencyProvenance(provenance *DependencyProvenance) string {
 		return "-"
 	}
 	if strings.TrimSpace(provenance.Source) != "" && len(provenance.Signals) == 0 {
-		return provenance.Source
+		return sanitizeTerminalString(provenance.Source)
 	}
-	return provenance.Source + " (" + strings.Join(provenance.Signals, ", ") + ")"
+	return sanitizeTerminalString(provenance.Source + " (" + strings.Join(provenance.Signals, ", ") + ")")
+}
+
+func formatRuntimeModuleUsageList(items []RuntimeModuleUsage) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Count > 1 {
+			parts = append(parts, fmt.Sprintf("%s (%d)", item.Module, item.Count))
+			continue
+		}
+		parts = append(parts, item.Module)
+	}
+	return strings.Join(parts, ", ")
 }

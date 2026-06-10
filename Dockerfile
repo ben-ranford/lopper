@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,id=go-mod-cache,sharing=locked \
 	&& ldflags="${ldflags} -X github.com/ben-ranford/lopper/internal/version.buildChannel=${BUILD_CHANNEL}" \
 	&& CGO_ENABLED=1 go build -trimpath -ldflags="${ldflags}" -o /out/lopper ./cmd/lopper
 
-FROM alpine:3.23
+FROM alpine:3.24
 RUN apk add --no-cache libstdc++ ca-certificates \
 	&& addgroup -S lopper \
 	&& adduser -S -G lopper lopper

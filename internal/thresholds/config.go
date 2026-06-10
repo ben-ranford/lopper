@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
@@ -19,16 +21,21 @@ type LoadResult struct {
 	Features      FeatureConfig
 	ConfigPath    string
 	PolicySources []string
+	PolicyTrace   []report.PolicyMergeTrace
 }
 
 type PathScope struct {
-	Include []string
-	Exclude []string
+	Include    []string
+	Exclude    []string
+	includeSet bool
+	excludeSet bool
 }
 
 type FeatureConfig struct {
-	Enable  []string
-	Disable []string
+	Enable     []string
+	Disable    []string
+	enableSet  bool
+	disableSet bool
 }
 
 func Load(repoPath, explicitPath string) (Overrides, string, error) {
@@ -53,13 +60,15 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	if !found {
 		return LoadResult{
 			Resolved:      Defaults(),
-			Scope:         PathScope{},
+			Scope:         normalizePathScope(PathScope{}),
+			Features:      normalizeFeatureConfig(FeatureConfig{}),
 			PolicySources: []string{defaultPolicySource},
+			PolicyTrace:   policyTraceFromMap(defaultPolicyTrace()),
 		}, nil
 	}
 
 	resolver := newPackResolver(repoAbs)
-	mergeResult, err := resolver.resolveFile(configPath, initialPackTrust(repoAbs, explicitProvided))
+	mergeResult, err := resolver.resolveFile(configPath, initialPackTrust(repoAbs, configPath, explicitProvided))
 	if err != nil {
 		return LoadResult{}, err
 	}
@@ -73,12 +82,13 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	}
 
 	return LoadResult{
-		Overrides:     mergeResult.overrides,
+		Overrides:     normalizeOverrides(mergeResult.overrides),
 		Resolved:      resolved,
-		Scope:         mergeResult.scope,
-		Features:      mergeResult.features,
+		Scope:         normalizePathScope(mergeResult.scope),
+		Features:      normalizeFeatureConfig(mergeResult.features),
 		ConfigPath:    configPath,
 		PolicySources: mergeResult.policySourcesHighToLow(),
+		PolicyTrace:   policyTraceFromMap(mergeResult.policyTrace),
 	}, nil
 }
 
@@ -93,17 +103,17 @@ type rawConfig struct {
 
 	Thresholds rawThresholds `yaml:"thresholds" json:"thresholds"`
 
-	FailOnIncreasePercent             *int     `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
-	LowConfidenceWarningPercent       *int     `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
-	MinUsagePercentForRecommendations *int     `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
-	MaxUncertainImportCount           *int     `yaml:"max_uncertain_import_count" json:"max_uncertain_import_count"`
-	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
-	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
-	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
-	LockfileDriftPolicy               *string  `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
-	LicenseDeny                       []string `yaml:"license_deny" json:"license_deny"`
-	LicenseFailOnDeny                 *bool    `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
-	LicenseIncludeRegistryProvenance  *bool    `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
+	FailOnIncreasePercent             *int      `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
+	LowConfidenceWarningPercent       *int      `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
+	MinUsagePercentForRecommendations *int      `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	MaxUncertainImportCount           *int      `yaml:"max_uncertain_import_count" json:"max_uncertain_import_count"`
+	RemovalCandidateWeightUsage       *float64  `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
+	RemovalCandidateWeightImpact      *float64  `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
+	RemovalCandidateWeightConfidence  *float64  `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
+	LockfileDriftPolicy               *string   `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
+	LicenseDeny                       *[]string `yaml:"license_deny" json:"license_deny"`
+	LicenseFailOnDeny                 *bool     `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
+	LicenseIncludeRegistryProvenance  *bool     `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
 }
 
 type rawPolicy struct {
@@ -111,25 +121,25 @@ type rawPolicy struct {
 }
 
 type rawScope struct {
-	Include []string `yaml:"include" json:"include"`
-	Exclude []string `yaml:"exclude" json:"exclude"`
+	Include *[]string `yaml:"include" json:"include"`
+	Exclude *[]string `yaml:"exclude" json:"exclude"`
 }
 
 type rawFeatures struct {
-	Enable  []string `yaml:"enable" json:"enable"`
-	Disable []string `yaml:"disable" json:"disable"`
+	Enable  *[]string `yaml:"enable" json:"enable"`
+	Disable *[]string `yaml:"disable" json:"disable"`
 }
 
 type rawThresholds struct {
-	FailOnIncreasePercent             *int     `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
-	LowConfidenceWarningPercent       *int     `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
-	MinUsagePercentForRecommendations *int     `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
-	MaxUncertainImportCount           *int     `yaml:"max_uncertain_import_count" json:"max_uncertain_import_count"`
-	RemovalCandidateWeightUsage       *float64 `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
-	RemovalCandidateWeightImpact      *float64 `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
-	RemovalCandidateWeightConfidence  *float64 `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
-	LockfileDriftPolicy               *string  `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
-	LicenseDeny                       []string `yaml:"license_deny" json:"license_deny"`
-	LicenseFailOnDeny                 *bool    `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
-	LicenseIncludeRegistryProvenance  *bool    `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
+	FailOnIncreasePercent             *int      `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
+	LowConfidenceWarningPercent       *int      `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
+	MinUsagePercentForRecommendations *int      `yaml:"min_usage_percent_for_recommendations" json:"min_usage_percent_for_recommendations"`
+	MaxUncertainImportCount           *int      `yaml:"max_uncertain_import_count" json:"max_uncertain_import_count"`
+	RemovalCandidateWeightUsage       *float64  `yaml:"removal_candidate_weight_usage" json:"removal_candidate_weight_usage"`
+	RemovalCandidateWeightImpact      *float64  `yaml:"removal_candidate_weight_impact" json:"removal_candidate_weight_impact"`
+	RemovalCandidateWeightConfidence  *float64  `yaml:"removal_candidate_weight_confidence" json:"removal_candidate_weight_confidence"`
+	LockfileDriftPolicy               *string   `yaml:"lockfile_drift_policy" json:"lockfile_drift_policy"`
+	LicenseDeny                       *[]string `yaml:"license_deny" json:"license_deny"`
+	LicenseFailOnDeny                 *bool     `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
+	LicenseIncludeRegistryProvenance  *bool     `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
 }

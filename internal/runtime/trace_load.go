@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -17,9 +18,11 @@ func Load(path string) (Trace, error) {
 	}
 
 	trace := Trace{
-		DependencyLoads:   make(map[string]int),
-		DependencyModules: make(map[string]map[string]int),
-		DependencySymbols: make(map[string]map[string]int),
+		DependencyLoads:       make(map[string]int),
+		DependencyModules:     make(map[string]map[string]int),
+		DependencyParents:     make(map[string]map[string]int),
+		DependencyEntrypoints: make(map[string]map[string]int),
+		DependencySymbols:     make(map[string]map[string]int),
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(content))
 	line := 0
@@ -40,6 +43,8 @@ func Load(path string) (Trace, error) {
 		trace.DependencyLoads[dep]++
 		module := runtimeModuleFromEvent(event, dep)
 		addCount(trace.DependencyModules, dep, module)
+		addCount(trace.DependencyParents, dep, runtimeContextValue(event.Parent))
+		addCount(trace.DependencyEntrypoints, dep, runtimeContextValue(event.Entrypoint))
 		symbol := runtimeSymbolFromModule(module, dep)
 		addSymbolCount(trace.DependencySymbols, dep, module, symbol)
 	}
@@ -72,4 +77,13 @@ func addSymbolCount(target map[string]map[string]int, dependency string, module 
 		target[dependency] = items
 	}
 	items[module+"\x00"+symbol]++
+}
+
+func runtimeContextValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.TrimPrefix(value, "file://")
+	return filepath.ToSlash(value)
 }
