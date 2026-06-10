@@ -42,6 +42,7 @@ escape_roff() {
 	printf "lopper analyse --top N [options]\n"
 	printf "lopper analyse <dependency> [options]\n"
 	printf "lopper dashboard [--repos PATH1,PATH2 | --config PATH]\n"
+	printf "lopper mcp [--enable-feature mcp-server-preview]\n"
 	printf ".fi\n"
 	printf ".SH DESCRIPTION\n"
 	printf "This man page is generated from the built-in command usage output.\n"

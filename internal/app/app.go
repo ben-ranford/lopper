@@ -7,6 +7,8 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/mcp"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -21,14 +23,18 @@ var (
 	ErrDeniedLicenses               = errors.New("denied licenses detected")
 	ErrDirtyWorktree                = errors.New("codemod apply requires a clean git worktree")
 	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
+	ErrMCPPreviewDisabled           = errors.New("mcp server preview feature is disabled")
 )
 
 type App struct {
 	Analyzer  analysis.Analyser
+	In        io.Reader
+	Out       io.Writer
 	Formatter *report.Formatter
 	TUI       ui.TUI
 	Notify    *notify.Dispatcher
 	Features  *featureflags.Registry
+	Languages *language.Registry
 }
 
 func New(out io.Writer, in io.Reader) *App {
@@ -37,10 +43,13 @@ func New(out io.Writer, in io.Reader) *App {
 
 	return &App{
 		Analyzer:  analyzer,
+		In:        in,
+		Out:       out,
 		Formatter: formatter,
 		TUI:       ui.NewSummary(out, in, analyzer, formatter),
 		Notify:    notify.NewDefaultDispatcher(),
 		Features:  featureflags.DefaultRegistry(),
+		Languages: analyzer.Registry,
 	}
 }
 
@@ -54,6 +63,15 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return a.executeDashboard(ctx, req)
 	case ModeFeatures:
 		return a.executeFeatures(req)
+	case ModeMCP:
+		if !req.MCP.Features.Enabled(mcp.ServerPreviewFeature) {
+			return "", ErrMCPPreviewDisabled
+		}
+		return "", mcp.Serve(ctx, a.In, a.Out, mcp.Options{
+			Analyzer:         a.Analyzer,
+			LanguageRegistry: a.Languages,
+			FeatureRegistry:  a.Features,
+		})
 	default:
 		return "", ErrUnknownMode
 	}

@@ -138,6 +138,24 @@ func TestRegisterValidationAndIDs(t *testing.T) {
 	if !slices.Equal(ids, []string{"js-ts"}) {
 		t.Fatalf("unexpected registry IDs: %#v", ids)
 	}
+
+	metadata := registry.Metadata()
+	if len(metadata) != 1 {
+		t.Fatalf("expected one metadata entry, got %#v", metadata)
+	}
+	if metadata[0].ID != "js-ts" || !slices.Equal(metadata[0].Aliases, []string{"js"}) {
+		t.Fatalf("unexpected metadata: %#v", metadata)
+	}
+	metadata[0].Aliases[0] = "mutated"
+	if got := registry.Metadata()[0].Aliases; !slices.Equal(got, []string{"js"}) {
+		t.Fatalf("expected metadata aliases to be copied, got %#v", got)
+	}
+
+	noAliasRegistry := registryWithTestAdapters(t, &testAdapter{id: "go", detection: Detection{Matched: true}})
+	noAliasMetadata := noAliasRegistry.Metadata()
+	if len(noAliasMetadata) != 1 || len(noAliasMetadata[0].Aliases) != 0 {
+		t.Fatalf("expected no-alias metadata, got %#v", noAliasMetadata)
+	}
 }
 
 func TestSelectAndResolveErrors(t *testing.T) {
@@ -216,6 +234,12 @@ func TestResolveAllNoMatchAndIDsNilRegistry(t *testing.T) {
 	if ids := (*Registry)(nil).IDs(); len(ids) != 0 {
 		t.Fatalf("expected nil IDs for nil registry, got %#v", ids)
 	}
+	if metadata := (*Registry)(nil).Metadata(); len(metadata) != 0 {
+		t.Fatalf("expected nil metadata for nil registry, got %#v", metadata)
+	}
+	if _, err := (*Registry)(nil).Select(context.Background(), ".", Auto); err == nil {
+		t.Fatalf("expected nil registry select error")
+	}
 }
 
 func TestResolveExplicitUnmatchedDetectionFallsBackToForcedMatch(t *testing.T) {
@@ -242,6 +266,21 @@ func TestResolveExplicitUnmatchedDetectionFallsBackToForcedMatch(t *testing.T) {
 	}
 	if len(candidates[0].Detection.Roots) == 0 {
 		t.Fatalf("expected fallback roots to be populated")
+	}
+}
+
+func TestNormalizeDetectionFallsBackToRawRootWhenAbsFails(t *testing.T) {
+	previous := absPath
+	absPath = func(string) (string, error) {
+		return "", errors.New("abs failed")
+	}
+	t.Cleanup(func() {
+		absPath = previous
+	})
+
+	detection := normalizeDetection("relative-root", Detection{Matched: true})
+	if !slices.Equal(detection.Roots, []string{"relative-root"}) {
+		t.Fatalf("expected raw repo path root, got %#v", detection.Roots)
 	}
 }
 
