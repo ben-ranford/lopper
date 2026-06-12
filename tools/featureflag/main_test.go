@@ -459,10 +459,13 @@ func TestRunManifestAndReportUseChannels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run feature report: %v", err)
 	}
-	for _, want := range []string{"Stable by default", "Preview available by opt-in", "Newly added preview flags", "LOP-FEAT-0001"} {
+	for _, want := range []string{"Stable by default since previous version", "Preview available by opt-in", "Newly added preview flags", "LOP-FEAT-0001"} {
 		if !strings.Contains(reportOutput, want) {
 			t.Fatalf("expected report to contain %q, got %s", want, reportOutput)
 		}
+	}
+	if strings.Contains(reportOutput, "`LOP-FEAT-0002` `stable-flag`") {
+		t.Fatalf("expected release report to omit unchanged stable defaults, got %s", reportOutput)
 	}
 
 	rollingReport, err := captureStdout(t, func() error {
@@ -559,12 +562,41 @@ func TestFormatReportReleaseLockSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
-	output := formatReport(featureflags.ChannelRelease, "v1.4.2", registry.Flags(), manifest, registry.Flags(), true)
+	output := formatReport(featureflags.ChannelRelease, "v1.4.2", registry.Flags(), manifest, registry.Flags(), true, formatReportOptions{})
 	if !strings.Contains(output, "Preview locked default-on for this release") || !strings.Contains(output, "Preview behavior") {
 		t.Fatalf("expected release lock report section, got %s", output)
 	}
 	if !strings.Contains(output, "None.") {
 		t.Fatalf("expected no newly added preview flags, got %s", output)
+	}
+}
+
+func TestFormatReportStableDefaultsSincePrevious(t *testing.T) {
+	current := []featureflags.Flag{
+		{Code: "LOP-FEAT-0002", Name: "existing-stable", Description: "Existing stable behavior", Lifecycle: featureflags.LifecycleStable},
+		{Code: "LOP-FEAT-0003", Name: "newly-stable", Description: "New stable behavior", Lifecycle: featureflags.LifecycleStable},
+	}
+	manifest := []featureflags.ManifestEntry{
+		{Code: "LOP-FEAT-0002", Name: "existing-stable", EnabledByDefault: true},
+		{Code: "LOP-FEAT-0003", Name: "newly-stable", EnabledByDefault: true},
+	}
+	previous := []featureflags.Flag{
+		{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: featureflags.LifecyclePreview},
+		{Code: "LOP-FEAT-0002", Name: "existing-stable", Lifecycle: featureflags.LifecycleStable},
+	}
+
+	output := formatReport(featureflags.ChannelRelease, "v1.6.0", current, manifest, previous, true, formatReportOptions{
+		StableDefaultSincePreviousOnly: true,
+	})
+
+	if !strings.Contains(output, "Stable by default since previous version") {
+		t.Fatalf("expected stable defaults section title to reflect previous comparison, got %s", output)
+	}
+	if strings.Contains(output, "`LOP-FEAT-0002` `existing-stable`") {
+		t.Fatalf("expected existing stable default to be omitted, got %s", output)
+	}
+	if !strings.Contains(output, "`LOP-FEAT-0003` `newly-stable`") {
+		t.Fatalf("expected newly stable default to remain in report, got %s", output)
 	}
 }
 

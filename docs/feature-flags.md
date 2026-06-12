@@ -166,7 +166,7 @@ go run ./tools/featureflag report \
 
 The report groups:
 
-- stable flags enabled by default
+- stable flags enabled by default since the previous catalog, when provided
 - preview flags available by opt-in
 - preview flags enabled by rolling or locked default-on for a release
 - newly added preview flags since the previous catalog, when provided
