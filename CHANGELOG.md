@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/ben-ranford/lopper/compare/v1.6.0...v1.6.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **release:** show only new stable defaults in published notes ([#1030](https://github.com/ben-ranford/lopper/issues/1030)) ([01184ae](https://github.com/ben-ranford/lopper/commit/01184ae60621c8efb64c282237bdf41ed9b65670))
+
 ## [1.6.0](https://github.com/ben-ranford/lopper/compare/v1.5.4...v1.6.0) (2026-06-12)
 
 
