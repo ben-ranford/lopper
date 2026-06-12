@@ -211,41 +211,45 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	}
 }
 
-func TestHomebrewTapWorkflowsTrustLocalTap(t *testing.T) {
+func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing.T) {
 	t.Parallel()
 
-	for _, path := range []string{
-		".github/workflows/ci.yml",
-		".github/workflows/release.yml",
-		".github/workflows/rolling.yml",
-	} {
-		path := path
-		t.Run(path, func(t *testing.T) {
-			t.Parallel()
-
-			workflowText := readConfig(t, path)
-			if !strings.Contains(workflowText, "brew trust ben-ranford/tap") {
-				t.Fatalf("%s must trust the local Homebrew tap before auditing formulae", path)
-			}
-		})
+	testCases := []struct {
+		name    string
+		command string
+		message string
+	}{
+		{
+			name:    "trust local tap",
+			command: "brew trust ben-ranford/tap",
+			message: "must trust the local Homebrew tap before auditing formulae",
+		},
+		{
+			name:    "disable linux sandbox",
+			command: "export HOMEBREW_NO_SANDBOX_LINUX=1",
+			message: "must disable the Linux Homebrew sandbox before build-from-source formula validation",
+		},
 	}
-}
 
-func TestHomebrewTapWorkflowsDisableLinuxSandboxForFormulaValidation(t *testing.T) {
-	t.Parallel()
-
-	for _, path := range []string{
-		".github/workflows/ci.yml",
-		".github/workflows/release.yml",
-		".github/workflows/rolling.yml",
-	} {
-		path := path
-		t.Run(path, func(t *testing.T) {
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			workflowText := readConfig(t, path)
-			if !strings.Contains(workflowText, "export HOMEBREW_NO_SANDBOX_LINUX=1") {
-				t.Fatalf("%s must disable the Linux Homebrew sandbox before build-from-source formula validation", path)
+			for _, path := range []string{
+				".github/workflows/ci.yml",
+				".github/workflows/release.yml",
+				".github/workflows/rolling.yml",
+			} {
+				path := path
+				t.Run(path, func(t *testing.T) {
+					t.Parallel()
+
+					workflowText := readConfig(t, path)
+					if !strings.Contains(workflowText, tc.command) {
+						t.Fatalf("%s %s", path, tc.message)
+					}
+				})
 			}
 		})
 	}
