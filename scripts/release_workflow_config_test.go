@@ -231,6 +231,26 @@ func TestHomebrewTapWorkflowsTrustLocalTap(t *testing.T) {
 	}
 }
 
+func TestHomebrewTapWorkflowsDisableLinuxSandboxForFormulaValidation(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		".github/workflows/ci.yml",
+		".github/workflows/release.yml",
+		".github/workflows/rolling.yml",
+	} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			workflowText := readConfig(t, path)
+			if !strings.Contains(workflowText, "export HOMEBREW_NO_SANDBOX_LINUX=1") {
+				t.Fatalf("%s must disable the Linux Homebrew sandbox before build-from-source formula validation", path)
+			}
+		})
+	}
+}
+
 func hasAutomerge(values []bool, want bool) bool {
 	for _, value := range values {
 		if value == want {

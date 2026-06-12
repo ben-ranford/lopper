@@ -320,6 +320,7 @@ jobs:
           brew tap --custom-remote ben-ranford/tap "file://${PWD}"
           brew trust ben-ranford/tap
           brew audit --strict --online ben-ranford/tap/lopper-rolling
+          export HOMEBREW_NO_SANDBOX_LINUX=1
           brew install --build-from-source ben-ranford/tap/lopper-rolling
           brew test ben-ranford/tap/lopper-rolling
 
