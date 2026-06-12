@@ -1,6 +1,6 @@
 # MCP Server
 
-`lopper mcp --enable-feature mcp-server-preview` runs a local stdio Model Context Protocol server for agent workflows that need dependency surface analysis without shelling out to parse CLI text.
+`lopper mcp` runs a local stdio Model Context Protocol server for agent workflows that need dependency surface analysis without shelling out to parse CLI text.
 
 The server speaks JSON-RPC over stdio using `Content-Length` frames. It writes protocol responses to stdout and does not emit normal CLI output in MCP mode.
 
@@ -13,13 +13,13 @@ Example MCP client entry:
   "mcpServers": {
     "lopper": {
       "command": "lopper",
-      "args": ["mcp", "--enable-feature", "mcp-server-preview"]
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-`mcp-server-preview` is a preview feature flag. Rolling builds enable preview flags by default; dev and stable release builds require the explicit `--enable-feature` argument shown above. During `initialize`, the server advertises tool support and returns Lopper version metadata. Use `tools/list` to inspect tool schemas at runtime.
+`mcp-server-preview` is now a stable feature flag and is enabled by default in every build channel. The original flag name remains available for compatibility and explicit rollback testing via `--disable-feature mcp-server-preview`. During `initialize`, the server advertises tool support and returns Lopper version metadata. Use `tools/list` to inspect tool schemas at runtime.
 
 ## Tools
 

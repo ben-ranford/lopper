@@ -418,6 +418,9 @@ func TestManifestEntries(t *testing.T) {
 	assertManifestEntryDefault(t, manifest, "swift-carthage-preview", true)
 	assertManifestEntryDefault(t, manifest, "powershell-adapter-preview", true)
 	assertManifestEntryDefault(t, manifest, "go-vendored-provenance-preview", true)
+	assertManifestEntryDefault(t, manifest, "baseline-provenance-runtime-context-preview", true)
+	assertManifestEntryDefault(t, manifest, "vscode-multi-root-workflows-preview", true)
+	assertManifestEntryDefault(t, manifest, "mcp-server-preview", true)
 }
 
 func TestRunManifestAndReportUseChannels(t *testing.T) {

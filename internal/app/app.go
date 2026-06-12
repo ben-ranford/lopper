@@ -23,7 +23,7 @@ var (
 	ErrDeniedLicenses               = errors.New("denied licenses detected")
 	ErrDirtyWorktree                = errors.New("codemod apply requires a clean git worktree")
 	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
-	ErrMCPPreviewDisabled           = errors.New("mcp server preview feature is disabled")
+	ErrMCPFeatureDisabled           = errors.New("mcp server feature is disabled")
 )
 
 type App struct {
@@ -65,7 +65,7 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return a.executeFeatures(req)
 	case ModeMCP:
 		if !req.MCP.Features.Enabled(mcp.ServerPreviewFeature) {
-			return "", ErrMCPPreviewDisabled
+			return "", ErrMCPFeatureDisabled
 		}
 		return "", mcp.Serve(ctx, a.In, a.Out, mcp.Options{
 			Analyzer:         a.Analyzer,

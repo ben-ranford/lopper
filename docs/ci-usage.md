@@ -24,6 +24,7 @@ Stable release automation:
 - Release versioning and changelog generation are configured in `release-please-config.json` and tracked in `.release-please-manifest.json`.
 - The Go project release notes are generated into the root `CHANGELOG.md`; the VS Code extension keeps its own `extensions/vscode-lopper/CHANGELOG.md`.
 - The current stable version is also synced into `extensions/vscode-lopper/package.json` and `extensions/vscode-lopper/package-lock.json` by the release-please PR.
+- Manual `workflow_dispatch` runs accept a release tag/version plus an optional `source_sha`, resolve the selected source ref, and create or reuse the draft GitHub release when the tag is not already present.
 - Release commits should use Conventional Commit prefixes: `fix:` for patch releases, `feat:` for minor releases, and any type with a breaking-change marker (for example `feat!:` or `fix!:`) or a `BREAKING CHANGE:` footer for major releases.
 - Set repository secret `RELEASE_PLEASE_TOKEN` to a PAT with contents and pull request write access so release-please-created PRs can trigger normal CI. If it is not configured, the workflow falls back to `MAIN_SYNC_PAT` and then `GITHUB_TOKEN`.
 

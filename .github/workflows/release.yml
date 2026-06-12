@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to publish, such as v1.4.1
-        required: false
+        description: Release tag or version to publish, such as v1.6.0 or 1.6.0
+        required: true
         type: string
       source_sha:
-        description: Release source ref or SHA; defaults to tag when omitted
+        description: Release source ref or SHA; defaults to the selected workflow ref when omitted
         required: false
         type: string
 
@@ -21,19 +21,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-please:
+  prepare-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       issues: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
-      sha: ${{ steps.release.outputs.sha }}
+      release_created: ${{ steps.release.outputs.release_created || steps.manual.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name || steps.manual.outputs.tag }}
+      version: ${{ steps.release.outputs.version || steps.manual.outputs.version }}
+      sha: ${{ steps.release.outputs.sha || steps.manual.outputs.sha }}
     steps:
       - name: Run release-please
+        if: ${{ github.event_name != 'workflow_dispatch' }}
         id: release
         uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062
         with:
@@ -41,25 +42,71 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Checkout manual release source
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_sha || github.sha }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Prepare manual release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        id: manual
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="$(printf '%s' "${INPUT_TAG}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          if [ -z "${tag}" ]; then
+            echo "::error::tag input is required for manual release promotion."
+            exit 1
+          fi
+          if [[ "${tag}" != v* ]]; then
+            tag="v${tag}"
+          fi
+
+          resolved_sha="$(git rev-parse HEAD)"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Reusing existing GitHub release ${tag}."
+          else
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${resolved_sha}" \
+              --draft \
+              --title "Release ${tag}" \
+              --notes ""
+          fi
+
+          {
+            echo "release_created=true"
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "sha=${resolved_sha}"
+          } >> "$GITHUB_OUTPUT"
+
   orchestrate-release:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/release-orchestration.yml
     with:
-      tag: ${{ needs.release-please.outputs.tag || inputs.tag }}
-      source_sha: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
+      tag: ${{ needs.prepare-release.outputs.tag }}
+      source_sha: ${{ needs.prepare-release.outputs.sha }}
       artifact_prefix: release
       build_channel: release
       image_tags: |
-        ${{ needs.release-please.outputs.tag || inputs.tag }}
+        ${{ needs.prepare-release.outputs.tag }}
         latest
 
   build-vscode-extension:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,7 +114,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -83,7 +130,7 @@ jobs:
 
       - name: Build local lopper binary
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           version="${RELEASE_TAG#v}"
           make build VERSION="$version" BUILD_CHANNEL=release
@@ -96,7 +143,7 @@ jobs:
 
       - name: Package VS Code extension
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -112,8 +159,8 @@ jobs:
           path: dist/*.vsix
 
   build-darwin-amd64:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: macos-15-intel
     permissions:
       contents: read
@@ -121,7 +168,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Compute build metadata
         id: build_meta
@@ -154,7 +201,7 @@ jobs:
 
       - name: Build Darwin amd64 release artifact
         env:
-          TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
           COMMIT_SHA: ${{ steps.build_meta.outputs.commit }}
           BUILD_DATE: ${{ steps.build_meta.outputs.build_date }}
         run: |
@@ -175,11 +222,11 @@ jobs:
 
   publish:
     needs:
-      - release-please
+      - prepare-release
       - orchestrate-release
       - build-vscode-extension
       - build-darwin-amd64
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,7 +237,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
-          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag }}
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -218,7 +265,7 @@ jobs:
 
       - name: Generate feature flag release report
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts
@@ -246,7 +293,7 @@ jobs:
       - name: Update GitHub Release notes
         run: |
           set -euo pipefail
-          tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
+          tag="${{ needs.prepare-release.outputs.tag }}"
           existing_body="$(mktemp)"
           release_notes="$(mktemp)"
 
@@ -285,7 +332,7 @@ jobs:
       - name: Upload GitHub Release assets
         run: |
           set -euo pipefail
-          tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
+          tag="${{ needs.prepare-release.outputs.tag }}"
           mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release assets found in dist" >&2
@@ -317,7 +364,7 @@ jobs:
       - name: Publish GitHub Release
         run: |
           set -euo pipefail
-          tag="${{ needs.release-please.outputs.tag || inputs.tag }}"
+          tag="${{ needs.prepare-release.outputs.tag }}"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           gh_err_file="$(mktemp)"
           set +e
@@ -353,9 +400,9 @@ jobs:
 
   update-homebrew-tap:
     needs:
-      - release-please
+      - prepare-release
       - publish
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: homebrew-tap-main
@@ -391,7 +438,7 @@ jobs:
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -458,7 +505,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "lopper ${{ needs.release-please.outputs.tag || inputs.tag }}"
+          git commit -m "lopper ${{ needs.prepare-release.outputs.tag }}"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
             if ! git fetch origin main:refs/remotes/origin/main; then
@@ -487,9 +534,9 @@ jobs:
 
   stamp-feature-release-history:
     needs:
-      - release-please
+      - prepare-release
       - publish
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: feature-release-history-main
@@ -501,7 +548,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
-          ref: ${{ needs.release-please.outputs.sha || inputs.source_sha || inputs.tag || github.sha }}
+          ref: ${{ needs.prepare-release.outputs.sha }}
           token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup Go
@@ -511,7 +558,7 @@ jobs:
 
       - name: Stamp first stable release history
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -550,8 +597,8 @@ jobs:
           exit 1
 
   skip-release:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created != 'true' }}
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
