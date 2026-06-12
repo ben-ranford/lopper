@@ -487,6 +487,7 @@ jobs:
           set -euo pipefail
           brew untap ben-ranford/tap >/dev/null 2>&1 || true
           brew tap --custom-remote ben-ranford/tap "file://${PWD}"
+          brew trust ben-ranford/tap
           brew audit --strict --online ben-ranford/tap/lopper
           brew install --build-from-source ben-ranford/tap/lopper
           brew test ben-ranford/tap/lopper

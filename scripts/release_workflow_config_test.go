@@ -11,6 +11,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type workflowInput struct {
+	Default     string `yaml:"default"`
+	Description string `yaml:"description"`
+	Required    bool   `yaml:"required"`
+}
+
+type workflowDispatchConfig struct {
+	Inputs map[string]workflowInput `yaml:"inputs"`
+}
+
+type workflowOnConfig struct {
+	WorkflowDispatch workflowDispatchConfig `yaml:"workflow_dispatch"`
+}
+
+type workflowConfig struct {
+	On workflowOnConfig `yaml:"on"`
+}
+
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	t.Parallel()
 
@@ -52,15 +70,7 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	t.Parallel()
 
-	var workflow struct {
-		On struct {
-			WorkflowDispatch struct {
-				Inputs map[string]struct {
-					Default string `yaml:"default"`
-				} `yaml:"inputs"`
-			} `yaml:"workflow_dispatch"`
-		} `yaml:"on"`
-	}
+	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/graduate-feature.yml", &workflow)
 
 	milestone, ok := workflow.On.WorkflowDispatch.Inputs["milestone"]
@@ -83,16 +93,7 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	t.Parallel()
 
-	var workflow struct {
-		On struct {
-			WorkflowDispatch struct {
-				Inputs map[string]struct {
-					Description string `yaml:"description"`
-					Required    bool   `yaml:"required"`
-				} `yaml:"inputs"`
-			} `yaml:"workflow_dispatch"`
-		} `yaml:"on"`
-	}
+	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	tag, ok := workflow.On.WorkflowDispatch.Inputs["tag"]
@@ -202,6 +203,26 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 			wantCheck := `host_goarch}" != "` + tc.expectedArch + `"`
 			if !strings.Contains(workflowText, wantCheck) {
 				t.Fatalf("%s must fail early unless GOARCH is %s", tc.path, tc.expectedArch)
+			}
+		})
+	}
+}
+
+func TestHomebrewTapWorkflowsTrustLocalTap(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		".github/workflows/ci.yml",
+		".github/workflows/release.yml",
+		".github/workflows/rolling.yml",
+	} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			workflowText := readConfig(t, path)
+			if !strings.Contains(workflowText, "brew trust ben-ranford/tap") {
+				t.Fatalf("%s must trust the local Homebrew tap before auditing formulae", path)
 			}
 		})
 	}
