@@ -121,7 +121,7 @@ func formatReleasePRComment(release string, current []featureflags.Flag, manifes
 	b.WriteString("<!-- lopper-feature-flag-release-pr -->\n")
 	b.WriteString("## Release feature flags\n\n")
 	fmt.Fprintf(&b, "This release PR is preparing `%s`.\n\n", release)
-	b.WriteString(formatReport(featureflags.ChannelRelease, release, current, manifest, previous, compared))
+	b.WriteString(formatReport(featureflags.ChannelRelease, release, current, manifest, previous, compared, formatReportOptions{}))
 	b.WriteString("\n")
 	b.WriteString("### Promotion options\n\n")
 	fmt.Fprintf(&b, "- Ship a preview flag default-on only in `%s` by editing `internal/featureflags/release_locks.json`.\n", release)

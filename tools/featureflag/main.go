@@ -220,7 +220,9 @@ func runReport(args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Print(formatReport(channel, release, registry.Flags(), manifest, previousFlags, compared))
+	_, err = fmt.Print(formatReport(channel, release, registry.Flags(), manifest, previousFlags, compared, formatReportOptions{
+		StableDefaultSincePreviousOnly: compared,
+	}))
 	return err
 }
 
@@ -290,7 +292,11 @@ func readPreviousCatalog(path string) ([]featureflags.Flag, bool, error) {
 	return flags, true, nil
 }
 
-func formatReport(channel featureflags.Channel, release string, current []featureflags.Flag, manifest []featureflags.ManifestEntry, previous []featureflags.Flag, compared bool) string {
+type formatReportOptions struct {
+	StableDefaultSincePreviousOnly bool
+}
+
+func formatReport(channel featureflags.Channel, release string, current []featureflags.Flag, manifest []featureflags.ManifestEntry, previous []featureflags.Flag, compared bool, opts formatReportOptions) string {
 	enabledByCode := make(map[string]bool, len(manifest))
 	for _, entry := range manifest {
 		enabledByCode[entry.Code] = entry.EnabledByDefault
@@ -308,6 +314,11 @@ func formatReport(channel featureflags.Channel, release string, current []featur
 			previewOptIn = append(previewOptIn, flag)
 		}
 	}
+	stableDefaultTitle := "Stable by default"
+	if opts.StableDefaultSincePreviousOnly && compared {
+		stableDefault = stableByDefaultSincePrevious(stableDefault, previous)
+		stableDefaultTitle = "Stable by default since previous version"
+	}
 
 	var b strings.Builder
 	b.WriteString("<!-- lopper-feature-flags:start -->\n")
@@ -317,7 +328,7 @@ func formatReport(channel featureflags.Channel, release string, current []featur
 		fmt.Fprintf(&b, "- Release: `%s`\n", release)
 	}
 	b.WriteString("\n")
-	writeFlagSection(&b, "Stable by default", stableDefault)
+	writeFlagSection(&b, stableDefaultTitle, stableDefault)
 	writeFlagSection(&b, "Preview available by opt-in", previewOptIn)
 	if channel == featureflags.ChannelRolling {
 		writeFlagSection(&b, "Preview enabled by rolling channel", previewDefault)
@@ -327,6 +338,29 @@ func formatReport(channel featureflags.Channel, release string, current []featur
 	writeNewPreviewSection(&b, current, previous, compared)
 	b.WriteString("<!-- lopper-feature-flags:end -->\n")
 	return b.String()
+}
+
+func stableByDefaultSincePrevious(current, previous []featureflags.Flag) []featureflags.Flag {
+	previousStableByCode := make(map[string]struct{}, len(previous))
+	previousStableByName := make(map[string]struct{}, len(previous))
+	for _, flag := range previous {
+		if flag.Lifecycle != featureflags.LifecycleStable {
+			continue
+		}
+		previousStableByCode[flag.Code] = struct{}{}
+		previousStableByName[flag.Name] = struct{}{}
+	}
+
+	filtered := make([]featureflags.Flag, 0, len(current))
+	for _, flag := range current {
+		_, seenCode := previousStableByCode[flag.Code]
+		_, seenName := previousStableByName[flag.Name]
+		if seenCode || seenName {
+			continue
+		}
+		filtered = append(filtered, flag)
+	}
+	return filtered
 }
 
 func writeFlagSection(b *strings.Builder, title string, flags []featureflags.Flag) {
