@@ -50,6 +50,6 @@
     "code": "LOP-FEAT-0008",
     "name": "mcp-server-preview",
     "description": "Enable the local stdio MCP server for read-only dependency analysis workflows.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   }
 ]
