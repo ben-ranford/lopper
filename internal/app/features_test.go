@@ -98,6 +98,9 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 		!strings.Contains(emptyOutput, "swift-carthage-preview") ||
 		!strings.Contains(emptyOutput, "powershell-adapter-preview") ||
 		!strings.Contains(emptyOutput, "go-vendored-provenance-preview") ||
+		!strings.Contains(emptyOutput, "baseline-provenance-runtime-context-preview") ||
+		!strings.Contains(emptyOutput, "vscode-multi-root-workflows-preview") ||
+		!strings.Contains(emptyOutput, "mcp-server-preview") ||
 		!strings.Contains(emptyOutput, "true") {
 		t.Fatalf("expected default feature table to include embedded graduated flags enabled by default, got %q", emptyOutput)
 	}

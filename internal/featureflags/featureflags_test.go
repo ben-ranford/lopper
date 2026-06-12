@@ -29,6 +29,9 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	assertDefaultFlag(t, defaultFlags, "swift-carthage-preview", "LOP-FEAT-0003")
 	assertDefaultFlag(t, defaultFlags, "powershell-adapter-preview", "LOP-FEAT-0004")
 	assertDefaultFlag(t, defaultFlags, "go-vendored-provenance-preview", "LOP-FEAT-0005")
+	assertDefaultFlagRelease(t, defaultFlags, "baseline-provenance-runtime-context-preview", "LOP-FEAT-0006", "v1.6.0")
+	assertDefaultFlagRelease(t, defaultFlags, "vscode-multi-root-workflows-preview", "LOP-FEAT-0007", "v1.6.0")
+	assertDefaultFlagRelease(t, defaultFlags, "mcp-server-preview", "LOP-FEAT-0008", "v1.6.0")
 	if defaultFlags[0].FirstStableRelease != "v1.5.0" {
 		t.Fatalf("expected default flags to retain first stable release history, got %#v", defaultFlags[0])
 	}
@@ -502,6 +505,9 @@ func TestManifestReportsDefaults(t *testing.T) {
 	assertManifestFlag(t, manifest, "swift-carthage-preview", true)
 	assertManifestFlag(t, manifest, "powershell-adapter-preview", true)
 	assertManifestFlag(t, manifest, "go-vendored-provenance-preview", true)
+	assertManifestFlag(t, manifest, "baseline-provenance-runtime-context-preview", true)
+	assertManifestFlag(t, manifest, "vscode-multi-root-workflows-preview", true)
+	assertManifestFlag(t, manifest, "mcp-server-preview", true)
 }
 
 func TestFormatManifest(t *testing.T) {
@@ -557,6 +563,9 @@ func TestDefaultRegistryGraduatedDefaultsAndDisable(t *testing.T) {
 		"swift-carthage-preview",
 		"powershell-adapter-preview",
 		"go-vendored-provenance-preview",
+		"baseline-provenance-runtime-context-preview",
+		"vscode-multi-root-workflows-preview",
+		"mcp-server-preview",
 	} {
 		if !dev.Enabled(name) {
 			t.Fatalf("expected %s default-on in dev channel", name)
@@ -573,6 +582,9 @@ func TestDefaultRegistryGraduatedDefaultsAndDisable(t *testing.T) {
 		"swift-carthage-preview",
 		"powershell-adapter-preview",
 		"go-vendored-provenance-preview",
+		"baseline-provenance-runtime-context-preview",
+		"vscode-multi-root-workflows-preview",
+		"mcp-server-preview",
 	} {
 		if !release.Enabled(name) {
 			t.Fatalf("expected %s default-on in release channel", name)
@@ -650,6 +662,22 @@ func assertDefaultFlag(t *testing.T, flags []Flag, name, code string) {
 		if flag.Name == name {
 			if flag.Code != code {
 				t.Fatalf("expected default flag %s to use code %s, got %#v", name, code, flag)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected default registry to include %s, got %#v", name, flags)
+}
+
+func assertDefaultFlagRelease(t *testing.T, flags []Flag, name, code, release string) {
+	t.Helper()
+	for _, flag := range flags {
+		if flag.Name == name {
+			if flag.Code != code {
+				t.Fatalf("expected default flag %s to use code %s, got %#v", name, code, flag)
+			}
+			if flag.FirstStableRelease != release {
+				t.Fatalf("expected default flag %s to record first stable release %s, got %#v", name, release, flag)
 			}
 			return
 		}

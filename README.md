@@ -93,7 +93,7 @@ lopper tui --repo . --language all
 Run the local MCP server for agent workflows:
 
 ```bash
-lopper mcp --enable-feature mcp-server-preview
+lopper mcp
 ```
 
 See [docs/mcp.md](docs/mcp.md) for tool names, input schemas, client configuration, and safety behavior.

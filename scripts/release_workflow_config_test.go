@@ -11,6 +11,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type workflowInput struct {
+	Default     string `yaml:"default"`
+	Description string `yaml:"description"`
+	Required    bool   `yaml:"required"`
+}
+
+type workflowDispatchConfig struct {
+	Inputs map[string]workflowInput `yaml:"inputs"`
+}
+
+type workflowOnConfig struct {
+	WorkflowDispatch workflowDispatchConfig `yaml:"workflow_dispatch"`
+}
+
+type workflowConfig struct {
+	On workflowOnConfig `yaml:"on"`
+}
+
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	t.Parallel()
 
@@ -52,15 +70,7 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	t.Parallel()
 
-	var workflow struct {
-		On struct {
-			WorkflowDispatch struct {
-				Inputs map[string]struct {
-					Default string `yaml:"default"`
-				} `yaml:"inputs"`
-			} `yaml:"workflow_dispatch"`
-		} `yaml:"on"`
-	}
+	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/graduate-feature.yml", &workflow)
 
 	milestone, ok := workflow.On.WorkflowDispatch.Inputs["milestone"]
@@ -77,6 +87,49 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	}
 	if strings.Contains(workflowText, "target-series:1.4.x") {
 		t.Fatal("graduate-feature workflow still references stale target-series:1.4.x")
+	}
+}
+
+func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	tag, ok := workflow.On.WorkflowDispatch.Inputs["tag"]
+	if !ok {
+		t.Fatal("release workflow must define the tag input")
+	}
+	if !tag.Required {
+		t.Fatal("manual release dispatch must require a release tag or version")
+	}
+	if strings.Contains(strings.ToLower(tag.Description), "existing release tag") {
+		t.Fatal("manual release dispatch should not require a pre-existing release tag")
+	}
+
+	sourceSHA, ok := workflow.On.WorkflowDispatch.Inputs["source_sha"]
+	if !ok {
+		t.Fatal("release workflow must define the source_sha input")
+	}
+	if strings.Contains(strings.ToLower(sourceSHA.Description), "defaults to tag") {
+		t.Fatal("manual release source should not fall back to the tag name")
+	}
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if strings.Contains(workflowText, "inputs.source_sha || inputs.tag") {
+		t.Fatal("manual release jobs must not fall back to tag names for source checkout")
+	}
+	if !strings.Contains(workflowText, "gh release create \"${tag}\"") {
+		t.Fatal("manual release flow must create a draft GitHub release when one is missing")
+	}
+	if !strings.Contains(workflowText, "--target \"${resolved_sha}\"") {
+		t.Fatal("manual release flow must target the resolved source SHA")
+	}
+	if !strings.Contains(workflowText, "Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}.") {
+		t.Fatal("manual release flow must fail when an existing release tag points to a different commit")
+	}
+	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
+		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
 	}
 }
 
@@ -153,6 +206,50 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 			wantCheck := `host_goarch}" != "` + tc.expectedArch + `"`
 			if !strings.Contains(workflowText, wantCheck) {
 				t.Fatalf("%s must fail early unless GOARCH is %s", tc.path, tc.expectedArch)
+			}
+		})
+	}
+}
+
+func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		command string
+		message string
+	}{
+		{
+			name:    "trust local tap",
+			command: "brew trust ben-ranford/tap",
+			message: "must trust the local Homebrew tap before auditing formulae",
+		},
+		{
+			name:    "disable linux sandbox",
+			command: "export HOMEBREW_NO_SANDBOX_LINUX=1",
+			message: "must disable the Linux Homebrew sandbox before build-from-source formula validation",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, path := range []string{
+				".github/workflows/ci.yml",
+				".github/workflows/release.yml",
+				".github/workflows/rolling.yml",
+			} {
+				path := path
+				t.Run(path, func(t *testing.T) {
+					t.Parallel()
+
+					workflowText := readConfig(t, path)
+					if !strings.Contains(workflowText, tc.command) {
+						t.Fatalf("%s %s", path, tc.message)
+					}
+				})
 			}
 		})
 	}
