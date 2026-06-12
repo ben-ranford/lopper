@@ -315,7 +315,7 @@ func formatReport(channel featureflags.Channel, release string, current []featur
 		}
 	}
 	stableDefaultTitle := "Stable by default"
-	if opts.StableDefaultSincePreviousOnly {
+	if opts.StableDefaultSincePreviousOnly && compared {
 		stableDefault = stableByDefaultSincePrevious(stableDefault, previous)
 		stableDefaultTitle = "Stable by default since previous version"
 	}
@@ -340,7 +340,7 @@ func formatReport(channel featureflags.Channel, release string, current []featur
 	return b.String()
 }
 
-func stableByDefaultSincePrevious(current []featureflags.Flag, previous []featureflags.Flag) []featureflags.Flag {
+func stableByDefaultSincePrevious(current, previous []featureflags.Flag) []featureflags.Flag {
 	previousStableByCode := make(map[string]struct{}, len(previous))
 	previousStableByName := make(map[string]struct{}, len(previous))
 	for _, flag := range previous {

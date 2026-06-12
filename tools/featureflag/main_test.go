@@ -600,6 +600,32 @@ func TestFormatReportStableDefaultsSincePrevious(t *testing.T) {
 	}
 }
 
+func TestFormatReportStableDefaultsRequiresComparison(t *testing.T) {
+	current := []featureflags.Flag{
+		{Code: "LOP-FEAT-0002", Name: "existing-stable", Description: "Existing stable behavior", Lifecycle: featureflags.LifecycleStable},
+	}
+	manifest := []featureflags.ManifestEntry{
+		{Code: "LOP-FEAT-0002", Name: "existing-stable", EnabledByDefault: true},
+	}
+	previous := []featureflags.Flag{
+		{Code: "LOP-FEAT-0002", Name: "existing-stable", Lifecycle: featureflags.LifecycleStable},
+	}
+
+	output := formatReport(featureflags.ChannelRelease, "v1.6.0", current, manifest, previous, false, formatReportOptions{
+		StableDefaultSincePreviousOnly: true,
+	})
+
+	if strings.Contains(output, "Stable by default since previous version") {
+		t.Fatalf("expected stable defaults section title to stay generic without a comparison, got %s", output)
+	}
+	if !strings.Contains(output, "Not compared; no previous feature catalog was provided.") {
+		t.Fatalf("expected report to keep the not-compared preview note, got %s", output)
+	}
+	if !strings.Contains(output, "`LOP-FEAT-0002` `existing-stable`") {
+		t.Fatalf("expected stable defaults to remain unfiltered without comparison, got %s", output)
+	}
+}
+
 func TestRunPREnforceFeaturePRRequiresNewFlag(t *testing.T) {
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, `[
