@@ -38,18 +38,21 @@
     "code": "LOP-FEAT-0006",
     "name": "baseline-provenance-runtime-context-preview",
     "description": "Enable baseline comparison, policy provenance, and runtime parent/entrypoint context in reports and dashboard views.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.6.0"
   },
   {
     "code": "LOP-FEAT-0007",
     "name": "vscode-multi-root-workflows-preview",
     "description": "Enable multi-root VS Code analysis workflows, dependency explorer detail views, baseline commands, and export commands.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.6.0"
   },
   {
     "code": "LOP-FEAT-0008",
     "name": "mcp-server-preview",
     "description": "Enable the local stdio MCP server for read-only dependency analysis workflows.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.6.0"
   }
 ]

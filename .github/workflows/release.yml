@@ -70,8 +70,27 @@ jobs:
           fi
 
           resolved_sha="$(git rev-parse HEAD)"
-          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
+          release_json="$(mktemp)"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>/dev/null; then
             echo "Reusing existing GitHub release ${tag}."
+            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
+
+            existing_commit=""
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+              existing_commit="$(git rev-list -n 1 "${tag}")"
+            else
+              existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"
+              if [ -n "${existing_target}" ] && git rev-parse -q --verify "${existing_target}^{commit}" >/dev/null 2>&1; then
+                existing_commit="$(git rev-parse "${existing_target}^{commit}")"
+              fi
+            fi
+
+            if [ -n "${existing_commit}" ] && [ "${existing_commit}" != "${resolved_sha}" ]; then
+              echo "::error::Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}." >&2
+              rm -f "${release_json}"
+              exit 1
+            fi
           else
             gh release create "${tag}" \
               --repo "${GITHUB_REPOSITORY}" \
@@ -80,6 +99,7 @@ jobs:
               --title "Release ${tag}" \
               --notes ""
           fi
+          rm -f "${release_json}"
 
           {
             echo "release_created=true"

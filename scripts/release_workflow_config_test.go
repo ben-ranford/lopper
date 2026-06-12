@@ -125,6 +125,9 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	if !strings.Contains(workflowText, "--target \"${resolved_sha}\"") {
 		t.Fatal("manual release flow must target the resolved source SHA")
 	}
+	if !strings.Contains(workflowText, "Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}.") {
+		t.Fatal("manual release flow must fail when an existing release tag points to a different commit")
+	}
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
 	}
