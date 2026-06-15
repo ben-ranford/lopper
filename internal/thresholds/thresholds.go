@@ -62,7 +62,7 @@ func (o *Overrides) SetLicenseDenyList(values []string) {
 	o.licenseDenyListSet = true
 }
 
-func (o Overrides) HasLicenseDenyListOverride() bool {
+func (o *Overrides) HasLicenseDenyListOverride() bool {
 	return o.licenseDenyListSet
 }
 
