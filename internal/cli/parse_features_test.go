@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestParseArgsFeaturesRejectsPositionals(t *testing.T) {
 }
 
 func TestParseArgsFeaturesHelpAndMissingValue(t *testing.T) {
-	if _, err := ParseArgs([]string{"features", "--help"}); err != ErrHelpRequested {
+	if _, err := ParseArgs([]string{"features", "--help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected features help to request help, got %v", err)
 	}
 
