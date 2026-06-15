@@ -679,23 +679,28 @@ async function extractZipArchive(archivePath: string, extractDir: string): Promi
 }
 
 async function extractTarArchive(archivePath: string, extractDir: string): Promise<void> {
-  await tar.t({
-    file: archivePath,
-    gzip: true,
-    onentry: (entry) => {
-      archiveDestinationPath(extractDir, entry.path);
-    },
-  });
-
+  let rejectedEntryError: Error | undefined;
   await tar.x({
     file: archivePath,
     cwd: extractDir,
     gzip: true,
+    preservePaths: false,
+    strict: true,
     filter: (entryPath) => {
-      archiveDestinationPath(extractDir, entryPath);
-      return true;
+      try {
+        archiveDestinationPath(extractDir, entryPath);
+        return true;
+      } catch (error) {
+        if (!rejectedEntryError) {
+          rejectedEntryError = error instanceof Error ? error : new Error(String(error));
+        }
+        return false;
+      }
     },
   });
+  if (rejectedEntryError) {
+    throw rejectedEntryError;
+  }
 }
 
 export function archiveDestinationPath(rootDir: string, entryName: string): string {
