@@ -43,4 +43,21 @@ suite("workspace path resolution", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("allows non-existent leaf paths when their canonical parent stays inside the workspace", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-workspace-paths-"));
+    const realWorkspaceRoot = path.join(tempRoot, "real-workspace");
+    const workspaceRoot = path.join(tempRoot, "workspace-link");
+    const missingLeafPath = path.join(workspaceRoot, "src", "missing.ts");
+
+    try {
+      await mkdir(path.join(realWorkspaceRoot, "src"), { recursive: true });
+      await symlink(realWorkspaceRoot, workspaceRoot);
+
+      assert.equal(__testing.isPathInsideWorkspace(missingLeafPath, workspaceRoot), true);
+      assert.equal(__testing.resolveWorkspaceFilePath(workspaceRoot, "src/missing.ts"), missingLeafPath);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

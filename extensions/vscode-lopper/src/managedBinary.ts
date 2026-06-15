@@ -679,7 +679,7 @@ async function extractZipArchive(archivePath: string, extractDir: string): Promi
 }
 
 async function extractTarArchive(archivePath: string, extractDir: string): Promise<void> {
-  let rejectedEntryMessage: string | undefined;
+  let rejectedEntryError: Error | undefined;
   await tar.x({
     file: archivePath,
     cwd: extractDir,
@@ -691,13 +691,15 @@ async function extractTarArchive(archivePath: string, extractDir: string): Promi
         archiveDestinationPath(extractDir, entryPath);
         return true;
       } catch (error) {
-        rejectedEntryMessage = error instanceof Error ? error.message : String(error);
+        if (!rejectedEntryError) {
+          rejectedEntryError = error instanceof Error ? error : new Error(String(error));
+        }
         return false;
       }
     },
   });
-  if (rejectedEntryMessage) {
-    throw new Error(rejectedEntryMessage);
+  if (rejectedEntryError) {
+    throw rejectedEntryError;
   }
 }
 

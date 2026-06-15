@@ -1783,10 +1783,24 @@ function isSameWorkspacePath(leftPath: string, rightPath: string): boolean {
 }
 
 function canonicalizeExistingPath(targetPath: string): string | undefined {
-  try {
-    return realpathSync.native(targetPath);
-  } catch {
-    return undefined;
+  const pendingSegments: string[] = [];
+  let currentPath = path.resolve(targetPath);
+
+  while (true) {
+    try {
+      const canonicalBasePath = realpathSync.native(currentPath);
+      if (pendingSegments.length === 0) {
+        return canonicalBasePath;
+      }
+      return path.join(canonicalBasePath, ...pendingSegments.reverse());
+    } catch {
+      const parentPath = path.dirname(currentPath);
+      if (parentPath === currentPath) {
+        return undefined;
+      }
+      pendingSegments.push(path.basename(currentPath));
+      currentPath = parentPath;
+    }
   }
 }
 

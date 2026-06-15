@@ -33,7 +33,6 @@ suite("vscode-lopper smoke", () => {
     const blockedUri = vscode.Uri.file(path.join(primaryFolder.uri.fsPath, "linked-outside", "escape.ts"));
     const activeBeforeBlockedOpen = vscode.window.activeTextEditor?.document.uri.toString();
     await vscode.commands.executeCommand("lopper.openLocation", blockedUri.fsPath, 1, 1);
-    await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), activeBeforeBlockedOpen);
     assert.equal(
       vscode.workspace.textDocuments.some((item) => item.uri.toString() === blockedUri.toString()),
