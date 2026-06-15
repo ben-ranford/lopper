@@ -43,3 +43,12 @@ func TestParseArgsMCPRejectsPositionals(t *testing.T) {
 		t.Fatalf("expected too many arguments error, got %v", err)
 	}
 }
+
+func TestParseArgsMCPNormalizesFlagsAfterUnexpectedPositional(t *testing.T) {
+	withFeatureRegistry(t, featureflags.ChannelRelease, nil)
+
+	err := expectParseArgsError(t, []string{"mcp", "extra", "--enable-feature", "missing"}, "expected normalized mcp flag parsing")
+	if !strings.Contains(err.Error(), "unknown feature") {
+		t.Fatalf("expected unknown feature error after normalization, got %v", err)
+	}
+}

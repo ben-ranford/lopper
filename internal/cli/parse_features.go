@@ -10,6 +10,12 @@ import (
 )
 
 func parseFeatures(args []string, req app.Request) (app.Request, error) {
+	normalizedArgs, err := normalizeArgs(args)
+	if err != nil {
+		return req, err
+	}
+	args = normalizedArgs
+
 	fs := flag.NewFlagSet("features", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	format := fs.String("format", req.Features.Format, "output format")
@@ -20,12 +26,12 @@ func parseFeatures(args []string, req app.Request) (app.Request, error) {
 	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
 	}
-	if len(fs.Args()) > 0 {
-		return req, fmt.Errorf("too many arguments for features")
-	}
 	outputPath, err := resolveOutputPath(*outputFlag, *outputShortFlag)
 	if err != nil {
 		return req, err
+	}
+	if len(fs.Args()) > 0 {
+		return req, fmt.Errorf("too many arguments for features")
 	}
 
 	req.Mode = app.ModeFeatures

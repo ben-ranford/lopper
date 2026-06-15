@@ -113,6 +113,12 @@ func TestParseArgsErrorsAndHelp(t *testing.T) {
 	if _, err := ParseArgs([]string{"help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected top-level help request error, got %v", err)
 	}
+	if _, err := ParseArgs([]string{"version"}); !errors.Is(err, ErrVersionRequested) {
+		t.Fatalf("expected top-level version request error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"--version", helpFlag}); !errors.Is(err, ErrVersionRequested) {
+		t.Fatalf("expected --version with extra args to remain a version request, got %v", err)
+	}
 	if _, err := ParseArgs([]string{"analyse", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected analyse help request error, got %v", err)
 	}
@@ -131,11 +137,11 @@ func TestIsVersionArg(t *testing.T) {
 	if !isVersionArg([]string{"--version"}) {
 		t.Fatalf("expected --version to be recognized")
 	}
-	if isVersionArg([]string{"version"}) {
-		t.Fatalf("did not expect bare version token to be recognized")
+	if !isVersionArg([]string{"version"}) {
+		t.Fatalf("expected bare version token to be recognized")
 	}
-	if isVersionArg([]string{"--version", "--help"}) {
-		t.Fatalf("did not expect mixed args to be recognized as a version request")
+	if !isVersionArg([]string{"--version", "--help"}) {
+		t.Fatalf("expected --version with extra args to be recognized")
 	}
 }
 

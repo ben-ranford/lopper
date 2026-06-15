@@ -32,13 +32,6 @@ func New(executor Executor, out io.Writer, errOut io.Writer) *CommandLine {
 }
 
 func (c *CommandLine) Run(ctx context.Context, args []string) int {
-	if isVersionArg(args) {
-		if c.writeOutln(c.VersionOutput) != nil {
-			return 1
-		}
-		return 0
-	}
-
 	req, err := ParseArgs(args)
 	if err != nil {
 		return c.handleParseError(err)
@@ -65,6 +58,12 @@ func (c *CommandLine) Run(ctx context.Context, args []string) int {
 }
 
 func (c *CommandLine) handleParseError(parseErr error) int {
+	if errors.Is(parseErr, ErrVersionRequested) {
+		if c.writeOutln(c.VersionOutput) != nil {
+			return 1
+		}
+		return 0
+	}
 	if errors.Is(parseErr, ErrHelpRequested) {
 		if c.writeOut(Usage()) != nil {
 			return 1

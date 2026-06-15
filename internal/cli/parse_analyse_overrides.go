@@ -172,7 +172,7 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 		overrides.RemovalCandidateWeightConfidence = values.scoreWeightConfidence
 	}
 	if visited["license-deny"] {
-		overrides.LicenseDenyList = splitPatternList(*values.licenseDeny)
+		overrides.SetLicenseDenyList(splitPatternList(*values.licenseDeny))
 	}
 	if visited["license-fail-on-deny"] {
 		overrides.LicenseFailOnDeny = values.licenseFailOnDeny
@@ -224,7 +224,7 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.RemovalCandidateWeightUsage != nil ||
 		overrides.RemovalCandidateWeightImpact != nil ||
 		overrides.RemovalCandidateWeightConfidence != nil ||
-		len(overrides.LicenseDenyList) > 0 ||
+		overrides.HasLicenseDenyListOverride() ||
 		overrides.LicenseFailOnDeny != nil ||
 		overrides.LicenseIncludeRegistryProvenance != nil ||
 		overrides.LockfileDriftPolicy != nil
@@ -256,7 +256,7 @@ func cliPolicyTrace(overrides thresholds.Overrides) []report.PolicyMergeTrace {
 	if overrides.RemovalCandidateWeightConfidence != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.confidence", Source: "cli"})
 	}
-	if len(overrides.LicenseDenyList) > 0 {
+	if overrides.HasLicenseDenyListOverride() {
 		trace = append(trace, report.PolicyMergeTrace{Field: "license.deny", Source: "cli"})
 	}
 	if overrides.LicenseFailOnDeny != nil {

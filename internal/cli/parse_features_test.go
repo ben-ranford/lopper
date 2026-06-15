@@ -39,3 +39,10 @@ func TestParseArgsFeaturesOutputConflict(t *testing.T) {
 		t.Fatalf("expected output conflict, got %v", err)
 	}
 }
+
+func TestParseArgsFeaturesNormalizesFlagsAfterUnexpectedPositional(t *testing.T) {
+	err := expectParseArgsError(t, []string{"features", "extra", "--output", "one.json", "-o", "two.json"}, "expected normalized features flag parsing")
+	if !strings.Contains(err.Error(), "--output and -o must match") {
+		t.Fatalf("expected output conflict after normalization, got %v", err)
+	}
+}
