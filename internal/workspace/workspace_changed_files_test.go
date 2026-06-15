@@ -62,6 +62,11 @@ func TestChangedFilesParsesDiffAndStatusFallback(t *testing.T) {
 			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  printf '%s\\n' '\"\\303\\261ame.go\"'\n  exit 0\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo 'M  \"\\303\\261ame.go\"'\n  exit 0\nfi\nexit 1\n",
 			want:   []string{"ñame.go"},
 		},
+		{
+			name:   "quoted_modified_path_with_arrow_substring",
+			script: "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff fail\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo 'M  \"weird -> name.go\"'\n  exit 0\nfi\nexit 1\n",
+			want:   []string{"weird -> name.go"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -180,6 +185,16 @@ func TestParseChangedFileHelpers(t *testing.T) {
 		t.Fatalf("expected quoted porcelain path to decode, got %#v", quotedPorcelain)
 	}
 
+	quotedWithArrow := parsePorcelainChangedFiles([]byte("M  \"weird -> name.go\"\n"))
+	if len(quotedWithArrow) != 1 || quotedWithArrow[0] != "weird -> name.go" {
+		t.Fatalf("expected modified quoted path with arrow substring to stay intact, got %#v", quotedWithArrow)
+	}
+
+	renamedQuotedWithArrow := parsePorcelainChangedFiles([]byte("R  \"old -> name.go\" -> \"new -> name.go\"\n"))
+	if len(renamedQuotedWithArrow) != 1 || renamedQuotedWithArrow[0] != "new -> name.go" {
+		t.Fatalf("expected renamed quoted path with arrow substring to parse destination, got %#v", renamedQuotedWithArrow)
+	}
+
 	unstaged := parsePorcelainChangedFiles([]byte(" M main.go\n"))
 	if len(unstaged) != 1 || unstaged[0] != "main.go" {
 		t.Fatalf("expected unstaged path to keep full filename, got %#v", unstaged)
@@ -188,6 +203,20 @@ func TestParseChangedFileHelpers(t *testing.T) {
 	withShort := parsePorcelainChangedFiles([]byte("\n??\nA  file.txt\n"))
 	if len(withShort) != 1 || withShort[0] != "file.txt" {
 		t.Fatalf("expected short lines to be ignored, got %#v", withShort)
+	}
+}
+
+func TestParseChangedFileHelperEdgeCases(t *testing.T) {
+	if idx := findPorcelainRenameSeparator("\"old \\\"->\\\" name.go\" -> \"new.go\""); idx < 0 {
+		t.Fatalf("expected rename separator outside escaped quoted content")
+	}
+
+	if idx := findPorcelainRenameSeparator("\"weird -> name.go\""); idx != -1 {
+		t.Fatalf("expected quoted arrow substring without rename separator, got %d", idx)
+	}
+
+	if decoded := decodeGitQuotedPath("\"\\xG1\""); decoded != "\"\\xG1\"" {
+		t.Fatalf("expected invalid quoted path to remain unchanged, got %q", decoded)
 	}
 }
 

@@ -71,14 +71,40 @@ func parsePorcelainChangedFiles(output []byte) []string {
 		if len(line) < 4 {
 			return ""
 		}
+		status := line[:2]
 		// Porcelain format is positional (`XY PATH`); trimming line whitespace corrupts
 		// unstaged entries that start with a leading status-space (`" M path"`).
 		path := line[3:]
-		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
-			path = path[idx+4:]
+		if strings.ContainsAny(status, "RC") {
+			if idx := findPorcelainRenameSeparator(path); idx >= 0 {
+				path = path[idx+4:]
+			}
 		}
 		return decodeGitQuotedPath(path)
 	})
+}
+
+func findPorcelainRenameSeparator(path string) int {
+	inQuotes := false
+	escaped := false
+	for i := 0; i+3 < len(path); i++ {
+		if !inQuotes && strings.HasPrefix(path[i:], " -> ") {
+			return i
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch path[i] {
+		case '\\':
+			if inQuotes {
+				escaped = true
+			}
+		case '"':
+			inQuotes = !inQuotes
+		}
+	}
+	return -1
 }
 
 func decodeGitQuotedPath(path string) string {
