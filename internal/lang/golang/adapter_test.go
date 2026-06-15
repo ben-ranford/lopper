@@ -448,7 +448,7 @@ func TestScanRepoScansLoadedNestedModuleDirs(t *testing.T) {
 
 func TestLoadGoModuleInfoInlineRequireBlock(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, fileGoMod), strings.Join([]string{
+	goModContentLines := []string{
 		moduleDemoLine,
 		go125Line,
 		"",
@@ -456,7 +456,9 @@ func TestLoadGoModuleInfoInlineRequireBlock(t *testing.T) {
 		requirePrefix + depLo + " v1.47.0",
 		replacePrefix + moduleOriginal + " => " + sharedForkImport + " v1.0.0",
 		"",
-	}, "\n"))
+	}
+	goModContent := strings.Join(goModContentLines, "\n")
+	writeFile(t, filepath.Join(repo, fileGoMod), goModContent)
 
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {

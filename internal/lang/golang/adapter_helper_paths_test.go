@@ -151,13 +151,15 @@ func assertGoModHelpers(t *testing.T) {
 		t.Fatalf("expected local replacement target to be ignored, got %#v", replacements)
 	}
 
-	inlineBlockModulePath, inlineBlockDependencies, inlineBlockReplacements := parseGoMod([]byte(strings.Join([]string{
+	inlineBlockGoModLines := []string{
 		"module example.com/root",
 		"require ( github.com/acme/dep v1.2.3 )",
 		"require github.com/acme/other v1.4.0",
 		"replace example.com/old => github.com/fork/old v1.2.4",
 		"",
-	}, "\n")))
+	}
+	inlineBlockGoMod := strings.Join(inlineBlockGoModLines, "\n")
+	inlineBlockModulePath, inlineBlockDependencies, inlineBlockReplacements := parseGoMod([]byte(inlineBlockGoMod))
 	if inlineBlockModulePath != "example.com/root" {
 		t.Fatalf("expected inline require block module path, got %q", inlineBlockModulePath)
 	}
