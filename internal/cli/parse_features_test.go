@@ -33,6 +33,17 @@ func TestParseArgsFeaturesRejectsPositionals(t *testing.T) {
 	}
 }
 
+func TestParseArgsFeaturesHelpAndMissingValue(t *testing.T) {
+	if _, err := ParseArgs([]string{"features", "--help"}); err != ErrHelpRequested {
+		t.Fatalf("expected features help to request help, got %v", err)
+	}
+
+	err := expectParseArgsError(t, []string{"features", "--output"}, "expected features missing output value")
+	if !strings.Contains(err.Error(), "flag needs an argument") {
+		t.Fatalf("expected missing flag value error, got %v", err)
+	}
+}
+
 func TestParseArgsFeaturesOutputConflict(t *testing.T) {
 	err := expectParseArgsError(t, []string{"features", "--output", "one.json", "-o", "two.json"}, "expected features output conflict")
 	if !strings.Contains(err.Error(), "--output and -o must match") {

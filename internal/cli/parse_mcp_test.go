@@ -52,3 +52,10 @@ func TestParseArgsMCPNormalizesFlagsAfterUnexpectedPositional(t *testing.T) {
 		t.Fatalf("expected unknown feature error after normalization, got %v", err)
 	}
 }
+
+func TestParseArgsMCPMissingFeatureValue(t *testing.T) {
+	err := expectParseArgsError(t, []string{"mcp", "--enable-feature"}, "expected missing mcp feature value")
+	if !strings.Contains(err.Error(), "flag needs an argument") {
+		t.Fatalf("expected missing flag value error, got %v", err)
+	}
+}
