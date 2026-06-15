@@ -55,7 +55,7 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 				return err
 			}
 		}
-		if err := s.renderSummaryOutput(reportView, state); err != nil {
+		if err := s.renderSummaryOutput(reportView, &state); err != nil {
 			return err
 		}
 
@@ -73,10 +73,17 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 	}
 }
 
-func (s *Summary) renderSummaryOutput(reportView summaryReportView, state summaryState) error {
-	output, err := s.renderSummary(reportView, state)
+func (s *Summary) renderSummaryOutput(reportView summaryReportView, state *summaryState) error {
+	currentState := summaryState{}
+	if state != nil {
+		currentState = *state
+	}
+	output, err := s.renderSummary(reportView, currentState)
 	if err != nil {
 		return err
+	}
+	if state != nil {
+		state.showHelp = false
 	}
 	_, err = fmt.Fprint(s.Out, output)
 	return err
