@@ -131,8 +131,11 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
 	}
-	if !strings.Contains(workflowText, "needs.prepare-release.outputs.release_created != 'true' && (github.event_name != 'workflow_dispatch' || inputs.tag == '')") {
+	if !strings.Contains(workflowText, "needs.prepare-release.outputs.release_created != 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.tag == '')") {
 		t.Fatal("skip-release must ignore manual dispatches that publish a requested tag")
+	}
+	if !strings.Contains(workflowText, "Release Please did not create a release on this push; the release PR was created or updated instead.") {
+		t.Fatal("skip-release must log the push-specific message when no release is published")
 	}
 	if strings.Contains(workflowText, "Release Please did not create a release; the release PR was created or updated instead.") {
 		t.Fatal("skip-release log must not use the stale message that also appears during manual tag dispatches")

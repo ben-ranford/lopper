@@ -620,7 +620,7 @@ jobs:
 
   skip-release:
     needs: prepare-release
-    if: ${{ needs.prepare-release.outputs.release_created != 'true' && (github.event_name != 'workflow_dispatch' || inputs.tag == '') }}
+    if: ${{ needs.prepare-release.outputs.release_created != 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.tag == '') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
