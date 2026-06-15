@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.1](https://github.com/ben-ranford/lopper/compare/v1.6.0...v1.6.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **cli:** normalize flag parsing and version handling ([#1032](https://github.com/ben-ranford/lopper/issues/1032)) ([7de7fb8](https://github.com/ben-ranford/lopper/commit/7de7fb81372f88e14bf280e0cd09baa8951ab7ff))
+* **lang:** handle inline go.mod require blocks ([#1033](https://github.com/ben-ranford/lopper/issues/1033)) ([ec3f466](https://github.com/ben-ranford/lopper/commit/ec3f466870dd35234eef021ece65a51bf010fcfd))
+* **release:** gate skip-release on manual tag dispatches ([#1035](https://github.com/ben-ranford/lopper/issues/1035)) ([874d176](https://github.com/ben-ranford/lopper/commit/874d176e7b6c36eb38f69417a431feceeb7b6c4f))
+* **release:** show only new stable defaults in published notes ([#1030](https://github.com/ben-ranford/lopper/issues/1030)) ([01184ae](https://github.com/ben-ranford/lopper/commit/01184ae60621c8efb64c282237bdf41ed9b65670))
+* **ui:** make summary help rendering one-shot ([#1034](https://github.com/ben-ranford/lopper/issues/1034)) ([cf3927c](https://github.com/ben-ranford/lopper/commit/cf3927cc4a865873b989bd5af9f6b50eaefde9ca))
+* **vscode:** harden workspace path and tar extraction ([#1037](https://github.com/ben-ranford/lopper/issues/1037)) ([3cefb67](https://github.com/ben-ranford/lopper/commit/3cefb678d1fb412376f690a84a6b06a726b1641b))
+* **workspace:** preserve arrow substrings in changed files ([#1036](https://github.com/ben-ranford/lopper/issues/1036)) ([6e278a3](https://github.com/ben-ranford/lopper/commit/6e278a37365c66d4bf11ba5c89baad474aa16452))
+
 ## [1.6.0](https://github.com/ben-ranford/lopper/compare/v1.5.4...v1.6.0) (2026-06-12)
 
 
