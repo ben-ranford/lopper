@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -147,6 +149,23 @@ func assertGoModHelpers(t *testing.T) {
 	}
 	if len(replacements) != 0 {
 		t.Fatalf("expected local replacement target to be ignored, got %#v", replacements)
+	}
+
+	inlineBlockModulePath, inlineBlockDependencies, inlineBlockReplacements := parseGoMod([]byte(strings.Join([]string{
+		"module example.com/root",
+		"require ( github.com/acme/dep v1.2.3 )",
+		"require github.com/acme/other v1.4.0",
+		"replace example.com/old => github.com/fork/old v1.2.4",
+		"",
+	}, "\n")))
+	if inlineBlockModulePath != "example.com/root" {
+		t.Fatalf("expected inline require block module path, got %q", inlineBlockModulePath)
+	}
+	if !slices.Equal(inlineBlockDependencies, []string{"github.com/acme/dep", "github.com/acme/other"}) {
+		t.Fatalf("expected inline require block dependencies to survive, got %#v", inlineBlockDependencies)
+	}
+	if len(inlineBlockReplacements) != 1 || inlineBlockReplacements["github.com/fork/old"] != "example.com/old" {
+		t.Fatalf("expected inline require block to preserve later replace directives, got %#v", inlineBlockReplacements)
 	}
 
 	malformedModulePath, malformedDependencies, malformedReplacements := parseGoMod([]byte("module example.com/root\nrequire (\n"))

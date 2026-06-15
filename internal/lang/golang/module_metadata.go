@@ -132,6 +132,12 @@ func unionDirSet(primary map[string]struct{}, extra map[string]struct{}) map[str
 func parseGoMod(content []byte) (string, []string, map[string]string) {
 	file, err := modfile.Parse(goModName, content, nil)
 	if err != nil && file == nil {
+		normalized := normalizeInlineGoModRequireBlocks(content)
+		if string(normalized) != string(content) {
+			file, err = modfile.Parse(goModName, normalized, nil)
+		}
+	}
+	if err != nil && file == nil {
 		return "", []string{}, map[string]string{}
 	}
 	if file == nil {
@@ -139,6 +145,48 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 	}
 
 	return goModModulePath(file), goModDependencies(file.Require), goModReplacements(file.Replace)
+}
+
+func normalizeInlineGoModRequireBlocks(content []byte) []byte {
+	lines := strings.Split(string(content), "\n")
+	changed := false
+	for i, rawLine := range lines {
+		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
+		if !ok {
+			continue
+		}
+		lines[i] = normalizedLine
+		changed = true
+	}
+	if !changed {
+		return content
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func normalizeInlineGoModRequireLine(rawLine string) (string, bool) {
+	commentSuffix := ""
+	lineWithoutComment := rawLine
+	if index := strings.Index(rawLine, "//"); index >= 0 {
+		lineWithoutComment = rawLine[:index]
+		commentSuffix = rawLine[index:]
+	}
+
+	trimmed := strings.TrimSpace(lineWithoutComment)
+	if !strings.HasPrefix(trimmed, "require (") || !strings.HasSuffix(trimmed, ")") {
+		return rawLine, false
+	}
+
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "require ("), ")"))
+	if body == "" {
+		return rawLine, false
+	}
+
+	normalized := "require " + body
+	if commentSuffix != "" {
+		normalized += " " + commentSuffix
+	}
+	return normalized, true
 }
 
 func goModModulePath(file *modfile.File) string {
