@@ -620,11 +620,11 @@ jobs:
 
   skip-release:
     needs: prepare-release
-    if: ${{ needs.prepare-release.outputs.release_created != 'true' }}
+    if: ${{ needs.prepare-release.outputs.release_created != 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.tag == '') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: No release created
+      - name: No release published
         run: |
-          echo "Release Please did not create a release; the release PR was created or updated instead."
+          echo "Release Please did not create a release on this push; the release PR was created or updated instead."
