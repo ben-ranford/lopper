@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -149,6 +151,52 @@ func assertGoModHelpers(t *testing.T) {
 		t.Fatalf("expected local replacement target to be ignored, got %#v", replacements)
 	}
 
+	inlineBlockGoModLines := []string{
+		"module example.com/root",
+		"require ( github.com/acme/dep v1.2.3 )",
+		"require github.com/acme/other v1.4.0",
+		"replace example.com/old => github.com/fork/old v1.2.4",
+		"",
+	}
+	inlineBlockGoMod := strings.Join(inlineBlockGoModLines, "\n")
+	inlineBlockModulePath, inlineBlockDependencies, inlineBlockReplacements := parseGoMod([]byte(inlineBlockGoMod))
+	if inlineBlockModulePath != "example.com/root" {
+		t.Fatalf("expected inline require block module path, got %q", inlineBlockModulePath)
+	}
+	if !slices.Equal(inlineBlockDependencies, []string{"github.com/acme/dep", "github.com/acme/other"}) {
+		t.Fatalf("expected inline require block dependencies to survive, got %#v", inlineBlockDependencies)
+	}
+	if len(inlineBlockReplacements) != 1 || inlineBlockReplacements["github.com/fork/old"] != "example.com/old" {
+		t.Fatalf("expected inline require block to preserve later replace directives, got %#v", inlineBlockReplacements)
+	}
+
+	commentedInlineBlockGoModLines := []string{
+		"module example.com/root",
+		"require ( github.com/acme/dep v1.2.3 ) // keep comment",
+		"",
+	}
+	commentedInlineBlockGoMod := strings.Join(commentedInlineBlockGoModLines, "\n")
+	commentedModulePath, commentedDependencies, commentedReplacements := parseGoMod([]byte(commentedInlineBlockGoMod))
+	if commentedModulePath != "example.com/root" {
+		t.Fatalf("expected commented inline require block module path, got %q", commentedModulePath)
+	}
+	if !slices.Equal(commentedDependencies, []string{"github.com/acme/dep"}) {
+		t.Fatalf("expected commented inline require block dependency, got %#v", commentedDependencies)
+	}
+	if len(commentedReplacements) != 0 {
+		t.Fatalf("expected no replacements from commented inline require block, got %#v", commentedReplacements)
+	}
+
+	normalizedLine, ok := normalizeInlineGoModRequireLine("require ( github.com/acme/dep v1.2.3 ) // keep comment")
+	if !ok || normalizedLine != "require github.com/acme/dep v1.2.3 // keep comment" {
+		t.Fatalf("expected inline require line normalization with comment, got line=%q ok=%v", normalizedLine, ok)
+	}
+
+	emptyLine, emptyOK := normalizeInlineGoModRequireLine("require ( )")
+	if emptyOK || emptyLine != "require ( )" {
+		t.Fatalf("expected empty inline require line to stay unchanged, got line=%q ok=%v", emptyLine, emptyOK)
+	}
+
 	malformedModulePath, malformedDependencies, malformedReplacements := parseGoMod([]byte("module example.com/root\nrequire (\n"))
 	if malformedModulePath != "" {
 		t.Fatalf("expected malformed go.mod parse to return empty module path, got %q", malformedModulePath)
@@ -178,6 +226,10 @@ func assertGoWorkAndPathHelpers(t *testing.T) {
 
 	if _, ok := resolveRepoBoundedPath(repo, ""); ok {
 		t.Fatalf("expected empty resolveRepoBoundedPath input to fail")
+	}
+	resolvedRepoPath, ok := resolveRepoBoundedPath(repo, "./svc")
+	if !ok || resolvedRepoPath != filepath.Join(repo, "svc") {
+		t.Fatalf("expected in-repo relative path to resolve, got path=%q ok=%v", resolvedRepoPath, ok)
 	}
 	if _, ok := resolveRepoBoundedPath(repo, "../outside"); ok {
 		t.Fatalf("expected resolveRepoBoundedPath to reject escaping path")

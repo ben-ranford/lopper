@@ -446,6 +446,35 @@ func TestScanRepoScansLoadedNestedModuleDirs(t *testing.T) {
 	requireScannedDependency(t, scan, depLo)
 }
 
+func TestLoadGoModuleInfoInlineRequireBlock(t *testing.T) {
+	repo := t.TempDir()
+	goModContentLines := []string{
+		moduleDemoLine,
+		go125Line,
+		"",
+		"require ( " + depUUID + versionV160 + " )",
+		requirePrefix + depLo + " v1.47.0",
+		replacePrefix + moduleOriginal + " => " + sharedForkImport + " v1.0.0",
+		"",
+	}
+	goModContent := strings.Join(goModContentLines, "\n")
+	writeFile(t, filepath.Join(repo, fileGoMod), goModContent)
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if info.ModulePath != moduleDemo {
+		t.Fatalf("expected module path %q, got %q", moduleDemo, info.ModulePath)
+	}
+	if !slices.Equal(info.DeclaredDependencies, []string{depUUID, depLo}) {
+		t.Fatalf("expected inline require block dependencies, got %#v", info.DeclaredDependencies)
+	}
+	if got := info.ReplacementImports[sharedForkImport]; got != moduleOriginal {
+		t.Fatalf("expected replacement mapping to survive inline require block, got %#v", info.ReplacementImports)
+	}
+}
+
 func TestScanRepoScansWorkspaceAndNestedModules(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
