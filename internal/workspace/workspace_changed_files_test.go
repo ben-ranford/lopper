@@ -206,6 +206,20 @@ func TestParseChangedFileHelpers(t *testing.T) {
 	}
 }
 
+func TestParseChangedFileHelperEdgeCases(t *testing.T) {
+	if idx := findPorcelainRenameSeparator("\"old \\\"->\\\" name.go\" -> \"new.go\""); idx < 0 {
+		t.Fatalf("expected rename separator outside escaped quoted content")
+	}
+
+	if idx := findPorcelainRenameSeparator("\"weird -> name.go\""); idx != -1 {
+		t.Fatalf("expected quoted arrow substring without rename separator, got %d", idx)
+	}
+
+	if decoded := decodeGitQuotedPath("\"\\xG1\""); decoded != "\"\\xG1\"" {
+		t.Fatalf("expected invalid quoted path to remain unchanged, got %q", decoded)
+	}
+}
+
 func TestResolveGitBinaryPathMissing(t *testing.T) {
 	original := resolveGitBinaryPathFn
 	originalExec := execGitCommandFn
