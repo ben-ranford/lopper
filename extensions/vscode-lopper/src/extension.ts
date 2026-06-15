@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -935,8 +936,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
 
   private async openLocation(filePath: string, line = 1, column = 1): Promise<void> {
     const uri = vscode.Uri.file(filePath);
-    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
-    if (!workspaceFolder || !isPathInsideWorkspace(uri.fsPath, workspaceFolder.uri.fsPath)) {
+    const workspaceFolder = findContainingWorkspaceFolder(uri.fsPath);
+    if (!workspaceFolder) {
       this.output.appendLine(`[open-location:skipped] refusing to open outside workspace: ${filePath}`);
       return;
     }
@@ -1012,10 +1013,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
 
   private async resolveDependencyWorkspaceFolder(folderPath?: string): Promise<vscode.WorkspaceFolder | undefined> {
     if (folderPath) {
-      const resolved = path.resolve(folderPath);
-      const folder = (vscode.workspace.workspaceFolders ?? []).find(
-        (candidate) => path.resolve(candidate.uri.fsPath) === resolved,
-      );
+      const folder = findWorkspaceFolder(folderPath);
       if (folder) {
         return folder;
       }
@@ -1199,8 +1197,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   }
 
   private findWorkspaceFolder(folderPath: string): vscode.WorkspaceFolder | undefined {
-    const resolved = path.resolve(folderPath);
-    return (vscode.workspace.workspaceFolders ?? []).find((folder) => path.resolve(folder.uri.fsPath) === resolved);
+    return findWorkspaceFolder(folderPath);
   }
 
   private pushDiagnostic(
@@ -1402,6 +1399,8 @@ class LopperExtensionBootstrap implements vscode.Disposable {
 export const __testing = {
   createController: (runner: WorkspaceAnalysisRunner): LopperControllerContract =>
     new LopperController({} as vscode.ExtensionContext, runner, { registerWithVSCode: false }),
+  isPathInsideWorkspace,
+  resolveWorkspaceFilePath,
 };
 
 const bootstrap = new LopperExtensionBootstrap();
@@ -1753,7 +1752,12 @@ function resolveWorkspaceFilePath(workspaceRoot: string, relativePath: string): 
 }
 
 function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
-  const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+  const resolvedWorkspaceRoot = canonicalizeExistingPath(workspaceRoot);
+  const resolvedCandidatePath = canonicalizeExistingPath(candidatePath);
+  if (!resolvedWorkspaceRoot || !resolvedCandidatePath) {
+    return false;
+  }
+  const relativePath = path.relative(resolvedWorkspaceRoot, resolvedCandidatePath);
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
@@ -1762,8 +1766,28 @@ function formatLocationSummary(location: LopperLocation): string {
 }
 
 function findWorkspaceFolder(folderPath: string): vscode.WorkspaceFolder | undefined {
-  const resolved = path.resolve(folderPath);
-  return (vscode.workspace.workspaceFolders ?? []).find((folder) => path.resolve(folder.uri.fsPath) === resolved);
+  return (vscode.workspace.workspaceFolders ?? []).find((folder) => isSameWorkspacePath(folder.uri.fsPath, folderPath));
+}
+
+function findContainingWorkspaceFolder(candidatePath: string): vscode.WorkspaceFolder | undefined {
+  return (vscode.workspace.workspaceFolders ?? []).find((folder) => isPathInsideWorkspace(candidatePath, folder.uri.fsPath));
+}
+
+function isSameWorkspacePath(leftPath: string, rightPath: string): boolean {
+  const canonicalLeftPath = canonicalizeExistingPath(leftPath);
+  const canonicalRightPath = canonicalizeExistingPath(rightPath);
+  if (canonicalLeftPath && canonicalRightPath) {
+    return canonicalLeftPath === canonicalRightPath;
+  }
+  return path.resolve(leftPath) === path.resolve(rightPath);
+}
+
+function canonicalizeExistingPath(targetPath: string): string | undefined {
+  try {
+    return realpathSync.native(targetPath);
+  } catch {
+    return undefined;
+  }
 }
 
 function dependencySummaryText(dependency: LopperDependencyReport, analysis: WorkspaceAnalysis): string {

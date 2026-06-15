@@ -171,6 +171,25 @@ suite("managed binary installer", () => {
     );
   });
 
+  test("rejects tar.gz managed binaries with escaping archive entries", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
+    try {
+      const releaseTag = "v9.8.7";
+      const host = { platform: "linux" as const, arch: "x64" };
+      const archivePath = await createEscapingTarballFixture(tempRoot, releaseTag, host);
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath);
+
+      await assert.rejects(
+        installer.ensureInstalled(),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("escapes the extraction directory"),
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("falls back to managed install when configured/local binaries are unavailable", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-test-"));
     const previousPath = process.env.PATH;
@@ -620,6 +639,30 @@ async function createTarballFixture(
 
   const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
   await tar.create({ gzip: true, file: archivePath, cwd: archiveDir }, [path.basename(rootDir)]);
+  return archivePath;
+}
+
+async function createEscapingTarballFixture(
+  tempRoot: string,
+  releaseTag: string,
+  host: { platform: "linux" | "darwin"; arch: string },
+): Promise<string> {
+  const archiveDir = path.join(tempRoot, "tar-escape-source");
+  const outsideDir = path.join(tempRoot, "tar-escape-outside");
+  await mkdir(archiveDir, { recursive: true });
+  await mkdir(outsideDir, { recursive: true });
+  await writeFile(path.join(outsideDir, "escape.txt"), "escape");
+
+  const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
+  await tar.create(
+    {
+      gzip: true,
+      file: archivePath,
+      cwd: archiveDir,
+      preservePaths: true,
+    },
+    ["../tar-escape-outside/escape.txt"],
+  );
   return archivePath;
 }
 

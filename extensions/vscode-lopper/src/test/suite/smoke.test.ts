@@ -30,6 +30,17 @@ suite("vscode-lopper smoke", () => {
     const document = await vscode.workspace.openTextDocument(primaryFixtureUri);
     await vscode.window.showTextDocument(document);
 
+    const blockedUri = vscode.Uri.file(path.join(primaryFolder.uri.fsPath, "linked-outside", "escape.ts"));
+    const activeBeforeBlockedOpen = vscode.window.activeTextEditor?.document.uri.toString();
+    await vscode.commands.executeCommand("lopper.openLocation", blockedUri.fsPath, 1, 1);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), activeBeforeBlockedOpen);
+    assert.equal(
+      vscode.workspace.textDocuments.some((item) => item.uri.toString() === blockedUri.toString()),
+      false,
+      "expected symlink-escaped location to remain unopened",
+    );
+
     await vscode.commands.executeCommand("lopper.refreshWorkspace");
     assert.match(api.getLatestSummary(), /package/);
     const commands = await vscode.commands.getCommands(true);

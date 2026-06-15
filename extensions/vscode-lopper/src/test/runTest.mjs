@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-vscode-smoke-"));
   const workspacePath = path.join(tempRoot, "workspace");
   const workspacePathTwo = path.join(tempRoot, "workspace-two");
+  const outsideLocationPath = path.join(tempRoot, "outside-location");
   const fixtureBinaryCopyPath = path.join(tempRoot, "lopper-smoke-binary.mjs");
   const userDataDir = path.join(tempRoot, "userdata");
   const extensionsDir = path.join(tempRoot, "extensions");
@@ -28,6 +29,7 @@ async function main() {
     await rm(path.join(workspacePathTwo, ".lopper-cache"), { recursive: true, force: true });
     await mkdir(path.join(workspacePath, "src"), { recursive: true });
     await mkdir(path.join(workspacePathTwo, "src"), { recursive: true });
+    await mkdir(outsideLocationPath, { recursive: true });
     await writeFile(
       path.join(workspacePath, "src", "index.ts"),
       [
@@ -50,6 +52,8 @@ async function main() {
       ].join("\n"),
       "utf8",
     );
+    await writeFile(path.join(outsideLocationPath, "escape.ts"), 'export const escaped = "outside";\n', "utf8");
+    await symlink(outsideLocationPath, path.join(workspacePath, "linked-outside"));
 
     await runTests({
       version: vscodeVersion,
