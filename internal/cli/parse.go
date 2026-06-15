@@ -9,6 +9,7 @@ import (
 
 var (
 	ErrHelpRequested      = errors.New("help requested")
+	ErrVersionRequested   = errors.New("version requested")
 	ErrConflictingTargets = errors.New("cannot use both dependency and --top")
 )
 
@@ -20,6 +21,9 @@ func ParseArgs(args []string) (app.Request, error) {
 
 	if isHelpArg(args[0]) {
 		return req, ErrHelpRequested
+	}
+	if isVersionArg(args) {
+		return req, ErrVersionRequested
 	}
 
 	switch args[0] {

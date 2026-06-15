@@ -57,6 +57,15 @@ type Overrides struct {
 	LicenseIncludeRegistryProvenance  *bool
 }
 
+func (o *Overrides) SetLicenseDenyList(values []string) {
+	o.LicenseDenyList = append(make([]string, 0, len(values)), values...)
+	o.licenseDenyListSet = true
+}
+
+func (o *Overrides) HasLicenseDenyListOverride() bool {
+	return o.licenseDenyListSet
+}
+
 func RemovalCandidateWeights(v Values) report.RemovalCandidateWeights {
 	return report.RemovalCandidateWeights{
 		Usage:      v.RemovalCandidateWeightUsage,

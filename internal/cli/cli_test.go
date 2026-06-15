@@ -82,6 +82,27 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+func TestRunVersionAliasAndExtraArgs(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	c := New(&fakeRunner{}, &out, &errOut)
+	c.VersionOutput = "lopper 1.2.1"
+
+	if code := c.Run(context.Background(), []string{"version"}); code != 0 {
+		t.Fatalf("expected version alias code 0, got %d", code)
+	}
+	if code := c.Run(context.Background(), []string{"--version", "--help"}); code != 0 {
+		t.Fatalf("expected --version with extra args code 0, got %d", code)
+	}
+
+	if out.String() != "lopper 1.2.1\nlopper 1.2.1\n" {
+		t.Fatalf("expected version output for alias and extra args, got %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr output for version requests, got %q", errOut.String())
+	}
+}
+
 func TestRunVersionWriterFailure(t *testing.T) {
 	c := New(&fakeRunner{}, &failWriter{}, &bytes.Buffer{})
 	if code := c.Run(context.Background(), []string{"--version"}); code != 1 {

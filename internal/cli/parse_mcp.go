@@ -9,6 +9,12 @@ import (
 )
 
 func parseMCP(args []string, req app.Request) (app.Request, error) {
+	normalizedArgs, err := normalizeArgs(args)
+	if err != nil {
+		return req, err
+	}
+	args = normalizedArgs
+
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	enableFeatures := newPatternListFlag(nil)
@@ -18,12 +24,12 @@ func parseMCP(args []string, req app.Request) (app.Request, error) {
 	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
 	}
-	if len(fs.Args()) > 0 {
-		return req, fmt.Errorf("too many arguments for mcp")
-	}
 	features, err := resolveFeatureRefs(enableFeatures.Values(), disableFeatures.Values())
 	if err != nil {
 		return req, err
+	}
+	if len(fs.Args()) > 0 {
+		return req, fmt.Errorf("too many arguments for mcp")
 	}
 	req.Mode = app.ModeMCP
 	req.MCP.Features = features

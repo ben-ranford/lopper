@@ -263,3 +263,19 @@ func TestNormalizeDenyListEmptyAndInvalid(t *testing.T) {
 		t.Fatalf("expected explicit deny list to survive normalization even when entries drop away, got %#v", gotInvalid.LicenseDenyList)
 	}
 }
+
+func TestOverridesSetLicenseDenyListMarksExplicitOverride(t *testing.T) {
+	base := Defaults()
+	base.LicenseDenyList = []string{"GPL-3.0-ONLY"}
+
+	var overrides Overrides
+	overrides.SetLicenseDenyList(nil)
+	if !overrides.HasLicenseDenyListOverride() {
+		t.Fatalf("expected explicit license deny override marker to be set")
+	}
+
+	got := overrides.Apply(base)
+	if len(got.LicenseDenyList) != 0 {
+		t.Fatalf("expected explicit empty license deny override to clear base values, got %#v", got.LicenseDenyList)
+	}
+}

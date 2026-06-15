@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -107,11 +108,26 @@ func TestParseFlagSetHelpAndBlankMissingValueError(t *testing.T) {
 	}
 }
 
+func TestParseFlagSetReturnsNonHelpErrors(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Int("top", 0, "top count")
+	if err := parseFlagSet(fs, []string{"--top", "nope"}); err == nil || errors.Is(err, ErrHelpRequested) {
+		t.Fatalf("expected parseFlagSet to return non-help parse error, got %v", err)
+	}
+}
+
 func TestParseArgsErrorsAndHelp(t *testing.T) {
 	const helpFlag = "--help"
 
 	if _, err := ParseArgs([]string{"help"}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected top-level help request error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"version"}); !errors.Is(err, ErrVersionRequested) {
+		t.Fatalf("expected top-level version request error, got %v", err)
+	}
+	if _, err := ParseArgs([]string{"--version", helpFlag}); !errors.Is(err, ErrVersionRequested) {
+		t.Fatalf("expected --version with extra args to remain a version request, got %v", err)
 	}
 	if _, err := ParseArgs([]string{"analyse", helpFlag}); !errors.Is(err, ErrHelpRequested) {
 		t.Fatalf("expected analyse help request error, got %v", err)
@@ -131,11 +147,20 @@ func TestIsVersionArg(t *testing.T) {
 	if !isVersionArg([]string{"--version"}) {
 		t.Fatalf("expected --version to be recognized")
 	}
-	if isVersionArg([]string{"version"}) {
-		t.Fatalf("did not expect bare version token to be recognized")
+	if !isVersionArg([]string{"version"}) {
+		t.Fatalf("expected bare version token to be recognized")
 	}
-	if isVersionArg([]string{"--version", "--help"}) {
-		t.Fatalf("did not expect mixed args to be recognized as a version request")
+	if !isVersionArg([]string{"--version", "--help"}) {
+		t.Fatalf("expected --version with extra args to be recognized")
+	}
+	if !isVersionArg([]string{" version "}) {
+		t.Fatalf("expected whitespace-trimmed version token to be recognized")
+	}
+	if isVersionArg(nil) {
+		t.Fatalf("expected nil args not to be recognized as version")
+	}
+	if isVersionArg([]string{"analyse"}) {
+		t.Fatalf("expected non-version args not to be recognized as version")
 	}
 }
 

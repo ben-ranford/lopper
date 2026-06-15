@@ -549,6 +549,30 @@ func TestParseArgsAnalysePolicySourcesIncludeCLI(t *testing.T) {
 	}
 }
 
+func TestParseArgsAnalyseLicenseDenyCanClearConfigAndPreserveCLITrace(t *testing.T) {
+	repo := t.TempDir()
+	config := "thresholds:\n  license_deny:\n    - GPL-3.0-only\n"
+	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
+
+	req := mustParseArgs(t, []string{"analyse", "--top", "1", repoFlagName, repo, "--license-deny", ""})
+	if len(req.Analyse.Thresholds.LicenseDenyList) != 0 {
+		t.Fatalf("expected CLI empty deny list to clear config deny list, got %#v", req.Analyse.Thresholds.LicenseDenyList)
+	}
+	if len(req.Analyse.PolicySources) == 0 || req.Analyse.PolicySources[0] != "cli" {
+		t.Fatalf("expected CLI source precedence when clearing deny list, got %#v", req.Analyse.PolicySources)
+	}
+	var traceSource string
+	for _, item := range req.Analyse.PolicyTrace {
+		if item.Field == "license.deny" {
+			traceSource = item.Source
+			break
+		}
+	}
+	if traceSource != "cli" {
+		t.Fatalf("expected CLI policy trace to win for license deny clear, got %q", traceSource)
+	}
+}
+
 func TestParseArgsAnalyseNotificationPrecedence(t *testing.T) {
 	repo := t.TempDir()
 	config := `notifications:
