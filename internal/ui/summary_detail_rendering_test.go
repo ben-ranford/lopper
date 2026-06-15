@@ -44,11 +44,46 @@ func TestRenderSummaryOutputSuccess(t *testing.T) {
 
 	var out bytes.Buffer
 	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
-	if err := summary.renderSummaryOutput(mapSummaryReportView(rep), summaryState{sortMode: sortByWaste, page: 1, pageSize: 10}); err != nil {
+	state := summaryState{sortMode: sortByWaste, page: 1, pageSize: 10}
+	if err := summary.renderSummaryOutput(mapSummaryReportView(rep), &state); err != nil {
 		t.Fatalf("render summary output: %v", err)
 	}
 	if !strings.Contains(out.String(), "Lopper TUI (summary)") {
 		t.Fatalf("expected rendered summary frame, got %q", out.String())
+	}
+}
+
+func TestRenderSummaryOutputHelpIsOneShot(t *testing.T) {
+	rep := report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+	}
+
+	var out bytes.Buffer
+	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
+	state := summaryState{sortMode: sortByWaste, page: 1, pageSize: 10, showHelp: true}
+	reportView := mapSummaryReportView(rep)
+
+	if err := summary.renderSummaryOutput(reportView, &state); err != nil {
+		t.Fatalf("render summary output with help: %v", err)
+	}
+	if !strings.Contains(out.String(), "Commands:\n  filter <text>") {
+		t.Fatalf("expected first render to include expanded help, got %q", out.String())
+	}
+	if state.showHelp {
+		t.Fatalf("expected help flag to clear after rendering")
+	}
+
+	out.Reset()
+	if err := summary.renderSummaryOutput(reportView, &state); err != nil {
+		t.Fatalf("render summary output without help: %v", err)
+	}
+	if strings.Contains(out.String(), "Commands:\n  filter <text>") {
+		t.Fatalf("expected second render to omit expanded help, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Commands: help | open <dependency> | q") {
+		t.Fatalf("expected second render to include compact command hint, got %q", out.String())
 	}
 }
 
@@ -279,7 +314,7 @@ func testUISummaryFormatterErrorsPropagate(t *testing.T) {
 	if _, err := summary.renderSummary(reportView, state); !errors.Is(err, formatErr) {
 		t.Fatalf("expected renderSummary to return formatter error, got %v", err)
 	}
-	if err := summary.renderSummaryOutput(reportView, state); !errors.Is(err, formatErr) {
+	if err := summary.renderSummaryOutput(reportView, &state); !errors.Is(err, formatErr) {
 		t.Fatalf("expected renderSummaryOutput to return formatter error, got %v", err)
 	}
 	if err := summary.Snapshot(context.Background(), Options{RepoPath: ".", Sort: "name", PageSize: 10}, filepath.Join(t.TempDir(), "summary.txt")); !errors.Is(err, formatErr) {
