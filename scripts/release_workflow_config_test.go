@@ -245,31 +245,22 @@ func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
 		{
 			name:   "amd64",
 			suffix: "-amd64",
-			want: strings.Join([]string{
-				"ghcr.io/example/lopper:v1.2.3-amd64",
-				"ghcr.io/example/lopper:latest-amd64",
-				"ghcr.io/example/lopper:v1.2.3-rc.1-amd64",
-				"",
-			}, "\n"),
+			want: "ghcr.io/example/lopper:v1.2.3-amd64\n" +
+				"ghcr.io/example/lopper:latest-amd64\n" +
+				"ghcr.io/example/lopper:v1.2.3-rc.1-amd64\n",
 		},
 		{
 			name:   "arm64",
 			suffix: "-arm64",
-			want: strings.Join([]string{
-				"ghcr.io/example/lopper:v1.2.3-arm64",
-				"ghcr.io/example/lopper:latest-arm64",
-				"ghcr.io/example/lopper:v1.2.3-rc.1-arm64",
-				"",
-			}, "\n"),
+			want: "ghcr.io/example/lopper:v1.2.3-arm64\n" +
+				"ghcr.io/example/lopper:latest-arm64\n" +
+				"ghcr.io/example/lopper:v1.2.3-rc.1-arm64\n",
 		},
 		{
 			name: "manifest",
-			want: strings.Join([]string{
-				"ghcr.io/example/lopper:v1.2.3",
-				"ghcr.io/example/lopper:latest",
-				"ghcr.io/example/lopper:v1.2.3-rc.1",
-				"",
-			}, "\n"),
+			want: "ghcr.io/example/lopper:v1.2.3\n" +
+				"ghcr.io/example/lopper:latest\n" +
+				"ghcr.io/example/lopper:v1.2.3-rc.1\n",
 		},
 	}
 
@@ -362,25 +353,37 @@ func TestReleaseOrchestrationImageTagStepsUseSanitizer(t *testing.T) {
 			t.Parallel()
 
 			step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
-			if step.Shell != "bash" {
-				t.Fatalf("%s shell = %q, want bash", tc.stepName, step.Shell)
-			}
-			if step.Env["IMAGE_NAME"] != "${{ steps.image.outputs.name }}" {
-				t.Fatalf("%s IMAGE_NAME env = %q, want image output", tc.stepName, step.Env["IMAGE_NAME"])
-			}
-			if step.Env["IMAGE_ARCH_SUFFIX"] != tc.suffix {
-				t.Fatalf("%s IMAGE_ARCH_SUFFIX env = %q, want %q", tc.stepName, step.Env["IMAGE_ARCH_SUFFIX"], tc.suffix)
-			}
-			if !strings.Contains(step.Run, "bash scripts/release-image-tags.sh > image-tags.txt") {
-				t.Fatalf("%s must generate tags through scripts/release-image-tags.sh", tc.stepName)
-			}
-			if strings.Contains(step.Run, "while IFS= read -r tag") {
-				t.Fatalf("%s must not use the stale unsanitized tag loop", tc.stepName)
-			}
+			assertArchImageTagStep(t, step, tc.stepName, tc.suffix)
 		})
 	}
 
 	manifestStep := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Publish multi-arch manifests")
+	assertManifestImageTagStep(t, manifestStep)
+}
+
+func assertArchImageTagStep(t *testing.T, step workflowStepConfig, stepName string, suffix string) {
+	t.Helper()
+
+	if step.Shell != "bash" {
+		t.Fatalf("%s shell = %q, want bash", stepName, step.Shell)
+	}
+	if step.Env["IMAGE_NAME"] != "${{ steps.image.outputs.name }}" {
+		t.Fatalf("%s IMAGE_NAME env = %q, want image output", stepName, step.Env["IMAGE_NAME"])
+	}
+	if step.Env["IMAGE_ARCH_SUFFIX"] != suffix {
+		t.Fatalf("%s IMAGE_ARCH_SUFFIX env = %q, want %q", stepName, step.Env["IMAGE_ARCH_SUFFIX"], suffix)
+	}
+	if !strings.Contains(step.Run, "bash scripts/release-image-tags.sh > image-tags.txt") {
+		t.Fatalf("%s must generate tags through scripts/release-image-tags.sh", stepName)
+	}
+	if strings.Contains(step.Run, "while IFS= read -r tag") {
+		t.Fatalf("%s must not use the stale unsanitized tag loop", stepName)
+	}
+}
+
+func assertManifestImageTagStep(t *testing.T, manifestStep workflowStepConfig) {
+	t.Helper()
+
 	sanitizerIndex := strings.Index(manifestStep.Run, "bash scripts/release-image-tags.sh > image-tags.txt")
 	dockerIndex := strings.Index(manifestStep.Run, "docker buildx imagetools create")
 	if sanitizerIndex < 0 {
@@ -468,11 +471,7 @@ func releaseImageTagScriptCommand(t *testing.T, imageTags string, suffix string)
 	t.Helper()
 
 	cmd := exec.Command("bash", repoPath(t, "scripts/release-image-tags.sh"))
-	cmd.Env = append(os.Environ(),
-		"IMAGE_NAME=ghcr.io/example/lopper",
-		"IMAGE_TAGS="+imageTags,
-		"IMAGE_ARCH_SUFFIX="+suffix,
-	)
+	cmd.Env = append(os.Environ(), "IMAGE_NAME=ghcr.io/example/lopper", "IMAGE_TAGS="+imageTags, "IMAGE_ARCH_SUFFIX="+suffix)
 	return cmd
 }
 
