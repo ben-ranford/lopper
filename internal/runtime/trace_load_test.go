@@ -34,6 +34,35 @@ func TestLoadTrace(t *testing.T) {
 	}
 }
 
+func TestLoadTracePythonLanguageEvents(t *testing.T) {
+	trace, err := loadTraceFromContent(t, `{"language":"python","module":"requests.sessions","parent":"/repo/app.py","entrypoint":"/repo/app.py"}`+"\n"+`{"language":"python","dependency":"python-dateutil","module":"dateutil.parser","resolved":"/repo/.venv/lib/python3.12/site-packages/dateutil/parser.py"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+
+	requestsKey := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+	if got := trace.DependencyLoadsByLanguage[requestsKey]; got != 1 {
+		t.Fatalf("expected python requests load count=1, got %d", got)
+	}
+	if got := trace.DependencyLoads["requests"]; got != 0 {
+		t.Fatalf("did not expect python loads in legacy JS counters, got %d", got)
+	}
+	if got := trace.DependencyModulesByLanguage[requestsKey]["requests.sessions"]; got != 1 {
+		t.Fatalf("expected python module count 1, got %d", got)
+	}
+	if got := trace.DependencyParentsByLanguage[requestsKey]["/repo/app.py"]; got != 1 {
+		t.Fatalf("expected python parent count 1, got %d", got)
+	}
+	if got := trace.DependencySymbolsByLanguage[requestsKey]["requests.sessions\x00sessions"]; got != 1 {
+		t.Fatalf("expected python symbol count 1, got %d", got)
+	}
+
+	dateutilKey := DependencyKey{Language: runtimeLanguagePython, Name: "python-dateutil"}
+	if got := trace.DependencyLoadsByLanguage[dateutilKey]; got != 1 {
+		t.Fatalf("expected python-dateutil load count=1, got %d", got)
+	}
+}
+
 func TestLoadTraceInvalidLine(t *testing.T) {
 	if _, err := loadTraceFromContent(t, "{not-json}\n"); err == nil {
 		t.Fatalf("expected parse error for invalid NDJSON")

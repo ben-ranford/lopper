@@ -192,7 +192,7 @@ func TestMergeReportsAndTopSymbolsBranches(t *testing.T) {
 }
 
 func TestAnnotateRuntimeTraceHelperMissingFileFallback(t *testing.T) {
-	annotated, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", report.Report{})
+	annotated, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", report.Report{}, false)
 	if err != nil {
 		t.Fatalf("expected missing runtime trace fallback, got %v", err)
 	}

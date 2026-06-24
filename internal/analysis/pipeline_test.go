@@ -195,7 +195,22 @@ func TestAnnotateRuntimeTraceInvalidFileFails(t *testing.T) {
 		t.Fatalf("write invalid trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}); err == nil {
+	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}, false); err == nil {
 		t.Fatalf("expected invalid runtime trace to fail")
+	}
+}
+
+func TestAnnotateRuntimeTraceSkipsUnsupportedLanguageBeforeReadingTrace(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write invalid trace: %v", err)
+	}
+
+	annotated, err := annotateRuntimeTraceIfPresent(tracePath, "python", report.Report{}, false)
+	if err != nil {
+		t.Fatalf("expected disabled Python runtime trace to skip invalid file, got %v", err)
+	}
+	if len(annotated.Warnings) != 0 {
+		t.Fatalf("expected no warnings when unsupported trace is skipped, got %#v", annotated.Warnings)
 	}
 }

@@ -334,7 +334,7 @@ func TestAnnotateRuntimeTrace(t *testing.T) {
 	rep := report.Report{
 		Dependencies: []report.DependencyReport{{Name: "lodash", UsedImports: []report.ImportUse{{Name: "map", Module: "lodash"}}}},
 	}
-	annotated, err := annotateRuntimeTraceIfPresent("", "js-ts", rep)
+	annotated, err := annotateRuntimeTraceIfPresent("", "js-ts", rep, false)
 	if err != nil {
 		t.Fatalf("annotate without trace: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestAnnotateRuntimeTrace(t *testing.T) {
 	if err := os.WriteFile(path, trace, 0o600); err != nil {
 		t.Fatalf("write runtime trace: %v", err)
 	}
-	annotated, err = annotateRuntimeTraceIfPresent(path, "js-ts", rep)
+	annotated, err = annotateRuntimeTraceIfPresent(path, "js-ts", rep, false)
 	if err != nil {
 		t.Fatalf("annotate with trace: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestAnnotateRuntimeTraceMissingFileFallsBackWithWarning(t *testing.T) {
 	rep := report.Report{
 		Dependencies: []report.DependencyReport{{Name: "lodash", Language: "js-ts"}},
 	}
-	annotated, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", rep)
+	annotated, err := annotateRuntimeTraceIfPresent(filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", rep, false)
 	if err != nil {
 		t.Fatalf("expected missing runtime trace to be non-fatal: %v", err)
 	}
