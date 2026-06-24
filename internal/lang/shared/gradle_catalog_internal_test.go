@@ -177,26 +177,59 @@ dependencies {
 
 func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	repo := t.TempDir()
+	paths := newGradleCatalogRegistryTestPaths(repo)
 	registry := newGradleCatalogRegistry(repo)
-	missingSettingsPath := filepath.Join(repo, "missing", gradleSettingsFileName)
-	missingCatalogPath := filepath.Join(repo, "gradle", "missing.versions.toml")
-	vendorCatalogPath := filepath.Join(repo, "vendor", gradleDefaultCatalogFileName)
-	defaultCatalogPath := filepath.Join(repo, "gradle", gradleDefaultCatalogFileName)
-	overrideCatalogPath := filepath.Join(repo, "gradle", gradleOverrideCatalogFileName)
-	otherCatalogPath := filepath.Join(repo, "gradle", "other.versions.toml")
-	settingsPath := filepath.Join(repo, gradleSettingsFileName)
+	assertGradleCatalogRegistryMissingInputWarnings(t, registry, repo, paths)
+	assertGradleCatalogRegistryDirectoryFiltering(t)
+	assertGradleCatalogRegistrySourcePathResolution(t, repo, paths.defaultCatalogPath)
+	assertGradleCatalogRegistryKnownCatalogNormalization(t, registry, repo)
+	assertGradleCatalogRegistryMergeWarnings(t, registry, repo, paths)
+	assertGradleCatalogRegistrySettingsParsing(t)
+	assertGradleCatalogRegistrySettingsLoading(t, repo, paths.settingsPath)
+	assertGradleCatalogRegistryResolverLoading(t, repo)
+	assertGradleCatalogRegistryBuildResolverSortsScopes(t, repo)
+	assertGradleCatalogLookupIndexResolveCases(t)
+}
 
-	registry.loadSettingsFile(missingSettingsPath)
+type gradleCatalogRegistryTestPaths struct {
+	missingSettingsPath string
+	missingCatalogPath  string
+	vendorCatalogPath   string
+	defaultCatalogPath  string
+	overrideCatalogPath string
+	otherCatalogPath    string
+	settingsPath        string
+}
+
+func newGradleCatalogRegistryTestPaths(repo string) gradleCatalogRegistryTestPaths {
+	return gradleCatalogRegistryTestPaths{
+		missingSettingsPath: filepath.Join(repo, "missing", gradleSettingsFileName),
+		missingCatalogPath:  filepath.Join(repo, "gradle", "missing.versions.toml"),
+		vendorCatalogPath:   filepath.Join(repo, "vendor", gradleDefaultCatalogFileName),
+		defaultCatalogPath:  filepath.Join(repo, "gradle", gradleDefaultCatalogFileName),
+		overrideCatalogPath: filepath.Join(repo, "gradle", gradleOverrideCatalogFileName),
+		otherCatalogPath:    filepath.Join(repo, "gradle", "other.versions.toml"),
+		settingsPath:        filepath.Join(repo, gradleSettingsFileName),
+	}
+}
+
+func assertGradleCatalogRegistryMissingInputWarnings(t *testing.T, registry *gradleCatalogRegistry, repo string, paths gradleCatalogRegistryTestPaths) {
+	t.Helper()
+
+	registry.loadSettingsFile(paths.missingSettingsPath)
 	registry.loadSource(gradleCatalogSource{
 		root: repo,
 		name: gradleCatalogName,
-		path: missingCatalogPath,
+		path: paths.missingCatalogPath,
 	})
-	initialWarnings := []string{
-		"unable to read missing/" + gradleSettingsFileName + ":",
+	assertGradleCatalogWarningsContain(t, registry.warnings,
+		"unable to read missing/"+gradleSettingsFileName+":",
 		"unable to read gradle/missing.versions.toml:",
-	}
-	assertGradleCatalogWarningsContain(t, registry.warnings, initialWarnings...)
+	)
+}
+
+func assertGradleCatalogRegistryDirectoryFiltering(t *testing.T) {
+	t.Helper()
 
 	if err := maybeSkipGradleCatalogDirectory(&stubGradleCatalogDirEntry{name: "build"}); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected build directory to be skipped, got %v", err)
@@ -204,6 +237,10 @@ func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	if err := maybeSkipGradleCatalogDirectory(&stubGradleCatalogDirEntry{name: "src"}); err != nil {
 		t.Fatalf("expected normal directory to be scanned, got %v", err)
 	}
+}
+
+func assertGradleCatalogRegistrySourcePathResolution(t *testing.T, repo string, defaultCatalogPath string) {
+	t.Helper()
 
 	relativePath := resolveGradleCatalogSourcePath(repo, "gradle/test-libs.versions.toml")
 	if want := filepath.Join(repo, "gradle", "test-libs.versions.toml"); relativePath != want {
@@ -213,6 +250,10 @@ func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	if want := defaultCatalogPath; absolutePath != want {
 		t.Fatalf("expected absolute catalog path to stay absolute, got %q want %q", absolutePath, want)
 	}
+}
+
+func assertGradleCatalogRegistryKnownCatalogNormalization(t *testing.T, registry *gradleCatalogRegistry, repo string) {
+	t.Helper()
 
 	registry.trackKnownCatalog(" TestLibs ")
 	if _, ok := registry.knownCatalogs["testlibs"]; !ok {
@@ -220,35 +261,42 @@ func TestGradleCatalogRegistryHelpersAndWarnings(t *testing.T) {
 	}
 	registry.trackKnownCatalog("   ")
 	registry.registerSource(repo, "", "")
+}
 
-	registry.registerDefaultCatalog(vendorCatalogPath)
-	registry.registerDefaultCatalog(defaultCatalogPath)
-	registry.registerSource(repo, gradleCatalogName, overrideCatalogPath)
-	registry.registerSource(repo, gradleCatalogName, otherCatalogPath)
+func assertGradleCatalogRegistryMergeWarnings(t *testing.T, registry *gradleCatalogRegistry, repo string, paths gradleCatalogRegistryTestPaths) {
+	t.Helper()
+
+	registry.registerDefaultCatalog(paths.vendorCatalogPath)
+	registry.registerDefaultCatalog(paths.defaultCatalogPath)
+	registry.registerSource(repo, gradleCatalogName, paths.overrideCatalogPath)
+	registry.registerSource(repo, gradleCatalogName, paths.otherCatalogPath)
 
 	scope := registry.ensureScope(repo)
-	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: defaultCatalogPath}, map[string]GradleCatalogLibrary{
+	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: paths.defaultCatalogPath}, map[string]GradleCatalogLibrary{
 		"okhttp": {Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: okhttpVersion},
 	})
-	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: overrideCatalogPath}, map[string]GradleCatalogLibrary{
+	registry.mergeLibraries(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: paths.overrideCatalogPath}, map[string]GradleCatalogLibrary{
 		"okhttp": {Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: "4.13.0"},
 	})
-	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: defaultCatalogPath}, map[string][]GradleCatalogLibrary{
+	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: paths.defaultCatalogPath}, map[string][]GradleCatalogLibrary{
 		"networking": {
 			{Catalog: gradleCatalogName, Alias: "okhttp", Group: okhttpGroup, Artifact: "okhttp", Version: okhttpVersion},
 		},
 	})
-	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: overrideCatalogPath}, map[string][]GradleCatalogLibrary{
+	registry.mergeBundles(scope, gradleCatalogSource{root: repo, name: gradleCatalogName, path: paths.overrideCatalogPath}, map[string][]GradleCatalogLibrary{
 		"networking": {
 			{Catalog: gradleCatalogName, Alias: "retrofit", Group: "com.squareup.retrofit2", Artifact: "retrofit", Version: "2.11.0"},
 		},
 	})
-	registryWarnings := []string{
-		fmt.Sprintf("multiple Gradle version catalog sources configured for libs under %s; using %s", filepath.Clean(repo), defaultCatalogPath),
+	assertGradleCatalogWarningsContain(t, registry.warnings,
+		fmt.Sprintf("multiple Gradle version catalog sources configured for libs under %s; using %s", filepath.Clean(repo), paths.defaultCatalogPath),
 		fmt.Sprintf("Gradle version catalog alias libs.%s resolves to multiple coordinates under %s; keeping %s:%s", "okhttp", filepath.Clean(repo), okhttpGroup, "okhttp"),
 		fmt.Sprintf("Gradle version catalog bundle libs.%s resolves to multiple dependency sets under %s; keeping the first definition", "networking", filepath.Clean(repo)),
-	}
-	assertGradleCatalogWarningsContain(t, registry.warnings, registryWarnings...)
+	)
+}
+
+func assertGradleCatalogRegistrySettingsParsing(t *testing.T) {
+	t.Helper()
 
 	settingsContent := `
 dependencyResolutionManagement {
@@ -269,11 +317,14 @@ dependencyResolutionManagement {
 	if len(refs) != 2 || refs[0].Path != gradleToolsCatalogPath || refs[1].Path != "" {
 		t.Fatalf("expected settings parser to keep first file and unsupported source, got %#v", refs)
 	}
-	settingsWarnings := []string{
-		"multiple Gradle version catalog files declared for tools in " + gradleSettingsFileName + "; using " + gradleToolsCatalogPath,
-		"unsupported Gradle version catalog source for dynamic in " + gradleSettingsFileName,
-	}
-	assertGradleCatalogWarningsContain(t, warnings, settingsWarnings...)
+	assertGradleCatalogWarningsContain(t, warnings,
+		"multiple Gradle version catalog files declared for tools in "+gradleSettingsFileName+"; using "+gradleToolsCatalogPath,
+		"unsupported Gradle version catalog source for dynamic in "+gradleSettingsFileName,
+	)
+}
+
+func assertGradleCatalogRegistrySettingsLoading(t *testing.T, repo string, settingsPath string) {
+	t.Helper()
 
 	writeGradleCatalogTestFile(t, settingsPath, `
 dependencyResolutionManagement {
@@ -284,7 +335,7 @@ dependencyResolutionManagement {
   }
 }
 `)
-	registry = newGradleCatalogRegistry(repo)
+	registry := newGradleCatalogRegistry(repo)
 	registry.loadSettingsFile(settingsPath)
 	if _, ok := registry.knownCatalogs["dynamic"]; !ok {
 		t.Fatalf("expected settings loader to track catalogs without file-backed sources, got %#v", registry.knownCatalogs)
@@ -292,6 +343,10 @@ dependencyResolutionManagement {
 	if len(registry.sources) != 0 {
 		t.Fatalf("expected unsupported settings source to avoid source registration, got %#v", registry.sources)
 	}
+}
+
+func assertGradleCatalogRegistryResolverLoading(t *testing.T, repo string) {
+	t.Helper()
 
 	missingRepoResolver, warnings := LoadGradleCatalogResolver(filepath.Join(repo, "does-not-exist"))
 	if len(missingRepoResolver.scopes) != 0 {
@@ -303,11 +358,16 @@ dependencyResolutionManagement {
 	if len(warnings) != 0 || len(emptyResolver.knownCatalogs) != 0 || len(emptyResolver.scopes) != 0 {
 		t.Fatalf("expected empty repo path to return an empty resolver, got %#v %#v", emptyResolver, warnings)
 	}
+}
 
-	registry = newGradleCatalogRegistry(repo)
+func assertGradleCatalogRegistryBuildResolverSortsScopes(t *testing.T, repo string) {
+	t.Helper()
+
+	registry := newGradleCatalogRegistry(repo)
 	registry.scopesByRoot[filepath.Join(repo, "zz")] = &gradleCatalogScope{root: filepath.Join(repo, "zz")}
 	registry.scopesByRoot[filepath.Join(repo, "aa")] = &gradleCatalogScope{root: filepath.Join(repo, "aa")}
 	registry.scopesByRoot[filepath.Join(repo, "module", "nested")] = &gradleCatalogScope{root: filepath.Join(repo, "module", "nested")}
+
 	resolver := registry.buildResolver()
 	if len(resolver.scopes) != 3 {
 		t.Fatalf("expected resolver to include all scopes, got %#v", resolver.scopes)
@@ -315,6 +375,10 @@ dependencyResolutionManagement {
 	if resolver.scopes[0].root != filepath.Join(repo, "module", "nested") || resolver.scopes[1].root != filepath.Join(repo, "aa") || resolver.scopes[2].root != filepath.Join(repo, "zz") {
 		t.Fatalf("expected resolver scopes sorted by depth then lexical order, got %#v", resolver.scopes)
 	}
+}
+
+func assertGradleCatalogLookupIndexResolveCases(t *testing.T) {
+	t.Helper()
 
 	var nilIndex *gradleCatalogLookupIndex
 	if nilIndex.resolve(testBuildFile) != nil {
@@ -324,6 +388,7 @@ dependencyResolutionManagement {
 	if emptyIndex.resolve(testBuildFile) != nil {
 		t.Fatalf("expected empty catalog lookup index to miss")
 	}
+
 	index := newGradleCatalogLookupIndex([]gradleCatalogScope{{root: testAppRoot}})
 	firstMatch := index.resolve(testBuildFile)
 	secondMatch := index.resolve(testBuildFile)
