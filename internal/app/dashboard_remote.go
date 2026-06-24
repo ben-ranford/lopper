@@ -276,7 +276,10 @@ func validateFileRepoURL(parsed *url.URL) error {
 	if parsed.Host != "" && parsed.Host != "localhost" {
 		return fmt.Errorf("file repoUrl host must be empty or localhost")
 	}
-	if parsed.Path == "" || !filepath.IsAbs(parsed.Path) {
+	if parsed.Path == "" || parsed.Path == "/" {
+		return fmt.Errorf("file repoUrl path is required")
+	}
+	if !filepath.IsAbs(parsed.Path) {
 		return fmt.Errorf("file repoUrl path must be absolute")
 	}
 	parsed.Path = filepath.ToSlash(filepath.Clean(parsed.Path))

@@ -114,49 +114,62 @@ func resolveDashboardFormat(flagFormat, configFormat string) (dashboard.Format, 
 func reposFromDashboardConfig(config dashboard.LoadedConfig, features *featureflags.Set) ([]dashboard.RepoInput, error) {
 	repos := make([]dashboard.RepoInput, 0, len(config.Dashboard.Repos))
 	for _, repo := range config.Dashboard.Repos {
-		repoPath := strings.TrimSpace(repo.Path)
-		repoURL := strings.TrimSpace(repo.RepoURL)
-		if repoPath != "" && repoURL != "" {
-			return nil, fmt.Errorf("dashboard config repo cannot define both path and repoUrl")
+		input, err := dashboardRepoInputFromConfig(config.ConfigDir, repo, features)
+		if err != nil {
+			return nil, err
 		}
-		if repoPath == "" && repoURL == "" {
-			return nil, fmt.Errorf("dashboard config repo is missing path or repoUrl")
-		}
-
-		if repoURL != "" {
-			if features == nil || !features.Enabled(DashboardRemoteReposPreviewFeature) {
-				return nil, fmt.Errorf("dashboard config repoUrl requires feature %s", DashboardRemoteReposPreviewFeature)
-			}
-			spec, err := parseDashboardRepoURL(repoURL)
-			if err != nil {
-				return nil, fmt.Errorf("dashboard config repoUrl %q is not allowed: %w", repoURL, err)
-			}
-			name := strings.TrimSpace(repo.Name)
-			if name == "" {
-				name = spec.name
-			}
-			repos = append(repos, dashboard.RepoInput{
-				Name:     name,
-				RepoURL:  spec.normalized,
-				Language: strings.TrimSpace(repo.Language),
-			})
-			continue
-		}
-
-		if !filepath.IsAbs(repoPath) {
-			repoPath = filepath.Join(config.ConfigDir, repoPath)
-		}
-		name := strings.TrimSpace(repo.Name)
-		if name == "" {
-			name = inferDashboardRepoName(repoPath)
-		}
-		repos = append(repos, dashboard.RepoInput{
-			Name:     name,
-			Path:     repoPath,
-			Language: strings.TrimSpace(repo.Language),
-		})
+		repos = append(repos, input)
 	}
 	return repos, nil
+}
+
+func dashboardRepoInputFromConfig(configDir string, repo dashboard.ConfigRepo, features *featureflags.Set) (dashboard.RepoInput, error) {
+	repoPath := strings.TrimSpace(repo.Path)
+	repoURL := strings.TrimSpace(repo.RepoURL)
+	switch {
+	case repoPath != "" && repoURL != "":
+		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repo cannot define both path and repoUrl")
+	case repoPath == "" && repoURL == "":
+		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repo is missing path or repoUrl")
+	case repoURL != "":
+		return dashboardRepoInputFromURL(repo, repoURL, features)
+	default:
+		return dashboardRepoInputFromPath(configDir, repo, repoPath), nil
+	}
+}
+
+func dashboardRepoInputFromURL(repo dashboard.ConfigRepo, repoURL string, features *featureflags.Set) (dashboard.RepoInput, error) {
+	if features == nil || !features.Enabled(DashboardRemoteReposPreviewFeature) {
+		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repoUrl requires feature %s", DashboardRemoteReposPreviewFeature)
+	}
+	spec, err := parseDashboardRepoURL(repoURL)
+	if err != nil {
+		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repoUrl %q is not allowed: %w", repoURL, err)
+	}
+	name := strings.TrimSpace(repo.Name)
+	if name == "" {
+		name = spec.name
+	}
+	return dashboard.RepoInput{
+		Name:     name,
+		RepoURL:  spec.normalized,
+		Language: strings.TrimSpace(repo.Language),
+	}, nil
+}
+
+func dashboardRepoInputFromPath(configDir string, repo dashboard.ConfigRepo, repoPath string) dashboard.RepoInput {
+	if !filepath.IsAbs(repoPath) {
+		repoPath = filepath.Join(configDir, repoPath)
+	}
+	name := strings.TrimSpace(repo.Name)
+	if name == "" {
+		name = inferDashboardRepoName(repoPath)
+	}
+	return dashboard.RepoInput{
+		Name:     name,
+		Path:     repoPath,
+		Language: strings.TrimSpace(repo.Language),
+	}
 }
 
 func inferDashboardRepoName(path string) string {

@@ -62,6 +62,27 @@ func TestResolveDashboardRequestConfigRepoURL(t *testing.T) {
 	}
 }
 
+func TestResolveDashboardRequestConfigRepoURLInfersName(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "lopper-org.yml")
+	config := "dashboard:\n  repos:\n    - repoUrl: https://github.com/org/worker.git\n  output: json\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	features := enabledDashboardRemoteReposFeatures(t)
+	resolved, err := resolveDashboardRequest(DashboardRequest{
+		ConfigPath: configPath,
+		Features:   features,
+	})
+	if err != nil {
+		t.Fatalf("resolve dashboard request with repoUrl: %v", err)
+	}
+	if got := resolved.repos[0].Name; got != "worker" {
+		t.Fatalf("expected repoUrl name inferred from URL, got %q", got)
+	}
+}
+
 func TestResolveDashboardRequestConfigRepoURLRequiresFeature(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "lopper-org.yml")

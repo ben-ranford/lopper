@@ -45,6 +45,11 @@ func TestDashboardRequestAdditionalBranches(t *testing.T) {
 	if len(fromConfig) != 1 || fromConfig[0].Name != "worker" || fromConfig[0].Path != filepath.Join(configDir, "worker") {
 		t.Fatalf("expected config repo name inference and path resolution, got %#v", fromConfig)
 	}
+
+	absoluteBaselineStore := filepath.Join(t.TempDir(), "baselines")
+	if got := resolveDashboardConfigPath(configDir, absoluteBaselineStore); got != absoluteBaselineStore {
+		t.Fatalf("expected absolute dashboard config path to pass through, got %q", got)
+	}
 }
 
 func TestExecuteDashboardOutputPathErrors(t *testing.T) {

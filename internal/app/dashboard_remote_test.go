@@ -444,7 +444,8 @@ func TestDashboardRepoURLParsingBranches(t *testing.T) {
 		{"https://github.com", "path is required"},
 		{"ssh://git:secret@github.com/org/repo.git", "cannot include passwords"},
 		{"file://user@localhost/tmp/repo.git", "cannot include credentials"},
-		{"file://localhost", "path must be absolute"},
+		{"file://localhost", "path is required"},
+		{"file:///", "path is required"},
 	}
 	for _, tc := range tests {
 		t.Run(tc[1], func(t *testing.T) {
@@ -469,9 +470,17 @@ func TestDashboardRepoURLParsingBranches(t *testing.T) {
 		t.Fatalf("expected host fallback name, got %#v", hostFallback)
 	}
 
-	fileFallback := mustParseDashboardRepoURL(t, "file:///")
-	if fileFallback.name != "file:///" {
-		t.Fatalf("expected file URL fallback name, got %#v", fileFallback)
+	if strings.Contains(fileSpec.normalized, "\\") {
+		t.Fatalf("expected file URL path to remain slash-normalized, got %#v", fileSpec)
+	}
+
+	if err := validateFileRepoURL(&url.URL{Scheme: "file", Path: "relative/repo.git"}); err == nil || !strings.Contains(err.Error(), "path must be absolute") {
+		t.Fatalf("expected relative file path validation error, got %v", err)
+	}
+
+	fileNameFallback := inferDashboardRepoURLName(&url.URL{Scheme: "file", Path: "/"})
+	if fileNameFallback != "file:///" {
+		t.Fatalf("expected file URL fallback name, got %q", fileNameFallback)
 	}
 }
 
