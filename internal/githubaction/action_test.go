@@ -89,15 +89,10 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 }
 
 func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
-	root := repoRoot(t)
-	argsFile := filepath.Join(t.TempDir(), "args.bin")
-	stub := writeStubLopper(t, argsFile)
 	outputFile := filepath.Join(t.TempDir(), "github-output")
 	injectedFile := filepath.Join(t.TempDir(), "injected")
 
-	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
-	cmd.Env = append(os.Environ(), []string{
-		"LOPPER_BINARY=" + stub,
+	env := []string{
 		"GITHUB_OUTPUT=" + outputFile,
 		"INPUT_REPO=repo; touch " + injectedFile,
 		"INPUT_LANGUAGE=all",
@@ -109,8 +104,8 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 		"INPUT_THRESHOLD_FAIL_ON_INCREASE=0",
 		"INPUT_CACHE=false",
 		"INPUT_CACHE_READONLY=true",
-	}...)
-	runCommand(t, cmd)
+	}
+	got := runLopperScript(t, env)
 
 	if _, err := os.Stat(injectedFile); !os.IsNotExist(err) {
 		t.Fatalf("unexpected shell evaluation created %s", injectedFile)
@@ -130,7 +125,7 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 		"--cache-readonly",
 		"--threshold-fail-on-increase", "0",
 	}
-	assertArgsFile(t, argsFile, want)
+	assertArgs(t, got, want)
 
 	outputContent, err := os.ReadFile(outputFile)
 	if err != nil {
@@ -142,13 +137,7 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 }
 
 func TestRunScriptBuildsSARIFCommand(t *testing.T) {
-	root := repoRoot(t)
-	argsFile := filepath.Join(t.TempDir(), "args.bin")
-	stub := writeStubLopper(t, argsFile)
-
-	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
-	cmd.Env = append(os.Environ(), []string{
-		"LOPPER_BINARY=" + stub,
+	env := []string{
 		"INPUT_REPO=.",
 		"INPUT_LANGUAGE=all",
 		"INPUT_TOP=20",
@@ -156,8 +145,8 @@ func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 		"INPUT_SCOPE_MODE=repo",
 		"INPUT_OUTPUT=lopper.sarif",
 		"INPUT_CACHE=true",
-	}...)
-	runCommand(t, cmd)
+	}
+	got := runLopperScript(t, env)
 
 	want := []string{
 		"analyse",
@@ -170,17 +159,11 @@ func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 		"--output", "lopper.sarif",
 		"--runtime-profile", "node-import",
 	}
-	assertArgsFile(t, argsFile, want)
+	assertArgs(t, got, want)
 }
 
 func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
-	root := repoRoot(t)
-	argsFile := filepath.Join(t.TempDir(), "args.bin")
-	stub := writeStubLopper(t, argsFile)
-
-	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
-	cmd.Env = append(os.Environ(), []string{
-		"LOPPER_BINARY=" + stub,
+	env := []string{
 		"INPUT_REPO=.",
 		"INPUT_LANGUAGE=all",
 		"INPUT_TOP=20",
@@ -188,8 +171,8 @@ func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
 		"INPUT_SCOPE_MODE=package",
 		"INPUT_RUNTIME_PROFILE=",
 		"INPUT_CACHE=true",
-	}...)
-	runCommand(t, cmd)
+	}
+	got := runLopperScript(t, env)
 
 	want := []string{
 		"analyse",
@@ -200,7 +183,7 @@ func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
 		"--cache=true",
 		"--top", "20",
 	}
-	assertArgsFile(t, argsFile, want)
+	assertArgs(t, got, want)
 }
 
 func TestInstallScriptDryRunResolvesPinnedVersion(t *testing.T) {
@@ -360,6 +343,18 @@ func writeStubLopper(t *testing.T, argsFile string) string {
 	return path
 }
 
+func runLopperScript(t *testing.T, env []string) []string {
+	t.Helper()
+	root := repoRoot(t)
+	argsFile := filepath.Join(t.TempDir(), "args.bin")
+	stub := writeStubLopper(t, argsFile)
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
+	cmd.Env = append(os.Environ(), "LOPPER_BINARY="+stub)
+	cmd.Env = append(cmd.Env, env...)
+	runCommand(t, cmd)
+	return readArgsFile(t, argsFile)
+}
+
 func runCommand(t *testing.T, cmd *exec.Cmd) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
@@ -371,7 +366,7 @@ func runCommand(t *testing.T, cmd *exec.Cmd) string {
 	return stdout.String()
 }
 
-func assertArgsFile(t *testing.T, argsFile string, want []string) {
+func readArgsFile(t *testing.T, argsFile string) []string {
 	t.Helper()
 	content, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -382,6 +377,11 @@ func assertArgsFile(t *testing.T, argsFile string, want []string) {
 	for _, part := range parts {
 		got = append(got, string(part))
 	}
+	return got
+}
+
+func assertArgs(t *testing.T, got, want []string) {
+	t.Helper()
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("args mismatch\ngot:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
