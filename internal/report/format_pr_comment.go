@@ -2,6 +2,7 @@ package report
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -92,13 +93,14 @@ func topDependencyDeltas(deltas []DependencyDelta, limit int) []DependencyDelta 
 }
 
 func signedPct(value float64) string {
-	if value == 0 {
+	rounded := math.Round(value*10) / 10
+	if rounded == 0 {
 		return "0.0%"
 	}
-	if value > 0 {
-		return fmt.Sprintf("+%.1f%%", value)
+	if rounded > 0 {
+		return fmt.Sprintf("+%.1f%%", rounded)
 	}
-	return fmt.Sprintf("%.1f%%", value)
+	return fmt.Sprintf("%.1f%%", rounded)
 }
 
 func signedInt(value int) string {
