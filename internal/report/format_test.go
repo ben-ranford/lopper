@@ -219,6 +219,36 @@ func TestFormatPRComment(t *testing.T) {
 	assertOutputContains(t, output, "## Lopper (Delta)", "| Dependency count | +2 |", "| Estimated unused bytes | +1.0 KB |", "### Dependency deltas", "`lodash`", "+512.0 B")
 }
 
+func TestFormatPRCommentZeroDeltasAreUnsigned(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{},
+			Dependencies: []DependencyDelta{
+				{Kind: DependencyDeltaChanged, Name: "same", Language: "js-ts"},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment with zero deltas: %v", err)
+	}
+
+	assertOutputContains(t, output,
+		"| Dependency count | 0 |",
+		"| Used percent | 0.0% |",
+		"| Waste percent | 0.0% |",
+		"| Estimated unused bytes | 0 B |",
+		"| Known licenses | 0 |",
+		"| Unknown licenses | 0 |",
+		"| Denied licenses | 0 |",
+		"| 1 | changed | `same` | js-ts | 0.0% | 0 | 0 | 0 B |",
+	)
+	if strings.Contains(output, "+0") {
+		t.Fatalf("expected zero deltas to render without a leading plus, got %q", output)
+	}
+}
+
 func TestFormatPRCommentEscapesDependencyNameNewlines(t *testing.T) {
 	reportData := Report{
 		BaselineComparison: &BaselineComparison{
@@ -512,6 +542,21 @@ func TestTopDependencyDeltasAndSignedBytesBranches(t *testing.T) {
 	}
 	if signedBytes(-1024) != "-1.0 KB" {
 		t.Fatalf("expected negative byte formatting branch")
+	}
+}
+
+func TestSignedDeltaHelpersRenderZeroUnsigned(t *testing.T) {
+	if got := signedInt(0); got != "0" {
+		t.Fatalf("signedInt(0) = %q, want 0", got)
+	}
+	if got := signedPct(0); got != "0.0%" {
+		t.Fatalf("signedPct(0) = %q, want 0.0%%", got)
+	}
+	if got := signedPct(math.Copysign(0, -1)); got != "0.0%" {
+		t.Fatalf("signedPct(-0) = %q, want 0.0%%", got)
+	}
+	if got := signedBytes(0); got != "0 B" {
+		t.Fatalf("signedBytes(0) = %q, want 0 B", got)
 	}
 }
 

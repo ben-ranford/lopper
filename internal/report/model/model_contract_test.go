@@ -248,7 +248,7 @@ func representativeReport() Report {
 			UsedExportsCount:    3,
 			TotalExportsCount:   10,
 			UsedPercent:         30,
-			KnownLicenseCount:   1,
+			KnownLicenseCount:   0,
 			UnknownLicenseCount: 0,
 			DeniedLicenseCount:  1,
 			Reachability:        &ReachabilityRollup{Model: "reachability-v2", AverageScore: 0.8, LowestScore: 0.8, HighestScore: 0.8},
@@ -281,7 +281,7 @@ func representativeReport() Report {
 		BaselineComparison: &BaselineComparison{
 			BaselineKey:       "base",
 			CurrentKey:        "head",
-			SummaryDelta:      SummaryDelta{DependencyCountDelta: 1, UsedExportsCountDelta: -2, TotalExportsCountDelta: 1, UsedPercentDelta: -20, WastePercentDelta: 20, UnusedBytesDelta: 1024, KnownLicenseCountDelta: 1, DeniedLicenseCountDelta: 1},
+			SummaryDelta:      SummaryDelta{DependencyCountDelta: 1, UsedExportsCountDelta: -2, TotalExportsCountDelta: 1, UsedPercentDelta: -20, WastePercentDelta: 20, UnusedBytesDelta: 1024, DeniedLicenseCountDelta: 1},
 			Dependencies:      []DependencyDelta{delta},
 			Regressions:       []DependencyDelta{delta},
 			NewDeniedLicenses: []DeniedLicenseDelta{{Language: "js", Name: "lodash", SPDX: "MIT"}},

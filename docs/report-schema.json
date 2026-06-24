@@ -48,9 +48,21 @@
         "usedExportsCount": { "type": "integer", "minimum": 0 },
         "totalExportsCount": { "type": "integer", "minimum": 0 },
         "usedPercent": { "type": "number", "minimum": 0 },
-        "knownLicenseCount": { "type": "integer", "minimum": 0 },
-        "unknownLicenseCount": { "type": "integer", "minimum": 0 },
-        "deniedLicenseCount": { "type": "integer", "minimum": 0 },
+        "knownLicenseCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Dependencies with known non-denied license metadata."
+        },
+        "unknownLicenseCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Dependencies with unknown non-denied license metadata."
+        },
+        "deniedLicenseCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Dependencies denied by license policy; mutually exclusive with knownLicenseCount and unknownLicenseCount."
+        },
         "reachability": { "$ref": "#/$defs/reachabilityRollup" }
       }
     },

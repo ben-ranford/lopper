@@ -92,21 +92,24 @@ func topDependencyDeltas(deltas []DependencyDelta, limit int) []DependencyDelta 
 }
 
 func signedPct(value float64) string {
-	if value >= 0 {
+	if value == 0 {
+		return "0.0%"
+	}
+	if value > 0 {
 		return fmt.Sprintf("+%.1f%%", value)
 	}
 	return fmt.Sprintf("%.1f%%", value)
 }
 
 func signedInt(value int) string {
-	if value >= 0 {
+	if value > 0 {
 		return fmt.Sprintf("+%d", value)
 	}
 	return fmt.Sprintf("%d", value)
 }
 
 func signedBytes(value int64) string {
-	if value >= 0 {
+	if value > 0 {
 		return "+" + formatBytes(value)
 	}
 	return formatBytes(value)
