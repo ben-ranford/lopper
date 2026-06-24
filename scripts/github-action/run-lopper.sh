@@ -13,17 +13,20 @@ trim() {
 }
 
 lower() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+  local value="$1"
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
 }
 
 input_or_default() {
+  local raw="${1:-}"
+  local default_value="$2"
   local value
-  value="$(trim "${1:-}")"
-  if [ -n "$value" ]; then
+  value="$(trim "$raw")"
+  if [[ -n "$value" ]]; then
     printf '%s' "$value"
     return
   fi
-  printf '%s' "$2"
+  printf '%s' "$default_value"
 }
 
 normalize_bool() {
@@ -50,7 +53,7 @@ append_optional_value() {
   local raw="$2"
   local value
   value="$(trim "$raw")"
-  if [ -n "$value" ]; then
+  if [[ -n "$value" ]]; then
     args+=("$flag" "$value")
   fi
 }
@@ -61,17 +64,17 @@ append_optional_bool_flag() {
   local raw="$3"
   local value
   value="$(normalize_bool "$name" "$raw")"
-  if [ "$value" = "true" ]; then
+  if [[ "$value" == "true" ]]; then
     args+=("$flag")
   fi
 }
 
 write_report_path_output() {
   local output_path="$1"
-  if [ -z "${GITHUB_OUTPUT:-}" ]; then
+  if [[ -z "${GITHUB_OUTPUT:-}" ]]; then
     return
   fi
-  if [ -n "$output_path" ] && [ "$output_path" != "-" ]; then
+  if [[ -n "$output_path" && "$output_path" != "-" ]]; then
     printf 'report-path=%s\n' "$output_path" >> "$GITHUB_OUTPUT"
   else
     printf 'report-path=\n' >> "$GITHUB_OUTPUT"
@@ -79,7 +82,7 @@ write_report_path_output() {
 }
 
 lopper_bin="$(trim "${LOPPER_BINARY:-lopper}")"
-if [ -z "$lopper_bin" ]; then
+if [[ -z "$lopper_bin" ]]; then
   error "LOPPER_BINARY resolved to an empty command."
   exit 2
 fi
@@ -100,7 +103,7 @@ args=(
 )
 
 dependency="$(trim "${INPUT_DEPENDENCY:-}")"
-if [ -n "$dependency" ]; then
+if [[ -n "$dependency" ]]; then
   args+=("$dependency")
 else
   top="$(input_or_default "${INPUT_TOP:-}" "20")"
@@ -118,7 +121,7 @@ append_optional_bool_flag --save-baseline save-baseline "${INPUT_SAVE_BASELINE:-
 append_optional_value --config "${INPUT_CONFIG:-}"
 append_optional_value --include "${INPUT_INCLUDE:-}"
 append_optional_value --exclude "${INPUT_EXCLUDE:-}"
-append_optional_value --runtime-profile "${INPUT_RUNTIME_PROFILE:-node-import}"
+append_optional_value --runtime-profile "${INPUT_RUNTIME_PROFILE-node-import}"
 append_optional_value --runtime-trace "${INPUT_RUNTIME_TRACE:-}"
 append_optional_value --runtime-test-command "${INPUT_RUNTIME_TEST_COMMAND:-}"
 append_optional_value --cache-path "${INPUT_CACHE_PATH:-}"
@@ -134,7 +137,7 @@ append_optional_bool_flag --license-provenance-registry license-provenance-regis
 append_optional_value --enable-feature "${INPUT_ENABLE_FEATURE:-}"
 append_optional_value --disable-feature "${INPUT_DISABLE_FEATURE:-}"
 
-if [ "${LOPPER_ACTION_PRINT_COMMAND:-}" = "1" ]; then
+if [[ "${LOPPER_ACTION_PRINT_COMMAND:-}" == "1" ]]; then
   printf 'lopper command:'
   printf ' %q' "$lopper_bin" "${args[@]}"
   printf '\n'

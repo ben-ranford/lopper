@@ -55,7 +55,7 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 		t.Fatalf("expected composite action, got %q", metadata.Runs.Using)
 	}
 
-	requiredInputs := []string{
+	requireInputDescriptions(t, metadata, []string{
 		"version",
 		"repo",
 		"dependency",
@@ -75,42 +75,17 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 		"threshold-max-uncertain-imports",
 		"cache",
 		"cache-readonly",
-	}
-	for _, name := range requiredInputs {
-		input, ok := metadata.Inputs[name]
-		if !ok {
-			t.Fatalf("missing input %q", name)
-		}
-		if strings.TrimSpace(input.Description) == "" {
-			t.Fatalf("input %q has empty description", name)
-		}
-	}
-	if _, ok := metadata.Inputs["extra-args"]; ok {
-		t.Fatal("action should not expose raw extra-args shell passthrough")
-	}
-
-	if got := metadata.Inputs["version"].Default; got != "action" {
-		t.Fatalf("version default = %q, want action", got)
-	}
-	if got := metadata.Inputs["format"].Default; got != "table" {
-		t.Fatalf("format default = %q, want table", got)
-	}
-	if got := metadata.Inputs["cache"].Default; got != "true" {
-		t.Fatalf("cache default = %q, want true", got)
-	}
+	})
+	requireNoInput(t, metadata, "extra-args")
+	requireInputDefault(t, metadata, "version", "action")
+	requireInputDefault(t, metadata, "format", "table")
+	requireInputDefault(t, metadata, "cache", "true")
 
 	requireOutput(t, metadata, "report-path", "${{ steps.analyse.outputs.report-path }}")
 	requireOutput(t, metadata, "lopper-version", "${{ steps.install.outputs.lopper-version }}")
 	requireOutput(t, metadata, "resolved-version", "${{ steps.install.outputs.resolved-version }}")
-
-	installStep := requireStep(t, metadata, "install")
-	if installStep.Shell != "bash" || !strings.Contains(installStep.Run, "install-lopper.sh") {
-		t.Fatalf("install step does not call install-lopper.sh with bash: %#v", installStep)
-	}
-	analyseStep := requireStep(t, metadata, "analyse")
-	if analyseStep.Shell != "bash" || !strings.Contains(analyseStep.Run, "run-lopper.sh") {
-		t.Fatalf("analyse step does not call run-lopper.sh with bash: %#v", analyseStep)
-	}
+	requireScriptStep(t, metadata, "install", "install-lopper.sh")
+	requireScriptStep(t, metadata, "analyse", "run-lopper.sh")
 }
 
 func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
@@ -121,10 +96,10 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 	injectedFile := filepath.Join(t.TempDir(), "injected")
 
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
-	cmd.Env = append(os.Environ(),
-		"LOPPER_BINARY="+stub,
-		"GITHUB_OUTPUT="+outputFile,
-		"INPUT_REPO=repo; touch "+injectedFile,
+	cmd.Env = append(os.Environ(), []string{
+		"LOPPER_BINARY=" + stub,
+		"GITHUB_OUTPUT=" + outputFile,
+		"INPUT_REPO=repo; touch " + injectedFile,
 		"INPUT_LANGUAGE=all",
 		"INPUT_TOP=10",
 		"INPUT_FORMAT=pr-comment",
@@ -134,7 +109,7 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 		"INPUT_THRESHOLD_FAIL_ON_INCREASE=0",
 		"INPUT_CACHE=false",
 		"INPUT_CACHE_READONLY=true",
-	)
+	}...)
 	runCommand(t, cmd)
 
 	if _, err := os.Stat(injectedFile); !os.IsNotExist(err) {
@@ -172,8 +147,8 @@ func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 	stub := writeStubLopper(t, argsFile)
 
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
-	cmd.Env = append(os.Environ(),
-		"LOPPER_BINARY="+stub,
+	cmd.Env = append(os.Environ(), []string{
+		"LOPPER_BINARY=" + stub,
 		"INPUT_REPO=.",
 		"INPUT_LANGUAGE=all",
 		"INPUT_TOP=20",
@@ -181,7 +156,7 @@ func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 		"INPUT_SCOPE_MODE=repo",
 		"INPUT_OUTPUT=lopper.sarif",
 		"INPUT_CACHE=true",
-	)
+	}...)
 	runCommand(t, cmd)
 
 	want := []string{
@@ -198,18 +173,48 @@ func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 	assertArgsFile(t, argsFile, want)
 }
 
+func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
+	root := repoRoot(t)
+	argsFile := filepath.Join(t.TempDir(), "args.bin")
+	stub := writeStubLopper(t, argsFile)
+
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
+	cmd.Env = append(os.Environ(), []string{
+		"LOPPER_BINARY=" + stub,
+		"INPUT_REPO=.",
+		"INPUT_LANGUAGE=all",
+		"INPUT_TOP=20",
+		"INPUT_FORMAT=table",
+		"INPUT_SCOPE_MODE=package",
+		"INPUT_RUNTIME_PROFILE=",
+		"INPUT_CACHE=true",
+	}...)
+	runCommand(t, cmd)
+
+	want := []string{
+		"analyse",
+		"--repo", ".",
+		"--language", "all",
+		"--format", "table",
+		"--scope-mode", "package",
+		"--cache=true",
+		"--top", "20",
+	}
+	assertArgsFile(t, argsFile, want)
+}
+
 func TestInstallScriptDryRunResolvesPinnedVersion(t *testing.T) {
 	root := repoRoot(t)
 	outputFile := filepath.Join(t.TempDir(), "github-output")
 
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "install-lopper.sh"))
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), []string{
 		"LOPPER_INSTALL_DRY_RUN=1",
 		"LOPPER_VERSION=1.6.1",
 		"LOPPER_ACTION_OS=linux",
 		"LOPPER_ACTION_ARCH=x86_64",
-		"GITHUB_OUTPUT="+outputFile,
-	)
+		"GITHUB_OUTPUT=" + outputFile,
+	}...)
 	stdout := runCommand(t, cmd)
 
 	wantURL := "https://github.com/ben-ranford/lopper/releases/download/v1.6.1/lopper_v1.6.1_linux_amd64.tar.gz"
@@ -236,13 +241,13 @@ func TestInstallScriptDryRunDefaultsToConcreteActionRef(t *testing.T) {
 	root := repoRoot(t)
 
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "install-lopper.sh"))
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), []string{
 		"LOPPER_INSTALL_DRY_RUN=1",
 		"LOPPER_VERSION=action",
 		"LOPPER_ACTION_REF=v1.7.0",
 		"LOPPER_ACTION_OS=linux",
 		"LOPPER_ACTION_ARCH=arm64",
-	)
+	}...)
 	stdout := runCommand(t, cmd)
 
 	wantURL := "https://github.com/ben-ranford/lopper/releases/download/v1.7.0/lopper_v1.7.0_linux_arm64.tar.gz"
@@ -257,12 +262,12 @@ func TestInstallScriptDryRunDefaultsToConcreteActionRef(t *testing.T) {
 func TestInstallScriptRejectsUnsafeVersion(t *testing.T) {
 	root := repoRoot(t)
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "install-lopper.sh"))
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), []string{
 		"LOPPER_INSTALL_DRY_RUN=1",
 		"LOPPER_VERSION=bad/version",
 		"LOPPER_ACTION_OS=linux",
 		"LOPPER_ACTION_ARCH=amd64",
-	)
+	}...)
 
 	err := cmd.Run()
 	if err == nil {
@@ -286,6 +291,33 @@ func TestActionScriptsAvoidEval(t *testing.T) {
 	}
 }
 
+func requireInputDescriptions(t *testing.T, metadata actionMetadata, names []string) {
+	t.Helper()
+	for _, name := range names {
+		input, ok := metadata.Inputs[name]
+		if !ok {
+			t.Fatalf("missing input %q", name)
+		}
+		if strings.TrimSpace(input.Description) == "" {
+			t.Fatalf("input %q has empty description", name)
+		}
+	}
+}
+
+func requireNoInput(t *testing.T, metadata actionMetadata, name string) {
+	t.Helper()
+	if _, ok := metadata.Inputs[name]; ok {
+		t.Fatalf("action should not expose raw %s shell passthrough", name)
+	}
+}
+
+func requireInputDefault(t *testing.T, metadata actionMetadata, name, want string) {
+	t.Helper()
+	if got := metadata.Inputs[name].Default; got != want {
+		t.Fatalf("%s default = %q, want %q", name, got, want)
+	}
+}
+
 func requireOutput(t *testing.T, metadata actionMetadata, name, value string) {
 	t.Helper()
 	output, ok := metadata.Outputs[name]
@@ -294,6 +326,14 @@ func requireOutput(t *testing.T, metadata actionMetadata, name, value string) {
 	}
 	if output.Value != value {
 		t.Fatalf("output %q value = %q, want %q", name, output.Value, value)
+	}
+}
+
+func requireScriptStep(t *testing.T, metadata actionMetadata, id, scriptName string) {
+	t.Helper()
+	step := requireStep(t, metadata, id)
+	if step.Shell != "bash" || !strings.Contains(step.Run, scriptName) {
+		t.Fatalf("%s step does not call %s with bash: %#v", id, scriptName, step)
 	}
 }
 

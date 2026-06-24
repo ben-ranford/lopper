@@ -13,13 +13,14 @@ trim() {
 }
 
 lower() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+  local value="$1"
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
 }
 
 write_output() {
   local name="$1"
   local value="$2"
-  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
   fi
 }
@@ -28,7 +29,7 @@ curl_with_token() {
   local token
   token="$(trim "${LOPPER_GITHUB_TOKEN:-}")"
   local curl_args=()
-  if [ -n "$token" ]; then
+  if [[ -n "$token" ]]; then
     curl_args=(-H "Authorization: Bearer ${token}")
   fi
   curl "${curl_args[@]}" "$@"
@@ -40,7 +41,7 @@ resolve_latest_tag() {
   local tag="${effective_url##*/}"
   tag="${tag%%\?*}"
   tag="${tag%%#*}"
-  if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
+  if [[ -z "$tag" || "$tag" == "latest" ]]; then
     error "Unable to resolve the latest Lopper release tag."
     exit 1
   fi
@@ -74,10 +75,10 @@ resolve_requested_tag() {
   local requested_lower
   requested_lower="$(lower "$requested")"
 
-  if [ -z "$requested" ] || [ "$requested_lower" = "action" ]; then
+  if [[ -z "$requested" || "$requested_lower" == "action" ]]; then
     local action_ref
     action_ref="$(trim "${LOPPER_ACTION_REF:-}")"
-    if [ -n "$action_ref" ] && is_concrete_release_ref "$action_ref"; then
+    if [[ -n "$action_ref" ]] && is_concrete_release_ref "$action_ref"; then
       printf '%s' "$action_ref"
       return
     fi
@@ -85,7 +86,7 @@ resolve_requested_tag() {
     return
   fi
 
-  if [ "$requested_lower" = "latest" ]; then
+  if [[ "$requested_lower" == "latest" ]]; then
     resolve_latest_tag
     return
   fi
@@ -96,7 +97,7 @@ resolve_requested_tag() {
 detect_os() {
   local value
   value="$(trim "${LOPPER_ACTION_OS:-}")"
-  if [ -z "$value" ]; then
+  if [[ -z "$value" ]]; then
     value="$(uname -s)"
   fi
 
@@ -113,7 +114,7 @@ detect_os() {
 detect_arch() {
   local value
   value="$(trim "${LOPPER_ACTION_ARCH:-}")"
-  if [ -z "$value" ]; then
+  if [[ -z "$value" ]]; then
     value="$(uname -m)"
   fi
 
@@ -137,7 +138,7 @@ download_url="https://github.com/ben-ranford/lopper/releases/download/${tag}/${a
 
 write_output "resolved-version" "$tag"
 
-if [ "${LOPPER_INSTALL_DRY_RUN:-}" = "1" ]; then
+if [[ "${LOPPER_INSTALL_DRY_RUN:-}" == "1" ]]; then
   write_output "download-url" "$download_url"
   printf 'resolved-version=%s\n' "$tag"
   printf 'download-url=%s\n' "$download_url"
@@ -145,12 +146,12 @@ if [ "${LOPPER_INSTALL_DRY_RUN:-}" = "1" ]; then
 fi
 
 runner_temp="$(trim "${RUNNER_TEMP:-}")"
-if [ -z "$runner_temp" ]; then
+if [[ -z "$runner_temp" ]]; then
   runner_temp="${TMPDIR:-/tmp}"
 fi
 runner_temp="${runner_temp%/}"
 install_dir="$(trim "${LOPPER_INSTALL_DIR:-}")"
-if [ -z "$install_dir" ]; then
+if [[ -z "$install_dir" ]]; then
   install_dir="${runner_temp}/lopper-action/bin"
 fi
 mkdir -p "$install_dir"
@@ -166,7 +167,7 @@ curl_with_token -fsSL "$download_url" -o "$archive_path"
 tar -xzf "$archive_path" -C "$work_dir"
 
 binary_path="$(find "$work_dir" -type f -name lopper -print | head -n 1)"
-if [ -z "$binary_path" ]; then
+if [[ -z "$binary_path" ]]; then
   error "Downloaded archive did not contain a lopper binary."
   exit 1
 fi
@@ -175,7 +176,7 @@ installed_binary="${install_dir}/lopper"
 cp "$binary_path" "$installed_binary"
 chmod +x "$installed_binary"
 
-if [ -n "${GITHUB_PATH:-}" ]; then
+if [[ -n "${GITHUB_PATH:-}" ]]; then
   printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
 fi
 
