@@ -6,6 +6,91 @@ import (
 	"testing"
 )
 
+type dependencyExpectation struct {
+	name      string
+	canonical string
+	localPath bool
+	renamed   bool
+}
+
+func assertManifestMeta(t *testing.T, got manifestMeta, wantHasPackage bool, wantWorkspaceMembers []string) {
+	t.Helper()
+
+	if got.HasPackage != wantHasPackage || !stringSlicesEqual(got.WorkspaceMembers, wantWorkspaceMembers) {
+		t.Fatalf("unexpected manifest meta: %#v", got)
+	}
+}
+
+func assertDependencyInfo(t *testing.T, deps map[string]dependencyInfo, want dependencyExpectation) {
+	t.Helper()
+
+	got := deps[want.name]
+	if got.Canonical != want.canonical || got.LocalPath != want.localPath || got.Renamed != want.renamed {
+		t.Fatalf("unexpected dependency %q: %#v", want.name, got)
+	}
+}
+
+func assertStringFields(t *testing.T, got, want map[string]string) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("unexpected flattened fields: %#v", got)
+	}
+	for key, wantValue := range want {
+		if got[key] != wantValue {
+			t.Fatalf("unexpected flattened fields: %#v", got)
+		}
+	}
+}
+
+func assertBool(t *testing.T, name string, got, want bool) {
+	t.Helper()
+
+	if got != want {
+		t.Fatalf("unexpected %s result: got %t want %t", name, got, want)
+	}
+}
+
+func assertStringSlice(t *testing.T, name string, got, want []string) {
+	t.Helper()
+
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("unexpected %s: got %#v want %#v", name, got, want)
+	}
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func assertWorkspaceMemberPatternMatch(t *testing.T, pattern, member string, want bool) {
+	t.Helper()
+
+	got, err := workspaceMemberPatternMatches(pattern, member)
+	if err != nil {
+		t.Fatalf("match workspace member pattern %q: %v", pattern, err)
+	}
+	if got != want {
+		t.Fatalf("unexpected workspace member match for %q and %q: got %t want %t", pattern, member, got, want)
+	}
+}
+
+func assertWorkspaceMemberPatternError(t *testing.T, pattern, member string) {
+	t.Helper()
+
+	if _, err := workspaceMemberPatternMatches(pattern, member); err == nil {
+		t.Fatalf("expected workspace member glob %q to return an error", pattern)
+	}
+}
+
 func TestStructuredCargoManifestParserBranches(t *testing.T) {
 	content := []byte(`
 [package]
@@ -28,23 +113,18 @@ clap_alias = { package = "clap", version = "4" }
 	if err != nil {
 		t.Fatalf("parse manifest document: %v", err)
 	}
-	meta := cargoManifestMeta(document)
-	if !meta.HasPackage || strings.Join(meta.WorkspaceMembers, ",") != "crates/a,crates/b" {
-		t.Fatalf("unexpected manifest meta: %#v", meta)
-	}
+	assertManifestMeta(t, cargoManifestMeta(document), true, []string{"crates/a", "crates/b"})
+
 	deps := cargoManifestDependencies(document)
-	if deps["serde"].Canonical != "serde" {
-		t.Fatalf("expected string dependency to map canonically, got %#v", deps["serde"])
+	for _, want := range []dependencyExpectation{
+		{name: "serde", canonical: "serde"},
+		{name: "serde-json-alias", canonical: "serde-json", localPath: true, renamed: true},
+		{name: "workspace-dep", canonical: "workspace-dep"},
+		{name: "clap-alias", canonical: "clap", renamed: true},
+	} {
+		assertDependencyInfo(t, deps, want)
 	}
-	if deps["serde-json-alias"].Canonical != "serde-json" || !deps["serde-json-alias"].LocalPath || !deps["serde-json-alias"].Renamed {
-		t.Fatalf("expected renamed local dependency from inline table, got %#v", deps["serde-json-alias"])
-	}
-	if deps["workspace-dep"].Canonical != "workspace-dep" {
-		t.Fatalf("expected workspace dependency table to parse, got %#v", deps["workspace-dep"])
-	}
-	if deps["clap-alias"].Canonical != "clap" || !deps["clap-alias"].Renamed {
-		t.Fatalf("expected target dependency table to parse, got %#v", deps["clap-alias"])
-	}
+
 	direct := map[string]dependencyInfo{}
 	addTargetTomlDependencyTables(direct, map[string]any{
 		"cfg(windows)": "ignored",
@@ -56,24 +136,22 @@ clap_alias = { package = "clap", version = "4" }
 	addTomlDependency(direct, "", "ignored")
 	addTomlDependency(direct, "plain_dep", "1")
 	addTomlDependency(direct, "weird_dep", map[string]any{"package": 12, "path": 13})
-	if direct["build-dep"].Canonical != "build-dep" || direct["plain-dep"].Canonical != "plain-dep" {
-		t.Fatalf("expected direct TOML dependency helpers to keep canonical aliases, got %#v", direct)
+	for _, want := range []dependencyExpectation{
+		{name: "build-dep", canonical: "build-dep"},
+		{name: "plain-dep", canonical: "plain-dep"},
+		{name: "weird-dep", canonical: "weird-dep"},
+	} {
+		assertDependencyInfo(t, direct, want)
 	}
-	if direct["weird-dep"].Renamed || direct["weird-dep"].LocalPath {
-		t.Fatalf("expected non-string inline fields to be ignored, got %#v", direct["weird-dep"])
-	}
+
 	fields := flattenTomlStringFields(map[string]any{
 		" version ": map[string]any{" ref ": "shared"},
 		"ignored":   12,
 		" ":         "skip",
 	})
-	if fields["version.ref"] != "shared" || len(fields) != 1 {
-		t.Fatalf("expected nested TOML string fields only, got %#v", fields)
-	}
+	assertStringFields(t, fields, map[string]string{"version.ref": "shared"})
 
-	if meta := parseCargoManifestContent("not valid = "); meta.HasPackage || len(meta.WorkspaceMembers) != 0 {
-		t.Fatalf("expected invalid content helper to return zero meta, got %#v", meta)
-	}
+	assertManifestMeta(t, parseCargoManifestContent("not valid = "), false, nil)
 	if deps := parseCargoDependencies("not valid = "); len(deps) != 0 {
 		t.Fatalf("expected invalid dependency content to return no deps, got %#v", deps)
 	}
@@ -111,42 +189,27 @@ func TestRustManifestHelperCoverageBranches(t *testing.T) {
 	repo := t.TempDir()
 	inside := filepath.Join(repo, "src", "lib.rs")
 	outside := filepath.Join(filepath.Dir(repo), "outside.rs")
-	if !isSubPath(repo, repo) || !isSubPath(repo, inside) {
-		t.Fatalf("expected repo and child paths to be within root")
-	}
-	if isSubPath(repo, outside) || isSubPath("\x00", inside) || isSubPath(repo, "\x00") {
-		t.Fatalf("expected outside or invalid paths to be rejected")
-	}
-	if !samePath("\x00", "\x00") || samePath("\x00", "\x00-other") {
-		t.Fatalf("expected samePath fallback to compare cleaned invalid paths")
-	}
-	if got := uniquePaths([]string{" b ", "a", "", "b", "a"}); strings.Join(got, ",") != ".,a,b" {
-		t.Fatalf("expected unique paths to trim, sort, and dedupe, got %#v", got)
-	}
+	assertBool(t, "root subpath", isSubPath(repo, repo), true)
+	assertBool(t, "child subpath", isSubPath(repo, inside), true)
+	assertBool(t, "outside subpath", isSubPath(repo, outside), false)
+	assertBool(t, "invalid root subpath", isSubPath("\x00", inside), false)
+	assertBool(t, "invalid child subpath", isSubPath(repo, "\x00"), false)
+	assertBool(t, "same invalid path", samePath("\x00", "\x00"), true)
+	assertBool(t, "different invalid path", samePath("\x00", "\x00-other"), false)
+	assertStringSlice(t, "unique paths", uniquePaths([]string{" b ", "a", "", "b", "a"}), []string{".", "a", "b"})
 
-	if matched, err := workspaceMemberPatternMatches("", "crate"); err != nil || matched {
-		t.Fatalf("expected empty workspace member pattern to miss, got %t %v", matched, err)
-	}
-	if _, err := workspaceMemberPatternMatches("[", "crate"); err == nil {
-		t.Fatalf("expected invalid workspace member glob to return an error")
-	}
+	assertWorkspaceMemberPatternMatch(t, "", "crate", false)
+	assertWorkspaceMemberPatternError(t, "[", "crate")
+
 	meta := manifestMeta{}
-	if parseWorkspaceMembersLine(`"crates/a"]`, "workspace", true, &meta) {
-		t.Fatalf("expected closing workspace members continuation to report completion")
-	}
-	if len(meta.WorkspaceMembers) != 1 || meta.WorkspaceMembers[0] != "crates/a" {
-		t.Fatalf("expected continuation workspace member to parse, got %#v", meta.WorkspaceMembers)
-	}
+	assertBool(t, "workspace member continuation", parseWorkspaceMembersLine(`"crates/a"]`, "workspace", true, &meta), false)
+	assertStringSlice(t, "workspace members", meta.WorkspaceMembers, []string{"crates/a"})
 
 	for _, section := range []string{"target.cfg.dependencies", "target.cfg.dev-dependencies", "target.cfg.build-dependencies"} {
-		if !isDependencySection(section) {
-			t.Fatalf("expected %s to be a dependency section", section)
-		}
+		assertBool(t, section, isDependencySection(section), true)
 	}
-	if isDependencySection("target.cfg.profile") {
-		t.Fatalf("expected non-dependency target section to be ignored")
-	}
-	if got := stripTomlComment(`name = 'x#y' # comment`); strings.TrimSpace(got) != `name = 'x#y'` {
+	assertBool(t, "target.cfg.profile", isDependencySection("target.cfg.profile"), false)
+	if got := strings.TrimSpace(stripTomlComment(`name = 'x#y' # comment`)); got != `name = 'x#y'` {
 		t.Fatalf("expected single-quoted hash to be preserved while stripping comment, got %q", got)
 	}
 }
