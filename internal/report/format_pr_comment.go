@@ -93,7 +93,7 @@ func topDependencyDeltas(deltas []DependencyDelta, limit int) []DependencyDelta 
 }
 
 func signedPct(value float64) string {
-	rounded := math.Round(value*10) / 10
+	rounded := math.RoundToEven(value*10) / 10
 	if rounded == 0 {
 		return "0.0%"
 	}

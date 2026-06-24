@@ -552,6 +552,12 @@ func TestSignedDeltaHelpersRenderZeroUnsigned(t *testing.T) {
 	if got := signedPct(-0.04); got != "0.0%" {
 		t.Fatalf("signedPct(-0.04) = %q, want 0.0%%", got)
 	}
+	if got := signedPct(1.25); got != "+1.2%" {
+		t.Fatalf("signedPct(1.25) = %q, want +1.2%%", got)
+	}
+	if got := signedPct(-1.25); got != "-1.2%" {
+		t.Fatalf("signedPct(-1.25) = %q, want -1.2%%", got)
+	}
 	if got := signedBytes(0); got != "0 B" {
 		t.Fatalf("signedBytes(0) = %q, want 0 B", got)
 	}
