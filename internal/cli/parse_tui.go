@@ -9,6 +9,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/app"
 )
 
+const snapshotOutputPathUsage = "snapshot output path"
+
 func parseTUI(args []string, req app.Request) (app.Request, error) {
 	normalizedArgs, err := normalizeArgs(args)
 	if err != nil {
@@ -25,9 +27,9 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	filter := fs.String("filter", req.TUI.Filter, "filter dependencies")
 	sortMode := fs.String("sort", req.TUI.Sort, "sort mode")
 	pageSize := fs.Int("page-size", req.TUI.PageSize, "page size")
-	snapshot := fs.String("snapshot", req.TUI.SnapshotPath, "snapshot output path")
-	outputFlag := fs.String("output", "", "snapshot output path")
-	outputShortFlag := fs.String("o", "", "snapshot output path")
+	snapshot := fs.String("snapshot", req.TUI.SnapshotPath, snapshotOutputPathUsage)
+	outputFlag := fs.String("output", "", snapshotOutputPathUsage)
+	outputShortFlag := fs.String("o", "", snapshotOutputPathUsage)
 	baselinePath := fs.String("baseline", req.TUI.BaselinePath, "baseline report path")
 	baselineStorePath := fs.String("baseline-store", req.TUI.BaselineStorePath, "baseline snapshot directory")
 	baselineKey := fs.String("baseline-key", req.TUI.BaselineKey, "baseline snapshot key for comparison")
