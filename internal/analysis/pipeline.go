@@ -185,20 +185,65 @@ func scopedCandidateRoots(scopeMode string, roots []string, repoPath string) ([]
 }
 
 func changedRoots(roots []string, repoPath string, changedFiles []string) []string {
-	absoluteChangedFiles := make([]string, 0, len(changedFiles))
-	for _, file := range changedFiles {
-		absoluteChangedFiles = append(absoluteChangedFiles, filepath.Join(repoPath, file))
+	if len(roots) == 0 || len(changedFiles) == 0 {
+		return nil
 	}
+	rootIndex := changedRootIndex(roots, repoPath)
+	if len(rootIndex) == 0 {
+		return nil
+	}
+
 	changed := make([]string, 0, len(roots))
-	for _, root := range roots {
-		for _, file := range absoluteChangedFiles {
-			if rootContainsFile(root, file) {
-				changed = append(changed, root)
-				break
-			}
-		}
+	seen := make(map[string]struct{}, len(roots))
+	for _, file := range changedFiles {
+		changed = appendChangedRootAncestors(changed, seen, rootIndex, absoluteChangedPath(repoPath, file))
 	}
 	return uniqueSorted(changed)
+}
+
+func appendChangedRootAncestors(changed []string, seen map[string]struct{}, rootIndex map[string][]string, path string) []string {
+	for current := path; ; {
+		changed = appendChangedRoots(changed, seen, rootIndex[current])
+		parent := filepath.Dir(current)
+		if parent == current {
+			return changed
+		}
+		current = parent
+	}
+}
+
+func appendChangedRoots(changed []string, seen map[string]struct{}, roots []string) []string {
+	for _, root := range roots {
+		if _, exists := seen[root]; exists {
+			continue
+		}
+		seen[root] = struct{}{}
+		changed = append(changed, root)
+	}
+	return changed
+}
+
+func changedRootIndex(roots []string, repoPath string) map[string][]string {
+	index := make(map[string][]string, len(roots))
+	for _, root := range roots {
+		path := absoluteRootPath(repoPath, root)
+		index[path] = append(index[path], root)
+	}
+	return index
+}
+
+func absoluteRootPath(repoPath, root string) string {
+	if filepath.IsAbs(root) {
+		return filepath.Clean(root)
+	}
+	return filepath.Clean(filepath.Join(repoPath, root))
+}
+
+func absoluteChangedPath(repoPath, file string) string {
+	if filepath.IsAbs(file) {
+		return filepath.Clean(file)
+	}
+	return filepath.Clean(filepath.Join(repoPath, file))
 }
 
 func rootContainsFile(root, file string) bool {
