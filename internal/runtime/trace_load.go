@@ -131,6 +131,6 @@ func runtimeContextValue(value string) string {
 	if value == "" {
 		return ""
 	}
-	value = strings.TrimPrefix(value, "file://")
+	value = strings.TrimPrefix(value, fileURLPrefix)
 	return filepath.ToSlash(value)
 }

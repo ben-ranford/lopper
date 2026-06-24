@@ -9,6 +9,7 @@ import (
 const (
 	runtimeLanguageJSTS   = "js-ts"
 	runtimeLanguagePython = "python"
+	fileURLPrefix         = "file://"
 )
 
 func runtimeModuleFromEvent(event Event, dependency string) string {
@@ -50,7 +51,7 @@ func runtimeModuleFromResolvedPath(value, dependency string) string {
 	if value == "" {
 		return ""
 	}
-	value = strings.TrimPrefix(value, "file://")
+	value = strings.TrimPrefix(value, fileURLPrefix)
 	value = filepath.ToSlash(value)
 
 	marker := "/node_modules/"
@@ -166,7 +167,7 @@ func dependencyFromResolvedPath(value string) string {
 	if value == "" {
 		return ""
 	}
-	value = strings.TrimPrefix(value, "file://")
+	value = strings.TrimPrefix(value, fileURLPrefix)
 	value = filepath.ToSlash(value)
 
 	marker := "/node_modules/"
@@ -285,7 +286,7 @@ func pythonModuleFromResolvedPath(value, dependency string) string {
 	if value == "" {
 		return ""
 	}
-	value = strings.TrimPrefix(value, "file://")
+	value = strings.TrimPrefix(value, fileURLPrefix)
 	value = filepath.ToSlash(value)
 	for _, marker := range []string{"/site-packages/", "/dist-packages/"} {
 		pos := strings.LastIndex(value, marker)
