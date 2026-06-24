@@ -99,8 +99,37 @@ func TestChangedRootsHandlesRelativeRootsAndNoChangedFiles(t *testing.T) {
 		t.Fatalf("expected relative changed root selection, got %#v", got)
 	}
 
+	absoluteFile := filepath.Join(repo, relativeRoot, "src", "absolute.ts")
+	got = changedRoots([]string{relativeRoot}, repo, []string{absoluteFile})
+	if len(got) != 1 || got[0] != relativeRoot {
+		t.Fatalf("expected absolute changed path selection, got %#v", got)
+	}
+
 	if empty := changedRoots([]string{relativeRoot}, repo, nil); len(empty) != 0 {
 		t.Fatalf("expected no changed files to select no roots, got %#v", empty)
+	}
+}
+
+func TestAppendChangedRootAncestorsDeduplicatesIndexedRoots(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	appRoot := filepath.Join(repo, "app")
+	equivalentAppRoot := appRoot + string(filepath.Separator) + "."
+	webRoot := filepath.Join(appRoot, "web")
+	rootIndex := map[string][]string{
+		appRoot: {appRoot, equivalentAppRoot},
+		webRoot: {webRoot},
+	}
+	seen := map[string]struct{}{appRoot: {}}
+
+	got := appendChangedRootAncestors([]string{appRoot}, seen, rootIndex, filepath.Join(webRoot, "src", "index.ts"))
+	want := []string{appRoot, webRoot, equivalentAppRoot}
+	if len(got) != len(want) {
+		t.Fatalf("expected changed roots %#v, got %#v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected changed roots %#v, got %#v", want, got)
+		}
 	}
 }
 
