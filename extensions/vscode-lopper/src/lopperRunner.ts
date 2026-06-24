@@ -57,6 +57,13 @@ export interface WorkspaceAnalysisRequest {
   saveBaseline?: boolean;
 }
 
+interface CodemodFetchContext {
+  binarySignature: string;
+  requestedLanguage: LopperLanguage;
+  scopeMode: LopperScopeMode;
+  timeoutMs: number | undefined;
+}
+
 export interface WorkspaceExportRequest {
   document?: vscode.TextDocument;
   scopeMode?: LopperScopeMode;
@@ -262,16 +269,12 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       saveBaseline: options.saveBaseline,
     });
 
-    const codemodsByDependency = await this.fetchCodemods(
-      binaryPath,
+    const codemodsByDependency = await this.fetchCodemods(binaryPath, folder, report.dependencies, options, {
       binarySignature,
-      folder,
-      report.dependencies,
       requestedLanguage,
       scopeMode,
-      options,
       timeoutMs,
-    );
+    });
 
     return { folder, binaryPath, binarySignature, requestedLanguage, scopeMode, report, codemodsByDependency };
   }
@@ -544,14 +547,12 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
 
   private async fetchCodemods(
     binaryPath: string,
-    binarySignature: string,
     folder: vscode.WorkspaceFolder,
     dependencies: LopperDependencyReport[],
-    requestedLanguage: LopperLanguage,
-    scopeMode: LopperScopeMode,
     options: WorkspaceAnalysisRequest,
-    timeoutMs: number | undefined,
+    context: CodemodFetchContext,
   ): Promise<Map<string, LopperCodemodReport>> {
+    const { binarySignature, requestedLanguage, scopeMode, timeoutMs } = context;
     const dependencyByCacheKey = new Map<string, LopperDependencyReport>();
     const cacheKeys: string[] = [];
     for (const dependency of dependencies) {
