@@ -691,9 +691,7 @@ async function extractTarArchive(archivePath: string, extractDir: string): Promi
         archiveDestinationPath(extractDir, entryPath);
         return true;
       } catch (error) {
-        if (!rejectedEntryError) {
-          rejectedEntryError = error instanceof Error ? error : new Error(String(error));
-        }
+        rejectedEntryError ??= error instanceof Error ? error : new Error(String(error));
         return false;
       }
     },
