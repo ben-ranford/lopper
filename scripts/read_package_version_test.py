@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import read_package_version
 
+PACKAGE_JSON_PATH = "extensions/vscode-lopper/package.json"
+
 
 class ResolvePackagePathTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -19,15 +21,15 @@ class ResolvePackagePathTest(unittest.TestCase):
         os.chdir(self.original_cwd)
 
     def test_resolves_repo_relative_package_path(self) -> None:
-        path = read_package_version.resolve_package_path("extensions/vscode-lopper/package.json")
-        self.assertEqual(path, self.repo_root / "extensions/vscode-lopper/package.json")
+        path = read_package_version.resolve_package_path(PACKAGE_JSON_PATH)
+        self.assertEqual(path, self.repo_root / PACKAGE_JSON_PATH)
 
     def test_resolves_caller_relative_package_path_inside_repo(self) -> None:
         os.chdir(self.repo_root / "scripts")
 
-        path = read_package_version.resolve_package_path("../extensions/vscode-lopper/package.json")
+        path = read_package_version.resolve_package_path(f"../{PACKAGE_JSON_PATH}")
 
-        self.assertEqual(path, self.repo_root / "extensions/vscode-lopper/package.json")
+        self.assertEqual(path, self.repo_root / PACKAGE_JSON_PATH)
 
     def test_rejects_non_package_json_basename(self) -> None:
         with self.assertRaises(ValueError):
