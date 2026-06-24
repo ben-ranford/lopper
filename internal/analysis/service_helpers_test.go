@@ -65,11 +65,9 @@ func TestChangedRootsPreservesNestedRootSemantics(t *testing.T) {
 	apiRoot := filepath.Join(appRoot, "api")
 	app2Root := filepath.Join(repo, "app2")
 
-	got := changedRoots(
-		[]string{app2Root, webRoot, appRoot, apiRoot},
-		repo,
-		[]string{"app/web/src/index.ts"},
-	)
+	roots := []string{app2Root, webRoot, appRoot, apiRoot}
+	changedFiles := []string{"app/web/src/index.ts"}
+	got := changedRoots(roots, repo, changedFiles)
 
 	want := []string{appRoot, webRoot}
 	if len(got) != len(want) {
