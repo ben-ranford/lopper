@@ -165,49 +165,80 @@ func TestChangedFilesIgnoresCallerGitConfigEnvironment(t *testing.T) {
 }
 
 func TestParseChangedFileHelpers(t *testing.T) {
-	changed := parseChangedFileLines([]byte("  packages/a/file.ts\n  packages/a/file.ts\n"))
-	if len(changed) != 1 || changed[0] != "  packages/a/file.ts" {
-		t.Fatalf("expected deduped changed lines, got %#v", changed)
+	tests := []struct {
+		name    string
+		parse   func([]byte) []string
+		input   []byte
+		want    []string
+		message string
+	}{
+		{
+			name:    "dedupes changed lines",
+			parse:   parseChangedFileLines,
+			input:   []byte("  packages/a/file.ts\n  packages/a/file.ts\n"),
+			want:    []string{"  packages/a/file.ts"},
+			message: "expected deduped changed lines",
+		},
+		{
+			name:    "decodes quoted diff path",
+			parse:   parseChangedFileLines,
+			input:   []byte("\"\\303\\261ame.go\"\n"),
+			want:    []string{"ñame.go"},
+			message: "expected quoted diff path to decode",
+		},
+		{
+			name:    "parses porcelain paths",
+			parse:   parsePorcelainChangedFiles,
+			input:   []byte("M   packages/a/file.ts\nR  old.ts ->  packages/b/new.ts\n"),
+			want:    []string{" packages/a/file.ts", " packages/b/new.ts"},
+			message: "expected parsed porcelain paths",
+		},
+		{
+			name:    "decodes quoted porcelain path",
+			parse:   parsePorcelainChangedFiles,
+			input:   []byte("M  \"\\303\\261ame.go\"\n"),
+			want:    []string{"ñame.go"},
+			message: "expected quoted porcelain path to decode",
+		},
+		{
+			name:    "keeps quoted arrow substring intact",
+			parse:   parsePorcelainChangedFiles,
+			input:   []byte("M  \"weird -> name.go\"\n"),
+			want:    []string{"weird -> name.go"},
+			message: "expected modified quoted path with arrow substring to stay intact",
+		},
+		{
+			name:    "parses renamed quoted arrow destination",
+			parse:   parsePorcelainChangedFiles,
+			input:   []byte("R  \"old -> name.go\" -> \"new -> name.go\"\n"),
+			want:    []string{"new -> name.go"},
+			message: "expected renamed quoted path with arrow substring to parse destination",
+		},
+		{
+			name:    "keeps unstaged full filename",
+			parse:   parsePorcelainChangedFiles,
+			input:   []byte(" M main.go\n"),
+			want:    []string{"main.go"},
+			message: "expected unstaged path to keep full filename",
+		},
+		{
+			name:    "ignores short lines",
+			parse:   parsePorcelainChangedFiles,
+			input:   []byte("\n??\nA  file.txt\n"),
+			want:    []string{"file.txt"},
+			message: "expected short lines to be ignored",
+		},
 	}
 
-	quoted := parseChangedFileLines([]byte("\"\\303\\261ame.go\"\n"))
-	if len(quoted) != 1 || quoted[0] != "ñame.go" {
-		t.Fatalf("expected quoted diff path to decode, got %#v", quoted)
-	}
-
-	porcelain := parsePorcelainChangedFiles([]byte("M   packages/a/file.ts\nR  old.ts ->  packages/b/new.ts\n"))
-	if len(porcelain) != 2 || porcelain[0] != " packages/a/file.ts" || porcelain[1] != " packages/b/new.ts" {
-		t.Fatalf("expected parsed porcelain paths, got %#v", porcelain)
-	}
-
-	quotedPorcelain := parsePorcelainChangedFiles([]byte("M  \"\\303\\261ame.go\"\n"))
-	if len(quotedPorcelain) != 1 || quotedPorcelain[0] != "ñame.go" {
-		t.Fatalf("expected quoted porcelain path to decode, got %#v", quotedPorcelain)
-	}
-
-	quotedWithArrow := parsePorcelainChangedFiles([]byte("M  \"weird -> name.go\"\n"))
-	if len(quotedWithArrow) != 1 || quotedWithArrow[0] != "weird -> name.go" {
-		t.Fatalf("expected modified quoted path with arrow substring to stay intact, got %#v", quotedWithArrow)
-	}
-
-	renamedQuotedWithArrow := parsePorcelainChangedFiles([]byte("R  \"old -> name.go\" -> \"new -> name.go\"\n"))
-	if len(renamedQuotedWithArrow) != 1 || renamedQuotedWithArrow[0] != "new -> name.go" {
-		t.Fatalf("expected renamed quoted path with arrow substring to parse destination, got %#v", renamedQuotedWithArrow)
-	}
-
-	unstaged := parsePorcelainChangedFiles([]byte(" M main.go\n"))
-	if len(unstaged) != 1 || unstaged[0] != "main.go" {
-		t.Fatalf("expected unstaged path to keep full filename, got %#v", unstaged)
-	}
-
-	withShort := parsePorcelainChangedFiles([]byte("\n??\nA  file.txt\n"))
-	if len(withShort) != 1 || withShort[0] != "file.txt" {
-		t.Fatalf("expected short lines to be ignored, got %#v", withShort)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertParsedPaths(t, tc.parse(tc.input), tc.want, tc.message)
+		})
 	}
 }
 
 func TestParseChangedFileHelperEdgeCases(t *testing.T) {
-	if idx := findPorcelainRenameSeparator("\"old \\\"->\\\" name.go\" -> \"new.go\""); idx < 0 {
+	if findPorcelainRenameSeparator("\"old \\\"->\\\" name.go\" -> \"new.go\"") < 0 {
 		t.Fatalf("expected rename separator outside escaped quoted content")
 	}
 
@@ -331,4 +362,17 @@ func containsEnvEntry(env []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func assertParsedPaths(t *testing.T, got, want []string, message string) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("%s, got %#v", message, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s, got %#v", message, got)
+		}
+	}
 }
