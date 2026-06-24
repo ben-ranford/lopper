@@ -28,7 +28,7 @@ on:
       milestone:
         description: Milestone to assign to the graduation PR
         required: false
-        default: "v1.6.0"
+        default: "v1.7.0"
         type: string
 
 permissions:
@@ -90,6 +90,10 @@ jobs:
           if [ -n "${ISSUE_NUMBER}" ]; then
             issue_line="Closes #${ISSUE_NUMBER}."
           fi
+          target_series_label=""
+          if [[ "${MILESTONE}" =~ ^v?([0-9]+)\.([0-9]+)(\.[0-9]+)?([-.].*)?$ ]]; then
+            target_series_label="target-series:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"
+          fi
 
           mkdir -p .artifacts
           cat > .artifacts/graduate-feature-pr.md <<PR_BODY
@@ -140,8 +144,10 @@ jobs:
             --title "feat(flags): graduate ${FEATURE} to stable"
             --body-file .artifacts/graduate-feature-pr.md
             --label enhancement
-            --label target-series:1.6.x
           )
+          if [ -n "${target_series_label}" ]; then
+            pr_args+=(--label "${target_series_label}")
+          fi
           if [ -n "${MILESTONE}" ]; then
             pr_args+=(--milestone "${MILESTONE}")
           fi
