@@ -268,7 +268,7 @@ suite("lopper runner", () => {
           runCommand: async () => "",
           runReport: async (_binaryPath, args): Promise<LopperReport> => {
             if (args.includes("--suggest-only")) {
-              const dependencyName = args[args.length - 1];
+              const dependencyName = args.at(-1);
               assert.ok(dependencyName, "expected dependency name in codemod command");
               codemodNames.push(dependencyName);
               activeCodemods += 1;
@@ -352,7 +352,7 @@ suite("lopper runner", () => {
               return {
                 dependencies: [
                   {
-                    name: args[args.length - 1] ?? "unknown",
+                    name: args.at(-1) ?? "unknown",
                     usedExportsCount: 1,
                     totalExportsCount: 2,
                     usedPercent: 50,
