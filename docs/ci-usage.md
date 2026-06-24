@@ -67,6 +67,151 @@ On pull requests, `ci.yml` also runs lopper delta analysis against the PR base a
 If `SONAR_TOKEN` is set, it additionally posts/updates a SonarQube summary comment.
 When running locally with `act`, target the Linux-backed jobs explicitly (for example `act pull_request -W .github/workflows/ci.yml --job verify`), because Docker-based `act` environments do not provide hosted macOS runners.
 
+## First-party GitHub Action
+
+Lopper ships a composite GitHub Action at the repository root. The action downloads a pinned Lopper release binary, builds `lopper analyse` arguments from named inputs, and supports the same CI outputs used by the CLI: threshold-gated analysis, JSON baselines, PR-comment markdown, and SARIF.
+
+Pin both the action ref and the `version` input for reproducible CI. The default `version: action` uses the matching concrete action tag when the workflow references a full release tag such as `v1.7.0`; otherwise it resolves the latest stable release. The action intentionally does not expose a raw `extra-args` passthrough, so shell values are never re-parsed by `eval` or another shell.
+
+### Pull request comment workflow
+
+```yaml
+name: lopper-pr
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  lopper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Prepare base report workspace
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          mkdir -p .artifacts
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+          git worktree add --detach .artifacts/base "origin/${BASE_REF}"
+
+      - name: Generate base report
+        uses: ben-ranford/lopper@v1.7.0
+        with:
+          version: v1.7.0
+          repo: .artifacts/base
+          language: all
+          top: '20'
+          format: json
+          output: .artifacts/lopper-base.json
+
+      - name: Remove base report workspace
+        if: ${{ always() }}
+        run: git worktree remove --force .artifacts/base || true
+
+      - name: Generate PR comment report
+        id: lopper
+        continue-on-error: true
+        uses: ben-ranford/lopper@v1.7.0
+        with:
+          version: v1.7.0
+          repo: .
+          language: all
+          top: '20'
+          baseline: .artifacts/lopper-base.json
+          format: pr-comment
+          output: .artifacts/lopper-pr-comment.md
+          threshold-fail-on-increase: '0'
+
+      - name: Upsert Lopper PR comment
+        if: ${{ always() }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const marker = '<!-- lopper-pr-report -->';
+            const reportPath = '.artifacts/lopper-pr-comment.md';
+            const body = fs.existsSync(reportPath)
+              ? `${marker}\n${fs.readFileSync(reportPath, 'utf8').trim()}`
+              : `${marker}\n## Lopper\n\nLopper did not produce a PR report.`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Enforce Lopper threshold
+        if: ${{ steps.lopper.outcome == 'failure' }}
+        run: exit 1
+```
+
+### SARIF code-scanning workflow
+
+```yaml
+name: lopper-code-scanning
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  lopper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate Lopper SARIF
+        uses: ben-ranford/lopper@v1.7.0
+        with:
+          version: v1.7.0
+          repo: .
+          language: all
+          top: '20'
+          scope-mode: repo
+          format: sarif
+          output: lopper.sarif
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: lopper.sarif
+```
+
 ## Make targets used by CI
 
 - `make build`: build local executable at `bin/lopper`

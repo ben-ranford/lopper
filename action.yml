@@ -1,0 +1,204 @@
+name: Lopper
+description: Run Lopper dependency-surface analysis in GitHub Actions.
+author: ben-ranford
+
+inputs:
+  version:
+    description: Lopper CLI release to install. Use action to match a concrete action tag when possible, latest for the newest stable release, or a tag such as v1.7.0.
+    required: false
+    default: action
+  github-token:
+    description: Optional token used when resolving and downloading GitHub release assets.
+    required: false
+    default: ''
+  repo:
+    description: Repository path to analyse.
+    required: false
+    default: .
+  dependency:
+    description: Optional single dependency target. When set, top is ignored.
+    required: false
+    default: ''
+  top:
+    description: Number of top dependencies to analyse when dependency is not set.
+    required: false
+    default: '20'
+  language:
+    description: Language adapter to use, such as auto, all, js-ts, python, go, rust, dotnet, swift, dart, or powershell.
+    required: false
+    default: all
+  scope-mode:
+    description: 'Analysis scope mode: repo, package, or changed-packages.'
+    required: false
+    default: package
+  format:
+    description: 'Output format: table, csv, json, sarif, or pr-comment.'
+    required: false
+    default: table
+  output:
+    description: Optional output file path. Use - or leave blank to write to stdout.
+    required: false
+    default: ''
+  baseline:
+    description: Baseline JSON report path for comparison.
+    required: false
+    default: ''
+  baseline-store:
+    description: Baseline snapshot directory.
+    required: false
+    default: ''
+  baseline-key:
+    description: Baseline snapshot key for comparison.
+    required: false
+    default: ''
+  baseline-label:
+    description: Label key to use when saving a baseline snapshot.
+    required: false
+    default: ''
+  save-baseline:
+    description: Save the current run as an immutable baseline snapshot.
+    required: false
+    default: 'false'
+  config:
+    description: Optional Lopper config file path.
+    required: false
+    default: ''
+  include:
+    description: Comma-separated include path globs.
+    required: false
+    default: ''
+  exclude:
+    description: Comma-separated exclude path globs.
+    required: false
+    default: ''
+  runtime-profile:
+    description: Conditional exports runtime profile.
+    required: false
+    default: node-import
+  runtime-trace:
+    description: Runtime trace file path.
+    required: false
+    default: ''
+  runtime-test-command:
+    description: Optional test command to run with runtime tracing.
+    required: false
+    default: ''
+  cache:
+    description: Enable the incremental analysis cache.
+    required: false
+    default: 'true'
+  cache-path:
+    description: Optional analysis cache directory path.
+    required: false
+    default: ''
+  cache-readonly:
+    description: Read cache entries but do not write misses.
+    required: false
+    default: 'false'
+  threshold-fail-on-increase:
+    description: Fail when waste increase is greater than this percent. Use 0 for strict no-regression gating.
+    required: false
+    default: ''
+  threshold-low-confidence-warning:
+    description: Warn in all-language mode when adapter confidence is below this percent.
+    required: false
+    default: ''
+  threshold-min-usage-percent:
+    description: Minimum used export percent before low-usage recommendations are emitted.
+    required: false
+    default: ''
+  threshold-max-uncertain-imports:
+    description: Fail when unresolved dynamic import/require usage count exceeds this threshold.
+    required: false
+    default: ''
+  lockfile-drift-policy:
+    description: 'Lockfile drift policy: off, warn, or fail.'
+    required: false
+    default: ''
+  license-deny:
+    description: Comma-separated denied SPDX identifiers.
+    required: false
+    default: ''
+  license-fail-on-deny:
+    description: Fail when denied licenses are detected.
+    required: false
+    default: 'false'
+  license-provenance-registry:
+    description: Include registry provenance heuristics for JS/TS dependencies.
+    required: false
+    default: 'false'
+  enable-feature:
+    description: Comma-separated feature flag names or codes to enable.
+    required: false
+    default: ''
+  disable-feature:
+    description: Comma-separated feature flag names or codes to disable.
+    required: false
+    default: ''
+
+outputs:
+  report-path:
+    description: Output report path when the output input points at a file.
+    value: ${{ steps.analyse.outputs.report-path }}
+  lopper-version:
+    description: Installed Lopper version output from lopper --version.
+    value: ${{ steps.install.outputs.lopper-version }}
+  resolved-version:
+    description: Resolved release tag used for the installed Lopper CLI.
+    value: ${{ steps.install.outputs.resolved-version }}
+  binary-path:
+    description: Installed Lopper binary path.
+    value: ${{ steps.install.outputs.binary-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Lopper
+      id: install
+      shell: bash
+      env:
+        LOPPER_VERSION: ${{ inputs.version }}
+        LOPPER_ACTION_REF: ${{ github.action_ref }}
+        LOPPER_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/github-action/install-lopper.sh"
+
+    - name: Run Lopper analysis
+      id: analyse
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_DEPENDENCY: ${{ inputs.dependency }}
+        INPUT_TOP: ${{ inputs.top }}
+        INPUT_LANGUAGE: ${{ inputs.language }}
+        INPUT_SCOPE_MODE: ${{ inputs.scope-mode }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_BASELINE_STORE: ${{ inputs.baseline-store }}
+        INPUT_BASELINE_KEY: ${{ inputs.baseline-key }}
+        INPUT_BASELINE_LABEL: ${{ inputs.baseline-label }}
+        INPUT_SAVE_BASELINE: ${{ inputs.save-baseline }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_INCLUDE: ${{ inputs.include }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_RUNTIME_PROFILE: ${{ inputs.runtime-profile }}
+        INPUT_RUNTIME_TRACE: ${{ inputs.runtime-trace }}
+        INPUT_RUNTIME_TEST_COMMAND: ${{ inputs.runtime-test-command }}
+        INPUT_CACHE: ${{ inputs.cache }}
+        INPUT_CACHE_PATH: ${{ inputs.cache-path }}
+        INPUT_CACHE_READONLY: ${{ inputs.cache-readonly }}
+        INPUT_THRESHOLD_FAIL_ON_INCREASE: ${{ inputs.threshold-fail-on-increase }}
+        INPUT_THRESHOLD_LOW_CONFIDENCE_WARNING: ${{ inputs.threshold-low-confidence-warning }}
+        INPUT_THRESHOLD_MIN_USAGE_PERCENT: ${{ inputs.threshold-min-usage-percent }}
+        INPUT_THRESHOLD_MAX_UNCERTAIN_IMPORTS: ${{ inputs.threshold-max-uncertain-imports }}
+        INPUT_LOCKFILE_DRIFT_POLICY: ${{ inputs.lockfile-drift-policy }}
+        INPUT_LICENSE_DENY: ${{ inputs.license-deny }}
+        INPUT_LICENSE_FAIL_ON_DENY: ${{ inputs.license-fail-on-deny }}
+        INPUT_LICENSE_PROVENANCE_REGISTRY: ${{ inputs.license-provenance-registry }}
+        INPUT_ENABLE_FEATURE: ${{ inputs.enable-feature }}
+        INPUT_DISABLE_FEATURE: ${{ inputs.disable-feature }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/github-action/run-lopper.sh"
+
+branding:
+  icon: activity
+  color: green

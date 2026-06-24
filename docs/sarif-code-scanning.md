@@ -16,7 +16,7 @@ The SARIF output includes:
 
 ## Upload to GitHub code scanning
 
-Use `github/codeql-action/upload-sarif` in a workflow after generating `lopper.sarif`:
+Use the first-party Lopper action to generate `lopper.sarif`, then upload it with `github/codeql-action/upload-sarif`:
 
 ```yaml
 name: lopper-code-scanning
@@ -25,21 +25,26 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   lopper:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Build lopper
-        run: go build -o bin/lopper ./cmd/lopper
+      - uses: actions/checkout@v7
 
       - name: Generate SARIF
-        run: ./bin/lopper analyse --top 20 --repo . --language all --format sarif > lopper.sarif
+        uses: ben-ranford/lopper@v1.7.0
+        with:
+          version: v1.7.0
+          repo: .
+          language: all
+          top: '20'
+          scope-mode: repo
+          format: sarif
+          output: lopper.sarif
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -50,4 +55,5 @@ jobs:
 ## Notes
 
 - Existing `table` and `json` outputs are unchanged.
+- The action supports `format: sarif`; direct CLI use with `lopper analyse --format sarif` remains supported.
 - For best review context in pull requests, run analysis from repository root.
