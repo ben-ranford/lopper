@@ -137,7 +137,7 @@ func assertGradleCatalogDefensiveParsing(t *testing.T) {
 	reference, ok = parseGradleCatalogPropertyExpression("libs.findLibrary.foo")
 	assertGradleCatalogRejected(t, reference, ok, "expected malformed finder property expression to be rejected")
 	value, valueOK := firstGradleQuotedValue(`"unterminated`)
-	assertQuotedGradleValueRejected(t, value, valueOK, "expected unterminated quoted value to be rejected")
+	assertGradleStringRejected(t, value, valueOK, "expected unterminated quoted value to be rejected")
 }
 
 func assertNoGradleNodes(t *testing.T, nodes []*sitter.Node, message string) {
@@ -157,14 +157,14 @@ func assertNoGradleExpressions(t *testing.T, expressions []string, message strin
 func assertGradleText(t *testing.T, got, want, message string) {
 	t.Helper()
 	if got != want {
-		t.Fatalf("%s, got %q", message, got)
+		t.Fatalf("%s, got %q want %q", message, got, want)
 	}
 }
 
-func assertGradleCoordinateRejected(t *testing.T, _ GradleDependencyCoordinate, ok bool, message string) {
+func assertGradleCoordinateRejected(t *testing.T, coordinate GradleDependencyCoordinate, ok bool, message string) {
 	t.Helper()
 	if ok {
-		t.Fatal(message)
+		t.Fatalf("%s, got %#v ok=%t", message, coordinate, ok)
 	}
 }
 
@@ -175,10 +175,10 @@ func assertParsedGradleCoordinate(t *testing.T, got GradleDependencyCoordinate, 
 	}
 }
 
-func assertGradleStringRejected(t *testing.T, _ string, ok bool, message string) {
+func assertGradleStringRejected(t *testing.T, text string, ok bool, message string) {
 	t.Helper()
 	if ok {
-		t.Fatal(message)
+		t.Fatalf("%s, got %q ok=%t", message, text, ok)
 	}
 }
 
@@ -189,17 +189,10 @@ func assertGradleLiteralRejected(t *testing.T, text string, ok bool, message str
 	}
 }
 
-func assertGradleCatalogRejected(t *testing.T, _ gradleCatalogReference, ok bool, message string) {
+func assertGradleCatalogRejected(t *testing.T, reference gradleCatalogReference, ok bool, message string) {
 	t.Helper()
 	if ok {
-		t.Fatal(message)
-	}
-}
-
-func assertQuotedGradleValueRejected(t *testing.T, _ string, ok bool, message string) {
-	t.Helper()
-	if ok {
-		t.Fatal(message)
+		t.Fatalf("%s, got %#v ok=%t", message, reference, ok)
 	}
 }
 
