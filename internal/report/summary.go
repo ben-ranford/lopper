@@ -36,6 +36,7 @@ func ComputeSummary(dependencies []DependencyReport) *Summary {
 func updateLicenseSummary(summary *Summary, license *DependencyLicense) {
 	if license != nil && license.Denied {
 		summary.DeniedLicenseCount++
+		return
 	}
 	if license == nil || license.Unknown || strings.TrimSpace(license.SPDX) == "" {
 		summary.UnknownLicenseCount++

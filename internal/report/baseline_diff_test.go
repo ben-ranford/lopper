@@ -200,6 +200,12 @@ func TestComputeBaselineComparisonTracksNewDeniedLicenses(t *testing.T) {
 	if comparison.SummaryDelta.DeniedLicenseCountDelta != 1 {
 		t.Fatalf("expected denied license count delta to be 1, got %d", comparison.SummaryDelta.DeniedLicenseCountDelta)
 	}
+	if comparison.SummaryDelta.KnownLicenseCountDelta != -1 {
+		t.Fatalf("expected denied SPDX license to leave known count, got %d", comparison.SummaryDelta.KnownLicenseCountDelta)
+	}
+	if comparison.SummaryDelta.UnknownLicenseCountDelta != 0 {
+		t.Fatalf("expected unknown license count delta to remain 0, got %d", comparison.SummaryDelta.UnknownLicenseCountDelta)
+	}
 }
 
 func TestBaselineDiffAdditionalBranches(t *testing.T) {
