@@ -57,6 +57,55 @@ type Overrides struct {
 	LicenseIncludeRegistryProvenance  *bool
 }
 
+type intThresholdValidator struct {
+	value    func(*Values) int
+	override func(*Overrides) *int
+	validate func(int) error
+}
+
+type stringThresholdValidator struct {
+	value    func(*Values) string
+	override func(*Overrides) *string
+	validate func(string) error
+}
+
+var intThresholdValidators = []intThresholdValidator{
+	{
+		value:    func(v *Values) int { return v.FailOnIncreasePercent },
+		override: func(o *Overrides) *int { return o.FailOnIncreasePercent },
+		validate: validateFailOnIncrease,
+	},
+	{
+		value:    func(v *Values) int { return v.LowConfidenceWarningPercent },
+		override: func(o *Overrides) *int { return o.LowConfidenceWarningPercent },
+		validate: func(value int) error {
+			return validatePercentageRange("low_confidence_warning_percent", value)
+		},
+	},
+	{
+		value:    func(v *Values) int { return v.MinUsagePercentForRecommendations },
+		override: func(o *Overrides) *int { return o.MinUsagePercentForRecommendations },
+		validate: func(value int) error {
+			return validatePercentageRange("min_usage_percent_for_recommendations", value)
+		},
+	},
+	{
+		value:    func(v *Values) int { return v.MaxUncertainImportCount },
+		override: func(o *Overrides) *int { return o.MaxUncertainImportCount },
+		validate: func(value int) error {
+			return validateThresholdWithDisableSentinel("max_uncertain_import_count", value)
+		},
+	},
+}
+
+var stringThresholdValidators = []stringThresholdValidator{
+	{
+		value:    func(v *Values) string { return v.LockfileDriftPolicy },
+		override: func(o *Overrides) *string { return o.LockfileDriftPolicy },
+		validate: validateLockfileDriftPolicy,
+	},
+}
+
 func (o *Overrides) SetLicenseDenyList(values []string) {
 	o.LicenseDenyList = append(make([]string, 0, len(values)), values...)
 	o.licenseDenyListSet = true
@@ -92,22 +141,13 @@ func Defaults() Values {
 }
 
 func (v *Values) Validate() error {
-	if err := validateFailOnIncrease(v.FailOnIncreasePercent); err != nil {
-		return err
-	}
-	if err := validatePercentageRange("low_confidence_warning_percent", v.LowConfidenceWarningPercent); err != nil {
-		return err
-	}
-	if err := validatePercentageRange("min_usage_percent_for_recommendations", v.MinUsagePercentForRecommendations); err != nil {
-		return err
-	}
-	if err := validateThresholdWithDisableSentinel("max_uncertain_import_count", v.MaxUncertainImportCount); err != nil {
+	if err := validateValueInts(v); err != nil {
 		return err
 	}
 	if err := report.ValidateRemovalCandidateWeightSet(RemovalCandidateWeights(*v)); err != nil {
 		return err
 	}
-	if err := validateLockfileDriftPolicy(v.LockfileDriftPolicy); err != nil {
+	if err := validateValueStrings(v); err != nil {
 		return err
 	}
 	v.LicenseDenyList = normalizeDenyList(v.LicenseDenyList)
@@ -154,28 +194,13 @@ func (o *Overrides) Apply(base Values) Values {
 }
 
 func (o *Overrides) Validate() error {
-	if err := validateOptionalInt(o.FailOnIncreasePercent, validateFailOnIncrease); err != nil {
-		return err
-	}
-	if err := validateOptionalInt(o.LowConfidenceWarningPercent, func(value int) error {
-		return validatePercentageRange("low_confidence_warning_percent", value)
-	}); err != nil {
-		return err
-	}
-	if err := validateOptionalInt(o.MinUsagePercentForRecommendations, func(value int) error {
-		return validatePercentageRange("min_usage_percent_for_recommendations", value)
-	}); err != nil {
-		return err
-	}
-	if err := validateOptionalInt(o.MaxUncertainImportCount, func(value int) error {
-		return validateThresholdWithDisableSentinel("max_uncertain_import_count", value)
-	}); err != nil {
+	if err := validateOverrideInts(o); err != nil {
 		return err
 	}
 	if err := validateOptionalWeights(o); err != nil {
 		return err
 	}
-	if err := validateOptionalString(o.LockfileDriftPolicy, validateLockfileDriftPolicy); err != nil {
+	if err := validateOverrideStrings(o); err != nil {
 		return err
 	}
 	o.LicenseDenyList = normalizeDenyList(o.LicenseDenyList)
@@ -207,18 +232,48 @@ func validatePercentageRange(name string, value int) error {
 	return nil
 }
 
-func validateOptionalInt(value *int, validate func(int) error) error {
-	if value == nil {
-		return nil
+func validateValueInts(values *Values) error {
+	for _, field := range intThresholdValidators {
+		if err := field.validate(field.value(values)); err != nil {
+			return err
+		}
 	}
-	return validate(*value)
+	return nil
 }
 
-func validateOptionalString(value *string, validate func(string) error) error {
-	if value == nil {
-		return nil
+func validateOverrideInts(overrides *Overrides) error {
+	for _, field := range intThresholdValidators {
+		value := field.override(overrides)
+		if value == nil {
+			continue
+		}
+		if err := field.validate(*value); err != nil {
+			return err
+		}
 	}
-	return validate(*value)
+	return nil
+}
+
+func validateValueStrings(values *Values) error {
+	for _, field := range stringThresholdValidators {
+		if err := field.validate(field.value(values)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOverrideStrings(overrides *Overrides) error {
+	for _, field := range stringThresholdValidators {
+		value := field.override(overrides)
+		if value == nil {
+			continue
+		}
+		if err := field.validate(*value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateOptionalWeights(overrides *Overrides) error {

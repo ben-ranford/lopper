@@ -24,6 +24,7 @@ var (
 	ErrDirtyWorktree                = errors.New("codemod apply requires a clean git worktree")
 	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
 	ErrMCPFeatureDisabled           = errors.New("mcp server feature is disabled")
+	ErrProfileFeatureDisabled       = errors.New("threshold profile command feature is disabled; enable threshold-profiles-preview with --enable-feature")
 )
 
 type App struct {
@@ -63,6 +64,8 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return a.executeDashboard(ctx, req)
 	case ModeFeatures:
 		return a.executeFeatures(req)
+	case ModeProfile:
+		return a.executeProfile(req)
 	case ModeMCP:
 		if !req.MCP.Features.Enabled(mcp.ServerPreviewFeature) {
 			return "", ErrMCPFeatureDisabled

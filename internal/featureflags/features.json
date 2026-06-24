@@ -54,5 +54,11 @@
     "description": "Enable the local stdio MCP server for read-only dependency analysis workflows.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.6.0"
+  },
+  {
+    "code": "LOP-FEAT-0009",
+    "name": "threshold-profiles-preview",
+    "description": "Enable built-in threshold profile config scaffolding through the profile command.",
+    "lifecycle": "preview"
   }
 ]

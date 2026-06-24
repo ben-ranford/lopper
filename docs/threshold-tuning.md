@@ -36,6 +36,32 @@ Validation ranges:
 
 ## Ways to set thresholds
 
+Use a built-in profile to generate a loader-ready config without copying YAML from this guide:
+
+```bash
+lopper profile apply balanced \
+  --enable-feature threshold-profiles-preview
+```
+
+Write a starter repo config:
+
+```bash
+lopper profile apply strict \
+  --enable-feature threshold-profiles-preview \
+  --output .lopper.yml
+```
+
+`profile apply` refuses to overwrite an existing output file. Pass `--force` only when you intentionally want to replace it:
+
+```bash
+lopper profile apply noise-reduction \
+  --enable-feature threshold-profiles-preview \
+  --output .lopper.yml \
+  --force
+```
+
+`threshold-profiles-preview` is a preview feature flag. Rolling builds enable preview features by default; dev and release builds require `--enable-feature threshold-profiles-preview` until the command graduates.
+
 Use CLI flags for per-run overrides:
 
 ```bash
@@ -101,47 +127,13 @@ Policy precedence is deterministic:
 
 ## Recommended tuning profiles
 
-### Strict CI gate
+| Profile | Use when | `fail_on_increase_percent` | `low_confidence_warning_percent` | `min_usage_percent_for_recommendations` | `removal_candidate_weight_usage` | `removal_candidate_weight_impact` | `removal_candidate_weight_confidence` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `strict` | You want faster regression detection and are okay with more warnings. | 1 | 55 | 60 | 0.60 | 0.25 | 0.15 |
+| `balanced` | You want stable signal without over-triggering. | 2 | 40 | 40 | 0.50 | 0.30 | 0.20 |
+| `noise-reduction` | Your repository currently produces too many warnings or recommendations. | 5 | 25 | 25 | 0.35 | 0.25 | 0.40 |
 
-Use this when you want faster regression detection and are okay with more warnings.
-
-```yaml
-thresholds:
-  fail_on_increase_percent: 1
-  low_confidence_warning_percent: 55
-  min_usage_percent_for_recommendations: 60
-  removal_candidate_weight_usage: 0.60
-  removal_candidate_weight_impact: 0.25
-  removal_candidate_weight_confidence: 0.15
-```
-
-### Balanced default-like behavior
-
-Use this for stable signal without over-triggering.
-
-```yaml
-thresholds:
-  fail_on_increase_percent: 2
-  low_confidence_warning_percent: 40
-  min_usage_percent_for_recommendations: 40
-  removal_candidate_weight_usage: 0.50
-  removal_candidate_weight_impact: 0.30
-  removal_candidate_weight_confidence: 0.20
-```
-
-### Noise reduction
-
-Use this when your repository currently produces too many warnings/recommendations.
-
-```yaml
-thresholds:
-  fail_on_increase_percent: 5
-  low_confidence_warning_percent: 25
-  min_usage_percent_for_recommendations: 25
-  removal_candidate_weight_usage: 0.35
-  removal_candidate_weight_impact: 0.25
-  removal_candidate_weight_confidence: 0.40
-```
+Use `lopper profile apply NAME --enable-feature threshold-profiles-preview` to print the exact YAML for any profile.
 
 ## How to verify effective values
 

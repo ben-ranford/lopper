@@ -84,6 +84,7 @@ func withFeatureRegistry(t *testing.T, channel featureflags.Channel, lock *featu
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{
 		{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: featureflags.LifecyclePreview},
 		{Code: "LOP-FEAT-0002", Name: "stable-flag", Lifecycle: featureflags.LifecycleStable},
+		{Code: "LOP-FEAT-0003", Name: thresholds.ProfilesPreviewFeature, Lifecycle: featureflags.LifecyclePreview},
 	})
 	if err != nil {
 		t.Fatalf("new feature registry: %v", err)
