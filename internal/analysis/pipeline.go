@@ -185,20 +185,57 @@ func scopedCandidateRoots(scopeMode string, roots []string, repoPath string) ([]
 }
 
 func changedRoots(roots []string, repoPath string, changedFiles []string) []string {
-	absoluteChangedFiles := make([]string, 0, len(changedFiles))
-	for _, file := range changedFiles {
-		absoluteChangedFiles = append(absoluteChangedFiles, filepath.Join(repoPath, file))
+	if len(roots) == 0 || len(changedFiles) == 0 {
+		return nil
 	}
+	rootIndex := changedRootIndex(roots, repoPath)
+	if len(rootIndex) == 0 {
+		return nil
+	}
+
 	changed := make([]string, 0, len(roots))
-	for _, root := range roots {
-		for _, file := range absoluteChangedFiles {
-			if rootContainsFile(root, file) {
-				changed = append(changed, root)
+	seen := make(map[string]struct{}, len(roots))
+	for _, file := range changedFiles {
+		for current := absoluteChangedPath(repoPath, file); ; current = filepath.Dir(current) {
+			if matchingRoots, ok := rootIndex[current]; ok {
+				for _, root := range matchingRoots {
+					if _, exists := seen[root]; exists {
+						continue
+					}
+					seen[root] = struct{}{}
+					changed = append(changed, root)
+				}
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
 				break
 			}
 		}
 	}
 	return uniqueSorted(changed)
+}
+
+func changedRootIndex(roots []string, repoPath string) map[string][]string {
+	index := make(map[string][]string, len(roots))
+	for _, root := range roots {
+		path := absoluteRootPath(repoPath, root)
+		index[path] = append(index[path], root)
+	}
+	return index
+}
+
+func absoluteRootPath(repoPath, root string) string {
+	if filepath.IsAbs(root) {
+		return filepath.Clean(root)
+	}
+	return filepath.Clean(filepath.Join(repoPath, root))
+}
+
+func absoluteChangedPath(repoPath, file string) string {
+	if filepath.IsAbs(file) {
+		return filepath.Clean(file)
+	}
+	return filepath.Clean(filepath.Join(repoPath, file))
 }
 
 func rootContainsFile(root, file string) bool {
