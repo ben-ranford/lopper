@@ -83,57 +83,116 @@ dependencies {
 }
 
 func TestGradleBuildParserDefensiveHelpers(t *testing.T) {
-	if args := gradleCallArguments(nil); len(args) != 0 {
-		t.Fatalf("expected nil call arguments to return none, got %#v", args)
-	}
-	if children := gradleNamedChildren(nil); len(children) != 0 {
-		t.Fatalf("expected nil named children to return none, got %#v", children)
-	}
-	if text := gradleNodeText(nil, nil); text != "" {
-		t.Fatalf("expected nil node text to be empty, got %q", text)
-	}
-	if _, ok := gradleCoordinateFromArgument(nil, nil); ok {
-		t.Fatalf("expected nil coordinate argument to be rejected")
-	}
-	if _, ok := parseGradleCoordinate("missing-version-parts"); ok {
-		t.Fatalf("expected malformed Gradle coordinate to be rejected")
-	}
-	if _, ok := parseGradleCoordinate(":artifact:1.0.0"); ok {
-		t.Fatalf("expected Gradle coordinate without group to be rejected")
-	}
-	if coordinate, ok := parseGradleCoordinate("com.example:demo"); !ok || coordinate.Group != "com.example" || coordinate.Artifact != "demo" || coordinate.Version != "" {
-		t.Fatalf("expected two-part Gradle coordinate to parse without version, got %#v %t", coordinate, ok)
-	}
-	visited := false
-	walkGradleNode(nil, func(*sitter.Node) { visited = true })
-	if visited {
-		t.Fatalf("expected nil Gradle node walk to skip visitor")
-	}
-	if _, ok := gradleStringValue(nil, nil); ok {
-		t.Fatalf("expected nil Gradle string value to be rejected")
-	}
-	if expressions := gradleDependencyArgumentExpressions(nil, nil); len(expressions) != 0 {
-		t.Fatalf("expected nil Gradle dependency argument to return no expressions, got %#v", expressions)
-	}
-	if text, ok := gradleStringLiteralText(nil, nil); ok || text != "" {
-		t.Fatalf("expected nil Gradle string literal to be rejected, got %q %t", text, ok)
-	}
+	assertGradleNilInputs(t)
+	assertGradleCoordinateParsing(t)
+	assertGradleNodeWalking(t)
+	assertGradleCatalogDefensiveParsing(t)
+}
+
+func assertGradleNilInputs(t *testing.T) {
+	t.Helper()
+	assertNoGradleNodes(t, gradleCallArguments(nil), "expected nil call arguments to return none")
+	assertNoGradleNodes(t, gradleNamedChildren(nil), "expected nil named children to return none")
+	assertGradleText(t, gradleNodeText(nil, nil), "", "expected nil node text to be empty")
+	coordinate, ok := gradleCoordinateFromArgument(nil, nil)
+	assertGradleCoordinateRejected(t, coordinate, ok, "expected nil coordinate argument to be rejected")
+	text, ok := gradleStringValue(nil, nil)
+	assertGradleStringRejected(t, text, ok, "expected nil Gradle string value to be rejected")
+	assertNoGradleExpressions(t, gradleDependencyArgumentExpressions(nil, nil), "expected nil Gradle dependency argument to return no expressions")
+	literalText, literalOK := gradleStringLiteralText(nil, nil)
+	assertGradleLiteralRejected(t, literalText, literalOK, "expected nil Gradle string literal to be rejected")
+
 	fields := map[string]string{}
 	collectGradleNamedArgument(fields, nil, nil)
 	if len(fields) != 0 {
 		t.Fatalf("expected nil named Gradle argument to leave fields empty, got %#v", fields)
 	}
-	if _, ok := gradleCoordinateFromFields(map[string]string{"group": "com.example"}); ok {
-		t.Fatalf("expected incomplete Gradle coordinate fields to be rejected")
+}
+
+func assertGradleCoordinateParsing(t *testing.T) {
+	t.Helper()
+	coordinate, ok := parseGradleCoordinate("missing-version-parts")
+	assertGradleCoordinateRejected(t, coordinate, ok, "expected malformed Gradle coordinate to be rejected")
+	coordinate, ok = parseGradleCoordinate(":artifact:1.0.0")
+	assertGradleCoordinateRejected(t, coordinate, ok, "expected Gradle coordinate without group to be rejected")
+	coordinate, ok = parseGradleCoordinate("com.example:demo")
+	assertParsedGradleCoordinate(t, coordinate, ok, GradleDependencyCoordinate{Group: "com.example", Artifact: "demo"}, "expected two-part Gradle coordinate to parse without version")
+	coordinate, ok = gradleCoordinateFromFields(map[string]string{"group": "com.example"})
+	assertGradleCoordinateRejected(t, coordinate, ok, "expected incomplete Gradle coordinate fields to be rejected")
+}
+
+func assertGradleNodeWalking(t *testing.T) {
+	t.Helper()
+	visited := false
+	walkGradleNode(nil, func(*sitter.Node) { visited = true })
+	if visited {
+		t.Fatalf("expected nil Gradle node walk to skip visitor")
 	}
-	if _, ok := parseGradleCatalogBracketExpression(`["okhttp"]`); ok {
-		t.Fatalf("expected bracket catalog expression without catalog name to be rejected")
+}
+
+func assertGradleCatalogDefensiveParsing(t *testing.T) {
+	t.Helper()
+	reference, ok := parseGradleCatalogBracketExpression(`["okhttp"]`)
+	assertGradleCatalogRejected(t, reference, ok, "expected bracket catalog expression without catalog name to be rejected")
+	reference, ok = parseGradleCatalogPropertyExpression("libs.findLibrary.foo")
+	assertGradleCatalogRejected(t, reference, ok, "expected malformed finder property expression to be rejected")
+	value, valueOK := firstGradleQuotedValue(`"unterminated`)
+	assertGradleStringRejected(t, value, valueOK, "expected unterminated quoted value to be rejected")
+}
+
+func assertNoGradleNodes(t *testing.T, nodes []*sitter.Node, message string) {
+	t.Helper()
+	if len(nodes) != 0 {
+		t.Fatalf("%s, got %#v", message, nodes)
 	}
-	if _, ok := parseGradleCatalogPropertyExpression("libs.findLibrary.foo"); ok {
-		t.Fatalf("expected malformed finder property expression to be rejected")
+}
+
+func assertNoGradleExpressions(t *testing.T, expressions []string, message string) {
+	t.Helper()
+	if len(expressions) != 0 {
+		t.Fatalf("%s, got %#v", message, expressions)
 	}
-	if _, ok := firstGradleQuotedValue(`"unterminated`); ok {
-		t.Fatalf("expected unterminated quoted value to be rejected")
+}
+
+func assertGradleText(t *testing.T, got, want, message string) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s, got %q want %q", message, got, want)
+	}
+}
+
+func assertGradleCoordinateRejected(t *testing.T, coordinate GradleDependencyCoordinate, ok bool, message string) {
+	t.Helper()
+	if ok {
+		t.Fatalf("%s, got %#v ok=%t", message, coordinate, ok)
+	}
+}
+
+func assertParsedGradleCoordinate(t *testing.T, got GradleDependencyCoordinate, ok bool, want GradleDependencyCoordinate, message string) {
+	t.Helper()
+	if !ok || got != want {
+		t.Fatalf("%s, got %#v %t", message, got, ok)
+	}
+}
+
+func assertGradleStringRejected(t *testing.T, text string, ok bool, message string) {
+	t.Helper()
+	if ok {
+		t.Fatalf("%s, got %q ok=%t", message, text, ok)
+	}
+}
+
+func assertGradleLiteralRejected(t *testing.T, text string, ok bool, message string) {
+	t.Helper()
+	if ok || text != "" {
+		t.Fatalf("%s, got %q %t", message, text, ok)
+	}
+}
+
+func assertGradleCatalogRejected(t *testing.T, reference gradleCatalogReference, ok bool, message string) {
+	t.Helper()
+	if ok {
+		t.Fatalf("%s, got %#v ok=%t", message, reference, ok)
 	}
 }
 
