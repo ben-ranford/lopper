@@ -234,16 +234,7 @@ func TestFormatPRCommentZeroDeltasAreUnsigned(t *testing.T) {
 		t.Fatalf("format pr-comment with zero deltas: %v", err)
 	}
 
-	assertOutputContains(t, output,
-		"| Dependency count | 0 |",
-		"| Used percent | 0.0% |",
-		"| Waste percent | 0.0% |",
-		"| Estimated unused bytes | 0 B |",
-		"| Known licenses | 0 |",
-		"| Unknown licenses | 0 |",
-		"| Denied licenses | 0 |",
-		"| 1 | changed | `same` | js-ts | 0.0% | 0 | 0 | 0 B |",
-	)
+	assertOutputContains(t, output, "| Dependency count | 0 |", "| Used percent | 0.0% |", "| Waste percent | 0.0% |", "| Estimated unused bytes | 0 B |", "| Known licenses | 0 |", "| Unknown licenses | 0 |", "| Denied licenses | 0 |", "| 1 | changed | `same` | js-ts | 0.0% | 0 | 0 | 0 B |")
 	if strings.Contains(output, "+0") {
 		t.Fatalf("expected zero deltas to render without a leading plus, got %q", output)
 	}
