@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/dashboard"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -39,6 +41,41 @@ type testAdapter struct {
 	language.AdapterContract
 }
 
+type fakeMutationRunner struct {
+	applyReport     report.Report
+	applyErr        error
+	baselineReport  report.Report
+	baselinePath    string
+	baselineErr     error
+	dashboardReport dashboard.Report
+	dashboardPath   string
+	dashboardErr    error
+	applyCalled     bool
+	baselineCalled  bool
+	dashboardCalled bool
+	lastApply       AnalysisMutationRequest
+	lastBaseline    AnalysisMutationRequest
+	lastDashboard   DashboardMutationRequest
+}
+
+func (f *fakeMutationRunner) ApplyCodemod(_ context.Context, req AnalysisMutationRequest) (report.Report, error) {
+	f.applyCalled = true
+	f.lastApply = req
+	return f.applyReport, f.applyErr
+}
+
+func (f *fakeMutationRunner) SaveBaseline(_ context.Context, req AnalysisMutationRequest) (report.Report, string, error) {
+	f.baselineCalled = true
+	f.lastBaseline = req
+	return f.baselineReport, f.baselinePath, f.baselineErr
+}
+
+func (f *fakeMutationRunner) SaveDashboardBaseline(_ context.Context, req DashboardMutationRequest) (dashboard.Report, string, error) {
+	f.dashboardCalled = true
+	f.lastDashboard = req
+	return f.dashboardReport, f.dashboardPath, f.dashboardErr
+}
+
 func newTestAdapter(id string, aliases ...string) *testAdapter {
 	return &testAdapter{AdapterContract: language.NewAdapterContract(id, aliases...)}
 }
@@ -52,7 +89,7 @@ func (a *testAdapter) Analyse(context.Context, language.Request) (report.Result,
 }
 
 func TestHandleToolsListRegistersExpectedTools(t *testing.T) {
-	server := NewServer(Options{})
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, false)})
 	response := server.handlePayload(context.Background(), mustJSON(t, rpcRequest{
 		JSONRPC: jsonrpcVersion,
 		ID:      json.RawMessage(`1`),
@@ -70,6 +107,31 @@ func TestHandleToolsListRegistersExpectedTools(t *testing.T) {
 	assertTopDependencySchema(t, byName[toolAnalyseTop])
 	assertDependencySchema(t, byName[toolAnalyseDependency])
 	assertBaselineSchema(t, byName[toolCompareBaseline])
+}
+
+func TestHandleToolsListRegistersMutationToolsWhenFeatureEnabled(t *testing.T) {
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: &fakeMutationRunner{}})
+	response := server.handlePayload(context.Background(), mustJSON(t, rpcRequest{
+		JSONRPC: jsonrpcVersion,
+		ID:      json.RawMessage(`1`),
+		Method:  methodToolsList,
+	}))
+	if response == nil || response.Error != nil {
+		t.Fatalf("expected tools/list response, got %#v", response)
+	}
+
+	result := response.Result.(map[string]any)
+	tools := result["tools"].([]toolSpec)
+	byName := toolSpecsByName(tools)
+	for _, name := range []string{toolApplyCodemod, toolSaveBaseline, toolSaveDashboardBaseline} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("expected mutation tool %s to be registered, got %#v", name, byName)
+		}
+	}
+	assertStrictToolSchemas(t, tools)
+	assertRequiredSchemaFields(t, byName[toolApplyCodemod], "repoPath", "dependency", "confirmApply")
+	assertRequiredSchemaFields(t, byName[toolSaveBaseline], "repoPath", "baselineStorePath", "confirmSave")
+	assertRequiredSchemaFields(t, byName[toolSaveDashboardBaseline], "repoPath", "baselineStorePath", "confirmSave")
 }
 
 func assertToolOrder(t *testing.T, tools []toolSpec) {
@@ -122,6 +184,19 @@ func assertBaselineSchema(t *testing.T, tool toolSpec) {
 	anyOf, ok := tool.InputSchema["anyOf"].([]map[string]any)
 	if !ok || len(anyOf) != 2 {
 		t.Fatalf("baseline schema should describe baselinePath or baselineStorePath alternatives, got %#v", tool.InputSchema["anyOf"])
+	}
+}
+
+func assertRequiredSchemaFields(t *testing.T, tool toolSpec, names ...string) {
+	t.Helper()
+	required, ok := tool.InputSchema["required"].([]string)
+	if !ok {
+		t.Fatalf("expected required string list for %s, got %#v", tool.Name, tool.InputSchema["required"])
+	}
+	for _, name := range names {
+		if !slices.Contains(required, name) {
+			t.Fatalf("expected %s to require %s, got %#v", tool.Name, name, required)
+		}
 	}
 }
 
@@ -208,8 +283,8 @@ func TestCallAnalyseTopValidatesInputs(t *testing.T) {
 	}
 
 	mutationArg := callToolResult(t, server, toolAnalyseTop, map[string]any{
-		"repoPath":           repo,
-		"runtimeTestCommand": "npm test",
+		"repoPath":     repo,
+		"applyCodemod": true,
 	})
 	if !mutationArg.IsError || !strings.Contains(mutationArg.Content[0].Text, "unknown field") {
 		t.Fatalf("expected unsupported argument validation error, got %#v", mutationArg)
@@ -221,6 +296,43 @@ func TestCallAnalyseTopValidatesInputs(t *testing.T) {
 	})
 	if !badTopN.IsError || !strings.Contains(badTopN.Content[0].Text, "topN") {
 		t.Fatalf("expected topN validation error, got %#v", badTopN)
+	}
+}
+
+func TestMutationToolsValidateFeatureAndConfirmation(t *testing.T) {
+	repo := t.TempDir()
+	disabled := NewServer(Options{Features: mustMutationFeatureSet(t, false), MutationRunner: &fakeMutationRunner{}})
+	result := callToolResult(t, disabled, toolApplyCodemod, map[string]any{
+		"repoPath":      repo,
+		"dependency":    "lodash",
+		"confirmApply":  true,
+		"cacheEnabled":  false,
+		"timeoutMillis": 1000,
+	})
+	if !result.IsError || !strings.Contains(result.Content[0].Text, MutationToolsFeature) {
+		t.Fatalf("expected feature flag rejection, got %#v", result)
+	}
+
+	enabled := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: &fakeMutationRunner{}})
+	missingConfirm := callToolResult(t, enabled, toolApplyCodemod, map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"cacheEnabled": false,
+	})
+	if !missingConfirm.IsError || !strings.Contains(missingConfirm.Content[0].Text, "confirmApply") {
+		t.Fatalf("expected missing confirmation rejection, got %#v", missingConfirm)
+	}
+
+	unsafeStore := callToolResult(t, enabled, toolSaveBaseline, map[string]any{
+		"repoPath":                    repo,
+		"baselineStorePath":           "https://example.com/baselines",
+		"baselineLabel":               "nightly",
+		"confirmSave":                 true,
+		"cacheEnabled":                false,
+		"lowConfidenceWarningPercent": 25,
+	})
+	if !unsafeStore.IsError || !strings.Contains(unsafeStore.Content[0].Text, "local filesystem path") {
+		t.Fatalf("expected unsafe path rejection, got %#v", unsafeStore)
 	}
 }
 
@@ -494,4 +606,26 @@ func policyTraceSource(trace []report.PolicyMergeTrace, field string) string {
 		}
 	}
 	return ""
+}
+
+func mustMutationFeatureSet(t *testing.T, enabled bool) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:        "LOP-FEAT-0001",
+		Name:        MutationToolsFeature,
+		Description: "test mutation tools",
+		Lifecycle:   featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new feature registry: %v", err)
+	}
+	opts := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if enabled {
+		opts.Enable = []string{MutationToolsFeature}
+	}
+	features, err := registry.Resolve(opts)
+	if err != nil {
+		t.Fatalf("resolve mutation feature: %v", err)
+	}
+	return features
 }

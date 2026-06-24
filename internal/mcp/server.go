@@ -49,6 +49,8 @@ type Options struct {
 	Analyzer         analysis.Analyser
 	LanguageRegistry *language.Registry
 	FeatureRegistry  *featureflags.Registry
+	Features         featureflags.Set
+	MutationRunner   MutationRunner
 	ServerName       string
 	ServerVersion    string
 }
@@ -57,6 +59,8 @@ type Server struct {
 	analyzer         analysis.Analyser
 	languageRegistry *language.Registry
 	featureRegistry  *featureflags.Registry
+	features         featureflags.Set
+	mutationRunner   MutationRunner
 	serverName       string
 	serverVersion    string
 	writeMu          sync.Mutex
@@ -105,6 +109,15 @@ type serverInfo struct {
 var currentVersion = version.Current
 
 func NewServer(opts Options) *Server {
+	featureRegistry := opts.FeatureRegistry
+	if featureRegistry == nil {
+		featureRegistry = featureflags.DefaultRegistry()
+	}
+	features := opts.Features
+	if features.Snapshot() == nil {
+		features = resolveDefaultServerFeatures(featureRegistry)
+	}
+
 	serverVersion := opts.ServerVersion
 	if serverVersion == "" {
 		serverVersion = currentVersion().Version
@@ -121,10 +134,35 @@ func NewServer(opts Options) *Server {
 	return &Server{
 		analyzer:         opts.Analyzer,
 		languageRegistry: opts.LanguageRegistry,
-		featureRegistry:  opts.FeatureRegistry,
+		featureRegistry:  featureRegistry,
+		features:         features,
+		mutationRunner:   opts.MutationRunner,
 		serverName:       serverName,
 		serverVersion:    serverVersion,
 	}
+}
+
+func resolveDefaultServerFeatures(registry *featureflags.Registry) featureflags.Set {
+	info := currentVersion()
+	channel, err := featureflags.NormalizeChannel(info.BuildChannel)
+	if err != nil {
+		return featureflags.Set{}
+	}
+	var lock *featureflags.ReleaseLock
+	if channel == featureflags.ChannelRelease {
+		lock, err = featureflags.DefaultReleaseLock(info.Version)
+		if err != nil {
+			return featureflags.Set{}
+		}
+	}
+	features, err := registry.Resolve(featureflags.ResolveOptions{
+		Channel: channel,
+		Lock:    lock,
+	})
+	if err != nil {
+		return featureflags.Set{}
+	}
+	return features
 }
 
 func Serve(ctx context.Context, in io.Reader, out io.Writer, opts Options) error {
@@ -215,7 +253,7 @@ func (s *Server) initialize(params json.RawMessage) initializeResult {
 			Name:    s.serverName,
 			Version: s.serverVersion,
 		},
-		Instructions: "Use Lopper MCP tools for local, read-only dependency surface analysis.",
+		Instructions: "Use Lopper MCP tools for local dependency surface analysis. Mutation tools are explicit, feature-gated, and require confirmation.",
 	}
 }
 

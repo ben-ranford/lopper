@@ -74,6 +74,8 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 			Analyzer:         a.Analyzer,
 			LanguageRegistry: a.Languages,
 			FeatureRegistry:  a.Features,
+			Features:         req.MCP.Features,
+			MutationRunner:   a.mcpMutationRunner(),
 		})
 	default:
 		return "", ErrUnknownMode

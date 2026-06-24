@@ -20,10 +20,13 @@ import (
 )
 
 const (
-	toolAnalyseTop        = "lopper_analyse_top_dependencies"
-	toolAnalyseDependency = "lopper_analyse_dependency"
-	toolCompareBaseline   = "lopper_compare_baseline"
-	toolListLanguages     = "lopper_list_languages"
+	toolAnalyseTop            = "lopper_analyse_top_dependencies"
+	toolAnalyseDependency     = "lopper_analyse_dependency"
+	toolCompareBaseline       = "lopper_compare_baseline"
+	toolListLanguages         = "lopper_list_languages"
+	toolApplyCodemod          = "lopper_apply_codemod"
+	toolSaveBaseline          = "lopper_save_baseline"
+	toolSaveDashboardBaseline = "lopper_save_dashboard_baseline"
 )
 
 type toolSpec struct {
@@ -126,7 +129,7 @@ type resolvedToolRequest struct {
 }
 
 func (s *Server) tools() []toolSpec {
-	return []toolSpec{
+	tools := []toolSpec{
 		{
 			Name:        toolAnalyseTop,
 			Description: "Analyse and rank the top dependencies by unused surface area for a local repository.",
@@ -148,6 +151,27 @@ func (s *Server) tools() []toolSpec {
 			InputSchema: listLanguagesInputSchema(),
 		},
 	}
+	if s.mutationToolsEnabled() {
+		mutationTools := []toolSpec{
+			{
+				Name:        toolApplyCodemod,
+				Description: "Apply deterministic codemod suggestions for one dependency after explicit confirmation.",
+				InputSchema: codemodApplyInputSchema(),
+			},
+			{
+				Name:        toolSaveBaseline,
+				Description: "Run analysis and save the report as an immutable baseline snapshot after explicit confirmation.",
+				InputSchema: baselineSaveInputSchema(),
+			},
+			{
+				Name:        toolSaveDashboardBaseline,
+				Description: "Run dashboard aggregation and save an immutable dashboard baseline snapshot after explicit confirmation.",
+				InputSchema: dashboardBaselineSaveInputSchema(),
+			},
+		}
+		tools = append(tools, mutationTools...)
+	}
+	return tools
 }
 
 func (s *Server) callTool(ctx context.Context, params json.RawMessage) (toolCallResult, *rpcError) {
@@ -172,6 +196,12 @@ func (s *Server) callTool(ctx context.Context, params json.RawMessage) (toolCall
 		return s.runAnalysisTool(ctx, args, analysisToolKindCompare), nil
 	case toolListLanguages:
 		return s.runListLanguagesTool(ctx, args), nil
+	case toolApplyCodemod:
+		return s.runCodemodApplyTool(ctx, args), nil
+	case toolSaveBaseline:
+		return s.runBaselineSaveTool(ctx, args), nil
+	case toolSaveDashboardBaseline:
+		return s.runDashboardBaselineSaveTool(ctx, args), nil
 	default:
 		return toolCallResult{}, &rpcError{Code: codeInvalidParams, Message: fmt.Sprintf("unknown tool: %s", call.Name)}
 	}
