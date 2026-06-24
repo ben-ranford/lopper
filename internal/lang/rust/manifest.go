@@ -13,6 +13,13 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
+const (
+	dependenciesSection      = "dependencies"
+	devDependenciesSection   = "dev-dependencies"
+	buildDependenciesSection = "build-dependencies"
+	workspaceDependenciesKey = "workspace.dependencies"
+)
+
 type manifestDiscoveryResult struct {
 	ManifestPaths      []string
 	Warnings           []string
@@ -402,11 +409,13 @@ func ensureCanonicalDependencyAlias(deps map[string]dependencyInfo, info depende
 
 func isDependencySection(section string) bool {
 	section = strings.ToLower(strings.TrimSpace(section))
-	if section == "dependencies" || section == "dev-dependencies" || section == "build-dependencies" || section == "workspace.dependencies" {
+	if section == dependenciesSection || section == devDependenciesSection || section == buildDependenciesSection || section == workspaceDependenciesKey {
 		return true
 	}
 	if strings.HasPrefix(section, "target.") {
-		return strings.HasSuffix(section, ".dependencies") || strings.HasSuffix(section, ".dev-dependencies") || strings.HasSuffix(section, ".build-dependencies")
+		return strings.HasSuffix(section, "."+dependenciesSection) ||
+			strings.HasSuffix(section, "."+devDependenciesSection) ||
+			strings.HasSuffix(section, "."+buildDependenciesSection)
 	}
 	return false
 }
@@ -466,11 +475,11 @@ func cargoManifestMeta(document map[string]any) manifestMeta {
 
 func cargoManifestDependencies(document map[string]any) map[string]dependencyInfo {
 	deps := make(map[string]dependencyInfo)
-	addTomlDependencyTable(deps, document["dependencies"])
-	addTomlDependencyTable(deps, document["dev-dependencies"])
-	addTomlDependencyTable(deps, document["build-dependencies"])
+	addTomlDependencyTable(deps, document[dependenciesSection])
+	addTomlDependencyTable(deps, document[devDependenciesSection])
+	addTomlDependencyTable(deps, document[buildDependenciesSection])
 	if workspace, ok := document["workspace"].(map[string]any); ok {
-		addTomlDependencyTable(deps, workspace["dependencies"])
+		addTomlDependencyTable(deps, workspace[dependenciesSection])
 	}
 	if target, ok := document["target"].(map[string]any); ok {
 		addTargetTomlDependencyTables(deps, target)
@@ -484,9 +493,9 @@ func addTargetTomlDependencyTables(deps map[string]dependencyInfo, target map[st
 		if !ok {
 			continue
 		}
-		addTomlDependencyTable(deps, targetTable["dependencies"])
-		addTomlDependencyTable(deps, targetTable["dev-dependencies"])
-		addTomlDependencyTable(deps, targetTable["build-dependencies"])
+		addTomlDependencyTable(deps, targetTable[dependenciesSection])
+		addTomlDependencyTable(deps, targetTable[devDependenciesSection])
+		addTomlDependencyTable(deps, targetTable[buildDependenciesSection])
 	}
 }
 
