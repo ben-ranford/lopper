@@ -20,6 +20,7 @@ var featurePRTitlePattern = regexp.MustCompile(`(?i)^feat(?:\([^)]*\))?(?:!)?:\s
 type prEnforcementResult struct {
 	RequireFlag       bool
 	AddedFlags        []featureflags.Flag
+	GraduatedFlags    []featureflags.Flag
 	InvalidAddedFlags []featureflags.Flag
 	CatalogViolations []string
 }
@@ -73,6 +74,7 @@ func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag
 
 	addedFlags := newlyAddedFlags(current, previous)
 	result.AddedFlags = addedFlags
+	result.GraduatedFlags = newlyGraduatedFlags(current, previous)
 	for _, flag := range addedFlags {
 		if flag.Lifecycle != featureflags.LifecyclePreview {
 			result.InvalidAddedFlags = append(result.InvalidAddedFlags, flag)
@@ -195,6 +197,25 @@ func newlyAddedFlags(current, previous []featureflags.Flag) []featureflags.Flag 
 	return added
 }
 
+func newlyGraduatedFlags(current, previous []featureflags.Flag) []featureflags.Flag {
+	previousByCode := make(map[string]featureflags.Flag, len(previous))
+	for _, flag := range previous {
+		previousByCode[flag.Code] = flag
+	}
+
+	graduated := make([]featureflags.Flag, 0)
+	for _, flag := range current {
+		previousFlag, seenCode := previousByCode[flag.Code]
+		if !seenCode {
+			continue
+		}
+		if previousFlag.Lifecycle == featureflags.LifecyclePreview && flag.Lifecycle == featureflags.LifecycleStable {
+			graduated = append(graduated, flag)
+		}
+	}
+	return graduated
+}
+
 func formatPREnforcementReport(result prEnforcementResult) string {
 	violations := result.violations()
 	status := "passed"
@@ -211,32 +232,14 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 		b.WriteString("- Feature PR: no\n")
 	}
 	fmt.Fprintf(&b, "- Check: %s\n", status)
-	b.WriteString("- Rule: feature PRs must add a feature flag, new flags must start as `preview`, and feature flag ids and names must be unique.\n\n")
+	b.WriteString("- Rule: feature PRs must add a feature flag or graduate an existing preview flag, new flags must start as `preview`, and feature flag ids and names must be unique.\n\n")
 
-	b.WriteString("### New feature flags in this PR\n\n")
-	if len(result.AddedFlags) == 0 {
-		b.WriteString("None.\n\n")
-	} else {
-		for _, flag := range result.AddedFlags {
-			fmt.Fprintf(&b, "- `%s` `%s` (`%s`)", flag.Code, flag.Name, flag.Lifecycle)
-			if flag.Description != "" {
-				fmt.Fprintf(&b, " - %s", flag.Description)
-			}
-			b.WriteByte('\n')
-		}
-		b.WriteByte('\n')
-	}
+	writePREnforcementFlagSection(&b, "New feature flags in this PR", result.AddedFlags, writeAddedFlag)
+	writePREnforcementFlagSection(&b, "Graduated feature flags in this PR", result.GraduatedFlags, writeGraduatedFlag)
 
 	if len(violations) == 0 {
 		b.WriteString("### Result\n\n")
-		switch {
-		case result.RequireFlag:
-			b.WriteString("Passed. This feature PR adds at least one new preview feature flag.\n")
-		case len(result.AddedFlags) > 0:
-			b.WriteString("Passed. Added feature flags all start as `preview`.\n")
-		default:
-			b.WriteString("Passed. No new feature flag was required for this PR.\n")
-		}
+		b.WriteString(previewEnforcementSuccessMessage(result))
 		return b.String()
 	}
 
@@ -248,14 +251,56 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 	return b.String()
 }
 
+func writePREnforcementFlagSection(b *strings.Builder, title string, flags []featureflags.Flag, writeFlag func(*strings.Builder, featureflags.Flag)) {
+	fmt.Fprintf(b, "### %s\n\n", title)
+	if len(flags) == 0 {
+		b.WriteString("None.\n\n")
+		return
+	}
+	for _, flag := range flags {
+		writeFlag(b, flag)
+	}
+	b.WriteByte('\n')
+}
+
+func writeAddedFlag(b *strings.Builder, flag featureflags.Flag) {
+	fmt.Fprintf(b, "- `%s` `%s` (`%s`)", flag.Code, flag.Name, flag.Lifecycle)
+	writeFlagDescription(b, flag.Description)
+}
+
+func writeGraduatedFlag(b *strings.Builder, flag featureflags.Flag) {
+	fmt.Fprintf(b, "- `%s` `%s` (`preview` -> `stable`)", flag.Code, flag.Name)
+	writeFlagDescription(b, flag.Description)
+}
+
+func writeFlagDescription(b *strings.Builder, description string) {
+	if description != "" {
+		fmt.Fprintf(b, " - %s", description)
+	}
+	b.WriteByte('\n')
+}
+
+func previewEnforcementSuccessMessage(result prEnforcementResult) string {
+	switch {
+	case result.RequireFlag && len(result.AddedFlags) > 0:
+		return "Passed. This feature PR adds at least one new preview feature flag.\n"
+	case result.RequireFlag && len(result.GraduatedFlags) > 0:
+		return "Passed. This feature PR graduates existing preview feature flags to stable.\n"
+	case len(result.AddedFlags) > 0:
+		return "Passed. Added feature flags all start as `preview`.\n"
+	default:
+		return "Passed. No new feature flag was required for this PR.\n"
+	}
+}
+
 func (r *prEnforcementResult) violations() []string {
 	violations := make([]string, 0, 2+len(r.CatalogViolations))
 	violations = append(violations, r.CatalogViolations...)
 	if len(violations) > 0 {
 		return violations
 	}
-	if r.RequireFlag && len(r.AddedFlags) == 0 {
-		violations = append(violations, "Feature PRs must add at least one new feature flag in `internal/featureflags/features.json`.")
+	if r.RequireFlag && len(r.AddedFlags) == 0 && len(r.GraduatedFlags) == 0 {
+		violations = append(violations, "Feature PRs must add at least one new feature flag or graduate an existing preview flag in `internal/featureflags/features.json`.")
 	}
 	if len(r.InvalidAddedFlags) > 0 {
 		parts := make([]string, 0, len(r.InvalidAddedFlags))

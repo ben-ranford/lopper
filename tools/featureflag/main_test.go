@@ -650,11 +650,45 @@ func TestRunPREnforceFeaturePRRequiresNewFlag(t *testing.T) {
 	output, err := captureStdout(t, func() error {
 		return run([]string{"pr-enforce", "--pr-title", "feat(runtime): add new feature", "--previous-catalog", previousCatalog})
 	})
-	if err == nil || !strings.Contains(err.Error(), "must add at least one new feature flag") {
+	if err == nil || !strings.Contains(err.Error(), "must add at least one new feature flag or graduate an existing preview flag") {
 		t.Fatalf("expected missing feature flag enforcement error, got %v", err)
 	}
 	if !strings.Contains(output, "Check: failed") || !strings.Contains(output, "New feature flags in this PR") {
 		t.Fatalf("expected failure report, got %s", output)
+	}
+}
+
+func TestRunPREnforceFeaturePRAllowsGraduationOnly(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "graduated-flag",
+    "description": "Existing behavior",
+    "lifecycle": "stable"
+  }
+]`)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "graduated-flag",
+    "description": "Existing behavior",
+    "lifecycle": "preview"
+  }
+]`)
+	t.Chdir(root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"pr-enforce", "--pr-title", "feat(flags): graduate LOP-FEAT-0001 to stable", "--previous-catalog", previousCatalog})
+	})
+	if err != nil {
+		t.Fatalf("expected graduation-only feature PR to pass, got %v", err)
+	}
+	for _, want := range []string{"Check: passed", "Graduated feature flags in this PR", "`LOP-FEAT-0001` `graduated-flag` (`preview` -> `stable`)", "Passed. This feature PR graduates existing preview feature flags to stable."} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected report to contain %q, got %s", want, output)
+		}
 	}
 }
 

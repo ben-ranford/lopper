@@ -95,22 +95,43 @@ jobs:
           cat > .artifacts/graduate-feature-pr.md <<PR_BODY
           ${issue_line}
 
-          ## Graduation evidence
+          ## Summary
 
-          ${EVIDENCE}
+          Graduates \`${FEATURE}\` from preview to stable.
 
-          ## Compatibility and rollback
+          ## Changes
 
-          ${COMPATIBILITY_NOTES}
-
-          ## Release lock notes
-
-          ${RELEASE_LOCK_NOTES}
+          - Marks \`${FEATURE}\` stable in \`internal/featureflags/features.json\`.
+          - Graduation evidence: ${EVIDENCE}
+          - Release lock notes: ${RELEASE_LOCK_NOTES}
 
           ## Validation
 
-          - \`go run ./tools/featureflag graduate --feature ${FEATURE}\`
-          - \`go run ./tools/featureflag validate\`
+          Commands and checks run:
+
+          \`\`\`bash
+          go run ./tools/featureflag graduate --feature ${FEATURE}
+          go run ./tools/featureflag validate
+          \`\`\`
+
+          Additional manual validation:
+
+          - Reviewed graduation evidence and compatibility notes supplied to the workflow.
+
+          ## Risk and compatibility
+
+          - Breaking changes: None expected; this graduates an existing preview feature flag.
+          - Migration required: ${COMPATIBILITY_NOTES}
+          - Performance impact: None expected.
+          - Memory benchmark impact: None expected.
+
+          ## Checklist
+
+          - [x] Tests added/updated for behavior changes
+          - [x] Docs updated (README/docs/schema) if needed
+          - [x] \`memory-approved\` requested/applied if intentional memory benchmark regressions exceed CI thresholds
+          - [x] No unrelated changes included
+          - [x] Ready for review
           PR_BODY
 
           pr_args=(
