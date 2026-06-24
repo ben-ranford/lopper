@@ -21,7 +21,7 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 		return "", err
 	}
 
-	executionPlan := planDashboardExecution(req.Dashboard, resolved.repos)
+	executionPlan := a.prepareDashboardExecutionPlan(ctx, req.Dashboard, resolved.repos)
 	analyses := a.executeDashboardAnalysisPlan(ctx, executionPlan)
 	now := time.Now()
 	reportData := dashboard.Aggregate(now, analyses)

@@ -30,14 +30,15 @@ func TestDashboardRequestAdditionalBranches(t *testing.T) {
 	}
 
 	configDir := t.TempDir()
-	fromConfig, err := reposFromDashboardConfig(dashboard.LoadedConfig{
+	config := dashboard.LoadedConfig{
 		ConfigDir: configDir,
 		Dashboard: dashboard.ConfigDashboard{
 			Repos: []dashboard.ConfigRepo{
 				{Path: "./worker"},
 			},
 		},
-	})
+	}
+	fromConfig, err := reposFromDashboardConfig(config, nil)
 	if err != nil {
 		t.Fatalf("repos from config: %v", err)
 	}

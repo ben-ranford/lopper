@@ -16,8 +16,14 @@ type dashboardAnalysisJob struct {
 }
 
 type dashboardExecutionPlan struct {
-	jobs       []dashboardAnalysisJob
-	maxWorkers int
+	jobs           []dashboardAnalysisJob
+	maxWorkers     int
+	initialResults []dashboard.RepoAnalysis
+}
+
+type dashboardPreparedRepo struct {
+	index int
+	input dashboard.RepoInput
 }
 
 func (a *App) runDashboardAnalyses(ctx context.Context, request DashboardRequest, repos []dashboard.RepoInput) []dashboard.RepoAnalysis {
@@ -25,15 +31,27 @@ func (a *App) runDashboardAnalyses(ctx context.Context, request DashboardRequest
 }
 
 func planDashboardExecution(request DashboardRequest, repos []dashboard.RepoInput) dashboardExecutionPlan {
+	prepared := make([]dashboardPreparedRepo, 0, len(repos))
+	for index, repo := range repos {
+		prepared = append(prepared, dashboardPreparedRepo{
+			index: index,
+			input: repo,
+		})
+	}
+	return planPreparedDashboardExecution(request, prepared, initialDashboardResults(repos))
+}
+
+func planPreparedDashboardExecution(request DashboardRequest, repos []dashboardPreparedRepo, initialResults []dashboard.RepoAnalysis) dashboardExecutionPlan {
 	topN := request.TopN
 	if topN <= 0 {
 		topN = 20
 	}
 
 	jobs := make([]dashboardAnalysisJob, 0, len(repos))
-	for index, repoInput := range repos {
+	for _, repo := range repos {
+		repoInput := repo.input
 		jobs = append(jobs, dashboardAnalysisJob{
-			index:     index,
+			index:     repo.index,
 			repoInput: repoInput,
 			analyseInput: analysis.Request{
 				RepoPath:       repoInput.Path,
@@ -55,13 +73,17 @@ func planDashboardExecution(request DashboardRequest, repos []dashboard.RepoInpu
 	}
 
 	return dashboardExecutionPlan{
-		jobs:       jobs,
-		maxWorkers: maxWorkers,
+		jobs:           jobs,
+		maxWorkers:     maxWorkers,
+		initialResults: initialResults,
 	}
 }
 
 func (a *App) executeDashboardAnalysisPlan(ctx context.Context, plan dashboardExecutionPlan) []dashboard.RepoAnalysis {
-	results := make([]dashboard.RepoAnalysis, len(plan.jobs))
+	results := append([]dashboard.RepoAnalysis{}, plan.initialResults...)
+	if len(results) == 0 {
+		results = make([]dashboard.RepoAnalysis, len(plan.jobs))
+	}
 	if len(plan.jobs) == 0 {
 		return results
 	}
@@ -90,5 +112,13 @@ func (a *App) executeDashboardAnalysisPlan(ctx context.Context, plan dashboardEx
 	close(jobs)
 
 	waitGroup.Wait()
+	return results
+}
+
+func initialDashboardResults(repos []dashboard.RepoInput) []dashboard.RepoAnalysis {
+	results := make([]dashboard.RepoAnalysis, len(repos))
+	for index, repo := range repos {
+		results[index].Input = repo
+	}
 	return results
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 )
 
 type resolvedDashboardRequest struct {
@@ -31,7 +32,7 @@ func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, er
 			req.BaselineStorePath = resolveDashboardConfigPath(loadedConfig.ConfigDir, loadedConfig.Dashboard.BaselineStore)
 		}
 		if len(repos) == 0 {
-			repos, err = reposFromDashboardConfig(loadedConfig)
+			repos, err = reposFromDashboardConfig(loadedConfig, &req.Features)
 			if err != nil {
 				return resolvedDashboardRequest{}, err
 			}
@@ -110,17 +111,38 @@ func resolveDashboardFormat(flagFormat, configFormat string) (dashboard.Format, 
 	return dashboard.ParseFormat(formatValue)
 }
 
-func reposFromDashboardConfig(config dashboard.LoadedConfig) ([]dashboard.RepoInput, error) {
+func reposFromDashboardConfig(config dashboard.LoadedConfig, features *featureflags.Set) ([]dashboard.RepoInput, error) {
 	repos := make([]dashboard.RepoInput, 0, len(config.Dashboard.Repos))
 	for _, repo := range config.Dashboard.Repos {
 		repoPath := strings.TrimSpace(repo.Path)
 		repoURL := strings.TrimSpace(repo.RepoURL)
-		if repoPath == "" {
-			if repoURL != "" {
-				return nil, fmt.Errorf("dashboard config repo %q uses repoUrl, which is not supported yet", repoURL)
-			}
-			return nil, fmt.Errorf("dashboard config repo is missing path")
+		if repoPath != "" && repoURL != "" {
+			return nil, fmt.Errorf("dashboard config repo cannot define both path and repoUrl")
 		}
+		if repoPath == "" && repoURL == "" {
+			return nil, fmt.Errorf("dashboard config repo is missing path or repoUrl")
+		}
+
+		if repoURL != "" {
+			if features == nil || !features.Enabled(DashboardRemoteReposPreviewFeature) {
+				return nil, fmt.Errorf("dashboard config repoUrl requires feature %s", DashboardRemoteReposPreviewFeature)
+			}
+			spec, err := parseDashboardRepoURL(repoURL)
+			if err != nil {
+				return nil, fmt.Errorf("dashboard config repoUrl %q is not allowed: %w", repoURL, err)
+			}
+			name := strings.TrimSpace(repo.Name)
+			if name == "" {
+				name = spec.name
+			}
+			repos = append(repos, dashboard.RepoInput{
+				Name:     name,
+				RepoURL:  spec.normalized,
+				Language: strings.TrimSpace(repo.Language),
+			})
+			continue
+		}
+
 		if !filepath.IsAbs(repoPath) {
 			repoPath = filepath.Join(config.ConfigDir, repoPath)
 		}
