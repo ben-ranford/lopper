@@ -16,7 +16,7 @@ type dependencyExpectation struct {
 func assertManifestMeta(t *testing.T, got manifestMeta, wantHasPackage bool, wantWorkspaceMembers []string) {
 	t.Helper()
 
-	if got.HasPackage != wantHasPackage || strings.Join(got.WorkspaceMembers, ",") != strings.Join(wantWorkspaceMembers, ",") {
+	if got.HasPackage != wantHasPackage || !stringSlicesEqual(got.WorkspaceMembers, wantWorkspaceMembers) {
 		t.Fatalf("unexpected manifest meta: %#v", got)
 	}
 }
@@ -54,9 +54,21 @@ func assertBool(t *testing.T, name string, got, want bool) {
 func assertStringSlice(t *testing.T, name string, got, want []string) {
 	t.Helper()
 
-	if strings.Join(got, ",") != strings.Join(want, ",") {
+	if !stringSlicesEqual(got, want) {
 		t.Fatalf("unexpected %s: got %#v want %#v", name, got, want)
 	}
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func assertWorkspaceMemberPatternMatch(t *testing.T, pattern, member string, want bool) {
