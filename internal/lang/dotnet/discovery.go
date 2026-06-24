@@ -285,22 +285,24 @@ func parseXMLManifestIncludes(content []byte, elementName string) ([]string, err
 		if err != nil {
 			return nil, err
 		}
-		start, ok := token.(xml.StartElement)
-		if !ok || !strings.EqualFold(start.Name.Local, elementName) {
-			continue
-		}
-		for _, attr := range start.Attr {
-			if !strings.EqualFold(attr.Name.Local, "Include") {
-				continue
-			}
-			value := normalizeDependencyID(attr.Value)
-			if value != "" {
-				set[value] = struct{}{}
-			}
-			break
+		if include := parseManifestInclude(token, elementName); include != "" {
+			set[include] = struct{}{}
 		}
 	}
 	return sortedDependencies(set), nil
+}
+
+func parseManifestInclude(token xml.Token, elementName string) string {
+	start, ok := token.(xml.StartElement)
+	if !ok || !strings.EqualFold(start.Name.Local, elementName) {
+		return ""
+	}
+	for _, attr := range start.Attr {
+		if strings.EqualFold(attr.Name.Local, "Include") {
+			return normalizeDependencyID(attr.Value)
+		}
+	}
+	return ""
 }
 
 func readSourceFile(repoPath, sourcePath string) ([]byte, string, error) {
