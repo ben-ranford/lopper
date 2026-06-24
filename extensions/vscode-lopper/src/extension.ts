@@ -1792,7 +1792,8 @@ function canonicalizeExistingPath(targetPath: string): string | undefined {
       if (pendingSegments.length === 0) {
         return canonicalBasePath;
       }
-      return path.join(canonicalBasePath, ...pendingSegments.reverse());
+      pendingSegments.reverse();
+      return path.join(canonicalBasePath, ...pendingSegments);
     } catch {
       const parentPath = path.dirname(currentPath);
       if (parentPath === currentPath) {
