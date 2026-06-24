@@ -224,114 +224,185 @@ func TestMutationToolErrorsReturnStructuredPayloads(t *testing.T) {
 	}
 }
 
-func TestMutationValidationBranches(t *testing.T) {
+func TestMutationToolValidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: &fakeMutationRunner{}})
 
-	if result := server.runCodemodApplyTool(context.Background(), jsonRaw(`{"repoPath":1}`)); !result.IsError {
-		t.Fatalf("expected codemod decode error")
+	cases := []struct {
+		name string
+		run  func() toolCallResult
+		want string
+	}{
+		{
+			name: "codemod decode error",
+			run: func() toolCallResult {
+				return server.runCodemodApplyTool(context.Background(), jsonRaw(`{"repoPath":1}`))
+			},
+		},
+		{
+			name: "codemod timeout",
+			run: func() toolCallResult {
+				return server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":      repo,
+					"dependency":    "lodash",
+					"confirmApply":  true,
+					"timeoutMillis": -1,
+				}))
+			},
+			want: "timeout",
+		},
+		{
+			name: "codemod missing repo",
+			run: func() toolCallResult {
+				return server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":     filepath.Join(repo, "missing"),
+					"dependency":   "lodash",
+					"confirmApply": true,
+				}))
+			},
+			want: "stat repoPath",
+		},
+		{
+			name: "codemod missing dependency",
+			run: func() toolCallResult {
+				return server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":     repo,
+					"confirmApply": true,
+				}))
+			},
+			want: "dependency",
+		},
+		{
+			name: "codemod topN",
+			run: func() toolCallResult {
+				return server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":     repo,
+					"dependency":   "lodash",
+					"topN":         2,
+					"confirmApply": true,
+				}))
+			},
+			want: "topN",
+		},
+		{
+			name: "baseline decode error",
+			run: func() toolCallResult {
+				return server.runBaselineSaveTool(context.Background(), jsonRaw(`{"repoPath":1}`))
+			},
+		},
+		{
+			name: "baseline missing confirmation",
+			run: func() toolCallResult {
+				return server.runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"baselineStorePath": "store",
+				}))
+			},
+			want: "confirmSave",
+		},
+		{
+			name: "baseline timeout",
+			run: func() toolCallResult {
+				return server.runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"baselineStorePath": "store",
+					"baselineKey":       "release",
+					"confirmSave":       true,
+					"timeoutMillis":     -1,
+				}))
+			},
+			want: "timeout",
+		},
+		{
+			name: "baseline bad scope",
+			run: func() toolCallResult {
+				return server.runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"baselineStorePath": "store",
+					"baselineKey":       "release",
+					"scopeMode":         "bad",
+					"confirmSave":       true,
+				}))
+			},
+			want: "scopeMode",
+		},
+		{
+			name: "dashboard decode error",
+			run: func() toolCallResult {
+				return server.runDashboardBaselineSaveTool(context.Background(), jsonRaw(`{"repoPath":1}`))
+			},
+		},
+		{
+			name: "dashboard missing confirmation",
+			run: func() toolCallResult {
+				return server.runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"baselineStorePath": "store",
+				}))
+			},
+			want: "confirmSave",
+		},
+		{
+			name: "dashboard timeout",
+			run: func() toolCallResult {
+				return server.runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"repos":             []map[string]any{{"path": repo}},
+					"baselineStorePath": "store",
+					"baselineKey":       "release",
+					"confirmSave":       true,
+					"timeoutMillis":     -1,
+				}))
+			},
+			want: "timeout",
+		},
+		{
+			name: "dashboard feature disabled",
+			run: func() toolCallResult {
+				return NewServer(Options{Features: mustMutationFeatureSet(t, false), MutationRunner: &fakeMutationRunner{}}).runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"repos":             []map[string]any{{"path": repo}},
+					"baselineStorePath": "store",
+					"baselineKey":       "release",
+					"confirmSave":       true,
+				}))
+			},
+			want: MutationToolsFeature,
+		},
+		{
+			name: "dashboard missing source",
+			run: func() toolCallResult {
+				return server.runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"baselineStorePath": "store",
+					"baselineKey":       "release",
+					"confirmSave":       true,
+				}))
+			},
+			want: "repos or configPath",
+		},
+		{
+			name: "baseline missing runner",
+			run: func() toolCallResult {
+				return NewServer(Options{Features: mustMutationFeatureSet(t, true)}).runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
+					"repoPath":          repo,
+					"baselineStorePath": "store",
+					"baselineKey":       "release",
+					"confirmSave":       true,
+				}))
+			},
+			want: "runner",
+		},
 	}
-	if result := server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":      repo,
-		"dependency":    "lodash",
-		"confirmApply":  true,
-		"timeoutMillis": -1,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "timeout") {
-		t.Fatalf("expected codemod timeout rejection, got %#v", result)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertMutationToolErrorContains(t, tc.run(), tc.want)
+		})
 	}
-	if result := server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":     filepath.Join(repo, "missing"),
-		"dependency":   "lodash",
-		"confirmApply": true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "stat repoPath") {
-		t.Fatalf("expected codemod request resolution error, got %#v", result)
-	}
-	if result := server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":     repo,
-		"confirmApply": true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "dependency") {
-		t.Fatalf("expected missing dependency rejection, got %#v", result)
-	}
-	if result := server.runCodemodApplyTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":     repo,
-		"dependency":   "lodash",
-		"topN":         2,
-		"confirmApply": true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "topN") {
-		t.Fatalf("expected topN rejection, got %#v", result)
-	}
-	if result := server.runBaselineSaveTool(context.Background(), jsonRaw(`{"repoPath":1}`)); !result.IsError {
-		t.Fatalf("expected baseline decode error")
-	}
-	if result := server.runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"baselineStorePath": "store",
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "confirmSave") {
-		t.Fatalf("expected missing baseline confirmation, got %#v", result)
-	}
-	if result := server.runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"baselineStorePath": "store",
-		"baselineKey":       "release",
-		"confirmSave":       true,
-		"timeoutMillis":     -1,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "timeout") {
-		t.Fatalf("expected baseline timeout rejection, got %#v", result)
-	}
-	if result := server.runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"baselineStorePath": "store",
-		"baselineKey":       "release",
-		"scopeMode":         "bad",
-		"confirmSave":       true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "scopeMode") {
-		t.Fatalf("expected baseline request resolution error, got %#v", result)
-	}
-	if result := server.runDashboardBaselineSaveTool(context.Background(), jsonRaw(`{"repoPath":1}`)); !result.IsError {
-		t.Fatalf("expected dashboard decode error")
-	}
-	if result := server.runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"baselineStorePath": "store",
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "confirmSave") {
-		t.Fatalf("expected missing dashboard confirmation, got %#v", result)
-	}
-	if result := server.runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"repos":             []map[string]any{{"path": repo}},
-		"baselineStorePath": "store",
-		"baselineKey":       "release",
-		"confirmSave":       true,
-		"timeoutMillis":     -1,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "timeout") {
-		t.Fatalf("expected dashboard timeout rejection, got %#v", result)
-	}
-	if result := NewServer(Options{Features: mustMutationFeatureSet(t, false), MutationRunner: &fakeMutationRunner{}}).runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"repos":             []map[string]any{{"path": repo}},
-		"baselineStorePath": "store",
-		"baselineKey":       "release",
-		"confirmSave":       true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, MutationToolsFeature) {
-		t.Fatalf("expected dashboard feature rejection, got %#v", result)
-	}
-	if result := server.runDashboardBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"baselineStorePath": "store",
-		"baselineKey":       "release",
-		"confirmSave":       true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "repos or configPath") {
-		t.Fatalf("expected dashboard source rejection, got %#v", result)
-	}
-	if result := NewServer(Options{Features: mustMutationFeatureSet(t, true)}).runBaselineSaveTool(context.Background(), mustJSON(t, map[string]any{
-		"repoPath":          repo,
-		"baselineStorePath": "store",
-		"baselineKey":       "release",
-		"confirmSave":       true,
-	})); !result.IsError || !strings.Contains(result.Content[0].Text, "runner") {
-		t.Fatalf("expected missing runner rejection, got %#v", result)
-	}
+}
 
+func TestResolveMutationAnalysisTargetBranches(t *testing.T) {
+	repo := t.TempDir()
 	cases := []struct {
 		name string
 		args mutationAnalysisArguments
@@ -424,7 +495,7 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 	}
 }
 
-func TestMutationPathAndPayloadHelpers(t *testing.T) {
+func TestResolveLocalMutationPath(t *testing.T) {
 	repo := t.TempDir()
 	absStore := filepath.Join(repo, "store")
 	resolved, err := resolveLocalMutationPath(repo, absStore, "baselineStorePath")
@@ -436,6 +507,10 @@ func TestMutationPathAndPayloadHelpers(t *testing.T) {
 			t.Fatalf("expected local path validation error for %q", rawPath)
 		}
 	}
+}
+
+func TestResolveBaselineMutationTarget(t *testing.T) {
+	repo := t.TempDir()
 	if _, _, err := resolveBaselineMutationTarget(repo, "store", "key", "label", "baseline"); err == nil {
 		t.Fatalf("expected key/label conflict")
 	}
@@ -451,7 +526,10 @@ func TestMutationPathAndPayloadHelpers(t *testing.T) {
 	if err != nil || store != filepath.Join(gitRepo, "store") || !strings.HasPrefix(key, "commit:") {
 		t.Fatalf("unexpected current commit key resolution: store=%q key=%q err=%v", store, key, err)
 	}
+}
 
+func TestValidateDashboardMutationRepos(t *testing.T) {
+	repo := t.TempDir()
 	for _, repos := range [][]DashboardRepoInput{
 		{{Path: ""}},
 		{{Path: "https://example.com/repo"}},
@@ -464,7 +542,10 @@ func TestMutationPathAndPayloadHelpers(t *testing.T) {
 	if err := validateDashboardMutationRepos([]DashboardRepoInput{{Path: repo}}); err != nil {
 		t.Fatalf("expected local dashboard repo path, got %v", err)
 	}
+}
 
+func TestMutationPayloadSummaryHelpers(t *testing.T) {
+	repo := t.TempDir()
 	if got := summarizeCodemodApply("dep", nil, nil); !strings.Contains(got, "no codemod changes") {
 		t.Fatalf("unexpected empty codemod summary: %q", got)
 	}
@@ -481,6 +562,19 @@ func TestMutationPathAndPayloadHelpers(t *testing.T) {
 	rep.Dependencies = append([]report.DependencyReport{{Name: "other", Codemod: &report.CodemodReport{Apply: &report.CodemodApplyReport{AppliedFiles: 1}}}}, rep.Dependencies...)
 	if apply := findCodemodApplyReport(rep, "lodash"); apply != nil {
 		t.Fatalf("expected dependency-specific codemod lookup to skip other dependency, got %#v", apply)
+	}
+}
+
+func assertMutationToolErrorContains(t *testing.T, result toolCallResult, want string) {
+	t.Helper()
+	if !result.IsError {
+		t.Fatalf("expected mutation tool error, got %#v", result)
+	}
+	if want == "" {
+		return
+	}
+	if len(result.Content) == 0 || !strings.Contains(result.Content[0].Text, want) {
+		t.Fatalf("expected %q error, got %#v", want, result)
 	}
 }
 
