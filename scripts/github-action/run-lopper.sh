@@ -69,15 +69,33 @@ append_optional_bool_flag() {
   fi
 }
 
-write_report_path_output() {
-  local output_path="$1"
+write_output() {
+  local name="$1"
+  local value="$2"
   if [[ -z "${GITHUB_OUTPUT:-}" ]]; then
     return
   fi
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    local delimiter="lopper_${name}_EOF"
+    while [[ "$value" == *"$delimiter"* ]]; do
+      delimiter="${delimiter}_x"
+    done
+    {
+      printf '%s<<%s\n' "$name" "$delimiter"
+      printf '%s\n' "$value"
+      printf '%s\n' "$delimiter"
+    } >> "$GITHUB_OUTPUT"
+    return
+  fi
+  printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+}
+
+write_report_path_output() {
+  local output_path="$1"
   if [[ -n "$output_path" && "$output_path" != "-" ]]; then
-    printf 'report-path=%s\n' "$output_path" >> "$GITHUB_OUTPUT"
+    write_output "report-path" "$output_path"
   else
-    printf 'report-path=\n' >> "$GITHUB_OUTPUT"
+    write_output "report-path" ""
   fi
 }
 
@@ -104,6 +122,10 @@ args=(
 
 dependency="$(trim "${INPUT_DEPENDENCY:-}")"
 if [[ -n "$dependency" ]]; then
+  if [[ "$dependency" == -* ]]; then
+    error "dependency input must not start with '-'. Use dedicated action inputs for Lopper flags."
+    exit 2
+  fi
   args+=("$dependency")
 else
   top="$(input_or_default "${INPUT_TOP:-}" "20")"

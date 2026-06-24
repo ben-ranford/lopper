@@ -136,6 +136,45 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 	}
 }
 
+func TestRunScriptWritesMultilineReportPathOutputSafely(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "github-output")
+	reportPath := ".artifacts/lopper-pr-comment.md\ninjected=true"
+
+	env := []string{
+		"GITHUB_OUTPUT=" + outputFile,
+		"INPUT_REPO=.",
+		"INPUT_LANGUAGE=all",
+		"INPUT_TOP=10",
+		"INPUT_FORMAT=pr-comment",
+		"INPUT_SCOPE_MODE=package",
+		"INPUT_OUTPUT=" + reportPath,
+		"INPUT_CACHE=false",
+	}
+	got := runLopperScript(t, env)
+
+	want := []string{
+		"analyse",
+		"--repo", ".",
+		"--language", "all",
+		"--format", "pr-comment",
+		"--scope-mode", "package",
+		"--cache=false",
+		"--top", "10",
+		"--output", reportPath,
+		"--runtime-profile", "node-import",
+	}
+	assertArgs(t, got, want)
+
+	outputContent, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read github output: %v", err)
+	}
+	wantOutput := "report-path<<lopper_report-path_EOF\n.artifacts/lopper-pr-comment.md\ninjected=true\nlopper_report-path_EOF\n"
+	if got := string(outputContent); got != wantOutput {
+		t.Fatalf("github output = %q, want %q", got, wantOutput)
+	}
+}
+
 func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 	env := []string{
 		"INPUT_REPO=.",
@@ -186,6 +225,26 @@ func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
 	assertArgs(t, got, want)
 }
 
+func TestRunScriptRejectsFlagLikeDependency(t *testing.T) {
+	root := repoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "run-lopper.sh"))
+	cmd.Env = append(os.Environ(), []string{
+		"LOPPER_BINARY=/bin/true",
+		"INPUT_DEPENDENCY=--license-fail-on-deny",
+		"INPUT_CACHE=true",
+	}...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected flag-like dependency input to fail")
+	}
+	if !strings.Contains(stderr.String(), "dependency input must not start with '-'") {
+		t.Fatalf("stderr missing dependency validation message: %s", stderr.String())
+	}
+}
+
 func TestInstallScriptDryRunResolvesPinnedVersion(t *testing.T) {
 	root := repoRoot(t)
 	outputFile := filepath.Join(t.TempDir(), "github-output")
@@ -217,6 +276,79 @@ func TestInstallScriptDryRunResolvesPinnedVersion(t *testing.T) {
 	}
 	if !strings.Contains(string(outputContent), "download-url="+wantURL+"\n") {
 		t.Fatalf("github output missing download URL: %s", outputContent)
+	}
+}
+
+func TestInstallScriptWritesMultilineGitHubOutputSafely(t *testing.T) {
+	root := repoRoot(t)
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create fake bin dir: %v", err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "curl"), `#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o)
+      shift
+      output="${1:-}"
+      ;;
+  esac
+  shift || true
+done
+if [[ -n "$output" ]]; then
+  printf 'archive' > "$output"
+fi
+`)
+	writeExecutable(t, filepath.Join(binDir, "tar"), `#!/usr/bin/env bash
+set -euo pipefail
+dest=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -C)
+      shift
+      dest="${1:-}"
+      ;;
+  esac
+  shift || true
+done
+mkdir -p "$dest/extracted"
+cat > "$dest/extracted/lopper" <<'LOPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'lopper 1.6.1\ninjected=true'
+  exit 0
+fi
+exit 1
+LOPPER
+chmod +x "$dest/extracted/lopper"
+`)
+	outputFile := filepath.Join(tempDir, "github-output")
+
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "install-lopper.sh"))
+	cmd.Env = append(os.Environ(), []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"RUNNER_TEMP=" + tempDir,
+		"GITHUB_OUTPUT=" + outputFile,
+		"LOPPER_VERSION=1.6.1",
+		"LOPPER_ACTION_OS=linux",
+		"LOPPER_ACTION_ARCH=amd64",
+	}...)
+	runCommand(t, cmd)
+
+	outputContent, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read github output: %v", err)
+	}
+	want := "lopper-version<<lopper_lopper-version_EOF\nlopper 1.6.1\ninjected=true\nlopper_lopper-version_EOF\n"
+	if !strings.Contains(string(outputContent), want) {
+		t.Fatalf("github output missing multiline lopper-version: %s", outputContent)
+	}
+	if strings.Contains(string(outputContent), "lopper-version=lopper 1.6.1\ninjected=true\n") {
+		t.Fatalf("github output used unsafe single-line format: %s", outputContent)
 	}
 }
 
@@ -341,6 +473,13 @@ func writeStubLopper(t *testing.T, argsFile string) string {
 	}
 	t.Setenv("LOPPER_ARGS_FILE", argsFile)
 	return path
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
 }
 
 func runLopperScript(t *testing.T, env []string) []string {

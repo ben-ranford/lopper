@@ -20,9 +20,22 @@ lower() {
 write_output() {
   local name="$1"
   local value="$2"
-  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+  if [[ -z "${GITHUB_OUTPUT:-}" ]]; then
+    return
   fi
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    local delimiter="lopper_${name}_EOF"
+    while [[ "$value" == *"$delimiter"* ]]; do
+      delimiter="${delimiter}_x"
+    done
+    {
+      printf '%s<<%s\n' "$name" "$delimiter"
+      printf '%s\n' "$value"
+      printf '%s\n' "$delimiter"
+    } >> "$GITHUB_OUTPUT"
+    return
+  fi
+  printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
 }
 
 curl_with_token() {
@@ -32,7 +45,11 @@ curl_with_token() {
   if [[ -n "$token" ]]; then
     curl_args=(-H "Authorization: Bearer ${token}")
   fi
-  curl "${curl_args[@]}" "$@"
+  if [[ "${#curl_args[@]}" -gt 0 ]]; then
+    curl "${curl_args[@]}" "$@"
+    return
+  fi
+  curl "$@"
 }
 
 resolve_latest_tag() {
@@ -158,7 +175,9 @@ mkdir -p "$install_dir"
 
 work_dir="$(mktemp -d "${runner_temp}/lopper-action.XXXXXX")"
 cleanup() {
+  local status=$?
   rm -rf "$work_dir"
+  return "$status"
 }
 trap cleanup EXIT INT TERM
 
