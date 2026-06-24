@@ -116,20 +116,9 @@ func assertGradleCoordinateParsing(t *testing.T) {
 	coordinate, ok = parseGradleCoordinate(":artifact:1.0.0")
 	assertGradleCoordinateRejected(t, coordinate, ok, "expected Gradle coordinate without group to be rejected")
 	coordinate, ok = parseGradleCoordinate("com.example:demo")
-	assertParsedGradleCoordinate(
-		t,
-		coordinate,
-		ok,
-		GradleDependencyCoordinate{Group: "com.example", Artifact: "demo"},
-		"expected two-part Gradle coordinate to parse without version",
-	)
+	assertParsedGradleCoordinate(t, coordinate, ok, GradleDependencyCoordinate{Group: "com.example", Artifact: "demo"}, "expected two-part Gradle coordinate to parse without version")
 	coordinate, ok = gradleCoordinateFromFields(map[string]string{"group": "com.example"})
-	assertGradleCoordinateRejected(
-		t,
-		coordinate,
-		ok,
-		"expected incomplete Gradle coordinate fields to be rejected",
-	)
+	assertGradleCoordinateRejected(t, coordinate, ok, "expected incomplete Gradle coordinate fields to be rejected")
 }
 
 func assertGradleNodeWalking(t *testing.T) {
@@ -144,19 +133,9 @@ func assertGradleNodeWalking(t *testing.T) {
 func assertGradleCatalogDefensiveParsing(t *testing.T) {
 	t.Helper()
 	reference, ok := parseGradleCatalogBracketExpression(`["okhttp"]`)
-	assertGradleCatalogRejected(
-		t,
-		reference,
-		ok,
-		"expected bracket catalog expression without catalog name to be rejected",
-	)
+	assertGradleCatalogRejected(t, reference, ok, "expected bracket catalog expression without catalog name to be rejected")
 	reference, ok = parseGradleCatalogPropertyExpression("libs.findLibrary.foo")
-	assertGradleCatalogRejected(
-		t,
-		reference,
-		ok,
-		"expected malformed finder property expression to be rejected",
-	)
+	assertGradleCatalogRejected(t, reference, ok, "expected malformed finder property expression to be rejected")
 	value, valueOK := firstGradleQuotedValue(`"unterminated`)
 	assertQuotedGradleValueRejected(t, value, valueOK, "expected unterminated quoted value to be rejected")
 }
