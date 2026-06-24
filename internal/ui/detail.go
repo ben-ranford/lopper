@@ -100,7 +100,7 @@ func findSummaryDependencyDetail(dependencies []summaryDependencyView, languageI
 	return detailDependencyView{}, false
 }
 
-func summaryDependencyLanguageMatches(languageID string, dependencyLanguage string) bool {
+func summaryDependencyLanguageMatches(languageID, dependencyLanguage string) bool {
 	switch strings.TrimSpace(languageID) {
 	case "", "auto", "all":
 		return true
