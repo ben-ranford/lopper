@@ -10,8 +10,8 @@ def resolve_package_path(raw_path: str) -> Path:
     if requested_path.name != "package.json":
         raise ValueError(f"Invalid package path {raw_path}: expected a package.json file")
 
-    repo_root = Path.cwd().resolve()
-    path = (repo_root / requested_path).resolve(strict=False)
+    repo_root = Path(__file__).resolve().parent.parent
+    path = requested_path.resolve(strict=False) if requested_path.is_absolute() else (Path.cwd() / requested_path).resolve(strict=False)
     try:
         path.relative_to(repo_root)
     except ValueError as exc:
