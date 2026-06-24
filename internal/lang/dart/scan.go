@@ -258,41 +258,47 @@ func stripBlockCommentLine(line string, commentDepth int) (string, int) {
 	builder.Grow(len(line))
 
 	for i := 0; i < len(line); i++ {
-		if commentDepth == 0 && i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
+		if commentDepth == 0 && hasCommentMarker(line, i, '/') {
 			builder.WriteString(line[i:])
 			break
 		}
 
-		if commentDepth == 0 {
-			if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
-				commentDepth++
-				builder.WriteByte(' ')
-				builder.WriteByte(' ')
-				i++
-				continue
-			}
-			builder.WriteByte(line[i])
+		if hasCommentMarker(line, i, '*') {
+			commentDepth++
+			writeMaskedCommentMarker(&builder)
+			i++
 			continue
 		}
 
-		if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
-			commentDepth++
-			builder.WriteByte(' ')
-			builder.WriteByte(' ')
-			i++
-			continue
-		}
-		if i+1 < len(line) && line[i] == '*' && line[i+1] == '/' {
+		if commentDepth > 0 && hasCommentEnd(line, i) {
 			commentDepth--
-			builder.WriteByte(' ')
-			builder.WriteByte(' ')
+			writeMaskedCommentMarker(&builder)
 			i++
 			continue
 		}
-		builder.WriteByte(' ')
+
+		if commentDepth > 0 {
+			builder.WriteByte(' ')
+			continue
+		}
+
+		builder.WriteByte(line[i])
 	}
 
 	return builder.String(), commentDepth
+}
+
+func hasCommentMarker(line string, index int, second byte) bool {
+	return index+1 < len(line) && line[index] == '/' && line[index+1] == second
+}
+
+func hasCommentEnd(line string, index int) bool {
+	return index+1 < len(line) && line[index] == '*' && line[index+1] == '/'
+}
+
+func writeMaskedCommentMarker(builder *strings.Builder) {
+	builder.WriteByte(' ')
+	builder.WriteByte(' ')
 }
 
 func collectDirective(lines []string) (string, int, bool) {
