@@ -35,6 +35,8 @@ func ParseArgs(args []string) (app.Request, error) {
 		return parseDashboard(args[1:], req)
 	case "features":
 		return parseFeatures(args[1:], req)
+	case "profile":
+		return parseProfile(args[1:], req)
 	case "mcp":
 		return parseMCP(args[1:], req)
 	default:

@@ -15,6 +15,7 @@ const (
 	ModeAnalyse   Mode = "analyse"
 	ModeDashboard Mode = "dashboard"
 	ModeFeatures  Mode = "features"
+	ModeProfile   Mode = "profile"
 	ModeMCP       Mode = "mcp"
 
 	ScopeModeRepo            = analysis.ScopeModeRepo
@@ -29,6 +30,7 @@ type Request struct {
 	TUI       TUIRequest
 	Dashboard DashboardRequest
 	Features  FeaturesRequest
+	Profile   ProfileRequest
 	MCP       MCPRequest
 }
 
@@ -100,6 +102,13 @@ type FeaturesRequest struct {
 	OutputPath string
 	Channel    string
 	Release    string
+}
+
+type ProfileRequest struct {
+	Name       string
+	OutputPath string
+	Force      bool
+	Features   featureflags.Set
 }
 
 type MCPRequest struct {

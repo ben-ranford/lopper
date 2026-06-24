@@ -8,6 +8,7 @@ const usage = `Usage:
   lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline]
   lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline]
   lopper features [--format table|json] [--channel dev|rolling|release] [--release VERSION]
+  lopper profile apply strict|balanced|noise-reduction [--output PATH] [--force] [--enable-feature threshold-profiles-preview]
   lopper mcp
 
 Options:
@@ -44,6 +45,7 @@ Options:
   --enable-feature NAME      Feature flag name or code to enable (repeatable, comma-separated)
   --disable-feature NAME     Feature flag name or code to disable (repeatable, comma-separated)
   --output PATH, -o PATH     Write command output to file instead of stdout
+  --force                    Allow profile apply to overwrite an existing output file
   --lockfile-drift-policy MODE
                               Lockfile drift policy (off, warn, fail; default: warn)
   --license-deny SPDXS        Comma-separated denied SPDX IDs (e.g. GPL-3.0-only,AGPL-3.0-only)
