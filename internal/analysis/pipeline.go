@@ -196,23 +196,31 @@ func changedRoots(roots []string, repoPath string, changedFiles []string) []stri
 	changed := make([]string, 0, len(roots))
 	seen := make(map[string]struct{}, len(roots))
 	for _, file := range changedFiles {
-		for current := absoluteChangedPath(repoPath, file); ; current = filepath.Dir(current) {
-			if matchingRoots, ok := rootIndex[current]; ok {
-				for _, root := range matchingRoots {
-					if _, exists := seen[root]; exists {
-						continue
-					}
-					seen[root] = struct{}{}
-					changed = append(changed, root)
-				}
-			}
-			parent := filepath.Dir(current)
-			if parent == current {
-				break
-			}
-		}
+		changed = appendChangedRootAncestors(changed, seen, rootIndex, absoluteChangedPath(repoPath, file))
 	}
 	return uniqueSorted(changed)
+}
+
+func appendChangedRootAncestors(changed []string, seen map[string]struct{}, rootIndex map[string][]string, path string) []string {
+	for current := path; ; {
+		changed = appendChangedRoots(changed, seen, rootIndex[current])
+		parent := filepath.Dir(current)
+		if parent == current {
+			return changed
+		}
+		current = parent
+	}
+}
+
+func appendChangedRoots(changed []string, seen map[string]struct{}, roots []string) []string {
+	for _, root := range roots {
+		if _, exists := seen[root]; exists {
+			continue
+		}
+		seen[root] = struct{}{}
+		changed = append(changed, root)
+	}
+	return changed
 }
 
 func changedRootIndex(roots []string, repoPath string) map[string][]string {
