@@ -58,6 +58,81 @@ func TestChangedRootsAndScopeMetadata(t *testing.T) {
 	}
 }
 
+func TestChangedRootsPreservesNestedRootSemantics(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	appRoot := filepath.Join(repo, "app")
+	webRoot := filepath.Join(appRoot, "web")
+	apiRoot := filepath.Join(appRoot, "api")
+	app2Root := filepath.Join(repo, "app2")
+
+	roots := []string{app2Root, webRoot, appRoot, apiRoot}
+	changedFiles := []string{"app/web/src/index.ts"}
+	got := changedRoots(roots, repo, changedFiles)
+
+	want := []string{appRoot, webRoot}
+	if len(got) != len(want) {
+		t.Fatalf("expected nested changed roots %#v, got %#v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected nested changed roots %#v, got %#v", want, got)
+		}
+	}
+}
+
+func TestChangedRootsRejectsSiblingPrefixMatches(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	appRoot := filepath.Join(repo, "app")
+
+	got := changedRoots([]string{appRoot}, repo, []string{"app2/src/index.ts"})
+	if len(got) != 0 {
+		t.Fatalf("expected sibling-prefix path to be excluded, got %#v", got)
+	}
+}
+
+func TestChangedRootsHandlesRelativeRootsAndNoChangedFiles(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	relativeRoot := filepath.Join("packages", "a")
+
+	got := changedRoots([]string{relativeRoot, filepath.Join("packages", "b")}, repo, []string{"packages/a/src/index.ts"})
+	if len(got) != 1 || got[0] != relativeRoot {
+		t.Fatalf("expected relative changed root selection, got %#v", got)
+	}
+
+	absoluteFile := filepath.Join(repo, relativeRoot, "src", "absolute.ts")
+	got = changedRoots([]string{relativeRoot}, repo, []string{absoluteFile})
+	if len(got) != 1 || got[0] != relativeRoot {
+		t.Fatalf("expected absolute changed path selection, got %#v", got)
+	}
+
+	if empty := changedRoots([]string{relativeRoot}, repo, nil); len(empty) != 0 {
+		t.Fatalf("expected no changed files to select no roots, got %#v", empty)
+	}
+}
+
+func TestAppendChangedRootAncestorsDeduplicatesIndexedRoots(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	appRoot := filepath.Join(repo, "app")
+	equivalentAppRoot := appRoot + string(filepath.Separator) + "."
+	webRoot := filepath.Join(appRoot, "web")
+	rootIndex := map[string][]string{
+		appRoot: {appRoot, equivalentAppRoot},
+		webRoot: {webRoot},
+	}
+	seen := map[string]struct{}{appRoot: {}}
+
+	got := appendChangedRootAncestors([]string{appRoot}, seen, rootIndex, filepath.Join(webRoot, "src", "index.ts"))
+	want := []string{appRoot, webRoot, equivalentAppRoot}
+	if len(got) != len(want) {
+		t.Fatalf("expected changed roots %#v, got %#v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected changed roots %#v, got %#v", want, got)
+		}
+	}
+}
+
 func TestScopedCandidateRootsNonGitModes(t *testing.T) {
 	repo := t.TempDir()
 	pkg := filepath.Join(repo, "packages", "a")
