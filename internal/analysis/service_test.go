@@ -399,6 +399,18 @@ func mustResolveStableDefaultsFeatureSet(t *testing.T) featureflags.Set {
 	return resolved
 }
 
+func mustResolvePythonRuntimeTracePreviewSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{pythonRuntimeTracePreviewFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve Python runtime trace preview feature set: %v", err)
+	}
+	return resolved
+}
+
 func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
@@ -443,6 +455,91 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	}
 }
 
+func TestServiceAnalysePythonRuntimeTracePreviewIntegration(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
+	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
+	tracePath := filepath.Join(repo, ".artifacts", "python-runtime.ndjson")
+	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n")
+
+	service := NewService()
+	withoutFlag, err := service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "python",
+		RuntimeTracePath: tracePath,
+		Features:         mustResolveStableDefaultsFeatureSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse python runtime without flag: %v", err)
+	}
+	if dep := dependencyByLanguageName(t, withoutFlag.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
+		t.Fatalf("did not expect Python runtime usage without preview flag, got %#v", dep.RuntimeUsage)
+	}
+
+	withFlag, err := service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "python",
+		RuntimeTracePath: tracePath,
+		Features:         mustResolvePythonRuntimeTracePreviewSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse python runtime with flag: %v", err)
+	}
+
+	requests := dependencyByLanguageName(t, withFlag.Dependencies, "python", "requests")
+	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected Python requests overlap correlation, got %#v", requests.RuntimeUsage)
+	}
+	if requests.RuntimeUsage.LoadCount != 1 {
+		t.Fatalf("expected one Python requests runtime load, got %#v", requests.RuntimeUsage)
+	}
+	if len(requests.RuntimeUsage.Modules) != 1 || requests.RuntimeUsage.Modules[0].Module != "requests.sessions" {
+		t.Fatalf("expected Python runtime module detail, got %#v", requests.RuntimeUsage.Modules)
+	}
+	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "/repo/main.py" {
+		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
+	}
+
+	httpx := dependencyByLanguageName(t, withFlag.Dependencies, "python", "httpx")
+	if httpx.RuntimeUsage == nil || httpx.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly || !httpx.RuntimeUsage.RuntimeOnly {
+		t.Fatalf("expected Python httpx runtime-only row, got %#v", httpx.RuntimeUsage)
+	}
+}
+
+func TestServiceAnalyseJSTraceIgnoresPythonLanguageEvents(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nimport request from \"requests\"\nmap([1], (x) => x)\nrequest('https://example.test')\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+	writeFile(t, filepath.Join(repo, "node_modules", "requests", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "requests", indexJSFileName), "export default function request() {}\n")
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	writeFile(t, tracePath, "{\"module\":\"lodash/map\"}\n{\"language\":\"python\",\"module\":\"requests.sessions\"}\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "js-ts",
+		RuntimeTracePath: tracePath,
+		Features:         mustResolvePythonRuntimeTracePreviewSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse js runtime with python event: %v", err)
+	}
+
+	lodash := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "lodash")
+	if lodash.RuntimeUsage == nil || lodash.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected lodash JS overlap correlation, got %#v", lodash.RuntimeUsage)
+	}
+	requests := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "requests")
+	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationStaticOnly || requests.RuntimeUsage.LoadCount != 0 {
+		t.Fatalf("expected JS requests to ignore Python runtime event, got %#v", requests.RuntimeUsage)
+	}
+}
+
 func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
@@ -463,6 +560,17 @@ func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 	if len(reportData.Warnings) == 0 {
 		t.Fatalf("expected warning for missing runtime trace")
 	}
+}
+
+func dependencyByLanguageName(t *testing.T, dependencies []report.DependencyReport, languageID, name string) report.DependencyReport {
+	t.Helper()
+	for _, dependency := range dependencies {
+		if dependency.Language == languageID && dependency.Name == name {
+			return dependency
+		}
+	}
+	t.Fatalf("dependency %s/%s not found in %#v", languageID, name, dependencies)
+	return report.DependencyReport{}
 }
 
 func TestMergeRecommendationsPriorityOrder(t *testing.T) {

@@ -15,6 +15,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
+const pythonRuntimeTracePreviewFeature = "python-runtime-trace-preview"
+
 type analysisPipeline struct {
 	service          *Service
 	request          Request
@@ -117,7 +119,7 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 
 func finalizeReport(req Request, repoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
 	var err error
-	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData)
+	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData, req.Features.Enabled(pythonRuntimeTracePreviewFeature))
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -310,8 +312,12 @@ func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []strin
 	return uniqueSorted(remapped)
 }
 
-func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report) (report.Report, error) {
+func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
 	if runtimeTracePath == "" {
+		return reportData, nil
+	}
+	supportedLanguages := supportedRuntimeTraceLanguages(languageID, pythonRuntimeTraceEnabled)
+	if len(supportedLanguages) == 0 {
 		return reportData, nil
 	}
 	traceData, err := runtime.Load(runtimeTracePath)
@@ -323,7 +329,8 @@ func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, r
 		return report.Report{}, err
 	}
 	return runtime.Annotate(reportData, traceData, runtime.AnnotateOptions{
-		IncludeRuntimeOnlyRows: supportsJSTraceLanguage(languageID),
+		IncludeRuntimeOnlyRows: true,
+		SupportedLanguages:     supportedLanguages,
 	}), nil
 }
 
@@ -335,6 +342,26 @@ func isMultiLanguage(languageID string) bool {
 func supportsJSTraceLanguage(languageID string) bool {
 	switch strings.TrimSpace(strings.ToLower(languageID)) {
 	case "", "auto", language.All, "js-ts":
+		return true
+	default:
+		return false
+	}
+}
+
+func supportedRuntimeTraceLanguages(languageID string, pythonRuntimeTraceEnabled bool) []string {
+	supported := make([]string, 0, 2)
+	if supportsJSTraceLanguage(languageID) {
+		supported = append(supported, "js-ts")
+	}
+	if pythonRuntimeTraceEnabled && supportsPythonTraceLanguage(languageID) {
+		supported = append(supported, "python")
+	}
+	return supported
+}
+
+func supportsPythonTraceLanguage(languageID string) bool {
+	switch strings.TrimSpace(strings.ToLower(languageID)) {
+	case "", "auto", language.All, "python", "py":
 		return true
 	default:
 		return false

@@ -228,7 +228,9 @@ lopper tui \
   --baseline-key commit:abc123
 ```
 
-## Runtime trace annotations (JS/TS)
+## Runtime trace annotations
+
+### JS/TS
 
 Capture a runtime trace:
 
@@ -255,13 +257,43 @@ lopper analyse --top 20 --repo . --language js-ts --runtime-trace .artifacts/lop
 
 With runtime traces enabled:
 
-- `runtimeUsage.correlation` marks each JS/TS dependency as `static-only`, `runtime-only`, or `overlap`.
+- `runtimeUsage.correlation` marks each supported dependency as `static-only`, `runtime-only`, or `overlap`.
 - `runtimeUsage.modules` includes runtime-loaded module paths.
 - `runtimeUsage.parentModules` includes parent module paths that triggered the load.
 - `runtimeUsage.entrypoints` includes entrypoint modules seen in the runtime trace.
 - `runtimeUsage.topSymbols` includes best-effort runtime symbol hits.
 
 If `--runtime-trace` points to a missing file, analysis continues with static results and adds a warning.
+
+### Python preview
+
+Python runtime trace consumption is available behind the `python-runtime-trace-preview` feature flag. Lopper consumes an existing NDJSON trace file; it does not run Python tests or install a Python import hook for you.
+
+Each trace line should identify the Python adapter and the imported module:
+
+```json
+{"language":"python","module":"requests.sessions","parent":"/repo/main.py","entrypoint":"/repo/main.py"}
+```
+
+When the import root differs from the package name, include `dependency`:
+
+```json
+{"language":"python","dependency":"beautifulsoup4","module":"bs4"}
+```
+
+Use the trace in analysis:
+
+```bash
+lopper analyse --top 20 --repo . --language python \
+  --runtime-trace .artifacts/python-runtime.ndjson \
+  --enable-feature python-runtime-trace-preview
+```
+
+Python caveats:
+
+- Runtime module names map to the top-level import package, with common aliases such as `bs4` -> `beautifulsoup4`.
+- Trace producers should emit third-party imports only. Lopper cannot reliably distinguish local modules or every stdlib import from an adapter-neutral trace line.
+- Automatic `--runtime-test-command` capture remains JS/TS-oriented.
 
 ## Development
 

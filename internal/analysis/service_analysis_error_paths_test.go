@@ -20,7 +20,7 @@ func TestServiceAdditionalHelperBranches(t *testing.T) {
 		t.Fatalf("expected scope metadata to keep repo root and skip invalid roots, got %#v", metadata)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(t.TempDir(), "js-ts", report.Report{}); err == nil {
+	if _, err := annotateRuntimeTraceIfPresent(t.TempDir(), "js-ts", report.Report{}, false); err == nil {
 		t.Fatalf("expected directory runtime trace path to return error")
 	}
 

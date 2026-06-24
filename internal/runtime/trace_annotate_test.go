@@ -94,6 +94,91 @@ func TestAnnotateSkipsUnsupportedLanguageAndZeroLoads(t *testing.T) {
 	t.Fatalf("did not expect runtime usage when js dependency has no static imports and no runtime loads")
 }
 
+func TestAnnotatePythonRuntimeUsageWhenSupported(t *testing.T) {
+	rep := report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name:     "requests",
+				Language: runtimeLanguagePython,
+				UsedImports: []report.ImportUse{
+					{Name: "get", Module: "requests"},
+				},
+			},
+			{
+				Name:     "requests",
+				Language: runtimeLanguageJSTS,
+				UsedImports: []report.ImportUse{
+					{Name: "request", Module: "requests"},
+				},
+			},
+		},
+	}
+	requestsKey := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+	httpxKey := DependencyKey{Language: runtimeLanguagePython, Name: "httpx"}
+	trace := Trace{
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			requestsKey: 2,
+			httpxKey:    1,
+		},
+		DependencyModulesByLanguage: map[DependencyKey]map[string]int{
+			requestsKey: {"requests.sessions": 2},
+			httpxKey:    {"httpx._client": 1},
+		},
+		DependencyParentsByLanguage: map[DependencyKey]map[string]int{
+			requestsKey: {"app.py": 2},
+		},
+		DependencyEntrypointsByLanguage: map[DependencyKey]map[string]int{
+			requestsKey: {"app.py": 2},
+		},
+		DependencySymbolsByLanguage: map[DependencyKey]map[string]int{
+			requestsKey: {"requests.sessions\x00sessions": 2},
+			httpxKey:    {"httpx._client\x00_client": 1},
+		},
+	}
+
+	annotated := Annotate(rep, trace, AnnotateOptions{
+		IncludeRuntimeOnlyRows: true,
+		SupportedLanguages:     []string{runtimeLanguagePython},
+	})
+
+	if len(annotated.Dependencies) != 3 {
+		t.Fatalf("expected python runtime-only row to be added, got %d dependencies", len(annotated.Dependencies))
+	}
+	dependencies := make(map[DependencyKey]report.DependencyReport, len(annotated.Dependencies))
+	for _, dependency := range annotated.Dependencies {
+		dependencies[DependencyKey{Language: dependency.Language, Name: dependency.Name}] = dependency
+	}
+
+	pythonRequests, ok := dependencies[requestsKey]
+	if !ok {
+		t.Fatalf("python requests dependency not found in %#v", annotated.Dependencies)
+	}
+	if pythonRequests.RuntimeUsage == nil {
+		t.Fatalf("expected python requests runtime usage, got %#v", pythonRequests)
+	}
+	if pythonRequests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap || pythonRequests.RuntimeUsage.LoadCount != 2 {
+		t.Fatalf("expected python requests overlap with two loads, got %#v", pythonRequests.RuntimeUsage)
+	}
+	if len(pythonRequests.RuntimeUsage.Modules) != 1 || pythonRequests.RuntimeUsage.Modules[0].Module != "requests.sessions" {
+		t.Fatalf("expected python runtime module context, got %#v", pythonRequests.RuntimeUsage.Modules)
+	}
+
+	jsRequests, ok := dependencies[DependencyKey{Language: runtimeLanguageJSTS, Name: "requests"}]
+	if !ok {
+		t.Fatalf("JS requests dependency not found in %#v", annotated.Dependencies)
+	}
+	if jsRequests.RuntimeUsage != nil {
+		t.Fatalf("did not expect python runtime trace to annotate JS dependency, got %#v", jsRequests.RuntimeUsage)
+	}
+	httpx, ok := dependencies[httpxKey]
+	if !ok {
+		t.Fatalf("python httpx dependency not found in %#v", annotated.Dependencies)
+	}
+	if httpx.RuntimeUsage == nil || !httpx.RuntimeUsage.RuntimeOnly {
+		t.Fatalf("expected python runtime-only httpx row, got %#v", httpx)
+	}
+}
+
 func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 	rep := report.Report{
 		Dependencies: []report.DependencyReport{
@@ -170,8 +255,32 @@ func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
 		},
 	}
 
-	appendRuntimeOnlyDependencies(&rep, trace, map[string]struct{}{"seen": {}})
+	seen := map[DependencyKey]struct{}{{Language: runtimeLanguageJSTS, Name: "seen"}: {}}
+	supported := map[string]struct{}{runtimeLanguageJSTS: {}}
+	appendRuntimeOnlyDependencies(&rep, trace, seen, supported)
 	if len(rep.Dependencies) != 1 || rep.Dependencies[0].Name != "new" {
 		t.Fatalf("expected only unseen runtime dependency to be appended, got %#v", rep.Dependencies)
+	}
+}
+
+func TestRuntimeDependencyKeysSkipsZeroAndUnsupportedLanguages(t *testing.T) {
+	trace := Trace{
+		DependencyLoads: map[string]int{
+			"lodash": 1,
+			"zero":   0,
+		},
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			{Language: runtimeLanguagePython, Name: "zero"}: 0,
+			{Language: "ruby", Name: "rake"}:                1,
+		},
+	}
+	supported := map[string]struct{}{runtimeLanguageJSTS: {}, runtimeLanguagePython: {}}
+
+	keys := runtimeDependencyKeys(trace, supported)
+	if len(keys) != 1 || keys[0].Language != runtimeLanguageJSTS || keys[0].Name != "lodash" {
+		t.Fatalf("expected only supported nonzero JS key, got %#v", keys)
+	}
+	if got := runtimeLoadCount(Trace{}, DependencyKey{Language: runtimeLanguagePython, Name: "missing"}); got != 0 {
+		t.Fatalf("expected missing non-JS runtime load count 0, got %d", got)
 	}
 }

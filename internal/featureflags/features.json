@@ -66,5 +66,11 @@
     "name": "dashboard-remote-repos-preview",
     "description": "Enable dashboard repoUrl entries by materializing remote Git repositories into a deterministic local checkout cache.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0011",
+    "name": "python-runtime-trace-preview",
+    "description": "Enable preview runtime trace annotations for Python dependencies using shared runtimeUsage report fields.",
+    "lifecycle": "preview"
   }
 ]

@@ -229,7 +229,7 @@ func TestWindowsExecutableExtensions(t *testing.T) {
 func TestRuntimeExecutableCandidatesWindowsIncludesPathextEntries(t *testing.T) {
 	setRuntimeOSTest(t, "windows")
 
-	t.Setenv("PATHEXT", ".CMD;.EXE")
+	t.Setenv("PATHEXT", ".CMD;.EXE;.EXE")
 	dir := t.TempDir()
 	got := runtimeExecutableCandidates("npm", dir)
 	want := []string{
@@ -239,6 +239,17 @@ func TestRuntimeExecutableCandidatesWindowsIncludesPathextEntries(t *testing.T) 
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected candidates %v, got %v", want, got)
+	}
+}
+
+func TestRuntimeExecutableCandidatesWindowsKeepsExplicitExtension(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	dir := t.TempDir()
+	got := runtimeExecutableCandidates("npm.cmd", dir)
+	want := []string{filepath.Join(dir, "npm.cmd")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected explicit-extension candidates %v, got %v", want, got)
 	}
 }
 

@@ -69,10 +69,11 @@ CSV columns:
 - Signal weights are fixed in v2: runtime correlation `0.20`, export inventory `0.30`, import precision `0.20`, repo usage uncertainty `0.15`, dependency dynamic-loader signal `0.10`, and risk severity `0.05`.
 - `dependencies[].removalCandidate.confidence` remains as a compatibility alias for `dependencies[].reachabilityConfidence.score`.
 - Finding-level `confidenceScore` and `confidenceReasonCodes` fields mirror `dependencies[].reachabilityConfidence.score` and `dependencies[].reachabilityConfidence.rationaleCodes`.
-- `runtimeUsage` currently annotates JS/TS dependencies.
+- `runtimeUsage` annotates JS/TS dependencies and, when `python-runtime-trace-preview` is enabled, Python dependencies from `{"language":"python",...}` trace events.
 - `runtimeUsage.correlation` distinguishes `static-only`, `runtime-only`, and `overlap` evidence categories.
 - `runtimeUsage.modules` lists runtime-loaded module paths seen for a dependency.
 - `runtimeUsage.topSymbols` lists best-effort runtime symbol hits derived from module subpaths.
+- Runtime annotations use the same report fields across supported languages; adapter differences are confined to trace-to-dependency mapping.
 - `cache.invalidations` entries identify deterministic invalidation reasons (for example `input-changed`).
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `summary.knownLicenseCount`, `summary.unknownLicenseCount`, and `summary.deniedLicenseCount` are mutually exclusive license buckets across dependency rows. Denied dependencies count only as denied, even when they also have an SPDX value or unknown license metadata.

@@ -85,4 +85,6 @@ Merged output deduplicates by `(language, dependency)` and computes:
 ## Runtime tracing integration
 
 If your adapter can consume runtime traces, extend `internal/runtime` and
-its annotation logic. The current implementation annotates JS/TS dependencies.
+its annotation logic. The implementation keeps runtime annotations in the shared
+`runtimeUsage` report fields; JS/TS traces are supported by default, and Python
+trace consumption is available behind `python-runtime-trace-preview`.
