@@ -470,7 +470,7 @@ func TestLoadGoModuleInfoInlineRequireBlock(t *testing.T) {
 	if !slices.Equal(info.DeclaredDependencies, []string{depUUID, depLo}) {
 		t.Fatalf("expected inline require block dependencies, got %#v", info.DeclaredDependencies)
 	}
-	if got := info.ReplacementImports[sharedForkImport]; got != moduleOriginal {
+	if info.ReplacementImports[sharedForkImport] != moduleOriginal {
 		t.Fatalf("expected replacement mapping to survive inline require block, got %#v", info.ReplacementImports)
 	}
 }
