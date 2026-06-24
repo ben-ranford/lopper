@@ -90,16 +90,16 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	if !ok {
 		t.Fatal("graduate-feature workflow must define the milestone input")
 	}
-	if milestone.Default != "v1.6.0" {
-		t.Fatalf("graduate-feature milestone default = %q, want v1.6.0", milestone.Default)
+	if milestone.Default != "v1.7.0" {
+		t.Fatalf("graduate-feature milestone default = %q, want v1.7.0", milestone.Default)
 	}
 
 	workflowText := readConfig(t, ".github/workflows/graduate-feature.yml")
-	if !strings.Contains(workflowText, "--label target-series:1.6.x") {
-		t.Fatal("graduate-feature workflow must label PRs with target-series:1.6.x")
+	if !strings.Contains(workflowText, `target_series_label="target-series:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"`) {
+		t.Fatal("graduate-feature workflow must derive target-series labels from the milestone")
 	}
-	if strings.Contains(workflowText, "target-series:1.4.x") {
-		t.Fatal("graduate-feature workflow still references stale target-series:1.4.x")
+	if strings.Contains(workflowText, "--label target-series:") {
+		t.Fatal("graduate-feature workflow must not hardcode a target-series label")
 	}
 }
 
