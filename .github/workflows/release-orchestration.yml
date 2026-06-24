@@ -183,13 +183,11 @@ jobs:
         shell: bash
         env:
           IMAGE_TAGS: ${{ inputs.image_tags }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_ARCH_SUFFIX: -amd64
         run: |
           set -euo pipefail
-          while IFS= read -r tag; do
-            if [ -n "$tag" ]; then
-              echo "${{ steps.image.outputs.name }}:${tag}-amd64"
-            fi
-          done <<< "$IMAGE_TAGS" > image-tags.txt
+          bash scripts/release-image-tags.sh > image-tags.txt
           {
             echo 'tags<<EOF'
             cat image-tags.txt
@@ -254,13 +252,11 @@ jobs:
         shell: bash
         env:
           IMAGE_TAGS: ${{ inputs.image_tags }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_ARCH_SUFFIX: -arm64
         run: |
           set -euo pipefail
-          while IFS= read -r tag; do
-            if [ -n "$tag" ]; then
-              echo "${{ steps.image.outputs.name }}:${tag}-arm64"
-            fi
-          done <<< "$IMAGE_TAGS" > image-tags.txt
+          bash scripts/release-image-tags.sh > image-tags.txt
           {
             echo 'tags<<EOF'
             cat image-tags.txt
@@ -306,6 +302,11 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+
       - name: Compute image name
         id: image
         run: |
@@ -329,12 +330,11 @@ jobs:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
         run: |
           set -euo pipefail
-          while IFS= read -r tag; do
-            if [ -n "$tag" ]; then
-              docker buildx imagetools create \
-                -t "${IMAGE_NAME}:${tag}" \
-                "${IMAGE_NAME}:${tag}-amd64" \
-                "${IMAGE_NAME}:${tag}-arm64"
-              docker buildx imagetools inspect "${IMAGE_NAME}:${tag}"
-            fi
-          done <<< "$IMAGE_TAGS"
+          bash scripts/release-image-tags.sh > image-tags.txt
+          while IFS= read -r image_ref; do
+            docker buildx imagetools create \
+              -t "${image_ref}" \
+              "${image_ref}-amd64" \
+              "${image_ref}-arm64"
+            docker buildx imagetools inspect "${image_ref}"
+          done < image-tags.txt

@@ -3,6 +3,7 @@ package scripts
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -27,6 +28,18 @@ type workflowOnConfig struct {
 
 type workflowConfig struct {
 	On workflowOnConfig `yaml:"on"`
+}
+
+type workflowJobConfig struct {
+	Steps []workflowStepConfig `yaml:"steps"`
+}
+
+type workflowStepConfig struct {
+	Name  string            `yaml:"name"`
+	ID    string            `yaml:"id"`
+	Run   string            `yaml:"run"`
+	Shell string            `yaml:"shell"`
+	Env   map[string]string `yaml:"env"`
 }
 
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
@@ -220,6 +233,176 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	}
 }
 
+func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
+	t.Parallel()
+
+	imageTags := "  v1.2.3 \r\n\tlatest\t\n\n \r\n v1.2.3-rc.1 \n"
+	testCases := []struct {
+		name   string
+		suffix string
+		want   string
+	}{
+		{
+			name:   "amd64",
+			suffix: "-amd64",
+			want: "ghcr.io/example/lopper:v1.2.3-amd64\n" +
+				"ghcr.io/example/lopper:latest-amd64\n" +
+				"ghcr.io/example/lopper:v1.2.3-rc.1-amd64\n",
+		},
+		{
+			name:   "arm64",
+			suffix: "-arm64",
+			want: "ghcr.io/example/lopper:v1.2.3-arm64\n" +
+				"ghcr.io/example/lopper:latest-arm64\n" +
+				"ghcr.io/example/lopper:v1.2.3-rc.1-arm64\n",
+		},
+		{
+			name: "manifest",
+			want: "ghcr.io/example/lopper:v1.2.3\n" +
+				"ghcr.io/example/lopper:latest\n" +
+				"ghcr.io/example/lopper:v1.2.3-rc.1\n",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			output := runReleaseImageTagScript(t, imageTags, tc.suffix)
+			if output != tc.want {
+				t.Fatalf("script output = %q, want %q", output, tc.want)
+			}
+		})
+	}
+}
+
+func TestReleaseImageTagScriptRejectsMalformedTagsBeforeOutput(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		imageTags string
+	}{
+		{
+			name:      "internal whitespace",
+			imageTags: "v1.2.3\nbad tag\nlatest",
+		},
+		{
+			name:      "slash",
+			imageTags: "release/candidate",
+		},
+		{
+			name:      "leading dash",
+			imageTags: "-latest",
+		},
+		{
+			name:      "too long",
+			imageTags: strings.Repeat("a", 129),
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := releaseImageTagScriptCommand(t, tc.imageTags, "-amd64")
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("script succeeded with malformed tag; output: %s", output)
+			}
+			if !strings.Contains(string(output), "::error::Malformed image tag rejected.") {
+				t.Fatalf("script error = %q, want malformed tag error", output)
+			}
+			if strings.Contains(string(output), "ghcr.io/example/lopper:") {
+				t.Fatalf("script emitted image refs before rejecting malformed input: %s", output)
+			}
+		})
+	}
+}
+
+func TestReleaseOrchestrationImageTagStepsUseSanitizer(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	testCases := []struct {
+		jobName  string
+		stepName string
+		suffix   string
+	}{
+		{
+			jobName:  "publish-ghcr-amd64",
+			stepName: "Compute amd64 image tags",
+			suffix:   "-amd64",
+		},
+		{
+			jobName:  "publish-ghcr-arm64",
+			stepName: "Compute arm64 image tags",
+			suffix:   "-arm64",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.jobName, func(t *testing.T) {
+			t.Parallel()
+
+			step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
+			assertArchImageTagStep(t, step, tc.stepName, tc.suffix)
+		})
+	}
+
+	manifestStep := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Publish multi-arch manifests")
+	assertManifestImageTagStep(t, manifestStep)
+}
+
+func assertArchImageTagStep(t *testing.T, step workflowStepConfig, stepName string, suffix string) {
+	t.Helper()
+
+	if step.Shell != "bash" {
+		t.Fatalf("%s shell = %q, want bash", stepName, step.Shell)
+	}
+	if step.Env["IMAGE_NAME"] != "${{ steps.image.outputs.name }}" {
+		t.Fatalf("%s IMAGE_NAME env = %q, want image output", stepName, step.Env["IMAGE_NAME"])
+	}
+	if step.Env["IMAGE_ARCH_SUFFIX"] != suffix {
+		t.Fatalf("%s IMAGE_ARCH_SUFFIX env = %q, want %q", stepName, step.Env["IMAGE_ARCH_SUFFIX"], suffix)
+	}
+	if !strings.Contains(step.Run, "bash scripts/release-image-tags.sh > image-tags.txt") {
+		t.Fatalf("%s must generate tags through scripts/release-image-tags.sh", stepName)
+	}
+	if strings.Contains(step.Run, "while IFS= read -r tag") {
+		t.Fatalf("%s must not use the stale unsanitized tag loop", stepName)
+	}
+}
+
+func assertManifestImageTagStep(t *testing.T, manifestStep workflowStepConfig) {
+	t.Helper()
+
+	sanitizerIndex := strings.Index(manifestStep.Run, "bash scripts/release-image-tags.sh > image-tags.txt")
+	dockerIndex := strings.Index(manifestStep.Run, "docker buildx imagetools create")
+	if sanitizerIndex < 0 {
+		t.Fatal("manifest publish step must sanitize image tags before use")
+	}
+	if dockerIndex < 0 {
+		t.Fatal("manifest publish step must create Docker manifests")
+	}
+	if sanitizerIndex > dockerIndex {
+		t.Fatal("manifest publish step must validate tags before Docker manifest operations")
+	}
+	if !strings.Contains(manifestStep.Run, "done < image-tags.txt") {
+		t.Fatal("manifest publish step must consume sanitized image tags")
+	}
+	if strings.Contains(manifestStep.Run, "done <<< \"$IMAGE_TAGS\"") {
+		t.Fatal("manifest publish step must not use the stale unsanitized image tag input loop")
+	}
+}
+
 func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing.T) {
 	t.Parallel()
 
@@ -271,6 +454,41 @@ func hasAutomerge(values []bool, want bool) bool {
 		}
 	}
 	return false
+}
+
+func runReleaseImageTagScript(t *testing.T, imageTags string, suffix string) string {
+	t.Helper()
+
+	cmd := releaseImageTagScriptCommand(t, imageTags, suffix)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run release image tag script: %v\n%s", err, output)
+	}
+	return string(output)
+}
+
+func releaseImageTagScriptCommand(t *testing.T, imageTags string, suffix string) *exec.Cmd {
+	t.Helper()
+
+	cmd := exec.Command("bash", repoPath(t, "scripts/release-image-tags.sh"))
+	cmd.Env = append(os.Environ(), "IMAGE_NAME=ghcr.io/example/lopper", "IMAGE_TAGS="+imageTags, "IMAGE_ARCH_SUFFIX="+suffix)
+	return cmd
+}
+
+func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) workflowStepConfig {
+	t.Helper()
+
+	job, ok := jobs[jobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", jobName)
+	}
+	for _, step := range job.Steps {
+		if step.Name == stepName {
+			return step
+		}
+	}
+	t.Fatalf("%s must define step %q", jobName, stepName)
+	return workflowStepConfig{}
 }
 
 func readJSONConfig(t *testing.T, path string, target any) {
