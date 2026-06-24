@@ -222,10 +222,7 @@ func assertGradleCatalogRegistryMissingInputWarnings(t *testing.T, registry *gra
 		name: gradleCatalogName,
 		path: paths.missingCatalogPath,
 	})
-	assertGradleCatalogWarningsContain(t, registry.warnings,
-		"unable to read missing/"+gradleSettingsFileName+":",
-		"unable to read gradle/missing.versions.toml:",
-	)
+	assertGradleCatalogWarningsContain(t, registry.warnings, "unable to read missing/"+gradleSettingsFileName+":", "unable to read gradle/missing.versions.toml:")
 }
 
 func assertGradleCatalogRegistryDirectoryFiltering(t *testing.T) {
@@ -288,11 +285,7 @@ func assertGradleCatalogRegistryMergeWarnings(t *testing.T, registry *gradleCata
 			{Catalog: gradleCatalogName, Alias: "retrofit", Group: "com.squareup.retrofit2", Artifact: "retrofit", Version: "2.11.0"},
 		},
 	})
-	assertGradleCatalogWarningsContain(t, registry.warnings,
-		fmt.Sprintf("multiple Gradle version catalog sources configured for libs under %s; using %s", filepath.Clean(repo), paths.defaultCatalogPath),
-		fmt.Sprintf("Gradle version catalog alias libs.%s resolves to multiple coordinates under %s; keeping %s:%s", "okhttp", filepath.Clean(repo), okhttpGroup, "okhttp"),
-		fmt.Sprintf("Gradle version catalog bundle libs.%s resolves to multiple dependency sets under %s; keeping the first definition", "networking", filepath.Clean(repo)),
-	)
+	assertGradleCatalogWarningsContain(t, registry.warnings, fmt.Sprintf("multiple Gradle version catalog sources configured for libs under %s; using %s", filepath.Clean(repo), paths.defaultCatalogPath), fmt.Sprintf("Gradle version catalog alias libs.%s resolves to multiple coordinates under %s; keeping %s:%s", "okhttp", filepath.Clean(repo), okhttpGroup, "okhttp"), fmt.Sprintf("Gradle version catalog bundle libs.%s resolves to multiple dependency sets under %s; keeping the first definition", "networking", filepath.Clean(repo)))
 }
 
 func assertGradleCatalogRegistrySettingsParsing(t *testing.T) {
@@ -317,10 +310,7 @@ dependencyResolutionManagement {
 	if len(refs) != 2 || refs[0].Path != gradleToolsCatalogPath || refs[1].Path != "" {
 		t.Fatalf("expected settings parser to keep first file and unsupported source, got %#v", refs)
 	}
-	assertGradleCatalogWarningsContain(t, warnings,
-		"multiple Gradle version catalog files declared for tools in "+gradleSettingsFileName+"; using "+gradleToolsCatalogPath,
-		"unsupported Gradle version catalog source for dynamic in "+gradleSettingsFileName,
-	)
+	assertGradleCatalogWarningsContain(t, warnings, "multiple Gradle version catalog files declared for tools in "+gradleSettingsFileName+"; using "+gradleToolsCatalogPath, "unsupported Gradle version catalog source for dynamic in "+gradleSettingsFileName)
 }
 
 func assertGradleCatalogRegistrySettingsLoading(t *testing.T, repo string, settingsPath string) {
