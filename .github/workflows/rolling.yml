@@ -52,7 +52,7 @@ jobs:
   build-darwin-amd64-rolling:
     needs:
       - prepare-rolling
-    runs-on: macos-15-intel
+    runs-on: macos-26-intel
     permissions:
       contents: read
     env:
