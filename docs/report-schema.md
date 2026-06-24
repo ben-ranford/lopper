@@ -75,6 +75,7 @@ CSV columns:
 - `runtimeUsage.topSymbols` lists best-effort runtime symbol hits derived from module subpaths.
 - `cache.invalidations` entries identify deterministic invalidation reasons (for example `input-changed`).
 - `usedPercent` values are adapter best-effort based on static analysis signals.
-- `summary.knownLicenseCount`, `summary.unknownLicenseCount`, and `summary.deniedLicenseCount` track license rollups across dependency rows.
+- `summary.knownLicenseCount`, `summary.unknownLicenseCount`, and `summary.deniedLicenseCount` are mutually exclusive license buckets across dependency rows. Denied dependencies count only as denied, even when they also have an SPDX value or unknown license metadata.
+- Stored reports or baselines created before the mutually exclusive license-bucket summary should be regenerated, or consumers should recompute `summary` from `dependencies`, before comparing license deltas.
 - `schemaVersion` is currently pinned to `0.1.0`.
 - Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed.

@@ -38,7 +38,7 @@ func TestComputeSummaryIncludesReachabilityRollup(t *testing.T) {
 	}
 }
 
-func TestComputeSummaryCountsUnknownDeniedLicense(t *testing.T) {
+func TestComputeSummaryCountsDeniedUnknownLicenseSeparately(t *testing.T) {
 	summary := ComputeSummary([]DependencyReport{
 		{
 			Name: "mystery",
@@ -53,14 +53,50 @@ func TestComputeSummaryCountsUnknownDeniedLicense(t *testing.T) {
 		t.Fatal("expected summary")
 		return
 	}
-	if summary.UnknownLicenseCount != 1 {
-		t.Fatalf("expected one unknown license, got %#v", summary)
+	if summary.UnknownLicenseCount != 0 {
+		t.Fatalf("expected denied unknown license to be excluded from unknown count, got %#v", summary)
 	}
 	if summary.DeniedLicenseCount != 1 {
 		t.Fatalf("expected denied count to include unknown denied licenses, got %#v", summary)
 	}
 	if summary.KnownLicenseCount != 0 {
 		t.Fatalf("expected no known licenses, got %#v", summary)
+	}
+}
+
+func TestComputeSummaryCountsDeniedSPDXLicenseSeparately(t *testing.T) {
+	summary := ComputeSummary([]DependencyReport{
+		{
+			Name: "copyleft",
+			License: &DependencyLicense{
+				SPDX:   "GPL-3.0-ONLY",
+				Denied: true,
+			},
+		},
+		{
+			Name: "permissive",
+			License: &DependencyLicense{
+				SPDX: "MIT",
+			},
+		},
+		{Name: "unlicensed"},
+	})
+
+	if summary == nil {
+		t.Fatal("expected summary")
+		return
+	}
+	if summary.KnownLicenseCount != 1 {
+		t.Fatalf("expected only non-denied SPDX license in known count, got %#v", summary)
+	}
+	if summary.UnknownLicenseCount != 1 {
+		t.Fatalf("expected only non-denied unknown license in unknown count, got %#v", summary)
+	}
+	if summary.DeniedLicenseCount != 1 {
+		t.Fatalf("expected denied SPDX license in denied count, got %#v", summary)
+	}
+	if got := summary.KnownLicenseCount + summary.UnknownLicenseCount + summary.DeniedLicenseCount; got != summary.DependencyCount {
+		t.Fatalf("expected disjoint license counts to sum to dependencies, got %d for %#v", got, summary)
 	}
 }
 
