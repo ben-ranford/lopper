@@ -60,7 +60,7 @@ jobs:
       SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
     steps:
       - name: Checkout rolling source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.SOURCE_SHA }}
 
@@ -129,7 +129,7 @@ jobs:
       SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
     steps:
       - name: Checkout (for changelog generation)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ env.SOURCE_SHA }}
@@ -257,7 +257,7 @@ jobs:
 
       - name: Checkout tap repository
         if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ben-ranford/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

@@ -51,7 +51,7 @@ jobs:
       RELEASE_LOCK_NOTES: ${{ inputs.release_lock_notes }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
