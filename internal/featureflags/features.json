@@ -60,5 +60,11 @@
     "name": "threshold-profiles-preview",
     "description": "Enable built-in threshold profile config scaffolding through the profile command.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0010",
+    "name": "dashboard-remote-repos-preview",
+    "description": "Enable dashboard repoUrl entries by materializing remote Git repositories into a deterministic local checkout cache.",
+    "lifecycle": "preview"
   }
 ]

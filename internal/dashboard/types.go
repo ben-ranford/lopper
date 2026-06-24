@@ -33,6 +33,7 @@ func ParseFormat(value string) (Format, error) {
 type RepoInput struct {
 	Name     string `json:"name"`
 	Path     string `json:"path"`
+	RepoURL  string `json:"repo_url,omitempty"`
 	Language string `json:"language,omitempty"`
 }
 

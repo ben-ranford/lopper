@@ -30,19 +30,25 @@ func TestDashboardRequestAdditionalBranches(t *testing.T) {
 	}
 
 	configDir := t.TempDir()
-	fromConfig, err := reposFromDashboardConfig(dashboard.LoadedConfig{
+	config := dashboard.LoadedConfig{
 		ConfigDir: configDir,
 		Dashboard: dashboard.ConfigDashboard{
 			Repos: []dashboard.ConfigRepo{
 				{Path: "./worker"},
 			},
 		},
-	})
+	}
+	fromConfig, err := reposFromDashboardConfig(config, nil)
 	if err != nil {
 		t.Fatalf("repos from config: %v", err)
 	}
 	if len(fromConfig) != 1 || fromConfig[0].Name != "worker" || fromConfig[0].Path != filepath.Join(configDir, "worker") {
 		t.Fatalf("expected config repo name inference and path resolution, got %#v", fromConfig)
+	}
+
+	absoluteBaselineStore := filepath.Join(t.TempDir(), "baselines")
+	if got := resolveDashboardConfigPath(configDir, absoluteBaselineStore); got != absoluteBaselineStore {
+		t.Fatalf("expected absolute dashboard config path to pass through, got %q", got)
 	}
 }
 

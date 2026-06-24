@@ -37,10 +37,56 @@ func TestResolveDashboardRequestConfigRelativeRepo(t *testing.T) {
 	}
 }
 
-func TestResolveDashboardRequestConfigRepoURLNotSupported(t *testing.T) {
+func TestResolveDashboardRequestConfigRepoURL(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "lopper-org.yml")
-	config := "dashboard:\n  repos:\n    - repoUrl: https://github.com/org/worker\n  output: json\n"
+	config := "dashboard:\n  repos:\n    - repoUrl: https://github.com/org/worker.git\n      name: Worker\n      language: python\n  output: json\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	features := enabledDashboardRemoteReposFeatures(t)
+	resolved, err := resolveDashboardRequest(DashboardRequest{
+		ConfigPath: configPath,
+		Features:   features,
+	})
+	if err != nil {
+		t.Fatalf("resolve dashboard request with repoUrl: %v", err)
+	}
+	if len(resolved.repos) != 1 {
+		t.Fatalf("expected one repo from repoUrl config, got %#v", resolved.repos)
+	}
+	got := resolved.repos[0]
+	if got.Name != "Worker" || got.Language != "python" || got.RepoURL != "https://github.com/org/worker.git" || got.Path != "" {
+		t.Fatalf("unexpected repoUrl repo input: %#v", got)
+	}
+}
+
+func TestResolveDashboardRequestConfigRepoURLInfersName(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "lopper-org.yml")
+	config := "dashboard:\n  repos:\n    - repoUrl: https://github.com/org/worker.git\n  output: json\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	features := enabledDashboardRemoteReposFeatures(t)
+	resolved, err := resolveDashboardRequest(DashboardRequest{
+		ConfigPath: configPath,
+		Features:   features,
+	})
+	if err != nil {
+		t.Fatalf("resolve dashboard request with repoUrl: %v", err)
+	}
+	if got := resolved.repos[0].Name; got != "worker" {
+		t.Fatalf("expected repoUrl name inferred from URL, got %q", got)
+	}
+}
+
+func TestResolveDashboardRequestConfigRepoURLRequiresFeature(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "lopper-org.yml")
+	config := "dashboard:\n  repos:\n    - repoUrl: https://github.com/org/worker.git\n  output: json\n"
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -48,11 +94,8 @@ func TestResolveDashboardRequestConfigRepoURLNotSupported(t *testing.T) {
 	_, err := resolveDashboardRequest(DashboardRequest{
 		ConfigPath: configPath,
 	})
-	if err == nil {
-		t.Fatalf("expected unsupported repoUrl error")
-	}
-	if !strings.Contains(err.Error(), "repoUrl") {
-		t.Fatalf("expected repoUrl error message, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), DashboardRemoteReposPreviewFeature) {
+		t.Fatalf("expected repoUrl feature gate error, got %v", err)
 	}
 }
 
@@ -85,16 +128,33 @@ func TestResolveDashboardRequestAppliesDefaultLanguageAndOutputTrim(t *testing.T
 }
 
 func TestReposFromDashboardConfigMissingPath(t *testing.T) {
-	_, err := reposFromDashboardConfig(dashboard.LoadedConfig{
+	config := dashboard.LoadedConfig{
 		ConfigDir: t.TempDir(),
 		Dashboard: dashboard.ConfigDashboard{
 			Repos: []dashboard.ConfigRepo{
 				{Name: "broken-repo"},
 			},
 		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "missing path") {
+	}
+	_, err := reposFromDashboardConfig(config, nil)
+	if err == nil || !strings.Contains(err.Error(), "missing path or repoUrl") {
 		t.Fatalf("expected missing path error, got %v", err)
+	}
+}
+
+func TestReposFromDashboardConfigRejectsPathAndRepoURL(t *testing.T) {
+	features := enabledDashboardRemoteReposFeatures(t)
+	config := dashboard.LoadedConfig{
+		ConfigDir: t.TempDir(),
+		Dashboard: dashboard.ConfigDashboard{
+			Repos: []dashboard.ConfigRepo{
+				{Path: "./worker", RepoURL: "https://github.com/org/worker.git"},
+			},
+		},
+	}
+	_, err := reposFromDashboardConfig(config, &features)
+	if err == nil || !strings.Contains(err.Error(), "cannot define both path and repoUrl") {
+		t.Fatalf("expected mutually exclusive path/repoUrl error, got %v", err)
 	}
 }
 

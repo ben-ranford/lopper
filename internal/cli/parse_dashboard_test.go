@@ -118,6 +118,24 @@ func TestParseArgsDashboardResolvesDefaultFeatureFlags(t *testing.T) {
 	})
 }
 
+func TestParseArgsDashboardFeatureOverrides(t *testing.T) {
+	withFeatureRegistry(t, featureflags.ChannelRelease, nil)
+	req := mustParseArgs(t, []string{"dashboard", dashboardReposFlagName, "./api", "--enable-feature", "preview-flag", "--disable-feature", "stable-flag"})
+	if !req.Dashboard.Features.Enabled("preview-flag") {
+		t.Fatalf("expected dashboard --enable-feature to enable preview flag")
+	}
+	if req.Dashboard.Features.Enabled("stable-flag") {
+		t.Fatalf("expected dashboard --disable-feature to disable stable flag")
+	}
+
+	if err := expectParseArgsError(t, []string{"dashboard", dashboardReposFlagName, "./api", "--enable-feature", "missing"}, "expected dashboard unknown feature error"); !strings.Contains(err.Error(), "unknown feature") {
+		t.Fatalf("expected unknown feature error, got %v", err)
+	}
+	if err := expectParseArgsError(t, []string{"dashboard", dashboardReposFlagName, "./api", "--enable-feature", "preview-flag", "--disable-feature", "preview-flag"}, "expected dashboard feature conflict"); !strings.Contains(err.Error(), "both enabled and disabled") {
+		t.Fatalf("expected feature conflict error, got %v", err)
+	}
+}
+
 func TestParseArgsDashboardReturnsFeatureResolutionError(t *testing.T) {
 	oldValidate := validateFeatureRegistry
 	validateFeatureRegistry = func() error { return errors.New("registry invalid") }

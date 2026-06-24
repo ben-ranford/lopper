@@ -30,6 +30,10 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 	baselineKeyFlag := fs.String("baseline-key", req.Dashboard.BaselineKey, "baseline snapshot key for comparison")
 	baselineLabelFlag := fs.String("baseline-label", req.Dashboard.BaselineLabel, "label to use when saving a baseline snapshot")
 	saveBaselineFlag := fs.Bool("save-baseline", req.Dashboard.SaveBaseline, "save current dashboard run as an immutable baseline snapshot")
+	enableFeatures := newPatternListFlag(nil)
+	disableFeatures := newPatternListFlag(nil)
+	fs.Var(enableFeatures, "enable-feature", "comma-separated feature flag names to enable (repeatable)")
+	fs.Var(disableFeatures, "disable-feature", "comma-separated feature flag names to disable (repeatable)")
 
 	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
@@ -50,7 +54,7 @@ func parseDashboard(args []string, req app.Request) (app.Request, error) {
 	if len(repos) == 0 && strings.TrimSpace(*configFlag) == "" {
 		return req, fmt.Errorf("dashboard requires --repos or --config")
 	}
-	resolvedFeatures, err := resolveDefaultFeatureSet()
+	resolvedFeatures, err := resolveFeatureRefs(enableFeatures.Values(), disableFeatures.Values())
 	if err != nil {
 		return req, err
 	}
