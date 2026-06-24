@@ -3,6 +3,7 @@ package golang
 import (
 	"context"
 	"go/ast"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -134,23 +135,39 @@ func assertGoTagVersionHelpers(t *testing.T) {
 
 func assertGoModHelpers(t *testing.T) {
 	t.Helper()
+	assertGoModReplacementIgnoresLocalTarget(t)
+	assertParseGoModStandardFile(t)
+	assertParseGoModInlineRequireBlock(t)
+	assertParseGoModCommentedInlineRequireBlock(t)
+	assertNormalizeInlineGoModRequireLineWithComment(t)
+	assertNormalizeInlineGoModRequireLineEmpty(t)
+	assertParseGoModMalformedInput(t)
+}
+
+func assertGoModReplacementIgnoresLocalTarget(t *testing.T) {
+	t.Helper()
 	replaceSet := map[string]string{}
 	addGoModReplacement("example.com/old => local/module", replaceSet)
 	if len(replaceSet) != 0 {
 		t.Fatalf("expected non-external replacement target to be ignored")
 	}
+}
 
-	modulePath, dependencies, replacements := parseGoMod([]byte("module example.com/root\n\nrequire github.com/acme/dep v1.2.3\nreplace example.com/old => ./local/module\n"))
-	if modulePath != "example.com/root" {
-		t.Fatalf("expected module path from modfile parse, got %q", modulePath)
-	}
-	if len(dependencies) != 1 || dependencies[0] != "github.com/acme/dep" {
-		t.Fatalf("expected dependency from modfile parse, got %#v", dependencies)
-	}
-	if len(replacements) != 0 {
-		t.Fatalf("expected local replacement target to be ignored, got %#v", replacements)
-	}
+func assertParseGoModStandardFile(t *testing.T) {
+	t.Helper()
+	assertParsedGoMod(t,
+		"module example.com/root\n\nrequire github.com/acme/dep v1.2.3\nreplace example.com/old => ./local/module\n",
+		"example.com/root",
+		[]string{"github.com/acme/dep"},
+		map[string]string{},
+		"expected module path from modfile parse",
+		"expected dependency from modfile parse",
+		"expected local replacement target to be ignored",
+	)
+}
 
+func assertParseGoModInlineRequireBlock(t *testing.T) {
+	t.Helper()
 	inlineBlockGoModLines := []string{
 		"module example.com/root",
 		"require ( github.com/acme/dep v1.2.3 )",
@@ -158,54 +175,84 @@ func assertGoModHelpers(t *testing.T) {
 		"replace example.com/old => github.com/fork/old v1.2.4",
 		"",
 	}
-	inlineBlockGoMod := strings.Join(inlineBlockGoModLines, "\n")
-	inlineBlockModulePath, inlineBlockDependencies, inlineBlockReplacements := parseGoMod([]byte(inlineBlockGoMod))
-	if inlineBlockModulePath != "example.com/root" {
-		t.Fatalf("expected inline require block module path, got %q", inlineBlockModulePath)
-	}
-	if !slices.Equal(inlineBlockDependencies, []string{"github.com/acme/dep", "github.com/acme/other"}) {
-		t.Fatalf("expected inline require block dependencies to survive, got %#v", inlineBlockDependencies)
-	}
-	if len(inlineBlockReplacements) != 1 || inlineBlockReplacements["github.com/fork/old"] != "example.com/old" {
-		t.Fatalf("expected inline require block to preserve later replace directives, got %#v", inlineBlockReplacements)
-	}
+	assertParsedGoMod(t,
+		strings.Join(inlineBlockGoModLines, "\n"),
+		"example.com/root",
+		[]string{"github.com/acme/dep", "github.com/acme/other"},
+		map[string]string{"github.com/fork/old": "example.com/old"},
+		"expected inline require block module path",
+		"expected inline require block dependencies to survive",
+		"expected inline require block to preserve later replace directives",
+	)
+}
 
+func assertParseGoModCommentedInlineRequireBlock(t *testing.T) {
+	t.Helper()
 	commentedInlineBlockGoModLines := []string{
 		"module example.com/root",
 		"require ( github.com/acme/dep v1.2.3 ) // keep comment",
 		"",
 	}
-	commentedInlineBlockGoMod := strings.Join(commentedInlineBlockGoModLines, "\n")
-	commentedModulePath, commentedDependencies, commentedReplacements := parseGoMod([]byte(commentedInlineBlockGoMod))
-	if commentedModulePath != "example.com/root" {
-		t.Fatalf("expected commented inline require block module path, got %q", commentedModulePath)
-	}
-	if !slices.Equal(commentedDependencies, []string{"github.com/acme/dep"}) {
-		t.Fatalf("expected commented inline require block dependency, got %#v", commentedDependencies)
-	}
-	if len(commentedReplacements) != 0 {
-		t.Fatalf("expected no replacements from commented inline require block, got %#v", commentedReplacements)
-	}
+	assertParsedGoMod(t,
+		strings.Join(commentedInlineBlockGoModLines, "\n"),
+		"example.com/root",
+		[]string{"github.com/acme/dep"},
+		map[string]string{},
+		"expected commented inline require block module path",
+		"expected commented inline require block dependency",
+		"expected no replacements from commented inline require block",
+	)
+}
 
+func assertNormalizeInlineGoModRequireLineWithComment(t *testing.T) {
+	t.Helper()
 	normalizedLine, ok := normalizeInlineGoModRequireLine("require ( github.com/acme/dep v1.2.3 ) // keep comment")
 	if !ok || normalizedLine != "require github.com/acme/dep v1.2.3 // keep comment" {
 		t.Fatalf("expected inline require line normalization with comment, got line=%q ok=%v", normalizedLine, ok)
 	}
+}
 
+func assertNormalizeInlineGoModRequireLineEmpty(t *testing.T) {
+	t.Helper()
 	emptyLine, emptyOK := normalizeInlineGoModRequireLine("require ( )")
 	if emptyOK || emptyLine != "require ( )" {
 		t.Fatalf("expected empty inline require line to stay unchanged, got line=%q ok=%v", emptyLine, emptyOK)
 	}
+}
 
-	malformedModulePath, malformedDependencies, malformedReplacements := parseGoMod([]byte("module example.com/root\nrequire (\n"))
-	if malformedModulePath != "" {
-		t.Fatalf("expected malformed go.mod parse to return empty module path, got %q", malformedModulePath)
+func assertParseGoModMalformedInput(t *testing.T) {
+	t.Helper()
+	assertParsedGoMod(t,
+		"module example.com/root\nrequire (\n",
+		"",
+		nil,
+		map[string]string{},
+		"expected malformed go.mod parse to return empty module path",
+		"expected malformed go.mod parse to preserve empty dependency slice",
+		"expected malformed go.mod parse to preserve empty replacements",
+	)
+}
+
+func assertParsedGoMod(
+	t *testing.T,
+	goMod string,
+	wantModulePath string,
+	wantDependencies []string,
+	wantReplacements map[string]string,
+	moduleMessage string,
+	dependencyMessage string,
+	replacementMessage string,
+) {
+	t.Helper()
+	modulePath, dependencies, replacements := parseGoMod([]byte(goMod))
+	if modulePath != wantModulePath {
+		t.Fatalf("%s, got %q", moduleMessage, modulePath)
 	}
-	if len(malformedDependencies) != 0 {
-		t.Fatalf("expected malformed go.mod parse to preserve empty dependency slice, got %#v", malformedDependencies)
+	if !slices.Equal(dependencies, wantDependencies) {
+		t.Fatalf("%s, got %#v", dependencyMessage, dependencies)
 	}
-	if len(malformedReplacements) != 0 {
-		t.Fatalf("expected malformed go.mod parse to preserve empty replacements, got %#v", malformedReplacements)
+	if !maps.Equal(replacements, wantReplacements) {
+		t.Fatalf("%s, got %#v", replacementMessage, replacements)
 	}
 }
 
