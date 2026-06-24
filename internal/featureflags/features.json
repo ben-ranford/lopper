@@ -72,5 +72,11 @@
     "name": "python-runtime-trace-preview",
     "description": "Enable preview runtime trace annotations for Python dependencies using shared runtimeUsage report fields.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0012",
+    "name": "mcp-mutation-tools-preview",
+    "description": "Enable explicit MCP mutation tools for codemod apply and baseline snapshot save workflows.",
+    "lifecycle": "preview"
   }
 ]

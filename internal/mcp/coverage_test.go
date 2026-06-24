@@ -94,6 +94,9 @@ func TestFramingErrorBranches(t *testing.T) {
 	if _, err := readFrame(bufio.NewReader(strings.NewReader("Content-Length: 5\r\n\r\nabc"))); err == nil {
 		t.Fatalf("expected short body error")
 	}
+	if err := frameReadError(io.ErrUnexpectedEOF, true); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected non-empty partial header error to pass through, got %v", err)
+	}
 	if err := writeFrame(&failWriteCloser{}, []byte("{}")); err == nil {
 		t.Fatalf("expected writeFrame header write error")
 	}
@@ -320,6 +323,36 @@ func TestResolveFeaturesBranches(t *testing.T) {
 	if _, err := server.resolveFeatures(emptyFeatureConfig(), nil, nil); err == nil {
 		t.Fatalf("expected invalid build channel error")
 	}
+}
+
+func TestDefaultServerFeatureBranches(t *testing.T) {
+	t.Run("invalid channel returns empty defaults", func(t *testing.T) {
+		withCurrentVersion(t, version.Info{BuildChannel: "bad"})
+		features := resolveDefaultServerFeatures(featureflags.DefaultRegistry())
+		if features.Snapshot() != nil {
+			t.Fatalf("expected empty feature set for invalid channel, got %#v", features.Snapshot())
+		}
+	})
+
+	t.Run("release channel resolves defaults", func(t *testing.T) {
+		withCurrentVersion(t, version.Info{Version: "v1.6.0", BuildChannel: "release"})
+		features := resolveDefaultServerFeatures(featureflags.DefaultRegistry())
+		if features.Snapshot() == nil {
+			t.Fatalf("expected release feature defaults")
+		}
+	})
+
+	t.Run("nil registry fallback", func(t *testing.T) {
+		withCurrentVersion(t, version.Info{BuildChannel: "dev"})
+		server := &Server{}
+		features, err := server.resolveFeatures(emptyFeatureConfig(), nil, nil)
+		if err != nil {
+			t.Fatalf("resolve fallback features: %v", err)
+		}
+		if features.Snapshot() == nil {
+			t.Fatalf("expected fallback default registry features")
+		}
+	})
 }
 
 func TestThresholdAndPolicyHelpers(t *testing.T) {

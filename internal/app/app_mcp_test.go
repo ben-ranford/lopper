@@ -47,17 +47,37 @@ func TestExecuteMCPRejectsExplicitlyDisabledFeature(t *testing.T) {
 
 func mustMCPFeatureSet(t *testing.T, disable bool) featureflags.Set {
 	t.Helper()
-	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
-		Code:      "LOP-FEAT-0001",
-		Name:      mcp.ServerPreviewFeature,
-		Lifecycle: featureflags.LifecycleStable,
-	}})
+	return mustMCPFeatureSetWithMutations(t, disable, false)
+}
+
+func mustMCPMutationFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	return mustMCPFeatureSetWithMutations(t, false, true)
+}
+
+func mustMCPFeatureSetWithMutations(t *testing.T, disableServer bool, enableMutations bool) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{
+		{
+			Code:      "LOP-FEAT-0001",
+			Name:      mcp.ServerPreviewFeature,
+			Lifecycle: featureflags.LifecycleStable,
+		},
+		{
+			Code:      "LOP-FEAT-0002",
+			Name:      mcp.MutationToolsFeature,
+			Lifecycle: featureflags.LifecyclePreview,
+		},
+	})
 	if err != nil {
 		t.Fatalf("new feature registry: %v", err)
 	}
 	opts := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
-	if disable {
+	if disableServer {
 		opts.Disable = []string{mcp.ServerPreviewFeature}
+	}
+	if enableMutations {
+		opts.Enable = append(opts.Enable, mcp.MutationToolsFeature)
 	}
 	features, err := registry.Resolve(opts)
 	if err != nil {
