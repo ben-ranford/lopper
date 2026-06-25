@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -66,6 +67,60 @@ func TestCaptureUsesAbsoluteNodeHookPaths(t *testing.T) {
 	}
 	if !strings.Contains(got, "--loader="+loaderPath) {
 		t.Fatalf("expected absolute loader hook path, got %q", got)
+	}
+}
+
+func TestCapturePythonRuntimeImports(t *testing.T) {
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	sitePackages := filepath.Join(t.TempDir(), "lib", "python3.12", "site-packages")
+	if err := os.MkdirAll(filepath.Join(sitePackages, "thirdparty"), 0o750); err != nil {
+		t.Fatalf("mkdir thirdparty package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sitePackages, "thirdparty", "__init__.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
+		t.Fatalf("write thirdparty package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "localmod.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
+		t.Fatalf("write local module: %v", err)
+	}
+
+	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
+	t.Setenv("PYTHONPATH", sitePackages)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import thirdparty; import localmod'\n"))
+
+	err = Capture(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   "pytest",
+		Provider:  CaptureProviderPython,
+	})
+	if err != nil {
+		t.Fatalf("capture python runtime trace: %v", err)
+	}
+
+	content, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read python runtime trace: %v", err)
+	}
+	if !strings.Contains(string(content), `"language":"python"`) || !strings.Contains(string(content), `"module":"thirdparty"`) {
+		t.Fatalf("expected third-party python import event, got %s", content)
+	}
+	if strings.Contains(string(content), "localmod") {
+		t.Fatalf("expected local module import to be filtered, got %s", content)
+	}
+
+	trace, err := Load(tracePath)
+	if err != nil {
+		t.Fatalf("load captured python runtime trace: %v", err)
+	}
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "thirdparty"}
+	if trace.DependencyLoadsByLanguage[key] == 0 {
+		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
 	}
 }
 
@@ -218,18 +273,35 @@ func TestCaptureReuseIfUnchangedSkipsRepeatedCommand(t *testing.T) {
 	}
 
 	third := second
-	third.Command = "npm run test"
+	third.Provider = CaptureProviderPython
 	if err := Capture(context.Background(), third); err != nil {
-		t.Fatalf("capture third run command change: %v", err)
+		t.Fatalf("capture third run provider change: %v", err)
 	}
 	if got := readCaptureCounter(t, counterPath); got != 2 {
+		t.Fatalf("expected changed provider to rerun capture, got %d", got)
+	}
+
+	fourth := third
+	if err := Capture(context.Background(), fourth); err != nil {
+		t.Fatalf("capture fourth run: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 2 {
+		t.Fatalf("expected repeated provider-specific capture to reuse trace, got %d", got)
+	}
+
+	fifth := second
+	fifth.Command = "npm run test"
+	if err := Capture(context.Background(), fifth); err != nil {
+		t.Fatalf("capture fifth run command change: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 3 {
 		t.Fatalf("expected changed command to rerun capture, got %d", got)
 	}
 }
 
 func TestReuseRuntimeTraceIfPossibleMissingTraceSkipsReuse(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
 }
 
 func TestReuseRuntimeTraceIfPossibleDirectoryTraceSkipsReuse(t *testing.T) {
@@ -237,12 +309,12 @@ func TestReuseRuntimeTraceIfPossibleDirectoryTraceSkipsReuse(t *testing.T) {
 	if err := os.MkdirAll(tracePath, 0o750); err != nil {
 		t.Fatalf("mkdir trace path dir: %v", err)
 	}
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
 }
 
 func TestReuseRuntimeTraceIfPossibleMissingStateSkipsReuse(t *testing.T) {
 	tracePath := writeTraceFixture(t)
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
 }
 
 func TestReuseRuntimeTraceIfPossibleInvalidStateSkipsReuse(t *testing.T) {
@@ -250,37 +322,41 @@ func TestReuseRuntimeTraceIfPossibleInvalidStateSkipsReuse(t *testing.T) {
 	if err := os.WriteFile(runtimeTraceStatePath(tracePath), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid state file: %v", err)
 	}
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
 }
 
 func TestParseRuntimeTraceStateValidation(t *testing.T) {
 	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"wrong","command":"npm test"}`)); ok {
 		t.Fatalf("expected wrong runtime trace schema to be rejected")
 	}
-	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v1","command":"  "}`)); ok {
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"  ","provider":"node"}`)); ok {
 		t.Fatalf("expected blank runtime trace command to be rejected")
+	}
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"npm test","provider":"ruby"}`)); ok {
+		t.Fatalf("expected unsupported runtime trace provider to be rejected")
 	}
 }
 
 func TestWriteRuntimeTraceStateAndReuseChecks(t *testing.T) {
 	tracePath := writeTraceFixture(t)
-	if err := writeRuntimeTraceState(tracePath, "  npm test  "); err != nil {
+	if err := writeRuntimeTraceState(tracePath, "  npm test  ", CaptureProviderNode); err != nil {
 		t.Fatalf("write runtime trace state: %v", err)
 	}
 
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, true)
-	assertRuntimeReuseResult(t, tracePath, "npm run test", false)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, true)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderPython, false)
+	assertRuntimeReuseResult(t, tracePath, "npm run test", CaptureProviderNode, false)
 }
 
 func TestWriteRuntimeTraceStateFailsWhenParentMissing(t *testing.T) {
 	missingParentTrace := filepath.Join(t.TempDir(), "missing", runtimeTraceNDJSON)
-	if err := writeRuntimeTraceState(missingParentTrace, npmTestCommand); err == nil {
+	if err := writeRuntimeTraceState(missingParentTrace, npmTestCommand, CaptureProviderNode); err == nil {
 		t.Fatalf("expected writeRuntimeTraceState to fail when parent directory is missing")
 	}
 }
 
 func TestReuseRuntimeTraceIfPossibleSurfacesStatError(t *testing.T) {
-	reused, err := reuseRuntimeTraceIfPossible(string([]byte{0}), npmTestCommand)
+	reused, err := reuseRuntimeTraceIfPossible(string([]byte{0}), npmTestCommand, CaptureProviderNode)
 	if err == nil || reused {
 		t.Fatalf("expected invalid trace path stat error, reused=%v err=%v", reused, err)
 	}
@@ -292,7 +368,7 @@ func TestReuseRuntimeTraceIfPossibleSurfacesStateReadError(t *testing.T) {
 		t.Fatalf("mkdir trace state dir: %v", err)
 	}
 
-	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand)
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand, CaptureProviderNode)
 	if err == nil || reused {
 		t.Fatalf("expected runtime trace state read error, reused=%v err=%v", reused, err)
 	}
@@ -355,10 +431,16 @@ func writeTraceFixture(t *testing.T) string {
 	return tracePath
 }
 
-func assertRuntimeReuseResult(t *testing.T, tracePath, command string, wantReused bool) {
+func assertDefaultRuntimeReuseResult(t *testing.T, tracePath, command string, wantReused bool) {
 	t.Helper()
 
-	reused, err := reuseRuntimeTraceIfPossible(tracePath, command)
+	assertRuntimeReuseResult(t, tracePath, command, CaptureProviderNode, wantReused)
+}
+
+func assertRuntimeReuseResult(t *testing.T, tracePath, command string, provider CaptureProvider, wantReused bool) {
+	t.Helper()
+
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, command, provider)
 	if err != nil {
 		t.Fatalf("reuse runtime trace: %v", err)
 	}

@@ -94,7 +94,7 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 		baselineLabel:                 fs.String("baseline-label", req.Analyse.BaselineLabel, "label to use when saving a baseline snapshot"),
 		saveBaseline:                  fs.Bool("save-baseline", req.Analyse.SaveBaseline, "save current run as immutable baseline snapshot"),
 		runtimeTracePath:              fs.String("runtime-trace", req.Analyse.RuntimeTracePath, "runtime trace file path"),
-		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with runtime tracing"),
+		runtimeTestCommand:            fs.String("runtime-test-command", req.Analyse.RuntimeTestCommand, "optional command to execute tests with JS/TS or preview Python runtime tracing"),
 		configPath:                    fs.String("config", req.Analyse.ConfigPath, "config file path"),
 		enableFeatures:                enableFeatures,
 		disableFeatures:               disableFeatures,

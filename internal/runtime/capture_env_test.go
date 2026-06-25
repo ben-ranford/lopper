@@ -17,13 +17,74 @@ func TestWithRuntimeTraceEnv(t *testing.T) {
 		t.Fatalf("runtime hook paths: %v", err)
 	}
 
-	env, err := withRuntimeTraceEnv([]string{"NODE_OPTIONS=--max-old-space-size=4096", "PATH=/usr/bin"}, tracePath)
+	env, err := withRuntimeTraceEnv([]string{"NODE_OPTIONS=--max-old-space-size=4096", "PATH=/usr/bin"}, tracePath, CaptureProviderNode)
 	if err != nil {
 		t.Fatalf("with runtime trace env: %v", err)
 	}
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
 	assertNodeOptionsEntry(t, env, requirePath, loaderPath)
+}
+
+func TestWithPythonRuntimeTraceEnv(t *testing.T) {
+	tracePath := "/tmp/python-runtime.ndjson"
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil {
+		t.Fatalf("runtime python hook directory: %v", err)
+	}
+
+	env, err := withRuntimeTraceEnv([]string{"PYTHONPATH=/existing/path", "NODE_OPTIONS=--max-old-space-size=4096"}, tracePath, CaptureProviderPython)
+	if err != nil {
+		t.Fatalf("with python runtime trace env: %v", err)
+	}
+
+	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
+	pythonPath, ok := lookupEnvEntry(env, "PYTHONPATH")
+	if !ok {
+		t.Fatalf("expected PYTHONPATH to be set")
+	}
+	wantPythonPath := hookDir + string(os.PathListSeparator) + "/existing/path"
+	if pythonPath != wantPythonPath {
+		t.Fatalf("expected PYTHONPATH %q, got %q", wantPythonPath, pythonPath)
+	}
+	if nodeOptions, ok := lookupEnvEntry(env, "NODE_OPTIONS"); !ok || nodeOptions != "--max-old-space-size=4096" {
+		t.Fatalf("expected NODE_OPTIONS to be preserved without Python changes, got %q", nodeOptions)
+	}
+}
+
+func TestWithPythonRuntimeTraceEnvWithoutExistingPythonPath(t *testing.T) {
+	tracePath := "/tmp/python-runtime.ndjson"
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil {
+		t.Fatalf("runtime python hook directory: %v", err)
+	}
+
+	env, err := withPythonRuntimeTraceEnv([]string{"PATH=/usr/bin"}, tracePath)
+	if err != nil {
+		t.Fatalf("with python runtime trace env: %v", err)
+	}
+
+	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
+	assertEnvEntryValue(t, env, "PYTHONPATH", hookDir)
+}
+
+func TestRuntimeCaptureProviderValidationBranches(t *testing.T) {
+	if got := normalizeCaptureProvider(""); got != CaptureProviderNode {
+		t.Fatalf("expected default provider to normalize to node, got %q", got)
+	}
+	if got := normalizeCaptureProvider(CaptureProviderPython); got != CaptureProviderPython {
+		t.Fatalf("expected python provider to normalize to python, got %q", got)
+	}
+	if got := normalizeCaptureProvider("ruby"); got != "" {
+		t.Fatalf("expected unsupported provider to normalize empty, got %q", got)
+	}
+
+	if _, err := withRuntimeTraceEnv(nil, "/tmp/runtime.ndjson", "ruby"); err == nil || !strings.Contains(err.Error(), "unsupported runtime capture provider") {
+		t.Fatalf("expected unsupported provider env error, got %v", err)
+	}
+	if _, err := resolveCapturePlan(CaptureRequest{RepoPath: t.TempDir(), Command: "npm test", Provider: "ruby"}); err == nil || !strings.Contains(err.Error(), "unsupported runtime capture provider") {
+		t.Fatalf("expected unsupported provider plan error, got %v", err)
+	}
 }
 
 func assertEnvEntryValue(t *testing.T, env []string, key, want string) {
@@ -124,6 +185,7 @@ func TestRuntimeHookSearchRootsAreAnchored(t *testing.T) {
 
 	roots := runtimeHookSearchRoots()
 	want := []string{
+		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "share", "lopper")),
 		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
 		filepath.Clean(filepath.Join("/tmp", "source", "internal", "runtime", "..", "..")),
 	}
@@ -148,6 +210,7 @@ func TestRuntimeHookSearchRootsResolveRelativeCallerPaths(t *testing.T) {
 		t.Fatalf("abs repo root: %v", err)
 	}
 	want := []string{
+		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "share", "lopper")),
 		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
 		wantRepoRoot,
 	}

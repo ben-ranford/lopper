@@ -39,10 +39,18 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 		"adapter":        adapterID,
 		"root":           normalizedRoot,
 		"dependency":     req.Dependency,
+		"language":       normalizeCacheLanguage(req.Language),
 		"topN":           req.TopN,
 		"suggestOnly":    req.SuggestOnly,
 		"runtimeProfile": req.RuntimeProfile,
 		"configPath":     strings.TrimSpace(req.ConfigPath),
+	}
+	if command := strings.TrimSpace(req.RuntimeTestCommand); command != "" {
+		baseKey["runtimeTestCommand"] = command
+		baseKey["runtimeTracePathExplicit"] = req.RuntimeTracePathExplicit
+		if tracePath := cleanRuntimeTracePath(req.RuntimeTracePath); tracePath != "" {
+			baseKey["runtimeTracePath"] = tracePath
+		}
 	}
 	if req.MinUsagePercentForRecommendations != nil {
 		baseKey["minUsagePercent"] = *req.MinUsagePercentForRecommendations
@@ -135,6 +143,17 @@ func cleanConfigPath(configPath string) string {
 		return ""
 	}
 	return filepath.Clean(strings.TrimSpace(configPath))
+}
+
+func cleanRuntimeTracePath(tracePath string) string {
+	if strings.TrimSpace(tracePath) == "" {
+		return ""
+	}
+	return filepath.Clean(strings.TrimSpace(tracePath))
+}
+
+func normalizeCacheLanguage(languageID string) string {
+	return strings.ToLower(strings.TrimSpace(languageID))
 }
 
 func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {

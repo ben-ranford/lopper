@@ -88,5 +88,11 @@
     "name": "sbom-attestation-exports-preview",
     "description": "Enable preview CycloneDX SBOM exports with Lopper dependency-surface metadata.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0014",
+    "name": "python-runtime-capture-preview",
+    "description": "Enable first-party Python runtime import capture for runtime-test-command analysis.",
+    "lifecycle": "preview"
   }
 ]

@@ -8,15 +8,16 @@ import (
 	"strings"
 )
 
-const runtimeTraceStateSchema = "v1"
+const runtimeTraceStateSchema = "v2"
 const runtimeTraceStateSuffix = ".state.json"
 
 type runtimeTraceState struct {
-	Schema  string `json:"schema"`
-	Command string `json:"command"`
+	Schema   string          `json:"schema"`
+	Command  string          `json:"command"`
+	Provider CaptureProvider `json:"provider"`
 }
 
-func reuseRuntimeTraceIfPossible(tracePath, command string) (bool, error) {
+func reuseRuntimeTraceIfPossible(tracePath, command string, provider CaptureProvider) (bool, error) {
 	info, err := os.Stat(tracePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -39,7 +40,8 @@ func reuseRuntimeTraceIfPossible(tracePath, command string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	return strings.TrimSpace(state.Command) == strings.TrimSpace(command), nil
+	return strings.TrimSpace(state.Command) == strings.TrimSpace(command) &&
+		normalizeCaptureProvider(state.Provider) == normalizeCaptureProvider(provider), nil
 }
 
 func runtimeTraceStatePath(tracePath string) string {
@@ -57,10 +59,15 @@ func parseRuntimeTraceState(stateData []byte) (runtimeTraceState, bool) {
 	if strings.TrimSpace(state.Command) == "" {
 		return runtimeTraceState{}, false
 	}
+	if normalizeCaptureProvider(state.Provider) == "" {
+		return runtimeTraceState{}, false
+	}
 	return state, true
 }
 
-func writeRuntimeTraceState(tracePath, command string) error {
-	payload := []byte(`{"schema":"` + runtimeTraceStateSchema + `","command":` + strconv.Quote(strings.TrimSpace(command)) + `}`)
+func writeRuntimeTraceState(tracePath, command string, provider CaptureProvider) error {
+	payload := []byte(`{"schema":"` + runtimeTraceStateSchema +
+		`","command":` + strconv.Quote(strings.TrimSpace(command)) +
+		`,"provider":` + strconv.Quote(string(normalizeCaptureProvider(provider))) + `}`)
 	return os.WriteFile(runtimeTraceStatePath(tracePath), payload, 0o600)
 }

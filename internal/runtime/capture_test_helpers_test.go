@@ -43,6 +43,9 @@ func setupFakeRuntimeTools(t *testing.T) string {
 		"ava",
 		"deno",
 		"make",
+		"pytest",
+		"python",
+		"python3",
 	}
 	for _, tool := range tools {
 		path := filepath.Join(toolDir, tool)

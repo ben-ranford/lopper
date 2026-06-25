@@ -296,7 +296,17 @@ If `--runtime-trace` points to a missing file, analysis continues with static re
 
 ### Python preview
 
-Python runtime trace consumption is available behind the `python-runtime-trace-preview` feature flag. Lopper consumes an existing NDJSON trace file; it does not run Python tests or install a Python import hook for you.
+First-party Python runtime capture is available behind the `python-runtime-capture-preview` feature flag for conservative test commands:
+
+```bash
+lopper analyse --top 20 --repo . --language python \
+  --runtime-test-command "pytest" \
+  --enable-feature python-runtime-capture-preview
+```
+
+`python -m pytest` and `python3 -m pytest` are also supported. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; it does not install project dependencies or run Python outside the user-provided command.
+
+Explicit Python trace consumption remains compatible through `--runtime-trace`.
 
 Each trace line should identify the Python adapter and the imported module:
 
@@ -313,16 +323,15 @@ When the import root differs from the package name, include `dependency`:
 Use the trace in analysis:
 
 ```bash
-lopper analyse --top 20 --repo . --language python \
-  --runtime-trace .artifacts/python-runtime.ndjson \
-  --enable-feature python-runtime-trace-preview
+lopper analyse --top 20 --repo . --language python --runtime-trace .artifacts/python-runtime.ndjson
 ```
 
 Python caveats:
 
 - Runtime module names map to the top-level import package, with common aliases such as `bs4` -> `beautifulsoup4`.
-- Trace producers should emit third-party imports only. Lopper cannot reliably distinguish local modules or every stdlib import from an adapter-neutral trace line.
-- Automatic `--runtime-test-command` capture remains JS/TS-oriented.
+- The first-party hook emits third-party imports resolved from `site-packages` or `dist-packages` and filters local modules and stdlib imports.
+- Subprocesses and pytest workers inherit the trace environment when they inherit the parent process environment; concurrent writers append NDJSON lines to the same trace file.
+- Existing project `sitecustomize.py` behavior can be affected while the runtime command is running because Python imports only one `sitecustomize` module from `PYTHONPATH`.
 
 ## Development
 

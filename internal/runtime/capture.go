@@ -14,13 +14,22 @@ type CaptureRequest struct {
 	RepoPath         string
 	TracePath        string
 	Command          string
+	Provider         CaptureProvider
 	ReuseIfUnchanged bool
 }
+
+type CaptureProvider string
+
+const (
+	CaptureProviderNode   CaptureProvider = "node"
+	CaptureProviderPython CaptureProvider = "python"
+)
 
 type capturePlan struct {
 	repoPath  string
 	tracePath string
 	command   string
+	provider  CaptureProvider
 }
 
 func DefaultTracePath(repoPath string) string {
@@ -34,7 +43,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 	}
 
 	if req.ReuseIfUnchanged {
-		reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command)
+		reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command, plan.provider)
 		if err == nil && reused {
 			return nil
 		}
@@ -49,7 +58,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 		return err
 	}
 	cmd.Dir = plan.repoPath
-	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath)
+	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath, plan.provider)
 	if err != nil {
 		return err
 	}
@@ -58,7 +67,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 	if err != nil {
 		return formatRuntimeCommandError(err, output)
 	}
-	if err := writeRuntimeTraceState(plan.tracePath, plan.command); err != nil {
+	if err := writeRuntimeTraceState(plan.tracePath, plan.command, plan.provider); err != nil {
 		return fmt.Errorf("write runtime trace state: %w", err)
 	}
 
@@ -70,6 +79,7 @@ func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
 		repoPath:  strings.TrimSpace(req.RepoPath),
 		tracePath: strings.TrimSpace(req.TracePath),
 		command:   strings.TrimSpace(req.Command),
+		provider:  normalizeCaptureProvider(req.Provider),
 	}
 	if plan.repoPath == "" {
 		return capturePlan{}, fmt.Errorf("repo path is required")
@@ -80,7 +90,21 @@ func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
 	if plan.tracePath == "" {
 		plan.tracePath = DefaultTracePath(plan.repoPath)
 	}
+	if plan.provider == "" {
+		return capturePlan{}, fmt.Errorf("unsupported runtime capture provider %q", req.Provider)
+	}
 	return plan, nil
+}
+
+func normalizeCaptureProvider(provider CaptureProvider) CaptureProvider {
+	switch provider {
+	case "", CaptureProviderNode:
+		return CaptureProviderNode
+	case CaptureProviderPython:
+		return CaptureProviderPython
+	default:
+		return ""
+	}
 }
 
 func prepareTracePath(tracePath string) error {

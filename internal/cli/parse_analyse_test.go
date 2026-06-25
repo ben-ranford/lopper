@@ -294,6 +294,11 @@ func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	if req.Analyse.RuntimeTestCommand != "npm test" {
 		t.Fatalf("expected runtime test command, got %q", req.Analyse.RuntimeTestCommand)
 	}
+
+	req = mustParseArgs(t, []string{"analyse", "--top", "5", "--runtime-test-command", "python3 -m pytest tests"})
+	if req.Analyse.RuntimeTestCommand != "python3 -m pytest tests" {
+		t.Fatalf("expected python runtime test command, got %q", req.Analyse.RuntimeTestCommand)
+	}
 }
 
 func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
@@ -305,6 +310,11 @@ func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
 	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "node -e 'console.log(\"hi\")'"}, "expected unsafe runtime flag rejection")
 	if !strings.Contains(err.Error(), "unsafe executable flag") {
 		t.Fatalf("expected unsafe executable flag rejection, got %v", err)
+	}
+
+	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "python -m pip install pytest"}, "expected unsafe python module rejection")
+	if !strings.Contains(err.Error(), "may only run '-m pytest'") {
+		t.Fatalf("expected unsafe python module rejection, got %v", err)
 	}
 }
 

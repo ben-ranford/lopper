@@ -311,6 +311,30 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	}
 }
 
+func TestMakefileReleasePackagesRuntimeHooks(t *testing.T) {
+	t.Parallel()
+
+	makefile := readConfig(t, "Makefile")
+	for _, want := range []string{
+		`mkdir -p "$$output_dir/share/lopper/scripts"`,
+		`cp -R scripts/runtime "$$output_dir/share/lopper/scripts/"`,
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Fatalf("release target must package runtime hook assets with %q", want)
+		}
+	}
+
+	for _, path := range []string{
+		"scripts/runtime/require-hook.cjs",
+		"scripts/runtime/loader.mjs",
+		"scripts/runtime/sitecustomize.py",
+	} {
+		if _, err := os.Stat(repoPath(t, path)); err != nil {
+			t.Fatalf("runtime hook asset %s must exist: %v", path, err)
+		}
+	}
+}
+
 func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
 	t.Parallel()
 
