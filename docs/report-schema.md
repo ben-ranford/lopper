@@ -6,6 +6,9 @@
 `lopper analyse --format csv` emits a stable dependency-level export with one row
 per dependency.
 
+`lopper analyse --format cyclonedx-json` emits a preview CycloneDX JSON SBOM
+for direct dependency rows when `sbom-attestation-exports-preview` is enabled.
+
 ## Generate a report
 
 ```bash
@@ -40,6 +43,40 @@ CSV columns:
 - Reachability and candidate scoring: `reachability_model`, `reachability_score`, `reachability_summary`, `reachability_rationale_codes`, `removal_candidate_score`, `removal_candidate_usage`, `removal_candidate_impact`, `removal_candidate_confidence`, `removal_candidate_rationale`
 - License metadata: `license_spdx`, `license_raw`, `license_source`, `license_confidence`, `license_unknown`, `license_denied`, `license_evidence`
 - Provenance metadata: `provenance_source`, `provenance_confidence`, `provenance_signals`
+
+## CycloneDX SBOM export
+
+Generate a CycloneDX JSON SBOM:
+
+```bash
+go run ./cmd/lopper analyse --top 20 --repo . --language all --format cyclonedx-json --enable-feature sbom-attestation-exports-preview > lopper.cdx.json
+```
+
+CycloneDX characteristics:
+
+- The export uses CycloneDX JSON `specVersion` `1.6` and represents Lopper's
+  direct dependency rows as `library` components.
+- Component ordering is deterministic by `language`, then dependency name.
+- Lopper does not infer package versions or package URLs from dependency names.
+  When the report lacks those values, component `version` and `purl` are omitted
+  and explicit `lopper:dependency:version:status=unknown` and
+  `lopper:dependency:purl:status=unavailable` properties are emitted.
+- License values are emitted conservatively as CycloneDX license names, with
+  normalized SPDX/raw/source/confidence/unknown/denied/evidence preserved in
+  `lopper:license:*` properties.
+- Lopper-specific dependency-surface metadata is preserved as CycloneDX
+  component properties, including language, used/unused import counts and
+  details, reachability confidence, runtime usage, license policy signals,
+  provenance, removal-candidate scores, waste metrics, and baseline deltas when
+  available.
+- Root-level properties preserve report context such as schema version, repo
+  path, scope, summary, effective policy, language breakdown, and baseline
+  comparison keys when available.
+- This is an analyse-only, direct-dependency SBOM. It is not a full transitive
+  inventory and should complement, not replace, dedicated SBOM generators for
+  full package-manager or container inventories.
+- `spdx-json`, dashboard-wide combined SBOMs, and signed attestations are
+  deferred from this first preview export.
 
 ## Key fields
 

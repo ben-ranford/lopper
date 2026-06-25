@@ -82,5 +82,11 @@
     "description": "Enable explicit MCP mutation tools for codemod apply and baseline snapshot save workflows.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.7.0"
+  },
+  {
+    "code": "LOP-FEAT-0013",
+    "name": "sbom-attestation-exports-preview",
+    "description": "Enable preview CycloneDX SBOM exports with Lopper dependency-surface metadata.",
+    "lifecycle": "preview"
   }
 ]

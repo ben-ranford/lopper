@@ -99,6 +99,20 @@ Emit SARIF for code scanning:
 lopper analyse --top 20 --repo . --language all --format sarif > lopper.sarif
 ```
 
+Emit a preview CycloneDX JSON SBOM for direct dependency rows:
+
+```bash
+lopper analyse --top 20 --repo . --language all \
+  --format cyclonedx-json \
+  --enable-feature sbom-attestation-exports-preview > lopper.cdx.json
+```
+
+The CycloneDX export preserves Lopper-specific usage, reachability, runtime,
+license, provenance, waste, removal-candidate, and baseline context as
+component properties. It does not infer missing versions or package URLs, and it
+is not a full transitive dependency inventory. SPDX JSON, dashboard-wide
+combined SBOMs, and signed attestations are deferred from the first preview.
+
 Launch the interactive TUI:
 
 ```bash
