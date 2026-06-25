@@ -17,18 +17,21 @@ const defaultWindowsPathExt = ".COM;.EXE;.BAT;.CMD"
 var runtimeOS = goruntime.GOOS
 
 var runtimeExecutableAllowlist = map[string]struct{}{
-	"npm":    {},
-	"pnpm":   {},
-	"yarn":   {},
-	"bun":    {},
-	"npx":    {},
-	"node":   {},
-	"vitest": {},
-	"jest":   {},
-	"mocha":  {},
-	"ava":    {},
-	"deno":   {},
-	"make":   {},
+	"npm":     {},
+	"pnpm":    {},
+	"yarn":    {},
+	"bun":     {},
+	"npx":     {},
+	"node":    {},
+	"vitest":  {},
+	"jest":    {},
+	"mocha":   {},
+	"ava":     {},
+	"deno":    {},
+	"make":    {},
+	"pytest":  {},
+	"python":  {},
+	"python3": {},
 }
 
 func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error) {
@@ -52,6 +55,7 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 		return nil, err
 	}
 	cmd.Path = executablePath
+	cmd.Err = nil
 	cmd.Args = append([]string{executablePath}, args...)
 	return cmd, nil
 }
@@ -192,6 +196,10 @@ func nextRuntimeCommandRune(runes []rune, index int) rune {
 }
 
 func rejectRuntimeCommandUnsafeFlags(executable string, args []string) error {
+	if isPythonRuntimeExecutable(executable) {
+		return rejectUnsafePythonRuntimeCommand(executable, args)
+	}
+
 	flags, ok := runtimeCommandUnsafeFlags[executable]
 	if !ok {
 		return nil
@@ -203,6 +211,28 @@ func rejectRuntimeCommandUnsafeFlags(executable string, args []string) error {
 				return fmt.Errorf("runtime test command uses unsafe executable flag %q for %q", arg, executable)
 			}
 		}
+	}
+	return nil
+}
+
+func IsPythonTestCommand(command string) bool {
+	fields, err := parseRuntimeCommand(command)
+	if err != nil || len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "pytest" {
+		return true
+	}
+	return isPythonRuntimeExecutable(fields[0]) && len(fields) >= 2 && fields[1] == "-m" && len(fields) >= 3 && fields[2] == "pytest"
+}
+
+func isPythonRuntimeExecutable(executable string) bool {
+	return executable == "python" || executable == "python3"
+}
+
+func rejectUnsafePythonRuntimeCommand(executable string, args []string) error {
+	if len(args) < 2 || args[0] != "-m" || args[1] != "pytest" {
+		return fmt.Errorf("runtime test command for %q may only run '-m pytest'", executable)
 	}
 	return nil
 }

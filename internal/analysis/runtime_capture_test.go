@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -63,7 +66,7 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 		RuntimeTracePath:         explicitTrace,
 		RuntimeTracePathExplicit: true,
 	}
-	warnings, tracePath := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil)
+	warnings, tracePath := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil, nil)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
 		t.Fatalf("expected explicit runtime capture warning, got %#v", warnings)
 	}
@@ -72,7 +75,7 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 	}
 
 	implicitReq := Request{RuntimeTestCommand: "foobar test"}
-	warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil)
+	warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil, nil)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
 		t.Fatalf("expected implicit runtime capture warning, got %#v", warnings)
 	}
@@ -80,7 +83,7 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 		t.Fatalf("expected implicit trace path to be cleared after failure, got %q", tracePath)
 	}
 
-	if warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil); len(warnings) != 0 || tracePath != "" {
+	if warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil, nil); len(warnings) != 0 || tracePath != "" {
 		t.Fatalf("expected empty runtime command to skip capture, got warnings=%#v tracePath=%q", warnings, tracePath)
 	}
 
@@ -99,6 +102,76 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 			t.Fatalf("%s: expected shouldReuseRuntimeTrace=%v, got %v", testCase.name, testCase.want, got)
 		}
 	}
+}
+
+func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
+	features := mustResolvePythonRuntimeCaptureFeatureSet(t, true)
+	pythonCandidate := language.Candidate{Adapter: &stubAdapter{id: "python"}}
+	jsCandidate := language.Candidate{Adapter: &stubAdapter{id: "js-ts"}}
+
+	testCases := []struct {
+		name       string
+		req        Request
+		command    string
+		candidates []language.Candidate
+		want       runtime.CaptureProvider
+	}{
+		{
+			name:    "explicit python language",
+			req:     Request{Language: "python", Features: features},
+			command: "make test",
+			want:    runtime.CaptureProviderPython,
+		},
+		{
+			name:       "auto python command with python candidate",
+			req:        Request{Language: "auto", Features: features},
+			command:    "pytest",
+			candidates: []language.Candidate{pythonCandidate},
+			want:       runtime.CaptureProviderPython,
+		},
+		{
+			name:       "python only candidate with make command",
+			req:        Request{Features: features},
+			command:    "make test",
+			candidates: []language.Candidate{pythonCandidate},
+			want:       runtime.CaptureProviderPython,
+		},
+		{
+			name:       "mixed repo keeps js command on node provider",
+			req:        Request{Language: "all", Features: features},
+			command:    "npm test",
+			candidates: []language.Candidate{pythonCandidate, jsCandidate},
+			want:       runtime.CaptureProviderNode,
+		},
+		{
+			name:       "disabled capture flag keeps node provider",
+			req:        Request{Language: "python", Features: mustResolvePythonRuntimeCaptureFeatureSet(t, false)},
+			command:    "pytest",
+			candidates: []language.Candidate{pythonCandidate},
+			want:       runtime.CaptureProviderNode,
+		},
+	}
+
+	for _, tc := range testCases {
+		if got := captureProviderForRequest(tc.req, tc.command, tc.candidates); got != tc.want {
+			t.Fatalf("%s: expected provider %q, got %q", tc.name, tc.want, got)
+		}
+	}
+}
+
+func mustResolvePythonRuntimeCaptureFeatureSet(t *testing.T, enabled bool) featureflags.Set {
+	t.Helper()
+	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if enabled {
+		options.Enable = []string{pythonRuntimeCapturePreviewFeature}
+	} else {
+		options.Disable = []string{pythonRuntimeCapturePreviewFeature}
+	}
+	resolved, err := featureflags.DefaultRegistry().Resolve(options)
+	if err != nil {
+		t.Fatalf("resolve Python runtime capture feature set: %v", err)
+	}
+	return resolved
 }
 
 func setupFakeAnalysisRuntimeTool(t *testing.T) string {

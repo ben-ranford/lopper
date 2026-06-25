@@ -106,7 +106,7 @@ CycloneDX characteristics:
 - Signal weights are fixed in v2: runtime correlation `0.20`, export inventory `0.30`, import precision `0.20`, repo usage uncertainty `0.15`, dependency dynamic-loader signal `0.10`, and risk severity `0.05`.
 - `dependencies[].removalCandidate.confidence` remains as a compatibility alias for `dependencies[].reachabilityConfidence.score`.
 - Finding-level `confidenceScore` and `confidenceReasonCodes` fields mirror `dependencies[].reachabilityConfidence.score` and `dependencies[].reachabilityConfidence.rationaleCodes`.
-- `runtimeUsage` annotates JS/TS dependencies and, when `python-runtime-trace-preview` is enabled, Python dependencies from `{"language":"python",...}` trace events.
+- `runtimeUsage` annotates JS/TS dependencies and Python dependencies from `{"language":"python",...}` trace events; first-party Python capture is gated by `python-runtime-capture-preview`.
 - `runtimeUsage.correlation` distinguishes `static-only`, `runtime-only`, and `overlap` evidence categories.
 - `runtimeUsage.modules` lists runtime-loaded module paths seen for a dependency.
 - `runtimeUsage.topSymbols` lists best-effort runtime symbol hits derived from module subpaths.

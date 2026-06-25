@@ -371,6 +371,8 @@ release:
 			esac; \
 			CC="$(ZIG) cc -target $$target" CXX="$(ZIG) c++ -target $$target" CGO_ENABLED=1 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -ldflags "$(RELEASE_GO_LDFLAGS)" -o "$$output_dir/$(BINARY_NAME)$$ext" $(CMD_PATH); \
 		fi; \
+		mkdir -p "$$output_dir/share/lopper/scripts"; \
+		cp -R scripts/runtime "$$output_dir/share/lopper/scripts/"; \
 		mkdir -p "$$output_dir/share/man/man1"; \
 		./scripts/generate-manpage.sh "$$output_dir/share/man/man1/$(BINARY_NAME).1"; \
 		if [ "$$GOOS" = "windows" ]; then \

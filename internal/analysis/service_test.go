@@ -418,6 +418,19 @@ func mustResolvePythonRuntimeTraceFeatureSet(t *testing.T, enabled bool) feature
 	return resolved
 }
 
+func mustResolvePythonRuntimeCaptureOnlyFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{pythonRuntimeCapturePreviewFeature},
+		Disable: []string{pythonRuntimeTracePreviewFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve Python runtime capture-only feature set: %v", err)
+	}
+	return resolved
+}
+
 func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
@@ -482,6 +495,20 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	}
 	if dep := dependencyByLanguageName(t, disabledFeature.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
 		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
+	}
+
+	captureOnly, err := service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "python",
+		RuntimeTracePath: tracePath,
+		Features:         mustResolvePythonRuntimeCaptureOnlyFeatureSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse python runtime with capture feature: %v", err)
+	}
+	if requests := dependencyByLanguageName(t, captureOnly.Dependencies, "python", "requests"); requests.RuntimeUsage == nil {
+		t.Fatalf("expected Python runtime usage when capture feature is enabled")
 	}
 
 	stableDefault, err := service.Analyse(context.Background(), Request{

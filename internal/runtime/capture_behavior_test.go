@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -66,6 +67,60 @@ func TestCaptureUsesAbsoluteNodeHookPaths(t *testing.T) {
 	}
 	if !strings.Contains(got, "--loader="+loaderPath) {
 		t.Fatalf("expected absolute loader hook path, got %q", got)
+	}
+}
+
+func TestCapturePythonRuntimeImports(t *testing.T) {
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	sitePackages := filepath.Join(t.TempDir(), "lib", "python3.12", "site-packages")
+	if err := os.MkdirAll(filepath.Join(sitePackages, "thirdparty"), 0o750); err != nil {
+		t.Fatalf("mkdir thirdparty package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sitePackages, "thirdparty", "__init__.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
+		t.Fatalf("write thirdparty package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "localmod.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
+		t.Fatalf("write local module: %v", err)
+	}
+
+	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
+	t.Setenv("PYTHONPATH", sitePackages)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import thirdparty; import localmod'\n"))
+
+	err = Capture(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   "pytest",
+		Provider:  CaptureProviderPython,
+	})
+	if err != nil {
+		t.Fatalf("capture python runtime trace: %v", err)
+	}
+
+	content, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read python runtime trace: %v", err)
+	}
+	if !strings.Contains(string(content), `"language":"python"`) || !strings.Contains(string(content), `"module":"thirdparty"`) {
+		t.Fatalf("expected third-party python import event, got %s", content)
+	}
+	if strings.Contains(string(content), "localmod") {
+		t.Fatalf("expected local module import to be filtered, got %s", content)
+	}
+
+	trace, err := Load(tracePath)
+	if err != nil {
+		t.Fatalf("load captured python runtime trace: %v", err)
+	}
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "thirdparty"}
+	if trace.DependencyLoadsByLanguage[key] == 0 {
+		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
 	}
 }
 

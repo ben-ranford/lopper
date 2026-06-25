@@ -86,5 +86,6 @@ Merged output deduplicates by `(language, dependency)` and computes:
 
 If your adapter can consume runtime traces, extend `internal/runtime` and
 its annotation logic. The implementation keeps runtime annotations in the shared
-`runtimeUsage` report fields; JS/TS traces are supported by default, and Python
-trace consumption is available behind `python-runtime-trace-preview`.
+`runtimeUsage` report fields; JS/TS and Python trace consumption are supported
+by default, and first-party Python capture is available behind
+`python-runtime-capture-preview`.

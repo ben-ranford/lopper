@@ -15,7 +15,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
-const pythonRuntimeTracePreviewFeature = "python-runtime-trace-preview"
+const (
+	pythonRuntimeTracePreviewFeature   = "python-runtime-trace-preview"
+	pythonRuntimeCapturePreviewFeature = "python-runtime-capture-preview"
+)
 
 type analysisPipeline struct {
 	service          *Service
@@ -71,7 +74,7 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtimeWarnings, runtimeTracePath := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.cache)
+	runtimeWarnings, runtimeTracePath := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.cache, p.candidates)
 	p.reports = reports
 	warnings = append(warnings, runtimeWarnings...)
 	p.warnings = warnings
@@ -119,7 +122,8 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 
 func finalizeReport(req Request, repoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
 	var err error
-	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData, req.Features.Enabled(pythonRuntimeTracePreviewFeature))
+	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTracePreviewFeature) || req.Features.Enabled(pythonRuntimeCapturePreviewFeature)
+	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData, pythonRuntimeTraceEnabled)
 	if err != nil {
 		return report.Report{}, err
 	}

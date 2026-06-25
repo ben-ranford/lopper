@@ -63,7 +63,7 @@ func TestRuntimeHookErrorsPropagate(t *testing.T) {
 		t.Fatalf("expected runtime hook options error %v, got %v", sentinel, err)
 	}
 
-	_, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, "/tmp/runtime.ndjson")
+	_, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, "/tmp/runtime.ndjson", CaptureProviderNode)
 	if err == nil || !strings.Contains(err.Error(), "resolve runtime node hooks") {
 		t.Fatalf("expected wrapped runtime hook error, got %v", err)
 	}
@@ -74,6 +74,14 @@ func TestRuntimeHookErrorsPropagate(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "resolve runtime node hooks") {
 		t.Fatalf("expected capture to surface hook resolution error, got %v", err)
+	}
+}
+
+func TestLocateRuntimePythonHookDirectoryInRootsErrorsWhenHookMissing(t *testing.T) {
+	root := t.TempDir()
+	_, err := locateRuntimePythonHookDirectoryInRoots([]string{root})
+	if err == nil || !strings.Contains(err.Error(), "could not locate runtime python hook") {
+		t.Fatalf("expected missing python hook error, got %v", err)
 	}
 }
 

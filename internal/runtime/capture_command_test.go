@@ -25,6 +25,10 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 		"ava",
 		"deno test",
 		"make test",
+		"pytest",
+		"pytest tests -q",
+		"python -m pytest",
+		"python3 -m pytest tests",
 	}
 
 	for _, command := range commands {
@@ -131,6 +135,9 @@ func TestBuildRuntimeCommandRejectsUnsafeSyntaxAndFlags(t *testing.T) {
 
 	checkRejects(`npm test && echo bad`, "indirect command execution operators")
 	checkRejects(`node -e 'console.log("hi")'`, "unsafe executable flag")
+	checkRejects(`python -c 'print("hi")'`, "may only run '-m pytest'")
+	checkRejects(`python -m pip install pytest`, "may only run '-m pytest'")
+	checkRejects(`python3 -m unittest`, "may only run '-m pytest'")
 }
 
 func TestValidateCommand(t *testing.T) {
@@ -140,10 +147,34 @@ func TestValidateCommand(t *testing.T) {
 	if err := ValidateCommand("npm test"); err != nil {
 		t.Fatalf("expected safe command to validate, got %v", err)
 	}
+	if err := ValidateCommand("python3 -m pytest tests"); err != nil {
+		t.Fatalf("expected python pytest command to validate, got %v", err)
+	}
 
 	err := ValidateCommand(`node -e 'console.log("hi")'`)
 	if err == nil || !strings.Contains(err.Error(), "unsafe executable flag") {
 		t.Fatalf("expected unsafe executable flag rejection, got %v", err)
+	}
+}
+
+func TestIsPythonTestCommand(t *testing.T) {
+	testCases := []struct {
+		command string
+		want    bool
+	}{
+		{command: "pytest", want: true},
+		{command: "pytest tests -q", want: true},
+		{command: "python -m pytest", want: true},
+		{command: "python3 -m pytest tests", want: true},
+		{command: "npm test", want: false},
+		{command: "python -m pip", want: false},
+		{command: `python -m "pytest`, want: false},
+	}
+
+	for _, tc := range testCases {
+		if got := IsPythonTestCommand(tc.command); got != tc.want {
+			t.Fatalf("IsPythonTestCommand(%q) = %v, want %v", tc.command, got, tc.want)
+		}
 	}
 }
 
@@ -324,7 +355,7 @@ func TestRuntimeSearchDirsDefaultOnWindowsKeepsProgramFilesNodejsDir(t *testing.
 }
 
 func TestNewAllowlistedRuntimeCommandRejectsUnsupportedExecutable(t *testing.T) {
-	if _, err := newAllowlistedRuntimeCommand(context.Background(), "python"); err == nil {
+	if _, err := newAllowlistedRuntimeCommand(context.Background(), "ruby"); err == nil {
 		t.Fatalf("expected unsupported executable error")
 	}
 }
