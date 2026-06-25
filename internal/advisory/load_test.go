@@ -259,3 +259,135 @@ func TestSmallParsingHelpers(t *testing.T) {
 		t.Fatalf("expected blank CVSS score to be empty, got %q", got)
 	}
 }
+
+func TestCVSSVectorSeverityBranches(t *testing.T) {
+	cases := []struct {
+		name  string
+		kind  string
+		score string
+		want  string
+	}{
+		{
+			name:  "v3 changed scope high",
+			kind:  "CVSS_V3",
+			score: "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:H/I:H/A:H",
+			want:  "critical",
+		},
+		{
+			name:  "v3 zero impact",
+			kind:  "CVSS_V3",
+			score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+			want:  "",
+		},
+		{
+			name:  "v2 medium",
+			kind:  "CVSS_V2",
+			score: "AV:N/AC:L/Au:N/C:P/I:P/A:N",
+			want:  "medium",
+		},
+		{
+			name:  "v2 zero impact",
+			kind:  "CVSS_V2",
+			score: "AV:N/AC:L/Au:N/C:N/I:N/A:N",
+			want:  "",
+		},
+		{
+			name:  "unknown vector version",
+			kind:  "CVSS_V4",
+			score: "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H",
+			want:  "",
+		},
+		{
+			name:  "malformed v3 vector",
+			kind:  "CVSS_V3",
+			score: "CVSS:3.1/AV:N",
+			want:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cvssSeverity(tc.kind, tc.score); got != tc.want {
+				t.Fatalf("cvssSeverity(%q, %q) = %q, want %q", tc.kind, tc.score, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCVSSVectorVersionBranches(t *testing.T) {
+	cases := []struct {
+		name  string
+		kind  string
+		score string
+		want  int
+	}{
+		{name: "kind v2 compact", kind: "CVSSV2", want: 2},
+		{name: "kind v3 compact", kind: "CVSSV3", want: 3},
+		{name: "score v2 prefix", score: "CVSS:2.0/AV:N/AC:L/Au:N/C:C/I:C/A:C", want: 2},
+		{name: "score v3 prefix", score: "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", want: 3},
+		{name: "v2 au inference", score: "AV:N/AC:L/Au:N/C:C/I:C/A:C", want: 2},
+		{name: "unknown", kind: "other", score: "not-a-vector", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cvssVectorVersion(tc.kind, tc.score); got != tc.want {
+				t.Fatalf("cvssVectorVersion(%q, %q) = %d, want %d", tc.kind, tc.score, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCVSSBaseScoreValidationBranches(t *testing.T) {
+	validV3 := cvssVectorMetrics("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+	score, ok := cvss3BaseScore(validV3)
+	assertCVSSScoreOK(t, score, ok)
+	for _, key := range []string{"AV", "AC", "PR", "UI", "C", "I", "A", "S"} {
+		metrics := cloneStringMap(validV3)
+		delete(metrics, key)
+		score, ok = cvss3BaseScore(metrics)
+		assertCVSSScoreInvalid(t, score, ok, "v3 missing "+key)
+	}
+	metrics := cloneStringMap(validV3)
+	metrics["AV"] = "X"
+	score, ok = cvss3BaseScore(metrics)
+	assertCVSSScoreInvalid(t, score, ok, "v3 invalid AV")
+	metrics = cloneStringMap(validV3)
+	metrics["S"] = "X"
+	score, ok = cvss3BaseScore(metrics)
+	assertCVSSScoreInvalid(t, score, ok, "v3 invalid scope")
+
+	validV2 := cvssVectorMetrics("AV:N/AC:L/Au:N/C:C/I:C/A:C")
+	score, ok = cvss2BaseScore(validV2)
+	assertCVSSScoreOK(t, score, ok)
+	for _, key := range []string{"AV", "AC", "AU", "C", "I", "A"} {
+		metrics := cloneStringMap(validV2)
+		delete(metrics, key)
+		score, ok = cvss2BaseScore(metrics)
+		assertCVSSScoreInvalid(t, score, ok, "v2 missing "+key)
+	}
+	metrics = cloneStringMap(validV2)
+	metrics["AC"] = "X"
+	score, ok = cvss2BaseScore(metrics)
+	assertCVSSScoreInvalid(t, score, ok, "v2 invalid AC")
+}
+
+func assertCVSSScoreOK(t *testing.T, score float64, ok bool) {
+	t.Helper()
+	if !ok || score <= 0 {
+		t.Fatalf("expected valid positive CVSS score, got %.1f ok=%v", score, ok)
+	}
+}
+
+func assertCVSSScoreInvalid(t *testing.T, score float64, ok bool, label string) {
+	t.Helper()
+	if ok || score != 0 {
+		t.Fatalf("%s: expected invalid CVSS score, got %.1f ok=%v", label, score, ok)
+	}
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}

@@ -352,15 +352,11 @@ func cvss3BaseScore(metrics map[string]string) (float64, bool) {
 		return 0, true
 	}
 	exploitability := 8.22 * av * ac * pr * ui
-	switch scope {
-	case "U":
-		return cvssRoundUp(math.Min(6.42*impactSubScore+exploitability, 10)), true
-	case "C":
+	if scope == "C" {
 		impact := 7.52*(impactSubScore-0.029) - 3.25*math.Pow(impactSubScore-0.02, 15)
 		return cvssRoundUp(math.Min(1.08*(impact+exploitability), 10)), true
-	default:
-		return 0, false
 	}
+	return cvssRoundUp(math.Min(6.42*impactSubScore+exploitability, 10)), true
 }
 
 func cvss3PrivilegesRequired(scope, value string) (float64, bool) {
