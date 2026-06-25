@@ -44,6 +44,21 @@ Run without local install:
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
 
+## GitHub Action
+
+Use the first-party `Scan with Lopper` action in CI:
+
+```yaml
+- uses: ben-ranford/lopper@v1
+  with:
+    version: action
+    repo: .
+    language: all
+    top: '20'
+```
+
+For reproducible CI, pin both the action ref and `version` to a concrete release such as `v1.7.0`. See [docs/ci-usage.md](docs/ci-usage.md#first-party-github-action) for PR comment and SARIF workflows.
+
 ## Terminal demos
 
 | Demo | What it demonstrates | GIF preview |

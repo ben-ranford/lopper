@@ -1,9 +1,9 @@
 # CI and release workflow
 
-This repository includes six GitHub Actions workflows:
+This repository includes these GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests
-- `.github/workflows/release.yml`: release-please-backed stable release workflow. On pushes to `main`, it creates or updates a release PR from Conventional Commits; when that release PR is merged, it creates a draft semver GitHub release, publishes assets, publishes images, optionally publishes the VS Code extension, publishes the draft release, and then updates the Homebrew tap with:
+- `.github/workflows/release.yml`: release-please-backed stable release workflow. On pushes to `main`, it creates or updates a release PR from Conventional Commits; when that release PR is merged, it creates a draft semver GitHub release, publishes assets, publishes images, optionally publishes the VS Code extension, publishes the draft release, updates the GitHub Action floating tags, and then updates the Homebrew tap with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
@@ -26,6 +26,7 @@ Stable release automation:
 - The current stable version is also synced into `extensions/vscode-lopper/package.json` and `extensions/vscode-lopper/package-lock.json` by the release-please PR.
 - Manual `workflow_dispatch` runs accept a release tag/version plus an optional `source_sha`, resolve the selected source ref, and create or reuse the draft GitHub release when the tag is not already present.
 - Release commits should use Conventional Commit prefixes: `fix:` for patch releases, `feat:` for minor releases, and any type with a breaking-change marker (for example `feat!:` or `fix!:`) or a `BREAKING CHANGE:` footer for major releases.
+- Stable releases also publish the first-party action version refs. The release tag, such as `v1.7.0`, is the exact action ref; the workflow force-updates `v1` and `v1.7` to the same release commit for standard GitHub Actions major/minor pinning.
 - Set repository secret `RELEASE_PLEASE_TOKEN` to a PAT with contents and pull request write access so release-please-created PRs can trigger normal CI. If it is not configured, the workflow falls back to `MAIN_SYNC_PAT` and then `GITHUB_TOKEN`.
 
 ## Example pipeline
@@ -69,9 +70,11 @@ When running locally with `act`, target the Linux-backed jobs explicitly (for ex
 
 ## First-party GitHub Action
 
-Lopper ships a composite GitHub Action at the repository root. The action downloads a pinned Lopper release binary, builds `lopper analyse` arguments from named inputs, and supports the same CI outputs used by the CLI: threshold-gated analysis, JSON baselines, PR-comment markdown, and SARIF.
+Lopper ships the `Scan with Lopper` composite GitHub Action at the repository root. The action downloads a pinned Lopper release binary, builds `lopper analyse` arguments from named inputs, and supports the same CI outputs used by the CLI: threshold-gated analysis, JSON baselines, PR-comment markdown, and SARIF.
 
-Pin both the action ref and the `version` input for reproducible CI. The default `version: action` uses the matching concrete action tag when the workflow references a full release tag such as `v1.7.0`; otherwise it resolves the latest stable release. The action intentionally does not expose a raw `extra-args` passthrough, so shell values are never re-parsed by `eval` or another shell.
+Pin both the action ref and the `version` input for fully reproducible CI. The default `version: action` uses the matching concrete action tag when the workflow references a full release tag such as `v1.7.0`; when the workflow references a floating action tag such as `v1` or `v1.7`, it resolves the newest stable Lopper release in that series; otherwise it resolves the latest stable release. The action intentionally does not expose a raw `extra-args` passthrough, so shell values are never re-parsed by `eval` or another shell.
+
+The standard release workflow publishes the semver action ref and updates the floating action refs with every stable release.
 
 ### Pull request comment workflow
 

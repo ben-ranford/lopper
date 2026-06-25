@@ -48,7 +48,7 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 		t.Fatalf("parse action metadata: %v", err)
 	}
 
-	if metadata.Name != "Lopper" {
+	if metadata.Name != "Scan with Lopper" {
 		t.Fatalf("unexpected action name %q", metadata.Name)
 	}
 	if metadata.Runs.Using != "composite" {
@@ -371,6 +371,42 @@ func TestInstallScriptDryRunDefaultsToConcreteActionRef(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "download-url="+wantURL) {
 		t.Fatalf("dry-run stdout missing action ref download URL %q: %s", wantURL, stdout)
+	}
+}
+
+func TestInstallScriptDryRunResolvesFloatingActionRef(t *testing.T) {
+	root := repoRoot(t)
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "curl"), `#!/usr/bin/env bash
+set -euo pipefail
+cat <<'JSON'
+[
+  {"tag_name":"v1.8.0","draft":false,"prerelease":false},
+  {"tag_name":"v1.7.2","draft":false,"prerelease":false},
+  {"tag_name":"v1.7.1","draft":false,"prerelease":true},
+  {"tag_name":"v1.7.0","draft":false,"prerelease":false},
+  {"tag_name":"v1.6.1","draft":false,"prerelease":false}
+]
+JSON
+`)
+
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "github-action", "install-lopper.sh"))
+	cmd.Env = append(os.Environ(), []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"LOPPER_INSTALL_DRY_RUN=1",
+		"LOPPER_VERSION=action",
+		"LOPPER_ACTION_REF=v1.7",
+		"LOPPER_ACTION_OS=linux",
+		"LOPPER_ACTION_ARCH=amd64",
+	}...)
+	stdout := runCommand(t, cmd)
+
+	wantURL := "https://github.com/ben-ranford/lopper/releases/download/v1.7.2/lopper_v1.7.2_linux_amd64.tar.gz"
+	if !strings.Contains(stdout, "resolved-version=v1.7.2") {
+		t.Fatalf("dry-run stdout missing resolved floating ref version: %s", stdout)
+	}
+	if !strings.Contains(stdout, "download-url="+wantURL) {
+		t.Fatalf("dry-run stdout missing floating ref download URL %q: %s", wantURL, stdout)
 	}
 }
 

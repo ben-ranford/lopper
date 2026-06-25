@@ -195,6 +195,44 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "publish", "Update GitHub Action floating tags")
+	if step.Shell != "bash" {
+		t.Fatalf("action floating tag step shell = %q, want bash", step.Shell)
+	}
+	if step.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
+		t.Fatalf("action floating tag step RELEASE_TAG env = %q", step.Env["RELEASE_TAG"])
+	}
+	if step.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
+		t.Fatalf("action floating tag step RELEASE_SHA env = %q", step.Env["RELEASE_SHA"])
+	}
+
+	for _, want := range []string{
+		`^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$`,
+		`major_tag="v${BASH_REMATCH[1]}"`,
+		`minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"`,
+		`git tag --force "${major_tag}" "${RELEASE_SHA}"`,
+		`git tag --force "${minor_tag}" "${RELEASE_SHA}"`,
+		`git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
+	} {
+		if !strings.Contains(step.Run, want) {
+			t.Fatalf("action floating tag step must contain %q", want)
+		}
+	}
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
+		t.Fatal("release notes must include the concrete GitHub Action ref")
+	}
+}
+
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 	t.Parallel()
 
