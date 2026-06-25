@@ -18,7 +18,7 @@ import (
 
 const (
 	// ServerPreviewFeature is the feature flag name that enables MCP server startup.
-	ServerPreviewFeature   = "mcp-server-preview"
+	ServerPreviewFeature   = "mcp-server"
 	jsonrpcVersion         = "2.0"
 	defaultProtocolVersion = "2024-11-05"
 	methodInitialize       = "initialize"

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const ProfilesPreviewFeature = "threshold-profiles-preview"
+const ProfilesPreviewFeature = "threshold-profiles"
 
 type Profile struct {
 	Name        string

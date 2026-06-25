@@ -36,6 +36,9 @@ func (c *CommandLine) Run(ctx context.Context, args []string) int {
 	if err != nil {
 		return c.handleParseError(err)
 	}
+	if err := c.writeFeatureDeprecationWarnings(req); err != nil {
+		return 1
+	}
 
 	output, runErr := c.Executor.Execute(ctx, req)
 	writeErr := c.writeOutput(output)
@@ -55,6 +58,30 @@ func (c *CommandLine) Run(ctx context.Context, args []string) int {
 	}
 
 	return 0
+}
+
+func (c *CommandLine) writeFeatureDeprecationWarnings(req app.Request) error {
+	for _, warning := range featureDeprecationWarnings(req) {
+		if err := c.writeErrln("warning: " + warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func featureDeprecationWarnings(req app.Request) []string {
+	switch req.Mode {
+	case app.ModeAnalyse:
+		return req.Analyse.Features.DeprecationWarnings()
+	case app.ModeDashboard:
+		return req.Dashboard.Features.DeprecationWarnings()
+	case app.ModeProfile:
+		return req.Profile.Features.DeprecationWarnings()
+	case app.ModeMCP:
+		return req.MCP.Features.DeprecationWarnings()
+	default:
+		return nil
+	}
 }
 
 func (c *CommandLine) handleParseError(parseErr error) int {

@@ -15,6 +15,8 @@ func TestNewRegistryValidatesEntries(t *testing.T) {
 	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-001", Name: "alpha", Lifecycle: LifecyclePreview}}, "must use LOP-FEAT-NNNN", "short code")
 	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-00A1", Name: "alpha", Lifecycle: LifecyclePreview}}, "suffix must be numeric", "nonnumeric code")
 	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "", Lifecycle: LifecyclePreview}}, "feature name is required", "missing name")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "alpha", DeprecatedNames: []string{"bad name"}, Lifecycle: LifecyclePreview}}, "invalid feature name", "invalid deprecated name")
+	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "alpha", DeprecatedNames: []string{"alpha"}, Lifecycle: LifecyclePreview}}, "duplicates canonical name", "canonical deprecated name")
 	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: "unknown"}}, "invalid feature lifecycle", "invalid lifecycle")
 	assertNewRegistryErrorContains(t, []Flag{{Code: "LOP-FEAT-0001", Name: "alpha", Lifecycle: LifecyclePreview, FirstStableRelease: "nope"}}, "invalid first stable release", "invalid first stable release")
 }
@@ -24,17 +26,20 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 		t.Fatalf("expected embedded default registry to be valid, got %v", err)
 	}
 	defaultFlags := DefaultRegistry().Flags()
-	assertDefaultFlag(t, defaultFlags, "dart-source-attribution-preview", "LOP-FEAT-0001")
-	assertDefaultFlag(t, defaultFlags, "lockfile-drift-ecosystem-expansion-preview", "LOP-FEAT-0002")
-	assertDefaultFlag(t, defaultFlags, "swift-carthage-preview", "LOP-FEAT-0003")
-	assertDefaultFlag(t, defaultFlags, "powershell-adapter-preview", "LOP-FEAT-0004")
-	assertDefaultFlag(t, defaultFlags, "go-vendored-provenance-preview", "LOP-FEAT-0005")
-	assertDefaultFlagRelease(t, defaultFlags, "baseline-provenance-runtime-context-preview", "LOP-FEAT-0006", "v1.6.0")
-	assertDefaultFlagRelease(t, defaultFlags, "vscode-multi-root-workflows-preview", "LOP-FEAT-0007", "v1.6.0")
-	assertDefaultFlagRelease(t, defaultFlags, "mcp-server-preview", "LOP-FEAT-0008", "v1.6.0")
+	assertDefaultFlag(t, defaultFlags, "dart-source-attribution", "LOP-FEAT-0001")
+	assertDefaultFlag(t, defaultFlags, "lockfile-drift-ecosystem-expansion", "LOP-FEAT-0002")
+	assertDefaultFlag(t, defaultFlags, "swift-carthage", "LOP-FEAT-0003")
+	assertDefaultFlag(t, defaultFlags, "powershell-adapter", "LOP-FEAT-0004")
+	assertDefaultFlag(t, defaultFlags, "go-vendored-provenance", "LOP-FEAT-0005")
+	assertDefaultFlagRelease(t, defaultFlags, "baseline-provenance-runtime-context", "LOP-FEAT-0006", "v1.6.0")
+	assertDefaultFlagRelease(t, defaultFlags, "vscode-multi-root-workflows", "LOP-FEAT-0007", "v1.6.0")
+	assertDefaultFlagRelease(t, defaultFlags, "mcp-server", "LOP-FEAT-0008", "v1.6.0")
 	if defaultFlags[0].FirstStableRelease != "v1.5.0" {
 		t.Fatalf("expected default flags to retain first stable release history, got %#v", defaultFlags[0])
 	}
+	assertDefaultLookup(t, "LOP-FEAT-0001", "dart-source-attribution", false)
+	assertDefaultLookup(t, "dart-source-attribution", "dart-source-attribution", false)
+	assertDefaultLookup(t, "dart-source-attribution-preview", "dart-source-attribution", true)
 	if flags := (*Registry)(nil).Flags(); len(flags) != 0 {
 		t.Fatalf("expected nil registry flags to be empty, got %#v", flags)
 	}
@@ -51,8 +56,12 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	}
 	copiedFlags := registry.Flags()
 	copiedFlags[0].Name = "mutated"
+	copiedFlags[1].DeprecatedNames[0] = "mutated"
 	if got, _ := registry.Lookup("LOP-FEAT-0001"); got.Name != "preview-flag" {
 		t.Fatalf("expected Flags to return a defensive copy, got %#v", got)
+	}
+	if got, _ := registry.Lookup("legacy-stable-flag"); got.DeprecatedNames[0] != "legacy-stable-flag" {
+		t.Fatalf("expected deprecated names to be defensively copied, got %#v", got)
 	}
 }
 
@@ -140,6 +149,14 @@ func TestNewRegistryRejectsDuplicates(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicate feature name") {
 		t.Fatalf("expected duplicate name error, got %v", err)
+	}
+
+	_, err = NewRegistry([]Flag{
+		{Code: "LOP-FEAT-0001", Name: "alpha", DeprecatedNames: []string{"legacy-alpha"}, Lifecycle: LifecycleStable},
+		{Code: "LOP-FEAT-0002", Name: "legacy-alpha", Lifecycle: LifecyclePreview},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate feature name") {
+		t.Fatalf("expected duplicate deprecated name error, got %v", err)
 	}
 }
 
@@ -500,14 +517,14 @@ func TestManifestReportsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil registry manifest to defer to defaults, manifest=%#v err=%v", manifest, err)
 	}
-	assertManifestFlag(t, manifest, "dart-source-attribution-preview", true)
-	assertManifestFlag(t, manifest, "lockfile-drift-ecosystem-expansion-preview", true)
-	assertManifestFlag(t, manifest, "swift-carthage-preview", true)
-	assertManifestFlag(t, manifest, "powershell-adapter-preview", true)
-	assertManifestFlag(t, manifest, "go-vendored-provenance-preview", true)
-	assertManifestFlag(t, manifest, "baseline-provenance-runtime-context-preview", true)
-	assertManifestFlag(t, manifest, "vscode-multi-root-workflows-preview", true)
-	assertManifestFlag(t, manifest, "mcp-server-preview", true)
+	assertManifestFlag(t, manifest, "dart-source-attribution", true)
+	assertManifestFlag(t, manifest, "lockfile-drift-ecosystem-expansion", true)
+	assertManifestFlag(t, manifest, "swift-carthage", true)
+	assertManifestFlag(t, manifest, "powershell-adapter", true)
+	assertManifestFlag(t, manifest, "go-vendored-provenance", true)
+	assertManifestFlag(t, manifest, "baseline-provenance-runtime-context", true)
+	assertManifestFlag(t, manifest, "vscode-multi-root-workflows", true)
+	assertManifestFlag(t, manifest, "mcp-server", true)
 }
 
 func TestFormatManifest(t *testing.T) {
@@ -526,19 +543,52 @@ func TestEnabledFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if got := resolved.EnabledCodes(); len(got) != 2 || got[0] != "LOP-FEAT-0001" || got[1] != "LOP-FEAT-0002" {
-		t.Fatalf("expected enabled codes for rolling defaults, got %#v", got)
+	assertEnabledCodes(t, resolved, "LOP-FEAT-0001", "LOP-FEAT-0002")
+	assertEnabledFlag(t, resolved, " preview-flag ")
+	assertEnabledFlag(t, resolved, " legacy-stable-flag ")
+	assertUnknownFeatureDisabled(t, resolved, "missing")
+	assertFeatureSnapshot(t, resolved, "LOP-FEAT-0001", "LOP-FEAT-0002")
+	assertNilFeatureSet(t)
+}
+
+func assertEnabledFlag(t *testing.T, set Set, ref string) {
+	t.Helper()
+	enabled, err := set.EnabledFlag(ref)
+	if err != nil || !enabled {
+		t.Fatalf("expected %q enabled, enabled=%v err=%v", ref, enabled, err)
 	}
-	if enabled, err := resolved.EnabledFlag(" preview-flag "); err != nil || !enabled {
-		t.Fatalf("expected preview flag enabled in rolling, enabled=%v err=%v", enabled, err)
+}
+
+func assertUnknownFeatureDisabled(t *testing.T, set Set, ref string) {
+	t.Helper()
+	enabled, err := set.EnabledFlag(ref)
+	if err == nil || enabled {
+		t.Fatalf("expected unknown feature error for %q, enabled=%v err=%v", ref, enabled, err)
 	}
-	if enabled, err := resolved.EnabledFlag("missing"); err == nil || enabled {
-		t.Fatalf("expected unknown feature error, enabled=%v err=%v", enabled, err)
+}
+
+func assertEnabledCodes(t *testing.T, set Set, want ...string) {
+	t.Helper()
+	if got := set.EnabledCodes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected enabled codes %#v, got %#v", want, got)
 	}
-	snapshot := resolved.Snapshot()
-	if len(snapshot) != 2 || !snapshot["LOP-FEAT-0001"] || !snapshot["LOP-FEAT-0002"] {
-		t.Fatalf("unexpected feature snapshot: %#v", snapshot)
+}
+
+func assertFeatureSnapshot(t *testing.T, set Set, want ...string) {
+	t.Helper()
+	snapshot := set.Snapshot()
+	if len(snapshot) != len(want) {
+		t.Fatalf("expected feature snapshot keys %#v, got %#v", want, snapshot)
 	}
+	for _, code := range want {
+		if !snapshot[code] {
+			t.Fatalf("expected feature snapshot to enable %s, got %#v", code, snapshot)
+		}
+	}
+}
+
+func assertNilFeatureSet(t *testing.T) {
+	t.Helper()
 	var empty *Set
 	if empty.Enabled("preview-flag") {
 		t.Fatalf("expected nil set to report disabled")
@@ -549,48 +599,22 @@ func TestEnabledFlag(t *testing.T) {
 	if snapshot := empty.Snapshot(); len(snapshot) != 0 {
 		t.Fatalf("expected nil set snapshot to be empty, got %#v", snapshot)
 	}
+	if refs := empty.DeprecatedReferences(); len(refs) != 0 {
+		t.Fatalf("expected nil set deprecated refs to be empty, got %#v", refs)
+	}
+	if warnings := empty.DeprecationWarnings(); len(warnings) != 0 {
+		t.Fatalf("expected nil set deprecation warnings to be empty, got %#v", warnings)
+	}
 }
 
 func TestDefaultRegistryGraduatedDefaultsAndDisable(t *testing.T) {
 	registry := DefaultRegistry()
-	dev, err := registry.Resolve(ResolveOptions{Channel: ChannelDev})
-	if err != nil {
-		t.Fatalf("resolve dev defaults: %v", err)
-	}
-	for _, name := range []string{
-		"dart-source-attribution-preview",
-		"lockfile-drift-ecosystem-expansion-preview",
-		"swift-carthage-preview",
-		"powershell-adapter-preview",
-		"go-vendored-provenance-preview",
-		"baseline-provenance-runtime-context-preview",
-		"vscode-multi-root-workflows-preview",
-		"mcp-server-preview",
-	} {
-		if !dev.Enabled(name) {
-			t.Fatalf("expected %s default-on in dev channel", name)
-		}
-	}
+	assertGraduatedDefaults(t, registry, ChannelDev)
+	assertGraduatedDefaults(t, registry, ChannelRelease)
+}
 
-	release, err := registry.Resolve(ResolveOptions{Channel: ChannelRelease})
-	if err != nil {
-		t.Fatalf("resolve release defaults: %v", err)
-	}
-	for _, name := range []string{
-		"dart-source-attribution-preview",
-		"lockfile-drift-ecosystem-expansion-preview",
-		"swift-carthage-preview",
-		"powershell-adapter-preview",
-		"go-vendored-provenance-preview",
-		"baseline-provenance-runtime-context-preview",
-		"vscode-multi-root-workflows-preview",
-		"mcp-server-preview",
-	} {
-		if !release.Enabled(name) {
-			t.Fatalf("expected %s default-on in release channel", name)
-		}
-	}
-
+func TestDefaultRegistryLegacyPreviewDisable(t *testing.T) {
+	registry := DefaultRegistry()
 	disabled, err := registry.Resolve(ResolveOptions{
 		Channel: ChannelRelease,
 		Disable: []string{"swift-carthage-preview"},
@@ -600,6 +624,70 @@ func TestDefaultRegistryGraduatedDefaultsAndDisable(t *testing.T) {
 	}
 	if disabled.Enabled("swift-carthage-preview") {
 		t.Fatalf("expected explicit disable to turn off swift-carthage-preview")
+	}
+	if disabled.Enabled("swift-carthage") {
+		t.Fatalf("expected explicit legacy disable to turn off swift-carthage")
+	}
+	if warnings := disabled.DeprecationWarnings(); len(warnings) != 1 || !strings.Contains(warnings[0], `"swift-carthage-preview"`) || !strings.Contains(warnings[0], `"swift-carthage"`) {
+		t.Fatalf("expected legacy disable deprecation warning, got %#v", warnings)
+	}
+}
+
+func TestDefaultRegistryDedupesDeprecatedReferences(t *testing.T) {
+	registry := DefaultRegistry()
+	duplicateLegacy, err := registry.Resolve(ResolveOptions{
+		Channel: ChannelRelease,
+		Enable:  []string{"swift-carthage-preview", "swift-carthage-preview"},
+	})
+	if err != nil {
+		t.Fatalf("resolve duplicate legacy enable: %v", err)
+	}
+	refs := duplicateLegacy.DeprecatedReferences()
+	if len(refs) != 1 || refs[0].Code != "LOP-FEAT-0003" || refs[0].Name != "swift-carthage-preview" || refs[0].Replacement != "swift-carthage" {
+		t.Fatalf("expected duplicate legacy refs to be deduped, got %#v", refs)
+	}
+	refs[0].Name = "mutated"
+	if got := duplicateLegacy.DeprecatedReferences(); got[0].Name != "swift-carthage-preview" {
+		t.Fatalf("expected deprecated refs to return a copy, got %#v", got)
+	}
+}
+
+func assertGraduatedDefaults(t *testing.T, registry *Registry, channel Channel) {
+	t.Helper()
+	resolved, err := registry.Resolve(ResolveOptions{Channel: channel})
+	if err != nil {
+		t.Fatalf("resolve %s defaults: %v", channel, err)
+	}
+	for _, name := range defaultGraduatedFeatureNames() {
+		if !resolved.Enabled(name) {
+			t.Fatalf("expected %s default-on in %s channel", name, channel)
+		}
+	}
+}
+
+func defaultGraduatedFeatureNames() []string {
+	return []string{
+		"dart-source-attribution",
+		"lockfile-drift-ecosystem-expansion",
+		"swift-carthage",
+		"powershell-adapter",
+		"go-vendored-provenance",
+		"baseline-provenance-runtime-context",
+		"vscode-multi-root-workflows",
+		"mcp-server",
+	}
+}
+
+func TestDefaultRegistryLegacyPreviewNamesResolve(t *testing.T) {
+	registry := DefaultRegistry()
+	dev, err := registry.Resolve(ResolveOptions{Channel: ChannelDev})
+	if err != nil {
+		t.Fatalf("resolve dev defaults: %v", err)
+	}
+	for _, name := range []string{"dart-source-attribution-preview", "swift-carthage-preview", "mcp-server-preview"} {
+		if !dev.Enabled(name) {
+			t.Fatalf("expected legacy name %s to resolve in dev channel", name)
+		}
 	}
 }
 
@@ -645,6 +733,7 @@ func testRegistry(t *testing.T) *Registry {
 		{
 			Code:               "LOP-FEAT-0002",
 			Name:               "stable-flag",
+			DeprecatedNames:    []string{"legacy-stable-flag"},
 			Description:        "Stable behavior",
 			Lifecycle:          LifecycleStable,
 			FirstStableRelease: "v1.5.0",
@@ -683,6 +772,20 @@ func assertDefaultFlagRelease(t *testing.T, flags []Flag, name, code, release st
 		}
 	}
 	t.Fatalf("expected default registry to include %s, got %#v", name, flags)
+}
+
+func assertDefaultLookup(t *testing.T, ref, canonicalName string, deprecated bool) {
+	t.Helper()
+	result, ok := DefaultRegistry().LookupReference(ref)
+	if !ok {
+		t.Fatalf("expected default registry lookup for %s to succeed", ref)
+	}
+	if result.Flag.Name != canonicalName || result.Deprecated != deprecated {
+		t.Fatalf("unexpected lookup for %s: %#v", ref, result)
+	}
+	if deprecated && result.ReplacementRef != canonicalName {
+		t.Fatalf("expected deprecated lookup for %s to point at %s, got %#v", ref, canonicalName, result)
+	}
 }
 
 func assertManifestFlag(t *testing.T, manifest []ManifestEntry, name string, enabled bool) {

@@ -413,14 +413,14 @@ func TestManifestEntries(t *testing.T) {
 	if len(manifest) < 4 {
 		t.Fatalf("expected embedded manifest entries, got %#v", manifest)
 	}
-	assertManifestEntryDefault(t, manifest, "dart-source-attribution-preview", true)
-	assertManifestEntryDefault(t, manifest, "lockfile-drift-ecosystem-expansion-preview", true)
-	assertManifestEntryDefault(t, manifest, "swift-carthage-preview", true)
-	assertManifestEntryDefault(t, manifest, "powershell-adapter-preview", true)
-	assertManifestEntryDefault(t, manifest, "go-vendored-provenance-preview", true)
-	assertManifestEntryDefault(t, manifest, "baseline-provenance-runtime-context-preview", true)
-	assertManifestEntryDefault(t, manifest, "vscode-multi-root-workflows-preview", true)
-	assertManifestEntryDefault(t, manifest, "mcp-server-preview", true)
+	assertManifestEntryDefault(t, manifest, "dart-source-attribution", true)
+	assertManifestEntryDefault(t, manifest, "lockfile-drift-ecosystem-expansion", true)
+	assertManifestEntryDefault(t, manifest, "swift-carthage", true)
+	assertManifestEntryDefault(t, manifest, "powershell-adapter", true)
+	assertManifestEntryDefault(t, manifest, "go-vendored-provenance", true)
+	assertManifestEntryDefault(t, manifest, "baseline-provenance-runtime-context", true)
+	assertManifestEntryDefault(t, manifest, "vscode-multi-root-workflows", true)
+	assertManifestEntryDefault(t, manifest, "mcp-server", true)
 }
 
 func TestRunManifestAndReportUseChannels(t *testing.T) {

@@ -76,7 +76,7 @@ func TestRunDashboardAnalysesForwardsFeatures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve release features: %v", err)
 	}
-	if !features.Enabled("powershell-adapter-preview") {
+	if !features.Enabled("powershell-adapter") {
 		t.Fatalf("expected release default features to include powershell adapter")
 	}
 
@@ -93,7 +93,7 @@ func TestRunDashboardAnalysesForwardsFeatures(t *testing.T) {
 	if len(analyzer.calls) != 1 {
 		t.Fatalf("expected one analyzer call, got %#v", analyzer.calls)
 	}
-	if !analyzer.calls[0].Features.Enabled("powershell-adapter-preview") {
+	if !analyzer.calls[0].Features.Enabled("powershell-adapter") {
 		t.Fatalf("expected dashboard analysis request to forward powershell feature flag")
 	}
 }

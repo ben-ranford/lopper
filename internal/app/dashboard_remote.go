@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	DashboardRemoteReposPreviewFeature = "dashboard-remote-repos-preview"
+	DashboardRemoteReposPreviewFeature = "dashboard-remote-repos"
 	dashboardRepoCacheEnv              = "LOPPER_DASHBOARD_REPO_CACHE"
 	dashboardRepoCacheHashLength       = 16
 	dashboardGitShallowDepthArg        = "--depth=1"

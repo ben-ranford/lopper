@@ -48,7 +48,7 @@ Codes are stable identifiers for config, release reports, and release locks:
 ```
 
 Do not renumber or recycle a feature code after it has shipped in any rolling or stable artifact.
-Avoid renaming shipped features; if a name must change, keep the code and update the description.
+Avoid renaming shipped features; if a name must change, keep the code and record the old name in `deprecatedNames`.
 
 Validate the registry and release locks before opening a PR:
 
@@ -89,6 +89,9 @@ features:
 The same flag cannot be enabled and disabled in one resolved run.
 Unknown feature names or codes fail parsing so stale config is visible.
 
+Stable features may keep deprecated legacy names for one major release boundary.
+When a stable feature drops a `-preview` suffix, use the stable name in docs, examples, release reports, and manifests; keep the old preview name in `deprecatedNames` so existing config and explicit rollback commands continue to resolve.
+
 Use `lopper features` to inspect the resolved defaults for a channel:
 
 ```bash
@@ -96,6 +99,25 @@ lopper features --format table
 lopper features --format json --channel rolling
 lopper features --format json --channel release --release v1.4.2
 ```
+
+## v2 Stable Alias Migration
+
+Use these stable names for v2.0.0 and later. The legacy preview names remain accepted in v2.0.0 and emit deprecation guidance when used as explicit CLI feature overrides.
+
+| Legacy preview name | Stable name |
+| --- | --- |
+| `dart-source-attribution-preview` | `dart-source-attribution` |
+| `lockfile-drift-ecosystem-expansion-preview` | `lockfile-drift-ecosystem-expansion` |
+| `swift-carthage-preview` | `swift-carthage` |
+| `powershell-adapter-preview` | `powershell-adapter` |
+| `go-vendored-provenance-preview` | `go-vendored-provenance` |
+| `baseline-provenance-runtime-context-preview` | `baseline-provenance-runtime-context` |
+| `vscode-multi-root-workflows-preview` | `vscode-multi-root-workflows` |
+| `mcp-server-preview` | `mcp-server` |
+| `threshold-profiles-preview` | `threshold-profiles` |
+| `dashboard-remote-repos-preview` | `dashboard-remote-repos` |
+| `python-runtime-trace-preview` | `python-runtime-trace` |
+| `mcp-mutation-tools-preview` | `mcp-mutation-tools` |
 
 ## Build Channels
 

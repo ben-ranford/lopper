@@ -15,7 +15,7 @@ const (
 	pubspecYAMLName                     = "pubspec.yaml"
 	pubspecYMLName                      = "pubspec.yml"
 	pubspecLockName                     = "pubspec.lock"
-	dartSourceAttributionPreviewFeature = "dart-source-attribution-preview"
+	dartSourceAttributionPreviewFeature = "dart-source-attribution"
 	maxDetectionEntries                 = 2048
 	maxManifestCount                    = 256
 	maxScanFiles                        = 4096

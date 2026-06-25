@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 )
 
 type fakeRunner struct {
@@ -82,6 +83,46 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+func TestRunWarnsOnDeprecatedFeatureName(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	c := New(&fakeRunner{}, &out, &errOut)
+
+	code := c.Run(context.Background(), []string{"dashboard", "--repos", ".", "--enable-feature", "mcp-server-preview"})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `feature flag "mcp-server-preview" is deprecated; use "mcp-server" instead`) {
+		t.Fatalf("expected feature deprecation warning, got %q", errOut.String())
+	}
+}
+
+func TestFeatureDeprecationWarningsByMode(t *testing.T) {
+	features := mustDeprecatedFeatureSet(t)
+	cases := []app.Request{
+		{Mode: app.ModeAnalyse, Analyse: app.AnalyseRequest{Features: features}},
+		{Mode: app.ModeDashboard, Dashboard: app.DashboardRequest{Features: features}},
+		{Mode: app.ModeProfile, Profile: app.ProfileRequest{Features: features}},
+		{Mode: app.ModeMCP, MCP: app.MCPRequest{Features: features}},
+	}
+	for _, req := range cases {
+		if warnings := featureDeprecationWarnings(req); len(warnings) != 1 {
+			t.Fatalf("expected warning for mode %s, got %#v", req.Mode, warnings)
+		}
+	}
+	if warnings := featureDeprecationWarnings(app.Request{Mode: app.ModeFeatures}); len(warnings) != 0 {
+		t.Fatalf("expected no feature warnings for features mode, got %#v", warnings)
+	}
+}
+
+func TestWriteFeatureDeprecationWarningsReturnsWriterError(t *testing.T) {
+	c := New(&fakeRunner{}, &bytes.Buffer{}, &failWriter{})
+	req := app.Request{Mode: app.ModeMCP, MCP: app.MCPRequest{Features: mustDeprecatedFeatureSet(t)}}
+	if err := c.writeFeatureDeprecationWarnings(req); err == nil {
+		t.Fatalf("expected warning writer error")
+	}
+}
+
 func TestRunVersionAliasAndExtraArgs(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -101,6 +142,24 @@ func TestRunVersionAliasAndExtraArgs(t *testing.T) {
 	if errOut.Len() != 0 {
 		t.Fatalf("expected no stderr output for version requests, got %q", errOut.String())
 	}
+}
+
+func mustDeprecatedFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:            "LOP-FEAT-0001",
+		Name:            "stable-flag",
+		DeprecatedNames: []string{"stable-flag-preview"},
+		Lifecycle:       featureflags.LifecycleStable,
+	}})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	features, err := registry.Resolve(featureflags.ResolveOptions{Enable: []string{"stable-flag-preview"}})
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+	return features
 }
 
 func TestRunVersionWriterFailure(t *testing.T) {

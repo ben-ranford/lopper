@@ -24,7 +24,7 @@ var (
 	ErrDirtyWorktree                = errors.New("codemod apply requires a clean git worktree")
 	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
 	ErrMCPFeatureDisabled           = errors.New("mcp server feature is disabled")
-	ErrProfileFeatureDisabled       = errors.New("threshold profile command feature is disabled; enable threshold-profiles-preview with --enable-feature")
+	ErrProfileFeatureDisabled       = errors.New("threshold profile command feature is disabled; enable threshold-profiles with --enable-feature")
 )
 
 type App struct {

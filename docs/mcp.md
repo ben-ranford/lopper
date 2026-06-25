@@ -19,16 +19,16 @@ Example MCP client entry:
 }
 ```
 
-`mcp-server-preview` is now a stable feature flag and is enabled by default in every build channel. The original flag name remains available for compatibility and explicit rollback testing via `--disable-feature mcp-server-preview`. During `initialize`, the server advertises tool support and returns Lopper version metadata. Use `tools/list` to inspect tool schemas at runtime.
+`mcp-server` is a stable feature flag and is enabled by default in every build channel. The legacy `mcp-server-preview` name remains available for compatibility and explicit rollback testing via `--disable-feature mcp-server-preview`. During `initialize`, the server advertises tool support and returns Lopper version metadata. Use `tools/list` to inspect tool schemas at runtime.
 
-Mutation tools are behind the preview flag `mcp-mutation-tools-preview` and are not advertised unless the MCP server is started with that flag enabled, for example:
+Mutation tools are behind the stable flag `mcp-mutation-tools` and are not advertised unless the MCP server is started with that flag enabled, for example:
 
 ```json
 {
   "mcpServers": {
     "lopper": {
       "command": "lopper",
-      "args": ["mcp", "--enable-feature", "mcp-mutation-tools-preview"]
+      "args": ["mcp", "--enable-feature", "mcp-mutation-tools"]
     }
   }
 }
@@ -194,7 +194,7 @@ The MCP server is local-first and read-only by default:
 
 Explicit mutation tools add these guardrails:
 
-- The MCP process must be started with `mcp-mutation-tools-preview` enabled; per-call `enableFeatures` cannot turn on hidden mutation tools after startup.
+- The MCP process must be started with `mcp-mutation-tools` enabled; per-call `enableFeatures` cannot turn on hidden mutation tools after startup. The legacy `mcp-mutation-tools-preview` name remains accepted for v2.0.0 compatibility.
 - Mutations require a dedicated tool name plus `confirmApply: true` or `confirmSave: true`.
 - Mutation store paths and dashboard repo paths must be local filesystem paths. Relative `baselineStorePath` values resolve under `repoPath`.
 - `baselineKey` and `baselineLabel` are mutually exclusive.

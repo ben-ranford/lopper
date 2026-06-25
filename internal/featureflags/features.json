@@ -1,84 +1,120 @@
 [
   {
     "code": "LOP-FEAT-0001",
-    "name": "dart-source-attribution-preview",
+    "name": "dart-source-attribution",
+    "deprecatedNames": [
+      "dart-source-attribution-preview"
+    ],
     "description": "Enable richer Dart and Flutter dependency source attribution and federated plugin relationship reporting.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
   },
   {
     "code": "LOP-FEAT-0002",
-    "name": "lockfile-drift-ecosystem-expansion-preview",
-    "description": "Preview expansion of shared lockfile drift checks for .NET, Dart, Elixir, and SwiftPM ecosystems.",
+    "name": "lockfile-drift-ecosystem-expansion",
+    "deprecatedNames": [
+      "lockfile-drift-ecosystem-expansion-preview"
+    ],
+    "description": "Enable shared lockfile drift checks for .NET, Dart, Elixir, and SwiftPM ecosystems.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
   },
   {
     "code": "LOP-FEAT-0003",
-    "name": "swift-carthage-preview",
+    "name": "swift-carthage",
+    "deprecatedNames": [
+      "swift-carthage-preview"
+    ],
     "description": "Enable Carthage dependency parsing for the Swift adapter.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
   },
   {
     "code": "LOP-FEAT-0004",
-    "name": "powershell-adapter-preview",
-    "description": "Enable preview support for the PowerShell language adapter.",
+    "name": "powershell-adapter",
+    "deprecatedNames": [
+      "powershell-adapter-preview"
+    ],
+    "description": "Enable support for the PowerShell language adapter.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
   },
   {
     "code": "LOP-FEAT-0005",
-    "name": "go-vendored-provenance-preview",
+    "name": "go-vendored-provenance",
+    "deprecatedNames": [
+      "go-vendored-provenance-preview"
+    ],
     "description": "Enable vendored dependency provenance for Go using vendor/modules.txt metadata.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.5.0"
   },
   {
     "code": "LOP-FEAT-0006",
-    "name": "baseline-provenance-runtime-context-preview",
+    "name": "baseline-provenance-runtime-context",
+    "deprecatedNames": [
+      "baseline-provenance-runtime-context-preview"
+    ],
     "description": "Enable baseline comparison, policy provenance, and runtime parent/entrypoint context in reports and dashboard views.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.6.0"
   },
   {
     "code": "LOP-FEAT-0007",
-    "name": "vscode-multi-root-workflows-preview",
+    "name": "vscode-multi-root-workflows",
+    "deprecatedNames": [
+      "vscode-multi-root-workflows-preview"
+    ],
     "description": "Enable multi-root VS Code analysis workflows, dependency explorer detail views, baseline commands, and export commands.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.6.0"
   },
   {
     "code": "LOP-FEAT-0008",
-    "name": "mcp-server-preview",
+    "name": "mcp-server",
+    "deprecatedNames": [
+      "mcp-server-preview"
+    ],
     "description": "Enable the local stdio MCP server for read-only dependency analysis workflows.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.6.0"
   },
   {
     "code": "LOP-FEAT-0009",
-    "name": "threshold-profiles-preview",
+    "name": "threshold-profiles",
+    "deprecatedNames": [
+      "threshold-profiles-preview"
+    ],
     "description": "Enable built-in threshold profile config scaffolding through the profile command.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.7.0"
   },
   {
     "code": "LOP-FEAT-0010",
-    "name": "dashboard-remote-repos-preview",
+    "name": "dashboard-remote-repos",
+    "deprecatedNames": [
+      "dashboard-remote-repos-preview"
+    ],
     "description": "Enable dashboard repoUrl entries by materializing remote Git repositories into a deterministic local checkout cache.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.7.0"
   },
   {
     "code": "LOP-FEAT-0011",
-    "name": "python-runtime-trace-preview",
-    "description": "Enable preview runtime trace annotations for Python dependencies using shared runtimeUsage report fields.",
+    "name": "python-runtime-trace",
+    "deprecatedNames": [
+      "python-runtime-trace-preview"
+    ],
+    "description": "Enable runtime trace annotations for Python dependencies using shared runtimeUsage report fields.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.7.0"
   },
   {
     "code": "LOP-FEAT-0012",
-    "name": "mcp-mutation-tools-preview",
+    "name": "mcp-mutation-tools",
+    "deprecatedNames": [
+      "mcp-mutation-tools-preview"
+    ],
     "description": "Enable explicit MCP mutation tools for codemod apply and baseline snapshot save workflows.",
     "lifecycle": "stable",
     "firstStableRelease": "v1.7.0"

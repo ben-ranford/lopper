@@ -18,7 +18,7 @@ func TestPowerShellPreviewFeatureUsesShippedCode(t *testing.T) {
 
 func TestAdapterFeatureFlagsUsesRegistryPattern(t *testing.T) {
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{
-		{Code: "LOP-FEAT-0001", Name: "powershell-adapter-preview", Lifecycle: featureflags.LifecyclePreview},
+		{Code: "LOP-FEAT-0001", Name: "powershell-adapter", DeprecatedNames: []string{"powershell-adapter-preview"}, Lifecycle: featureflags.LifecyclePreview},
 		{Code: "LOP-FEAT-0002", Name: "swift-carthage-preview", Lifecycle: featureflags.LifecyclePreview},
 		{Code: "LOP-FEAT-0003", Name: "ruby-adapter-preview", Lifecycle: featureflags.LifecycleStable},
 	})
@@ -30,7 +30,7 @@ func TestAdapterFeatureFlagsUsesRegistryPattern(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected adapter feature flags, got %#v", got)
 	}
-	if got["powershell"] != "powershell-adapter-preview" {
+	if got["powershell"] != "powershell-adapter" {
 		t.Fatalf("expected powershell adapter feature mapping, got %#v", got)
 	}
 	if _, ok := got["swift-carthage"]; ok {

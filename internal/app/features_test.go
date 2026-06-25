@@ -93,16 +93,19 @@ func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute empty features: %v", err)
 	}
-	if !strings.Contains(emptyOutput, "dart-source-attribution-preview") ||
-		!strings.Contains(emptyOutput, "lockfile-drift-ecosystem-expansion-preview") ||
-		!strings.Contains(emptyOutput, "swift-carthage-preview") ||
-		!strings.Contains(emptyOutput, "powershell-adapter-preview") ||
-		!strings.Contains(emptyOutput, "go-vendored-provenance-preview") ||
-		!strings.Contains(emptyOutput, "baseline-provenance-runtime-context-preview") ||
-		!strings.Contains(emptyOutput, "vscode-multi-root-workflows-preview") ||
-		!strings.Contains(emptyOutput, "mcp-server-preview") ||
+	if !strings.Contains(emptyOutput, "dart-source-attribution") ||
+		!strings.Contains(emptyOutput, "lockfile-drift-ecosystem-expansion") ||
+		!strings.Contains(emptyOutput, "swift-carthage") ||
+		!strings.Contains(emptyOutput, "powershell-adapter") ||
+		!strings.Contains(emptyOutput, "go-vendored-provenance") ||
+		!strings.Contains(emptyOutput, "baseline-provenance-runtime-context") ||
+		!strings.Contains(emptyOutput, "vscode-multi-root-workflows") ||
+		!strings.Contains(emptyOutput, "mcp-server") ||
 		!strings.Contains(emptyOutput, "true") {
 		t.Fatalf("expected default feature table to include embedded graduated flags enabled by default, got %q", emptyOutput)
+	}
+	if strings.Contains(emptyOutput, "dart-source-attribution-preview") || strings.Contains(emptyOutput, "mcp-server-preview") {
+		t.Fatalf("expected default feature table to use stable aliases, got %q", emptyOutput)
 	}
 }
 

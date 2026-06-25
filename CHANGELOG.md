@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 (Unreleased)
+
+### Feature Flag Migration
+
+Stable v2 feature names no longer use the `-preview` suffix. The legacy preview names remain accepted in v2.0.0 for compatibility and explicit rollback commands, but new docs, examples, manifests, and release reports use the stable names.
+
+| Legacy preview name | Stable name |
+| --- | --- |
+| `dart-source-attribution-preview` | `dart-source-attribution` |
+| `lockfile-drift-ecosystem-expansion-preview` | `lockfile-drift-ecosystem-expansion` |
+| `swift-carthage-preview` | `swift-carthage` |
+| `powershell-adapter-preview` | `powershell-adapter` |
+| `go-vendored-provenance-preview` | `go-vendored-provenance` |
+| `baseline-provenance-runtime-context-preview` | `baseline-provenance-runtime-context` |
+| `vscode-multi-root-workflows-preview` | `vscode-multi-root-workflows` |
+| `mcp-server-preview` | `mcp-server` |
+| `threshold-profiles-preview` | `threshold-profiles` |
+| `dashboard-remote-repos-preview` | `dashboard-remote-repos` |
+| `python-runtime-trace-preview` | `python-runtime-trace` |
+| `mcp-mutation-tools-preview` | `mcp-mutation-tools` |
+
 ## [1.7.0](https://github.com/ben-ranford/lopper/compare/v1.6.1...v1.7.0) (2026-06-25)
 
 

@@ -4,7 +4,7 @@ import "github.com/ben-ranford/lopper/internal/lang/shared"
 
 const (
 	swiftAdapterID               = "swift"
-	swiftCarthagePreviewFlagName = "swift-carthage-preview"
+	swiftCarthagePreviewFlagName = "swift-carthage"
 	packageManifestName          = "Package.swift"
 	packageResolvedName          = "Package.resolved"
 	podManifestName              = "Podfile"

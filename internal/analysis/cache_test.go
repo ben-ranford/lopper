@@ -425,7 +425,7 @@ func mustResolveFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
 	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
 	if !enabled {
-		options.Disable = []string{"swift-carthage-preview"}
+		options.Disable = []string{"swift-carthage"}
 	}
 	resolved, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {

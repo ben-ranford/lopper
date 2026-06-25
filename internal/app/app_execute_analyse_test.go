@@ -47,7 +47,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	featureRegistry, err := featureflags.NewRegistry([]featureflags.Flag{{
 		Code:      "LOP-FEAT-0001",
-		Name:      "powershell-adapter-preview",
+		Name:      "powershell-adapter",
 		Lifecycle: featureflags.LifecyclePreview,
 	}})
 	if err != nil {
@@ -55,7 +55,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	resolvedFeatures, err := featureRegistry.Resolve(featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
-		Enable:  []string{"powershell-adapter-preview"},
+		Enable:  []string{"powershell-adapter"},
 	})
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)
@@ -68,7 +68,7 @@ func TestExecuteAnalyseEmitsEffectiveThresholds(t *testing.T) {
 	}
 	assertContainsAll(t, output, []string{`"effectiveThresholds"`, `"effectivePolicy"`, `"sources": [`, `"cli"`, `"lowConfidenceWarningPercent": 33`})
 	assertForwardedAnalyseRequest(t, analyzer.lastReq)
-	if !analyzer.lastReq.Features.Enabled("powershell-adapter-preview") {
+	if !analyzer.lastReq.Features.Enabled("powershell-adapter") {
 		t.Fatalf("expected feature set to be forwarded to analysis request")
 	}
 }
@@ -165,7 +165,7 @@ func TestExecuteAnalyseForwardsFeatureFlags(t *testing.T) {
 
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
 		Code:      "LOP-FEAT-0001",
-		Name:      "swift-carthage-preview",
+		Name:      "swift-carthage",
 		Lifecycle: featureflags.LifecyclePreview,
 	}})
 	if err != nil {
@@ -173,7 +173,7 @@ func TestExecuteAnalyseForwardsFeatureFlags(t *testing.T) {
 	}
 	resolved, err := registry.Resolve(featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
-		Enable:  []string{"swift-carthage-preview"},
+		Enable:  []string{"swift-carthage"},
 	})
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)
@@ -188,7 +188,7 @@ func TestExecuteAnalyseForwardsFeatureFlags(t *testing.T) {
 	if _, err := application.Execute(context.Background(), req); err != nil {
 		t.Fatalf(executeAnalyseErrFmt, err)
 	}
-	if !analyzer.lastReq.Features.Enabled("swift-carthage-preview") {
+	if !analyzer.lastReq.Features.Enabled("swift-carthage") {
 		t.Fatalf("expected analyse request features to be forwarded, got %#v", analyzer.lastReq.Features)
 	}
 }

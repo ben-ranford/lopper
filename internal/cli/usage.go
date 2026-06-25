@@ -8,7 +8,7 @@ const usage = `Usage:
   lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
   lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
   lopper features [--format table|json] [--channel dev|rolling|release] [--release VERSION]
-  lopper profile apply strict|balanced|noise-reduction [--output PATH] [--force] [--enable-feature threshold-profiles-preview]
+  lopper profile apply strict|balanced|noise-reduction [--output PATH] [--force] [--enable-feature threshold-profiles]
   lopper mcp
 
 Options:

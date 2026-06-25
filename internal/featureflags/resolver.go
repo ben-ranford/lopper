@@ -15,9 +15,16 @@ type ResolveOptions struct {
 }
 
 type Set struct {
-	enabled map[string]bool
-	byCode  map[string]Flag
-	byName  map[string]Flag
+	enabled      map[string]bool
+	byCode       map[string]Flag
+	byName       map[string]Flag
+	deprecations []DeprecatedReference
+}
+
+type DeprecatedReference struct {
+	Code        string
+	Name        string
+	Replacement string
 }
 
 type ManifestEntry struct {
@@ -42,14 +49,16 @@ func (r *Registry) Resolve(opts ResolveOptions) (Set, error) {
 
 	enabled := r.channelDefaults(channel)
 	r.applyReleaseLockDefaults(channel, opts.Lock, enabled)
-	if err := r.applyExplicitOverrides(enabled, opts.Enable, opts.Disable); err != nil {
+	deprecations, err := r.applyExplicitOverrides(enabled, opts.Enable, opts.Disable)
+	if err != nil {
 		return Set{}, err
 	}
 
 	return Set{
-		enabled: enabled,
-		byCode:  copyFlagMap(r.byCode),
-		byName:  copyFlagMap(r.byName),
+		enabled:      enabled,
+		byCode:       copyFlagMap(r.byCode),
+		byName:       copyFlagMap(r.byName),
+		deprecations: deprecations,
 	}, nil
 }
 
@@ -72,25 +81,25 @@ func (r *Registry) applyReleaseLockDefaults(channel Channel, lock *ReleaseLock, 
 	}
 }
 
-func (r *Registry) applyExplicitOverrides(enabled map[string]bool, enable []string, disable []string) error {
-	explicitEnable, err := r.resolveRefs(enable)
+func (r *Registry) applyExplicitOverrides(enabled map[string]bool, enable []string, disable []string) ([]DeprecatedReference, error) {
+	explicitEnable, enableDeprecations, err := r.resolveRefs(enable)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	explicitDisable, err := r.resolveRefs(disable)
+	explicitDisable, disableDeprecations, err := r.resolveRefs(disable)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for code := range explicitEnable {
 		if _, disabled := explicitDisable[code]; disabled {
-			return fmt.Errorf("feature %s is both enabled and disabled", code)
+			return nil, fmt.Errorf("feature %s is both enabled and disabled", code)
 		}
 		enabled[code] = true
 	}
 	for code := range explicitDisable {
 		enabled[code] = false
 	}
-	return nil
+	return mergeDeprecatedReferences(enableDeprecations, disableDeprecations), nil
 }
 
 func (r *Registry) Manifest(opts ResolveOptions) ([]ManifestEntry, error) {
@@ -166,34 +175,80 @@ func (s *Set) Snapshot() map[string]bool {
 	return snapshot
 }
 
+func (s *Set) DeprecatedReferences() []DeprecatedReference {
+	if s == nil || len(s.deprecations) == 0 {
+		return nil
+	}
+	return append([]DeprecatedReference{}, s.deprecations...)
+}
+
+func (s *Set) DeprecationWarnings() []string {
+	if s == nil || len(s.deprecations) == 0 {
+		return nil
+	}
+	warnings := make([]string, 0, len(s.deprecations))
+	for _, ref := range s.deprecations {
+		warnings = append(warnings, fmt.Sprintf("feature flag %q is deprecated; use %q instead", ref.Name, ref.Replacement))
+	}
+	return warnings
+}
+
 func (s *Set) lookup(ref string) (Flag, bool) {
 	ref = strings.TrimSpace(ref)
 	if s == nil {
 		return Flag{}, false
 	}
 	if flag, ok := s.byCode[ref]; ok {
-		return flag, true
+		return cloneFlag(flag), true
 	}
 	flag, ok := s.byName[ref]
-	return flag, ok
+	if !ok {
+		return Flag{}, false
+	}
+	return cloneFlag(flag), true
 }
 
-func (r *Registry) resolveRefs(refs []string) (map[string]struct{}, error) {
+func (r *Registry) resolveRefs(refs []string) (map[string]struct{}, []DeprecatedReference, error) {
 	resolved := map[string]struct{}{}
+	var deprecations []DeprecatedReference
 	for _, ref := range normalizeRefs(refs) {
-		flag, ok := r.Lookup(ref)
+		result, ok := r.LookupReference(ref)
 		if !ok {
-			return nil, fmt.Errorf("unknown feature: %s", ref)
+			return nil, nil, fmt.Errorf("unknown feature: %s", ref)
 		}
+		flag := result.Flag
 		resolved[flag.Code] = struct{}{}
+		if result.Deprecated {
+			deprecations = append(deprecations, DeprecatedReference{
+				Code:        flag.Code,
+				Name:        result.Reference,
+				Replacement: result.ReplacementRef,
+			})
+		}
 	}
-	return resolved, nil
+	return resolved, deprecations, nil
 }
 
 func copyFlagMap(source map[string]Flag) map[string]Flag {
 	copied := make(map[string]Flag, len(source))
 	for key, value := range source {
-		copied[key] = value
+		copied[key] = cloneFlag(value)
 	}
 	return copied
+}
+
+func mergeDeprecatedReferences(groups ...[]DeprecatedReference) []DeprecatedReference {
+	seen := map[string]struct{}{}
+	var merged []DeprecatedReference
+	for _, group := range groups {
+		for _, ref := range group {
+			key := ref.Code + "\x00" + ref.Name
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, ref)
+		}
+	}
+	return merged
 }
