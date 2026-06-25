@@ -10,7 +10,7 @@ import threading
 
 try:
     from importlib import metadata as importlib_metadata
-except Exception:  # pragma: no cover - older or constrained Python runtimes.
+except Exception:
     importlib_metadata = None
 
 
@@ -95,7 +95,7 @@ def _dependency_for_module(module_name: str) -> str:
         return ""
     distributions = _package_distributions().get(top_level, ())
     if distributions:
-        return sorted(distributions, key=str.lower)[0]
+        return min(distributions, key=str.lower)
     return top_level
 
 
