@@ -58,13 +58,19 @@ code --install-extension lopper-vscode-<version>.vsix
 - `lopper.managedBinaryTag`: optional release tag override for managed installs
 - `lopper.runtimeTracePath`: optional runtime trace file for JS/TS runtime-aware analysis
 - `lopper.runtimeTestCommand`: optional command to run while capturing a runtime trace
+- `lopper.advisorySourcePath`: optional local JSON or YAML advisory file for vulnerability findings
 - `lopper.thresholdFailOnIncreasePercent`: waste increase gate threshold, default `-1`
 - `lopper.thresholdLowConfidenceWarningPercent`: warning threshold for low-confidence dependencies
 - `lopper.thresholdMinUsagePercentForRecommendations`: recommendation threshold for usage
 - `lopper.thresholdMaxUncertainImportCount`: uncertain import gate threshold, default `-1`
+- `lopper.thresholdReachableVulnerabilityPriority`: reachable vulnerability gate threshold (`off`, `low`, `medium`, `high`, `critical`)
 - `lopper.licenseDeny`: SPDX identifiers to deny during analysis
 - `lopper.licenseFailOnDeny`: fail when denied licenses are detected
 - `lopper.licenseProvenanceRegistry`: enable registry provenance heuristics for JS/TS dependencies
+
+Setting `lopper.advisorySourcePath` or a non-`off` reachable vulnerability
+threshold automatically enables the
+`reachability-vulnerability-prioritization-preview` feature for VS Code runs.
 
 ## Commands
 

@@ -15,13 +15,14 @@ const (
 )
 
 type LoadResult struct {
-	Overrides     Overrides
-	Resolved      Values
-	Scope         PathScope
-	Features      FeatureConfig
-	ConfigPath    string
-	PolicySources []string
-	PolicyTrace   []report.PolicyMergeTrace
+	Overrides          Overrides
+	Resolved           Values
+	Scope              PathScope
+	Features           FeatureConfig
+	AdvisorySourcePath string
+	ConfigPath         string
+	PolicySources      []string
+	PolicyTrace        []report.PolicyMergeTrace
 }
 
 type PathScope struct {
@@ -59,11 +60,12 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	}
 	if !found {
 		return LoadResult{
-			Resolved:      Defaults(),
-			Scope:         normalizePathScope(PathScope{}),
-			Features:      normalizeFeatureConfig(FeatureConfig{}),
-			PolicySources: []string{defaultPolicySource},
-			PolicyTrace:   policyTraceFromMap(defaultPolicyTrace()),
+			Resolved:           Defaults(),
+			Scope:              normalizePathScope(PathScope{}),
+			Features:           normalizeFeatureConfig(FeatureConfig{}),
+			AdvisorySourcePath: "",
+			PolicySources:      []string{defaultPolicySource},
+			PolicyTrace:        policyTraceFromMap(defaultPolicyTrace()),
 		}, nil
 	}
 
@@ -82,13 +84,14 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	}
 
 	return LoadResult{
-		Overrides:     normalizeOverrides(mergeResult.overrides),
-		Resolved:      resolved,
-		Scope:         normalizePathScope(mergeResult.scope),
-		Features:      normalizeFeatureConfig(mergeResult.features),
-		ConfigPath:    configPath,
-		PolicySources: mergeResult.policySourcesHighToLow(),
-		PolicyTrace:   policyTraceFromMap(mergeResult.policyTrace),
+		Overrides:          normalizeOverrides(mergeResult.overrides),
+		Resolved:           resolved,
+		Scope:              normalizePathScope(mergeResult.scope),
+		Features:           normalizeFeatureConfig(mergeResult.features),
+		AdvisorySourcePath: mergeResult.advisorySource.source,
+		ConfigPath:         configPath,
+		PolicySources:      mergeResult.policySourcesHighToLow(),
+		PolicyTrace:        policyTraceFromMap(mergeResult.policyTrace),
 	}, nil
 }
 
@@ -97,7 +100,8 @@ type rawConfig struct {
 	Scope  rawScope  `yaml:"scope" json:"scope"`
 	// Feature flags are resolved by the cli package; keep this field here so shared config parsing
 	// preserves unknown-field validation while accepting the feature section.
-	Features rawFeatures `yaml:"features" json:"features"`
+	Features   rawFeatures   `yaml:"features" json:"features"`
+	Advisories rawAdvisories `yaml:"advisories" json:"advisories"`
 	// Notifications are parsed by the notify package; keep this field so threshold parsing accepts shared config files.
 	Notifications map[string]any `yaml:"notifications" json:"notifications"`
 
@@ -114,6 +118,7 @@ type rawConfig struct {
 	LicenseDeny                       *[]string `yaml:"license_deny" json:"license_deny"`
 	LicenseFailOnDeny                 *bool     `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
 	LicenseIncludeRegistryProvenance  *bool     `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
+	ReachableVulnerabilityPriority    *string   `yaml:"reachable_vulnerability_priority" json:"reachable_vulnerability_priority"`
 }
 
 type rawPolicy struct {
@@ -130,6 +135,10 @@ type rawFeatures struct {
 	Disable *[]string `yaml:"disable" json:"disable"`
 }
 
+type rawAdvisories struct {
+	Source *string `yaml:"source" json:"source"`
+}
+
 type rawThresholds struct {
 	FailOnIncreasePercent             *int      `yaml:"fail_on_increase_percent" json:"fail_on_increase_percent"`
 	LowConfidenceWarningPercent       *int      `yaml:"low_confidence_warning_percent" json:"low_confidence_warning_percent"`
@@ -142,4 +151,5 @@ type rawThresholds struct {
 	LicenseDeny                       *[]string `yaml:"license_deny" json:"license_deny"`
 	LicenseFailOnDeny                 *bool     `yaml:"license_fail_on_deny" json:"license_fail_on_deny"`
 	LicenseIncludeRegistryProvenance  *bool     `yaml:"license_include_registry_provenance" json:"license_include_registry_provenance"`
+	ReachableVulnerabilityPriority    *string   `yaml:"reachable_vulnerability_priority" json:"reachable_vulnerability_priority"`
 }

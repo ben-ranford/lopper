@@ -62,15 +62,16 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 
 	comparison := BaselineComparison{
 		SummaryDelta: SummaryDelta{
-			DependencyCountDelta:     safeSummaryField(currentSummary, func(s *Summary) int { return s.DependencyCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DependencyCount }),
-			UsedExportsCountDelta:    safeSummaryField(currentSummary, func(s *Summary) int { return s.UsedExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UsedExportsCount }),
-			TotalExportsCountDelta:   safeSummaryField(currentSummary, func(s *Summary) int { return s.TotalExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.TotalExportsCount }),
-			UsedPercentDelta:         safeSummaryFloat(currentSummary, func(s *Summary) float64 { return s.UsedPercent }) - safeSummaryFloat(baselineSummary, func(s *Summary) float64 { return s.UsedPercent }),
-			WastePercentDelta:        wasteFromSummary(currentSummary) - wasteFromSummary(baselineSummary),
-			UnusedBytesDelta:         currentUnused - baselineUnused,
-			KnownLicenseCountDelta:   safeSummaryField(currentSummary, func(s *Summary) int { return s.KnownLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.KnownLicenseCount }),
-			UnknownLicenseCountDelta: safeSummaryField(currentSummary, func(s *Summary) int { return s.UnknownLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UnknownLicenseCount }),
-			DeniedLicenseCountDelta:  safeSummaryField(currentSummary, func(s *Summary) int { return s.DeniedLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DeniedLicenseCount }),
+			DependencyCountDelta:             safeSummaryField(currentSummary, func(s *Summary) int { return s.DependencyCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DependencyCount }),
+			UsedExportsCountDelta:            safeSummaryField(currentSummary, func(s *Summary) int { return s.UsedExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UsedExportsCount }),
+			TotalExportsCountDelta:           safeSummaryField(currentSummary, func(s *Summary) int { return s.TotalExportsCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.TotalExportsCount }),
+			UsedPercentDelta:                 safeSummaryFloat(currentSummary, func(s *Summary) float64 { return s.UsedPercent }) - safeSummaryFloat(baselineSummary, func(s *Summary) float64 { return s.UsedPercent }),
+			WastePercentDelta:                wasteFromSummary(currentSummary) - wasteFromSummary(baselineSummary),
+			UnusedBytesDelta:                 currentUnused - baselineUnused,
+			KnownLicenseCountDelta:           safeSummaryField(currentSummary, func(s *Summary) int { return s.KnownLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.KnownLicenseCount }),
+			UnknownLicenseCountDelta:         safeSummaryField(currentSummary, func(s *Summary) int { return s.UnknownLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.UnknownLicenseCount }),
+			DeniedLicenseCountDelta:          safeSummaryField(currentSummary, func(s *Summary) int { return s.DeniedLicenseCount }) - safeSummaryField(baselineSummary, func(s *Summary) int { return s.DeniedLicenseCount }),
+			ReachableVulnerabilityCountDelta: safeReachableVulnerabilityCount(currentSummary) - safeReachableVulnerabilityCount(baselineSummary),
 		},
 	}
 
@@ -109,6 +110,7 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 		appendDependencyDelta(&comparison, delta)
 	}
 	comparison.NewDeniedLicenses = newlyDeniedLicenses(currentByKey, baselineByKey)
+	comparison.NewReachableVulnerabilities = newlyReachableVulnerabilities(currentByKey, baselineByKey)
 
 	return comparison
 }
@@ -190,6 +192,8 @@ func dependencyDelta(curr DependencyReport, hasCurrent bool, base DependencyRepo
 		delta.EstimatedUnusedBytesDelta = curr.EstimatedUnusedBytes
 		delta.WastePercentDelta = wasteFromDependency(curr)
 		delta.DeniedIntroduced = isDenied(curr) && !isDenied(base)
+		delta.ReachableVulnerabilityCountDelta = reachableVulnerabilityCount(curr)
+		delta.ReachableVulnerabilitiesIntroduced = delta.ReachableVulnerabilityCountDelta > 0
 		return delta, true
 	case !hasCurrent && hasBaseline:
 		delta.Kind = DependencyDeltaRemoved
@@ -198,6 +202,7 @@ func dependencyDelta(curr DependencyReport, hasCurrent bool, base DependencyRepo
 		delta.UsedPercentDelta = -base.UsedPercent
 		delta.EstimatedUnusedBytesDelta = -base.EstimatedUnusedBytes
 		delta.WastePercentDelta = -wasteFromDependency(base)
+		delta.ReachableVulnerabilityCountDelta = -reachableVulnerabilityCount(base)
 		return delta, true
 	default:
 		delta.Kind = DependencyDeltaChanged
@@ -209,12 +214,15 @@ func dependencyDelta(curr DependencyReport, hasCurrent bool, base DependencyRepo
 		runtimeDelta, runtimeChanged := dependencyRuntimeDelta(curr.RuntimeUsage, base.RuntimeUsage)
 		delta.RuntimeDelta = runtimeDelta
 		delta.DeniedIntroduced = isDenied(curr) && !isDenied(base)
+		delta.ReachableVulnerabilityCountDelta = reachableVulnerabilityCount(curr) - reachableVulnerabilityCount(base)
+		delta.ReachableVulnerabilitiesIntroduced = hasNewReachableVulnerabilities(curr, base)
 		if delta.UsedExportsCountDelta == 0 &&
 			delta.TotalExportsCountDelta == 0 &&
 			delta.UsedPercentDelta == 0 &&
 			delta.EstimatedUnusedBytesDelta == 0 &&
 			!runtimeChanged &&
-			!delta.DeniedIntroduced {
+			!delta.DeniedIntroduced &&
+			!delta.ReachableVulnerabilitiesIntroduced {
 			return DependencyDelta{}, false
 		}
 		return delta, true
@@ -435,4 +443,84 @@ func newlyDeniedLicenses(currentByKey, baselineByKey map[string]DependencyReport
 
 func isDenied(dep DependencyReport) bool {
 	return dep.License != nil && dep.License.Denied
+}
+
+func safeReachableVulnerabilityCount(summary *Summary) int {
+	if summary == nil || summary.Vulnerabilities == nil {
+		return 0
+	}
+	return summary.Vulnerabilities.ReachableFindings
+}
+
+func reachableVulnerabilityCount(dep DependencyReport) int {
+	count := 0
+	for _, finding := range dep.Vulnerabilities {
+		if finding.Reachable {
+			count++
+		}
+	}
+	return count
+}
+
+func hasNewReachableVulnerabilities(current, baseline DependencyReport) bool {
+	return len(newReachableVulnerabilityFindings(current, baseline)) > 0
+}
+
+func newlyReachableVulnerabilities(currentByKey, baselineByKey map[string]DependencyReport) []VulnerabilityDelta {
+	items := make([]VulnerabilityDelta, 0)
+	for key, current := range currentByKey {
+		baseline := baselineByKey[key]
+		for _, finding := range newReachableVulnerabilityFindings(current, baseline) {
+			items = append(items, VulnerabilityDelta{
+				Language:      current.Language,
+				Name:          current.Name,
+				AdvisoryID:    finding.AdvisoryID,
+				Package:       finding.Package,
+				Severity:      finding.Severity,
+				FixedVersion:  finding.FixedVersion,
+				Source:        finding.Source,
+				Priority:      finding.Priority,
+				PriorityScore: finding.PriorityScore,
+				Evidence:      append([]string{}, finding.Evidence...),
+			})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].PriorityScore != items[j].PriorityScore {
+			return items[i].PriorityScore > items[j].PriorityScore
+		}
+		if priorityRank(items[i].Priority) != priorityRank(items[j].Priority) {
+			return priorityRank(items[i].Priority) > priorityRank(items[j].Priority)
+		}
+		if items[i].Language != items[j].Language {
+			return items[i].Language < items[j].Language
+		}
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].AdvisoryID < items[j].AdvisoryID
+	})
+	return items
+}
+
+func newReachableVulnerabilityFindings(current, baseline DependencyReport) []VulnerabilityFinding {
+	baselineReachable := make(map[string]struct{}, len(baseline.Vulnerabilities))
+	for _, finding := range baseline.Vulnerabilities {
+		if !finding.Reachable {
+			continue
+		}
+		baselineReachable[vulnerabilityFindingKey(finding)] = struct{}{}
+	}
+	items := make([]VulnerabilityFinding, 0)
+	for _, finding := range current.Vulnerabilities {
+		if !finding.Reachable {
+			continue
+		}
+		if _, ok := baselineReachable[vulnerabilityFindingKey(finding)]; ok {
+			continue
+		}
+		items = append(items, finding)
+	}
+	sortVulnerabilityFindings(items)
+	return items
 }

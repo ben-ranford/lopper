@@ -205,6 +205,58 @@ func TestRunAnalysisToolErrorBranches(t *testing.T) {
 	}
 }
 
+func TestRunAnalysisToolAppliesLocalAdvisories(t *testing.T) {
+	repo := t.TempDir()
+	advisoryPath := filepath.Join(repo, "advisories.yml")
+	if err := os.WriteFile(advisoryPath, []byte("advisories:\n  - id: GHSA-mcp\n    package: lodash\n    ecosystem: npm\n    severity: high\n"), 0o600); err != nil {
+		t.Fatalf("write advisory source: %v", err)
+	}
+	reportData := sampleReport(repo)
+	reportData.Dependencies[0].UsedImports = []report.ImportUse{{Name: "default", Module: "lodash", Locations: []report.Location{{File: "app.ts", Line: 1}}}}
+	server := NewServer(Options{Analyzer: &fakeAnalyser{report: reportData}})
+
+	args := mustJSON(t, analysisToolArguments{
+		RepoPath:                       repo,
+		AdvisorySourcePath:             advisoryPath,
+		RuntimeTracePath:               "trace.ndjson",
+		Include:                        []string{"src/**/*.ts"},
+		Exclude:                        []string{"src/**/*.test.ts"},
+		ReachableVulnerabilityPriority: stringPtr(report.VulnerabilityPriorityHigh),
+		EnableFeatures:                 []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature},
+	})
+	result := server.runAnalysisTool(context.Background(), args, analysisToolKindTop)
+	if result.IsError {
+		t.Fatalf("expected advisory analysis success, got %#v", result)
+	}
+	payload, ok := result.StructuredContent.(analysisPayload)
+	if !ok {
+		t.Fatalf("expected analysis payload, got %#v", result.StructuredContent)
+	}
+	if len(payload.Report.Dependencies) != 1 || len(payload.Report.Dependencies[0].Vulnerabilities) != 1 {
+		t.Fatalf("expected annotated vulnerability finding, got %#v", payload.Report.Dependencies)
+	}
+	if payload.Report.EffectivePolicy == nil || payload.Report.EffectivePolicy.Vulnerabilities.AdvisorySourcePath != advisoryPath {
+		t.Fatalf("expected advisory policy metadata, got %#v", payload.Report.EffectivePolicy)
+	}
+}
+
+func TestRunAnalysisToolRequiresVulnerabilityPreviewFeature(t *testing.T) {
+	withCurrentVersion(t, version.Info{BuildChannel: "dev"})
+
+	repo := t.TempDir()
+	server := NewServer(Options{Analyzer: &fakeAnalyser{report: sampleReport(repo)}})
+
+	args := mustJSON(t, analysisToolArguments{
+		RepoPath:                       repo,
+		AdvisorySourcePath:             "advisories.yml",
+		ReachableVulnerabilityPriority: stringPtr(report.VulnerabilityPriorityHigh),
+	})
+	result := server.runAnalysisTool(context.Background(), args, analysisToolKindTop)
+	if !result.IsError || !strings.Contains(result.Content[0].Text, report.ReachabilityVulnerabilityPrioritizationPreviewFeature) {
+		t.Fatalf("expected vulnerability preview feature error, got %#v", result)
+	}
+}
+
 func TestResolveAnalysisRequestValidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	server := NewServer(Options{})
@@ -375,16 +427,24 @@ func TestThresholdAndPolicyHelpers(t *testing.T) {
 		LicenseDeny:                       []string{"MIT"},
 		LicenseFailOnDeny:                 boolPtr(true),
 		LicenseProvenanceRegistry:         boolPtr(true),
+		ReachableVulnerabilityPriority:    stringPtr(report.VulnerabilityPriorityHigh),
+		AdvisorySourcePath:                "advisories.yml",
 	}
 	_, values, sources, trace, err := resolveThresholds(repo, args)
 	if err != nil {
 		t.Fatalf("resolve thresholds: %v", err)
 	}
-	if sources[0] != "mcp" || policyTraceSource(trace, "license.fail_on_deny") != "mcp" {
+	if sources[0] != "mcp" || policyTraceSource(trace, "license.fail_on_deny") != "mcp" || policyTraceSource(trace, "advisories.source") != "mcp" {
 		t.Fatalf("expected mcp policy metadata, sources=%#v trace=%#v", sources, trace)
 	}
-	if !values.LicenseFailOnDeny || !values.LicenseIncludeRegistryProvenance {
+	if !values.LicenseFailOnDeny || !values.LicenseIncludeRegistryProvenance || values.ReachableVulnerabilityPriority != report.VulnerabilityPriorityHigh {
 		t.Fatalf("expected license policy values, got %#v", values)
+	}
+	if got := resolveAdvisorySourcePath(thresholds.LoadResult{AdvisorySourcePath: "config.yml"}, analysisToolArguments{}); got != "config.yml" {
+		t.Fatalf("expected config advisory source, got %q", got)
+	}
+	if got := resolveAdvisorySourcePath(thresholds.LoadResult{AdvisorySourcePath: "config.yml"}, analysisToolArguments{AdvisorySourcePath: "cli.yml"}); got != "cli.yml" {
+		t.Fatalf("expected argument advisory source, got %q", got)
 	}
 	if got := prependPolicySource("mcp", []string{"mcp", "defaults"}); !slicesEqual(got, []string{"mcp", "defaults"}) {
 		t.Fatalf("unexpected deduped sources: %#v", got)
@@ -468,7 +528,7 @@ func TestSmallHelperBranches(t *testing.T) {
 	if got := mergeStringOptions(nil, nil); len(got) != 0 {
 		t.Fatalf("expected nil patterns, got %#v", got)
 	}
-	decorateReport(nil, defaultThresholdValues(), nil, nil)
+	decorateReport(nil, defaultThresholdValues(), nil, nil, "")
 }
 
 func TestDecodeStrictBranches(t *testing.T) {
@@ -518,6 +578,10 @@ func intPtr(value int) *int {
 }
 
 func floatPtr(value float64) *float64 {
+	return &value
+}
+
+func stringPtr(value string) *string {
 	return &value
 }
 

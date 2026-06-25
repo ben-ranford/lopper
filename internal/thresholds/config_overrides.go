@@ -27,6 +27,7 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		LockfileDriftPolicy:               c.LockfileDriftPolicy,
 		LicenseFailOnDeny:                 c.LicenseFailOnDeny,
 		LicenseIncludeRegistryProvenance:  c.LicenseIncludeRegistryProvenance,
+		ReachableVulnerabilityPriority:    c.ReachableVulnerabilityPriority,
 	}
 	if c.LicenseDeny != nil {
 		overrides.LicenseDenyList = cloneStrings(*c.LicenseDeny)
@@ -63,6 +64,9 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 		return Overrides{}, err
 	}
 	if err := applyNestedBoolOverride("license_include_registry_provenance", &overrides.LicenseIncludeRegistryProvenance, c.Thresholds.LicenseIncludeRegistryProvenance); err != nil {
+		return Overrides{}, err
+	}
+	if err := applyNestedStringOverride("reachable_vulnerability_priority", &overrides.ReachableVulnerabilityPriority, c.Thresholds.ReachableVulnerabilityPriority); err != nil {
 		return Overrides{}, err
 	}
 	return overrides, nil
@@ -160,6 +164,9 @@ func mergeOverrides(base, higher Overrides) Overrides {
 	if higher.LicenseIncludeRegistryProvenance != nil {
 		merged.LicenseIncludeRegistryProvenance = higher.LicenseIncludeRegistryProvenance
 	}
+	if higher.ReachableVulnerabilityPriority != nil {
+		merged.ReachableVulnerabilityPriority = higher.ReachableVulnerabilityPriority
+	}
 	return merged
 }
 
@@ -193,6 +200,32 @@ func normalizeFeatureRefs(refs []string) []string {
 
 func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
 	return featureConfigFromOptionalStringPair(mergeOptionalStringPair(featureConfigToOptionalStringPair(base), featureConfigToOptionalStringPair(higher)))
+}
+
+type advisorySourceConfig struct {
+	source string
+	set    bool
+}
+
+func (a *rawAdvisories) toAdvisorySourceConfig(configPath string) advisorySourceConfig {
+	if a == nil || a.Source == nil {
+		return advisorySourceConfig{}
+	}
+	source := strings.TrimSpace(*a.Source)
+	if source == "" {
+		return advisorySourceConfig{set: true}
+	}
+	if filepath.IsAbs(source) {
+		return advisorySourceConfig{source: filepath.Clean(source), set: true}
+	}
+	return advisorySourceConfig{source: filepath.Clean(filepath.Join(filepath.Dir(configPath), source)), set: true}
+}
+
+func mergeAdvisorySource(base, higher advisorySourceConfig) advisorySourceConfig {
+	if higher.set {
+		return higher
+	}
+	return base
 }
 
 func normalizePathScope(scope PathScope) PathScope {

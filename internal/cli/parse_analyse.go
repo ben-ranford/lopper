@@ -14,18 +14,19 @@ import (
 )
 
 type analyseParseState struct {
-	dependency    string
-	format        report.Format
-	outputPath    string
-	scopeMode     string
-	visited       map[string]bool
-	thresholds    thresholds.Values
-	scope         thresholds.PathScope
-	policySources []string
-	policyTrace   []report.PolicyMergeTrace
-	configPath    string
-	features      featureflags.Set
-	notifications notify.Config
+	dependency         string
+	format             report.Format
+	outputPath         string
+	scopeMode          string
+	visited            map[string]bool
+	thresholds         thresholds.Values
+	scope              thresholds.PathScope
+	policySources      []string
+	policyTrace        []report.PolicyMergeTrace
+	advisorySourcePath string
+	configPath         string
+	features           featureflags.Set
+	notifications      notify.Config
 }
 
 func parseAnalyse(args []string, req app.Request) (app.Request, error) {
@@ -77,7 +78,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	}
 
 	visited := visitedFlags(fs)
-	resolvedThresholds, resolvedScope, policySources, policyTrace, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
+	resolvedThresholds, resolvedScope, policySources, policyTrace, advisorySourcePath, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
 	if err != nil {
 		return analyseParseState{}, err
 	}
@@ -91,18 +92,19 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	}
 
 	return analyseParseState{
-		dependency:    dependency,
-		format:        format,
-		outputPath:    outputPath,
-		scopeMode:     scopeMode,
-		visited:       visited,
-		thresholds:    resolvedThresholds,
-		scope:         resolvedScope,
-		policySources: policySources,
-		policyTrace:   policyTrace,
-		configPath:    resolvedConfigPath,
-		features:      resolvedFeatures,
-		notifications: resolvedNotifications,
+		dependency:         dependency,
+		format:             format,
+		outputPath:         outputPath,
+		scopeMode:          scopeMode,
+		visited:            visited,
+		thresholds:         resolvedThresholds,
+		scope:              resolvedScope,
+		policySources:      policySources,
+		policyTrace:        policyTrace,
+		advisorySourcePath: advisorySourcePath,
+		configPath:         resolvedConfigPath,
+		features:           resolvedFeatures,
+		notifications:      resolvedNotifications,
 	}, nil
 }
 
@@ -130,6 +132,7 @@ func buildAnalyseRequest(req app.Request, flags analyseFlagValues, state analyse
 		SaveBaseline:       *flags.saveBaseline,
 		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
+		AdvisorySourcePath: state.advisorySourcePath,
 		IncludePatterns:    resolveScopePatterns(state.visited, "include", flags.includePatterns.Values(), state.scope.Include),
 		ExcludePatterns:    resolveScopePatterns(state.visited, "exclude", flags.excludePatterns.Values(), state.scope.Exclude),
 		ConfigPath:         state.configPath,

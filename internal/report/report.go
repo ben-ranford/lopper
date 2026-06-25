@@ -18,6 +18,7 @@ const (
 )
 
 const SBOMAttestationExportsPreviewFeature = "sbom-attestation-exports-preview"
+const ReachabilityVulnerabilityPrioritizationPreviewFeature = "reachability-vulnerability-prioritization-preview"
 
 var ErrUnknownFormat = errors.New("unknown format")
 

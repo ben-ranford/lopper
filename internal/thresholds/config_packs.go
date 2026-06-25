@@ -12,6 +12,7 @@ import (
 )
 
 const invalidPolicyPackErrFmt = "parse config file %s: invalid policy.packs[%d]: %w"
+const advisorySourceField = "advisories.source"
 
 type packResolver struct {
 	repoPath string
@@ -26,6 +27,7 @@ type resolveMergeResult struct {
 	overrides         Overrides
 	scope             PathScope
 	features          FeatureConfig
+	advisorySource    advisorySourceConfig
 	appliedSourcesLow []string
 	policyTrace       map[string]string
 }
@@ -89,6 +91,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	merged := Overrides{}
 	mergedScope := PathScope{}
 	mergedFeatures := FeatureConfig{}
+	mergedAdvisorySource := advisorySourceConfig{}
 	mergedTrace := defaultPolicyTrace()
 	sources := make([]string, 0, len(cfg.Policy.Packs)+1)
 	for idx, packRef := range cfg.Policy.Packs {
@@ -99,6 +102,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 		merged = mergeOverrides(merged, packResult.overrides)
 		mergedScope = mergeScope(mergedScope, packResult.scope)
 		mergedFeatures = mergeFeatures(mergedFeatures, packResult.features)
+		mergedAdvisorySource = mergeAdvisorySource(mergedAdvisorySource, packResult.advisorySource)
 		mergedTrace = mergePolicyTrace(mergedTrace, packResult.policyTrace)
 		sources = append(sources, packResult.appliedSourcesLow...)
 	}
@@ -110,13 +114,17 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	merged = mergeOverrides(merged, selfOverrides)
 	mergedScope = mergeScope(mergedScope, cfg.Scope.toPathScope())
 	mergedFeatures = mergeFeatures(mergedFeatures, cfg.Features.toFeatureConfig())
+	selfAdvisorySource := cfg.Advisories.toAdvisorySourceConfig(canonical)
+	mergedAdvisorySource = mergeAdvisorySource(mergedAdvisorySource, selfAdvisorySource)
 	mergedTrace = mergePolicyTrace(mergedTrace, traceForOverrides(canonical, selfOverrides))
+	mergedTrace = mergePolicyTrace(mergedTrace, traceForAdvisorySource(canonical, selfAdvisorySource))
 	sources = append(sources, canonical)
 
 	return resolveMergeResult{
 		overrides:         merged,
 		scope:             mergedScope,
 		features:          mergedFeatures,
+		advisorySource:    mergedAdvisorySource,
 		appliedSourcesLow: dedupeStable(sources),
 		policyTrace:       mergedTrace,
 	}, nil
@@ -226,6 +234,7 @@ var policyTraceFieldNames = []string{
 	"thresholds.low_confidence_warning_percent",
 	"thresholds.min_usage_percent_for_recommendations",
 	"thresholds.max_uncertain_import_count",
+	"thresholds.reachable_vulnerability_priority",
 	"thresholds.lockfile_drift_policy",
 	"removal_candidate_weights.usage",
 	"removal_candidate_weights.impact",
@@ -233,11 +242,15 @@ var policyTraceFieldNames = []string{
 	"license.deny",
 	"license.fail_on_deny",
 	"license.include_registry_provenance",
+	advisorySourceField,
 }
 
 func defaultPolicyTrace() map[string]string {
 	trace := make(map[string]string, len(policyTraceFieldNames))
 	for _, field := range policyTraceFieldNames {
+		if field == advisorySourceField {
+			continue
+		}
 		trace[field] = defaultPolicySource
 	}
 	return trace
@@ -292,7 +305,17 @@ func traceForOverrides(source string, overrides Overrides) map[string]string {
 	if overrides.LicenseIncludeRegistryProvenance != nil {
 		trace["license.include_registry_provenance"] = source
 	}
+	if overrides.ReachableVulnerabilityPriority != nil {
+		trace["thresholds.reachable_vulnerability_priority"] = source
+	}
 	return trace
+}
+
+func traceForAdvisorySource(source string, advisorySource advisorySourceConfig) map[string]string {
+	if !advisorySource.set {
+		return nil
+	}
+	return map[string]string{advisorySourceField: source}
 }
 
 func policyTraceFromMap(trace map[string]string) []report.PolicyMergeTrace {

@@ -63,8 +63,49 @@ func dependencySARIFResults(dep DependencyReport, rules *sarifRuleBuilder, basel
 	results := make([]sarifResult, 0, len(dep.UnusedImports)+len(dep.UnusedExports)+len(dep.RiskCues)+len(dep.Recommendations))
 	results = appendUnusedImportResults(results, rules, dep, anchor, baselineDelta)
 	results = appendUnusedExportResults(results, rules, dep, anchor, baselineDelta)
+	results = appendVulnerabilityResults(results, rules, dep, anchor, baselineDelta)
 	for _, signal := range dependencySignals(dep) {
 		results = appendSignalResult(results, rules, dep, anchor, signal, baselineDelta)
+	}
+	return results
+}
+
+func appendVulnerabilityResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, baselineDelta *DependencyDelta) []sarifResult {
+	for _, finding := range dep.Vulnerabilities {
+		ruleID := "lopper/vulnerability/" + normalizeRuleToken(finding.AdvisoryID)
+		rules.add(sarifRule{
+			ID:               ruleID,
+			Name:             finding.AdvisoryID,
+			ShortDescription: sarifMessage{Text: "Dependency vulnerability finding"},
+			Help:             &sarifMessage{Text: "Prioritize vulnerable dependencies using Lopper reachability, runtime, and static import evidence. Lopper does not claim exploitability."},
+			Properties: map[string]any{
+				"category": "vulnerability",
+				"severity": finding.Severity,
+				"priority": finding.Priority,
+			},
+		})
+
+		props := sarifDependencyProperties(dep, baselineDelta, map[string]any{
+			"advisoryId":    finding.AdvisoryID,
+			"package":       finding.Package,
+			"severity":      finding.Severity,
+			"fixedVersion":  finding.FixedVersion,
+			"source":        finding.Source,
+			"priority":      finding.Priority,
+			"priorityScore": finding.PriorityScore,
+			"reachable":     finding.Reachable,
+			"evidence":      append([]string{}, finding.Evidence...),
+		})
+		result := sarifResult{
+			RuleID:     ruleID,
+			Level:      vulnerabilitySARIFLevel(finding),
+			Message:    sarifMessage{Text: fmt.Sprintf("%s has advisory %s with %s severity and %s reachability-weighted priority.", dep.Name, finding.AdvisoryID, finding.Severity, finding.Priority)},
+			Properties: props,
+		}
+		if anchor != nil {
+			result.Locations = []sarifLocation{*anchor}
+		}
+		results = append(results, result)
 	}
 	return results
 }
@@ -247,6 +288,9 @@ func sarifDependencyProperties(dep DependencyReport, baselineDelta *DependencyDe
 			"summary":        dep.ReachabilityConfidence.Summary,
 			"rationaleCodes": append([]string(nil), dep.ReachabilityConfidence.RationaleCodes...),
 		}
+	}
+	if len(dep.Vulnerabilities) > 0 {
+		props["vulnerabilities"] = append([]VulnerabilityFinding{}, dep.Vulnerabilities...)
 	}
 	if baselineDelta != nil {
 		baselineContext := map[string]any{

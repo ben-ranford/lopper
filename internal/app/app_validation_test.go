@@ -131,6 +131,71 @@ func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
 	}
 }
 
+func TestValidateReachableVulnerabilityThreshold(t *testing.T) {
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name: "reachable",
+				Vulnerabilities: []report.VulnerabilityFinding{
+					{
+						AdvisoryID: "GHSA-reachable",
+						Package:    "reachable",
+						Priority:   report.VulnerabilityPriorityMedium,
+						Reachable:  true,
+					},
+				},
+			},
+		},
+	}
+
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); err != nil {
+		t.Fatalf("expected no error below threshold, got %v", err)
+	}
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityMedium); !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected reachable vulnerability threshold error, got %v", err)
+	}
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityOff); err != nil {
+		t.Fatalf("expected off threshold to disable validation, got %v", err)
+	}
+	if err := validateReachableVulnerabilityThreshold(reportData, "urgent"); err == nil {
+		t.Fatalf("expected invalid reachable vulnerability threshold error")
+	}
+}
+
+func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testing.T) {
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name: "existing",
+				Vulnerabilities: []report.VulnerabilityFinding{
+					{
+						AdvisoryID: "GHSA-existing",
+						Package:    "existing",
+						Priority:   report.VulnerabilityPriorityCritical,
+						Reachable:  true,
+					},
+				},
+			},
+		},
+		BaselineComparison: &report.BaselineComparison{},
+	}
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); err != nil {
+		t.Fatalf("expected baseline mode to ignore existing current findings, got %v", err)
+	}
+
+	reportData.BaselineComparison.NewReachableVulnerabilities = []report.VulnerabilityDelta{
+		{
+			Name:       "new",
+			AdvisoryID: "GHSA-new",
+			Package:    "new",
+			Priority:   report.VulnerabilityPriorityHigh,
+		},
+	}
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected baseline new reachable vulnerability error, got %v", err)
+	}
+}
+
 func TestValidateUncertaintyThreshold(t *testing.T) {
 	reportData := report.Report{
 		UsageUncertainty: &report.UsageUncertainty{
@@ -204,6 +269,131 @@ func TestExecuteAnalyseDeniedLicensesError(t *testing.T) {
 	}
 	if !strings.Contains(output, `"effectivePolicy"`) {
 		t.Fatalf("expected formatted output on denied-license failure, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseReachableVulnerabilityThresholdError(t *testing.T) {
+	tmp := t.TempDir()
+	advisoryPath := filepath.Join(tmp, "advisories.yml")
+	advisorySource := `advisories:
+  - id: GHSA-threshold
+    package: reachable-lib
+    ecosystem: npm
+    severity: high
+    fixedVersion: 1.2.3
+    source: security-team
+`
+	if err := os.WriteFile(advisoryPath, []byte(advisorySource), 0o600); err != nil {
+		t.Fatalf("write advisory source: %v", err)
+	}
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: tmp,
+			Dependencies: []report.DependencyReport{
+				{
+					Language:          "js-ts",
+					Name:              "reachable-lib",
+					UsedExportsCount:  1,
+					TotalExportsCount: 1,
+					UsedPercent:       100,
+					UsedImports: []report.ImportUse{
+						{Name: "default", Module: "reachable-lib"},
+					},
+				},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = tmp
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.AdvisorySourcePath = advisoryPath
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+
+	output, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected reachable vulnerabilities error, got %v", err)
+	}
+	if !strings.Contains(output, `"vulnerabilities"`) || !strings.Contains(output, `"GHSA-threshold"`) {
+		t.Fatalf("expected formatted vulnerability output on threshold failure, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseReachableVulnerabilityThresholdUsesOSVCVSSVector(t *testing.T) {
+	advisorySource := `id: GHSA-osv-vector
+severity:
+  - type: CVSS_V3
+    score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+affected:
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+`
+	assertReachableVulnerabilityThresholdFromAdvisory(t, "osv.yml", advisorySource, "GHSA-osv-vector", "critical")
+}
+
+func TestExecuteAnalyseReachableVulnerabilityThresholdUsesAffectedOSVSeverity(t *testing.T) {
+	advisorySource := `id: GHSA-multi-affected
+affected:
+  - package:
+      ecosystem: npm
+      name: safe-lib
+    database_specific:
+      severity: low
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+    database_specific:
+      severity: high
+`
+	assertReachableVulnerabilityThresholdFromAdvisory(t, "osv-multi.yml", advisorySource, "GHSA-multi-affected", "high")
+}
+
+func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName string, advisorySource string, wantID string, wantSeverity string) {
+	t.Helper()
+	tmp := t.TempDir()
+	advisoryPath := filepath.Join(tmp, fileName)
+	if err := os.WriteFile(advisoryPath, []byte(advisorySource), 0o600); err != nil {
+		t.Fatalf("write advisory source: %v", err)
+	}
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: tmp,
+			Dependencies: []report.DependencyReport{
+				{
+					Language:          "js-ts",
+					Name:              "reachable-lib",
+					UsedExportsCount:  1,
+					TotalExportsCount: 1,
+					UsedPercent:       100,
+					UsedImports: []report.ImportUse{
+						{Name: "default", Module: "reachable-lib"},
+					},
+				},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = tmp
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.AdvisorySourcePath = advisoryPath
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+
+	output, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected reachable vulnerabilities error, got %v output=%q", err, output)
+	}
+	if !strings.Contains(output, `"`+wantID+`"`) || !strings.Contains(output, `"`+wantSeverity+`"`) {
+		t.Fatalf("expected advisory %q with severity %q in output, got %q", wantID, wantSeverity, output)
 	}
 }
 

@@ -217,8 +217,9 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	impactWeight := 0.3
 	confidenceWeight := 0.1
 	lockfileDriftPolicy := "fail"
+	reachableVulnerabilityPriority := "high"
 	base := Defaults()
-	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &minUsage, MaxUncertainImportCount: &maxUncertain, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight, LockfileDriftPolicy: &lockfileDriftPolicy}).Apply(base)
+	got := (&Overrides{FailOnIncreasePercent: &fail, LowConfidenceWarningPercent: &low, MinUsagePercentForRecommendations: &minUsage, MaxUncertainImportCount: &maxUncertain, RemovalCandidateWeightUsage: &usageWeight, RemovalCandidateWeightImpact: &impactWeight, RemovalCandidateWeightConfidence: &confidenceWeight, LockfileDriftPolicy: &lockfileDriftPolicy, ReachableVulnerabilityPriority: &reachableVulnerabilityPriority}).Apply(base)
 	if got.FailOnIncreasePercent != 4 || got.LowConfidenceWarningPercent != 22 || got.MinUsagePercentForRecommendations != 60 || got.MaxUncertainImportCount != 5 {
 		t.Fatalf("unexpected resolved thresholds: %+v", got)
 	}
@@ -227,6 +228,9 @@ func TestOverridesApplyAllFields(t *testing.T) {
 	}
 	if got.LockfileDriftPolicy != "fail" {
 		t.Fatalf("unexpected lockfile drift policy: %+v", got)
+	}
+	if got.ReachableVulnerabilityPriority != "high" {
+		t.Fatalf("unexpected reachable vulnerability priority: %+v", got)
 	}
 }
 

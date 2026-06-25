@@ -114,6 +114,8 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 			TotalWasteCandidatesDelta:        current.Summary.TotalWasteCandidates - baseline.Summary.TotalWasteCandidates,
 			CrossRepoDuplicatesDelta:         current.Summary.CrossRepoDuplicates - baseline.Summary.CrossRepoDuplicates,
 			CriticalCVEsDelta:                current.Summary.CriticalCVEs - baseline.Summary.CriticalCVEs,
+			VulnerabilityFindingsDelta:       current.Summary.VulnerabilityFindings - baseline.Summary.VulnerabilityFindings,
+			ReachableVulnerabilitiesDelta:    current.Summary.ReachableVulnerabilities - baseline.Summary.ReachableVulnerabilities,
 			ReposWithRuntimeTraceDataDelta:   current.Summary.ReposWithRuntimeTraceData - baseline.Summary.ReposWithRuntimeTraceData,
 			ReposWithRuntimeRegressionsDelta: current.Summary.ReposWithRuntimeRegressions - baseline.Summary.ReposWithRuntimeRegressions,
 		},
@@ -160,6 +162,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 		delta.WasteCandidateCountDelta = curr.WasteCandidateCount
 		delta.WasteCandidatePercentDelta = curr.WasteCandidatePercent
 		delta.CriticalCVEsDelta = curr.CriticalCVEs
+		delta.VulnerabilityFindingsDelta = curr.VulnerabilityFindings
+		delta.ReachableVulnerabilitiesDelta = curr.ReachableVulnerabilities
 		delta.DeniedLicenseCountDelta = curr.DeniedLicenseCount
 		delta.RuntimeRegressionCountDelta = curr.RuntimeRegressionCount
 		delta.RuntimeImprovementCountDelta = curr.RuntimeImprovementCount
@@ -171,6 +175,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 		delta.WasteCandidateCountDelta = -base.WasteCandidateCount
 		delta.WasteCandidatePercentDelta = -base.WasteCandidatePercent
 		delta.CriticalCVEsDelta = -base.CriticalCVEs
+		delta.VulnerabilityFindingsDelta = -base.VulnerabilityFindings
+		delta.ReachableVulnerabilitiesDelta = -base.ReachableVulnerabilities
 		delta.DeniedLicenseCountDelta = -base.DeniedLicenseCount
 		delta.RuntimeRegressionCountDelta = -base.RuntimeRegressionCount
 		delta.RuntimeImprovementCountDelta = -base.RuntimeImprovementCount
@@ -182,6 +188,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 		delta.WasteCandidateCountDelta = curr.WasteCandidateCount - base.WasteCandidateCount
 		delta.WasteCandidatePercentDelta = curr.WasteCandidatePercent - base.WasteCandidatePercent
 		delta.CriticalCVEsDelta = curr.CriticalCVEs - base.CriticalCVEs
+		delta.VulnerabilityFindingsDelta = curr.VulnerabilityFindings - base.VulnerabilityFindings
+		delta.ReachableVulnerabilitiesDelta = curr.ReachableVulnerabilities - base.ReachableVulnerabilities
 		delta.DeniedLicenseCountDelta = curr.DeniedLicenseCount - base.DeniedLicenseCount
 		delta.RuntimeRegressionCountDelta = curr.RuntimeRegressionCount - base.RuntimeRegressionCount
 		delta.RuntimeImprovementCountDelta = curr.RuntimeImprovementCount - base.RuntimeImprovementCount
@@ -191,6 +199,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 			delta.WasteCandidateCountDelta == 0 &&
 			delta.WasteCandidatePercentDelta == 0 &&
 			delta.CriticalCVEsDelta == 0 &&
+			delta.VulnerabilityFindingsDelta == 0 &&
+			delta.ReachableVulnerabilitiesDelta == 0 &&
 			delta.DeniedLicenseCountDelta == 0 &&
 			delta.RuntimeRegressionCountDelta == 0 &&
 			delta.RuntimeImprovementCountDelta == 0 &&
@@ -212,6 +222,8 @@ func computeSummary(rep Report) Summary {
 		TotalWasteCandidates:      sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.WasteCandidateCount }),
 		CrossRepoDuplicates:       len(rep.CrossRepoDeps),
 		CriticalCVEs:              sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.CriticalCVEs }),
+		VulnerabilityFindings:     sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.VulnerabilityFindings }),
+		ReachableVulnerabilities:  sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.ReachableVulnerabilities }),
 		ReposWithRuntimeTraceData: countRepoField(rep.Repos, func(repo RepoResult) bool { return repo.RuntimeTraceData }),
 		ReposWithRuntimeRegressions: countRepoField(rep.Repos, func(repo RepoResult) bool {
 			return repo.RuntimeTraceData && repo.RuntimeRegressionCount > 0

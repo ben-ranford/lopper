@@ -10,7 +10,7 @@ import (
 type analyseReportStage func(context.Context, report.Report) (report.Report, error)
 
 func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
-	if err := validateAnalyseFormatFeatures(req.Analyse); err != nil {
+	if err := validateAnalyseFeatures(req.Analyse); err != nil {
 		return "", err
 	}
 
@@ -39,6 +39,9 @@ func (a *App) runAnalysePostStages(ctx context.Context, repoPath string, req Ana
 
 	return runAnalyseStages(ctx, reportData, []analyseReportStage{
 		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			return applyAdvisoriesIfNeeded(reportData, req)
+		},
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
 			return a.applyBaselineIfNeeded(reportData, repoPath, req)
 		},
 		analyseValidationStage(func(reportData report.Report) error {
@@ -49,6 +52,9 @@ func (a *App) runAnalysePostStages(ctx context.Context, repoPath string, req Ana
 		}),
 		analyseValidationStage(func(reportData report.Report) error {
 			return validateDeniedLicenses(reportData, req.Thresholds.LicenseFailOnDeny)
+		}),
+		analyseValidationStage(func(reportData report.Report) error {
+			return validateReachableVulnerabilityThreshold(reportData, req.Thresholds.ReachableVulnerabilityPriority)
 		}),
 		func(ctx context.Context, reportData report.Report) (report.Report, error) {
 			return applyCodemodIfNeeded(ctx, reportData, repoPath, req, now)
@@ -79,7 +85,7 @@ func analyseValidationStage(validate func(report.Report) error) analyseReportSta
 
 func (a *App) completeAnalyseExecution(ctx context.Context, req AnalyseRequest, reportData report.Report, runErr error) (string, error) {
 	a.appendNotificationWarnings(ctx, req.Notifications, &reportData, buildNotificationOutcome(reportData, runErr))
-	if err := validateAnalyseFormatFeatures(req); err != nil {
+	if err := validateAnalyseFeatures(req); err != nil {
 		if runErr != nil {
 			return "", runErr
 		}

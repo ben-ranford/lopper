@@ -17,8 +17,21 @@ type DependencyReport struct {
 	RuntimeUsage           *RuntimeUsage           `json:"runtimeUsage,omitempty"`
 	ReachabilityConfidence *ReachabilityConfidence `json:"reachabilityConfidence,omitempty"`
 	RemovalCandidate       *RemovalCandidate       `json:"removalCandidate,omitempty"`
+	Vulnerabilities        []VulnerabilityFinding  `json:"vulnerabilities,omitempty"`
 	License                *DependencyLicense      `json:"license,omitempty"`
 	Provenance             *DependencyProvenance   `json:"provenance,omitempty"`
+}
+
+type VulnerabilityFinding struct {
+	AdvisoryID    string   `json:"advisoryId"`
+	Package       string   `json:"package"`
+	Severity      string   `json:"severity"`
+	FixedVersion  string   `json:"fixedVersion,omitempty"`
+	Source        string   `json:"source"`
+	Priority      string   `json:"priority"`
+	PriorityScore float64  `json:"priorityScore"`
+	Reachable     bool     `json:"reachable"`
+	Evidence      []string `json:"evidence,omitempty"`
 }
 
 type DependencyLicense struct {

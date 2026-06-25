@@ -131,6 +131,9 @@ jobs:
           format: pr-comment
           output: .artifacts/lopper-pr-comment.md
           threshold-fail-on-increase: '0'
+          enable-feature: reachability-vulnerability-prioritization-preview
+          advisory-source: security/lopper-advisories.yml
+          threshold-reachable-vulnerability-priority: high
 
       - name: Upsert Lopper PR comment
         if: ${{ always() }}
@@ -178,6 +181,14 @@ jobs:
         if: ${{ steps.lopper.outcome == 'failure' }}
         run: exit 1
 ```
+
+`advisory-source` points at a local JSON or YAML file in the checked-out
+workspace and requires
+`enable-feature: reachability-vulnerability-prioritization-preview`. It does not
+fetch a network vulnerability database. When
+`threshold-reachable-vulnerability-priority` is set above `off`, Lopper fails on
+reachable advisory findings at or above that priority; in baseline mode it gates
+only on newly introduced reachable findings.
 
 ### SARIF code-scanning workflow
 

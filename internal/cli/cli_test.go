@@ -97,6 +97,14 @@ func TestRunWarnsOnDeprecatedFeatureName(t *testing.T) {
 	}
 }
 
+func TestRunReturnsOneWhenDeprecationWarningWriteFails(t *testing.T) {
+	c := New(&fakeRunner{}, &bytes.Buffer{}, &failWriter{})
+	code := c.Run(context.Background(), []string{"dashboard", "--repos", ".", "--enable-feature", "mcp-server-preview"})
+	if code != 1 {
+		t.Fatalf("expected warning write failure to return code 1, got %d", code)
+	}
+}
+
 func TestFeatureDeprecationWarningsByMode(t *testing.T) {
 	features := mustDeprecatedFeatureSet(t)
 	cases := []app.Request{

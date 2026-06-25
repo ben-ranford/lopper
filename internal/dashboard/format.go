@@ -65,6 +65,8 @@ func writeDashboardSummaryCSV(write func([]string) error, reportData Report) err
 		{"total_waste_candidates", fmt.Sprintf("%d", reportData.Summary.TotalWasteCandidates)},
 		{"cross_repo_duplicates", fmt.Sprintf("%d", reportData.Summary.CrossRepoDuplicates)},
 		{"critical_cves", fmt.Sprintf("%d", reportData.Summary.CriticalCVEs)},
+		{"vulnerability_findings", fmt.Sprintf("%d", reportData.Summary.VulnerabilityFindings)},
+		{"reachable_vulnerabilities", fmt.Sprintf("%d", reportData.Summary.ReachableVulnerabilities)},
 		{"repos_with_runtime_trace_data", fmt.Sprintf("%d", reportData.Summary.ReposWithRuntimeTraceData)},
 		{"repos_with_runtime_regressions", fmt.Sprintf("%d", reportData.Summary.ReposWithRuntimeRegressions)},
 	}
@@ -89,6 +91,8 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 		"waste_candidate_percent",
 		"top_risk_severity",
 		"critical_cves",
+		"vulnerability_findings",
+		"reachable_vulnerabilities",
 		"denied_license_count",
 		"runtime_trace_data",
 		"runtime_regression_count",
@@ -111,6 +115,8 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 			fmt.Sprintf("%.2f", repoResult.WasteCandidatePercent),
 			repoResult.TopRiskSeverity,
 			fmt.Sprintf("%d", repoResult.CriticalCVEs),
+			fmt.Sprintf("%d", repoResult.VulnerabilityFindings),
+			fmt.Sprintf("%d", repoResult.ReachableVulnerabilities),
 			fmt.Sprintf("%d", repoResult.DeniedLicenseCount),
 			fmt.Sprintf("%t", repoResult.RuntimeTraceData),
 			fmt.Sprintf("%d", repoResult.RuntimeRegressionCount),
@@ -170,6 +176,8 @@ func writeDashboardBaselineRowsCSV(write func([]string) error, comparison *Basel
 		{"total_waste_candidates_delta", fmt.Sprintf("%d", comparison.SummaryDelta.TotalWasteCandidatesDelta)},
 		{"cross_repo_duplicates_delta", fmt.Sprintf("%d", comparison.SummaryDelta.CrossRepoDuplicatesDelta)},
 		{"critical_cves_delta", fmt.Sprintf("%d", comparison.SummaryDelta.CriticalCVEsDelta)},
+		{"vulnerability_findings_delta", fmt.Sprintf("%d", comparison.SummaryDelta.VulnerabilityFindingsDelta)},
+		{"reachable_vulnerabilities_delta", fmt.Sprintf("%d", comparison.SummaryDelta.ReachableVulnerabilitiesDelta)},
 		{"repos_with_runtime_trace_data_delta", fmt.Sprintf("%d", comparison.SummaryDelta.ReposWithRuntimeTraceDataDelta)},
 		{"repos_with_runtime_regressions_delta", fmt.Sprintf("%d", comparison.SummaryDelta.ReposWithRuntimeRegressionsDelta)},
 	}
@@ -192,6 +200,8 @@ func writeDashboardBaselineRowsCSV(write func([]string) error, comparison *Basel
 		"waste_candidate_count_delta",
 		"waste_candidate_percent_delta",
 		"critical_cves_delta",
+		"vulnerability_findings_delta",
+		"reachable_vulnerabilities_delta",
 		"denied_license_count_delta",
 		"runtime_regression_count_delta",
 		"runtime_improvement_count_delta",
@@ -209,6 +219,8 @@ func writeDashboardBaselineRowsCSV(write func([]string) error, comparison *Basel
 			fmt.Sprintf("%d", delta.WasteCandidateCountDelta),
 			fmt.Sprintf("%.2f", delta.WasteCandidatePercentDelta),
 			fmt.Sprintf("%d", delta.CriticalCVEsDelta),
+			fmt.Sprintf("%d", delta.VulnerabilityFindingsDelta),
+			fmt.Sprintf("%d", delta.ReachableVulnerabilitiesDelta),
 			fmt.Sprintf("%d", delta.DeniedLicenseCountDelta),
 			fmt.Sprintf("%d", delta.RuntimeRegressionCountDelta),
 			fmt.Sprintf("%d", delta.RuntimeImprovementCountDelta),
@@ -248,12 +260,14 @@ func formatHTML(reportData Report) string {
 	buffer.WriteString(metricHTML("Waste Candidates", fmt.Sprintf("%d", reportData.Summary.TotalWasteCandidates)))
 	buffer.WriteString(metricHTML("Cross-Repo Duplicates", fmt.Sprintf("%d", reportData.Summary.CrossRepoDuplicates)))
 	buffer.WriteString(metricHTML("Critical CVEs", fmt.Sprintf("%d", reportData.Summary.CriticalCVEs)))
+	buffer.WriteString(metricHTML("Vulnerability Findings", fmt.Sprintf("%d", reportData.Summary.VulnerabilityFindings)))
+	buffer.WriteString(metricHTML("Reachable Vulnerabilities", fmt.Sprintf("%d", reportData.Summary.ReachableVulnerabilities)))
 	buffer.WriteString(metricHTML("Runtime Trace Repos", fmt.Sprintf("%d", reportData.Summary.ReposWithRuntimeTraceData)))
 	buffer.WriteString(metricHTML("Runtime Regression Repos", fmt.Sprintf("%d", reportData.Summary.ReposWithRuntimeRegressions)))
 	buffer.WriteString("</div></section>")
 
 	buffer.WriteString("<h2>Per-Repo Summary</h2><table><thead><tr>")
-	buffer.WriteString("<th>Repo</th><th>Path</th><th>Repo URL</th><th>Revision</th><th>Resolved Commit</th><th>Language</th><th>Deps</th><th>Waste Candidates</th><th>Waste %</th><th>Top Risk</th><th>Critical CVEs</th><th>Denied Licenses</th><th>Runtime Trace</th><th>Runtime Regressions</th><th>Runtime Improvements</th><th>Error</th>")
+	buffer.WriteString("<th>Repo</th><th>Path</th><th>Repo URL</th><th>Revision</th><th>Resolved Commit</th><th>Language</th><th>Deps</th><th>Waste Candidates</th><th>Waste %</th><th>Top Risk</th><th>Critical CVEs</th><th>Vuln Findings</th><th>Reachable Vulns</th><th>Denied Licenses</th><th>Runtime Trace</th><th>Runtime Regressions</th><th>Runtime Improvements</th><th>Error</th>")
 	buffer.WriteString("</tr></thead><tbody>")
 	for _, repoResult := range reportData.Repos {
 		buffer.WriteString("<tr>")
@@ -268,6 +282,8 @@ func formatHTML(reportData Report) string {
 		buffer.WriteString("<td>" + fmt.Sprintf("%.1f%%", repoResult.WasteCandidatePercent) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(repoResult.TopRiskSeverity) + "</td>")
 		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.CriticalCVEs) + "</td>")
+		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.VulnerabilityFindings) + "</td>")
+		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.ReachableVulnerabilities) + "</td>")
 		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.DeniedLicenseCount) + "</td>")
 		buffer.WriteString("<td>" + fmt.Sprintf("%t", repoResult.RuntimeTraceData) + "</td>")
 		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.RuntimeRegressionCount) + "</td>")
@@ -310,13 +326,15 @@ func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 	buffer.WriteString(metricHTML("Waste Candidates Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.TotalWasteCandidatesDelta)))
 	buffer.WriteString(metricHTML("Cross-Repo Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.CrossRepoDuplicatesDelta)))
 	buffer.WriteString(metricHTML("Critical CVEs Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.CriticalCVEsDelta)))
+	buffer.WriteString(metricHTML("Vuln Findings Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.VulnerabilityFindingsDelta)))
+	buffer.WriteString(metricHTML("Reachable Vulns Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.ReachableVulnerabilitiesDelta)))
 	buffer.WriteString(metricHTML("Runtime Trace Repos Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.ReposWithRuntimeTraceDataDelta)))
 	buffer.WriteString(metricHTML("Runtime Regression Repos Delta", fmt.Sprintf("%+d", comparison.SummaryDelta.ReposWithRuntimeRegressionsDelta)))
 	buffer.WriteString("</div></section>")
 
 	if len(comparison.RepoDeltas) > 0 {
 		buffer.WriteString("<table><thead><tr>")
-		buffer.WriteString("<th>Repo</th><th>Path</th><th>Kind</th><th>Deps Δ</th><th>Waste Δ</th><th>Waste % Δ</th><th>Critical CVEs Δ</th><th>Denied Licenses Δ</th><th>Runtime Regressions Δ</th><th>Runtime Improvements Δ</th><th>Current Error</th><th>Baseline Error</th>")
+		buffer.WriteString("<th>Repo</th><th>Path</th><th>Kind</th><th>Deps Δ</th><th>Waste Δ</th><th>Waste % Δ</th><th>Critical CVEs Δ</th><th>Vuln Findings Δ</th><th>Reachable Vulns Δ</th><th>Denied Licenses Δ</th><th>Runtime Regressions Δ</th><th>Runtime Improvements Δ</th><th>Current Error</th><th>Baseline Error</th>")
 		buffer.WriteString(htmlTableBodyOpen)
 		for _, delta := range comparison.RepoDeltas {
 			buffer.WriteString("<tr>")
@@ -327,6 +345,8 @@ func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.WasteCandidateCountDelta) + "</td>")
 			buffer.WriteString("<td>" + fmt.Sprintf("%+0.2f%%", delta.WasteCandidatePercentDelta) + "</td>")
 			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.CriticalCVEsDelta) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.VulnerabilityFindingsDelta) + "</td>")
+			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.ReachableVulnerabilitiesDelta) + "</td>")
 			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.DeniedLicenseCountDelta) + "</td>")
 			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.RuntimeRegressionCountDelta) + "</td>")
 			buffer.WriteString("<td>" + fmt.Sprintf("%+d", delta.RuntimeImprovementCountDelta) + "</td>")

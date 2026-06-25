@@ -15,6 +15,7 @@ type preparedAnalyseExecution struct {
 	effectiveThresholds     report.EffectiveThresholds
 	removalCandidateWeights report.RemovalCandidateWeights
 	licensePolicy           report.LicensePolicy
+	vulnerabilityPolicy     report.VulnerabilityPolicy
 	policySources           []string
 	policyTrace             []report.PolicyMergeTrace
 }
@@ -37,6 +38,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 		LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
 		MaxUncertainImportCount:           req.Analyse.Thresholds.MaxUncertainImportCount,
+		ReachableVulnerabilityPriority:    req.Analyse.Thresholds.ReachableVulnerabilityPriority,
 	}
 
 	return preparedAnalyseExecution{
@@ -74,6 +76,10 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 			FailOnDenied:              req.Analyse.Thresholds.LicenseFailOnDeny,
 			IncludeRegistryProvenance: req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
 		},
+		vulnerabilityPolicy: report.VulnerabilityPolicy{
+			AdvisorySourcePath:         req.Analyse.AdvisorySourcePath,
+			ReachablePriorityThreshold: req.Analyse.Thresholds.ReachableVulnerabilityPriority,
+		},
 		policySources: append([]string{}, req.Analyse.PolicySources...),
 		policyTrace:   append([]report.PolicyMergeTrace{}, req.Analyse.PolicyTrace...),
 	}, nil
@@ -105,6 +111,7 @@ func decorateAnalyseReport(reportData *report.Report, prepared preparedAnalyseEx
 		Thresholds:              effectiveThresholds,
 		RemovalCandidateWeights: prepared.removalCandidateWeights,
 		License:                 licensePolicy,
+		Vulnerabilities:         prepared.vulnerabilityPolicy,
 	}
 	reportData.Warnings = append(reportData.Warnings, prepared.lockfileWarnings...)
 }

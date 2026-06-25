@@ -35,10 +35,23 @@ func TestExitCodeForDeniedLicenses(t *testing.T) {
 	}
 }
 
+func TestExitCodeForReachableVulnerabilities(t *testing.T) {
+	if got := exitCodeForRunError(app.ErrReachableVulnerabilities); got != 3 {
+		t.Fatalf("expected reachable-vulnerability error to use exit code 3, got %d", got)
+	}
+}
+
 func TestRunRunnerErrorWriteFailure(t *testing.T) {
 	c := New(&fakeRunner{err: app.ErrLockfileDrift}, &bytes.Buffer{}, &failWriter{})
 	if code := c.Run(context.Background(), []string{"analyse", "lodash"}); code != 1 {
 		t.Fatalf("expected err writer failure to return exit code 1, got %d", code)
+	}
+}
+
+func TestRunOutputWriteFailureWithoutRunError(t *testing.T) {
+	c := New(&fakeRunner{output: "partial report"}, &failWriter{}, &bytes.Buffer{})
+	if code := c.Run(context.Background(), []string{"analyse", "lodash"}); code != 1 {
+		t.Fatalf("expected output writer failure to return exit code 1, got %d", code)
 	}
 }
 

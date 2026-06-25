@@ -246,6 +246,11 @@
           "default": "",
           "description": "Optional command to run while capturing a runtime trace for JS/TS analysis."
         },
+        "lopper.advisorySourcePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local JSON or YAML advisory file to attach reachability-weighted vulnerability findings. Enables the reachability vulnerability preview for VS Code runs."
+        },
         "lopper.thresholdFailOnIncreasePercent": {
           "type": "number",
           "default": -1,
@@ -271,6 +276,18 @@
           "default": -1,
           "minimum": -1,
           "description": "Fail when uncertain dynamic imports or requires exceed this count. Use -1 to disable the gate."
+        },
+        "lopper.thresholdReachableVulnerabilityPriority": {
+          "type": "string",
+          "default": "off",
+          "enum": [
+            "off",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "description": "Fail when reachable local advisory findings meet or exceed this reachability-weighted priority. Non-off values enable the reachability vulnerability preview for VS Code runs."
         },
         "lopper.licenseDeny": {
           "type": "array",

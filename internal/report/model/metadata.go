@@ -6,30 +6,32 @@ type ScopeMetadata struct {
 }
 
 type BaselineComparison struct {
-	BaselineKey         string               `json:"baselineKey"`
-	CurrentKey          string               `json:"currentKey,omitempty"`
-	SummaryDelta        SummaryDelta         `json:"summaryDelta"`
-	Dependencies        []DependencyDelta    `json:"dependencies,omitempty"`
-	Regressions         []DependencyDelta    `json:"regressions,omitempty"`
-	Progressions        []DependencyDelta    `json:"progressions,omitempty"`
-	RuntimeRegressions  []DependencyDelta    `json:"runtimeRegressions,omitempty"`
-	RuntimeImprovements []DependencyDelta    `json:"runtimeImprovements,omitempty"`
-	Added               []DependencyDelta    `json:"added,omitempty"`
-	Removed             []DependencyDelta    `json:"removed,omitempty"`
-	NewDeniedLicenses   []DeniedLicenseDelta `json:"newDeniedLicenses,omitempty"`
-	UnchangedRows       int                  `json:"unchangedRows,omitempty"`
+	BaselineKey                 string               `json:"baselineKey"`
+	CurrentKey                  string               `json:"currentKey,omitempty"`
+	SummaryDelta                SummaryDelta         `json:"summaryDelta"`
+	Dependencies                []DependencyDelta    `json:"dependencies,omitempty"`
+	Regressions                 []DependencyDelta    `json:"regressions,omitempty"`
+	Progressions                []DependencyDelta    `json:"progressions,omitempty"`
+	RuntimeRegressions          []DependencyDelta    `json:"runtimeRegressions,omitempty"`
+	RuntimeImprovements         []DependencyDelta    `json:"runtimeImprovements,omitempty"`
+	Added                       []DependencyDelta    `json:"added,omitempty"`
+	Removed                     []DependencyDelta    `json:"removed,omitempty"`
+	NewDeniedLicenses           []DeniedLicenseDelta `json:"newDeniedLicenses,omitempty"`
+	NewReachableVulnerabilities []VulnerabilityDelta `json:"newReachableVulnerabilities,omitempty"`
+	UnchangedRows               int                  `json:"unchangedRows,omitempty"`
 }
 
 type SummaryDelta struct {
-	DependencyCountDelta     int     `json:"dependencyCountDelta"`
-	UsedExportsCountDelta    int     `json:"usedExportsCountDelta"`
-	TotalExportsCountDelta   int     `json:"totalExportsCountDelta"`
-	UsedPercentDelta         float64 `json:"usedPercentDelta"`
-	WastePercentDelta        float64 `json:"wastePercentDelta"`
-	UnusedBytesDelta         int64   `json:"unusedBytesDelta"`
-	KnownLicenseCountDelta   int     `json:"knownLicenseCountDelta"`
-	UnknownLicenseCountDelta int     `json:"unknownLicenseCountDelta"`
-	DeniedLicenseCountDelta  int     `json:"deniedLicenseCountDelta"`
+	DependencyCountDelta             int     `json:"dependencyCountDelta"`
+	UsedExportsCountDelta            int     `json:"usedExportsCountDelta"`
+	TotalExportsCountDelta           int     `json:"totalExportsCountDelta"`
+	UsedPercentDelta                 float64 `json:"usedPercentDelta"`
+	WastePercentDelta                float64 `json:"wastePercentDelta"`
+	UnusedBytesDelta                 int64   `json:"unusedBytesDelta"`
+	KnownLicenseCountDelta           int     `json:"knownLicenseCountDelta"`
+	UnknownLicenseCountDelta         int     `json:"unknownLicenseCountDelta"`
+	DeniedLicenseCountDelta          int     `json:"deniedLicenseCountDelta"`
+	ReachableVulnerabilityCountDelta int     `json:"reachableVulnerabilityCountDelta"`
 }
 
 type DependencyDeltaKind string
@@ -41,22 +43,37 @@ const (
 )
 
 type DependencyDelta struct {
-	Kind                      DependencyDeltaKind `json:"kind"`
-	Language                  string              `json:"language,omitempty"`
-	Name                      string              `json:"name"`
-	UsedExportsCountDelta     int                 `json:"usedExportsCountDelta"`
-	TotalExportsCountDelta    int                 `json:"totalExportsCountDelta"`
-	UsedPercentDelta          float64             `json:"usedPercentDelta"`
-	EstimatedUnusedBytesDelta int64               `json:"estimatedUnusedBytesDelta"`
-	WastePercentDelta         float64             `json:"wastePercentDelta"`
-	RuntimeDelta              *RuntimeDelta       `json:"runtimeDelta,omitempty"`
-	DeniedIntroduced          bool                `json:"deniedIntroduced,omitempty"`
+	Kind                               DependencyDeltaKind `json:"kind"`
+	Language                           string              `json:"language,omitempty"`
+	Name                               string              `json:"name"`
+	UsedExportsCountDelta              int                 `json:"usedExportsCountDelta"`
+	TotalExportsCountDelta             int                 `json:"totalExportsCountDelta"`
+	UsedPercentDelta                   float64             `json:"usedPercentDelta"`
+	EstimatedUnusedBytesDelta          int64               `json:"estimatedUnusedBytesDelta"`
+	WastePercentDelta                  float64             `json:"wastePercentDelta"`
+	RuntimeDelta                       *RuntimeDelta       `json:"runtimeDelta,omitempty"`
+	DeniedIntroduced                   bool                `json:"deniedIntroduced,omitempty"`
+	ReachableVulnerabilityCountDelta   int                 `json:"reachableVulnerabilityCountDelta,omitempty"`
+	ReachableVulnerabilitiesIntroduced bool                `json:"reachableVulnerabilitiesIntroduced,omitempty"`
 }
 
 type DeniedLicenseDelta struct {
 	Language string `json:"language,omitempty"`
 	Name     string `json:"name"`
 	SPDX     string `json:"spdx,omitempty"`
+}
+
+type VulnerabilityDelta struct {
+	Language      string   `json:"language,omitempty"`
+	Name          string   `json:"name"`
+	AdvisoryID    string   `json:"advisoryId"`
+	Package       string   `json:"package"`
+	Severity      string   `json:"severity"`
+	FixedVersion  string   `json:"fixedVersion,omitempty"`
+	Source        string   `json:"source"`
+	Priority      string   `json:"priority"`
+	PriorityScore float64  `json:"priorityScore"`
+	Evidence      []string `json:"evidence,omitempty"`
 }
 
 type RuntimeChangeType string
@@ -121,10 +138,11 @@ type CacheInvalidation struct {
 }
 
 type EffectiveThresholds struct {
-	FailOnIncreasePercent             int `json:"failOnIncreasePercent"`
-	LowConfidenceWarningPercent       int `json:"lowConfidenceWarningPercent"`
-	MinUsagePercentForRecommendations int `json:"minUsagePercentForRecommendations"`
-	MaxUncertainImportCount           int `json:"maxUncertainImportCount"`
+	FailOnIncreasePercent             int    `json:"failOnIncreasePercent"`
+	LowConfidenceWarningPercent       int    `json:"lowConfidenceWarningPercent"`
+	MinUsagePercentForRecommendations int    `json:"minUsagePercentForRecommendations"`
+	MaxUncertainImportCount           int    `json:"maxUncertainImportCount"`
+	ReachableVulnerabilityPriority    string `json:"reachableVulnerabilityPriority,omitempty"`
 }
 
 type EffectivePolicy struct {
@@ -133,6 +151,7 @@ type EffectivePolicy struct {
 	Thresholds              EffectiveThresholds     `json:"thresholds"`
 	RemovalCandidateWeights RemovalCandidateWeights `json:"removalCandidateWeights"`
 	License                 LicensePolicy           `json:"license"`
+	Vulnerabilities         VulnerabilityPolicy     `json:"vulnerabilities,omitempty"`
 }
 
 type PolicyMergeTrace struct {
@@ -141,20 +160,36 @@ type PolicyMergeTrace struct {
 }
 
 type Summary struct {
-	DependencyCount     int                 `json:"dependencyCount"`
-	UsedExportsCount    int                 `json:"usedExportsCount"`
-	TotalExportsCount   int                 `json:"totalExportsCount"`
-	UsedPercent         float64             `json:"usedPercent"`
-	KnownLicenseCount   int                 `json:"knownLicenseCount"`
-	UnknownLicenseCount int                 `json:"unknownLicenseCount"`
-	DeniedLicenseCount  int                 `json:"deniedLicenseCount"`
-	Reachability        *ReachabilityRollup `json:"reachability,omitempty"`
+	DependencyCount     int                   `json:"dependencyCount"`
+	UsedExportsCount    int                   `json:"usedExportsCount"`
+	TotalExportsCount   int                   `json:"totalExportsCount"`
+	UsedPercent         float64               `json:"usedPercent"`
+	KnownLicenseCount   int                   `json:"knownLicenseCount"`
+	UnknownLicenseCount int                   `json:"unknownLicenseCount"`
+	DeniedLicenseCount  int                   `json:"deniedLicenseCount"`
+	Reachability        *ReachabilityRollup   `json:"reachability,omitempty"`
+	Vulnerabilities     *VulnerabilitySummary `json:"vulnerabilities,omitempty"`
 }
 
 type LicensePolicy struct {
 	Deny                      []string `json:"deny,omitempty"`
 	FailOnDenied              bool     `json:"failOnDenied"`
 	IncludeRegistryProvenance bool     `json:"includeRegistryProvenance"`
+}
+
+type VulnerabilityPolicy struct {
+	AdvisorySourcePath         string `json:"advisorySourcePath,omitempty"`
+	ReachablePriorityThreshold string `json:"reachablePriorityThreshold,omitempty"`
+}
+
+type VulnerabilitySummary struct {
+	TotalFindings     int            `json:"totalFindings"`
+	ReachableFindings int            `json:"reachableFindings"`
+	HighestSeverity   string         `json:"highestSeverity,omitempty"`
+	HighestPriority   string         `json:"highestPriority,omitempty"`
+	BySeverity        map[string]int `json:"bySeverity,omitempty"`
+	ByPriority        map[string]int `json:"byPriority,omitempty"`
+	Sources           []string       `json:"sources,omitempty"`
 }
 
 type UsageUncertainty struct {

@@ -27,6 +27,7 @@ export interface LopperSummary {
   unknownLicenseCount?: number;
   deniedLicenseCount?: number;
   reachability?: LopperReachabilityRollup;
+  vulnerabilities?: LopperVulnerabilitySummary;
 }
 
 export interface LopperScopeMetadata {
@@ -68,6 +69,7 @@ export interface LopperEffectiveThresholds {
   lowConfidenceWarningPercent: number;
   minUsagePercentForRecommendations: number;
   maxUncertainImportCount: number;
+  reachableVulnerabilityPriority?: LopperVulnerabilityPriorityThreshold;
 }
 
 export interface LopperEffectivePolicy {
@@ -75,6 +77,7 @@ export interface LopperEffectivePolicy {
   thresholds: LopperEffectiveThresholds;
   removalCandidateWeights: LopperRemovalCandidateWeights;
   license: LopperLicensePolicy;
+  vulnerabilities?: LopperVulnerabilityPolicy;
 }
 
 export interface LopperRemovalCandidateWeights {
@@ -96,6 +99,24 @@ export interface LopperReachabilityRollup {
   highestScore?: number;
 }
 
+export type LopperVulnerabilityPriority = "critical" | "high" | "medium" | "low";
+export type LopperVulnerabilityPriorityThreshold = "off" | LopperVulnerabilityPriority;
+
+export interface LopperVulnerabilityPolicy {
+  advisorySourcePath?: string;
+  reachablePriorityThreshold?: LopperVulnerabilityPriorityThreshold;
+}
+
+export interface LopperVulnerabilitySummary {
+  totalFindings: number;
+  reachableFindings: number;
+  highestSeverity?: string;
+  highestPriority?: LopperVulnerabilityPriority;
+  bySeverity?: Record<string, number>;
+  byPriority?: Record<string, number>;
+  sources?: string[];
+}
+
 export interface LopperDependencyReport {
   language?: string;
   name: string;
@@ -115,6 +136,19 @@ export interface LopperDependencyReport {
   removalCandidate?: LopperRemovalCandidate;
   license?: LopperDependencyLicense;
   provenance?: LopperDependencyProvenance;
+  vulnerabilities?: LopperVulnerabilityFinding[];
+}
+
+export interface LopperVulnerabilityFinding {
+  advisoryId: string;
+  package: string;
+  severity: string;
+  fixedVersion?: string;
+  source: string;
+  priority: LopperVulnerabilityPriority;
+  priorityScore: number;
+  reachable: boolean;
+  evidence?: string[];
 }
 
 export interface LopperDependencyLicense {
@@ -262,6 +296,7 @@ export interface LopperBaselineComparison {
   added?: LopperDependencyDelta[];
   removed?: LopperDependencyDelta[];
   newDeniedLicenses?: LopperDeniedLicenseDelta[];
+  newReachableVulnerabilities?: LopperVulnerabilityDelta[];
   unchangedRows?: number;
 }
 
@@ -275,6 +310,7 @@ export interface LopperSummaryDelta {
   knownLicenseCountDelta: number;
   unknownLicenseCountDelta: number;
   deniedLicenseCountDelta: number;
+  reachableVulnerabilityCountDelta?: number;
 }
 
 export interface LopperDependencyDelta {
@@ -288,6 +324,8 @@ export interface LopperDependencyDelta {
   wastePercentDelta: number;
   runtimeDelta?: LopperRuntimeDelta;
   deniedIntroduced?: boolean;
+  reachableVulnerabilityCountDelta?: number;
+  reachableVulnerabilitiesIntroduced?: boolean;
 }
 
 export type LopperRuntimeChangeType =
@@ -339,4 +377,17 @@ export interface LopperDeniedLicenseDelta {
   language?: string;
   name: string;
   spdx?: string;
+}
+
+export interface LopperVulnerabilityDelta {
+  language?: string;
+  name: string;
+  advisoryId: string;
+  package: string;
+  severity: string;
+  fixedVersion?: string;
+  source: string;
+  priority: LopperVulnerabilityPriority;
+  priorityScore: number;
+  evidence?: string[];
 }

@@ -125,7 +125,10 @@ func (c *CommandLine) writeOutput(output string) error {
 }
 
 func exitCodeForRunError(runErr error) int {
-	if errors.Is(runErr, app.ErrFailOnIncrease) || errors.Is(runErr, app.ErrUncertaintyThresholdExceeded) || errors.Is(runErr, app.ErrDeniedLicenses) {
+	if errors.Is(runErr, app.ErrFailOnIncrease) ||
+		errors.Is(runErr, app.ErrUncertaintyThresholdExceeded) ||
+		errors.Is(runErr, app.ErrDeniedLicenses) ||
+		errors.Is(runErr, app.ErrReachableVulnerabilities) {
 		return 3
 	}
 	if errors.Is(runErr, app.ErrLockfileDrift) {

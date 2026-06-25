@@ -33,12 +33,13 @@ func formatTable(report Report) (string, error) {
 	showLanguage := hasLanguageColumn(report.Dependencies)
 	showRuntime := hasRuntimeColumn(report.Dependencies)
 	showReachability := hasReachabilityColumn(report.Dependencies)
-	if err := writeTableHeader(writer, showLanguage, showRuntime, showReachability); err != nil {
+	showVulnerabilities := hasVulnerabilityColumn(report.Dependencies)
+	if err := writeTableHeader(writer, showLanguage, showRuntime, showReachability, showVulnerabilities); err != nil {
 		return "", err
 	}
 
 	for _, dep := range report.Dependencies {
-		if _, err := fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime, showReachability)); err != nil {
+		if _, err := fmt.Fprintln(writer, formatTableRow(dep, showLanguage, showRuntime, showReachability, showVulnerabilities)); err != nil {
 			return "", err
 		}
 	}
@@ -82,12 +83,15 @@ func formatEmpty(report Report) (string, error) {
 	return buffer.String(), nil
 }
 
-func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime, showReachability bool) error {
+func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime, showReachability, showVulnerabilities bool) error {
 	columns := make([]string, 0, 12)
 	if showLanguage {
 		columns = append(columns, "Language")
 	}
 	columns = append(columns, "Dependency", "Used/Total", "Used%")
+	if showVulnerabilities {
+		columns = append(columns, "Vulnerabilities")
+	}
 	if showRuntime {
 		columns = append(columns, "Runtime")
 	}
@@ -100,12 +104,15 @@ func writeTableHeader(writer *tabwriter.Writer, showLanguage, showRuntime, showR
 	return err
 }
 
-func formatTableRow(dep DependencyReport, showLanguage, showRuntime, showReachability bool) string {
+func formatTableRow(dep DependencyReport, showLanguage, showRuntime, showReachability, showVulnerabilities bool) string {
 	columns := make([]string, 0, 12)
 	if showLanguage {
 		columns = append(columns, sanitizeTerminalString(dep.Language))
 	}
 	columns = append(columns, sanitizeTerminalString(dep.Name), fmt.Sprintf("%d/%d", dep.UsedExportsCount, dep.TotalExportsCount), fmt.Sprintf("%.1f", dep.UsedPercent))
+	if showVulnerabilities {
+		columns = append(columns, formatVulnerabilities(dep.Vulnerabilities))
+	}
 	if showRuntime {
 		columns = append(columns, formatRuntimeUsage(dep.RuntimeUsage))
 	}
@@ -138,6 +145,15 @@ func hasRuntimeColumn(dependencies []DependencyReport) bool {
 func hasReachabilityColumn(dependencies []DependencyReport) bool {
 	for _, dep := range dependencies {
 		if dep.ReachabilityConfidence != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVulnerabilityColumn(dependencies []DependencyReport) bool {
+	for _, dep := range dependencies {
+		if len(dep.Vulnerabilities) > 0 {
 			return true
 		}
 	}

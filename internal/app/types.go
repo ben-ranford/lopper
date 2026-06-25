@@ -55,6 +55,7 @@ type AnalyseRequest struct {
 	SaveBaseline       bool
 	RuntimeTracePath   string
 	RuntimeTestCommand string
+	AdvisorySourcePath string
 	IncludePatterns    []string
 	ExcludePatterns    []string
 	ConfigPath         string

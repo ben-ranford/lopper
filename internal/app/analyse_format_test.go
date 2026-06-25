@@ -58,6 +58,44 @@ func TestExecuteAnalyseCycloneDXAllowsPreviewFeature(t *testing.T) {
 	}
 }
 
+func TestExecuteAnalyseVulnerabilityPrioritizationRequiresPreviewFeature(t *testing.T) {
+	analyzer := &fakeAnalyzer{}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.AdvisorySourcePath = "security/advisories.yml"
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), report.ReachabilityVulnerabilityPrioritizationPreviewFeature) {
+		t.Fatalf("expected vulnerability preview feature error, got %v", err)
+	}
+	if analyzer.called {
+		t.Fatalf("expected vulnerability feature gating to happen before analysis")
+	}
+}
+
+func TestExecuteAnalyseVulnerabilityPrioritizationAllowsPreviewFeature(t *testing.T) {
+	application := &App{
+		Analyzer: &fakeAnalyzer{report: report.Report{
+			SchemaVersion: report.SchemaVersion,
+			Dependencies:  []report.DependencyReport{{Name: "lodash", Language: "js-ts"}},
+		}},
+		Formatter: report.NewFormatter(),
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+
+	if _, err := application.Execute(context.Background(), req); err != nil {
+		t.Fatalf("execute vulnerability preview analyse: %v", err)
+	}
+}
+
 func mustSBOMPreviewFeatureSet(t *testing.T) featureflags.Set {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
@@ -71,6 +109,26 @@ func mustSBOMPreviewFeatureSet(t *testing.T) featureflags.Set {
 	features, err := registry.Resolve(featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
 		Enable:  []string{report.SBOMAttestationExportsPreviewFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve feature set: %v", err)
+	}
+	return features
+}
+
+func mustVulnerabilityPreviewFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:      "LOP-FEAT-0015",
+		Name:      report.ReachabilityVulnerabilityPrioritizationPreviewFeature,
+		Lifecycle: featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new feature registry: %v", err)
+	}
+	features, err := registry.Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature},
 	})
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)

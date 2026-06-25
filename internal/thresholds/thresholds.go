@@ -18,6 +18,7 @@ const (
 	DefaultLockfileDriftPolicy              = "warn"
 	DefaultLicenseFailOnDeny                = false
 	DefaultLicenseIncludeRegistryProvenance = false
+	DefaultReachableVulnerabilityPriority   = "off"
 )
 
 var validLockfileDriftPolicies = map[string]struct{}{
@@ -40,6 +41,7 @@ type Values struct {
 	LicenseDenyList                   []string
 	LicenseFailOnDeny                 bool
 	LicenseIncludeRegistryProvenance  bool
+	ReachableVulnerabilityPriority    string
 }
 
 type Overrides struct {
@@ -55,6 +57,7 @@ type Overrides struct {
 	licenseDenyListSet                bool
 	LicenseFailOnDeny                 *bool
 	LicenseIncludeRegistryProvenance  *bool
+	ReachableVulnerabilityPriority    *string
 }
 
 type intThresholdValidator struct {
@@ -104,6 +107,11 @@ var stringThresholdValidators = []stringThresholdValidator{
 		override: func(o *Overrides) *string { return o.LockfileDriftPolicy },
 		validate: validateLockfileDriftPolicy,
 	},
+	{
+		value:    func(v *Values) string { return v.ReachableVulnerabilityPriority },
+		override: func(o *Overrides) *string { return o.ReachableVulnerabilityPriority },
+		validate: validateReachableVulnerabilityPriority,
+	},
 }
 
 func (o *Overrides) SetLicenseDenyList(values []string) {
@@ -137,6 +145,7 @@ func Defaults() Values {
 		LicenseDenyList:                   make([]string, 0),
 		LicenseFailOnDeny:                 DefaultLicenseFailOnDeny,
 		LicenseIncludeRegistryProvenance:  DefaultLicenseIncludeRegistryProvenance,
+		ReachableVulnerabilityPriority:    DefaultReachableVulnerabilityPriority,
 	}
 }
 
@@ -151,6 +160,7 @@ func (v *Values) Validate() error {
 		return err
 	}
 	v.LicenseDenyList = normalizeDenyList(v.LicenseDenyList)
+	v.ReachableVulnerabilityPriority = report.NormalizeVulnerabilityPriorityThreshold(v.ReachableVulnerabilityPriority)
 	return nil
 }
 
@@ -189,6 +199,9 @@ func (o *Overrides) Apply(base Values) Values {
 	if o.LicenseIncludeRegistryProvenance != nil {
 		resolved.LicenseIncludeRegistryProvenance = *o.LicenseIncludeRegistryProvenance
 	}
+	if o.ReachableVulnerabilityPriority != nil {
+		resolved.ReachableVulnerabilityPriority = report.NormalizeVulnerabilityPriorityThreshold(*o.ReachableVulnerabilityPriority)
+	}
 	resolved.LicenseDenyList = normalizeDenyList(resolved.LicenseDenyList)
 	return resolved
 }
@@ -204,6 +217,10 @@ func (o *Overrides) Validate() error {
 		return err
 	}
 	o.LicenseDenyList = normalizeDenyList(o.LicenseDenyList)
+	if o.ReachableVulnerabilityPriority != nil {
+		normalized := report.NormalizeVulnerabilityPriorityThreshold(*o.ReachableVulnerabilityPriority)
+		o.ReachableVulnerabilityPriority = &normalized
+	}
 	return nil
 }
 
@@ -223,6 +240,13 @@ func validateLockfileDriftPolicy(value string) error {
 		return nil
 	}
 	return fmt.Errorf("invalid threshold lockfile_drift_policy: %q (must be one of: %s)", value, strings.Join(lockfileDriftPolicyValues, ", "))
+}
+
+func validateReachableVulnerabilityPriority(value string) error {
+	if report.ValidVulnerabilityPriorityThreshold(value) {
+		return nil
+	}
+	return fmt.Errorf("invalid threshold reachable_vulnerability_priority: %q (must be one of: off, low, medium, high, critical)", value)
 }
 
 func validatePercentageRange(name string, value int) error {
