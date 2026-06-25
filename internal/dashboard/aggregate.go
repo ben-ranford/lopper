@@ -29,9 +29,15 @@ func Aggregate(generatedAt time.Time, analyses []RepoAnalysis) Report {
 
 	for _, analysis := range analyses {
 		repoResult := RepoResult{
-			Name:     analysis.Input.Name,
-			Path:     analysis.Input.Path,
-			Language: analysis.Input.Language,
+			Name:           analysis.Input.Name,
+			Path:           analysis.Input.Path,
+			RepoURL:        analysis.Input.RepoURL,
+			ResolvedCommit: analysis.Input.ResolvedCommit,
+			Language:       analysis.Input.Language,
+		}
+		if !analysis.Input.Revision.IsZero() {
+			revision := analysis.Input.Revision
+			repoResult.Revision = &revision
 		}
 		if analysis.Err != nil {
 			repoResult.Error = analysis.Err.Error()

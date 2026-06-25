@@ -31,24 +31,74 @@ func ParseFormat(value string) (Format, error) {
 }
 
 type RepoInput struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	RepoURL  string `json:"repo_url,omitempty"`
-	Language string `json:"language,omitempty"`
+	Name           string       `json:"name"`
+	Path           string       `json:"path"`
+	RepoURL        string       `json:"repo_url,omitempty"`
+	Revision       RepoRevision `json:"revision,omitempty"`
+	ResolvedCommit string       `json:"resolved_commit,omitempty"`
+	Language       string       `json:"language,omitempty"`
+}
+
+type RepoRevision struct {
+	Branch string `json:"branch,omitempty"`
+	Tag    string `json:"tag,omitempty"`
+	Commit string `json:"commit,omitempty"`
+}
+
+func (r *RepoRevision) IsZero() bool {
+	if r == nil {
+		return true
+	}
+	return strings.TrimSpace(r.Branch) == "" && strings.TrimSpace(r.Tag) == "" && strings.TrimSpace(r.Commit) == ""
+}
+
+func (r *RepoRevision) Kind() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case strings.TrimSpace(r.Branch) != "":
+		return "branch"
+	case strings.TrimSpace(r.Tag) != "":
+		return "tag"
+	case strings.TrimSpace(r.Commit) != "":
+		return "commit"
+	default:
+		return ""
+	}
+}
+
+func (r *RepoRevision) Value() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case strings.TrimSpace(r.Branch) != "":
+		return strings.TrimSpace(r.Branch)
+	case strings.TrimSpace(r.Tag) != "":
+		return strings.TrimSpace(r.Tag)
+	case strings.TrimSpace(r.Commit) != "":
+		return strings.TrimSpace(r.Commit)
+	default:
+		return ""
+	}
 }
 
 type RepoResult struct {
-	Name                  string   `json:"name"`
-	Path                  string   `json:"path"`
-	Language              string   `json:"language,omitempty"`
-	DependencyCount       int      `json:"dependency_count"`
-	WasteCandidateCount   int      `json:"waste_candidate_count"`
-	WasteCandidatePercent float64  `json:"waste_candidate_percent"`
-	TopRiskSeverity       string   `json:"top_risk_severity,omitempty"`
-	CriticalCVEs          int      `json:"critical_cves"`
-	DeniedLicenseCount    int      `json:"denied_license_count"`
-	Warnings              []string `json:"warnings,omitempty"`
-	Error                 string   `json:"error,omitempty"`
+	Name                  string        `json:"name"`
+	Path                  string        `json:"path"`
+	RepoURL               string        `json:"repo_url,omitempty"`
+	Revision              *RepoRevision `json:"revision,omitempty"`
+	ResolvedCommit        string        `json:"resolved_commit,omitempty"`
+	Language              string        `json:"language,omitempty"`
+	DependencyCount       int           `json:"dependency_count"`
+	WasteCandidateCount   int           `json:"waste_candidate_count"`
+	WasteCandidatePercent float64       `json:"waste_candidate_percent"`
+	TopRiskSeverity       string        `json:"top_risk_severity,omitempty"`
+	CriticalCVEs          int           `json:"critical_cves"`
+	DeniedLicenseCount    int           `json:"denied_license_count"`
+	Warnings              []string      `json:"warnings,omitempty"`
+	Error                 string        `json:"error,omitempty"`
 }
 
 type CrossRepoDependency struct {

@@ -179,27 +179,60 @@ func TestAggregateCrossRepoDuplicatesDistinguishesSameInferredRepoNames(t *testi
 	}
 }
 
+func TestAggregateCopiesRemoteRevisionMetadata(t *testing.T) {
+	reportData := Aggregate(time.Date(2026, time.March, 10, 1, 2, 3, 0, time.UTC), []RepoAnalysis{
+		{
+			Input: RepoInput{
+				Name:           "api",
+				Path:           "/cache/api",
+				RepoURL:        "https://github.com/example/api.git",
+				Revision:       RepoRevision{Branch: "release/2.0"},
+				ResolvedCommit: "0123456789abcdef0123456789abcdef01234567",
+				Language:       "go",
+			},
+			Report: report.Report{
+				Dependencies: []report.DependencyReport{{Name: "dep"}},
+			},
+		},
+	})
+
+	if len(reportData.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %#v", reportData.Repos)
+	}
+	got := reportData.Repos[0]
+	if got.RepoURL != "https://github.com/example/api.git" || got.ResolvedCommit != "0123456789abcdef0123456789abcdef01234567" || got.Revision == nil || got.Revision.Branch != "release/2.0" {
+		t.Fatalf("expected remote revision metadata to be copied, got %#v", got)
+	}
+}
+
 func TestFormatReport(t *testing.T) {
 	reportData := Report{
 		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
 		Repos: []RepoResult{
-			{Name: testRepoA, Path: "./a", DependencyCount: 1},
+			{
+				Name:            testRepoA,
+				Path:            "./a",
+				RepoURL:         "https://github.com/example/a.git",
+				Revision:        &RepoRevision{Tag: "v1.0.0"},
+				ResolvedCommit:  "0123456789abcdef0123456789abcdef01234567",
+				DependencyCount: 1,
+			},
 		},
 		Summary: Summary{TotalRepos: 1, TotalDeps: 1},
 	}
 
 	jsonOutput, err := FormatReport(reportData, FormatJSON)
-	if err != nil || !strings.Contains(jsonOutput, "\"total_repos\": 1") {
+	if err != nil || !strings.Contains(jsonOutput, "\"total_repos\": 1") || !strings.Contains(jsonOutput, "\"resolved_commit\": \"0123456789abcdef0123456789abcdef01234567\"") {
 		t.Fatalf("expected json output, err=%v output=%q", err, jsonOutput)
 	}
 
 	csvOutput, err := FormatReport(reportData, FormatCSV)
-	if err != nil || !strings.Contains(csvOutput, "total_repos,1") {
+	if err != nil || !strings.Contains(csvOutput, "total_repos,1") || !strings.Contains(csvOutput, "tag:v1.0.0,0123456789abcdef0123456789abcdef01234567") {
 		t.Fatalf("expected csv output, err=%v output=%q", err, csvOutput)
 	}
 
 	htmlOutput, err := FormatReport(reportData, FormatHTML)
-	if err != nil || !strings.Contains(strings.ToLower(htmlOutput), "<html") {
+	if err != nil || !strings.Contains(strings.ToLower(htmlOutput), "<html") || !strings.Contains(htmlOutput, "0123456789abcdef0123456789abcdef01234567") {
 		t.Fatalf("expected html output, err=%v output=%q", err, htmlOutput)
 	}
 }
@@ -279,7 +312,7 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 	repoRow := dashboardCSVRowAfterHeader(rows, "repo_name")
 	crossRepoRow := dashboardCSVRowAfterHeader(rows, "dependency_name")
 
-	if len(repoRow) != 10 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[2] != "go" {
+	if len(repoRow) != 13 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[5] != "go" {
 		t.Fatalf("expected sanitized repo csv row, got %#v", repoRow)
 	}
 	if len(crossRepoRow) != 3 || crossRepoRow[0] != "'-shared" || !strings.Contains(crossRepoRow[2], "'\trepo-d") {
@@ -524,7 +557,7 @@ func dashboardCSVRowAfterHeader(rows [][]string, header string) []string {
 
 func dashboardCSVContainsRepoRow(rows [][]string, name, path string) bool {
 	for _, row := range rows {
-		if len(row) == 10 && row[0] == name && row[1] == path {
+		if len(row) == 13 && row[0] == name && row[1] == path {
 			return true
 		}
 	}

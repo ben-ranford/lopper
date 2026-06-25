@@ -15,7 +15,16 @@ func TestDashboardBaselineLoadBranches(t *testing.T) {
 	snapshot := Report{
 		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
 		Repos: []RepoResult{
-			{Name: "web", Path: "./web", DependencyCount: 2, WasteCandidateCount: 1, CriticalCVEs: 1},
+			{
+				Name:                "web",
+				Path:                "./web",
+				RepoURL:             "https://github.com/example/web.git",
+				Revision:            &RepoRevision{Branch: "release/2.0"},
+				ResolvedCommit:      "0123456789abcdef0123456789abcdef01234567",
+				DependencyCount:     2,
+				WasteCandidateCount: 1,
+				CriticalCVEs:        1,
+			},
 		},
 	}
 	path, err := SaveSnapshot(tmp, " label:load ", snapshot, time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC))
@@ -24,6 +33,13 @@ func TestDashboardBaselineLoadBranches(t *testing.T) {
 	}
 	if loaded, err := Load(path); err != nil || loaded.Summary.TotalRepos != 1 {
 		t.Fatalf("Load() = summary=%+v err=%v", loaded.Summary, err)
+	}
+	loaded, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("LoadWithKey(snapshot) error = %v", err)
+	}
+	if key != "label:load" || loaded.Repos[0].RepoURL != "https://github.com/example/web.git" || loaded.Repos[0].Revision == nil || loaded.Repos[0].Revision.Branch != "release/2.0" || loaded.Repos[0].ResolvedCommit != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("expected snapshot to preserve remote revision metadata, key=%q repo=%#v", key, loaded.Repos[0])
 	}
 	if got := BaselineSnapshotPath(tmp, " label:load "); got != path {
 		t.Fatalf("BaselineSnapshotPath() = %q, want %q", got, path)
@@ -40,6 +56,9 @@ func TestDashboardBaselineLoadBranches(t *testing.T) {
 	}
 	if key != "" || legacy.Summary.TotalRepos != 1 || legacy.Summary.TotalDeps != 3 || legacy.Summary.CriticalCVEs != 1 {
 		t.Fatalf("unexpected legacy load result: key=%q summary=%+v", key, legacy.Summary)
+	}
+	if legacy.Repos[0].RepoURL != "" || legacy.Repos[0].Revision != nil || legacy.Repos[0].ResolvedCommit != "" {
+		t.Fatalf("expected legacy baseline remote metadata fields to remain empty, got %#v", legacy.Repos[0])
 	}
 
 	badPath := filepath.Join(tmp, "bad-schema.json")

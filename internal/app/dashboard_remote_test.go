@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	testHTTPSRepoURL = "https://github.com/org/repo.git"
+	testHTTPSRepoURL   = "https://github.com/org/repo.git"
+	testResolvedCommit = "0123456789abcdef0123456789abcdef01234567"
 )
 
 func TestReposFromDashboardConfigRejectsUnsafeRepoURLs(t *testing.T) {
@@ -49,6 +50,73 @@ func TestReposFromDashboardConfigRejectsUnsafeRepoURLs(t *testing.T) {
 				t.Fatalf("expected repoUrl error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestReposFromDashboardConfigRemoteRevisionValidation(t *testing.T) {
+	features := enabledDashboardRemoteReposFeatures(t)
+	tests := []struct {
+		name string
+		repo dashboard.ConfigRepo
+		want string
+	}{
+		{
+			name: "ambiguous branch and tag",
+			repo: dashboard.ConfigRepo{RepoURL: testHTTPSRepoURL, Branch: "main", Tag: "v1.0.0"},
+			want: "define only one of branch, tag, or commit",
+		},
+		{
+			name: "branch full ref",
+			repo: dashboard.ConfigRepo{RepoURL: testHTTPSRepoURL, Branch: "refs/heads/main"},
+			want: "not a full refs/... ref",
+		},
+		{
+			name: "tag invalid ref syntax",
+			repo: dashboard.ConfigRepo{RepoURL: testHTTPSRepoURL, Tag: "release..candidate"},
+			want: "cannot contain dot-dot",
+		},
+		{
+			name: "short commit",
+			repo: dashboard.ConfigRepo{RepoURL: testHTTPSRepoURL, Commit: "abc123"},
+			want: "full 40- or 64-character hex SHA",
+		},
+		{
+			name: "local path pin",
+			repo: dashboard.ConfigRepo{Path: "./api", Branch: "main"},
+			want: "revision fields require repoUrl",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := dashboard.LoadedConfig{
+				ConfigDir: t.TempDir(),
+				Dashboard: dashboard.ConfigDashboard{
+					Repos: []dashboard.ConfigRepo{tc.repo},
+				},
+			}
+			_, err := reposFromDashboardConfig(config, &features)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected revision error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	config := dashboard.LoadedConfig{
+		ConfigDir: t.TempDir(),
+		Dashboard: dashboard.ConfigDashboard{
+			Repos: []dashboard.ConfigRepo{{
+				RepoURL: testHTTPSRepoURL,
+				Branch:  " release/2.0 ",
+			}},
+		},
+	}
+	repos, err := reposFromDashboardConfig(config, &features)
+	if err != nil {
+		t.Fatalf("expected branch revision config to resolve: %v", err)
+	}
+	if len(repos) != 1 || repos[0].Revision.Branch != "release/2.0" {
+		t.Fatalf("unexpected resolved repo revision: %#v", repos)
 	}
 }
 
@@ -159,6 +227,7 @@ func TestExecuteDashboardMaterializesRepoURL(t *testing.T) {
 	cacheRoot := t.TempDir()
 	t.Setenv(dashboardRepoCacheEnv, cacheRoot)
 	remoteRepo := initDashboardRemoteGitRepo(t)
+	remoteHead := gitHead(t, remoteRepo)
 	configPath := filepath.Join(t.TempDir(), "lopper-org.yml")
 	config := "dashboard:\n  repos:\n    - repoUrl: " + fileURL(remoteRepo) + "\n      name: Fixture Remote\n      language: go\n  output: json\n"
 	testutil.MustWriteFile(t, configPath, config)
@@ -195,7 +264,7 @@ func TestExecuteDashboardMaterializesRepoURL(t *testing.T) {
 		t.Fatalf("expected one repo result, got %#v", reportData.Repos)
 	}
 	got := reportData.Repos[0]
-	if got.Name != "Fixture Remote" || got.Language != "go" || got.Path != checkoutPath || got.Error != "" {
+	if got.Name != "Fixture Remote" || got.Language != "go" || got.Path != checkoutPath || got.RepoURL != fileURL(remoteRepo) || got.ResolvedCommit != remoteHead || got.Error != "" {
 		t.Fatalf("unexpected materialized repo result: %#v", got)
 	}
 }
@@ -239,6 +308,100 @@ func TestExecuteDashboardReportsRepoURLCheckoutFailure(t *testing.T) {
 	}
 }
 
+func TestDashboardRepoMaterializerPinsFileRemoteRevisions(t *testing.T) {
+	fixture := initDashboardRemoteGitRepoWithRefs(t)
+	repoURL := fileURL(fixture.repoPath)
+	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: dashboardGitPathForTest(t)}
+
+	unpinned, err := materializer.Materialize(context.Background(), repoURL, dashboard.RepoRevision{})
+	if err != nil {
+		t.Fatalf("materialize unpinned file remote: %v", err)
+	}
+	branch, err := materializer.Materialize(context.Background(), repoURL, dashboard.RepoRevision{Branch: "stable"})
+	if err != nil {
+		t.Fatalf("materialize branch-pinned file remote: %v", err)
+	}
+	tag, err := materializer.Materialize(context.Background(), repoURL, dashboard.RepoRevision{Tag: "v1.0.0"})
+	if err != nil {
+		t.Fatalf("materialize tag-pinned file remote: %v", err)
+	}
+	commit, err := materializer.Materialize(context.Background(), repoURL, dashboard.RepoRevision{Commit: fixture.initialCommit})
+	if err != nil {
+		t.Fatalf("materialize commit-pinned file remote: %v", err)
+	}
+
+	if unpinned.ResolvedCommit != fixture.headCommit {
+		t.Fatalf("expected unpinned checkout at HEAD %s, got %#v", fixture.headCommit, unpinned)
+	}
+	for name, materialized := range map[string]dashboardMaterializedRepo{
+		"branch": branch,
+		"tag":    tag,
+		"commit": commit,
+	} {
+		if materialized.ResolvedCommit != fixture.initialCommit {
+			t.Fatalf("expected %s pin at %s, got %#v", name, fixture.initialCommit, materialized)
+		}
+	}
+
+	paths := map[string]bool{}
+	for _, materialized := range []dashboardMaterializedRepo{unpinned, branch, tag, commit} {
+		if paths[materialized.CheckoutPath] {
+			t.Fatalf("expected pin-aware cache paths, duplicate %q", materialized.CheckoutPath)
+		}
+		paths[materialized.CheckoutPath] = true
+	}
+}
+
+func TestDashboardRepoMaterializerPinnedHTTPSFetchCommands(t *testing.T) {
+	tests := []struct {
+		name      string
+		revision  dashboard.RepoRevision
+		wantFetch string
+	}{
+		{name: "branch", revision: dashboard.RepoRevision{Branch: "release/2.0"}, wantFetch: "fetch --prune --no-tags --depth=1 origin refs/heads/release/2.0"},
+		{name: "tag", revision: dashboard.RepoRevision{Tag: "v2.0.0"}, wantFetch: "fetch --prune --no-tags --depth=1 origin refs/tags/v2.0.0"},
+		{name: "commit", revision: dashboard.RepoRevision{Commit: testResolvedCommit}, wantFetch: "fetch --prune --no-tags --depth=1 origin " + testResolvedCommit},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var commands []string
+			withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+				joined := strings.Join(args, " ")
+				commands = append(commands, joined)
+				if strings.Contains(joined, "rev-parse --verify HEAD") {
+					return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testResolvedCommit), nil
+				}
+				return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
+			})
+
+			materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+			got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, tc.revision)
+			if err != nil {
+				t.Fatalf("materialize pinned https remote: %v", err)
+			}
+			if got.ResolvedCommit != testResolvedCommit {
+				t.Fatalf("expected resolved commit %s, got %#v", testResolvedCommit, got)
+			}
+			assertCommandContains(t, commands, "init "+got.CheckoutPath)
+			assertCommandContains(t, commands, "remote add origin "+testHTTPSRepoURL)
+			assertCommandContains(t, commands, tc.wantFetch)
+			assertCommandContains(t, commands, "checkout --detach --force FETCH_HEAD")
+		})
+	}
+}
+
+func TestDashboardRepoMaterializerPinnedCommitFailure(t *testing.T) {
+	fixture := initDashboardRemoteGitRepoWithRefs(t)
+	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: dashboardGitPathForTest(t)}
+	missingCommit := strings.Repeat("f", 40)
+
+	_, err := materializer.Materialize(context.Background(), fileURL(fixture.repoPath), dashboard.RepoRevision{Commit: missingCommit})
+	if err == nil || !strings.Contains(err.Error(), "fetch remote commit") {
+		t.Fatalf("expected unresolved commit fetch error, got %v", err)
+	}
+}
+
 func TestDashboardRepoMaterializerRefreshesUsableCheckout(t *testing.T) {
 	cacheRoot := t.TempDir()
 	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
@@ -253,16 +416,19 @@ func TestDashboardRepoMaterializerRefreshesUsableCheckout(t *testing.T) {
 		if strings.Contains(strings.Join(args, " "), "remote get-url origin") {
 			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testHTTPSRepoURL), nil
 		}
+		if strings.Contains(strings.Join(args, " "), "rev-parse --verify HEAD") {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testResolvedCommit), nil
+		}
 		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
 	})
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: cacheRoot, gitPath: "/usr/bin/git"}
-	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL)
+	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
 	if err != nil {
 		t.Fatalf("materialize existing checkout: %v", err)
 	}
-	if got != checkoutPath {
-		t.Fatalf("expected checkout path %q, got %q", checkoutPath, got)
+	if got.CheckoutPath != checkoutPath || got.ResolvedCommit != testResolvedCommit {
+		t.Fatalf("expected checkout %q at %s, got %#v", checkoutPath, testResolvedCommit, got)
 	}
 	assertCommandContains(t, commands, "fetch --prune --depth=1 origin HEAD")
 	assertCommandContains(t, commands, "checkout --detach --force FETCH_HEAD")
@@ -290,9 +456,9 @@ func TestDashboardRepoMaterializerRefreshFailure(t *testing.T) {
 	})
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: cacheRoot, gitPath: "/usr/bin/git"}
-	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL)
-	if got != checkoutPath {
-		t.Fatalf("expected checkout path on refresh failure, got %q", got)
+	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
+	if got.CheckoutPath != checkoutPath {
+		t.Fatalf("expected checkout path on refresh failure, got %#v", got)
 	}
 	if err == nil || !strings.Contains(err.Error(), "fetch remote repo") {
 		t.Fatalf("expected fetch failure, got %v", err)
@@ -301,20 +467,20 @@ func TestDashboardRepoMaterializerRefreshFailure(t *testing.T) {
 
 func TestDashboardRepoMaterializerValidationAndCacheErrors(t *testing.T) {
 	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
-	if checkoutPath, err := materializer.Materialize(context.Background(), "notaurl"); err == nil || checkoutPath != "" {
-		t.Fatalf("expected invalid URL without checkout path, path=%q err=%v", checkoutPath, err)
+	if materialized, err := materializer.Materialize(context.Background(), "notaurl", dashboard.RepoRevision{}); err == nil || materialized.CheckoutPath != "" {
+		t.Fatalf("expected invalid URL without checkout path, materialized=%#v err=%v", materialized, err)
 	}
 
 	materializer.cacheRoot = "relative-cache"
-	if _, err := materializer.Materialize(context.Background(), testHTTPSRepoURL); err == nil || !strings.Contains(err.Error(), "cache root") {
+	if _, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{}); err == nil || !strings.Contains(err.Error(), "cache root") {
 		t.Fatalf("expected relative cache root error, got %v", err)
 	}
 
 	blocker := filepath.Join(t.TempDir(), "blocked-cache")
 	testutil.MustWriteFile(t, blocker, "x")
 	materializer.cacheRoot = blocker
-	checkoutPath, err := materializer.Materialize(context.Background(), testHTTPSRepoURL)
-	if checkoutPath == "" {
+	materialized, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
+	if materialized.CheckoutPath == "" {
 		t.Fatalf("expected deterministic checkout path with blocked cache")
 	}
 	if err == nil || !strings.Contains(err.Error(), "create dashboard repo cache") {
@@ -329,7 +495,7 @@ func TestDashboardRepoMaterializerRemoveErrors(t *testing.T) {
 	dashboardRemoveAllFn = func(string) error { return resetErr }
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
-	if _, err := materializer.Materialize(context.Background(), testHTTPSRepoURL); !errors.Is(err, resetErr) {
+	if _, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{}); !errors.Is(err, resetErr) {
 		t.Fatalf("expected reset remove error, got %v", err)
 	}
 }
@@ -354,7 +520,7 @@ func TestDashboardRepoMaterializerCloneCleanupError(t *testing.T) {
 	})
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
-	_, err := materializer.Materialize(context.Background(), testHTTPSRepoURL)
+	_, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
 	if err == nil || !strings.Contains(err.Error(), "clone remote repo") || !strings.Contains(err.Error(), "cleanup failed") || !errors.Is(err, cleanupErr) {
 		t.Fatalf("expected clone and cleanup failure, got %v", err)
 	}
@@ -376,16 +542,19 @@ func TestDashboardRepoMaterializerReplacesMismatchedCheckout(t *testing.T) {
 		if strings.Contains(joined, "remote get-url origin") {
 			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), "https://github.com/other/repo.git"), nil
 		}
+		if strings.Contains(joined, "rev-parse --verify HEAD") {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testResolvedCommit), nil
+		}
 		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
 	})
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: cacheRoot, gitPath: "/usr/bin/git"}
-	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL)
+	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
 	if err != nil {
 		t.Fatalf("materialize mismatched checkout: %v", err)
 	}
-	if got != checkoutPath {
-		t.Fatalf("expected checkout path %q, got %q", checkoutPath, got)
+	if got.CheckoutPath != checkoutPath || got.ResolvedCommit != testResolvedCommit {
+		t.Fatalf("expected checkout %q at %s, got %#v", checkoutPath, testResolvedCommit, got)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutPath, "stale.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale checkout to be removed before clone, stat err=%v", err)
@@ -415,7 +584,7 @@ func TestDashboardRepoMaterializerPinCheckoutErrors(t *testing.T) {
 			})
 
 			materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
-			err := materializer.pinCheckout(context.Background(), t.TempDir(), spec, "HEAD")
+			_, err := materializer.pinCheckout(context.Background(), t.TempDir(), spec, "HEAD", dashboard.RepoRevision{})
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
 			}
@@ -492,6 +661,11 @@ func TestDashboardCheckoutHelpers(t *testing.T) {
 	if first != second || !strings.HasPrefix(first, root+string(filepath.Separator)) {
 		t.Fatalf("expected deterministic checkout path under root, first=%q second=%q root=%q", first, second, root)
 	}
+	branchCheckout := mustDashboardCheckoutPath(t, root, spec, dashboard.RepoRevision{Branch: "main"})
+	tagCheckout := mustDashboardCheckoutPath(t, root, spec, dashboard.RepoRevision{Tag: "main"})
+	if branchCheckout == first || tagCheckout == first || branchCheckout == tagCheckout {
+		t.Fatalf("expected distinct checkout paths for unpinned, branch, and tag pins: %q %q %q", first, branchCheckout, tagCheckout)
+	}
 	if sanitized := sanitizeDashboardCheckoutName(" ../repo name:with/slash "); sanitized != "repo-name-with-slash" {
 		t.Fatalf("unexpected sanitized checkout name: %q", sanitized)
 	}
@@ -504,7 +678,7 @@ func TestDashboardCheckoutHelpers(t *testing.T) {
 	if !pathWithinDir(root, root) {
 		t.Fatalf("expected cache root to be within itself")
 	}
-	if _, err := dashboardCheckoutPath("relative", spec); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if _, err := dashboardCheckoutPath("relative", spec, dashboard.RepoRevision{}); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("expected relative checkout root error, got %v", err)
 	}
 
@@ -540,6 +714,47 @@ func initDashboardRemoteGitRepo(t *testing.T) string {
 	testutil.RunGit(t, repo, "add", ".")
 	testutil.RunGit(t, repo, "-c", "user.name=Lopper Test", "-c", "user.email=lopper@example.invalid", "commit", "-m", "initial")
 	return repo
+}
+
+type dashboardRemoteGitFixture struct {
+	repoPath      string
+	initialCommit string
+	headCommit    string
+}
+
+func initDashboardRemoteGitRepoWithRefs(t *testing.T) dashboardRemoteGitFixture {
+	t.Helper()
+	repo := initDashboardRemoteGitRepo(t)
+	initialCommit := gitHead(t, repo)
+	testutil.RunGit(t, repo, "branch", "stable", initialCommit)
+	testutil.RunGit(t, repo, "tag", "v1.0.0", initialCommit)
+	testutil.MustWriteFile(t, filepath.Join(repo, "main.go"), "package main\n")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "-c", "user.name=Lopper Test", "-c", "user.email=lopper@example.invalid", "commit", "-m", "head")
+	return dashboardRemoteGitFixture{
+		repoPath:      repo,
+		initialCommit: initialCommit,
+		headCommit:    gitHead(t, repo),
+	}
+}
+
+func gitHead(t *testing.T, repo string) string {
+	t.Helper()
+	command := exec.Command("git", "-C", repo, "rev-parse", "--verify", "HEAD")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v\n%s", err, string(output))
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func dashboardGitPathForTest(t *testing.T) string {
+	t.Helper()
+	gitPath, err := resolveDashboardGitBinaryFn()
+	if err != nil {
+		t.Fatalf("resolve git path: %v", err)
+	}
+	return gitPath
 }
 
 func fileURL(path string) string {
@@ -578,9 +793,13 @@ func mustParseDashboardRepoURL(t *testing.T, repoURL string) dashboardRepoURLSpe
 	return spec
 }
 
-func mustDashboardCheckoutPath(t *testing.T, cacheRoot string, spec dashboardRepoURLSpec) string {
+func mustDashboardCheckoutPath(t *testing.T, cacheRoot string, spec dashboardRepoURLSpec, revision ...dashboard.RepoRevision) string {
 	t.Helper()
-	checkoutPath, err := dashboardCheckoutPath(cacheRoot, spec)
+	resolvedRevision := dashboard.RepoRevision{}
+	if len(revision) > 0 {
+		resolvedRevision = revision[0]
+	}
+	checkoutPath, err := dashboardCheckoutPath(cacheRoot, spec, resolvedRevision)
 	if err != nil {
 		t.Fatalf("dashboard checkout path: %v", err)
 	}
