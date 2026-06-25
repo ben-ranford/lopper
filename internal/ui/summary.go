@@ -18,6 +18,7 @@ import (
 
 type Summary struct {
 	Analyzer  analysis.Analyser
+	Actions   ActionRunner
 	Formatter summaryFormatter
 	Out       io.Writer
 	In        io.Reader
@@ -63,7 +64,7 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		quit, err := s.handleSummaryInput(ctx, opts, reportView, &state, input)
+		quit, err := s.handleSummaryInputMutable(ctx, &opts, &reportView, &state, input)
 		if err != nil {
 			return err
 		}
@@ -101,7 +102,10 @@ func readSummaryInput(reader *bufio.Reader) (string, error) {
 }
 
 func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, reportView summaryReportView, state *summaryState, input string) (bool, error) {
-	_ = ctx
+	return s.handleSummaryInputMutable(ctx, &opts, &reportView, state, input)
+}
+
+func (s *Summary) handleSummaryInputMutable(ctx context.Context, opts *Options, reportView *summaryReportView, state *summaryState, input string) (bool, error) {
 	if input == "" || input == "refresh" {
 		return false, nil
 	}
@@ -110,7 +114,19 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, reportVi
 	}
 	if dependency, ok := isDetailCommand(input); ok {
 		detail := NewDetail(s.Out, s.Analyzer, opts.RepoPath, opts.Language)
-		if err := detail.showLoadedSummary(dependency, reportView); err != nil {
+		if err := detail.showLoadedSummary(dependency, *reportView); err != nil {
+			return false, err
+		}
+		if state != nil {
+			state.selectedDependency = dependency
+		}
+		return false, nil
+	}
+	if action, ok, err := parseSummaryAction(input, state); ok {
+		if err != nil {
+			return false, writeSummaryActionError(s.Out, err)
+		}
+		if err := s.runSummaryAction(ctx, opts, reportView, state, action); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -120,7 +136,7 @@ func (s *Summary) handleSummaryInput(ctx context.Context, opts Options, reportVi
 			return false, err
 		}
 	} else {
-		clampSummaryPage(reportView, state)
+		clampSummaryPage(*reportView, state)
 	}
 	return false, nil
 }
@@ -149,11 +165,12 @@ const (
 )
 
 type summaryState struct {
-	filter   string
-	sortMode sortMode
-	page     int
-	pageSize int
-	showHelp bool
+	filter             string
+	sortMode           sortMode
+	page               int
+	pageSize           int
+	showHelp           bool
+	selectedDependency string
 }
 
 func applySummaryCommand(state *summaryState, input string, out io.Writer) bool {
@@ -301,6 +318,12 @@ func summaryHelpText() string {
 		"  size <n>             Change page size\n" +
 		"  open <dependency>    Show dependency detail\n" +
 		"  open <lang>:<dep>    Detail in multi-language mode\n" +
+		"  apply-codemod [dep] --confirm [--allow-dirty]\n" +
+		"                       Apply safe codemod suggestions from detail\n" +
+		"  save-baseline [label] [--store DIR] [--key KEY]\n" +
+		"                       Save current report as an immutable baseline\n" +
+		"  compare-baseline <key|file> [--store DIR]\n" +
+		"                       Refresh summary/detail with baseline deltas\n" +
 		"  refresh              Re-render the current view\n" +
 		"  q                    Quit\n\n"
 }
@@ -575,7 +598,7 @@ func renderSummaryFrame(formatted string, state summaryState, totalPages int, to
 	if state.showHelp {
 		builder.WriteString(summaryHelpText())
 	} else {
-		builder.WriteString("Commands: help | open <dependency> | q\n")
+		builder.WriteString("Commands: help | open <dependency> | apply-codemod | save-baseline | compare-baseline | q\n")
 	}
 	return builder.String()
 }

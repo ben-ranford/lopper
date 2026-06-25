@@ -34,6 +34,9 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 	if !strings.Contains(summaryHelpText(), "sort name|alpha|waste") {
 		t.Fatalf("expected help text to list alpha sort alias")
 	}
+	if !strings.Contains(summaryHelpText(), "apply-codemod") || !strings.Contains(summaryHelpText(), "save-baseline") || !strings.Contains(summaryHelpText(), "compare-baseline") {
+		t.Fatalf("expected help text to list action commands")
+	}
 	if !applySummaryCommand(state, "filter lodash", io.Discard) || state.filter != "lodash" || state.page != 1 {
 		t.Fatalf("expected filter command to set filter and reset page")
 	}

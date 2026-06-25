@@ -89,6 +89,13 @@ Options:
   --baseline PATH            Baseline report (JSON) for TUI comparison
   --baseline-store DIR       Directory for immutable keyed TUI baseline snapshots
   --baseline-key KEY         Baseline snapshot key for TUI comparison
+  TUI commands:
+    apply-codemod [dep] --confirm [--allow-dirty]
+                              Apply safe codemod suggestions shown in dependency detail
+    save-baseline [label] [--store DIR] [--key KEY]
+                              Save the current TUI report; defaults to .artifacts/lopper-baselines and commit:<HEAD>
+    compare-baseline <key|file> [--store DIR]
+                              Refresh TUI summary/detail views with baseline deltas
   --fail-on-increase PERCENT Legacy alias for --threshold-fail-on-increase
   --version                  Show CLI version metadata
   mcp                        Run a local stdio MCP server with read-only dependency analysis tools

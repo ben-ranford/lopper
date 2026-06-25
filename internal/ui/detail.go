@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/terminal"
 )
 
@@ -135,7 +136,7 @@ func printDependencySections(out io.Writer, dep detailDependencyView) error {
 		func(w io.Writer) error { return printRuntimeDelta(w, dep.RuntimeDelta) },
 		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
 		func(w io.Writer) error { return printRecommendations(w, dep.Recommendations) },
-		func(w io.Writer) error { return printCodemod(w, dep.Codemod) },
+		func(w io.Writer) error { return printCodemod(w, dep.Codemod, detailCodemodActionTarget(dep)) },
 		func(w io.Writer) error { return printImportList(w, "Used imports", dep.UsedImports) },
 		func(w io.Writer) error { return printImportList(w, "Unused imports", dep.UnusedImports) },
 		func(w io.Writer) error { return printExportsList(w, "Unused exports", dep.UnusedExports) },
@@ -230,7 +231,7 @@ func printRecommendations(out io.Writer, recommendations []detailRecommendationV
 	})
 }
 
-func printCodemod(out io.Writer, codemod *detailCodemodView) error {
+func printCodemod(out io.Writer, codemod *detailCodemodView, actionTargets ...string) error {
 	if err := writeln(out, "Codemod preview"); err != nil {
 		return err
 	}
@@ -261,7 +262,60 @@ func printCodemod(out io.Writer, codemod *detailCodemodView) error {
 			return err
 		}
 	}
+	if len(codemod.Suggestions) > 0 {
+		actionTarget := firstNonEmpty(actionTargets...)
+		if actionTarget != "" {
+			if err := writef(out, "  - action: apply-codemod %s --confirm\n", actionTarget); err != nil {
+				return err
+			}
+		}
+	}
+	if err := printDetailCodemodApply(out, codemod.Apply); err != nil {
+		return err
+	}
 	return writeln(out, "")
+}
+
+func detailCodemodActionTarget(dep detailDependencyView) string {
+	if strings.TrimSpace(dep.Name) == "" {
+		return ""
+	}
+	if strings.TrimSpace(dep.Language) == "" {
+		return dep.Name
+	}
+	return dep.Language + ":" + dep.Name
+}
+
+func printDetailCodemodApply(out io.Writer, apply *report.CodemodApplyReport) error {
+	if apply == nil {
+		return nil
+	}
+	if err := writeln(out, "  - apply results:"); err != nil {
+		return err
+	}
+	lines := []string{
+		fmt.Sprintf("    applied: %d file(s), %d patch(es)", apply.AppliedFiles, apply.AppliedPatches),
+		fmt.Sprintf("    skipped: %d file(s), %d patch(es)", apply.SkippedFiles, apply.SkippedPatches),
+		fmt.Sprintf("    failed: %d file(s), %d patch(es)", apply.FailedFiles, apply.FailedPatches),
+	}
+	if apply.BackupPath != "" {
+		lines = append(lines, fmt.Sprintf("    backup: %s", apply.BackupPath))
+	}
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	for _, result := range apply.Results {
+		line := fmt.Sprintf("    - %s %s (%d patch(es))", result.Status, result.File, result.PatchCount)
+		if strings.TrimSpace(result.Message) != "" {
+			line += ": " + result.Message
+		}
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func printRuntimeUsage(out io.Writer, usage *detailRuntimeUsageView) error {

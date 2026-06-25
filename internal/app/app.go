@@ -42,16 +42,19 @@ func New(out io.Writer, in io.Reader) *App {
 	analyzer := analysis.NewService()
 	formatter := report.NewFormatter()
 
-	return &App{
+	app := &App{
 		Analyzer:  analyzer,
 		In:        in,
 		Out:       out,
 		Formatter: formatter,
-		TUI:       ui.NewSummary(out, in, analyzer, formatter),
 		Notify:    notify.NewDefaultDispatcher(),
 		Features:  featureflags.DefaultRegistry(),
 		Languages: analyzer.Registry,
 	}
+	summary := ui.NewSummary(out, in, analyzer, formatter)
+	summary.Actions = app.tuiActionRunner()
+	app.TUI = summary
+	return app
 }
 
 func (a *App) Execute(ctx context.Context, req Request) (string, error) {
