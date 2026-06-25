@@ -441,6 +441,30 @@ func TestDashboardRepoMaterializerPinnedHTTPSFetchCommands(t *testing.T) {
 	}
 }
 
+func TestDashboardRepoMaterializerCloneCheckoutSetupErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		failOn  string
+		wantErr string
+	}{
+		{name: "init", failOn: "init ", wantErr: "initialize remote repo checkout"},
+		{name: "remote", failOn: "remote add origin", wantErr: "configure remote repo origin"},
+	}
+	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withDashboardGitFailingCommand(t, tc.failOn)
+
+			materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+			_, err := materializer.cloneCheckout(context.Background(), t.TempDir(), spec, dashboard.RepoRevision{Branch: "main"})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestDashboardRepoMaterializerPinnedCommitFailure(t *testing.T) {
 	fixture := initDashboardRemoteGitRepoWithRefs(t)
 	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: dashboardGitPathForTest(t)}
@@ -449,6 +473,13 @@ func TestDashboardRepoMaterializerPinnedCommitFailure(t *testing.T) {
 	_, err := materializer.Materialize(context.Background(), fileURL(fixture.repoPath), dashboard.RepoRevision{Commit: missingCommit})
 	if err == nil || !strings.Contains(err.Error(), "fetch remote commit") {
 		t.Fatalf("expected unresolved commit fetch error, got %v", err)
+	}
+}
+
+func TestDashboardRepoMaterializerRejectsInvalidMaterializeRevision(t *testing.T) {
+	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+	if materialized, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{Branch: "release..main"}); err == nil || materialized.CheckoutPath != "" {
+		t.Fatalf("expected invalid revision without checkout path, materialized=%#v err=%v", materialized, err)
 	}
 }
 
@@ -461,16 +492,7 @@ func TestDashboardRepoMaterializerRefreshesUsableCheckout(t *testing.T) {
 	}
 
 	var commands []string
-	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
-		commands = append(commands, strings.Join(args, " "))
-		if strings.Contains(strings.Join(args, " "), "remote get-url origin") {
-			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testHTTPSRepoURL), nil
-		}
-		if strings.Contains(strings.Join(args, " "), "rev-parse --verify HEAD") {
-			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testResolvedCommit), nil
-		}
-		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
-	})
+	withDashboardGitRemoteOriginAndCommit(t, testHTTPSRepoURL, testResolvedCommit, &commands)
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: cacheRoot, gitPath: "/usr/bin/git"}
 	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
@@ -586,17 +608,7 @@ func TestDashboardRepoMaterializerReplacesMismatchedCheckout(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(checkoutPath, "stale.txt"), "stale")
 
 	var commands []string
-	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
-		joined := strings.Join(args, " ")
-		commands = append(commands, joined)
-		if strings.Contains(joined, "remote get-url origin") {
-			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), "https://github.com/other/repo.git"), nil
-		}
-		if strings.Contains(joined, "rev-parse --verify HEAD") {
-			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), testResolvedCommit), nil
-		}
-		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
-	})
+	withDashboardGitRemoteOriginAndCommit(t, "https://github.com/other/repo.git", testResolvedCommit, &commands)
 
 	materializer := &dashboardRepoMaterializer{cacheRoot: cacheRoot, gitPath: "/usr/bin/git"}
 	got, err := materializer.Materialize(context.Background(), testHTTPSRepoURL, dashboard.RepoRevision{})
@@ -626,12 +638,7 @@ func TestDashboardRepoMaterializerPinCheckoutErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
-				if strings.Contains(strings.Join(args, " "), tc.failOn) {
-					return exec.CommandContext(ctx, fixedTestBinary(t, "false")), nil
-				}
-				return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
-			})
+			withDashboardGitFailingCommand(t, tc.failOn)
 
 			materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
 			_, err := materializer.pinCheckout(context.Background(), t.TempDir(), spec, "HEAD", dashboard.RepoRevision{})
@@ -687,6 +694,22 @@ func TestDashboardRepoMaterializerPinnedCommitMismatch(t *testing.T) {
 	_, err := materializer.pinCheckout(context.Background(), t.TempDir(), spec, "FETCH_HEAD", dashboard.RepoRevision{Commit: requestedCommit})
 	if err == nil || !strings.Contains(err.Error(), "does not match requested commit") {
 		t.Fatalf("expected pinned commit mismatch error, got %v", err)
+	}
+}
+
+func TestDashboardRepoMaterializerPinCheckoutResolveCommitError(t *testing.T) {
+	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
+	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		if strings.Contains(strings.Join(args, " "), "rev-parse --verify HEAD") {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "false")), nil
+		}
+		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
+	})
+
+	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+	_, err := materializer.pinCheckout(context.Background(), t.TempDir(), spec, "FETCH_HEAD", dashboard.RepoRevision{})
+	if err == nil || !strings.Contains(err.Error(), "resolve remote repo commit") {
+		t.Fatalf("expected resolve commit error, got %v", err)
 	}
 }
 
@@ -772,6 +795,9 @@ func TestDashboardCheckoutHelpers(t *testing.T) {
 	}
 	if pathWithinDir(root, filepath.Dir(root)) {
 		t.Fatalf("expected parent directory to be outside cache root")
+	}
+	if !pathWithinDir(root, filepath.Join(root, "child")) {
+		t.Fatalf("expected child directory to be within cache root")
 	}
 	if !pathWithinDir(root, root) {
 		t.Fatalf("expected cache root to be within itself")
@@ -864,6 +890,31 @@ func withFakeDashboardGit(t *testing.T, fake func(context.Context, string, ...st
 	original := execDashboardGitCommandFn
 	execDashboardGitCommandFn = fake
 	t.Cleanup(func() { execDashboardGitCommandFn = original })
+}
+
+func withDashboardGitFailingCommand(t *testing.T, failOn string) {
+	t.Helper()
+	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		if strings.Contains(strings.Join(args, " "), failOn) {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "false")), nil
+		}
+		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
+	})
+}
+
+func withDashboardGitRemoteOriginAndCommit(t *testing.T, remoteOrigin, commit string, commands *[]string) {
+	t.Helper()
+	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		joined := strings.Join(args, " ")
+		*commands = append(*commands, joined)
+		if strings.Contains(joined, "remote get-url origin") {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), remoteOrigin), nil
+		}
+		if strings.Contains(joined, "rev-parse --verify HEAD") {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), commit), nil
+		}
+		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
+	})
 }
 
 func fixedTestBinary(t *testing.T, name string) string {
