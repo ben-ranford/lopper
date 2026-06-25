@@ -132,6 +132,7 @@ func printDependencySections(out io.Writer, dep detailDependencyView) error {
 		func(w io.Writer) error { return printReachabilityConfidence(w, dep.ReachabilityConfidence) },
 		func(w io.Writer) error { return printRemovalCandidate(w, dep.RemovalCandidate) },
 		func(w io.Writer) error { return printRuntimeUsage(w, dep.RuntimeUsage) },
+		func(w io.Writer) error { return printRuntimeDelta(w, dep.RuntimeDelta) },
 		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
 		func(w io.Writer) error { return printRecommendations(w, dep.Recommendations) },
 		func(w io.Writer) error { return printCodemod(w, dep.Codemod) },
@@ -297,6 +298,64 @@ func printRuntimeUsage(out io.Writer, usage *detailRuntimeUsageView) error {
 	return writeln(out, "")
 }
 
+func printRuntimeDelta(out io.Writer, delta *detailRuntimeDeltaView) error {
+	if delta == nil {
+		return nil
+	}
+	if err := writeln(out, "Runtime baseline delta"); err != nil {
+		return err
+	}
+	lines := []string{
+		fmt.Sprintf("  - comparable: %t", delta.Comparable),
+		fmt.Sprintf("  - baseline runtime data: %t", delta.BaselinePresent),
+		fmt.Sprintf("  - current runtime data: %t", delta.CurrentPresent),
+	}
+	if delta.BaselineLoadCount != nil {
+		lines = append(lines, fmt.Sprintf("  - baseline load count: %d", *delta.BaselineLoadCount))
+	}
+	if delta.CurrentLoadCount != nil {
+		lines = append(lines, fmt.Sprintf("  - current load count: %d", *delta.CurrentLoadCount))
+	}
+	if delta.LoadCountDelta != nil {
+		lines = append(lines, fmt.Sprintf("  - load count delta: %+d", *delta.LoadCountDelta))
+	}
+	if delta.BaselineCorrelation != "" || delta.CurrentCorrelation != "" {
+		lines = append(lines, fmt.Sprintf("  - correlation: %s -> %s", delta.BaselineCorrelation, delta.CurrentCorrelation))
+	}
+	if len(delta.ChangeTypes) > 0 {
+		changeTypes := make([]string, 0, len(delta.ChangeTypes))
+		for _, changeType := range delta.ChangeTypes {
+			changeTypes = append(changeTypes, string(changeType))
+		}
+		lines = append(lines, fmt.Sprintf("  - change types: %s", strings.Join(changeTypes, ", ")))
+	}
+	if delta.NewRuntimeLoads {
+		lines = append(lines, "  - new runtime loads: true")
+	}
+	if delta.RemovedRuntimeLoads {
+		lines = append(lines, "  - removed runtime loads: true")
+	}
+	if delta.RuntimeOnlyRegression {
+		lines = append(lines, "  - runtime-only regression: true")
+	}
+	if delta.RuntimeOnlyImprovement {
+		lines = append(lines, "  - runtime-only improvement: true")
+	}
+	appendRuntimeModuleDeltaLine(&lines, "modules added", delta.ModulesAdded)
+	appendRuntimeModuleDeltaLine(&lines, "modules removed", delta.ModulesRemoved)
+	appendRuntimeModuleDeltaLine(&lines, "modules changed", delta.ModulesChanged)
+	appendRuntimeModuleDeltaLine(&lines, "parent modules added", delta.ParentModulesAdded)
+	appendRuntimeModuleDeltaLine(&lines, "parent modules removed", delta.ParentModulesRemoved)
+	appendRuntimeModuleDeltaLine(&lines, "parent modules changed", delta.ParentModulesChanged)
+	appendRuntimeModuleDeltaLine(&lines, "entrypoints added", delta.EntrypointsAdded)
+	appendRuntimeModuleDeltaLine(&lines, "entrypoints removed", delta.EntrypointsRemoved)
+	appendRuntimeModuleDeltaLine(&lines, "entrypoints changed", delta.EntrypointsChanged)
+	if err := writeLines(out, lines); err != nil {
+		return err
+	}
+	return writeln(out, "")
+}
+
 func printReachabilityConfidence(out io.Writer, confidence *detailReachabilityConfidenceView) error {
 	if err := writeln(out, "Reachability confidence"); err != nil {
 		return err
@@ -441,6 +500,17 @@ func formatRuntimeSymbols(symbols []detailRuntimeSymbolView) string {
 		items = append(items, fmt.Sprintf("%s (%d)", symbol.Symbol, symbol.Count))
 	}
 	return strings.Join(items, ", ")
+}
+
+func appendRuntimeModuleDeltaLine(lines *[]string, label string, deltas []detailRuntimeModuleDeltaView) {
+	if len(deltas) == 0 {
+		return
+	}
+	items := make([]string, 0, len(deltas))
+	for _, delta := range deltas {
+		items = append(items, fmt.Sprintf("%s (%d -> %d, %+d)", delta.Module, delta.BaselineCount, delta.CurrentCount, delta.CountDelta))
+	}
+	*lines = append(*lines, fmt.Sprintf("  - %s: %s", label, strings.Join(items, ", ")))
 }
 
 func isDetailCommand(input string) (string, bool) {

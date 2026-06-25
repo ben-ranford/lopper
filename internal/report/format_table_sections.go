@@ -215,6 +215,9 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 	writef(buffer, "- summary_delta: deps %+d, used %% %+0.1f, waste %% %+0.1f, unused bytes %+d\n", comparison.SummaryDelta.DependencyCountDelta, comparison.SummaryDelta.UsedPercentDelta, comparison.SummaryDelta.WastePercentDelta, comparison.SummaryDelta.UnusedBytesDelta)
 	writef(buffer, "- license_delta: known %+d, unknown %+d, denied %+d\n", comparison.SummaryDelta.KnownLicenseCountDelta, comparison.SummaryDelta.UnknownLicenseCountDelta, comparison.SummaryDelta.DeniedLicenseCountDelta)
 	writef(buffer, "- changed: %d, regressions: %d, progressions: %d, added: %d, removed: %d, unchanged: %d\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows)
+	if len(comparison.RuntimeRegressions) > 0 || len(comparison.RuntimeImprovements) > 0 {
+		writef(buffer, "- runtime_trace_delta: regressions %d, improvements %d\n", len(comparison.RuntimeRegressions), len(comparison.RuntimeImprovements))
+	}
 	if len(comparison.NewDeniedLicenses) > 0 {
 		for _, denied := range comparison.NewDeniedLicenses {
 			writef(buffer, "  new denied license %s/%s (%s)\n", denied.Language, denied.Name, denied.SPDX)
@@ -226,6 +229,12 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 	}
 	for _, delta := range topWasteDeltas(comparison.Progressions, 3) {
 		writef(buffer, "  progression %s/%s waste %+0.1f%% used %+0.1f%%\n", delta.Language, delta.Name, delta.WastePercentDelta, delta.UsedPercentDelta)
+	}
+	for _, delta := range topRuntimeDeltas(comparison.RuntimeRegressions, 3) {
+		writef(buffer, "  runtime regression %s/%s %s\n", delta.Language, delta.Name, formatRuntimeDelta(delta.RuntimeDelta))
+	}
+	for _, delta := range topRuntimeDeltas(comparison.RuntimeImprovements, 3) {
+		writef(buffer, "  runtime improvement %s/%s %s\n", delta.Language, delta.Name, formatRuntimeDelta(delta.RuntimeDelta))
 	}
 	buffer.WriteString("\n")
 }

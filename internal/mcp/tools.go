@@ -828,6 +828,9 @@ func summarizeReport(kind analysisToolKind, reportData report.Report) string {
 	summary := fmt.Sprintf("%s completed: %d dependencies, %.1f%% used exports, %.1f%% waste.", label, reportData.Summary.DependencyCount, reportData.Summary.UsedPercent, waste)
 	if reportData.BaselineComparison != nil {
 		summary += fmt.Sprintf(" Waste delta: %.1f%%.", reportData.BaselineComparison.SummaryDelta.WastePercentDelta)
+		if len(reportData.BaselineComparison.RuntimeRegressions) > 0 || len(reportData.BaselineComparison.RuntimeImprovements) > 0 {
+			summary += fmt.Sprintf(" Runtime regressions: %d. Runtime improvements: %d.", len(reportData.BaselineComparison.RuntimeRegressions), len(reportData.BaselineComparison.RuntimeImprovements))
+		}
 	}
 	return summary
 }

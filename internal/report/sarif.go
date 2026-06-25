@@ -249,7 +249,7 @@ func sarifDependencyProperties(dep DependencyReport, baselineDelta *DependencyDe
 		}
 	}
 	if baselineDelta != nil {
-		props["baselineContext"] = map[string]any{
+		baselineContext := map[string]any{
 			"kind":                      baselineDelta.Kind,
 			"usedExportsCountDelta":     baselineDelta.UsedExportsCountDelta,
 			"totalExportsCountDelta":    baselineDelta.TotalExportsCountDelta,
@@ -258,6 +258,10 @@ func sarifDependencyProperties(dep DependencyReport, baselineDelta *DependencyDe
 			"wastePercentDelta":         baselineDelta.WastePercentDelta,
 			"deniedIntroduced":          baselineDelta.DeniedIntroduced,
 		}
+		if baselineDelta.RuntimeDelta != nil {
+			baselineContext["runtimeDelta"] = baselineDelta.RuntimeDelta
+		}
+		props["baselineContext"] = baselineContext
 	}
 	for key, value := range extra {
 		props[key] = value

@@ -11,6 +11,7 @@ type summaryDependencyView struct {
 	EstimatedUnusedBytes   int64
 	TopUsedSymbols         []report.SymbolUsage
 	RuntimeUsage           *report.RuntimeUsage
+	RuntimeDelta           *report.RuntimeDelta
 	ReachabilityConfidence *report.ReachabilityConfidence
 	RemovalCandidate       *report.RemovalCandidate
 	License                *report.DependencyLicense
@@ -63,13 +64,17 @@ func mapSummaryReportView(reportData report.Report) summaryReportView {
 		EffectivePolicy:     reportData.EffectivePolicy,
 		BaselineComparison:  reportData.BaselineComparison,
 		Warnings:            append([]string(nil), reportData.Warnings...),
-		Dependencies:        mapSummaryDependencies(reportData.Dependencies),
+		Dependencies:        mapSummaryDependencies(reportData.Dependencies, reportData.BaselineComparison),
 	}
 }
 
-func mapSummaryDependencies(dependencies []report.DependencyReport) []summaryDependencyView {
+func mapSummaryDependencies(dependencies []report.DependencyReport, comparison *report.BaselineComparison) []summaryDependencyView {
 	views := make([]summaryDependencyView, 0, len(dependencies))
+	runtimeDeltas := baselineRuntimeDeltasByDependency(comparison)
 	for _, dep := range dependencies {
+		runtimeDelta := runtimeDeltas[summaryDependencyKey(dep.Language, dep.Name)]
+		detail := mapDetailDependencyView(dep)
+		detail.RuntimeDelta = mapDetailRuntimeDelta(runtimeDelta)
 		views = append(views, summaryDependencyView{
 			Language:               dep.Language,
 			Name:                   dep.Name,
@@ -79,15 +84,35 @@ func mapSummaryDependencies(dependencies []report.DependencyReport) []summaryDep
 			EstimatedUnusedBytes:   dep.EstimatedUnusedBytes,
 			TopUsedSymbols:         append([]report.SymbolUsage(nil), dep.TopUsedSymbols...),
 			RuntimeUsage:           dep.RuntimeUsage,
+			RuntimeDelta:           runtimeDelta,
 			ReachabilityConfidence: dep.ReachabilityConfidence,
 			RemovalCandidate:       dep.RemovalCandidate,
 			License:                dep.License,
 			Provenance:             dep.Provenance,
 			CodemodApply:           summaryCodemodApplyView(dep.Codemod),
-			detail:                 mapDetailDependencyView(dep),
+			detail:                 detail,
 		})
 	}
 	return views
+}
+
+func baselineRuntimeDeltasByDependency(comparison *report.BaselineComparison) map[string]*report.RuntimeDelta {
+	deltas := make(map[string]*report.RuntimeDelta)
+	if comparison == nil {
+		return deltas
+	}
+	for i := range comparison.Dependencies {
+		delta := comparison.Dependencies[i]
+		if delta.RuntimeDelta == nil {
+			continue
+		}
+		deltas[summaryDependencyKey(delta.Language, delta.Name)] = delta.RuntimeDelta
+	}
+	return deltas
+}
+
+func summaryDependencyKey(language, name string) string {
+	return language + "\x00" + name
 }
 
 func summaryDependencyDetailView(dep summaryDependencyView) detailDependencyView {
@@ -181,6 +206,7 @@ type detailDependencyView struct {
 	Recommendations        []detailRecommendationView
 	Codemod                *detailCodemodView
 	RuntimeUsage           *detailRuntimeUsageView
+	RuntimeDelta           *detailRuntimeDeltaView
 	ReachabilityConfidence *detailReachabilityConfidenceView
 	RemovalCandidate       *detailRemovalCandidateView
 }
@@ -255,6 +281,10 @@ type detailRuntimeSymbolView struct {
 	Module string
 	Count  int
 }
+
+type detailRuntimeDeltaView = report.RuntimeDelta
+
+type detailRuntimeModuleDeltaView = report.RuntimeModuleDelta
 
 type detailReachabilityConfidenceView struct {
 	Model          string
@@ -425,6 +455,10 @@ func mapDetailRuntimeSymbols(symbols []report.RuntimeSymbolUsage) []detailRuntim
 		})
 	}
 	return views
+}
+
+func mapDetailRuntimeDelta(delta *report.RuntimeDelta) *detailRuntimeDeltaView {
+	return delta
 }
 
 func mapDetailReachabilityConfidence(confidence *report.ReachabilityConfidence) *detailReachabilityConfidenceView {

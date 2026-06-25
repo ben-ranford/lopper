@@ -85,20 +85,23 @@ func (r *RepoRevision) Value() string {
 }
 
 type RepoResult struct {
-	Name                  string        `json:"name"`
-	Path                  string        `json:"path"`
-	RepoURL               string        `json:"repo_url,omitempty"`
-	Revision              *RepoRevision `json:"revision,omitempty"`
-	ResolvedCommit        string        `json:"resolved_commit,omitempty"`
-	Language              string        `json:"language,omitempty"`
-	DependencyCount       int           `json:"dependency_count"`
-	WasteCandidateCount   int           `json:"waste_candidate_count"`
-	WasteCandidatePercent float64       `json:"waste_candidate_percent"`
-	TopRiskSeverity       string        `json:"top_risk_severity,omitempty"`
-	CriticalCVEs          int           `json:"critical_cves"`
-	DeniedLicenseCount    int           `json:"denied_license_count"`
-	Warnings              []string      `json:"warnings,omitempty"`
-	Error                 string        `json:"error,omitempty"`
+	Name                    string        `json:"name"`
+	Path                    string        `json:"path"`
+	RepoURL                 string        `json:"repo_url,omitempty"`
+	Revision                *RepoRevision `json:"revision,omitempty"`
+	ResolvedCommit          string        `json:"resolved_commit,omitempty"`
+	Language                string        `json:"language,omitempty"`
+	DependencyCount         int           `json:"dependency_count"`
+	WasteCandidateCount     int           `json:"waste_candidate_count"`
+	WasteCandidatePercent   float64       `json:"waste_candidate_percent"`
+	TopRiskSeverity         string        `json:"top_risk_severity,omitempty"`
+	CriticalCVEs            int           `json:"critical_cves"`
+	DeniedLicenseCount      int           `json:"denied_license_count"`
+	RuntimeTraceData        bool          `json:"runtime_trace_data,omitempty"`
+	RuntimeRegressionCount  int           `json:"runtime_regression_count,omitempty"`
+	RuntimeImprovementCount int           `json:"runtime_improvement_count,omitempty"`
+	Warnings                []string      `json:"warnings,omitempty"`
+	Error                   string        `json:"error,omitempty"`
 }
 
 type CrossRepoDependency struct {
@@ -108,11 +111,13 @@ type CrossRepoDependency struct {
 }
 
 type Summary struct {
-	TotalRepos           int `json:"total_repos"`
-	TotalDeps            int `json:"total_deps"`
-	TotalWasteCandidates int `json:"total_waste_candidates"`
-	CrossRepoDuplicates  int `json:"cross_repo_duplicates"`
-	CriticalCVEs         int `json:"critical_cves"`
+	TotalRepos                  int `json:"total_repos"`
+	TotalDeps                   int `json:"total_deps"`
+	TotalWasteCandidates        int `json:"total_waste_candidates"`
+	CrossRepoDuplicates         int `json:"cross_repo_duplicates"`
+	CriticalCVEs                int `json:"critical_cves"`
+	ReposWithRuntimeTraceData   int `json:"repos_with_runtime_trace_data"`
+	ReposWithRuntimeRegressions int `json:"repos_with_runtime_regressions"`
 }
 
 type BaselineComparison struct {
@@ -126,11 +131,13 @@ type BaselineComparison struct {
 }
 
 type SummaryDelta struct {
-	TotalReposDelta           int `json:"total_repos_delta"`
-	TotalDepsDelta            int `json:"total_deps_delta"`
-	TotalWasteCandidatesDelta int `json:"total_waste_candidates_delta"`
-	CrossRepoDuplicatesDelta  int `json:"cross_repo_duplicates_delta"`
-	CriticalCVEsDelta         int `json:"critical_cves_delta"`
+	TotalReposDelta                  int `json:"total_repos_delta"`
+	TotalDepsDelta                   int `json:"total_deps_delta"`
+	TotalWasteCandidatesDelta        int `json:"total_waste_candidates_delta"`
+	CrossRepoDuplicatesDelta         int `json:"cross_repo_duplicates_delta"`
+	CriticalCVEsDelta                int `json:"critical_cves_delta"`
+	ReposWithRuntimeTraceDataDelta   int `json:"repos_with_runtime_trace_data_delta"`
+	ReposWithRuntimeRegressionsDelta int `json:"repos_with_runtime_regressions_delta"`
 }
 
 type RepoDeltaKind string
@@ -142,16 +149,18 @@ const (
 )
 
 type RepoDelta struct {
-	Kind                       RepoDeltaKind `json:"kind"`
-	Name                       string        `json:"name"`
-	Path                       string        `json:"path,omitempty"`
-	DependencyCountDelta       int           `json:"dependency_count_delta"`
-	WasteCandidateCountDelta   int           `json:"waste_candidate_count_delta"`
-	WasteCandidatePercentDelta float64       `json:"waste_candidate_percent_delta"`
-	CriticalCVEsDelta          int           `json:"critical_cves_delta"`
-	DeniedLicenseCountDelta    int           `json:"denied_license_count_delta"`
-	CurrentError               string        `json:"current_error,omitempty"`
-	BaselineError              string        `json:"baseline_error,omitempty"`
+	Kind                         RepoDeltaKind `json:"kind"`
+	Name                         string        `json:"name"`
+	Path                         string        `json:"path,omitempty"`
+	DependencyCountDelta         int           `json:"dependency_count_delta"`
+	WasteCandidateCountDelta     int           `json:"waste_candidate_count_delta"`
+	WasteCandidatePercentDelta   float64       `json:"waste_candidate_percent_delta"`
+	CriticalCVEsDelta            int           `json:"critical_cves_delta"`
+	DeniedLicenseCountDelta      int           `json:"denied_license_count_delta"`
+	RuntimeRegressionCountDelta  int           `json:"runtime_regression_count_delta"`
+	RuntimeImprovementCountDelta int           `json:"runtime_improvement_count_delta"`
+	CurrentError                 string        `json:"current_error,omitempty"`
+	BaselineError                string        `json:"baseline_error,omitempty"`
 }
 
 type Report struct {

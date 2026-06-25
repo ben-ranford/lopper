@@ -96,7 +96,7 @@ Notes:
 Dashboard JSON emits:
 
 - `generated_at`
-- `repos[]` (per-repo metrics, remote `repo_url`, requested `revision`, `resolved_commit`, and any analysis errors)
+- `repos[]` (per-repo metrics, remote `repo_url`, requested `revision`, `resolved_commit`, runtime trace/regression counts, and any analysis errors)
 - `baseline_comparison` when a dashboard baseline is loaded and compared
 - `summary`:
   - `total_repos`
@@ -104,4 +104,6 @@ Dashboard JSON emits:
   - `total_waste_candidates`
   - `cross_repo_duplicates`
   - `critical_cves`
+  - `repos_with_runtime_trace_data`
+  - `repos_with_runtime_regressions`
 - `cross_repo_deps[]` (dependencies present in 3+ repos)

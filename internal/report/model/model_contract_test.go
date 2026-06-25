@@ -102,10 +102,16 @@ func TestReportJSONContractShape(t *testing.T) {
 		"dependencies",
 		"newDeniedLicenses",
 		"regressions",
+		"runtimeRegressions",
 		"summaryDelta",
 		"unchangedRows",
 	}
 	assertKeys(t, baselineComparison, baselineComparisonKeys...)
+	dependencyDeltas := jsonArray(t, baselineComparison, "dependencies")
+	dependencyDelta := jsonObjectValue(t, dependencyDeltas[0], "baselineComparison.dependencies[0]")
+	assertKeys(t, dependencyDelta, "deniedIntroduced", "estimatedUnusedBytesDelta", "kind", "language", "name", "runtimeDelta", "totalExportsCountDelta", "usedExportsCountDelta", "usedPercentDelta", "wastePercentDelta")
+	runtimeDelta := jsonObject(t, dependencyDelta, "runtimeDelta")
+	assertKeys(t, runtimeDelta, "baselineCorrelation", "baselineLoadCount", "baselinePresent", "changeTypes", "comparable", "currentCorrelation", "currentLoadCount", "currentPresent", "loadCountDelta", "modulesAdded", "newRuntimeLoads", "runtimeOnlyRegression")
 
 	reachability := jsonObject(t, dependency, "reachabilityConfidence")
 	assertKeys(t, reachability, "model", "rationaleCodes", "score", "signals", "summary")
@@ -117,6 +123,9 @@ func TestReportJSONContractShape(t *testing.T) {
 
 func representativeReport() Report {
 	wasteIncreasePercent := 12.5
+	baselineLoadCount := 2
+	currentLoadCount := 4
+	loadCountDelta := 2
 	delta := DependencyDelta{
 		Kind:                      DependencyDeltaChanged,
 		Language:                  "js",
@@ -126,7 +135,21 @@ func representativeReport() Report {
 		UsedPercentDelta:          -20,
 		EstimatedUnusedBytesDelta: 1024,
 		WastePercentDelta:         20,
-		DeniedIntroduced:          true,
+		RuntimeDelta: &RuntimeDelta{
+			Comparable:            true,
+			BaselinePresent:       true,
+			CurrentPresent:        true,
+			BaselineLoadCount:     &baselineLoadCount,
+			CurrentLoadCount:      &currentLoadCount,
+			LoadCountDelta:        &loadCountDelta,
+			BaselineCorrelation:   RuntimeCorrelationStaticOnly,
+			CurrentCorrelation:    RuntimeCorrelationRuntimeOnly,
+			ChangeTypes:           []RuntimeChangeType{RuntimeChangeLoadCount, RuntimeChangeNewRuntimeLoads, RuntimeChangeCorrelation, RuntimeChangeRuntimeOnlyRegression, RuntimeChangeModules},
+			NewRuntimeLoads:       true,
+			RuntimeOnlyRegression: true,
+			ModulesAdded:          []RuntimeModuleDelta{{Module: "lodash/runtime", BaselineCount: 0, CurrentCount: 2, CountDelta: 2}},
+		},
+		DeniedIntroduced: true,
 	}
 
 	return Report{
@@ -290,10 +313,11 @@ func representativeReport() Report {
 				KnownLicenseCountDelta:  -1,
 				DeniedLicenseCountDelta: 1,
 			},
-			Dependencies:      []DependencyDelta{delta},
-			Regressions:       []DependencyDelta{delta},
-			NewDeniedLicenses: []DeniedLicenseDelta{{Language: "js", Name: "lodash", SPDX: "MIT"}},
-			UnchangedRows:     1,
+			Dependencies:       []DependencyDelta{delta},
+			Regressions:        []DependencyDelta{delta},
+			RuntimeRegressions: []DependencyDelta{delta},
+			NewDeniedLicenses:  []DeniedLicenseDelta{{Language: "js", Name: "lodash", SPDX: "MIT"}},
+			UnchangedRows:      1,
 		},
 	}
 }

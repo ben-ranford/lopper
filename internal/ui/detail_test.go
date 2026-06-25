@@ -311,6 +311,30 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("print runtime usage: %v", err)
 	}
+	baselineLoads := 0
+	currentLoads := 2
+	loadDelta := 2
+	if err := printRuntimeDelta(&out, &detailRuntimeDeltaView{
+		Comparable:            true,
+		BaselinePresent:       true,
+		CurrentPresent:        true,
+		BaselineLoadCount:     &baselineLoads,
+		CurrentLoadCount:      &currentLoads,
+		LoadCountDelta:        &loadDelta,
+		BaselineCorrelation:   report.RuntimeCorrelationStaticOnly,
+		CurrentCorrelation:    report.RuntimeCorrelationRuntimeOnly,
+		ChangeTypes:           []report.RuntimeChangeType{report.RuntimeChangeNewRuntimeLoads, report.RuntimeChangeRuntimeOnlyRegression, report.RuntimeChangeParentModules, report.RuntimeChangeEntrypoints},
+		NewRuntimeLoads:       true,
+		RuntimeOnlyRegression: true,
+		ParentModulesAdded: []detailRuntimeModuleDeltaView{
+			{Module: "pkg/parent", BaselineCount: 0, CurrentCount: 1, CountDelta: 1},
+		},
+		EntrypointsAdded: []detailRuntimeModuleDeltaView{
+			{Module: "pkg/main", BaselineCount: 0, CurrentCount: 1, CountDelta: 1},
+		},
+	}); err != nil {
+		t.Fatalf("print runtime delta: %v", err)
+	}
 	text := out.String()
 	if !strings.Contains(text, "rationale: because") {
 		t.Fatalf("expected rationale output, got %q", text)
@@ -323,6 +347,99 @@ func TestDetailRationaleAndRuntimeOnlyOutput(t *testing.T) {
 	}
 	if !strings.Contains(text, "parent modules: pkg/parent (1)") || !strings.Contains(text, "entrypoints: pkg/main (1)") {
 		t.Fatalf("expected runtime parent and entrypoint output, got %q", text)
+	}
+	if !strings.Contains(text, "Runtime baseline delta") || !strings.Contains(text, "load count delta: +2") || !strings.Contains(text, "correlation: static-only -> runtime-only") {
+		t.Fatalf("expected runtime delta output, got %q", text)
+	}
+	if !strings.Contains(text, "parent modules added: pkg/parent (0 -> 1, +1)") || !strings.Contains(text, "entrypoints added: pkg/main (0 -> 1, +1)") {
+		t.Fatalf("expected runtime delta parent and entrypoint output, got %q", text)
+	}
+}
+
+func TestSummaryDetailIncludesRuntimeBaselineDelta(t *testing.T) {
+	loadDelta := 1
+	reportView := mapSummaryReportView(report.Report{
+		Dependencies: []report.DependencyReport{{
+			Name:              "alpha",
+			Language:          "js-ts",
+			UsedExportsCount:  1,
+			TotalExportsCount: 2,
+			UsedPercent:       50,
+		}},
+		BaselineComparison: &report.BaselineComparison{
+			Dependencies: []report.DependencyDelta{{
+				Kind:     report.DependencyDeltaChanged,
+				Name:     "alpha",
+				Language: "js-ts",
+				RuntimeDelta: &report.RuntimeDelta{
+					Comparable:      true,
+					BaselinePresent: true,
+					CurrentPresent:  true,
+					LoadCountDelta:  &loadDelta,
+					NewRuntimeLoads: true,
+					ChangeTypes:     []report.RuntimeChangeType{report.RuntimeChangeNewRuntimeLoads},
+					ModulesChanged:  []report.RuntimeModuleDelta{{Module: "alpha/runtime", BaselineCount: 1, CurrentCount: 2, CountDelta: 1}},
+				},
+			}},
+		},
+	})
+
+	detail, ok := findSummaryDependencyDetail(reportView.Dependencies, "js-ts", "alpha")
+	if !ok {
+		t.Fatalf("expected mapped dependency detail")
+	}
+	if detail.RuntimeDelta == nil || detail.RuntimeDelta.LoadCountDelta == nil || *detail.RuntimeDelta.LoadCountDelta != 1 {
+		t.Fatalf("expected runtime baseline delta to be mapped into detail view, got %#v", detail.RuntimeDelta)
+	}
+	if len(detail.RuntimeDelta.ModulesChanged) != 1 {
+		t.Fatalf("expected runtime module deltas to be mapped into detail view, got %#v", detail.RuntimeDelta)
+	}
+	if got := mapDetailRuntimeDelta(nil); got != nil {
+		t.Fatalf("expected nil runtime delta to map to nil, got %#v", got)
+	}
+}
+
+func TestPrintRuntimeDeltaBranches(t *testing.T) {
+	var out bytes.Buffer
+	if err := printRuntimeDelta(&out, nil); err != nil {
+		t.Fatalf("print nil runtime delta: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected nil runtime delta to produce no output, got %q", out.String())
+	}
+
+	if err := printRuntimeDelta(&out, &detailRuntimeDeltaView{
+		Comparable:             false,
+		BaselinePresent:        true,
+		CurrentPresent:         false,
+		RemovedRuntimeLoads:    true,
+		RuntimeOnlyImprovement: true,
+		ModulesAdded:           []detailRuntimeModuleDeltaView{{Module: "added", BaselineCount: 0, CurrentCount: 1, CountDelta: 1}},
+		ModulesRemoved:         []detailRuntimeModuleDeltaView{{Module: "removed", BaselineCount: 1, CurrentCount: 0, CountDelta: -1}},
+		ModulesChanged:         []detailRuntimeModuleDeltaView{{Module: "changed", BaselineCount: 1, CurrentCount: 2, CountDelta: 1}},
+		ParentModulesRemoved:   []detailRuntimeModuleDeltaView{{Module: "old-parent", BaselineCount: 1, CurrentCount: 0, CountDelta: -1}},
+		ParentModulesChanged:   []detailRuntimeModuleDeltaView{{Module: "same-parent", BaselineCount: 1, CurrentCount: 2, CountDelta: 1}},
+		EntrypointsRemoved:     []detailRuntimeModuleDeltaView{{Module: "old-entry", BaselineCount: 1, CurrentCount: 0, CountDelta: -1}},
+		EntrypointsChanged:     []detailRuntimeModuleDeltaView{{Module: "same-entry", BaselineCount: 1, CurrentCount: 2, CountDelta: 1}},
+	}); err != nil {
+		t.Fatalf("print runtime delta branches: %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"comparable: false",
+		"removed runtime loads: true",
+		"runtime-only improvement: true",
+		"modules added: added (0 -> 1, +1)",
+		"modules removed: removed (1 -> 0, -1)",
+		"modules changed: changed (1 -> 2, +1)",
+		"parent modules removed: old-parent (1 -> 0, -1)",
+		"parent modules changed: same-parent (1 -> 2, +1)",
+		"entrypoints removed: old-entry (1 -> 0, -1)",
+		"entrypoints changed: same-entry (1 -> 2, +1)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected runtime delta output to contain %q, got %q", want, text)
+		}
 	}
 }
 
