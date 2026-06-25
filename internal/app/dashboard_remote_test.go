@@ -120,6 +120,56 @@ func TestReposFromDashboardConfigRemoteRevisionValidation(t *testing.T) {
 	}
 }
 
+func TestValidateDashboardRevisionNameBranches(t *testing.T) {
+	tests := []struct {
+		name  string
+		kind  string
+		value string
+		want  string
+	}{
+		{name: "empty", kind: "branch", value: "", want: "is required"},
+		{name: "dash prefix", kind: "branch", value: "-main", want: "cannot start with '-'"},
+		{name: "at", kind: "tag", value: "@", want: "reflog"},
+		{name: "reflog", kind: "tag", value: "main@{1}", want: "reflog"},
+		{name: "slash prefix", kind: "branch", value: "/main", want: "start, end, or repeat '/'"},
+		{name: "slash suffix", kind: "branch", value: "main/", want: "start, end, or repeat '/'"},
+		{name: "repeated slash", kind: "branch", value: "release//main", want: "start, end, or repeat '/'"},
+		{name: "dot suffix", kind: "tag", value: "v1.", want: "cannot end with a dot"},
+		{name: "dot component", kind: "branch", value: "release/.hidden", want: "component starting with a dot"},
+		{name: "lock component", kind: "branch", value: "release/main.lock", want: "component ending with '.lock'"},
+		{name: "space", kind: "branch", value: "release main", want: "whitespace"},
+		{name: "tilde", kind: "branch", value: "release~main", want: "~"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDashboardRevisionName(tc.kind, tc.value)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected revision validation error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	if err := validateDashboardRevisionName("branch", "release/main"); err != nil {
+		t.Fatalf("expected valid branch revision name, got %v", err)
+	}
+}
+
+func TestDashboardRevisionHelperBranches(t *testing.T) {
+	if got := dashboardFetchRef(dashboard.RepoRevision{}); got != "HEAD" {
+		t.Fatalf("expected empty revision fetch ref HEAD, got %q", got)
+	}
+	if isFullCommitSHA("not-a-sha") {
+		t.Fatalf("expected non-hex commit to be rejected")
+	}
+	if isFullCommitSHA(strings.Repeat("a", 39)) {
+		t.Fatalf("expected short commit to be rejected")
+	}
+	if !isFullCommitSHA(strings.Repeat("A", 64)) {
+		t.Fatalf("expected 64-character uppercase commit to be accepted")
+	}
+}
+
 func TestDashboardRemoteCacheRootRules(t *testing.T) {
 	t.Setenv(dashboardRepoCacheEnv, "relative-cache")
 	if _, err := dashboardRemoteCacheRoot(); err == nil || !strings.Contains(err.Error(), "absolute path") {
@@ -589,6 +639,54 @@ func TestDashboardRepoMaterializerPinCheckoutErrors(t *testing.T) {
 				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestDashboardRepoMaterializerResolveCommitErrors(t *testing.T) {
+	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
+	tests := []struct {
+		name    string
+		output  string
+		fail    bool
+		wantErr string
+	}{
+		{name: "rev parse failure", fail: true, wantErr: "resolve remote repo commit"},
+		{name: "invalid sha", output: "not-a-sha", wantErr: "invalid SHA"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+				if tc.fail {
+					return exec.CommandContext(ctx, fixedTestBinary(t, "false")), nil
+				}
+				return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), tc.output), nil
+			})
+
+			materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+			_, err := materializer.resolveCheckoutCommit(context.Background(), t.TempDir(), spec)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected resolve commit error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestDashboardRepoMaterializerPinnedCommitMismatch(t *testing.T) {
+	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
+	resolvedCommit := strings.Repeat("a", 40)
+	requestedCommit := strings.Repeat("b", 40)
+	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		if strings.Contains(strings.Join(args, " "), "rev-parse --verify HEAD") {
+			return exec.CommandContext(ctx, fixedTestBinary(t, "printf"), resolvedCommit), nil
+		}
+		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
+	})
+
+	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+	_, err := materializer.pinCheckout(context.Background(), t.TempDir(), spec, "FETCH_HEAD", dashboard.RepoRevision{Commit: requestedCommit})
+	if err == nil || !strings.Contains(err.Error(), "does not match requested commit") {
+		t.Fatalf("expected pinned commit mismatch error, got %v", err)
 	}
 }
 
