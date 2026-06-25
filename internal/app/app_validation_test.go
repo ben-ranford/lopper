@@ -375,6 +375,62 @@ affected:
 	}
 }
 
+func TestExecuteAnalyseReachableVulnerabilityThresholdUsesAffectedOSVSeverity(t *testing.T) {
+	tmp := t.TempDir()
+	advisoryPath := filepath.Join(tmp, "osv-multi.yml")
+	advisorySource := `id: GHSA-multi-affected
+affected:
+  - package:
+      ecosystem: npm
+      name: safe-lib
+    database_specific:
+      severity: low
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+    database_specific:
+      severity: high
+`
+	if err := os.WriteFile(advisoryPath, []byte(advisorySource), 0o600); err != nil {
+		t.Fatalf("write advisory source: %v", err)
+	}
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: tmp,
+			Dependencies: []report.DependencyReport{
+				{
+					Language:          "js-ts",
+					Name:              "reachable-lib",
+					UsedExportsCount:  1,
+					TotalExportsCount: 1,
+					UsedPercent:       100,
+					UsedImports: []report.ImportUse{
+						{Name: "default", Module: "reachable-lib"},
+					},
+				},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = tmp
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.AdvisorySourcePath = advisoryPath
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+
+	output, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected reachable vulnerabilities error for affected-specific OSV severity, got %v output=%q", err, output)
+	}
+	if !strings.Contains(output, `"GHSA-multi-affected"`) || !strings.Contains(output, `"high"`) {
+		t.Fatalf("expected high affected-specific vulnerability output, got %q", output)
+	}
+}
+
 func TestApplyBaselineIfNeededFormatAndLoadErrors(t *testing.T) {
 	application := &App{Formatter: report.NewFormatter()}
 

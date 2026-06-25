@@ -195,22 +195,42 @@ func TestAdvisoriesFromOSVSkipsIncompleteEntries(t *testing.T) {
 	}
 }
 
+func TestAdvisoriesFromOSVUsesAffectedSpecificSeverity(t *testing.T) {
+	items := []osvAdvisory{
+		{
+			ID: "GHSA-multi-affected",
+			Affected: []osvAffected{
+				{
+					Package:          osvPackage{Ecosystem: "npm", Name: "safe-lib"},
+					DatabaseSpecific: map[string]any{"severity": "low"},
+				},
+				{
+					Package:          osvPackage{Ecosystem: "npm", Name: "reachable-lib"},
+					DatabaseSpecific: map[string]any{"severity": "high"},
+				},
+			},
+		},
+	}
+
+	advisories := advisoriesFromOSV(items)
+	if len(advisories) != 2 {
+		t.Fatalf("expected two affected advisories, got %#v", advisories)
+	}
+	severities := map[string]string{}
+	for _, advisory := range advisories {
+		severities[advisory.Package] = advisory.Severity
+	}
+	if severities["safe-lib"] != "low" || severities["reachable-lib"] != "high" {
+		t.Fatalf("expected affected-specific severities, got %#v", advisories)
+	}
+}
+
 func TestOSVSeverityFallbacks(t *testing.T) {
 	cases := []struct {
 		name string
 		item osvAdvisory
 		want string
 	}{
-		{
-			name: "affected database specific",
-			item: osvAdvisory{Affected: []osvAffected{{DatabaseSpecific: map[string]any{"severity": "high"}}}},
-			want: "high",
-		},
-		{
-			name: "affected ecosystem specific",
-			item: osvAdvisory{Affected: []osvAffected{{EcosystemSpecific: map[string]any{"severity": "low"}}}},
-			want: "low",
-		},
 		{
 			name: "cvss critical",
 			item: osvAdvisory{Severity: []osvSeverity{{Score: "9.0"}}},
@@ -246,6 +266,46 @@ func TestOSVSeverityFallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := osvAdvisorySeverity(tc.item); got != tc.want {
 				t.Fatalf("severity = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOSVAffectedSeverityFallbacks(t *testing.T) {
+	cases := []struct {
+		name     string
+		affected osvAffected
+		fallback string
+		want     string
+	}{
+		{
+			name:     "affected database specific",
+			affected: osvAffected{DatabaseSpecific: map[string]any{"severity": "high"}},
+			fallback: "low",
+			want:     "high",
+		},
+		{
+			name:     "affected ecosystem specific",
+			affected: osvAffected{EcosystemSpecific: map[string]any{"severity": "low"}},
+			fallback: "high",
+			want:     "low",
+		},
+		{
+			name:     "item fallback",
+			affected: osvAffected{},
+			fallback: "critical",
+			want:     "critical",
+		},
+		{
+			name:     "unknown",
+			affected: osvAffected{},
+			want:     "unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osvAffectedSeverity(tc.affected, tc.fallback); got != tc.want {
+				t.Fatalf("affected severity = %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -185,7 +185,7 @@ func advisoriesFromOSV(items []osvAdvisory) []report.VulnerabilityAdvisory {
 		if strings.TrimSpace(item.ID) == "" {
 			continue
 		}
-		severity := osvAdvisorySeverity(item)
+		itemSeverity := osvAdvisorySeverity(item)
 		for _, affected := range item.Affected {
 			if strings.TrimSpace(affected.Package.Name) == "" {
 				continue
@@ -194,7 +194,7 @@ func advisoriesFromOSV(items []osvAdvisory) []report.VulnerabilityAdvisory {
 				ID:           item.ID,
 				Package:      affected.Package.Name,
 				Ecosystem:    affected.Package.Ecosystem,
-				Severity:     severity,
+				Severity:     osvAffectedSeverity(affected, itemSeverity),
 				FixedVersion: firstFixedVersion(affected.Ranges),
 				Aliases:      item.Aliases,
 			})
@@ -207,18 +207,23 @@ func osvAdvisorySeverity(item osvAdvisory) string {
 	if severity := stringValue(item.DatabaseSpecific, "severity"); severity != "" {
 		return severity
 	}
-	for _, affected := range item.Affected {
-		if severity := stringValue(affected.DatabaseSpecific, "severity"); severity != "" {
-			return severity
-		}
-		if severity := stringValue(affected.EcosystemSpecific, "severity"); severity != "" {
-			return severity
-		}
-	}
 	for _, severity := range item.Severity {
 		if value := cvssSeverity(severity.Type, severity.Score); value != "" {
 			return value
 		}
+	}
+	return "unknown"
+}
+
+func osvAffectedSeverity(affected osvAffected, fallback string) string {
+	if severity := stringValue(affected.DatabaseSpecific, "severity"); severity != "" {
+		return severity
+	}
+	if severity := stringValue(affected.EcosystemSpecific, "severity"); severity != "" {
+		return severity
+	}
+	if strings.TrimSpace(fallback) != "" {
+		return fallback
 	}
 	return "unknown"
 }
