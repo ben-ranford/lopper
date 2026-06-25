@@ -142,5 +142,11 @@
     "name": "python-codemod-suggestions-preview",
     "description": "Enable preview Python safe remediation suggestions for deterministic unused import cleanup.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0017",
+    "name": "dashboard-remediation-queue-preview",
+    "description": "Enable org-level dashboard remediation queue items across errors, vulnerabilities, policy findings, recommendations, runtime regressions, and shared dependency hotspots.",
+    "lifecycle": "preview"
   }
 ]

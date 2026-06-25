@@ -547,6 +547,10 @@ func TestDashboardCSVHelpersPropagateWriteErrors(t *testing.T) {
 		t.Fatalf("expected repo row CSV writer error")
 	}
 
+	if writeDashboardRemediationRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}).Write, []RemediationItem{{ID: "rqi-test", Repo: "api", Category: remediationCategoryRisk}}) == nil {
+		t.Fatalf("expected remediation CSV writer error")
+	}
+
 	if writeDashboardCrossRepoRowsCSV(poisonedDashboardCSVWriter(t, &failingDashboardWriter{}).Write, reportData.CrossRepoDeps) == nil {
 		t.Fatalf("expected cross-repo CSV writer error")
 	}

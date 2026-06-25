@@ -14,6 +14,10 @@ type RepoAnalysis struct {
 	Err    error
 }
 
+type AggregateOptions struct {
+	IncludeRemediationQueue bool
+}
+
 type crossRepoRepository struct {
 	Label string
 }
@@ -29,10 +33,15 @@ type repoSummaryContribution struct {
 }
 
 func Aggregate(generatedAt time.Time, analyses []RepoAnalysis) Report {
+	return AggregateWithOptions(generatedAt, analyses, AggregateOptions{})
+}
+
+func AggregateWithOptions(generatedAt time.Time, analyses []RepoAnalysis, options AggregateOptions) Report {
 	results := make([]RepoResult, 0, len(analyses))
 	crossRepoIndex := make(map[string]map[string]crossRepoRepository)
 	repoNameCounts := countRepoNames(analyses)
 	sourceWarnings := make([]string, 0)
+	remediationItems := make([]RemediationItem, 0)
 	summary := Summary{
 		TotalRepos: len(analyses),
 	}
@@ -43,18 +52,30 @@ func Aggregate(generatedAt time.Time, analyses []RepoAnalysis) Report {
 		if warning != "" {
 			sourceWarnings = append(sourceWarnings, warning)
 		}
+		if options.IncludeRemediationQueue {
+			if analysis.Err != nil {
+				remediationItems = append(remediationItems, repoErrorRemediationItem(analysis.Input, repoNameCounts, analysis.Err))
+			} else {
+				remediationItems = append(remediationItems, repoRemediationItems(analysis, repoNameCounts)...)
+			}
+		}
 		results = append(results, repoResult)
 	}
 
 	crossRepoDeps := buildCrossRepoDependencies(crossRepoIndex)
 	summary.CrossRepoDuplicates = len(crossRepoDeps)
+	if options.IncludeRemediationQueue {
+		remediationItems = append(remediationItems, crossRepoRemediationItems(crossRepoDeps)...)
+		remediationItems = dedupeAndSortRemediationItems(remediationItems)
+	}
 
 	return Report{
-		GeneratedAt:    generatedAt.UTC(),
-		Repos:          results,
-		Summary:        summary,
-		CrossRepoDeps:  crossRepoDeps,
-		SourceWarnings: sourceWarnings,
+		GeneratedAt:      generatedAt.UTC(),
+		Repos:            results,
+		Summary:          summary,
+		CrossRepoDeps:    crossRepoDeps,
+		RemediationItems: remediationItems,
+		SourceWarnings:   sourceWarnings,
 	}
 }
 

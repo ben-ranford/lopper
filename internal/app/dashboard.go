@@ -24,9 +24,12 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 	executionPlan := a.prepareDashboardExecutionPlan(ctx, req.Dashboard, resolved.repos)
 	analyses := a.executeDashboardAnalysisPlan(ctx, executionPlan)
 	now := time.Now()
-	reportData := dashboard.Aggregate(now, analyses)
+	includeRemediationQueue := req.Dashboard.Features.Enabled(DashboardRemediationQueuePreviewFeature)
+	reportData := dashboard.AggregateWithOptions(now, analyses, dashboard.AggregateOptions{
+		IncludeRemediationQueue: includeRemediationQueue,
+	})
 
-	reportData, err = a.applyDashboardBaselineIfNeeded(reportData, req.RepoPath, resolved)
+	reportData, err = a.applyDashboardBaselineIfNeeded(reportData, req.RepoPath, resolved, includeRemediationQueue)
 	if err != nil {
 		return "", err
 	}
@@ -42,7 +45,7 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 	return persistDashboardOutput(formatted, resolved.outputPath)
 }
 
-func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest) (dashboard.Report, error) {
+func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, includeRemediationQueue bool) (dashboard.Report, error) {
 	baselinePath, baselineKey, currentKey, shouldApply, err := resolveDashboardBaselinePaths(repoPath, resolved)
 	if err != nil {
 		return reportData, err
@@ -60,6 +63,9 @@ func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPa
 	}
 	if strings.TrimSpace(baselineKey) == "" {
 		baselineKey = loadedKey
+	}
+	if !includeRemediationQueue {
+		baseline.RemediationItems = nil
 	}
 	return dashboard.ApplyBaselineWithKeys(reportData, baseline, baselineKey, currentKey)
 }

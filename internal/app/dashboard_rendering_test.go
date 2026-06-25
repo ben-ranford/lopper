@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -93,6 +94,56 @@ func TestExecuteDashboardJSON(t *testing.T) {
 	}
 }
 
+func TestExecuteDashboardRemediationQueueRequiresPreviewFeature(t *testing.T) {
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			singleRepoPath: {
+				Dependencies: []report.DependencyReport{{
+					Name: "vuln-lib",
+					Vulnerabilities: []report.VulnerabilityFinding{{
+						AdvisoryID: "GHSA-dashboard",
+						Package:    "vuln-lib",
+						Severity:   report.VulnerabilityPriorityHigh,
+						Priority:   report.VulnerabilityPriorityHigh,
+					}},
+				}},
+			},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{{Name: "repo", Path: singleRepoPath}}
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute dashboard without remediation feature: %v", err)
+	}
+	disabledReport := dashboard.Report{}
+	if err := json.Unmarshal([]byte(output), &disabledReport); err != nil {
+		t.Fatalf("unmarshal disabled dashboard output: %v", err)
+	}
+	if len(disabledReport.RemediationItems) != 0 {
+		t.Fatalf("expected remediation queue to be disabled by default, got %#v", disabledReport.RemediationItems)
+	}
+
+	req.Dashboard.Features = enabledDashboardRemediationQueueFeatures(t)
+	output, err = application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute dashboard with remediation feature: %v", err)
+	}
+	enabledReport := dashboard.Report{}
+	if err := json.Unmarshal([]byte(output), &enabledReport); err != nil {
+		t.Fatalf("unmarshal enabled dashboard output: %v", err)
+	}
+	if len(enabledReport.RemediationItems) != 1 || enabledReport.RemediationItems[0].Category != "vulnerability" {
+		t.Fatalf("expected vulnerability remediation item when feature is enabled, got %#v", enabledReport.RemediationItems)
+	}
+}
+
 func TestExecuteDashboardJSONDistinguishesSameBasenameRepos(t *testing.T) {
 	const (
 		platformAPI = "./platform/api"
@@ -139,6 +190,27 @@ func TestExecuteDashboardJSONDistinguishesSameBasenameRepos(t *testing.T) {
 	if reportData.CrossRepoDeps[0].Count != 3 || !reflect.DeepEqual(reportData.CrossRepoDeps[0].Repositories, wantRepos) {
 		t.Fatalf("unexpected cross-repo duplicate payload: %#v", reportData.CrossRepoDeps[0])
 	}
+}
+
+func enabledDashboardRemediationQueueFeatures(t *testing.T) featureflags.Set {
+	t.Helper()
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
+		Code:        "LOP-FEAT-0017",
+		Name:        DashboardRemediationQueuePreviewFeature,
+		Description: "Dashboard remediation queue preview",
+		Lifecycle:   featureflags.LifecyclePreview,
+	}})
+	if err != nil {
+		t.Fatalf("new remediation queue feature registry: %v", err)
+	}
+	features, err := registry.Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{DashboardRemediationQueuePreviewFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve remediation queue feature: %v", err)
+	}
+	return features
 }
 
 func TestExecuteDashboardOutputFile(t *testing.T) {
@@ -318,5 +390,52 @@ func TestExecuteDashboardAppliesBaselineComparison(t *testing.T) {
 	}
 	if !strings.Contains(output, "baseline_comparison") {
 		t.Fatalf("expected baseline comparison in dashboard output, got %q", output)
+	}
+}
+
+func TestExecuteDashboardBaselineDoesNotExposeRemediationQueueWhenPreviewDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	baselineStore := filepath.Join(tmp, "baselines")
+	baseline := dashboard.Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		RemediationItems: []dashboard.RemediationItem{{
+			ID:              "rqi-baseline-only",
+			Repo:            "api",
+			Dependency:      "vuln-lib",
+			Category:        "vulnerability",
+			Severity:        report.VulnerabilityPriorityHigh,
+			Priority:        report.VulnerabilityPriorityHigh,
+			SuggestedAction: "Upgrade vuln-lib.",
+		}},
+	}
+	if _, err := dashboard.SaveSnapshot(baselineStore, "label:baseline", baseline, time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("save dashboard baseline snapshot: %v", err)
+	}
+
+	application := &App{Analyzer: &mapAnalyzer{
+		reports: map[string]report.Report{
+			singleRepoPath: {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+		},
+		errs: map[string]error{},
+	}}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "csv"
+	req.Dashboard.Repos = []DashboardRepo{{Name: "api", Path: singleRepoPath}}
+	req.Dashboard.BaselineStorePath = baselineStore
+	req.Dashboard.BaselineKey = "label:baseline"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute dashboard baseline compare: %v", err)
+	}
+	if !strings.Contains(output, "baseline_key,label:baseline") {
+		t.Fatalf("expected ordinary baseline comparison to remain enabled, got %q", output)
+	}
+	for _, forbidden := range []string{"rqi-baseline-only", "remediation_id,kind", "remediation_id,baseline_status"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("expected remediation queue data to stay hidden when preview is disabled; found %q in %q", forbidden, output)
+		}
 	}
 }

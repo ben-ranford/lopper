@@ -271,10 +271,11 @@ func TestApplyDashboardBaselineIfNeededBranches(t *testing.T) {
 		t.Fatalf("seed dashboard baseline: %v", err)
 	}
 
-	applied, err := application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
+	nightlyResolved := resolvedDashboardRequest{
 		baselineStorePath: store,
 		baselineKey:       "label:nightly",
-	})
+	}
+	applied, err := application.applyDashboardBaselineIfNeeded(base, ".", nightlyResolved, true)
 	if err != nil {
 		t.Fatalf("apply dashboard baseline: %v", err)
 	}
@@ -283,11 +284,12 @@ func TestApplyDashboardBaselineIfNeededBranches(t *testing.T) {
 	}
 
 	missingStore := t.TempDir()
-	bootstrapped, err := application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
+	missingResolved := resolvedDashboardRequest{
 		baselineStorePath: missingStore,
 		baselineKey:       "label:missing",
 		saveBaseline:      true,
-	})
+	}
+	bootstrapped, err := application.applyDashboardBaselineIfNeeded(base, ".", missingResolved, true)
 	if err != nil {
 		t.Fatalf("expected missing dashboard baseline to bootstrap when saving: %v", err)
 	}
@@ -295,17 +297,17 @@ func TestApplyDashboardBaselineIfNeededBranches(t *testing.T) {
 		t.Fatalf("expected missing bootstrap baseline to leave report unchanged, got %#v", bootstrapped.BaselineComparison)
 	}
 
-	_, err = application.applyDashboardBaselineIfNeeded(base, filepath.Join(t.TempDir(), "missing", "repo"), resolvedDashboardRequest{
-		baselineStorePath: t.TempDir(),
-	})
+	missingRepoPath := filepath.Join(t.TempDir(), "missing", "repo")
+	_, err = application.applyDashboardBaselineIfNeeded(base, missingRepoPath, resolvedDashboardRequest{baselineStorePath: t.TempDir()}, true)
 	if err == nil || !strings.Contains(err.Error(), "baseline key is required") {
 		t.Fatalf("expected dashboard baseline resolution error, got %v", err)
 	}
 
-	_, err = application.applyDashboardBaselineIfNeeded(base, ".", resolvedDashboardRequest{
+	notFoundResolved := resolvedDashboardRequest{
 		baselineStorePath: t.TempDir(),
 		baselineKey:       "label:not-found",
-	})
+	}
+	_, err = application.applyDashboardBaselineIfNeeded(base, ".", notFoundResolved, true)
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing dashboard baseline load error, got %v", err)
 	}

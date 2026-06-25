@@ -27,6 +27,15 @@ lopper dashboard \
   --enable-feature dashboard-remote-repos
 ```
 
+With the remediation queue preview enabled:
+
+```bash
+lopper dashboard \
+  --repos "./api,./frontend,./worker" \
+  --format html \
+  --enable-feature dashboard-remediation-queue-preview
+```
+
 Supported output formats:
 
 - `json`
@@ -85,6 +94,7 @@ Notes:
 - Remote repos are materialized under the user cache at `<cache-dir>/lopper/dashboard/repos/<repo-name>-<hash>`. Set `LOPPER_DASHBOARD_REPO_CACHE` to an absolute path to override the cache root in CI.
 - The checkout lifecycle is deterministic: unpinned `repoUrl` entries continue to track remote `HEAD`; pinned entries fetch the requested branch, tag, or commit and reset to that revision. Cache paths include the requested pin, so the same `repoUrl` at different pins uses separate checkouts.
 - Dashboard JSON, CSV, HTML, and saved dashboard baselines include the resolved commit SHA for materialized remote repos. JSON repo rows also include `repo_url` and the requested `revision` when present.
+- When `dashboard-remediation-queue-preview` is enabled, dashboard JSON, CSV, HTML, and saved dashboard baselines include org-level remediation queue items derived from per-repo errors, vulnerability findings, denied licenses, dependency recommendations, risk cues, runtime regressions, and cross-repo duplicate dependencies. The queue is sorted by highest severity/priority first.
 - Fetch, clone, checkout, reset, or clean failures are reported in the affected repo's dashboard `error` field and in top-level dashboard warnings, while other repos continue to analyze.
 - `baseline_store` enables dashboard baseline snapshots and compare mode. Relative values are resolved against the config file directory.
 - `baseline_key` selects a stored baseline snapshot when comparing. `baseline_label` is used when saving a labeled snapshot.
@@ -98,6 +108,16 @@ Dashboard JSON emits:
 - `generated_at`
 - `repos[]` (per-repo metrics, remote `repo_url`, requested `revision`, `resolved_commit`, runtime trace/regression counts, vulnerability finding counts, and any analysis errors)
 - `baseline_comparison` when a dashboard baseline is loaded and compared
+- `remediation_items[]` when `dashboard-remediation-queue-preview` is enabled:
+  - `id`: deterministic stable queue item ID
+  - `repo`: repo label, or a comma-separated repo set for cross-repo duplicate dependency items
+  - `repo_path`: local repo path when available
+  - `dependency`: affected dependency when applicable
+  - `category`: one of the emitted remediation categories, such as `repo_error`, `vulnerability`, `license`, `runtime_regression`, `risk`, `waste`, `recommendation`, or `duplicate_dependency`
+  - `severity` and `priority`: normalized triage levels when available
+  - `evidence[]`: compact evidence strings backing the item
+  - `suggested_action`: recommended next action
+  - `baseline_status`: `new`, `regressed`, or `existing` when compared with a dashboard baseline
 - `summary`:
   - `total_repos`
   - `total_deps`
@@ -109,3 +129,22 @@ Dashboard JSON emits:
   - `repos_with_runtime_trace_data`
   - `repos_with_runtime_regressions`
 - `cross_repo_deps[]` (dependencies present in 3+ repos)
+
+## CSV Shape
+
+Dashboard CSV is sectioned. It starts with summary key/value rows, then per-repo rows, and conditionally adds more sections.
+
+When `dashboard-remediation-queue-preview` is enabled and the queue is non-empty, a remediation section is emitted with these columns:
+
+- `remediation_id`
+- `baseline_status`
+- `repo`
+- `repo_path`
+- `dependency`
+- `category`
+- `severity`
+- `priority`
+- `evidence` (`|` delimited)
+- `suggested_action`
+
+When a dashboard baseline is compared, `baseline_comparison` also includes remediation queue deltas split into `new_remediation_items`, `regressed_remediation_items`, `existing_remediation_items`, and `removed_remediation_items`. The CSV baseline section includes a remediation delta subsection with `kind`, current severity/priority, and baseline severity/priority columns.

@@ -124,14 +124,32 @@ type Summary struct {
 	ReposWithRuntimeRegressions int `json:"repos_with_runtime_regressions"`
 }
 
+type RemediationItem struct {
+	ID              string   `json:"id"`
+	Repo            string   `json:"repo"`
+	RepoPath        string   `json:"repo_path,omitempty"`
+	Dependency      string   `json:"dependency,omitempty"`
+	Category        string   `json:"category"`
+	Severity        string   `json:"severity,omitempty"`
+	Priority        string   `json:"priority,omitempty"`
+	Evidence        []string `json:"evidence,omitempty"`
+	SuggestedAction string   `json:"suggested_action"`
+	BaselineStatus  string   `json:"baseline_status,omitempty"`
+}
+
 type BaselineComparison struct {
-	BaselineKey  string       `json:"baseline_key"`
-	CurrentKey   string       `json:"current_key,omitempty"`
-	SummaryDelta SummaryDelta `json:"summary_delta"`
-	RepoDeltas   []RepoDelta  `json:"repo_deltas,omitempty"`
-	Added        []RepoDelta  `json:"added,omitempty"`
-	Removed      []RepoDelta  `json:"removed,omitempty"`
-	Changed      []RepoDelta  `json:"changed,omitempty"`
+	BaselineKey               string                 `json:"baseline_key"`
+	CurrentKey                string                 `json:"current_key,omitempty"`
+	SummaryDelta              SummaryDelta           `json:"summary_delta"`
+	RepoDeltas                []RepoDelta            `json:"repo_deltas,omitempty"`
+	Added                     []RepoDelta            `json:"added,omitempty"`
+	Removed                   []RepoDelta            `json:"removed,omitempty"`
+	Changed                   []RepoDelta            `json:"changed,omitempty"`
+	RemediationItemDeltas     []RemediationItemDelta `json:"remediation_item_deltas,omitempty"`
+	NewRemediationItems       []RemediationItemDelta `json:"new_remediation_items,omitempty"`
+	RegressedRemediationItems []RemediationItemDelta `json:"regressed_remediation_items,omitempty"`
+	ExistingRemediationItems  []RemediationItemDelta `json:"existing_remediation_items,omitempty"`
+	RemovedRemediationItems   []RemediationItemDelta `json:"removed_remediation_items,omitempty"`
 }
 
 type SummaryDelta struct {
@@ -171,11 +189,36 @@ type RepoDelta struct {
 	BaselineError                 string        `json:"baseline_error,omitempty"`
 }
 
+type RemediationItemDeltaKind string
+
+const (
+	RemediationItemNew       RemediationItemDeltaKind = "new"
+	RemediationItemRegressed RemediationItemDeltaKind = "regressed"
+	RemediationItemExisting  RemediationItemDeltaKind = "existing"
+	RemediationItemRemoved   RemediationItemDeltaKind = "removed"
+)
+
+type RemediationItemDelta struct {
+	Kind             RemediationItemDeltaKind `json:"kind"`
+	ID               string                   `json:"id"`
+	Repo             string                   `json:"repo"`
+	RepoPath         string                   `json:"repo_path,omitempty"`
+	Dependency       string                   `json:"dependency,omitempty"`
+	Category         string                   `json:"category"`
+	Severity         string                   `json:"severity,omitempty"`
+	Priority         string                   `json:"priority,omitempty"`
+	BaselineSeverity string                   `json:"baseline_severity,omitempty"`
+	BaselinePriority string                   `json:"baseline_priority,omitempty"`
+	Evidence         []string                 `json:"evidence,omitempty"`
+	SuggestedAction  string                   `json:"suggested_action"`
+}
+
 type Report struct {
 	GeneratedAt        time.Time             `json:"generated_at"`
 	Repos              []RepoResult          `json:"repos"`
 	Summary            Summary               `json:"summary"`
 	BaselineComparison *BaselineComparison   `json:"baseline_comparison,omitempty"`
 	CrossRepoDeps      []CrossRepoDependency `json:"cross_repo_deps,omitempty"`
+	RemediationItems   []RemediationItem     `json:"remediation_items,omitempty"`
 	SourceWarnings     []string              `json:"warnings,omitempty"`
 }
