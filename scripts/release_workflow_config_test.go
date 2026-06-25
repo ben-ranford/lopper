@@ -103,6 +103,46 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	}
 }
 
+func TestGraduateFeatureWorkflowCreatesTemplateCompatiblePRBody(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/graduate-feature.yml")
+	for _, want := range []string{
+		"cat > .artifacts/graduate-feature-pr.md <<PR_BODY",
+		"## Summary",
+		"## Changes",
+		"## Validation",
+		"Commands and checks run:",
+		"Additional manual validation:",
+		"## Risk and compatibility",
+		"- Breaking changes:",
+		"- Migration required:",
+		"- Performance impact:",
+		"- Memory benchmark impact:",
+		"## Checklist",
+		"- [x] Tests added/updated for behavior changes",
+		"- [x] Docs updated (README/docs/schema) if needed",
+		"- [x] \\`memory-approved\\` requested/applied if intentional memory benchmark regressions exceed CI thresholds",
+		"- [x] No unrelated changes included",
+		"- [x] Ready for review",
+		"--body-file .artifacts/graduate-feature-pr.md",
+	} {
+		if !strings.Contains(workflowText, want) {
+			t.Fatalf("graduate-feature workflow must create template-compatible PR body containing %q", want)
+		}
+	}
+
+	for _, staleHeading := range []string{
+		"## Graduation evidence",
+		"## Compatibility and rollback",
+		"## Release lock notes",
+	} {
+		if strings.Contains(workflowText, staleHeading) {
+			t.Fatalf("graduate-feature workflow must not use stale non-template body heading %q", staleHeading)
+		}
+	}
+}
+
 func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	t.Parallel()
 
