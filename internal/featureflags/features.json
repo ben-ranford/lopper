@@ -77,6 +77,6 @@
     "code": "LOP-FEAT-0012",
     "name": "mcp-mutation-tools-preview",
     "description": "Enable explicit MCP mutation tools for codemod apply and baseline snapshot save workflows.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   }
 ]
