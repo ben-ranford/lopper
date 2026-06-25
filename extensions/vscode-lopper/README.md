@@ -10,6 +10,7 @@ Lopper brings dependency-surface analysis into VS Code with inline diagnostics a
 - Surfaces a dependency explorer sidebar with folder summaries, dependency drilldown, and source-navigation links.
 - Supports multi-root workspaces by analyzing each workspace folder independently.
 - Offers deterministic quick fixes for safe `--suggest-only` JS/TS subpath rewrites.
+- Applies available safe JS/TS codemods through the guarded CLI flow and reports rollback artifact paths.
 - Supports `package`, `repo`, and `changed-packages` analysis scope modes directly in VS Code.
 - Keeps a status-bar summary and manual refresh commands, including force-fresh, runtime-aware, baseline, and export workflows.
 
@@ -30,6 +31,7 @@ The extension shells out to `lopper`.
 - If no local binary is available, the extension can download a matching GitHub release into extension-managed storage.
 - You can always override detection with `lopper.binaryPath` or `LOPPER_BINARY_PATH`.
 - Workspace-local binaries, including `bin/lopper` and `lopper.binaryPath` values inside the repo, are blocked until the workspace is trusted.
+- Codemod apply actions are disabled until the workspace is trusted and keep the CLI's clean-worktree protection unless you explicitly retry with the dirty-worktree override.
 
 ## Install
 
@@ -73,6 +75,7 @@ code --install-extension lopper-vscode-<version>.vsix
 - `Lopper: Save Baseline Snapshot`: save the current workspace analysis as a baseline snapshot.
 - `Lopper: Compare Baseline`: compare the current workspace analysis against a saved baseline key or file.
 - `Lopper: Analyse Dependency...`: open a focused dependency analysis and detail view.
+- `Lopper: Apply Codemod`: apply an available safe codemod for a dependency and print applied, skipped, failed, and rollback artifact details.
 - `Lopper: Export Analysis as JSON|CSV|SARIF|PR Comment`: export the current analysis in a machine-readable format.
 
 The extension deduplicates in-flight refreshes per folder/language/scope, prevents stale runs from overwriting newer diagnostics, and logs refresh lifecycle states to the `Lopper` output channel.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const args = process.argv.slice(2);
@@ -20,13 +20,18 @@ if (format !== "json") {
 
 const dependencyName = options._[0] ?? "scope-lib";
 const suggestOnly = options["suggest-only"] !== undefined;
-const report = await buildReport(cwd, dependencyName, suggestOnly);
+const applyCodemod = options["apply-codemod"] !== undefined;
+const report = await buildReport(cwd, dependencyName, suggestOnly, applyCodemod);
 process.stdout.write(JSON.stringify(report, null, 2));
 
 function parseArgs(tokens) {
   const parsed = { _: [] };
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
+    if (token === "--") {
+      parsed._.push(...tokens.slice(index + 1));
+      break;
+    }
     if (token.startsWith("--")) {
       const key = token.slice(2);
       const next = tokens[index + 1];
@@ -43,7 +48,7 @@ function parseArgs(tokens) {
   return parsed;
 }
 
-async function buildReport(workspaceRoot, dependencyName, suggestOnly) {
+async function buildReport(workspaceRoot, dependencyName, suggestOnly, applyCodemod) {
   const indexPath = path.join(workspaceRoot, "src", "index.ts");
   const source = await readFile(indexPath, "utf8");
   const lines = source.split(/\r?\n/);
@@ -212,7 +217,23 @@ async function buildReport(workspaceRoot, dependencyName, suggestOnly) {
     wasteIncreasePercent: 0,
   };
 
-  if (suggestOnly) {
+  if (suggestOnly || applyCodemod) {
+    const suggestion = {
+      file: "src/index.ts",
+      line: 1,
+      importName: "chunk",
+      fromModule: "scope-lib",
+      toModule: "scope-lib/chunk",
+      original: 'import { chunk } from "scope-lib";',
+      replacement: 'import chunk from "scope-lib/chunk";',
+    };
+    const codemod = {
+      mode: applyCodemod ? "apply" : "suggest-only",
+      suggestions: [suggestion],
+    };
+    if (applyCodemod) {
+      codemod.apply = await applySmokeCodemod(workspaceRoot, indexPath, source, dependencyName, suggestion);
+    }
     analysis.dependencies = [
       {
         language: "js-ts",
@@ -220,25 +241,49 @@ async function buildReport(workspaceRoot, dependencyName, suggestOnly) {
         usedExportsCount: 1,
         totalExportsCount: 2,
         usedPercent: 50,
-        codemod: {
-          mode: "suggest-only",
-          suggestions: [
-            {
-              file: "src/index.ts",
-              line: 1,
-              importName: "chunk",
-              fromModule: "scope-lib",
-              toModule: "scope-lib/chunk",
-              original: 'import { chunk } from "scope-lib";',
-              replacement: 'import chunk from "scope-lib/chunk";',
-            },
-          ],
-        },
+        codemod,
       },
     ];
   }
 
   return analysis;
+}
+
+async function applySmokeCodemod(workspaceRoot, indexPath, source, dependencyName, suggestion) {
+  if (!source.includes(suggestion.original)) {
+    return {
+      failedFiles: 1,
+      failedPatches: 1,
+      results: [{ file: suggestion.file, status: "failed", patchCount: 1, message: "original line mismatch" }],
+    };
+  }
+
+  const backupPath = ".artifacts/lopper-codemod-backups/scope-lib-smoke.json";
+  await mkdir(path.dirname(path.join(workspaceRoot, backupPath)), { recursive: true });
+  await writeFile(
+    path.join(workspaceRoot, backupPath),
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        dependency: dependencyName,
+        files: [{ file: suggestion.file, mode: 0o644, content: source }],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(indexPath, source.replace(suggestion.original, suggestion.replacement), "utf8");
+  return {
+    appliedFiles: 1,
+    appliedPatches: 1,
+    skippedFiles: 0,
+    skippedPatches: 0,
+    failedFiles: 0,
+    failedPatches: 0,
+    backupPath,
+    results: [{ file: suggestion.file, status: "applied", patchCount: 1 }],
+  };
 }
 
 function renderExport(commandName, parsedOptions, workspaceRoot) {

@@ -14,6 +14,7 @@ import {
 export { BinaryResolutionError } from "./managedBinary";
 import {
   lopperScopeModeValues,
+  type LopperCodemodApplyReport,
   type LopperCodemodReport,
   type LopperDependencyReport,
   type LopperReport,
@@ -40,6 +41,11 @@ export interface WorkspaceAnalysis {
 export interface WorkspaceAnalysisRunner {
   analyseWorkspace(folder: vscode.WorkspaceFolder, options?: WorkspaceAnalysisRequest): Promise<WorkspaceAnalysis>;
   exportWorkspace(folder: vscode.WorkspaceFolder, format: LopperOutputFormat, options?: WorkspaceExportRequest): Promise<string>;
+  applyCodemod(
+    folder: vscode.WorkspaceFolder,
+    dependencyName: string,
+    options?: WorkspaceCodemodApplyRequest,
+  ): Promise<WorkspaceCodemodApplyResult>;
 }
 
 export interface WorkspaceAnalysisRequest {
@@ -55,6 +61,31 @@ export interface WorkspaceAnalysisRequest {
   baselineKey?: string;
   baselineLabel?: string;
   saveBaseline?: boolean;
+}
+
+export interface WorkspaceCodemodApplyRequest {
+  document?: vscode.TextDocument;
+  scopeMode?: LopperScopeMode;
+  requestedLanguage?: LopperLanguage;
+  signal?: AbortSignal;
+  allowDirty?: boolean;
+  runtimeTracePath?: string;
+  runtimeTestCommand?: string;
+  baselinePath?: string;
+  baselineStorePath?: string;
+  baselineKey?: string;
+  baselineLabel?: string;
+  saveBaseline?: boolean;
+}
+
+export interface WorkspaceCodemodApplyResult {
+  folder: vscode.WorkspaceFolder;
+  binaryPath: string;
+  requestedLanguage: LopperLanguage;
+  scopeMode: LopperScopeMode;
+  dependencyName: string;
+  report: LopperReport;
+  apply?: LopperCodemodApplyReport;
 }
 
 interface CodemodFetchContext {
@@ -90,6 +121,26 @@ export interface LopperRunnerDeps {
 export interface LopperExecutionOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+}
+
+interface AnalysisArgsOptions {
+  format: LopperOutputFormat;
+  requestedLanguage: string;
+  scopeMode: LopperScopeMode;
+  document?: vscode.TextDocument;
+  dependencyName?: string;
+  suggestOnly?: boolean;
+  applyCodemod?: boolean;
+  allowDirty?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  runtimeTracePath?: string;
+  runtimeTestCommand?: string;
+  baselinePath?: string;
+  baselineStorePath?: string;
+  baselineKey?: string;
+  baselineLabel?: string;
+  saveBaseline?: boolean;
 }
 
 export class LopperCliReportExecutor implements ReportCommandExecutor {
@@ -306,6 +357,51 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     });
   }
 
+  async applyCodemod(
+    folder: vscode.WorkspaceFolder,
+    dependencyName: string,
+    options: WorkspaceCodemodApplyRequest = {},
+  ): Promise<WorkspaceCodemodApplyResult> {
+    const targetDependency = normalizeDependencyArgument(dependencyName);
+    if (!targetDependency) {
+      throw new Error("Choose a dependency before applying a Lopper codemod.");
+    }
+
+    const binaryPath = await this.resolveBinaryPath(folder);
+    const requestedLanguage = options.requestedLanguage
+      ?? await resolveLopperLanguage(configuredLopperLanguage(folder), options.document, folder.uri.fsPath);
+    const scopeMode = normalizeScopeMode(options.scopeMode);
+    const timeoutMs = this.runTimeoutMs(folder);
+    const report = await this.executeReport(binaryPath, folder, {
+      format: "json",
+      requestedLanguage,
+      scopeMode,
+      document: options.document,
+      dependencyName: targetDependency,
+      applyCodemod: true,
+      allowDirty: options.allowDirty,
+      signal: options.signal,
+      timeoutMs,
+      runtimeTracePath: options.runtimeTracePath,
+      runtimeTestCommand: options.runtimeTestCommand,
+      baselinePath: options.baselinePath,
+      baselineStorePath: options.baselineStorePath,
+      baselineKey: options.baselineKey,
+      baselineLabel: options.baselineLabel,
+      saveBaseline: options.saveBaseline,
+    });
+    const dependency = report.dependencies.find((item) => item.name === targetDependency) ?? report.dependencies[0];
+    return {
+      folder,
+      binaryPath,
+      requestedLanguage,
+      scopeMode,
+      dependencyName: targetDependency,
+      report,
+      apply: dependency?.codemod?.apply,
+    };
+  }
+
   async resolveBinaryPath(
     folder: vscode.WorkspaceFolder,
     workspaceTrusted = vscode.workspace.isTrusted,
@@ -342,23 +438,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
   private async executeReport(
     binaryPath: string,
     folder: vscode.WorkspaceFolder,
-    options: {
-      format: LopperOutputFormat;
-      requestedLanguage: string;
-      scopeMode: LopperScopeMode;
-      document?: vscode.TextDocument;
-      dependencyName?: string;
-      suggestOnly?: boolean;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      runtimeTracePath?: string;
-      runtimeTestCommand?: string;
-      baselinePath?: string;
-      baselineStorePath?: string;
-      baselineKey?: string;
-      baselineLabel?: string;
-      saveBaseline?: boolean;
-    },
+    options: AnalysisArgsOptions,
   ): Promise<LopperReport> {
     const args = this.buildAnalysisArgs(folder, options);
     return this.reportExecutor.runReport(binaryPath, args, folder.uri.fsPath, {
@@ -370,21 +450,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
   private async executeText(
     binaryPath: string,
     folder: vscode.WorkspaceFolder,
-    options: {
-      format: LopperOutputFormat;
-      requestedLanguage: string;
-      scopeMode: LopperScopeMode;
-      document?: vscode.TextDocument;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      runtimeTracePath?: string;
-      runtimeTestCommand?: string;
-      baselinePath?: string;
-      baselineStorePath?: string;
-      baselineKey?: string;
-      baselineLabel?: string;
-      saveBaseline?: boolean;
-    },
+    options: AnalysisArgsOptions,
   ): Promise<string> {
     const args = this.buildAnalysisArgs(folder, options);
     return this.reportExecutor.runCommand(binaryPath, args, folder.uri.fsPath, {
@@ -395,23 +461,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
 
   private buildAnalysisArgs(
     folder: vscode.WorkspaceFolder,
-    options: {
-      format: LopperOutputFormat;
-      requestedLanguage: string;
-      scopeMode: LopperScopeMode;
-      document?: vscode.TextDocument;
-      dependencyName?: string;
-      suggestOnly?: boolean;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      runtimeTracePath?: string;
-      runtimeTestCommand?: string;
-      baselinePath?: string;
-      baselineStorePath?: string;
-      baselineKey?: string;
-      baselineLabel?: string;
-      saveBaseline?: boolean;
-    },
+    options: AnalysisArgsOptions,
   ): string[] {
     const args = ["analyse"];
     const dependencyName = normalizeDependencyArgument(options.dependencyName);
@@ -434,6 +484,12 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     this.appendBaselineArgs(args, options.baselinePath, options.baselineStorePath, options.baselineKey, options.baselineLabel, options.saveBaseline);
     if (options.suggestOnly) {
       args.push("--suggest-only");
+    }
+    if (options.applyCodemod) {
+      args.push("--apply-codemod", "--apply-codemod-confirm");
+      if (options.allowDirty) {
+        args.push("--allow-dirty");
+      }
     }
     if (dependencyName) {
       args.push("--", dependencyName);

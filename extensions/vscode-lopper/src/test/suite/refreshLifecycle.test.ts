@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 
 import { __testing, deactivate } from "../../extension";
 import type { RefreshWorkspaceOptions } from "../../extension";
-import type { WorkspaceAnalysis, WorkspaceAnalysisRunner } from "../../lopperRunner";
+import type { WorkspaceAnalysis, WorkspaceAnalysisRunner, WorkspaceCodemodApplyResult } from "../../lopperRunner";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -222,8 +222,8 @@ suite("refresh lifecycle", () => {
     });
   });
 
-  test("skips escaped codemod suggestions while keeping in-workspace diagnostics", async function () {
-    this.timeout(30_000);
+	  test("skips escaped codemod suggestions while keeping in-workspace diagnostics", async function () {
+	    this.timeout(30_000);
 
     await withHarness(async (harness) => {
       const validSuggestionPath = "src/index.ts";
@@ -278,7 +278,101 @@ suite("refresh lifecycle", () => {
           assert.equal(diagnostics.length, 2);
         },
       );
-    });
+	    });
+	  });
+
+	  test("refreshes diagnostics after mixed codemod apply mutates files", async function () {
+	    this.timeout(30_000);
+
+	    await withHarness(async (harness) => {
+	      let analyseCalls = 0;
+	      let applyCalls = 0;
+	      let firstAnalysis: WorkspaceAnalysis | undefined;
+	      const restoreNotifications = stubCodemodApplyNotifications();
+	      try {
+
+	        await withController(
+	          {
+	            analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+	              analyseCalls += 1;
+	              const analysis = makeAnalysis(harness, {
+	                dependencyCount: 1,
+	                usedPercent: analyseCalls === 1 ? 50 : 100,
+	                withUnusedImport: analyseCalls === 1,
+	              });
+	              attachScopeLibCodemod(analysis);
+	              firstAnalysis ??= analysis;
+	              return analysis;
+	            },
+	            applyCodemod: async (folder, dependencyName): Promise<WorkspaceCodemodApplyResult> => {
+	              applyCalls += 1;
+	              assert.equal(folder.uri.fsPath, harness.folder.uri.fsPath);
+	              assert.equal(dependencyName, "scope-lib");
+	              return {
+	                folder,
+	                binaryPath: harness.binaryPath,
+	                requestedLanguage: "js-ts",
+	                scopeMode: "package",
+	                dependencyName,
+	                report: firstAnalysis?.report ?? makeAnalysis(harness, { dependencyCount: 1, usedPercent: 50 }).report,
+	                apply: {
+	                  appliedFiles: 1,
+	                  appliedPatches: 1,
+	                  skippedFiles: 0,
+	                  skippedPatches: 0,
+	                  failedFiles: 1,
+	                  failedPatches: 1,
+	                  backupPath: ".artifacts/lopper-codemod-backups/scope-lib.json",
+	                  results: [
+	                    { file: "src/index.ts", status: "applied", patchCount: 1 },
+	                    { file: "src/readonly.ts", status: "failed", patchCount: 0, message: "permission denied" },
+	                  ],
+	                },
+	              };
+	            },
+	            exportWorkspace: async (): Promise<string> => "",
+	          },
+	          async (controller) => {
+	            await refresh(controller, harness);
+	            await controller.applyCodemod("scope-lib", harness.folder.uri.fsPath, { skipConfirmation: true });
+
+	            assert.equal(applyCalls, 1);
+	            assert.equal(analyseCalls, 2, "mixed apply with file mutations should force a diagnostics refresh");
+	          },
+	        );
+	      } finally {
+	        restoreNotifications();
+	      }
+	    });
+	  });
+
+	  test("formats codemod apply summaries and dirty-worktree guard errors", () => {
+	    const apply = {
+      appliedFiles: 1,
+      appliedPatches: 2,
+      skippedFiles: 3,
+      skippedPatches: 4,
+      failedFiles: 0,
+      failedPatches: 0,
+      backupPath: ".artifacts/lopper-codemod-backups/scope-lib.json",
+      results: [{ file: "src/index.ts", status: "applied", patchCount: 2 }],
+    };
+
+    const summary = __testing.formatCodemodApplySummary("scope-lib", apply);
+    assert.match(summary, /scope-lib/);
+    assert.match(summary, /applied 1 files\/2 patches/);
+    assert.match(summary, /skipped 3 files\/4 patches/);
+    assert.match(summary, /failed 0 files\/0 patches/);
+    assert.match(summary, /rollback \.artifacts\/lopper-codemod-backups\/scope-lib\.json/);
+
+    const notification = __testing.formatCodemodApplyNotification("scope-lib", apply, "applied");
+    assert.match(notification, /Rollback: \.artifacts\/lopper-codemod-backups\/scope-lib\.json/);
+    assert.equal(
+      __testing.isDirtyWorktreeApplyError(
+        "codemod apply requires a clean git worktree: detected uncommitted changes in README.md; pass --allow-dirty",
+      ),
+      true,
+    );
   });
 });
 
@@ -294,10 +388,16 @@ async function withHarness(run: (harness: LifecycleHarness) => Promise<void>): P
 }
 
 async function withController(
-  runner: WorkspaceAnalysisRunner,
+  runner: Omit<WorkspaceAnalysisRunner, "applyCodemod"> & Partial<Pick<WorkspaceAnalysisRunner, "applyCodemod">>,
   run: (controller: TestController) => Promise<void>,
 ): Promise<void> {
-  const controller = __testing.createController(runner);
+  const completeRunner: WorkspaceAnalysisRunner = {
+    applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+      throw new Error("unexpected codemod apply in refresh lifecycle test");
+    },
+    ...runner,
+  };
+  const controller = __testing.createController(completeRunner);
   try {
     await run(controller);
   } finally {
@@ -380,6 +480,41 @@ async function waitForAssertion(assertion: () => void, timeoutMs = 1_000): Promi
     throw lastError;
   }
   assertion();
+	}
+
+function attachScopeLibCodemod(analysis: WorkspaceAnalysis): void {
+	analysis.codemodsByDependency = new Map([
+		[
+			"scope-lib",
+			{
+				mode: "replace",
+				suggestions: [
+					{
+						file: "src/index.ts",
+						line: 1,
+						importName: "chunk",
+						fromModule: "scope-lib",
+						toModule: "scope-lib/chunk",
+						original: "import chunk from \"scope-lib\";",
+						replacement: "import chunk from \"scope-lib/chunk\";",
+					},
+				],
+			},
+		],
+	]);
+}
+
+function stubCodemodApplyNotifications(): () => void {
+	const originalShowErrorMessage = vscode.window.showErrorMessage;
+	const originalShowInformationMessage = vscode.window.showInformationMessage;
+	(vscode.window as typeof vscode.window & { showErrorMessage: typeof vscode.window.showErrorMessage }).showErrorMessage =
+		(async () => undefined) as typeof vscode.window.showErrorMessage;
+	(vscode.window as typeof vscode.window & { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage =
+		(async () => undefined) as typeof vscode.window.showInformationMessage;
+	return () => {
+		(vscode.window as typeof vscode.window & { showErrorMessage: typeof vscode.window.showErrorMessage }).showErrorMessage = originalShowErrorMessage;
+		(vscode.window as typeof vscode.window & { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = originalShowInformationMessage;
+	};
 }
 
 function makeAnalysis(

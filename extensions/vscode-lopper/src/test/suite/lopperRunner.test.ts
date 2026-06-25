@@ -250,6 +250,79 @@ suite("lopper runner", () => {
     assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
   });
 
+  test("applies codemods with guarded CLI flags and optional dirty override", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const calls: string[][] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            calls.push(args);
+            return {
+              dependencies: [
+                {
+                  name: "scope-lib",
+                  language: "js-ts",
+                  usedExportsCount: 1,
+                  totalExportsCount: 2,
+                  usedPercent: 50,
+                  codemod: {
+                    mode: "apply",
+                    apply: {
+                      appliedFiles: 1,
+                      appliedPatches: 2,
+                      skippedFiles: 0,
+                      skippedPatches: 0,
+                      failedFiles: 0,
+                      failedPatches: 0,
+                      backupPath: ".artifacts/lopper-codemod-backups/scope-lib.json",
+                      results: [{ file: "src/index.ts", status: "applied", patchCount: 2 }],
+                    },
+                  },
+                },
+              ],
+            };
+          },
+        },
+      },
+    );
+
+    const result = await runner.applyCodemod(folder, "scope-lib", {
+      scopeMode: "repo",
+      requestedLanguage: "js-ts",
+    });
+    assert.equal(result.apply?.appliedFiles, 1);
+    assert.equal(result.apply?.backupPath, ".artifacts/lopper-codemod-backups/scope-lib.json");
+
+    const applyArgs = calls[0];
+    assert.ok(applyArgs, "expected codemod apply invocation");
+    assert.deepEqual(applyArgs.slice(0, 1), ["analyse"]);
+    assert.ok(applyArgs.includes("--apply-codemod"), "expected guarded apply flag");
+    assert.ok(applyArgs.includes("--apply-codemod-confirm"), "expected apply confirmation flag");
+    assert.ok(!applyArgs.includes("--suggest-only"), "apply command must not combine suggest-only");
+    assert.ok(!applyArgs.includes("--allow-dirty"), "dirty override must be opt-in");
+    assert.equal(applyArgs[applyArgs.indexOf("--format") + 1], "json");
+    assert.equal(applyArgs[applyArgs.indexOf("--language") + 1], "js-ts");
+    assert.equal(applyArgs[applyArgs.indexOf("--scope-mode") + 1], "repo");
+    assert.deepEqual(applyArgs.slice(-2), ["--", "scope-lib"]);
+
+    await runner.applyCodemod(folder, "scope-lib", {
+      scopeMode: "repo",
+      requestedLanguage: "js-ts",
+      allowDirty: true,
+    });
+    const dirtyApplyArgs = calls[1];
+    assert.ok(dirtyApplyArgs?.includes("--allow-dirty"), "expected explicit dirty override flag");
+  });
+
   test("fetches codemods with bounded concurrency and reuses duplicate dependencies", async () => {
     const folder = workspaceFolder();
     const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
