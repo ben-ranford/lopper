@@ -107,6 +107,65 @@ func TestFormatSARIFIncludesRuntimeAndBaselineContext(t *testing.T) {
 	assertSARIFBaselineContextPresent(t, wasteProps["baselineContext"])
 }
 
+func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Language: "js-ts",
+				Name:     "reachable-lib",
+				UsedImports: []ImportUse{
+					{
+						Name:   "default",
+						Module: "reachable-lib",
+						Locations: []Location{
+							{File: "src/app.ts", Line: 7, Column: 1},
+						},
+					},
+				},
+				Vulnerabilities: []VulnerabilityFinding{
+					{
+						AdvisoryID:    "GHSA-1234",
+						Package:       "reachable-lib",
+						Severity:      "high",
+						FixedVersion:  "1.2.3",
+						Source:        "security-team",
+						Priority:      VulnerabilityPriorityCritical,
+						PriorityScore: 91,
+						Reachable:     true,
+						Evidence:      []string{"static_location: src/app.ts:7"},
+					},
+				},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf("format sarif with vulnerability finding: %v", err)
+	}
+
+	payload := mustSARIFLog(t, output)
+	var finding *sarifResult
+	for i := range payload.Runs[0].Results {
+		if payload.Runs[0].Results[i].RuleID == "lopper/vulnerability/ghsa-1234" {
+			finding = &payload.Runs[0].Results[i]
+			break
+		}
+	}
+	if finding == nil {
+		t.Fatalf("expected vulnerability SARIF result, got %#v", payload.Runs[0].Results)
+	}
+	if finding.Level != "error" {
+		t.Fatalf("expected critical priority vulnerability to be SARIF error, got %#v", finding)
+	}
+	if !strings.Contains(finding.Message.Text, "reachability-weighted priority") || strings.Contains(strings.ToLower(finding.Message.Text), "exploit") {
+		t.Fatalf("unexpected vulnerability SARIF message: %q", finding.Message.Text)
+	}
+	if finding.Properties["advisoryId"] != "GHSA-1234" || finding.Properties["fixedVersion"] != "1.2.3" || finding.Properties["priority"] != VulnerabilityPriorityCritical || finding.Properties["reachable"] != true {
+		t.Fatalf("expected vulnerability properties, got %#v", finding.Properties)
+	}
+}
+
 func assertWasteOnlySARIFWithoutResult(t *testing.T, wasteIncrease float64) {
 	t.Helper()
 

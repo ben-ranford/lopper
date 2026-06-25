@@ -102,7 +102,13 @@ func TestAggregate(t *testing.T) {
 			},
 			{Name: "a-only"},
 		},
-		Summary: &report.Summary{DeniedLicenseCount: 2},
+		Summary: &report.Summary{
+			DeniedLicenseCount: 2,
+			Vulnerabilities: &report.VulnerabilitySummary{
+				TotalFindings:     2,
+				ReachableFindings: 1,
+			},
+		},
 		BaselineComparison: &report.BaselineComparison{
 			RuntimeRegressions: []report.DependencyDelta{{
 				Kind:     report.DependencyDeltaChanged,
@@ -119,7 +125,13 @@ func TestAggregate(t *testing.T) {
 	}
 	reportB := report.Report{
 		Dependencies: []report.DependencyReport{
-			{Name: "shared", RuntimeUsage: &report.RuntimeUsage{LoadCount: 1, Correlation: report.RuntimeCorrelationOverlap}},
+			{
+				Name:         "shared",
+				RuntimeUsage: &report.RuntimeUsage{LoadCount: 1, Correlation: report.RuntimeCorrelationOverlap},
+				Vulnerabilities: []report.VulnerabilityFinding{
+					{AdvisoryID: "GHSA-dashboard", Package: "shared", Priority: report.VulnerabilityPriorityHigh, Reachable: true},
+				},
+			},
 			{Name: "b-only"},
 		},
 	}
@@ -137,35 +149,61 @@ func TestAggregate(t *testing.T) {
 		{Input: RepoInput{Name: testRepoD, Path: "./d"}, Err: errors.New("failed")},
 	})
 
-	if data.Summary.TotalRepos != 4 {
-		t.Fatalf("expected four repos total, got %+v", data.Summary)
+	assertAggregateSummary(t, data.Summary)
+	assertAggregateRepos(t, data.Repos)
+	assertAggregateCrossRepoDeps(t, data.CrossRepoDeps)
+	assertAggregateWarnings(t, data.SourceWarnings)
+}
+
+func assertAggregateSummary(t *testing.T, summary Summary) {
+	t.Helper()
+	if summary.TotalRepos != 4 {
+		t.Fatalf("expected four repos total, got %+v", summary)
 	}
-	if data.Summary.TotalDeps != 6 {
-		t.Fatalf("expected six dependencies, got %+v", data.Summary)
+	if summary.TotalDeps != 6 {
+		t.Fatalf("expected six dependencies, got %+v", summary)
 	}
-	if data.Summary.TotalWasteCandidates != 1 {
-		t.Fatalf("expected one waste candidate, got %+v", data.Summary)
+	if summary.TotalWasteCandidates != 1 {
+		t.Fatalf("expected one waste candidate, got %+v", summary)
 	}
-	if data.Summary.CrossRepoDuplicates != 1 {
-		t.Fatalf("expected one cross-repo duplicate, got %+v", data.Summary)
+	if summary.CrossRepoDuplicates != 1 {
+		t.Fatalf("expected one cross-repo duplicate, got %+v", summary)
 	}
-	if data.Summary.CriticalCVEs != 1 {
-		t.Fatalf("expected one critical CVE signal, got %+v", data.Summary)
+	if summary.CriticalCVEs != 1 {
+		t.Fatalf("expected one critical CVE signal, got %+v", summary)
 	}
-	if data.Summary.ReposWithRuntimeTraceData != 2 {
-		t.Fatalf("expected two repos with runtime trace data, got %+v", data.Summary)
+	if summary.VulnerabilityFindings != 3 || summary.ReachableVulnerabilities != 2 {
+		t.Fatalf("expected vulnerability aggregate counts, got %+v", summary)
 	}
-	if data.Summary.ReposWithRuntimeRegressions != 1 {
-		t.Fatalf("expected one repo with runtime regressions, got %+v", data.Summary)
+	if summary.ReposWithRuntimeTraceData != 2 {
+		t.Fatalf("expected two repos with runtime trace data, got %+v", summary)
 	}
-	if !data.Repos[0].RuntimeTraceData || data.Repos[0].RuntimeRegressionCount != 1 {
-		t.Fatalf("expected first repo runtime regression counts, got %+v", data.Repos[0])
+	if summary.ReposWithRuntimeRegressions != 1 {
+		t.Fatalf("expected one repo with runtime regressions, got %+v", summary)
 	}
-	if len(data.CrossRepoDeps) != 1 || data.CrossRepoDeps[0].Name != "shared" || data.CrossRepoDeps[0].Count != 3 {
-		t.Fatalf("unexpected cross-repo dependency set: %#v", data.CrossRepoDeps)
+}
+
+func assertAggregateRepos(t *testing.T, repos []RepoResult) {
+	t.Helper()
+	if !repos[0].RuntimeTraceData || repos[0].RuntimeRegressionCount != 1 {
+		t.Fatalf("expected first repo runtime regression counts, got %+v", repos[0])
 	}
-	if len(data.SourceWarnings) != 1 || !strings.Contains(data.SourceWarnings[0], "failed") {
-		t.Fatalf("expected source warning from failed repo analysis, got %#v", data.SourceWarnings)
+	if repos[0].VulnerabilityFindings != 2 || repos[0].ReachableVulnerabilities != 1 || repos[1].VulnerabilityFindings != 1 || repos[1].ReachableVulnerabilities != 1 {
+		t.Fatalf("expected per-repo vulnerability counts, got %#v", repos)
+	}
+}
+
+func assertAggregateCrossRepoDeps(t *testing.T, deps []CrossRepoDependency) {
+	t.Helper()
+	if len(deps) != 1 || deps[0].Name != "shared" || deps[0].Count != 3 {
+		t.Fatalf("unexpected cross-repo dependency set: %#v", deps)
+	}
+}
+
+func assertAggregateWarnings(t *testing.T, warnings []string) {
+	t.Helper()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed") {
+		t.Fatalf("expected source warning from failed repo analysis, got %#v", warnings)
 	}
 }
 
@@ -357,7 +395,7 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 	repoRow := dashboardCSVRowAfterHeader(rows, "repo_name")
 	crossRepoRow := dashboardCSVRowAfterHeader(rows, "dependency_name")
 
-	if len(repoRow) != 16 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[5] != "go" {
+	if len(repoRow) != 18 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[5] != "go" {
 		t.Fatalf("expected sanitized repo csv row, got %#v", repoRow)
 	}
 	if len(crossRepoRow) != 3 || crossRepoRow[0] != "'-shared" || !strings.Contains(crossRepoRow[2], "'\trepo-d") {
@@ -602,7 +640,7 @@ func dashboardCSVRowAfterHeader(rows [][]string, header string) []string {
 
 func dashboardCSVContainsRepoRow(rows [][]string, name, path string) bool {
 	for _, row := range rows {
-		if len(row) == 16 && row[0] == name && row[1] == path {
+		if len(row) == 18 && row[0] == name && row[1] == path {
 			return true
 		}
 	}

@@ -43,6 +43,38 @@ CSV columns:
 - Reachability and candidate scoring: `reachability_model`, `reachability_score`, `reachability_summary`, `reachability_rationale_codes`, `removal_candidate_score`, `removal_candidate_usage`, `removal_candidate_impact`, `removal_candidate_confidence`, `removal_candidate_rationale`
 - License metadata: `license_spdx`, `license_raw`, `license_source`, `license_confidence`, `license_unknown`, `license_denied`, `license_evidence`
 - Provenance metadata: `provenance_source`, `provenance_confidence`, `provenance_signals`
+- Vulnerability metadata: `vulnerability_findings`, `vulnerability_highest_priority`, `vulnerability_reachable_count`
+
+## Local advisory ingestion
+
+With `reachability-vulnerability-prioritization-preview` enabled, use
+`lopper analyse --advisory-source PATH` to read a local JSON or YAML advisory
+file and attach vulnerability findings to matching dependency rows. Lopper does
+not contact a vulnerability database during analysis, does not require network
+access, and does not claim exploitability.
+
+Local advisory format:
+
+```yaml
+advisories:
+  - id: GHSA-example-1234
+    package: example-lib
+    ecosystem: npm
+    severity: high
+    fixedVersion: 1.2.3
+    source: security-team
+    aliases:
+      - CVE-2026-0001
+```
+
+The loader also accepts OSV-style JSON/YAML documents with `affected` package
+entries. Relative config paths under `advisories.source` resolve relative to the
+config file; CLI `--advisory-source` paths are used as provided.
+
+Vulnerability priority is a deterministic triage score, not an exploitability
+claim. The score uses severity, `dependencies[].reachabilityConfidence`, runtime
+usage correlation, and static import/export evidence with fixed weights:
+severity `50%`, reachability `30%`, runtime `10%`, static `10%`.
 
 ## CycloneDX SBOM export
 
@@ -67,8 +99,8 @@ CycloneDX characteristics:
 - Lopper-specific dependency-surface metadata is preserved as CycloneDX
   component properties, including language, used/unused import counts and
   details, reachability confidence, runtime usage, license policy signals,
-  provenance, removal-candidate scores, waste metrics, and baseline deltas when
-  available.
+  provenance, vulnerability findings, removal-candidate scores, waste metrics,
+  and baseline deltas when available.
 - Root-level properties preserve report context such as schema version, repo
   path, scope, summary, effective policy, language breakdown, and baseline
   comparison keys when available.
@@ -80,17 +112,22 @@ CycloneDX characteristics:
 
 ## Key fields
 
-- `summary`: aggregated totals across all dependency rows.
+- `summary`: aggregated totals across all dependency rows, including
+  `summary.vulnerabilities` when local advisories produce findings.
 - `scope`: analysis scope metadata (`mode`, `packages`).
 - `usageUncertainty`: JS/TS usage certainty summary (`confirmedImportUses`, `uncertainImportUses`, `samples`).
 - `languageBreakdown`: aggregate totals by adapter language (`js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`, `powershell`).
-- `effectiveThresholds`: resolved threshold values applied for this run.
-- `effectivePolicy`: resolved policy object, including precedence sources, merge trace, scoring weights, and license policy controls (`CLI > repo config > imported policy packs > defaults`).
+- `effectiveThresholds`: resolved threshold values applied for this run,
+  including `reachableVulnerabilityPriority`.
+- `effectivePolicy`: resolved policy object, including precedence sources, merge trace, scoring weights, license policy controls, and vulnerability advisory policy (`CLI > repo config > imported policy packs > defaults`).
 - `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
 - `dependencies[].language`: language tag for each dependency row.
 - `dependencies[].reachabilityConfidence`: deterministic v2 per-dependency confidence artifact (`model`, `score`, `summary`, `rationaleCodes`, and weighted `signals`).
 - `dependencies[].license`: normalized per-dependency license detection (`spdx`, `source`, `confidence`, `unknown`, `denied`).
 - `dependencies[].provenance`: per-dependency provenance signals (`source`, `confidence`, `signals`).
+- `dependencies[].vulnerabilities`: local advisory findings with `advisoryId`,
+  `package`, `severity`, `fixedVersion`, `source`, reachability-weighted
+  `priority`, numeric `priorityScore`, `reachable`, and evidence strings.
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
 - `dependencies[].codemod`: optional codemod preview/apply data for JS/TS subpath migrations, including deterministic patch previews, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths.
@@ -98,7 +135,7 @@ CycloneDX characteristics:
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
-- `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `summaryDelta`, `dependencies`, `added`, `removed`, `regressions`, `progressions`, `runtimeRegressions`, `runtimeImprovements`, and `newDeniedLicenses`.
+- `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `summaryDelta`, `dependencies`, `added`, `removed`, `regressions`, `progressions`, `runtimeRegressions`, `runtimeImprovements`, `newDeniedLicenses`, and `newReachableVulnerabilities`.
 - `baselineComparison.dependencies[].runtimeDelta`: runtime trace comparison for dependencies present in both baseline and current reports when at least one side has runtime data. Comparable deltas include load-count changes, correlation transitions, new/removed runtime loads, runtime-only regressions/improvements, and module/parent/entrypoint changes.
 
 ## Notes
@@ -117,6 +154,9 @@ CycloneDX characteristics:
 - `cache.invalidations` entries identify deterministic invalidation reasons (for example `input-changed`).
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `summary.knownLicenseCount`, `summary.unknownLicenseCount`, and `summary.deniedLicenseCount` are mutually exclusive license buckets across dependency rows. Denied dependencies count only as denied, even when they also have an SPDX value or unknown license metadata.
+- `summary.vulnerabilities.reachableFindings` counts advisory findings with
+  reachability evidence. Baseline comparison reports newly introduced reachable
+  findings under `baselineComparison.newReachableVulnerabilities`.
 - Stored reports or baselines created before the mutually exclusive license-bucket summary should be regenerated, or consumers should recompute `summary` from `dependencies`, before comparing license deltas.
 - `schemaVersion` is currently pinned to `0.1.0`.
 - Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed.

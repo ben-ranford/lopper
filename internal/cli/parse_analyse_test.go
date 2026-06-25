@@ -380,6 +380,13 @@ func TestParseArgsAnalyseApplyCodemodValidation(t *testing.T) {
 	}
 }
 
+func TestValidateCodemodApplyRequiresDependency(t *testing.T) {
+	err := validateCodemodApplyFlags(false, true, true, false, "", 0)
+	if err == nil || !strings.Contains(err.Error(), "--apply-codemod requires a dependency argument") {
+		t.Fatalf("expected dependency target validation error, got %v", err)
+	}
+}
+
 func TestParseArgsAnalyseThresholdDefaults(t *testing.T) {
 	req := mustParseArgs(t, []string{"analyse", "--top", "3"})
 	if !reflect.DeepEqual(req.Analyse.Thresholds, thresholds.Defaults()) {
@@ -395,6 +402,8 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 		thresholdLowWarnFlag, "31",
 		"--threshold-min-usage-percent", "45",
 		"--threshold-max-uncertain-imports", "3",
+		"--threshold-reachable-vuln-priority", "high",
+		"--advisory-source", "security/advisories.yml",
 		scoreWeightFlag, "0.7",
 		"--score-weight-impact", "0.2",
 		"--score-weight-confidence", "0.1",
@@ -414,6 +423,12 @@ func TestParseArgsAnalyseThresholdFlags(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.MaxUncertainImportCount != 3 {
 		t.Fatalf("expected max uncertain import threshold 3, got %d", req.Analyse.Thresholds.MaxUncertainImportCount)
+	}
+	if req.Analyse.Thresholds.ReachableVulnerabilityPriority != "high" {
+		t.Fatalf("expected reachable vulnerability threshold high, got %q", req.Analyse.Thresholds.ReachableVulnerabilityPriority)
+	}
+	if req.Analyse.AdvisorySourcePath != "security/advisories.yml" {
+		t.Fatalf("expected advisory source path from CLI, got %q", req.Analyse.AdvisorySourcePath)
 	}
 	if req.Analyse.Thresholds.RemovalCandidateWeightUsage != 0.7 || req.Analyse.Thresholds.RemovalCandidateWeightImpact != 0.2 || req.Analyse.Thresholds.RemovalCandidateWeightConfidence != 0.1 {
 		t.Fatalf("expected score weights 0.7/0.2/0.1, got %+v", req.Analyse.Thresholds)
@@ -455,7 +470,7 @@ func TestParseArgsAnalyseThresholdAliasesConflict(t *testing.T) {
 
 func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	repo := t.TempDir()
-	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", " lockfile_drift_policy: warn", ""}, "\n")
+	config := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 4", " low_confidence_warning_percent: 27", " min_usage_percent_for_recommendations: 52", " reachable_vulnerability_priority: medium", " removal_candidate_weight_usage: 0.2", " removal_candidate_weight_impact: 0.5", " removal_candidate_weight_confidence: 0.3", " lockfile_drift_policy: warn", "advisories:", " source: security/config-advisories.yml", ""}, "\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, parseConfigFileName), config)
 
 	req := mustParseArgs(t, []string{
@@ -485,6 +500,12 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	}
 	if req.Analyse.Thresholds.LockfileDriftPolicy != "fail" {
 		t.Fatalf("expected CLI lockfile drift policy fail, got %q", req.Analyse.Thresholds.LockfileDriftPolicy)
+	}
+	if req.Analyse.Thresholds.ReachableVulnerabilityPriority != "medium" {
+		t.Fatalf("expected config reachable vulnerability threshold medium, got %q", req.Analyse.Thresholds.ReachableVulnerabilityPriority)
+	}
+	if want := filepath.Join(repo, "security", "config-advisories.yml"); req.Analyse.AdvisorySourcePath != want {
+		t.Fatalf("expected config advisory source %q, got %q", want, req.Analyse.AdvisorySourcePath)
 	}
 }
 

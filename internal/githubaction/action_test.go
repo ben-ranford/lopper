@@ -69,10 +69,12 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 		"baseline-key",
 		"baseline-label",
 		"save-baseline",
+		"advisory-source",
 		"threshold-fail-on-increase",
 		"threshold-low-confidence-warning",
 		"threshold-min-usage-percent",
 		"threshold-max-uncertain-imports",
+		"threshold-reachable-vulnerability-priority",
 		"cache",
 		"cache-readonly",
 	})
@@ -101,7 +103,9 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 		"INPUT_SCOPE_MODE=package",
 		"INPUT_OUTPUT=.artifacts/lopper-pr-comment.md",
 		"INPUT_BASELINE=.artifacts/lopper-base.json",
+		"INPUT_ADVISORY_SOURCE=security/advisories.yml",
 		"INPUT_THRESHOLD_FAIL_ON_INCREASE=0",
+		"INPUT_THRESHOLD_REACHABLE_VULNERABILITY_PRIORITY=high",
 		"INPUT_CACHE=false",
 		"INPUT_CACHE_READONLY=true",
 	}
@@ -122,8 +126,10 @@ func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
 		"--output", ".artifacts/lopper-pr-comment.md",
 		"--baseline", ".artifacts/lopper-base.json",
 		"--runtime-profile", "node-import",
+		"--advisory-source", "security/advisories.yml",
 		"--cache-readonly",
 		"--threshold-fail-on-increase", "0",
+		"--threshold-reachable-vuln-priority", "high",
 	}
 	assertArgs(t, got, want)
 

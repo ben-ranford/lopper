@@ -20,26 +20,27 @@ var (
 	featureReleaseLockProvider = featureflags.DefaultReleaseLock
 )
 
-func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, []report.PolicyMergeTrace, thresholds.FeatureConfig, string, error) {
+func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, []report.PolicyMergeTrace, string, thresholds.FeatureConfig, string, error) {
 	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", thresholds.FeatureConfig{}, "", err
 	}
 
 	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visited, values)
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", thresholds.FeatureConfig{}, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", thresholds.FeatureConfig{}, "", err
 	}
 
 	policySources := append([]string{}, loadResult.PolicySources...)
 	policyTrace := append([]report.PolicyMergeTrace{}, loadResult.PolicyTrace...)
+	advisorySourcePath := strings.TrimSpace(loadResult.AdvisorySourcePath)
 	if hasThresholdOverrides(cliOverrides) {
-		policySources = append([]string{"cli"}, policySources...)
+		policySources = prependUniquePolicySource("cli", policySources)
 		traceIndex := make(map[string]int, len(policyTrace))
 		for i, item := range policyTrace {
 			traceIndex[item.Field] = i
@@ -53,8 +54,26 @@ func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool)
 			policyTrace = append(policyTrace, item)
 		}
 	}
+	if visited["advisory-source"] {
+		advisorySourcePath = strings.TrimSpace(*values.advisorySourcePath)
+		policySources = prependUniquePolicySource("cli", policySources)
+		policyTrace = mergePolicyTraceItems(policyTrace, report.PolicyMergeTrace{Field: "advisories.source", Source: "cli"})
+	}
 
-	return resolvedThresholds, loadResult.Scope, policySources, policyTrace, loadResult.Features, loadResult.ConfigPath, nil
+	return resolvedThresholds, loadResult.Scope, policySources, policyTrace, advisorySourcePath, loadResult.Features, loadResult.ConfigPath, nil
+}
+
+func prependUniquePolicySource(source string, sources []string) []string {
+	out := []string{source}
+	seen := map[string]struct{}{source: {}}
+	for _, item := range sources {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
@@ -144,15 +163,29 @@ func resolveAnalyseNotifications(visited map[string]bool, values analyseFlagValu
 
 func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (thresholds.Overrides, error) {
 	overrides := thresholds.Overrides{}
+	if err := applyFailOnIncreaseOverride(&overrides, visited, values); err != nil {
+		return thresholds.Overrides{}, err
+	}
+	applyUsageThresholdOverrides(&overrides, visited, values)
+	applyRemovalWeightOverrides(&overrides, visited, values)
+	applyLicenseThresholdOverrides(&overrides, visited, values)
+	return overrides, nil
+}
+
+func applyFailOnIncreaseOverride(overrides *thresholds.Overrides, visited map[string]bool, values analyseFlagValues) error {
 	if visited["fail-on-increase"] {
 		overrides.FailOnIncreasePercent = values.legacyFailOnIncrease
 	}
 	if visited["threshold-fail-on-increase"] {
 		if overrides.FailOnIncreasePercent != nil && *overrides.FailOnIncreasePercent != *values.thresholdFailOnIncrease {
-			return thresholds.Overrides{}, fmt.Errorf("--fail-on-increase and --threshold-fail-on-increase must match when both are provided")
+			return fmt.Errorf("--fail-on-increase and --threshold-fail-on-increase must match when both are provided")
 		}
 		overrides.FailOnIncreasePercent = values.thresholdFailOnIncrease
 	}
+	return nil
+}
+
+func applyUsageThresholdOverrides(overrides *thresholds.Overrides, visited map[string]bool, values analyseFlagValues) {
 	if visited["threshold-low-confidence-warning"] {
 		overrides.LowConfidenceWarningPercent = values.thresholdLowConfidenceWarning
 	}
@@ -162,6 +195,15 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["threshold-max-uncertain-imports"] {
 		overrides.MaxUncertainImportCount = values.thresholdMaxUncertainImports
 	}
+	if visited["threshold-reachable-vuln-priority"] {
+		overrides.ReachableVulnerabilityPriority = values.thresholdReachableVulnPriority
+	}
+	if visited["lockfile-drift-policy"] {
+		overrides.LockfileDriftPolicy = values.lockfileDriftPolicy
+	}
+}
+
+func applyRemovalWeightOverrides(overrides *thresholds.Overrides, visited map[string]bool, values analyseFlagValues) {
 	if visited["score-weight-usage"] {
 		overrides.RemovalCandidateWeightUsage = values.scoreWeightUsage
 	}
@@ -171,6 +213,9 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["score-weight-confidence"] {
 		overrides.RemovalCandidateWeightConfidence = values.scoreWeightConfidence
 	}
+}
+
+func applyLicenseThresholdOverrides(overrides *thresholds.Overrides, visited map[string]bool, values analyseFlagValues) {
 	if visited["license-deny"] {
 		overrides.SetLicenseDenyList(splitPatternList(*values.licenseDeny))
 	}
@@ -180,10 +225,6 @@ func cliThresholdOverrides(visited map[string]bool, values analyseFlagValues) (t
 	if visited["license-provenance-registry"] {
 		overrides.LicenseIncludeRegistryProvenance = values.licenseIncludeRegistryProv
 	}
-	if visited["lockfile-drift-policy"] {
-		overrides.LockfileDriftPolicy = values.lockfileDriftPolicy
-	}
-	return overrides, nil
 }
 
 func cliNotificationOverrides(visited map[string]bool, values analyseFlagValues) (notify.Overrides, error) {
@@ -227,11 +268,12 @@ func hasThresholdOverrides(overrides thresholds.Overrides) bool {
 		overrides.HasLicenseDenyListOverride() ||
 		overrides.LicenseFailOnDeny != nil ||
 		overrides.LicenseIncludeRegistryProvenance != nil ||
+		overrides.ReachableVulnerabilityPriority != nil ||
 		overrides.LockfileDriftPolicy != nil
 }
 
 func cliPolicyTrace(overrides thresholds.Overrides) []report.PolicyMergeTrace {
-	trace := make([]report.PolicyMergeTrace, 0, 11)
+	trace := make([]report.PolicyMergeTrace, 0, 12)
 	if overrides.FailOnIncreasePercent != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.fail_on_increase_percent", Source: "cli"})
 	}
@@ -243,6 +285,9 @@ func cliPolicyTrace(overrides thresholds.Overrides) []report.PolicyMergeTrace {
 	}
 	if overrides.MaxUncertainImportCount != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.max_uncertain_import_count", Source: "cli"})
+	}
+	if overrides.ReachableVulnerabilityPriority != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.reachable_vulnerability_priority", Source: "cli"})
 	}
 	if overrides.LockfileDriftPolicy != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.lockfile_drift_policy", Source: "cli"})
@@ -266,4 +311,21 @@ func cliPolicyTrace(overrides thresholds.Overrides) []report.PolicyMergeTrace {
 		trace = append(trace, report.PolicyMergeTrace{Field: "license.include_registry_provenance", Source: "cli"})
 	}
 	return trace
+}
+
+func mergePolicyTraceItems(trace []report.PolicyMergeTrace, items ...report.PolicyMergeTrace) []report.PolicyMergeTrace {
+	out := append([]report.PolicyMergeTrace{}, trace...)
+	index := make(map[string]int, len(out))
+	for i, item := range out {
+		index[item.Field] = i
+	}
+	for _, item := range items {
+		if existing, ok := index[item.Field]; ok {
+			out[existing].Source = item.Source
+			continue
+		}
+		index[item.Field] = len(out)
+		out = append(out, item)
+	}
+	return out
 }

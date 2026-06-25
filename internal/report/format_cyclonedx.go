@@ -169,6 +169,7 @@ func formatCycloneDXBOMProperties(reportData Report) []cycloneDXProperty {
 		appendCycloneDXJSONProperty(&props, "lopper:policy:thresholds", reportData.EffectivePolicy.Thresholds)
 		appendCycloneDXJSONProperty(&props, "lopper:policy:removal-candidate-weights", reportData.EffectivePolicy.RemovalCandidateWeights)
 		appendCycloneDXJSONProperty(&props, "lopper:policy:license", reportData.EffectivePolicy.License)
+		appendCycloneDXJSONProperty(&props, "lopper:policy:vulnerabilities", reportData.EffectivePolicy.Vulnerabilities)
 		appendCycloneDXJSONProperty(&props, "lopper:policy:merge-trace", sortedPolicyMergeTrace(reportData.EffectivePolicy.MergeTrace))
 	}
 	if reportData.BaselineComparison != nil {
@@ -177,6 +178,7 @@ func formatCycloneDXBOMProperties(reportData Report) []cycloneDXProperty {
 		appendCycloneDXProperty(&props, "lopper:baseline:unchanged-rows", strconv.Itoa(reportData.BaselineComparison.UnchangedRows))
 		appendCycloneDXJSONProperty(&props, "lopper:baseline:summary-delta", reportData.BaselineComparison.SummaryDelta)
 		appendCycloneDXJSONProperty(&props, "lopper:baseline:new-denied-licenses", sortedDeniedLicenseDeltas(reportData.BaselineComparison.NewDeniedLicenses))
+		appendCycloneDXJSONProperty(&props, "lopper:baseline:new-reachable-vulnerabilities", sortedVulnerabilityDeltas(reportData.BaselineComparison.NewReachableVulnerabilities))
 	}
 	return sortedCycloneDXProperties(props)
 }
@@ -205,11 +207,23 @@ func formatCycloneDXComponentProperties(dep DependencyReport, baselineDelta Depe
 	appendCycloneDXJSONProperty(&props, "lopper:recommendations", sortedRecommendations(dep.Recommendations))
 	appendCycloneDXRuntimeProperties(&props, dep.RuntimeUsage)
 	appendCycloneDXReachabilityProperties(&props, dep.ReachabilityConfidence)
+	appendCycloneDXVulnerabilityProperties(&props, dep.Vulnerabilities)
 	appendCycloneDXRemovalCandidateProperties(&props, dep.RemovalCandidate)
 	appendCycloneDXLicenseProperties(&props, dep.License)
 	appendCycloneDXProvenanceProperties(&props, dep.Provenance)
 	appendCycloneDXBaselineDeltaProperties(&props, baselineDelta)
 	return sortedCycloneDXProperties(props)
+}
+
+func appendCycloneDXVulnerabilityProperties(props *[]cycloneDXProperty, findings []VulnerabilityFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	sorted := append([]VulnerabilityFinding{}, findings...)
+	sortVulnerabilityFindings(sorted)
+	appendCycloneDXProperty(props, "lopper:vulnerabilities:count", strconv.Itoa(len(sorted)))
+	appendCycloneDXProperty(props, "lopper:vulnerabilities:reachable-count", strconv.Itoa(countReachableCSVVulnerabilities(sorted)))
+	appendCycloneDXJSONProperty(props, "lopper:vulnerabilities", sorted)
 }
 
 func appendCycloneDXRuntimeProperties(props *[]cycloneDXProperty, runtime *RuntimeUsage) {
@@ -280,6 +294,8 @@ func appendCycloneDXBaselineDeltaProperties(props *[]cycloneDXProperty, delta De
 	appendCycloneDXProperty(props, "lopper:baseline:estimated-unused-bytes-delta", strconv.FormatInt(delta.EstimatedUnusedBytesDelta, 10))
 	appendCycloneDXJSONProperty(props, "lopper:baseline:runtime-delta", delta.RuntimeDelta)
 	appendCycloneDXProperty(props, "lopper:baseline:denied-introduced", strconv.FormatBool(delta.DeniedIntroduced))
+	appendCycloneDXProperty(props, "lopper:baseline:reachable-vulnerability-count-delta", strconv.Itoa(delta.ReachableVulnerabilityCountDelta))
+	appendCycloneDXProperty(props, "lopper:baseline:reachable-vulnerabilities-introduced", strconv.FormatBool(delta.ReachableVulnerabilitiesIntroduced))
 }
 
 func appendCycloneDXProperty(props *[]cycloneDXProperty, name, value string) {
@@ -455,6 +471,15 @@ func sortedPolicyMergeTrace(values []PolicyMergeTrace) []PolicyMergeTrace {
 func sortedDeniedLicenseDeltas(values []DeniedLicenseDelta) []DeniedLicenseDelta {
 	return sortedCycloneDXByKey(values, func(value DeniedLicenseDelta) cycloneDXSortKey {
 		return cycloneDXSortKey{strings: []string{value.Language, value.Name, value.SPDX}}
+	})
+}
+
+func sortedVulnerabilityDeltas(values []VulnerabilityDelta) []VulnerabilityDelta {
+	return sortedCycloneDXByKey(values, func(value VulnerabilityDelta) cycloneDXSortKey {
+		return cycloneDXSortKey{
+			strings: []string{value.Priority, value.Language, value.Name, value.AdvisoryID},
+			ints:    []int{int(value.PriorityScore * 10)},
+		}
 	})
 }
 

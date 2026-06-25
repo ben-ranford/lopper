@@ -38,6 +38,9 @@ var analyseCSVHeader = []string{
 	"reachability_score",
 	"reachability_summary",
 	"reachability_rationale_codes",
+	"vulnerability_findings",
+	"vulnerability_highest_priority",
+	"vulnerability_reachable_count",
 	"removal_candidate_score",
 	"removal_candidate_usage",
 	"removal_candidate_impact",
@@ -128,6 +131,9 @@ func formatDependencyCSVRow(reportData Report, dep DependencyReport) []string {
 		formatCSVReachabilityScore(dep.ReachabilityConfidence),
 		formatCSVReachabilitySummary(dep.ReachabilityConfidence),
 		formatCSVReachabilityRationale(dep.ReachabilityConfidence),
+		formatCSVVulnerabilities(dep.Vulnerabilities),
+		formatCSVHighestVulnerabilityPriority(dep.Vulnerabilities),
+		strconv.Itoa(countReachableCSVVulnerabilities(dep.Vulnerabilities)),
 		formatCSVRemovalCandidateScore(dep.RemovalCandidate),
 		formatCSVRemovalCandidateMetric(dep.RemovalCandidate, "usage"),
 		formatCSVRemovalCandidateMetric(dep.RemovalCandidate, "impact"),
@@ -332,6 +338,55 @@ func formatCSVRiskCues(cues []RiskCue) string {
 
 func formatCSVRecommendations(recommendations []Recommendation) string {
 	return formatCSVCodeValues(recommendations, recommendationCode, recommendationPriority)
+}
+
+func formatCSVVulnerabilities(findings []VulnerabilityFinding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+	sorted := append([]VulnerabilityFinding{}, findings...)
+	sortVulnerabilityFindings(sorted)
+	items := make([]string, 0, len(sorted))
+	for _, finding := range sorted {
+		parts := []string{
+			finding.AdvisoryID,
+			finding.Package,
+			finding.Severity,
+			finding.Priority,
+			formatCSVFloat(finding.PriorityScore),
+		}
+		if finding.Reachable {
+			parts = append(parts, "reachable")
+		}
+		if strings.TrimSpace(finding.FixedVersion) != "" {
+			parts = append(parts, "fixed="+finding.FixedVersion)
+		}
+		if strings.TrimSpace(finding.Source) != "" {
+			parts = append(parts, "source="+finding.Source)
+		}
+		items = append(items, strings.Join(parts, ":"))
+	}
+	return strings.Join(items, "|")
+}
+
+func formatCSVHighestVulnerabilityPriority(findings []VulnerabilityFinding) string {
+	highest := ""
+	for _, finding := range findings {
+		if priorityRank(finding.Priority) > priorityRank(highest) {
+			highest = finding.Priority
+		}
+	}
+	return highest
+}
+
+func countReachableCSVVulnerabilities(findings []VulnerabilityFinding) int {
+	count := 0
+	for _, finding := range findings {
+		if finding.Reachable {
+			count++
+		}
+	}
+	return count
 }
 
 func formatCSVRuntimeLoadCount(usage *RuntimeUsage) string {

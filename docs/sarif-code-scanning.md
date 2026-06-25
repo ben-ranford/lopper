@@ -11,6 +11,9 @@ The SARIF output includes:
 - stable rule IDs for waste, risk cues, and recommendations
 - finding metadata (dependency, language, module/symbol when available)
 - dependency provenance and runtime context, including parent modules and entrypoints when runtime traces are present
+- local advisory vulnerability findings with severity, fixed version when known,
+  source, reachability-weighted priority, and evidence when
+  `--advisory-source` or config `advisories.source` is set
 - baseline context for compare-mode findings, including per-dependency deltas and overall waste delta
 - source locations for findings when location data exists
 
@@ -44,6 +47,8 @@ jobs:
           top: '20'
           scope-mode: repo
           format: sarif
+          enable-feature: reachability-vulnerability-prioritization-preview
+          advisory-source: security/lopper-advisories.yml
           output: lopper.sarif
 
       - name: Upload SARIF
@@ -56,4 +61,7 @@ jobs:
 
 - Existing `table` and `json` outputs are unchanged.
 - The action supports `format: sarif`; direct CLI use with `lopper analyse --format sarif` remains supported.
+- Advisory-backed vulnerability SARIF results are sourced only from the local
+  advisory file passed to Lopper. They are triage priorities and do not claim
+  exploitability.
 - For best review context in pull requests, run analysis from repository root.

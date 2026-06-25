@@ -63,7 +63,8 @@
           "minimum": 0,
           "description": "Dependencies denied by license policy; mutually exclusive with knownLicenseCount and unknownLicenseCount."
         },
-        "reachability": { "$ref": "#/$defs/reachabilityRollup" }
+        "reachability": { "$ref": "#/$defs/reachabilityRollup" },
+        "vulnerabilities": { "$ref": "#/$defs/vulnerabilitySummary" }
       }
     },
     "scopeMetadata": {
@@ -113,10 +114,14 @@
         "maxUncertainImportCount"
       ],
       "properties": {
-        "failOnIncreasePercent": { "type": "integer", "minimum": 0 },
+        "failOnIncreasePercent": { "type": "integer", "minimum": -1 },
         "lowConfidenceWarningPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
         "minUsagePercentForRecommendations": { "type": "integer", "minimum": 0, "maximum": 100 },
-        "maxUncertainImportCount": { "type": "integer", "minimum": 0 }
+        "maxUncertainImportCount": { "type": "integer", "minimum": -1 },
+        "reachableVulnerabilityPriority": {
+          "type": "string",
+          "enum": ["off", "low", "medium", "high", "critical"]
+        }
       }
     },
     "cacheMetadata": {
@@ -160,7 +165,8 @@
         },
         "thresholds": { "$ref": "#/$defs/effectiveThresholds" },
         "removalCandidateWeights": { "$ref": "#/$defs/removalCandidateWeights" },
-        "license": { "$ref": "#/$defs/licensePolicy" }
+        "license": { "$ref": "#/$defs/licensePolicy" },
+        "vulnerabilities": { "$ref": "#/$defs/vulnerabilityPolicy" }
       }
     },
     "licensePolicy": {
@@ -216,7 +222,64 @@
         "reachabilityConfidence": { "$ref": "#/$defs/reachabilityConfidence" },
         "removalCandidate": { "$ref": "#/$defs/removalCandidate" },
         "license": { "$ref": "#/$defs/dependencyLicense" },
-        "provenance": { "$ref": "#/$defs/dependencyProvenance" }
+        "provenance": { "$ref": "#/$defs/dependencyProvenance" },
+        "vulnerabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/vulnerabilityFinding" }
+        }
+      }
+    },
+    "vulnerabilityFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["advisoryId", "package", "severity", "source", "priority", "priorityScore", "reachable"],
+      "properties": {
+        "advisoryId": { "type": "string" },
+        "package": { "type": "string" },
+        "severity": { "type": "string" },
+        "fixedVersion": { "type": "string" },
+        "source": { "type": "string" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "priorityScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "reachable": { "type": "boolean" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "vulnerabilityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "advisorySourcePath": { "type": "string" },
+        "reachablePriorityThreshold": {
+          "type": "string",
+          "enum": ["off", "low", "medium", "high", "critical"]
+        }
+      }
+    },
+    "vulnerabilitySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["totalFindings", "reachableFindings"],
+      "properties": {
+        "totalFindings": { "type": "integer", "minimum": 0 },
+        "reachableFindings": { "type": "integer", "minimum": 0 },
+        "highestSeverity": { "type": "string" },
+        "highestPriority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "bySeverity": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "byPriority": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "dependencyLicense": {
@@ -573,6 +636,10 @@
           "type": "array",
           "items": { "$ref": "#/$defs/deniedLicenseDelta" }
         },
+        "newReachableVulnerabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/vulnerabilityDelta" }
+        },
         "unchangedRows": { "type": "integer", "minimum": 0 }
       }
     },
@@ -599,7 +666,8 @@
         "unusedBytesDelta": { "type": "integer" },
         "knownLicenseCountDelta": { "type": "integer" },
         "unknownLicenseCountDelta": { "type": "integer" },
-        "deniedLicenseCountDelta": { "type": "integer" }
+        "deniedLicenseCountDelta": { "type": "integer" },
+        "reachableVulnerabilityCountDelta": { "type": "integer" }
       }
     },
     "dependencyDelta": {
@@ -624,7 +692,9 @@
         "estimatedUnusedBytesDelta": { "type": "integer" },
         "wastePercentDelta": { "type": "number" },
         "runtimeDelta": { "$ref": "#/$defs/runtimeDelta" },
-        "deniedIntroduced": { "type": "boolean" }
+        "deniedIntroduced": { "type": "boolean" },
+        "reachableVulnerabilityCountDelta": { "type": "integer" },
+        "reachableVulnerabilitiesIntroduced": { "type": "boolean" }
       }
     },
     "runtimeDelta": {
@@ -724,6 +794,26 @@
         "language": { "type": "string" },
         "name": { "type": "string" },
         "spdx": { "type": "string" }
+      }
+    },
+    "vulnerabilityDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "advisoryId", "package", "severity", "source", "priority", "priorityScore"],
+      "properties": {
+        "language": { "type": "string" },
+        "name": { "type": "string" },
+        "advisoryId": { "type": "string" },
+        "package": { "type": "string" },
+        "severity": { "type": "string" },
+        "fixedVersion": { "type": "string" },
+        "source": { "type": "string" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "priorityScore": { "type": "number", "minimum": 0, "maximum": 100 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     }
   }

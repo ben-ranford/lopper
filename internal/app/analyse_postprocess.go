@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
@@ -175,6 +176,19 @@ func appendBaselineSaveWarning(reportData report.Report, savedPath string) repor
 	return reportData
 }
 
+func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, error) {
+	if strings.TrimSpace(req.AdvisorySourcePath) == "" {
+		return reportData, nil
+	}
+	advisories, err := advisory.Load(req.AdvisorySourcePath)
+	if err != nil {
+		return reportData, err
+	}
+	report.AnnotateVulnerabilities(&reportData, advisories)
+	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+	return reportData, nil
+}
+
 func resolveCurrentBaselineKey(repoPath string) string {
 	sha, err := workspace.CurrentCommitSHA(repoPath)
 	if err != nil || strings.TrimSpace(sha) == "" {
@@ -229,4 +243,36 @@ func validateDeniedLicenses(reportData report.Report, failOnDeny bool) error {
 	}
 
 	return nil
+}
+
+func validateReachableVulnerabilityThreshold(reportData report.Report, threshold string) error {
+	if !report.ValidVulnerabilityPriorityThreshold(threshold) {
+		return fmt.Errorf("invalid reachable vulnerability priority threshold: %s", threshold)
+	}
+	if !hasReachableVulnerabilityAtOrAbove(reportData, threshold) {
+		return nil
+	}
+	return ErrReachableVulnerabilities
+}
+
+func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold string) bool {
+	if strings.TrimSpace(threshold) == "" || report.NormalizeVulnerabilityPriorityThreshold(threshold) == report.VulnerabilityPriorityOff {
+		return false
+	}
+	if reportData.BaselineComparison != nil {
+		for _, finding := range reportData.BaselineComparison.NewReachableVulnerabilities {
+			if report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, dep := range reportData.Dependencies {
+		for _, finding := range dep.Vulnerabilities {
+			if finding.Reachable && report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
+				return true
+			}
+		}
+	}
+	return false
 }

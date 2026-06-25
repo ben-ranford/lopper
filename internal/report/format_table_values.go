@@ -45,6 +45,27 @@ func formatReachabilityConfidence(confidence *ReachabilityConfidence) string {
 	return sanitizeTerminalString(fmt.Sprintf("%.1f (%s)", confidence.Score, confidence.Summary))
 }
 
+func formatVulnerabilities(findings []VulnerabilityFinding) string {
+	if len(findings) == 0 {
+		return "-"
+	}
+	sorted := append([]VulnerabilityFinding{}, findings...)
+	sortVulnerabilityFindings(sorted)
+	parts := make([]string, 0, len(sorted))
+	for _, finding := range sorted {
+		reachable := ""
+		if finding.Reachable {
+			reachable = " reachable"
+		}
+		fixed := ""
+		if strings.TrimSpace(finding.FixedVersion) != "" {
+			fixed = " fixed " + finding.FixedVersion
+		}
+		parts = append(parts, fmt.Sprintf("%s %s/%s %.1f%s%s", finding.AdvisoryID, finding.Severity, finding.Priority, finding.PriorityScore, reachable, fixed))
+	}
+	return sanitizeTerminalString(strings.Join(parts, "; "))
+}
+
 func formatRuntimeUsage(usage *RuntimeUsage) string {
 	if usage == nil {
 		return "-"

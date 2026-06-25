@@ -21,6 +21,7 @@ var (
 	ErrLockfileDrift                = errors.New("lockfile drift detected")
 	ErrUncertaintyThresholdExceeded = errors.New("uncertain dynamic import/require usage exceeded threshold")
 	ErrDeniedLicenses               = errors.New("denied licenses detected")
+	ErrReachableVulnerabilities     = errors.New("reachable vulnerabilities detected")
 	ErrDirtyWorktree                = errors.New("codemod apply requires a clean git worktree")
 	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
 	ErrMCPFeatureDisabled           = errors.New("mcp server feature is disabled")

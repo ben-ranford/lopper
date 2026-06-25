@@ -130,5 +130,11 @@
     "name": "python-runtime-capture-preview",
     "description": "Enable first-party Python runtime import capture for runtime-test-command analysis.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0015",
+    "name": "reachability-vulnerability-prioritization-preview",
+    "description": "Enable local advisory ingestion and reachability-weighted vulnerability prioritization for dependency reports.",
+    "lifecycle": "preview"
   }
 ]

@@ -16,6 +16,8 @@ Licenses: known={{.KnownLicenseCount}}, unknown={{.UnknownLicenseCount}}, denied
 
 {{if .Reachability}}Reachability confidence: avg={{printf "%.1f" .Reachability.AverageScore}} range={{printf "%.1f" .Reachability.LowestScore}}-{{printf "%.1f" .Reachability.HighestScore}} ({{.Reachability.Model}})
 
+{{end}}{{if .Vulnerabilities}}Vulnerabilities: total={{.Vulnerabilities.TotalFindings}}, reachable={{.Vulnerabilities.ReachableFindings}}, highest={{.Vulnerabilities.HighestSeverity}}/{{.Vulnerabilities.HighestPriority}}
+
 {{end}}`))
 
 	effectiveThresholdsSectionTemplate = template.Must(template.New("effective-thresholds-section").Parse(`Effective thresholds:
@@ -23,6 +25,9 @@ Licenses: known={{.KnownLicenseCount}}, unknown={{.UnknownLicenseCount}}, denied
 - low_confidence_warning_percent: {{.LowConfidenceWarningPercent}}
 - min_usage_percent_for_recommendations: {{.MinUsagePercentForRecommendations}}
 - max_uncertain_import_count: {{.MaxUncertainImportCount}}
+{{- if .ReachableVulnerabilityPriority}}
+- reachable_vulnerability_priority: {{.ReachableVulnerabilityPriority}}
+{{- end}}
 
 `))
 
@@ -102,6 +107,9 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	writef(buffer, "- low_confidence_warning_percent: %d\n", report.EffectivePolicy.Thresholds.LowConfidenceWarningPercent)
 	writef(buffer, "- min_usage_percent_for_recommendations: %d\n", report.EffectivePolicy.Thresholds.MinUsagePercentForRecommendations)
 	writef(buffer, "- max_uncertain_import_count: %d\n", report.EffectivePolicy.Thresholds.MaxUncertainImportCount)
+	if report.EffectivePolicy.Thresholds.ReachableVulnerabilityPriority != "" {
+		writef(buffer, "- reachable_vulnerability_priority: %s\n", report.EffectivePolicy.Thresholds.ReachableVulnerabilityPriority)
+	}
 	writef(buffer, "- removal_candidate_weight_usage: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Usage)
 	writef(buffer, "- removal_candidate_weight_impact: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Impact)
 	writef(buffer, "- removal_candidate_weight_confidence: %.3f\n", report.EffectivePolicy.RemovalCandidateWeights.Confidence)
@@ -112,6 +120,12 @@ func appendEffectivePolicy(buffer *bytes.Buffer, report Report) {
 	}
 	writef(buffer, "- license_fail_on_deny: %t\n", report.EffectivePolicy.License.FailOnDenied)
 	writef(buffer, "- license_include_registry_provenance: %t\n", report.EffectivePolicy.License.IncludeRegistryProvenance)
+	if strings.TrimSpace(report.EffectivePolicy.Vulnerabilities.AdvisorySourcePath) != "" {
+		writef(buffer, "- advisory_source: %s\n", report.EffectivePolicy.Vulnerabilities.AdvisorySourcePath)
+	}
+	if strings.TrimSpace(report.EffectivePolicy.Vulnerabilities.ReachablePriorityThreshold) != "" {
+		writef(buffer, "- reachable_vulnerability_priority: %s\n", report.EffectivePolicy.Vulnerabilities.ReachablePriorityThreshold)
+	}
 	if len(report.EffectivePolicy.MergeTrace) > 0 {
 		buffer.WriteString("- merge_trace:\n")
 		for _, item := range report.EffectivePolicy.MergeTrace {
@@ -137,6 +151,7 @@ type summarySectionData struct {
 	UnknownLicenseCount int
 	DeniedLicenseCount  int
 	Reachability        *reachabilitySectionData
+	Vulnerabilities     *vulnerabilitySectionData
 }
 
 type reachabilitySectionData struct {
@@ -144,6 +159,13 @@ type reachabilitySectionData struct {
 	LowestScore  float64
 	HighestScore float64
 	Model        string
+}
+
+type vulnerabilitySectionData struct {
+	TotalFindings     int
+	ReachableFindings int
+	HighestSeverity   string
+	HighestPriority   string
 }
 
 type languageBreakdownSectionData struct {
@@ -174,6 +196,14 @@ func newSummarySectionData(summary *Summary) summarySectionData {
 			LowestScore:  summary.Reachability.LowestScore,
 			HighestScore: summary.Reachability.HighestScore,
 			Model:        sanitizeTerminalString(summary.Reachability.Model),
+		}
+	}
+	if summary.Vulnerabilities != nil {
+		data.Vulnerabilities = &vulnerabilitySectionData{
+			TotalFindings:     summary.Vulnerabilities.TotalFindings,
+			ReachableFindings: summary.Vulnerabilities.ReachableFindings,
+			HighestSeverity:   sanitizeTerminalString(summary.Vulnerabilities.HighestSeverity),
+			HighestPriority:   sanitizeTerminalString(summary.Vulnerabilities.HighestPriority),
 		}
 	}
 	return data
@@ -221,6 +251,11 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 	if len(comparison.NewDeniedLicenses) > 0 {
 		for _, denied := range comparison.NewDeniedLicenses {
 			writef(buffer, "  new denied license %s/%s (%s)\n", denied.Language, denied.Name, denied.SPDX)
+		}
+	}
+	if len(comparison.NewReachableVulnerabilities) > 0 {
+		for _, finding := range topVulnerabilityDeltas(comparison.NewReachableVulnerabilities, 5) {
+			writef(buffer, "  new reachable vulnerability %s/%s %s %s priority=%s score=%.1f\n", finding.Language, finding.Name, finding.AdvisoryID, finding.Severity, finding.Priority, finding.PriorityScore)
 		}
 	}
 
@@ -324,6 +359,32 @@ func topWasteDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
 			return left.Language < right.Language
 		}
 		return left.Name < right.Name
+	})
+	if len(copied) < limit {
+		return copied
+	}
+	return copied[:limit]
+}
+
+func topVulnerabilityDeltas(deltas []VulnerabilityDelta, limit int) []VulnerabilityDelta {
+	if len(deltas) == 0 || limit <= 0 {
+		return make([]VulnerabilityDelta, 0)
+	}
+	copied := append([]VulnerabilityDelta(nil), deltas...)
+	sort.Slice(copied, func(i, j int) bool {
+		if copied[i].PriorityScore != copied[j].PriorityScore {
+			return copied[i].PriorityScore > copied[j].PriorityScore
+		}
+		if priorityRank(copied[i].Priority) != priorityRank(copied[j].Priority) {
+			return priorityRank(copied[i].Priority) > priorityRank(copied[j].Priority)
+		}
+		if copied[i].Language != copied[j].Language {
+			return copied[i].Language < copied[j].Language
+		}
+		if copied[i].Name != copied[j].Name {
+			return copied[i].Name < copied[j].Name
+		}
+		return copied[i].AdvisoryID < copied[j].AdvisoryID
 	})
 	if len(copied) < limit {
 		return copied

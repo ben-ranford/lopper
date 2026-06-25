@@ -25,6 +25,7 @@ export type LopperOutputFormat = "json" | "csv" | "sarif" | "pr-comment";
 
 export const defaultLopperRunTimeoutMs = 120_000;
 export const defaultCodemodAnalysisConcurrency = 4;
+const reachabilityVulnerabilityFeature = "reachability-vulnerability-prioritization-preview";
 
 const execFileAsync = promisify(execFile);
 
@@ -503,6 +504,10 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     const lowConfidenceWarning = configuration.get<number>("thresholdLowConfidenceWarningPercent", 40);
     const minUsagePercent = configuration.get<number>("thresholdMinUsagePercentForRecommendations", 40);
     const maxUncertainImports = configuration.get<number>("thresholdMaxUncertainImportCount", -1);
+    const reachableVulnerabilityPriority = configuration.get<string>("thresholdReachableVulnerabilityPriority", "off");
+    const advisorySourcePath = configuration.get<string>("advisorySourcePath", "");
+    const enableVulnerabilityFeature =
+      advisorySourcePath.trim().length > 0 || reachableVulnerabilityPriority.trim().toLowerCase() !== "off";
     const licenseDeny = configuration.get<string[]>("licenseDeny", []);
     const licenseFailOnDeny = configuration.get<boolean>("licenseFailOnDeny", false);
     const licenseIncludeRegistryProvenance = configuration.get<boolean>("licenseProvenanceRegistry", false);
@@ -516,6 +521,10 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       String(minUsagePercent),
       "--threshold-max-uncertain-imports",
       String(maxUncertainImports),
+      "--threshold-reachable-vuln-priority",
+      reachableVulnerabilityPriority,
+      ...(enableVulnerabilityFeature ? ["--enable-feature", reachabilityVulnerabilityFeature] : []),
+      ...(advisorySourcePath.trim().length > 0 ? ["--advisory-source", advisorySourcePath.trim()] : []),
       ...(licenseDeny.length > 0 ? ["--license-deny", licenseDeny.join(",")] : []),
       ...(licenseFailOnDeny ? ["--license-fail-on-deny"] : []),
       ...(licenseIncludeRegistryProvenance ? ["--license-provenance-registry"] : []),

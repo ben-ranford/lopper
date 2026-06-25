@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -67,9 +68,11 @@ type analysisToolArguments struct {
 	CacheReadOnly                     bool     `json:"cacheReadOnly,omitempty"`
 	RuntimeProfile                    string   `json:"runtimeProfile,omitempty"`
 	RuntimeTracePath                  string   `json:"runtimeTracePath,omitempty"`
+	AdvisorySourcePath                string   `json:"advisorySourcePath,omitempty"`
 	LowConfidenceWarningPercent       *int     `json:"lowConfidenceWarningPercent,omitempty"`
 	MinUsagePercentForRecommendations *int     `json:"minUsagePercentForRecommendations,omitempty"`
 	MaxUncertainImportCount           *int     `json:"maxUncertainImportCount,omitempty"`
+	ReachableVulnerabilityPriority    *string  `json:"reachableVulnerabilityPriority,omitempty"`
 	ScoreWeightUsage                  *float64 `json:"scoreWeightUsage,omitempty"`
 	ScoreWeightImpact                 *float64 `json:"scoreWeightImpact,omitempty"`
 	ScoreWeightConfidence             *float64 `json:"scoreWeightConfidence,omitempty"`
@@ -112,20 +115,22 @@ type languagesPayload struct {
 	EffectiveThresholds report.EffectiveThresholds     `json:"effectiveThresholds"`
 	RemovalWeights      report.RemovalCandidateWeights `json:"removalCandidateWeights"`
 	LicensePolicy       report.LicensePolicy           `json:"licensePolicy"`
+	VulnerabilityPolicy report.VulnerabilityPolicy     `json:"vulnerabilityPolicy,omitempty"`
 	EnabledFeatures     []string                       `json:"enabledFeatures,omitempty"`
 	PolicySources       []string                       `json:"policySources,omitempty"`
 	PolicyTrace         []report.PolicyMergeTrace      `json:"policyTrace,omitempty"`
 }
 
 type resolvedToolRequest struct {
-	analysisRequest analysis.Request
-	repoPath        string
-	thresholds      thresholds.Values
-	policySources   []string
-	policyTrace     []report.PolicyMergeTrace
-	baselinePath    string
-	baselineKey     string
-	currentKey      string
+	analysisRequest    analysis.Request
+	repoPath           string
+	thresholds         thresholds.Values
+	policySources      []string
+	policyTrace        []report.PolicyMergeTrace
+	advisorySourcePath string
+	baselinePath       string
+	baselineKey        string
+	currentKey         string
 }
 
 func (s *Server) tools() []toolSpec {
@@ -240,7 +245,15 @@ func (s *Server) runAnalysisTool(ctx context.Context, rawArgs json.RawMessage, k
 	if err != nil {
 		return analysisErrorResult(err)
 	}
-	decorateReport(&reportData, resolved.thresholds, resolved.policySources, resolved.policyTrace)
+	if resolved.advisorySourcePath != "" {
+		advisories, err := advisory.Load(resolved.advisorySourcePath)
+		if err != nil {
+			return analysisErrorResult(err)
+		}
+		report.AnnotateVulnerabilities(&reportData, advisories)
+		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+	}
+	decorateReport(&reportData, resolved.thresholds, resolved.policySources, resolved.policyTrace, resolved.advisorySourcePath)
 	if resolved.baselinePath != "" {
 		reportData, err = applyBaseline(reportData, resolved.baselinePath, resolved.baselineKey, resolved.currentKey)
 		if err != nil {
@@ -294,15 +307,20 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
+	advisorySourcePath := resolveAdvisorySourcePath(loadResult, args)
+	if err := validateAnalysisVulnerabilityFeature(features, thresholdsValue, advisorySourcePath); err != nil {
+		return resolvedToolRequest{}, err
+	}
 	return resolvedToolRequest{
-		analysisRequest: analysisReq,
-		repoPath:        repoPath,
-		thresholds:      thresholdsValue,
-		policySources:   policySources,
-		policyTrace:     policyTrace,
-		baselinePath:    baselinePath,
-		baselineKey:     baselineKey,
-		currentKey:      currentKey,
+		analysisRequest:    analysisReq,
+		repoPath:           repoPath,
+		thresholds:         thresholdsValue,
+		policySources:      policySources,
+		policyTrace:        policyTrace,
+		advisorySourcePath: advisorySourcePath,
+		baselinePath:       baselinePath,
+		baselineKey:        baselineKey,
+		currentKey:         currentKey,
 	}, ctx.Err()
 }
 
@@ -428,9 +446,14 @@ func (s *Server) runListLanguagesTool(ctx context.Context, rawArgs json.RawMessa
 			LowConfidenceWarningPercent:       thresholdValues.LowConfidenceWarningPercent,
 			MinUsagePercentForRecommendations: thresholdValues.MinUsagePercentForRecommendations,
 			MaxUncertainImportCount:           thresholdValues.MaxUncertainImportCount,
+			ReachableVulnerabilityPriority:    thresholdValues.ReachableVulnerabilityPriority,
 		},
-		RemovalWeights:  thresholds.RemovalCandidateWeights(thresholdValues),
-		LicensePolicy:   licensePolicy(thresholdValues),
+		RemovalWeights: thresholds.RemovalCandidateWeights(thresholdValues),
+		LicensePolicy:  licensePolicy(thresholdValues),
+		VulnerabilityPolicy: report.VulnerabilityPolicy{
+			AdvisorySourcePath:         strings.TrimSpace(loadResult.AdvisorySourcePath),
+			ReachablePriorityThreshold: thresholdValues.ReachableVulnerabilityPriority,
+		},
 		EnabledFeatures: features.EnabledCodes(),
 		PolicySources:   append([]string{}, loadResult.PolicySources...),
 		PolicyTrace:     append([]report.PolicyMergeTrace{}, loadResult.PolicyTrace...),
@@ -508,6 +531,7 @@ func resolveThresholds(repoPath string, args analysisToolArguments) (thresholds.
 		LicenseDenyList:                   append([]string{}, args.LicenseDeny...),
 		LicenseFailOnDeny:                 args.LicenseFailOnDeny,
 		LicenseIncludeRegistryProvenance:  args.LicenseProvenanceRegistry,
+		ReachableVulnerabilityPriority:    args.ReachableVulnerabilityPriority,
 	}
 	if err := overrides.Validate(); err != nil {
 		return thresholds.LoadResult{}, thresholds.Values{}, nil, nil, err
@@ -534,7 +558,9 @@ func hasMCPPolicyOverrides(args analysisToolArguments) bool {
 		args.ScoreWeightConfidence != nil ||
 		len(args.LicenseDeny) > 0 ||
 		args.LicenseFailOnDeny != nil ||
-		args.LicenseProvenanceRegistry != nil
+		args.LicenseProvenanceRegistry != nil ||
+		args.ReachableVulnerabilityPriority != nil ||
+		strings.TrimSpace(args.AdvisorySourcePath) != ""
 }
 
 func prependPolicySource(source string, sources []string) []string {
@@ -582,6 +608,9 @@ func mcpPolicyTrace(args analysisToolArguments) []report.PolicyMergeTrace {
 	if args.MaxUncertainImportCount != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.max_uncertain_import_count", Source: "mcp"})
 	}
+	if args.ReachableVulnerabilityPriority != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.reachable_vulnerability_priority", Source: "mcp"})
+	}
 	if args.ScoreWeightUsage != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.usage", Source: "mcp"})
 	}
@@ -600,7 +629,30 @@ func mcpPolicyTrace(args analysisToolArguments) []report.PolicyMergeTrace {
 	if args.LicenseProvenanceRegistry != nil {
 		trace = append(trace, report.PolicyMergeTrace{Field: "license.include_registry_provenance", Source: "mcp"})
 	}
+	if strings.TrimSpace(args.AdvisorySourcePath) != "" {
+		trace = append(trace, report.PolicyMergeTrace{Field: "advisories.source", Source: "mcp"})
+	}
 	return trace
+}
+
+func resolveAdvisorySourcePath(loadResult thresholds.LoadResult, args analysisToolArguments) string {
+	if path := strings.TrimSpace(args.AdvisorySourcePath); path != "" {
+		return path
+	}
+	return strings.TrimSpace(loadResult.AdvisorySourcePath)
+}
+
+func validateAnalysisVulnerabilityFeature(features featureflags.Set, values thresholds.Values, advisorySourcePath string) error {
+	if strings.TrimSpace(advisorySourcePath) == "" {
+		threshold := report.NormalizeVulnerabilityPriorityThreshold(values.ReachableVulnerabilityPriority)
+		if threshold == "" || threshold == report.VulnerabilityPriorityOff {
+			return nil
+		}
+	}
+	if features.Enabled(report.ReachabilityVulnerabilityPrioritizationPreviewFeature) {
+		return nil
+	}
+	return fmt.Errorf("reachable vulnerability prioritization requires enableFeatures to include %s", report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
 }
 
 func resolveBaselineComparison(repoPath string, args analysisToolArguments) (string, string, string, error) {
@@ -637,7 +689,7 @@ func applyBaseline(current report.Report, baselinePath, requestedKey, currentKey
 	return report.ApplyBaselineWithKeys(current, baseline, requestedKey, currentKey)
 }
 
-func decorateReport(reportData *report.Report, values thresholds.Values, policySources []string, policyTrace []report.PolicyMergeTrace) {
+func decorateReport(reportData *report.Report, values thresholds.Values, policySources []string, policyTrace []report.PolicyMergeTrace, advisorySourcePath string) {
 	if reportData == nil {
 		return
 	}
@@ -646,6 +698,7 @@ func decorateReport(reportData *report.Report, values thresholds.Values, policyS
 		LowConfidenceWarningPercent:       values.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: values.MinUsagePercentForRecommendations,
 		MaxUncertainImportCount:           values.MaxUncertainImportCount,
+		ReachableVulnerabilityPriority:    values.ReachableVulnerabilityPriority,
 	}
 	reportData.EffectiveThresholds = &effective
 	reportData.EffectivePolicy = &report.EffectivePolicy{
@@ -654,6 +707,10 @@ func decorateReport(reportData *report.Report, values thresholds.Values, policyS
 		Thresholds:              effective,
 		RemovalCandidateWeights: thresholds.RemovalCandidateWeights(values),
 		License:                 licensePolicy(values),
+		Vulnerabilities: report.VulnerabilityPolicy{
+			AdvisorySourcePath:         strings.TrimSpace(advisorySourcePath),
+			ReachablePriorityThreshold: values.ReachableVulnerabilityPriority,
+		},
 	}
 }
 
@@ -882,9 +939,11 @@ func commonAnalysisProperties() map[string]any {
 		"cacheReadOnly":                     map[string]any{"type": "boolean", "default": false},
 		"runtimeProfile":                    map[string]any{"type": "string", "enum": []string{"node-import", "node-require", "browser-import", "browser-require"}, "default": defaultRuntimeProfile},
 		"runtimeTracePath":                  map[string]any{"type": "string"},
+		"advisorySourcePath":                map[string]any{"type": "string", "description": "Local JSON or YAML advisory file used to attach vulnerability findings without network access."},
 		"lowConfidenceWarningPercent":       percentageSchema(),
 		"minUsagePercentForRecommendations": percentageSchema(),
 		"maxUncertainImportCount":           map[string]any{"type": "integer", "minimum": -1},
+		"reachableVulnerabilityPriority":    map[string]any{"type": "string", "enum": []string{report.VulnerabilityPriorityOff, report.VulnerabilityPriorityLow, report.VulnerabilityPriorityMedium, report.VulnerabilityPriorityHigh, report.VulnerabilityPriorityCritical}, "default": report.VulnerabilityPriorityOff},
 		"scoreWeightUsage":                  map[string]any{"type": "number", "minimum": 0},
 		"scoreWeightImpact":                 map[string]any{"type": "number", "minimum": 0},
 		"scoreWeightConfidence":             map[string]any{"type": "number", "minimum": 0},

@@ -24,6 +24,7 @@ func formatPRComment(report Report) string {
 	buffer.WriteString(fmt.Sprintf("| Known licenses | %s |\n", signedInt(comparison.SummaryDelta.KnownLicenseCountDelta)))
 	buffer.WriteString(fmt.Sprintf("| Unknown licenses | %s |\n", signedInt(comparison.SummaryDelta.UnknownLicenseCountDelta)))
 	buffer.WriteString(fmt.Sprintf("| Denied licenses | %s |\n", signedInt(comparison.SummaryDelta.DeniedLicenseCountDelta)))
+	buffer.WriteString(fmt.Sprintf("| Reachable vulnerabilities | %s |\n", signedInt(comparison.SummaryDelta.ReachableVulnerabilityCountDelta)))
 	buffer.WriteString("\n")
 	buffer.WriteString("| Changed | Regressions | Progressions | Added | Removed | Unchanged |\n")
 	buffer.WriteString("| --- | --- | --- | --- | --- | --- |\n")
@@ -41,6 +42,24 @@ func formatPRComment(report Report) string {
 		buffer.WriteString("| --- | --- | --- | --- |\n")
 		for i, denied := range comparison.NewDeniedLicenses {
 			buffer.WriteString(fmt.Sprintf("| %d | `%s` | %s | %s |\n", i+1, escapeMarkdownTable(denied.Name), escapeMarkdownTable(denied.Language), escapeMarkdownTable(denied.SPDX)))
+		}
+	}
+
+	if len(comparison.NewReachableVulnerabilities) > 0 {
+		buffer.WriteString("\n### Newly reachable vulnerabilities\n\n")
+		buffer.WriteString("| # | Dependency | Advisory | Severity | Priority | Fixed version | Source |\n")
+		buffer.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
+		for i, finding := range topVulnerabilityDeltas(comparison.NewReachableVulnerabilities, 10) {
+			row := []string{
+				fmt.Sprintf("%d", i+1),
+				"`" + escapeMarkdownTable(finding.Name) + "`",
+				escapeMarkdownTable(finding.AdvisoryID),
+				escapeMarkdownTable(finding.Severity),
+				escapeMarkdownTable(fmt.Sprintf("%s (%.1f)", finding.Priority, finding.PriorityScore)),
+				escapeMarkdownTable(emptyDash(finding.FixedVersion)),
+				escapeMarkdownTable(finding.Source),
+			}
+			buffer.WriteString("| " + strings.Join(row, " | ") + " |\n")
 		}
 	}
 
@@ -71,6 +90,13 @@ func formatPRComment(report Report) string {
 	}
 
 	return buffer.String()
+}
+
+func emptyDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func appendRuntimePRCommentSection(buffer *strings.Builder, title string, deltas []DependencyDelta) {

@@ -45,13 +45,15 @@ func TestLoadNoConfigFile(t *testing.T) {
 
 func TestLoadYAMLConfig(t *testing.T) {
 	repo := t.TempDir()
-	cfg := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 3", " low_confidence_warning_percent: 25", " min_usage_percent_for_recommendations: 55", " removal_candidate_weight_usage: 0.6", " removal_candidate_weight_impact: 0.2", " removal_candidate_weight_confidence: 0.2", " lockfile_drift_policy: fail", ""}, "\n")
+	cfg := strings.Join([]string{"thresholds:", " fail_on_increase_percent: 3", " low_confidence_warning_percent: 25", " min_usage_percent_for_recommendations: 55", " reachable_vulnerability_priority: high", " removal_candidate_weight_usage: 0.6", " removal_candidate_weight_impact: 0.2", " removal_candidate_weight_confidence: 0.2", " lockfile_drift_policy: fail", "advisories:", " source: security/advisories.yml", ""}, "\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), cfg)
 
-	overrides, path, err := Load(repo, "")
+	result, err := LoadWithPolicy(repo, "")
 	if err != nil {
 		t.Fatalf(loadConfigErrFmt, err)
 	}
+	overrides := result.Overrides
+	path := result.ConfigPath
 	if !strings.HasSuffix(path, lopperYMLName) {
 		t.Fatalf("expected %s path, got %q", lopperYMLName, path)
 	}
@@ -65,11 +67,17 @@ func TestLoadYAMLConfig(t *testing.T) {
 	if resolved.MinUsagePercentForRecommendations != 55 {
 		t.Fatalf("expected min_usage_percent_for_recommendations=55, got %d", resolved.MinUsagePercentForRecommendations)
 	}
+	if resolved.ReachableVulnerabilityPriority != "high" {
+		t.Fatalf("expected reachable_vulnerability_priority=high, got %q", resolved.ReachableVulnerabilityPriority)
+	}
 	if resolved.RemovalCandidateWeightUsage != 0.6 || resolved.RemovalCandidateWeightImpact != 0.2 || resolved.RemovalCandidateWeightConfidence != 0.2 {
 		t.Fatalf("unexpected score weights: %+v", resolved)
 	}
 	if resolved.LockfileDriftPolicy != "fail" {
 		t.Fatalf("expected lockfile_drift_policy=fail, got %q", resolved.LockfileDriftPolicy)
+	}
+	if want := filepath.Join(repo, "security", "advisories.yml"); result.AdvisorySourcePath != want {
+		t.Fatalf("expected advisory source path %q, got %q", want, result.AdvisorySourcePath)
 	}
 }
 
@@ -388,6 +396,10 @@ func TestLoadConfigInvalidScoreWeightValue(t *testing.T) {
 
 func TestLoadConfigInvalidLockfileDriftPolicy(t *testing.T) {
 	assertLoadConfigErrorContains(t, "thresholds:\n  lockfile_drift_policy: nope\n", "lockfile_drift_policy")
+}
+
+func TestLoadConfigInvalidReachableVulnerabilityPriority(t *testing.T) {
+	assertLoadConfigErrorContains(t, "thresholds:\n  reachable_vulnerability_priority: urgent\n", "reachable_vulnerability_priority")
 }
 
 func TestLoadConfigDiscoveryPriority(t *testing.T) {

@@ -83,6 +83,10 @@ inputs:
     description: Optional test command to run with runtime tracing.
     required: false
     default: ''
+  advisory-source:
+    description: Local JSON or YAML advisory file to attach vulnerability findings without network access. Requires enable-feature=reachability-vulnerability-prioritization-preview.
+    required: false
+    default: ''
   cache:
     description: Enable the incremental analysis cache.
     required: false
@@ -109,6 +113,10 @@ inputs:
     default: ''
   threshold-max-uncertain-imports:
     description: Fail when unresolved dynamic import/require usage count exceeds this threshold.
+    required: false
+    default: ''
+  threshold-reachable-vulnerability-priority:
+    description: 'Fail when reachable local advisory findings meet or exceed this reachability-weighted priority: off, low, medium, high, or critical. Requires enable-feature=reachability-vulnerability-prioritization-preview when above off.'
     required: false
     default: ''
   lockfile-drift-policy:
@@ -184,6 +192,7 @@ runs:
         INPUT_RUNTIME_PROFILE: ${{ inputs.runtime-profile }}
         INPUT_RUNTIME_TRACE: ${{ inputs.runtime-trace }}
         INPUT_RUNTIME_TEST_COMMAND: ${{ inputs.runtime-test-command }}
+        INPUT_ADVISORY_SOURCE: ${{ inputs.advisory-source }}
         INPUT_CACHE: ${{ inputs.cache }}
         INPUT_CACHE_PATH: ${{ inputs.cache-path }}
         INPUT_CACHE_READONLY: ${{ inputs.cache-readonly }}
@@ -191,6 +200,7 @@ runs:
         INPUT_THRESHOLD_LOW_CONFIDENCE_WARNING: ${{ inputs.threshold-low-confidence-warning }}
         INPUT_THRESHOLD_MIN_USAGE_PERCENT: ${{ inputs.threshold-min-usage-percent }}
         INPUT_THRESHOLD_MAX_UNCERTAIN_IMPORTS: ${{ inputs.threshold-max-uncertain-imports }}
+        INPUT_THRESHOLD_REACHABLE_VULNERABILITY_PRIORITY: ${{ inputs.threshold-reachable-vulnerability-priority }}
         INPUT_LOCKFILE_DRIFT_POLICY: ${{ inputs.lockfile-drift-policy }}
         INPUT_LICENSE_DENY: ${{ inputs.license-deny }}
         INPUT_LICENSE_FAIL_ON_DENY: ${{ inputs.license-fail-on-deny }}

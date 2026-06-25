@@ -13,24 +13,27 @@ This guide explains how to tune `lopper` threshold behavior for CI quality gates
 - `license_deny`: SPDX deny list used for license policy checks.
 - `license_fail_on_deny`: fail CI when denied licenses are detected.
 - `license_include_registry_provenance`: opt-in JS/TS registry provenance heuristics (default local-only).
+- `reachable_vulnerability_priority`: fail CI when reachable local advisory findings meet or exceed this reachability-weighted priority (`off`, `low`, `medium`, `high`, or `critical`).
 
 Default values:
 
-- `fail_on_increase_percent: 0` (disabled unless set above `0`)
+- `fail_on_increase_percent: -1` (disabled)
 - `low_confidence_warning_percent: 40`
 - `min_usage_percent_for_recommendations: 40`
 - `removal_candidate_weight_usage: 0.50`
 - `removal_candidate_weight_impact: 0.30`
 - `removal_candidate_weight_confidence: 0.20`
+- `reachable_vulnerability_priority: off`
 - `license_deny: []`
 - `license_fail_on_deny: false`
 - `license_include_registry_provenance: false`
 
 Validation ranges:
 
-- `fail_on_increase_percent >= 0`
+- `fail_on_increase_percent` is `-1` (disabled) or `>= 0`
 - `low_confidence_warning_percent` in `[0, 100]`
 - `min_usage_percent_for_recommendations` in `[0, 100]`
+- `reachable_vulnerability_priority` is one of `off`, `low`, `medium`, `high`, or `critical`
 - `removal_candidate_weight_*` values must be `>= 0`
 - At least one removal-candidate weight must be greater than `0`
 
@@ -71,6 +74,9 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2 \
   --threshold-low-confidence-warning 35 \
   --threshold-min-usage-percent 45 \
+  --enable-feature reachability-vulnerability-prioritization-preview \
+  --advisory-source security/lopper-advisories.yml \
+  --threshold-reachable-vuln-priority high \
   --license-deny GPL-3.0-only,AGPL-3.0-only \
   --license-fail-on-deny \
   --license-provenance-registry \
@@ -91,10 +97,24 @@ thresholds:
     - AGPL-3.0-only
   license_fail_on_deny: true
   license_include_registry_provenance: false
+  reachable_vulnerability_priority: high
   removal_candidate_weight_usage: 0.50
   removal_candidate_weight_impact: 0.30
   removal_candidate_weight_confidence: 0.20
+advisories:
+  source: security/lopper-advisories.yml
+features:
+  enable:
+    - reachability-vulnerability-prioritization-preview
 ```
+
+Local advisory ingestion is gated by
+`reachability-vulnerability-prioritization-preview`. `advisories.source` points
+to a local JSON or YAML advisory file and resolves
+relative to the config file. Lopper does not fetch a proprietary or network
+vulnerability database for this gate. The finding priority combines local
+advisory severity with reachability confidence, runtime usage correlation, and
+static import/export evidence.
 
 You can also pass an explicit config path:
 
@@ -157,6 +177,10 @@ lopper analyse --top 20 --repo . --language all --format json | jq '.effectivePo
 
 - If `fail_on_increase_percent` is above `0`, you need `--baseline PATH` for compare mode.
 - If `license_fail_on_deny` is enabled, CI exits non-zero when denied licenses appear, and baseline comparison highlights `newDeniedLicenses`.
+- If `reachable_vulnerability_priority` is not `off`, CI exits non-zero when
+  reachable advisory findings meet or exceed that priority. With a baseline,
+  only `baselineComparison.newReachableVulnerabilities` are gated; without a
+  baseline, current reachable findings are gated.
 - You can use immutable keyed snapshots instead of a raw file path:
   - Save baseline: `--baseline-store DIR --save-baseline` (defaults key to `commit:<sha>`)
   - Save labeled baseline: add `--baseline-label LABEL`

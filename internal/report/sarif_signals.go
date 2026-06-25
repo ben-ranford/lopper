@@ -120,3 +120,15 @@ func priorityToSARIFLevel(priority string) string {
 		return "note"
 	}
 }
+
+func vulnerabilitySARIFLevel(finding VulnerabilityFinding) string {
+	if finding.Reachable {
+		switch strings.ToLower(strings.TrimSpace(finding.Priority)) {
+		case "critical", "high":
+			return "error"
+		case "medium":
+			return "warning"
+		}
+	}
+	return severityToSARIFLevel(finding.Severity)
+}

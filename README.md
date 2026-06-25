@@ -136,6 +136,9 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2 \
   --threshold-low-confidence-warning 35 \
   --threshold-min-usage-percent 45 \
+  --enable-feature reachability-vulnerability-prioritization-preview \
+  --advisory-source security/lopper-advisories.yml \
+  --threshold-reachable-vuln-priority high \
   --score-weight-usage 0.50 \
   --score-weight-impact 0.30 \
   --score-weight-confidence 0.20
@@ -176,6 +179,22 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2
 ```
 
+Attach local vulnerability advisories for reachability-weighted security triage:
+
+```bash
+lopper analyse --top 20 \
+  --repo . \
+  --language all \
+  --enable-feature reachability-vulnerability-prioritization-preview \
+  --advisory-source security/lopper-advisories.yml \
+  --threshold-reachable-vuln-priority high
+```
+
+Advisory ingestion is preview-gated and local-only. Lopper does not fetch a proprietary or network
+vulnerability database, and the priority score ranks triage using advisory
+severity plus reachability, runtime, and static import evidence; it is not an
+exploitability claim.
+
 Generate an org-level dashboard across multiple repos:
 
 ```bash
@@ -214,25 +233,30 @@ thresholds:
   fail_on_increase_percent: 2
   low_confidence_warning_percent: 35
   min_usage_percent_for_recommendations: 45
+  reachable_vulnerability_priority: high
   removal_candidate_weight_usage: 0.50
   removal_candidate_weight_impact: 0.30
   removal_candidate_weight_confidence: 0.20
+advisories:
+  source: security/lopper-advisories.yml
 ```
 
 Threshold defaults:
 
-- `fail_on_increase_percent: 0` (disabled unless set above `0`)
+- `fail_on_increase_percent: -1` (disabled)
 - `low_confidence_warning_percent: 40`
 - `min_usage_percent_for_recommendations: 40`
+- `reachable_vulnerability_priority: off`
 - `removal_candidate_weight_usage: 0.50`
 - `removal_candidate_weight_impact: 0.30`
 - `removal_candidate_weight_confidence: 0.20`
 
 Threshold ranges:
 
-- `fail_on_increase_percent` must be `>= 0`
+- `fail_on_increase_percent` must be `-1` or `>= 0`
 - `low_confidence_warning_percent` must be between `0` and `100`
 - `min_usage_percent_for_recommendations` must be between `0` and `100`
+- `reachable_vulnerability_priority` must be `off`, `low`, `medium`, `high`, or `critical`
 - removal candidate weights must be `>= 0` and at least one must be greater than `0`
 
 Precedence is `CLI > repo config > imported policy packs > defaults`.

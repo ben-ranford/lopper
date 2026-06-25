@@ -54,8 +54,10 @@ Common optional inputs:
 - `cacheEnabled`, `cachePath`, `cacheReadOnly`: incremental cache controls.
 - `runtimeProfile`: `node-import`, `node-require`, `browser-import`, or `browser-require`.
 - `runtimeTracePath`: local NDJSON runtime trace path.
+- `advisorySourcePath`: local JSON or YAML advisory file. MCP reads this file
+  only; it does not fetch vulnerability data from a network service.
 - `enableFeatures` / `disableFeatures`: feature flag names or codes.
-- threshold and policy overrides: `lowConfidenceWarningPercent`, `minUsagePercentForRecommendations`, `maxUncertainImportCount`, `scoreWeightUsage`, `scoreWeightImpact`, `scoreWeightConfidence`, `licenseDeny`, `licenseFailOnDeny`, `licenseProvenanceRegistry`.
+- threshold and policy overrides: `lowConfidenceWarningPercent`, `minUsagePercentForRecommendations`, `maxUncertainImportCount`, `reachableVulnerabilityPriority`, `scoreWeightUsage`, `scoreWeightImpact`, `scoreWeightConfidence`, `licenseDeny`, `licenseFailOnDeny`, `licenseProvenanceRegistry`.
 - `timeoutMillis`: per-tool timeout.
 
 ### `lopper_analyse_dependency`
@@ -157,7 +159,7 @@ Optional input:
 - `enableFeatures` / `disableFeatures`: feature overrides used for the metadata response.
 - `timeoutMillis`: per-tool timeout.
 
-The response includes canonical language IDs, aliases, supported language modes, runtime profiles, effective threshold defaults or config values, removal candidate weights, license policy, enabled feature codes, and policy source trace when config is loaded.
+The response includes canonical language IDs, aliases, supported language modes, runtime profiles, effective threshold defaults or config values, removal candidate weights, license policy, vulnerability advisory policy, enabled feature codes, and policy source trace when config is loaded.
 
 ## Output Shape
 
@@ -167,6 +169,13 @@ Analysis and mutation tools return MCP tool content with:
 - `structuredContent.schemaVersion`: Lopper report schema version.
 - `structuredContent.summary`: same concise summary string.
 - `structuredContent.report`: full report payload aligned with `docs/report-schema.json` for analysis and analysis-baseline tools, or the dashboard report shape for dashboard baseline saves.
+
+When `advisorySourcePath` or config `advisories.source` is set, include
+`reachability-vulnerability-prioritization-preview` in `enableFeatures` or config
+`features.enable`. Analysis reports then include
+`dependencies[].vulnerabilities`, `summary.vulnerabilities`, and baseline
+`newReachableVulnerabilities` fields when applicable. The priority is
+reachability-weighted triage metadata, not an exploitability claim.
 
 Tool failures return `isError: true` with a text message and structured error:
 
@@ -190,6 +199,8 @@ The MCP server is local-first and read-only by default:
 - Baseline comparison loads existing files only. It does not write snapshots.
 - Config resolution uses the existing local config and policy-pack rules; remote policy packs are disabled before any fetch.
 - Runtime trace support reads a local trace file only. MCP does not run test commands.
+- Advisory support reads a local JSON or YAML file only. MCP does not fetch a
+  vulnerability database.
 - Analysis observes JSON-RPC request context and optional `timeoutMillis` cancellation.
 
 Explicit mutation tools add these guardrails:

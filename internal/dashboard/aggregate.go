@@ -19,11 +19,13 @@ type crossRepoRepository struct {
 }
 
 type repoSummaryContribution struct {
-	TotalDeps              int
-	TotalWasteCandidates   int
-	CriticalCVEs           int
-	RuntimeTraceData       bool
-	RuntimeRegressionCount int
+	TotalDeps                int
+	TotalWasteCandidates     int
+	CriticalCVEs             int
+	VulnerabilityFindings    int
+	ReachableVulnerabilities int
+	RuntimeTraceData         bool
+	RuntimeRegressionCount   int
 }
 
 func Aggregate(generatedAt time.Time, analyses []RepoAnalysis) Report {
@@ -86,12 +88,15 @@ func baseRepoResult(input RepoInput) RepoResult {
 
 func summarizeRepo(reportData report.Report) repoSummaryContribution {
 	_, criticalCVEs := scanRiskSignals(reportData.Dependencies)
+	vulnerabilityFindings, reachableVulnerabilities := countVulnerabilities(reportData)
 	return repoSummaryContribution{
-		TotalDeps:              len(reportData.Dependencies),
-		TotalWasteCandidates:   countWasteCandidates(reportData.Dependencies),
-		CriticalCVEs:           criticalCVEs,
-		RuntimeTraceData:       reportHasRuntimeUsage(reportData),
-		RuntimeRegressionCount: runtimeRegressionCount(reportData),
+		TotalDeps:                len(reportData.Dependencies),
+		TotalWasteCandidates:     countWasteCandidates(reportData.Dependencies),
+		CriticalCVEs:             criticalCVEs,
+		VulnerabilityFindings:    vulnerabilityFindings,
+		ReachableVulnerabilities: reachableVulnerabilities,
+		RuntimeTraceData:         reportHasRuntimeUsage(reportData),
+		RuntimeRegressionCount:   runtimeRegressionCount(reportData),
 	}
 }
 
@@ -104,6 +109,8 @@ func populateRepoResult(result *RepoResult, reportData report.Report, contributi
 	}
 	result.TopRiskSeverity = topRiskSeverity
 	result.CriticalCVEs = contribution.CriticalCVEs
+	result.VulnerabilityFindings = contribution.VulnerabilityFindings
+	result.ReachableVulnerabilities = contribution.ReachableVulnerabilities
 	result.DeniedLicenseCount = countDeniedLicenses(reportData)
 	result.RuntimeTraceData = contribution.RuntimeTraceData
 	result.RuntimeRegressionCount = contribution.RuntimeRegressionCount
@@ -115,12 +122,31 @@ func addSummaryContribution(summary *Summary, contribution repoSummaryContributi
 	summary.TotalDeps += contribution.TotalDeps
 	summary.TotalWasteCandidates += contribution.TotalWasteCandidates
 	summary.CriticalCVEs += contribution.CriticalCVEs
+	summary.VulnerabilityFindings += contribution.VulnerabilityFindings
+	summary.ReachableVulnerabilities += contribution.ReachableVulnerabilities
 	if contribution.RuntimeTraceData {
 		summary.ReposWithRuntimeTraceData++
 	}
 	if contribution.RuntimeTraceData && contribution.RuntimeRegressionCount > 0 {
 		summary.ReposWithRuntimeRegressions++
 	}
+}
+
+func countVulnerabilities(reportData report.Report) (int, int) {
+	if reportData.Summary != nil && reportData.Summary.Vulnerabilities != nil {
+		return reportData.Summary.Vulnerabilities.TotalFindings, reportData.Summary.Vulnerabilities.ReachableFindings
+	}
+	total := 0
+	reachable := 0
+	for _, dependency := range reportData.Dependencies {
+		for _, finding := range dependency.Vulnerabilities {
+			total++
+			if finding.Reachable {
+				reachable++
+			}
+		}
+	}
+	return total, reachable
 }
 
 func indexCrossRepoDependencies(index map[string]map[string]crossRepoRepository, input RepoInput, repoNameCounts map[string]int, dependencies []report.DependencyReport) {
