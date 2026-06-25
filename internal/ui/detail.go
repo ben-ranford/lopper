@@ -241,39 +241,65 @@ func printCodemod(out io.Writer, codemod *detailCodemodView, actionTargets ...st
 		}
 		return writeln(out, "")
 	}
-	if codemod.Mode != "" {
-		if err := writef(out, "  - mode: %s\n", codemod.Mode); err != nil {
-			return err
-		}
-	}
-	if err := writef(out, "  - suggestions: %d\n", len(codemod.Suggestions)); err != nil {
+
+	if err := printCodemodMode(out, codemod.Mode); err != nil {
 		return err
 	}
-	for _, suggestion := range codemod.Suggestions {
-		if err := writef(out, "    - %s:%d %s -> %s\n", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule); err != nil {
-			return err
-		}
-	}
-	if err := writef(out, "  - skips: %d\n", len(codemod.Skips)); err != nil {
+	if err := printCodemodSuggestions(out, codemod.Suggestions); err != nil {
 		return err
 	}
-	for _, skip := range codemod.Skips {
-		if err := writef(out, "    - %s:%d [%s] %s\n", skip.File, skip.Line, skip.ReasonCode, skip.Message); err != nil {
-			return err
-		}
+	if err := printCodemodSkips(out, codemod.Skips); err != nil {
+		return err
 	}
-	if len(codemod.Suggestions) > 0 {
-		actionTarget := firstNonEmpty(actionTargets...)
-		if actionTarget != "" {
-			if err := writef(out, "  - action: apply-codemod %s --confirm\n", actionTarget); err != nil {
-				return err
-			}
-		}
+	if err := printCodemodActionHint(out, codemod.Suggestions, actionTargets...); err != nil {
+		return err
 	}
 	if err := printDetailCodemodApply(out, codemod.Apply); err != nil {
 		return err
 	}
 	return writeln(out, "")
+}
+
+func printCodemodMode(out io.Writer, mode string) error {
+	if mode == "" {
+		return nil
+	}
+	return writef(out, "  - mode: %s\n", mode)
+}
+
+func printCodemodSuggestions(out io.Writer, suggestions []detailCodemodSuggestionView) error {
+	if err := writef(out, "  - suggestions: %d\n", len(suggestions)); err != nil {
+		return err
+	}
+	for _, suggestion := range suggestions {
+		if err := writef(out, "    - %s:%d %s -> %s\n", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func printCodemodSkips(out io.Writer, skips []detailCodemodSkipView) error {
+	if err := writef(out, "  - skips: %d\n", len(skips)); err != nil {
+		return err
+	}
+	for _, skip := range skips {
+		if err := writef(out, "    - %s:%d [%s] %s\n", skip.File, skip.Line, skip.ReasonCode, skip.Message); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func printCodemodActionHint(out io.Writer, suggestions []detailCodemodSuggestionView, actionTargets ...string) error {
+	if len(suggestions) == 0 {
+		return nil
+	}
+	actionTarget := firstNonEmpty(actionTargets...)
+	if actionTarget == "" {
+		return nil
+	}
+	return writef(out, "  - action: apply-codemod %s --confirm\n", actionTarget)
 }
 
 func detailCodemodActionTarget(dep detailDependencyView) string {

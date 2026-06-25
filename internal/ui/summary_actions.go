@@ -113,49 +113,77 @@ func parseSummaryBaselineArguments(args []string, action *summaryAction, kind su
 	positionals := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		switch arg {
-		case "--store":
-			value, next, err := readSummaryActionValue(args, i, arg)
-			if err != nil {
-				return nil, err
-			}
-			action.baselineStorePath = value
-			i = next
-		case "--key":
-			value, next, err := readSummaryActionValue(args, i, arg)
-			if err != nil {
-				return nil, err
-			}
-			action.baselineKey = value
-			i = next
-		case "--label":
-			if kind != summaryActionSaveBaseline {
-				return nil, fmt.Errorf("unknown %s option: %s", kind, arg)
-			}
-			value, next, err := readSummaryActionValue(args, i, arg)
-			if err != nil {
-				return nil, err
-			}
-			action.baselineLabel = value
-			i = next
-		case "--file":
-			if kind != summaryActionCompareBaseline {
-				return nil, fmt.Errorf("unknown %s option: %s", kind, arg)
-			}
-			value, next, err := readSummaryActionValue(args, i, arg)
-			if err != nil {
-				return nil, err
-			}
-			action.baselinePath = value
-			i = next
-		default:
-			if strings.HasPrefix(arg, "-") {
-				return nil, fmt.Errorf("unknown %s option: %s", kind, arg)
-			}
-			positionals = append(positionals, arg)
+		next, handled, err := parseSummaryBaselineOption(args, i, action, kind)
+		if err != nil {
+			return nil, err
 		}
+		if handled {
+			i = next
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			return nil, fmt.Errorf("unknown %s option: %s", kind, arg)
+		}
+		positionals = append(positionals, arg)
 	}
 	return positionals, nil
+}
+
+func parseSummaryBaselineOption(args []string, index int, action *summaryAction, kind summaryActionKind) (int, bool, error) {
+	switch args[index] {
+	case "--store":
+		return readSummaryBaselineStoreOption(args, index, action)
+	case "--key":
+		return readSummaryBaselineKeyOption(args, index, action)
+	case "--label":
+		return readSummaryBaselineLabelOption(args, index, action, kind)
+	case "--file":
+		return readSummaryBaselineFileOption(args, index, action, kind)
+	default:
+		return index, false, nil
+	}
+}
+
+func readSummaryBaselineStoreOption(args []string, index int, action *summaryAction) (int, bool, error) {
+	value, next, err := readSummaryActionValue(args, index, args[index])
+	if err != nil {
+		return index, true, err
+	}
+	action.baselineStorePath = value
+	return next, true, nil
+}
+
+func readSummaryBaselineKeyOption(args []string, index int, action *summaryAction) (int, bool, error) {
+	value, next, err := readSummaryActionValue(args, index, args[index])
+	if err != nil {
+		return index, true, err
+	}
+	action.baselineKey = value
+	return next, true, nil
+}
+
+func readSummaryBaselineLabelOption(args []string, index int, action *summaryAction, kind summaryActionKind) (int, bool, error) {
+	if kind != summaryActionSaveBaseline {
+		return index, true, fmt.Errorf("unknown %s option: %s", kind, args[index])
+	}
+	value, next, err := readSummaryActionValue(args, index, args[index])
+	if err != nil {
+		return index, true, err
+	}
+	action.baselineLabel = value
+	return next, true, nil
+}
+
+func readSummaryBaselineFileOption(args []string, index int, action *summaryAction, kind summaryActionKind) (int, bool, error) {
+	if kind != summaryActionCompareBaseline {
+		return index, true, fmt.Errorf("unknown %s option: %s", kind, args[index])
+	}
+	value, next, err := readSummaryActionValue(args, index, args[index])
+	if err != nil {
+		return index, true, err
+	}
+	action.baselinePath = value
+	return next, true, nil
 }
 
 func readSummaryActionValue(args []string, index int, option string) (string, int, error) {

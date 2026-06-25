@@ -112,33 +112,50 @@ func (s *Summary) handleSummaryInputMutable(ctx context.Context, opts *Options, 
 	if input == "q" || input == "quit" {
 		return true, nil
 	}
-	if dependency, ok := isDetailCommand(input); ok {
-		detail := NewDetail(s.Out, s.Analyzer, opts.RepoPath, opts.Language)
-		if err := detail.showLoadedSummary(dependency, *reportView); err != nil {
-			return false, err
-		}
-		if state != nil {
-			state.selectedDependency = dependency
-		}
+	if handled, err := s.handleSummaryDetailInput(opts, reportView, state, input); handled || err != nil {
+		return false, err
+	}
+	if handled, err := s.handleSummaryActionInput(ctx, opts, reportView, state, input); handled || err != nil {
+		return false, err
+	}
+	return false, s.handleSummaryCommandInput(reportView, state, input)
+}
+
+func (s *Summary) handleSummaryDetailInput(opts *Options, reportView *summaryReportView, state *summaryState, input string) (bool, error) {
+	dependency, ok := isDetailCommand(input)
+	if !ok {
 		return false, nil
 	}
-	if action, ok, err := parseSummaryAction(input, state); ok {
-		if err != nil {
-			return false, writeSummaryActionError(s.Out, err)
-		}
-		if err := s.runSummaryAction(ctx, opts, reportView, state, action); err != nil {
-			return false, err
-		}
+	detail := NewDetail(s.Out, s.Analyzer, opts.RepoPath, opts.Language)
+	if err := detail.showLoadedSummary(dependency, *reportView); err != nil {
+		return true, err
+	}
+	if state != nil {
+		state.selectedDependency = dependency
+	}
+	return true, nil
+}
+
+func (s *Summary) handleSummaryActionInput(ctx context.Context, opts *Options, reportView *summaryReportView, state *summaryState, input string) (bool, error) {
+	action, ok, err := parseSummaryAction(input, state)
+	if !ok {
 		return false, nil
 	}
+	if err != nil {
+		return true, writeSummaryActionError(s.Out, err)
+	}
+	return true, s.runSummaryAction(ctx, opts, reportView, state, action)
+}
+
+func (s *Summary) handleSummaryCommandInput(reportView *summaryReportView, state *summaryState, input string) error {
 	if !applySummaryCommand(state, input, s.Out) {
 		if _, err := fmt.Fprintln(s.Out, "Unknown command. Type 'help' for options."); err != nil {
-			return false, err
+			return err
 		}
 	} else {
 		clampSummaryPage(*reportView, state)
 	}
-	return false, nil
+	return nil
 }
 
 func filterDependencies(deps []summaryDependencyView, filter string) []summaryDependencyView {
