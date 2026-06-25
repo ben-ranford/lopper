@@ -24,6 +24,9 @@ type ConfigRepo struct {
 	Name     string `yaml:"name"`
 	Language string `yaml:"language"`
 	RepoURL  string `yaml:"repoUrl"`
+	Branch   string `yaml:"branch"`
+	Tag      string `yaml:"tag"`
+	Commit   string `yaml:"commit"`
 }
 
 type LoadedConfig struct {

@@ -126,19 +126,30 @@ func reposFromDashboardConfig(config dashboard.LoadedConfig, features *featurefl
 func dashboardRepoInputFromConfig(configDir string, repo dashboard.ConfigRepo, features *featureflags.Set) (dashboard.RepoInput, error) {
 	repoPath := strings.TrimSpace(repo.Path)
 	repoURL := strings.TrimSpace(repo.RepoURL)
+	revision, err := normalizeDashboardRepoRevision(dashboard.RepoRevision{
+		Branch: repo.Branch,
+		Tag:    repo.Tag,
+		Commit: repo.Commit,
+	})
+	if err != nil {
+		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repo revision is invalid: %w", err)
+	}
+	if repoPath != "" && !revision.IsZero() {
+		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repo revision fields require repoUrl")
+	}
 	switch {
 	case repoPath != "" && repoURL != "":
 		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repo cannot define both path and repoUrl")
 	case repoPath == "" && repoURL == "":
 		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repo is missing path or repoUrl")
 	case repoURL != "":
-		return dashboardRepoInputFromURL(repo, repoURL, features)
+		return dashboardRepoInputFromURL(repo, repoURL, revision, features)
 	default:
 		return dashboardRepoInputFromPath(configDir, repo, repoPath), nil
 	}
 }
 
-func dashboardRepoInputFromURL(repo dashboard.ConfigRepo, repoURL string, features *featureflags.Set) (dashboard.RepoInput, error) {
+func dashboardRepoInputFromURL(repo dashboard.ConfigRepo, repoURL string, revision dashboard.RepoRevision, features *featureflags.Set) (dashboard.RepoInput, error) {
 	if features == nil || !features.Enabled(DashboardRemoteReposPreviewFeature) {
 		return dashboard.RepoInput{}, fmt.Errorf("dashboard config repoUrl requires feature %s", DashboardRemoteReposPreviewFeature)
 	}
@@ -153,6 +164,7 @@ func dashboardRepoInputFromURL(repo dashboard.ConfigRepo, repoURL string, featur
 	return dashboard.RepoInput{
 		Name:     name,
 		RepoURL:  spec.normalized,
+		Revision: revision,
 		Language: strings.TrimSpace(repo.Language),
 	}, nil
 }

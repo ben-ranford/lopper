@@ -78,6 +78,9 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
 		"repo_name",
 		"repo_path",
+		"repo_url",
+		"revision",
+		"resolved_commit",
 		"language",
 		"dependency_count",
 		"waste_candidate_count",
@@ -94,6 +97,9 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
 			repoResult.Name,
 			repoResult.Path,
+			repoResult.RepoURL,
+			formatRepoRevision(repoResult.Revision),
+			repoResult.ResolvedCommit,
 			repoResult.Language,
 			fmt.Sprintf("%d", repoResult.DependencyCount),
 			fmt.Sprintf("%d", repoResult.WasteCandidateCount),
@@ -231,12 +237,15 @@ func formatHTML(reportData Report) string {
 	buffer.WriteString("</div></section>")
 
 	buffer.WriteString("<h2>Per-Repo Summary</h2><table><thead><tr>")
-	buffer.WriteString("<th>Repo</th><th>Path</th><th>Language</th><th>Deps</th><th>Waste Candidates</th><th>Waste %</th><th>Top Risk</th><th>Critical CVEs</th><th>Denied Licenses</th><th>Error</th>")
+	buffer.WriteString("<th>Repo</th><th>Path</th><th>Repo URL</th><th>Revision</th><th>Resolved Commit</th><th>Language</th><th>Deps</th><th>Waste Candidates</th><th>Waste %</th><th>Top Risk</th><th>Critical CVEs</th><th>Denied Licenses</th><th>Error</th>")
 	buffer.WriteString("</tr></thead><tbody>")
 	for _, repoResult := range reportData.Repos {
 		buffer.WriteString("<tr>")
 		buffer.WriteString("<td>" + html.EscapeString(repoResult.Name) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(repoResult.Path) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(repoResult.RepoURL) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(formatRepoRevision(repoResult.Revision)) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(repoResult.ResolvedCommit) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(repoResult.Language) + "</td>")
 		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.DependencyCount) + "</td>")
 		buffer.WriteString("<td>" + fmt.Sprintf("%d", repoResult.WasteCandidateCount) + "</td>")
@@ -310,4 +319,11 @@ func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 
 func metricHTML(label, value string) string {
 	return "<div class=\"metric\"><span>" + html.EscapeString(label) + "</span><strong>" + html.EscapeString(value) + "</strong></div>"
+}
+
+func formatRepoRevision(revision *RepoRevision) string {
+	if revision == nil || revision.IsZero() {
+		return ""
+	}
+	return revision.Kind() + ":" + revision.Value()
 }

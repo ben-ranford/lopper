@@ -20,12 +20,18 @@ const (
 	DashboardRemoteReposPreviewFeature = "dashboard-remote-repos-preview"
 	dashboardRepoCacheEnv              = "LOPPER_DASHBOARD_REPO_CACHE"
 	dashboardRepoCacheHashLength       = 16
+	dashboardGitShallowDepthArg        = "--depth=1"
 )
 
 type dashboardRepoURLSpec struct {
 	normalized string
 	scheme     string
 	name       string
+}
+
+type dashboardMaterializedRepo struct {
+	CheckoutPath   string
+	ResolvedCommit string
 }
 
 type dashboardRepoMaterializer struct {
@@ -62,8 +68,9 @@ func (a *App) prepareDashboardExecutionPlan(ctx context.Context, request Dashboa
 			continue
 		}
 
-		checkoutPath, err := materializer.Materialize(ctx, repo.RepoURL)
-		repo.Path = checkoutPath
+		materialized, err := materializer.Materialize(ctx, repo.RepoURL, repo.Revision)
+		repo.Path = materialized.CheckoutPath
+		repo.ResolvedCommit = materialized.ResolvedCommit
 		initialResults[index].Input = repo
 		if err != nil {
 			initialResults[index].Err = fmt.Errorf("materialize repoUrl: %w", err)
@@ -105,36 +112,45 @@ func dashboardRemoteCacheRoot() (string, error) {
 	return filepath.Join(userCacheDir, "lopper", "dashboard", "repos"), nil
 }
 
-func (m *dashboardRepoMaterializer) Materialize(ctx context.Context, repoURL string) (string, error) {
+func (m *dashboardRepoMaterializer) Materialize(ctx context.Context, repoURL string, revision dashboard.RepoRevision) (dashboardMaterializedRepo, error) {
 	spec, err := parseDashboardRepoURL(repoURL)
 	if err != nil {
-		return "", err
+		return dashboardMaterializedRepo{}, err
 	}
-	checkoutPath, err := dashboardCheckoutPath(m.cacheRoot, spec)
+	normalizedRevision, err := normalizeDashboardRepoRevision(revision)
 	if err != nil {
-		return "", err
+		return dashboardMaterializedRepo{}, err
 	}
+	checkoutPath, err := dashboardCheckoutPath(m.cacheRoot, spec, normalizedRevision)
+	if err != nil {
+		return dashboardMaterializedRepo{}, err
+	}
+	materialized := dashboardMaterializedRepo{CheckoutPath: checkoutPath}
 	if err := os.MkdirAll(m.cacheRoot, 0o750); err != nil {
-		return checkoutPath, fmt.Errorf("create dashboard repo cache: %w", err)
+		return materialized, fmt.Errorf("create dashboard repo cache: %w", err)
 	}
 
 	if m.checkoutUsable(ctx, checkoutPath, spec.normalized) {
-		if err := m.refreshCheckout(ctx, checkoutPath, spec); err != nil {
-			return checkoutPath, err
+		resolvedCommit, err := m.refreshCheckout(ctx, checkoutPath, spec, normalizedRevision)
+		materialized.ResolvedCommit = resolvedCommit
+		if err != nil {
+			return materialized, err
 		}
-		return checkoutPath, nil
+		return materialized, nil
 	}
 
 	if err := dashboardRemoveAllFn(checkoutPath); err != nil {
-		return checkoutPath, fmt.Errorf("reset dashboard repo checkout: %w", err)
+		return materialized, fmt.Errorf("reset dashboard repo checkout: %w", err)
 	}
-	if err := m.cloneCheckout(ctx, checkoutPath, spec); err != nil {
+	resolvedCommit, err := m.cloneCheckout(ctx, checkoutPath, spec, normalizedRevision)
+	materialized.ResolvedCommit = resolvedCommit
+	if err != nil {
 		if cleanupErr := dashboardRemoveAllFn(checkoutPath); cleanupErr != nil {
-			return checkoutPath, fmt.Errorf("%w; cleanup failed: %w", err, cleanupErr)
+			return materialized, fmt.Errorf("%w; cleanup failed: %w", err, cleanupErr)
 		}
-		return checkoutPath, err
+		return materialized, err
 	}
-	return checkoutPath, nil
+	return materialized, nil
 }
 
 func (m *dashboardRepoMaterializer) checkoutUsable(ctx context.Context, checkoutPath, repoURL string) bool {
@@ -145,31 +161,71 @@ func (m *dashboardRepoMaterializer) checkoutUsable(ctx context.Context, checkout
 	return err == nil && strings.TrimSpace(string(output)) == repoURL
 }
 
-func (m *dashboardRepoMaterializer) cloneCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec) error {
-	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "clone", "--no-tags", "--depth=1", "--", spec.normalized, checkoutPath)...); err != nil {
-		return fmt.Errorf("clone remote repo: %w", err)
+func (m *dashboardRepoMaterializer) cloneCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, revision dashboard.RepoRevision) (string, error) {
+	if revision.IsZero() {
+		if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "clone", "--no-tags", dashboardGitShallowDepthArg, "--", spec.normalized, checkoutPath)...); err != nil {
+			return "", fmt.Errorf("clone remote repo: %w", err)
+		}
+		return m.pinCheckout(ctx, checkoutPath, spec, "HEAD", revision)
 	}
-	return m.pinCheckout(ctx, checkoutPath, spec, "HEAD")
+
+	if _, err := m.runGit(ctx, "init", checkoutPath); err != nil {
+		return "", fmt.Errorf("initialize remote repo checkout: %w", err)
+	}
+	if _, err := m.runGit(ctx, "-C", checkoutPath, "remote", "add", "origin", spec.normalized); err != nil {
+		return "", fmt.Errorf("configure remote repo origin: %w", err)
+	}
+	return m.fetchAndPinCheckout(ctx, checkoutPath, spec, revision)
 }
 
-func (m *dashboardRepoMaterializer) refreshCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec) error {
-	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", "--depth=1", "origin", "HEAD")...); err != nil {
-		return fmt.Errorf("fetch remote repo: %w", err)
+func (m *dashboardRepoMaterializer) refreshCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, revision dashboard.RepoRevision) (string, error) {
+	if !revision.IsZero() {
+		return m.fetchAndPinCheckout(ctx, checkoutPath, spec, revision)
 	}
-	return m.pinCheckout(ctx, checkoutPath, spec, "FETCH_HEAD")
+	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", dashboardGitShallowDepthArg, "origin", "HEAD")...); err != nil {
+		return "", fmt.Errorf("fetch remote repo: %w", err)
+	}
+	return m.pinCheckout(ctx, checkoutPath, spec, "FETCH_HEAD", revision)
 }
 
-func (m *dashboardRepoMaterializer) pinCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, ref string) error {
+func (m *dashboardRepoMaterializer) fetchAndPinCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, revision dashboard.RepoRevision) (string, error) {
+	ref := dashboardFetchRef(revision)
+	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", "--no-tags", dashboardGitShallowDepthArg, "origin", ref)...); err != nil {
+		return "", fmt.Errorf("fetch remote %s %q: %w", revision.Kind(), revision.Value(), err)
+	}
+	return m.pinCheckout(ctx, checkoutPath, spec, "FETCH_HEAD", revision)
+}
+
+func (m *dashboardRepoMaterializer) pinCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, ref string, revision dashboard.RepoRevision) (string, error) {
 	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "checkout", "--detach", "--force", ref)...); err != nil {
-		return fmt.Errorf("checkout remote repo: %w", err)
+		return "", fmt.Errorf("checkout remote repo: %w", err)
 	}
 	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "reset", "--hard", ref)...); err != nil {
-		return fmt.Errorf("reset remote repo checkout: %w", err)
+		return "", fmt.Errorf("reset remote repo checkout: %w", err)
 	}
 	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "clean", "-fdx")...); err != nil {
-		return fmt.Errorf("clean remote repo checkout: %w", err)
+		return "", fmt.Errorf("clean remote repo checkout: %w", err)
 	}
-	return nil
+	resolvedCommit, err := m.resolveCheckoutCommit(ctx, checkoutPath, spec)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(revision.Commit) != "" && !strings.EqualFold(resolvedCommit, revision.Commit) {
+		return "", fmt.Errorf("resolved commit %s does not match requested commit %s", resolvedCommit, revision.Commit)
+	}
+	return resolvedCommit, nil
+}
+
+func (m *dashboardRepoMaterializer) resolveCheckoutCommit(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec) (string, error) {
+	output, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "rev-parse", "--verify", "HEAD")...)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote repo commit: %w", err)
+	}
+	sha := strings.ToLower(strings.TrimSpace(string(output)))
+	if !isFullCommitSHA(sha) {
+		return "", fmt.Errorf("resolve remote repo commit: invalid SHA %q", sha)
+	}
+	return sha, nil
 }
 
 func (m *dashboardRepoMaterializer) runGit(ctx context.Context, args ...string) ([]byte, error) {
@@ -203,6 +259,123 @@ func gitArgsForURL(repoURL string, args ...string) []string {
 	combined := make([]string, 0, len(prefix)+len(args))
 	combined = append(combined, prefix...)
 	return append(combined, args...)
+}
+
+func normalizeDashboardRepoRevision(revision dashboard.RepoRevision) (dashboard.RepoRevision, error) {
+	normalized := dashboard.RepoRevision{
+		Branch: strings.TrimSpace(revision.Branch),
+		Tag:    strings.TrimSpace(revision.Tag),
+		Commit: strings.ToLower(strings.TrimSpace(revision.Commit)),
+	}
+	pinCount := 0
+	for _, value := range []string{normalized.Branch, normalized.Tag, normalized.Commit} {
+		if value != "" {
+			pinCount++
+		}
+	}
+	if pinCount > 1 {
+		return dashboard.RepoRevision{}, fmt.Errorf("define only one of branch, tag, or commit")
+	}
+
+	switch {
+	case normalized.Branch != "":
+		if err := validateDashboardRevisionName("branch", normalized.Branch); err != nil {
+			return dashboard.RepoRevision{}, err
+		}
+	case normalized.Tag != "":
+		if err := validateDashboardRevisionName("tag", normalized.Tag); err != nil {
+			return dashboard.RepoRevision{}, err
+		}
+	case normalized.Commit != "":
+		if !isFullCommitSHA(normalized.Commit) {
+			return dashboard.RepoRevision{}, fmt.Errorf("commit must be a full 40- or 64-character hex SHA")
+		}
+	}
+
+	return normalized, nil
+}
+
+func validateDashboardRevisionName(kind, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", kind)
+	}
+	if err := validateDashboardRevisionSyntax(kind, value); err != nil {
+		return err
+	}
+	if err := validateDashboardRevisionPathComponents(kind, value); err != nil {
+		return err
+	}
+	return validateDashboardRevisionCharacters(kind, value)
+}
+
+func validateDashboardRevisionSyntax(kind, value string) error {
+	switch {
+	case strings.HasPrefix(value, "refs/"):
+		return fmt.Errorf("%s must be a name, not a full refs/... ref", kind)
+	case strings.HasPrefix(value, "-"):
+		return fmt.Errorf("%s cannot start with '-'", kind)
+	case value == "@" || strings.Contains(value, "@{"):
+		return fmt.Errorf("%s cannot use git reflog syntax", kind)
+	case strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//"):
+		return fmt.Errorf("%s cannot start, end, or repeat '/'", kind)
+	case strings.Contains(value, ".."):
+		return fmt.Errorf("%s cannot contain dot-dot path segments", kind)
+	case strings.HasSuffix(value, "."):
+		return fmt.Errorf("%s cannot end with a dot", kind)
+	default:
+		return nil
+	}
+}
+
+func validateDashboardRevisionPathComponents(kind, value string) error {
+	for _, component := range strings.Split(value, "/") {
+		switch {
+		case strings.HasPrefix(component, "."):
+			return fmt.Errorf("%s cannot contain a path component starting with a dot", kind)
+		case strings.HasSuffix(component, ".lock"):
+			return fmt.Errorf("%s cannot contain a path component ending with '.lock'", kind)
+		}
+	}
+	return nil
+}
+
+func validateDashboardRevisionCharacters(kind, value string) error {
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == 0x7f {
+			return fmt.Errorf("%s cannot contain whitespace or control characters", kind)
+		}
+		switch r {
+		case '~', '^', ':', '?', '*', '[', '\\':
+			return fmt.Errorf("%s cannot contain %q", kind, r)
+		}
+	}
+	return nil
+}
+
+func dashboardFetchRef(revision dashboard.RepoRevision) string {
+	switch revision.Kind() {
+	case "branch":
+		return "refs/heads/" + revision.Value()
+	case "tag":
+		return "refs/tags/" + revision.Value()
+	case "commit":
+		return revision.Value()
+	default:
+		return "HEAD"
+	}
+}
+
+func isFullCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseDashboardRepoURL(raw string) (dashboardRepoURLSpec, error) {
@@ -298,14 +471,21 @@ func inferDashboardRepoURLName(parsed *url.URL) string {
 	return base
 }
 
-func dashboardCheckoutPath(cacheRoot string, spec dashboardRepoURLSpec) (string, error) {
+func dashboardCheckoutPath(cacheRoot string, spec dashboardRepoURLSpec, revision dashboard.RepoRevision) (string, error) {
 	root := filepath.Clean(cacheRoot)
 	if !filepath.IsAbs(root) {
 		return "", fmt.Errorf("dashboard repo cache root must be absolute")
 	}
-	sum := sha256.Sum256([]byte(spec.normalized))
+	hashInput := spec.normalized
+	checkoutName := sanitizeDashboardCheckoutName(spec.name)
+	if !revision.IsZero() {
+		revisionKey := revision.Kind() + ":" + revision.Value()
+		hashInput += "\x00" + revisionKey
+		checkoutName += "-" + sanitizeDashboardCheckoutName(revisionKey)
+	}
+	sum := sha256.Sum256([]byte(hashInput))
 	hash := hex.EncodeToString(sum[:])[:dashboardRepoCacheHashLength]
-	checkoutPath := filepath.Join(root, sanitizeDashboardCheckoutName(spec.name)+"-"+hash)
+	checkoutPath := filepath.Join(root, checkoutName+"-"+hash)
 	if !pathWithinDir(root, checkoutPath) {
 		return "", fmt.Errorf("dashboard repo checkout path escapes cache root")
 	}
