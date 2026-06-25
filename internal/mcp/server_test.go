@@ -381,7 +381,7 @@ func TestCallToolTimeoutCancelsAnalysis(t *testing.T) {
 	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
 		"repoPath":      repo,
 		"topN":          5,
-		"timeoutMillis": 1,
+		"timeoutMillis": 250,
 		"cacheEnabled":  false,
 	})
 	if !fake.called {
