@@ -163,26 +163,26 @@ func readSummaryBaselineKeyOption(args []string, index int, action *summaryActio
 }
 
 func readSummaryBaselineLabelOption(args []string, index int, action *summaryAction, kind summaryActionKind) (int, bool, error) {
-	if kind != summaryActionSaveBaseline {
-		return index, true, fmt.Errorf("unknown %s option: %s", kind, args[index])
-	}
-	value, next, err := readSummaryActionValue(args, index, args[index])
-	if err != nil {
-		return index, true, err
-	}
-	action.baselineLabel = value
-	return next, true, nil
+	return readSummaryBaselineScopedOption(args, index, kind, summaryActionSaveBaseline, func(value string) {
+		action.baselineLabel = value
+	})
 }
 
 func readSummaryBaselineFileOption(args []string, index int, action *summaryAction, kind summaryActionKind) (int, bool, error) {
-	if kind != summaryActionCompareBaseline {
-		return index, true, fmt.Errorf("unknown %s option: %s", kind, args[index])
+	return readSummaryBaselineScopedOption(args, index, kind, summaryActionCompareBaseline, func(value string) {
+		action.baselinePath = value
+	})
+}
+
+func readSummaryBaselineScopedOption(args []string, index int, actual summaryActionKind, allowed summaryActionKind, assign func(string)) (int, bool, error) {
+	if actual != allowed {
+		return index, true, fmt.Errorf("unknown %s option: %s", actual, args[index])
 	}
 	value, next, err := readSummaryActionValue(args, index, args[index])
 	if err != nil {
 		return index, true, err
 	}
-	action.baselinePath = value
+	assign(value)
 	return next, true, nil
 }
 

@@ -15,9 +15,13 @@ import (
 
 type stubAnalyzer struct {
 	report report.Report
+	err    error
 }
 
 func (s *stubAnalyzer) Analyse(ctx context.Context, req analysis.Request) (report.Report, error) {
+	if s.err != nil {
+		return report.Report{}, s.err
+	}
 	return s.report, nil
 }
 
