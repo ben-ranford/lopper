@@ -8,6 +8,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const CodemodSuggestionsPreviewFeature = "python-codemod-suggestions-preview"
+
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	buildDependency := func(dependency string, current scanResult) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, current, req)
@@ -49,9 +51,13 @@ func buildDependencyReport(dependency string, scan scanResult, req language.Requ
 		})
 	}
 	if req.SuggestOnly {
-		codemod, codemodWarnings := BuildUnusedImportCodemodReport(req.RepoPath, dependency, scan)
-		dep.Codemod = codemod
-		warnings = append(warnings, codemodWarnings...)
+		if req.Features.Enabled(CodemodSuggestionsPreviewFeature) {
+			codemod, codemodWarnings := BuildUnusedImportCodemodReport(req.RepoPath, dependency, scan)
+			dep.Codemod = codemod
+			warnings = append(warnings, codemodWarnings...)
+		} else {
+			warnings = append(warnings, fmt.Sprintf("python codemod suggestions require --enable-feature %s", CodemodSuggestionsPreviewFeature))
+		}
 	}
 	dep.Recommendations = buildRecommendations(dep)
 	return dep, warnings

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -108,6 +109,7 @@ func TestRunAnalyseSuggestOnlyPythonCodemodE2E(t *testing.T) {
 		"--language", "python",
 		"--format", "json",
 		"--suggest-only",
+		"--enable-feature", python.CodemodSuggestionsPreviewFeature,
 	}
 	code := run(args, strings.NewReader(""), &out, &errOut)
 	if code != 0 {
@@ -142,6 +144,7 @@ func TestRunAnalyseApplyPythonCodemodE2E(t *testing.T) {
 		"--format", "json",
 		"--apply-codemod",
 		"--apply-codemod-confirm",
+		"--enable-feature", python.CodemodSuggestionsPreviewFeature,
 	}
 	code := run(args, strings.NewReader(""), &out, &errOut)
 	if code != 0 {

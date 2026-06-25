@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -109,6 +110,30 @@ func TestAdapterAnalyseSuggestOnlyPythonUnsafeSkips(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseSuggestOnlyPythonCodemodRequiresPreviewFeature(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:    repo,
+		Dependency:  "requests",
+		SuggestOnly: true,
+		Features:    mustPythonCodemodFeatureSet(t, false),
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	if reportData.Dependencies[0].Codemod != nil {
+		t.Fatalf("expected python codemod report to be preview-gated, got %#v", reportData.Dependencies[0].Codemod)
+	}
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), CodemodSuggestionsPreviewFeature) {
+		t.Fatalf("expected preview feature warning, got %#v", reportData.Warnings)
+	}
+}
+
 func TestAdapterAnalyseDependencyUsesKnownImportAliases(t *testing.T) {
 	bs4Dependency := analysePythonDependency(t, testAliasImportsPy, "beautifulsoup4")
 	assertDependencyReport(t, bs4Dependency, dependencyReportExpectation{name: "beautifulsoup4", language: "python", used: 1, total: 1})
@@ -192,6 +217,15 @@ func analysePythonDependency(t *testing.T, source string, dependency string) rep
 
 func analysePythonDependencyWithOptions(t *testing.T, files map[string]string, dependency string, suggestOnly bool) report.DependencyReport {
 	t.Helper()
+	features := featureflags.Set{}
+	if suggestOnly {
+		features = mustPythonCodemodFeatureSet(t, true)
+	}
+	return analysePythonDependencyWithFeatureSet(t, files, dependency, suggestOnly, features)
+}
+
+func analysePythonDependencyWithFeatureSet(t *testing.T, files map[string]string, dependency string, suggestOnly bool, features featureflags.Set) report.DependencyReport {
+	t.Helper()
 	repo := t.TempDir()
 	for name, source := range files {
 		testutil.MustWriteFile(t, filepath.Join(repo, name), source)
@@ -201,6 +235,7 @@ func analysePythonDependencyWithOptions(t *testing.T, files map[string]string, d
 		RepoPath:    repo,
 		Dependency:  dependency,
 		SuggestOnly: suggestOnly,
+		Features:    features,
 	})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
@@ -209,6 +244,19 @@ func analysePythonDependencyWithOptions(t *testing.T, files map[string]string, d
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
 	return reportData.Dependencies[0]
+}
+
+func mustPythonCodemodFeatureSet(t *testing.T, enabled bool) featureflags.Set {
+	t.Helper()
+	opts := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if enabled {
+		opts.Enable = []string{CodemodSuggestionsPreviewFeature}
+	}
+	features, err := featureflags.DefaultRegistry().Resolve(opts)
+	if err != nil {
+		t.Fatalf("resolve python codemod feature set: %v", err)
+	}
+	return features
 }
 
 func TestAdapterAnalyseTopNRequiresRequirementsDependencies(t *testing.T) {

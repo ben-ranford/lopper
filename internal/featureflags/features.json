@@ -136,5 +136,11 @@
     "name": "reachability-vulnerability-prioritization-preview",
     "description": "Enable local advisory ingestion and reachability-weighted vulnerability prioritization for dependency reports.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0016",
+    "name": "python-codemod-suggestions-preview",
+    "description": "Enable preview Python safe remediation suggestions for deterministic unused import cleanup.",
+    "lifecycle": "preview"
   }
 ]
