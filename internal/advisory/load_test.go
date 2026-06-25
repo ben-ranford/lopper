@@ -217,6 +217,16 @@ func TestOSVSeverityFallbacks(t *testing.T) {
 			want: "critical",
 		},
 		{
+			name: "cvss v3 vector critical",
+			item: osvAdvisory{Severity: []osvSeverity{{Type: "CVSS_V3", Score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}}},
+			want: "critical",
+		},
+		{
+			name: "cvss v2 vector critical",
+			item: osvAdvisory{Severity: []osvSeverity{{Type: "CVSS_V2", Score: "AV:N/AC:L/Au:N/C:C/I:C/A:C"}}},
+			want: "critical",
+		},
+		{
 			name: "cvss medium",
 			item: osvAdvisory{Severity: []osvSeverity{{Score: "4.1"}}},
 			want: "medium",
@@ -245,7 +255,7 @@ func TestSmallParsingHelpers(t *testing.T) {
 	if got := stringValue(map[string]any{"other": "value"}, "severity"); got != "" {
 		t.Fatalf("expected missing string value to be empty, got %q", got)
 	}
-	if got := cvssSeverity(" "); got != "" {
+	if got := cvssSeverity("", " "); got != "" {
 		t.Fatalf("expected blank CVSS score to be empty, got %q", got)
 	}
 }

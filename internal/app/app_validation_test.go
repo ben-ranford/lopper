@@ -323,6 +323,58 @@ func TestExecuteAnalyseReachableVulnerabilityThresholdError(t *testing.T) {
 	}
 }
 
+func TestExecuteAnalyseReachableVulnerabilityThresholdUsesOSVCVSSVector(t *testing.T) {
+	tmp := t.TempDir()
+	advisoryPath := filepath.Join(tmp, "osv.yml")
+	advisorySource := `id: GHSA-osv-vector
+severity:
+  - type: CVSS_V3
+    score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+affected:
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+`
+	if err := os.WriteFile(advisoryPath, []byte(advisorySource), 0o600); err != nil {
+		t.Fatalf("write advisory source: %v", err)
+	}
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: tmp,
+			Dependencies: []report.DependencyReport{
+				{
+					Language:          "js-ts",
+					Name:              "reachable-lib",
+					UsedExportsCount:  1,
+					TotalExportsCount: 1,
+					UsedPercent:       100,
+					UsedImports: []report.ImportUse{
+						{Name: "default", Module: "reachable-lib"},
+					},
+				},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = tmp
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.AdvisorySourcePath = advisoryPath
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+
+	output, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected reachable vulnerabilities error for OSV CVSS vector, got %v output=%q", err, output)
+	}
+	if !strings.Contains(output, `"GHSA-osv-vector"`) || !strings.Contains(output, `"critical"`) {
+		t.Fatalf("expected critical OSV vector vulnerability output, got %q", output)
+	}
+}
+
 func TestApplyBaselineIfNeededFormatAndLoadErrors(t *testing.T) {
 	application := &App{Formatter: report.NewFormatter()}
 

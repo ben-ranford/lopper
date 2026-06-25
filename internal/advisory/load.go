@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -214,7 +216,7 @@ func osvAdvisorySeverity(item osvAdvisory) string {
 		}
 	}
 	for _, severity := range item.Severity {
-		if value := cvssSeverity(severity.Score); value != "" {
+		if value := cvssSeverity(severity.Type, severity.Score); value != "" {
 			return value
 		}
 	}
@@ -236,15 +238,35 @@ func stringValue(values map[string]any, key string) string {
 	return strings.TrimSpace(text)
 }
 
-func cvssSeverity(score string) string {
+func cvssSeverity(kind, score string) string {
 	score = strings.TrimSpace(score)
 	if score == "" {
 		return ""
 	}
-	var value float64
-	if _, err := fmt.Sscanf(score, "%f", &value); err != nil {
-		return ""
+	if value, ok := parseCVSSNumericScore(score); ok {
+		return cvssScoreSeverity(value)
 	}
+
+	metrics := cvssVectorMetrics(score)
+	switch cvssVectorVersion(kind, score) {
+	case 2:
+		if value, ok := cvss2BaseScore(metrics); ok {
+			return cvssScoreSeverity(value)
+		}
+	case 3:
+		if value, ok := cvss3BaseScore(metrics); ok {
+			return cvssScoreSeverity(value)
+		}
+	}
+	return ""
+}
+
+func parseCVSSNumericScore(score string) (float64, bool) {
+	value, err := strconv.ParseFloat(score, 64)
+	return value, err == nil
+}
+
+func cvssScoreSeverity(value float64) string {
 	switch {
 	case value >= 9:
 		return "critical"
@@ -257,6 +279,143 @@ func cvssSeverity(score string) string {
 	default:
 		return ""
 	}
+}
+
+func cvssVectorVersion(kind, score string) int {
+	normalizedKind := strings.ToUpper(strings.TrimSpace(kind))
+	normalizedScore := strings.ToUpper(strings.TrimSpace(score))
+	switch {
+	case strings.Contains(normalizedKind, "CVSS_V2"), strings.Contains(normalizedKind, "CVSSV2"), strings.HasPrefix(normalizedScore, "CVSS:2."):
+		return 2
+	case strings.Contains(normalizedKind, "CVSS_V3"), strings.Contains(normalizedKind, "CVSSV3"), strings.HasPrefix(normalizedScore, "CVSS:3."):
+		return 3
+	case strings.Contains(normalizedScore, "AU:"):
+		return 2
+	default:
+		return 0
+	}
+}
+
+func cvssVectorMetrics(vector string) map[string]string {
+	parts := strings.Split(strings.TrimSpace(vector), "/")
+	metrics := make(map[string]string, len(parts))
+	for _, part := range parts {
+		if strings.HasPrefix(strings.ToUpper(part), "CVSS:") {
+			continue
+		}
+		key, value, ok := strings.Cut(part, ":")
+		if !ok {
+			continue
+		}
+		key = strings.ToUpper(strings.TrimSpace(key))
+		value = strings.ToUpper(strings.TrimSpace(value))
+		if key != "" && value != "" {
+			metrics[key] = value
+		}
+	}
+	return metrics
+}
+
+func cvss3BaseScore(metrics map[string]string) (float64, bool) {
+	av, ok := cvssMetricValue(metrics, "AV", map[string]float64{"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2})
+	if !ok {
+		return 0, false
+	}
+	ac, ok := cvssMetricValue(metrics, "AC", map[string]float64{"L": 0.77, "H": 0.44})
+	if !ok {
+		return 0, false
+	}
+	scope := metrics["S"]
+	pr, ok := cvss3PrivilegesRequired(scope, metrics["PR"])
+	if !ok {
+		return 0, false
+	}
+	ui, ok := cvssMetricValue(metrics, "UI", map[string]float64{"N": 0.85, "R": 0.62})
+	if !ok {
+		return 0, false
+	}
+	c, ok := cvssMetricValue(metrics, "C", map[string]float64{"H": 0.56, "L": 0.22, "N": 0})
+	if !ok {
+		return 0, false
+	}
+	i, ok := cvssMetricValue(metrics, "I", map[string]float64{"H": 0.56, "L": 0.22, "N": 0})
+	if !ok {
+		return 0, false
+	}
+	a, ok := cvssMetricValue(metrics, "A", map[string]float64{"H": 0.56, "L": 0.22, "N": 0})
+	if !ok {
+		return 0, false
+	}
+
+	impactSubScore := 1 - ((1 - c) * (1 - i) * (1 - a))
+	if impactSubScore <= 0 {
+		return 0, true
+	}
+	exploitability := 8.22 * av * ac * pr * ui
+	switch scope {
+	case "U":
+		return cvssRoundUp(math.Min(6.42*impactSubScore+exploitability, 10)), true
+	case "C":
+		impact := 7.52*(impactSubScore-0.029) - 3.25*math.Pow(impactSubScore-0.02, 15)
+		return cvssRoundUp(math.Min(1.08*(impact+exploitability), 10)), true
+	default:
+		return 0, false
+	}
+}
+
+func cvss3PrivilegesRequired(scope, value string) (float64, bool) {
+	switch scope {
+	case "U":
+		return cvssMetricValue(map[string]string{"PR": value}, "PR", map[string]float64{"N": 0.85, "L": 0.62, "H": 0.27})
+	case "C":
+		return cvssMetricValue(map[string]string{"PR": value}, "PR", map[string]float64{"N": 0.85, "L": 0.68, "H": 0.5})
+	default:
+		return 0, false
+	}
+}
+
+func cvss2BaseScore(metrics map[string]string) (float64, bool) {
+	av, ok := cvssMetricValue(metrics, "AV", map[string]float64{"L": 0.395, "A": 0.646, "N": 1})
+	if !ok {
+		return 0, false
+	}
+	ac, ok := cvssMetricValue(metrics, "AC", map[string]float64{"H": 0.35, "M": 0.61, "L": 0.71})
+	if !ok {
+		return 0, false
+	}
+	au, ok := cvssMetricValue(metrics, "AU", map[string]float64{"M": 0.45, "S": 0.56, "N": 0.704})
+	if !ok {
+		return 0, false
+	}
+	c, ok := cvssMetricValue(metrics, "C", map[string]float64{"N": 0, "P": 0.275, "C": 0.66})
+	if !ok {
+		return 0, false
+	}
+	i, ok := cvssMetricValue(metrics, "I", map[string]float64{"N": 0, "P": 0.275, "C": 0.66})
+	if !ok {
+		return 0, false
+	}
+	a, ok := cvssMetricValue(metrics, "A", map[string]float64{"N": 0, "P": 0.275, "C": 0.66})
+	if !ok {
+		return 0, false
+	}
+
+	impact := 10.41 * (1 - ((1 - c) * (1 - i) * (1 - a)))
+	if impact <= 0 {
+		return 0, true
+	}
+	exploitability := 20 * av * ac * au
+	score := ((0.6 * impact) + (0.4 * exploitability) - 1.5) * 1.176
+	return math.Round(score*10) / 10, true
+}
+
+func cvssMetricValue(metrics map[string]string, key string, values map[string]float64) (float64, bool) {
+	value, ok := values[strings.ToUpper(strings.TrimSpace(metrics[key]))]
+	return value, ok
+}
+
+func cvssRoundUp(value float64) float64 {
+	return math.Ceil((value-0.000001)*10) / 10
 }
 
 func firstFixedVersion(ranges []osvRange) string {
