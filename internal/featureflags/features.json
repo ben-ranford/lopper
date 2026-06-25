@@ -59,7 +59,7 @@
     "code": "LOP-FEAT-0009",
     "name": "threshold-profiles-preview",
     "description": "Enable built-in threshold profile config scaffolding through the profile command.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0010",
