@@ -126,6 +126,12 @@ func appendDependencyDelta(comparison *BaselineComparison, delta DependencyDelta
 		} else if delta.WastePercentDelta < 0 {
 			comparison.Progressions = append(comparison.Progressions, delta)
 		}
+		if runtimeDeltaIsRegression(delta.RuntimeDelta) {
+			comparison.RuntimeRegressions = append(comparison.RuntimeRegressions, delta)
+		}
+		if runtimeDeltaIsImprovement(delta.RuntimeDelta) {
+			comparison.RuntimeImprovements = append(comparison.RuntimeImprovements, delta)
+		}
 	}
 }
 
@@ -200,16 +206,181 @@ func dependencyDelta(curr DependencyReport, hasCurrent bool, base DependencyRepo
 		delta.UsedPercentDelta = curr.UsedPercent - base.UsedPercent
 		delta.EstimatedUnusedBytesDelta = curr.EstimatedUnusedBytes - base.EstimatedUnusedBytes
 		delta.WastePercentDelta = wasteFromDependency(curr) - wasteFromDependency(base)
+		runtimeDelta, runtimeChanged := dependencyRuntimeDelta(curr.RuntimeUsage, base.RuntimeUsage)
+		delta.RuntimeDelta = runtimeDelta
 		delta.DeniedIntroduced = isDenied(curr) && !isDenied(base)
 		if delta.UsedExportsCountDelta == 0 &&
 			delta.TotalExportsCountDelta == 0 &&
 			delta.UsedPercentDelta == 0 &&
 			delta.EstimatedUnusedBytesDelta == 0 &&
+			!runtimeChanged &&
 			!delta.DeniedIntroduced {
 			return DependencyDelta{}, false
 		}
 		return delta, true
 	}
+}
+
+func dependencyRuntimeDelta(currentUsage, baselineUsage *RuntimeUsage) (*RuntimeDelta, bool) {
+	if currentUsage == nil && baselineUsage == nil {
+		return nil, false
+	}
+
+	delta := runtimePresenceDelta(currentUsage, baselineUsage)
+	if currentUsage == nil || baselineUsage == nil {
+		return delta, false
+	}
+
+	delta.Comparable = true
+	appendRuntimeLoadCountChanges(delta, currentUsage, baselineUsage)
+	appendRuntimeCorrelationChange(delta, currentUsage, baselineUsage)
+	appendRuntimeOnlyChange(delta, currentUsage, baselineUsage)
+	appendRuntimeCollectionChanges(delta, currentUsage, baselineUsage)
+	return delta, len(delta.ChangeTypes) > 0
+}
+
+func runtimePresenceDelta(currentUsage, baselineUsage *RuntimeUsage) *RuntimeDelta {
+	delta := &RuntimeDelta{
+		BaselinePresent: baselineUsage != nil,
+		CurrentPresent:  currentUsage != nil,
+	}
+	if baselineUsage != nil {
+		delta.BaselineLoadCount = intPointer(baselineUsage.LoadCount)
+	}
+	if currentUsage != nil {
+		delta.CurrentLoadCount = intPointer(currentUsage.LoadCount)
+	}
+	return delta
+}
+
+func appendRuntimeLoadCountChanges(delta *RuntimeDelta, currentUsage, baselineUsage *RuntimeUsage) {
+	loadCountDelta := currentUsage.LoadCount - baselineUsage.LoadCount
+	delta.LoadCountDelta = intPointer(loadCountDelta)
+	if loadCountDelta != 0 {
+		delta.ChangeTypes = append(delta.ChangeTypes, RuntimeChangeLoadCount)
+	}
+	if baselineUsage.LoadCount == 0 && currentUsage.LoadCount > 0 {
+		delta.NewRuntimeLoads = true
+		delta.ChangeTypes = append(delta.ChangeTypes, RuntimeChangeNewRuntimeLoads)
+	}
+	if baselineUsage.LoadCount > 0 && currentUsage.LoadCount == 0 {
+		delta.RemovedRuntimeLoads = true
+		delta.ChangeTypes = append(delta.ChangeTypes, RuntimeChangeRemovedRuntimeLoads)
+	}
+}
+
+func appendRuntimeCorrelationChange(delta *RuntimeDelta, currentUsage, baselineUsage *RuntimeUsage) {
+	delta.BaselineCorrelation = runtimeUsageCorrelation(baselineUsage)
+	delta.CurrentCorrelation = runtimeUsageCorrelation(currentUsage)
+	if delta.BaselineCorrelation != delta.CurrentCorrelation {
+		delta.ChangeTypes = append(delta.ChangeTypes, RuntimeChangeCorrelation)
+	}
+}
+
+func appendRuntimeOnlyChange(delta *RuntimeDelta, currentUsage, baselineUsage *RuntimeUsage) {
+	baselineRuntimeOnly := isRuntimeOnlyUsage(baselineUsage)
+	currentRuntimeOnly := isRuntimeOnlyUsage(currentUsage)
+	if currentRuntimeOnly && !baselineRuntimeOnly {
+		delta.RuntimeOnlyRegression = true
+		delta.ChangeTypes = append(delta.ChangeTypes, RuntimeChangeRuntimeOnlyRegression)
+	}
+	if baselineRuntimeOnly && !currentRuntimeOnly {
+		delta.RuntimeOnlyImprovement = true
+		delta.ChangeTypes = append(delta.ChangeTypes, RuntimeChangeRuntimeOnlyImprovement)
+	}
+}
+
+func appendRuntimeCollectionChanges(delta *RuntimeDelta, currentUsage, baselineUsage *RuntimeUsage) {
+	delta.ModulesAdded, delta.ModulesRemoved, delta.ModulesChanged = compareRuntimeModuleUsage(currentUsage.Modules, baselineUsage.Modules)
+	appendRuntimeCollectionChangeType(delta, RuntimeChangeModules, delta.ModulesAdded, delta.ModulesRemoved, delta.ModulesChanged)
+	delta.ParentModulesAdded, delta.ParentModulesRemoved, delta.ParentModulesChanged = compareRuntimeModuleUsage(currentUsage.ParentModules, baselineUsage.ParentModules)
+	appendRuntimeCollectionChangeType(delta, RuntimeChangeParentModules, delta.ParentModulesAdded, delta.ParentModulesRemoved, delta.ParentModulesChanged)
+	delta.EntrypointsAdded, delta.EntrypointsRemoved, delta.EntrypointsChanged = compareRuntimeModuleUsage(currentUsage.Entrypoints, baselineUsage.Entrypoints)
+	appendRuntimeCollectionChangeType(delta, RuntimeChangeEntrypoints, delta.EntrypointsAdded, delta.EntrypointsRemoved, delta.EntrypointsChanged)
+}
+
+func appendRuntimeCollectionChangeType(delta *RuntimeDelta, changeType RuntimeChangeType, added, removed, changed []RuntimeModuleDelta) {
+	if len(added) > 0 || len(removed) > 0 || len(changed) > 0 {
+		delta.ChangeTypes = append(delta.ChangeTypes, changeType)
+	}
+}
+
+func compareRuntimeModuleUsage(current, baseline []RuntimeModuleUsage) ([]RuntimeModuleDelta, []RuntimeModuleDelta, []RuntimeModuleDelta) {
+	currentByModule := runtimeModuleCounts(current)
+	baselineByModule := runtimeModuleCounts(baseline)
+	keys := make([]string, 0, len(currentByModule)+len(baselineByModule))
+	seen := make(map[string]struct{}, len(currentByModule)+len(baselineByModule))
+	for module := range currentByModule {
+		keys = append(keys, module)
+		seen[module] = struct{}{}
+	}
+	for module := range baselineByModule {
+		if _, ok := seen[module]; ok {
+			continue
+		}
+		keys = append(keys, module)
+	}
+	sort.Strings(keys)
+
+	added := make([]RuntimeModuleDelta, 0)
+	removed := make([]RuntimeModuleDelta, 0)
+	changed := make([]RuntimeModuleDelta, 0)
+	for _, module := range keys {
+		currentCount, hasCurrent := currentByModule[module]
+		baselineCount, hasBaseline := baselineByModule[module]
+		moduleDelta := RuntimeModuleDelta{
+			Module:        module,
+			BaselineCount: baselineCount,
+			CurrentCount:  currentCount,
+			CountDelta:    currentCount - baselineCount,
+		}
+		switch {
+		case hasCurrent && !hasBaseline:
+			added = append(added, moduleDelta)
+		case !hasCurrent && hasBaseline:
+			removed = append(removed, moduleDelta)
+		case moduleDelta.CountDelta != 0:
+			changed = append(changed, moduleDelta)
+		}
+	}
+	return added, removed, changed
+}
+
+func runtimeModuleCounts(items []RuntimeModuleUsage) map[string]int {
+	counts := make(map[string]int, len(items))
+	for _, item := range items {
+		counts[item.Module] += item.Count
+	}
+	return counts
+}
+
+func runtimeDeltaIsRegression(delta *RuntimeDelta) bool {
+	if delta == nil || !delta.Comparable {
+		return false
+	}
+	return delta.NewRuntimeLoads || delta.RuntimeOnlyRegression || runtimeDeltaLoadCount(delta) > 0
+}
+
+func runtimeDeltaIsImprovement(delta *RuntimeDelta) bool {
+	if delta == nil || !delta.Comparable {
+		return false
+	}
+	return delta.RemovedRuntimeLoads || delta.RuntimeOnlyImprovement || runtimeDeltaLoadCount(delta) < 0
+}
+
+func runtimeDeltaLoadCount(delta *RuntimeDelta) int {
+	if delta == nil || delta.LoadCountDelta == nil {
+		return 0
+	}
+	return *delta.LoadCountDelta
+}
+
+func isRuntimeOnlyUsage(usage *RuntimeUsage) bool {
+	return usage != nil && (usage.RuntimeOnly || runtimeUsageCorrelation(usage) == RuntimeCorrelationRuntimeOnly)
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func wasteFromDependency(dep DependencyReport) float64 {

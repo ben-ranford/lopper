@@ -28,6 +28,12 @@ func formatPRComment(report Report) string {
 	buffer.WriteString("| Changed | Regressions | Progressions | Added | Removed | Unchanged |\n")
 	buffer.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 	buffer.WriteString(fmt.Sprintf("| %d | %d | %d | %d | %d | %d |\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows))
+	if len(comparison.RuntimeRegressions) > 0 || len(comparison.RuntimeImprovements) > 0 {
+		buffer.WriteString("\n| Runtime trace deltas | Count |\n")
+		buffer.WriteString("| --- | --- |\n")
+		buffer.WriteString(fmt.Sprintf("| Runtime regressions | %d |\n", len(comparison.RuntimeRegressions)))
+		buffer.WriteString(fmt.Sprintf("| Runtime improvements | %d |\n", len(comparison.RuntimeImprovements)))
+	}
 
 	if len(comparison.NewDeniedLicenses) > 0 {
 		buffer.WriteString("\n### Newly denied licenses\n\n")
@@ -37,6 +43,9 @@ func formatPRComment(report Report) string {
 			buffer.WriteString(fmt.Sprintf("| %d | `%s` | %s | %s |\n", i+1, escapeMarkdownTable(denied.Name), escapeMarkdownTable(denied.Language), escapeMarkdownTable(denied.SPDX)))
 		}
 	}
+
+	appendRuntimePRCommentSection(&buffer, "Runtime regressions", comparison.RuntimeRegressions)
+	appendRuntimePRCommentSection(&buffer, "Runtime improvements", comparison.RuntimeImprovements)
 
 	top := topDependencyDeltas(comparison.Dependencies, 10)
 	if len(top) == 0 {
@@ -64,6 +73,27 @@ func formatPRComment(report Report) string {
 	return buffer.String()
 }
 
+func appendRuntimePRCommentSection(buffer *strings.Builder, title string, deltas []DependencyDelta) {
+	top := topRuntimeDeltas(deltas, 10)
+	if len(top) == 0 {
+		return
+	}
+	buffer.WriteString("\n### ")
+	buffer.WriteString(title)
+	buffer.WriteString("\n\n")
+	buffer.WriteString("| # | Dependency | Language | Runtime delta |\n")
+	buffer.WriteString("| --- | --- | --- | --- |\n")
+	for i, delta := range top {
+		row := []string{
+			fmt.Sprintf("%d", i+1),
+			"`" + escapeMarkdownTable(delta.Name) + "`",
+			escapeMarkdownTable(delta.Language),
+			escapeMarkdownTable(formatRuntimeDelta(delta.RuntimeDelta)),
+		}
+		buffer.WriteString("| " + strings.Join(row, " | ") + " |\n")
+	}
+}
+
 func topDependencyDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
 	if len(deltas) == 0 || limit <= 0 {
 		return make([]DependencyDelta, 0)
@@ -75,6 +105,34 @@ func topDependencyDeltas(deltas []DependencyDelta, limit int) []DependencyDelta 
 			leftMagnitude = -leftMagnitude
 		}
 		rightMagnitude := copied[j].EstimatedUnusedBytesDelta
+		if rightMagnitude < 0 {
+			rightMagnitude = -rightMagnitude
+		}
+		if leftMagnitude != rightMagnitude {
+			return leftMagnitude > rightMagnitude
+		}
+		if copied[i].Language != copied[j].Language {
+			return copied[i].Language < copied[j].Language
+		}
+		return copied[i].Name < copied[j].Name
+	})
+	if len(copied) < limit {
+		return copied
+	}
+	return copied[:limit]
+}
+
+func topRuntimeDeltas(deltas []DependencyDelta, limit int) []DependencyDelta {
+	if len(deltas) == 0 || limit <= 0 {
+		return make([]DependencyDelta, 0)
+	}
+	copied := append([]DependencyDelta(nil), deltas...)
+	sort.Slice(copied, func(i, j int) bool {
+		leftMagnitude := runtimeDeltaLoadCount(copied[i].RuntimeDelta)
+		if leftMagnitude < 0 {
+			leftMagnitude = -leftMagnitude
+		}
+		rightMagnitude := runtimeDeltaLoadCount(copied[j].RuntimeDelta)
 		if rightMagnitude < 0 {
 			rightMagnitude = -rightMagnitude
 		}

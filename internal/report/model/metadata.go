@@ -6,16 +6,18 @@ type ScopeMetadata struct {
 }
 
 type BaselineComparison struct {
-	BaselineKey       string               `json:"baselineKey"`
-	CurrentKey        string               `json:"currentKey,omitempty"`
-	SummaryDelta      SummaryDelta         `json:"summaryDelta"`
-	Dependencies      []DependencyDelta    `json:"dependencies,omitempty"`
-	Regressions       []DependencyDelta    `json:"regressions,omitempty"`
-	Progressions      []DependencyDelta    `json:"progressions,omitempty"`
-	Added             []DependencyDelta    `json:"added,omitempty"`
-	Removed           []DependencyDelta    `json:"removed,omitempty"`
-	NewDeniedLicenses []DeniedLicenseDelta `json:"newDeniedLicenses,omitempty"`
-	UnchangedRows     int                  `json:"unchangedRows,omitempty"`
+	BaselineKey         string               `json:"baselineKey"`
+	CurrentKey          string               `json:"currentKey,omitempty"`
+	SummaryDelta        SummaryDelta         `json:"summaryDelta"`
+	Dependencies        []DependencyDelta    `json:"dependencies,omitempty"`
+	Regressions         []DependencyDelta    `json:"regressions,omitempty"`
+	Progressions        []DependencyDelta    `json:"progressions,omitempty"`
+	RuntimeRegressions  []DependencyDelta    `json:"runtimeRegressions,omitempty"`
+	RuntimeImprovements []DependencyDelta    `json:"runtimeImprovements,omitempty"`
+	Added               []DependencyDelta    `json:"added,omitempty"`
+	Removed             []DependencyDelta    `json:"removed,omitempty"`
+	NewDeniedLicenses   []DeniedLicenseDelta `json:"newDeniedLicenses,omitempty"`
+	UnchangedRows       int                  `json:"unchangedRows,omitempty"`
 }
 
 type SummaryDelta struct {
@@ -47,6 +49,7 @@ type DependencyDelta struct {
 	UsedPercentDelta          float64             `json:"usedPercentDelta"`
 	EstimatedUnusedBytesDelta int64               `json:"estimatedUnusedBytesDelta"`
 	WastePercentDelta         float64             `json:"wastePercentDelta"`
+	RuntimeDelta              *RuntimeDelta       `json:"runtimeDelta,omitempty"`
 	DeniedIntroduced          bool                `json:"deniedIntroduced,omitempty"`
 }
 
@@ -54,6 +57,52 @@ type DeniedLicenseDelta struct {
 	Language string `json:"language,omitempty"`
 	Name     string `json:"name"`
 	SPDX     string `json:"spdx,omitempty"`
+}
+
+type RuntimeChangeType string
+
+const (
+	RuntimeChangeLoadCount              RuntimeChangeType = "load-count"
+	RuntimeChangeNewRuntimeLoads        RuntimeChangeType = "new-runtime-loads"
+	RuntimeChangeRemovedRuntimeLoads    RuntimeChangeType = "removed-runtime-loads"
+	RuntimeChangeCorrelation            RuntimeChangeType = "correlation"
+	RuntimeChangeRuntimeOnlyRegression  RuntimeChangeType = "runtime-only-regression"
+	RuntimeChangeRuntimeOnlyImprovement RuntimeChangeType = "runtime-only-improvement"
+	RuntimeChangeModules                RuntimeChangeType = "modules"
+	RuntimeChangeParentModules          RuntimeChangeType = "parent-modules"
+	RuntimeChangeEntrypoints            RuntimeChangeType = "entrypoints"
+)
+
+type RuntimeDelta struct {
+	Comparable             bool                 `json:"comparable"`
+	BaselinePresent        bool                 `json:"baselinePresent"`
+	CurrentPresent         bool                 `json:"currentPresent"`
+	BaselineLoadCount      *int                 `json:"baselineLoadCount,omitempty"`
+	CurrentLoadCount       *int                 `json:"currentLoadCount,omitempty"`
+	LoadCountDelta         *int                 `json:"loadCountDelta,omitempty"`
+	BaselineCorrelation    RuntimeCorrelation   `json:"baselineCorrelation,omitempty"`
+	CurrentCorrelation     RuntimeCorrelation   `json:"currentCorrelation,omitempty"`
+	ChangeTypes            []RuntimeChangeType  `json:"changeTypes,omitempty"`
+	NewRuntimeLoads        bool                 `json:"newRuntimeLoads,omitempty"`
+	RemovedRuntimeLoads    bool                 `json:"removedRuntimeLoads,omitempty"`
+	RuntimeOnlyRegression  bool                 `json:"runtimeOnlyRegression,omitempty"`
+	RuntimeOnlyImprovement bool                 `json:"runtimeOnlyImprovement,omitempty"`
+	ModulesAdded           []RuntimeModuleDelta `json:"modulesAdded,omitempty"`
+	ModulesRemoved         []RuntimeModuleDelta `json:"modulesRemoved,omitempty"`
+	ModulesChanged         []RuntimeModuleDelta `json:"modulesChanged,omitempty"`
+	ParentModulesAdded     []RuntimeModuleDelta `json:"parentModulesAdded,omitempty"`
+	ParentModulesRemoved   []RuntimeModuleDelta `json:"parentModulesRemoved,omitempty"`
+	ParentModulesChanged   []RuntimeModuleDelta `json:"parentModulesChanged,omitempty"`
+	EntrypointsAdded       []RuntimeModuleDelta `json:"entrypointsAdded,omitempty"`
+	EntrypointsRemoved     []RuntimeModuleDelta `json:"entrypointsRemoved,omitempty"`
+	EntrypointsChanged     []RuntimeModuleDelta `json:"entrypointsChanged,omitempty"`
+}
+
+type RuntimeModuleDelta struct {
+	Module        string `json:"module"`
+	BaselineCount int    `json:"baselineCount"`
+	CurrentCount  int    `json:"currentCount"`
+	CountDelta    int    `json:"countDelta"`
 }
 
 type CacheMetadata struct {

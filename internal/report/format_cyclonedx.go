@@ -278,6 +278,7 @@ func appendCycloneDXBaselineDeltaProperties(props *[]cycloneDXProperty, delta De
 	appendCycloneDXProperty(props, "lopper:baseline:used-percent-delta", formatCycloneDXFloat(delta.UsedPercentDelta))
 	appendCycloneDXProperty(props, "lopper:baseline:waste-percent-delta", formatCycloneDXFloat(delta.WastePercentDelta))
 	appendCycloneDXProperty(props, "lopper:baseline:estimated-unused-bytes-delta", strconv.FormatInt(delta.EstimatedUnusedBytesDelta, 10))
+	appendCycloneDXJSONProperty(props, "lopper:baseline:runtime-delta", delta.RuntimeDelta)
 	appendCycloneDXProperty(props, "lopper:baseline:denied-introduced", strconv.FormatBool(delta.DeniedIntroduced))
 }
 

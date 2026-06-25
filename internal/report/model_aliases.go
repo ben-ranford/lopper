@@ -43,6 +43,9 @@ type SummaryDelta = model.SummaryDelta
 type DependencyDeltaKind = model.DependencyDeltaKind
 type DependencyDelta = model.DependencyDelta
 type DeniedLicenseDelta = model.DeniedLicenseDelta
+type RuntimeChangeType = model.RuntimeChangeType
+type RuntimeDelta = model.RuntimeDelta
+type RuntimeModuleDelta = model.RuntimeModuleDelta
 type CacheMetadata = model.CacheMetadata
 type CacheInvalidation = model.CacheInvalidation
 type EffectiveThresholds = model.EffectiveThresholds
@@ -57,4 +60,14 @@ const (
 	DependencyDeltaAdded   = model.DependencyDeltaAdded
 	DependencyDeltaRemoved = model.DependencyDeltaRemoved
 	DependencyDeltaChanged = model.DependencyDeltaChanged
+
+	RuntimeChangeLoadCount              = model.RuntimeChangeLoadCount
+	RuntimeChangeNewRuntimeLoads        = model.RuntimeChangeNewRuntimeLoads
+	RuntimeChangeRemovedRuntimeLoads    = model.RuntimeChangeRemovedRuntimeLoads
+	RuntimeChangeCorrelation            = model.RuntimeChangeCorrelation
+	RuntimeChangeRuntimeOnlyRegression  = model.RuntimeChangeRuntimeOnlyRegression
+	RuntimeChangeRuntimeOnlyImprovement = model.RuntimeChangeRuntimeOnlyImprovement
+	RuntimeChangeModules                = model.RuntimeChangeModules
+	RuntimeChangeParentModules          = model.RuntimeChangeParentModules
+	RuntimeChangeEntrypoints            = model.RuntimeChangeEntrypoints
 )

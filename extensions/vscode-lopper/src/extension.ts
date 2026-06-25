@@ -35,6 +35,7 @@ import type {
   LopperImportUse,
   LopperLocation,
   LopperReachabilityConfidence,
+  LopperRuntimeDelta,
   LopperRuntimeUsage,
   LopperScopeMode,
 } from "./types";
@@ -2290,8 +2291,71 @@ function dependencyBaselineSummary(
   }
   if (dependencyDelta) {
     parts.push(`dep ${dependencyDelta.usedPercentDelta > 0 ? "+" : ""}${dependencyDelta.usedPercentDelta.toFixed(1)}%`);
+    const runtimeDelta = runtimeDeltaSummary(dependencyDelta.runtimeDelta);
+    if (runtimeDelta) {
+      parts.push(runtimeDelta);
+    }
   }
   return parts.length > 0 ? parts.join(" • ") : undefined;
+}
+
+function runtimeDeltaSummary(runtimeDelta?: LopperRuntimeDelta): string | undefined {
+  if (!runtimeDelta) {
+    return undefined;
+  }
+  if (!runtimeDelta.comparable) {
+    return runtimeDeltaNotComparableSummary(runtimeDelta);
+  }
+  const parts: string[] = [];
+  appendRuntimeDeltaSummaryPart(parts, runtimeLoadCountDeltaSummary(runtimeDelta));
+  appendRuntimeDeltaSummaryPart(parts, runtimeDelta.newRuntimeLoads ? "new runtime loads" : undefined);
+  appendRuntimeDeltaSummaryPart(parts, runtimeDelta.removedRuntimeLoads ? "removed runtime loads" : undefined);
+  appendRuntimeDeltaSummaryPart(parts, runtimeCorrelationDeltaSummary(runtimeDelta));
+  appendRuntimeDeltaSummaryPart(parts, runtimeDelta.runtimeOnlyRegression ? "runtime-only regression" : undefined);
+  appendRuntimeDeltaSummaryPart(parts, runtimeDelta.runtimeOnlyImprovement ? "runtime-only improvement" : undefined);
+  appendRuntimeDeltaSummaryPart(parts, runtimeModuleGroupDeltaSummary("modules", runtimeDelta.modulesAdded, runtimeDelta.modulesRemoved, runtimeDelta.modulesChanged));
+  appendRuntimeDeltaSummaryPart(parts, runtimeModuleGroupDeltaSummary("parent modules", runtimeDelta.parentModulesAdded, runtimeDelta.parentModulesRemoved, runtimeDelta.parentModulesChanged));
+  appendRuntimeDeltaSummaryPart(parts, runtimeModuleGroupDeltaSummary("entrypoints", runtimeDelta.entrypointsAdded, runtimeDelta.entrypointsRemoved, runtimeDelta.entrypointsChanged));
+  return parts.length > 0 ? parts.join(" • ") : "runtime unchanged";
+}
+
+function runtimeDeltaNotComparableSummary(runtimeDelta: LopperRuntimeDelta): string {
+  if (!runtimeDelta.baselinePresent && runtimeDelta.currentPresent) {
+    return "runtime baseline missing";
+  }
+  if (runtimeDelta.baselinePresent && !runtimeDelta.currentPresent) {
+    return "runtime current missing";
+  }
+  return "runtime not comparable";
+}
+
+function runtimeLoadCountDeltaSummary(runtimeDelta: LopperRuntimeDelta): string | undefined {
+  if (typeof runtimeDelta.loadCountDelta !== "number" || runtimeDelta.loadCountDelta === 0) {
+    return undefined;
+  }
+  return `runtime loads ${runtimeDelta.loadCountDelta > 0 ? "+" : ""}${runtimeDelta.loadCountDelta}`;
+}
+
+function runtimeCorrelationDeltaSummary(runtimeDelta: LopperRuntimeDelta): string | undefined {
+  if (runtimeDelta.baselineCorrelation === runtimeDelta.currentCorrelation) {
+    return undefined;
+  }
+  return `runtime ${runtimeDelta.baselineCorrelation ?? "n/a"} -> ${runtimeDelta.currentCorrelation ?? "n/a"}`;
+}
+
+function runtimeModuleGroupDeltaSummary(
+  label: string,
+  added?: NonNullable<LopperRuntimeDelta["modulesAdded"]>,
+  removed?: NonNullable<LopperRuntimeDelta["modulesAdded"]>,
+  changed?: NonNullable<LopperRuntimeDelta["modulesAdded"]>,
+): string | undefined {
+  return added?.length || removed?.length || changed?.length ? `${label} changed` : undefined;
+}
+
+function appendRuntimeDeltaSummaryPart(parts: string[], value?: string): void {
+  if (value) {
+    parts.push(value);
+  }
 }
 
 function renderDependencyDetailHtml(
@@ -2523,9 +2587,56 @@ function renderBaselineHtml(baseline: LopperBaselineComparison, dependencyDelta?
       ["Dependency waste delta", `${dependencyDelta.wastePercentDelta.toFixed(1)}%`],
       ["Dependency used delta", `${dependencyDelta.usedPercentDelta.toFixed(1)}%`],
     ]) : "",
+    dependencyDelta?.runtimeDelta ? renderRuntimeDeltaHtml(dependencyDelta.runtimeDelta) : "",
     baseline.newDeniedLicenses?.length ? `<p><strong>New denied licenses:</strong> ${escapeHtml(baseline.newDeniedLicenses.map((item) => item.name).join(", "))}</p>` : "",
   ];
   return lines.join("");
+}
+
+function renderRuntimeDeltaHtml(runtimeDelta: LopperRuntimeDelta): string {
+  const entries: Array<[string, string]> = [
+    ["Runtime comparable", runtimeDelta.comparable ? "yes" : "no"],
+    ["Baseline runtime data", runtimeDelta.baselinePresent ? "yes" : "no"],
+    ["Current runtime data", runtimeDelta.currentPresent ? "yes" : "no"],
+  ];
+  if (typeof runtimeDelta.baselineLoadCount === "number") {
+    entries.push(["Baseline loads", String(runtimeDelta.baselineLoadCount)]);
+  }
+  if (typeof runtimeDelta.currentLoadCount === "number") {
+    entries.push(["Current loads", String(runtimeDelta.currentLoadCount)]);
+  }
+  if (typeof runtimeDelta.loadCountDelta === "number") {
+    entries.push(["Load delta", `${runtimeDelta.loadCountDelta > 0 ? "+" : ""}${runtimeDelta.loadCountDelta}`]);
+  }
+  if (runtimeDelta.baselineCorrelation || runtimeDelta.currentCorrelation) {
+    entries.push(["Correlation", `${runtimeDelta.baselineCorrelation ?? "n/a"} -> ${runtimeDelta.currentCorrelation ?? "n/a"}`]);
+  }
+  const parts = [renderHtmlSection("Runtime baseline delta", renderKeyValueList(entries))];
+  if (runtimeDelta.changeTypes?.length) {
+    parts.push(renderHtmlSection("Runtime change types", renderHtmlList(runtimeDelta.changeTypes.map((item) => renderListItem(escapeHtml(item))))));
+  }
+  appendRuntimeModuleDeltaSection(parts, "Modules added", runtimeDelta.modulesAdded);
+  appendRuntimeModuleDeltaSection(parts, "Modules removed", runtimeDelta.modulesRemoved);
+  appendRuntimeModuleDeltaSection(parts, "Modules changed", runtimeDelta.modulesChanged);
+  appendRuntimeModuleDeltaSection(parts, "Parent modules added", runtimeDelta.parentModulesAdded);
+  appendRuntimeModuleDeltaSection(parts, "Parent modules removed", runtimeDelta.parentModulesRemoved);
+  appendRuntimeModuleDeltaSection(parts, "Parent modules changed", runtimeDelta.parentModulesChanged);
+  appendRuntimeModuleDeltaSection(parts, "Entrypoints added", runtimeDelta.entrypointsAdded);
+  appendRuntimeModuleDeltaSection(parts, "Entrypoints removed", runtimeDelta.entrypointsRemoved);
+  appendRuntimeModuleDeltaSection(parts, "Entrypoints changed", runtimeDelta.entrypointsChanged);
+  return parts.join("");
+}
+
+function appendRuntimeModuleDeltaSection(parts: string[], title: string, deltas?: NonNullable<LopperRuntimeDelta["modulesAdded"]>): void {
+  if (!deltas?.length) {
+    return;
+  }
+  parts.push(renderHtmlSection(title, renderHtmlList(deltas.map(renderRuntimeModuleDeltaItem))));
+}
+
+function renderRuntimeModuleDeltaItem(delta: { module: string; baselineCount: number; currentCount: number; countDelta: number }): string {
+  const signed = delta.countDelta > 0 ? `+${delta.countDelta}` : String(delta.countDelta);
+  return renderListItem(`<code>${escapeHtml(delta.module)}</code> ${delta.baselineCount} -> ${delta.currentCount} (${signed})`);
 }
 
 function renderRuntimeUsage(runtime: LopperRuntimeUsage): string {
@@ -2538,6 +2649,12 @@ function renderRuntimeUsage(runtime: LopperRuntimeUsage): string {
   ];
   if (runtime.modules?.length) {
     parts.push(renderHtmlSection("Modules", renderHtmlList(runtime.modules.map(renderRuntimeModuleItem))));
+  }
+  if (runtime.parentModules?.length) {
+    parts.push(renderHtmlSection("Parent modules", renderHtmlList(runtime.parentModules.map(renderRuntimeModuleItem))));
+  }
+  if (runtime.entrypoints?.length) {
+    parts.push(renderHtmlSection("Entrypoints", renderHtmlList(runtime.entrypoints.map(renderRuntimeModuleItem))));
   }
   if (runtime.topSymbols?.length) {
     parts.push(renderHtmlSection("Top symbols", renderHtmlList(runtime.topSymbols.map(renderRuntimeTopSymbolItem))));

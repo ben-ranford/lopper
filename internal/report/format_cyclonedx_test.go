@@ -129,6 +129,7 @@ func TestFormatCycloneDXJSONDeterministicOrdering(t *testing.T) {
 }
 
 func TestFormatCycloneDXJSONPreservesDependencySurfaceMetadata(t *testing.T) {
+	loadDelta := 3
 	reportData := Report{
 		SchemaVersion: SchemaVersion,
 		RepoPath:      ".",
@@ -148,7 +149,14 @@ func TestFormatCycloneDXJSONPreservesDependencySurfaceMetadata(t *testing.T) {
 				UsedPercentDelta:          -5,
 				WastePercentDelta:         5,
 				EstimatedUnusedBytesDelta: 128,
-				DeniedIntroduced:          true,
+				RuntimeDelta: &RuntimeDelta{
+					Comparable:      true,
+					BaselinePresent: true,
+					CurrentPresent:  true,
+					LoadCountDelta:  &loadDelta,
+					NewRuntimeLoads: true,
+				},
+				DeniedIntroduced: true,
 			}},
 		},
 		Dependencies: []DependencyReport{{
@@ -216,6 +224,10 @@ func TestFormatCycloneDXJSONPreservesDependencySurfaceMetadata(t *testing.T) {
 	requireCycloneDXProperty(t, component.Properties, "lopper:removal-candidate:score", "71")
 	requireCycloneDXProperty(t, component.Properties, "lopper:baseline:kind", "changed")
 	requireCycloneDXProperty(t, component.Properties, "lopper:baseline:denied-introduced", "true")
+	runtimeDelta, ok := cycloneDXPropertyValue(component.Properties, "lopper:baseline:runtime-delta")
+	if !ok || !strings.Contains(runtimeDelta, `"newRuntimeLoads":true`) {
+		t.Fatalf("expected CycloneDX runtime baseline delta, got %q", runtimeDelta)
+	}
 	requireCycloneDXProperty(t, bom.Properties, "lopper:baseline:key", "commit:base")
 
 	provenanceSignals, ok := cycloneDXPropertyValue(component.Properties, "lopper:provenance:signals")

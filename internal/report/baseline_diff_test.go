@@ -208,6 +208,174 @@ func TestComputeBaselineComparisonTracksNewDeniedLicenses(t *testing.T) {
 	}
 }
 
+func TestComputeBaselineComparisonRuntimeMissingBaselineDataIsNotZeroLoads(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{{
+			Name:              "alpha",
+			Language:          "js-ts",
+			UsedExportsCount:  1,
+			TotalExportsCount: 4,
+			UsedPercent:       25,
+			RuntimeUsage: &RuntimeUsage{
+				LoadCount:   3,
+				Correlation: RuntimeCorrelationOverlap,
+			},
+		}},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{{
+			Name:              "alpha",
+			Language:          "js-ts",
+			UsedExportsCount:  2,
+			TotalExportsCount: 4,
+			UsedPercent:       50,
+		}},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if len(comparison.RuntimeRegressions) != 0 {
+		t.Fatalf("missing baseline runtime data must not create runtime regressions: %#v", comparison.RuntimeRegressions)
+	}
+	if len(comparison.Dependencies) != 1 {
+		t.Fatalf("expected export delta to keep dependency row, got %#v", comparison.Dependencies)
+	}
+	runtimeDelta := comparison.Dependencies[0].RuntimeDelta
+	if runtimeDelta == nil {
+		t.Fatalf("expected runtime availability context on changed dependency")
+	}
+	if runtimeDelta.Comparable {
+		t.Fatalf("expected runtime delta with missing baseline to be non-comparable")
+	}
+	if runtimeDelta.BaselinePresent || !runtimeDelta.CurrentPresent {
+		t.Fatalf("unexpected runtime availability flags: %#v", runtimeDelta)
+	}
+	if runtimeDelta.LoadCountDelta != nil {
+		t.Fatalf("missing baseline runtime data must not produce load delta, got %d", *runtimeDelta.LoadCountDelta)
+	}
+}
+
+func TestComputeBaselineComparisonRuntimeOnlyChangesDoNotPolluteAddedRemovedDependencies(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{{
+			Name:              "new-runtime",
+			Language:          "js-ts",
+			UsedExportsCount:  1,
+			TotalExportsCount: 1,
+			UsedPercent:       100,
+			RuntimeUsage:      &RuntimeUsage{LoadCount: 3, Correlation: RuntimeCorrelationRuntimeOnly, RuntimeOnly: true},
+		}},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{{
+			Name:              "removed-runtime",
+			Language:          "js-ts",
+			UsedExportsCount:  1,
+			TotalExportsCount: 1,
+			UsedPercent:       100,
+			RuntimeUsage:      &RuntimeUsage{LoadCount: 2, Correlation: RuntimeCorrelationOverlap},
+		}},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if len(comparison.Added) != 1 || comparison.Added[0].RuntimeDelta != nil {
+		t.Fatalf("added dependencies should not produce runtime baseline deltas: %#v", comparison.Added)
+	}
+	if len(comparison.Removed) != 1 || comparison.Removed[0].RuntimeDelta != nil {
+		t.Fatalf("removed dependencies should not produce runtime baseline deltas: %#v", comparison.Removed)
+	}
+	if len(comparison.RuntimeRegressions) != 0 || len(comparison.RuntimeImprovements) != 0 {
+		t.Fatalf("new/removed dependencies should not be classified as runtime regressions/improvements: %#v %#v", comparison.RuntimeRegressions, comparison.RuntimeImprovements)
+	}
+}
+
+func TestComputeBaselineComparisonRuntimeCorrelationTransitions(t *testing.T) {
+	current := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "regression",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:     2,
+					Correlation:   RuntimeCorrelationRuntimeOnly,
+					RuntimeOnly:   true,
+					Modules:       []RuntimeModuleUsage{{Module: "regression/runtime", Count: 2}},
+					ParentModules: []RuntimeModuleUsage{{Module: "src/new-parent.js", Count: 2}},
+					Entrypoints:   []RuntimeModuleUsage{{Module: "src/new-entry.js", Count: 2}},
+				},
+			},
+			{
+				Name:              "improvement",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   0,
+					Correlation: RuntimeCorrelationStaticOnly,
+				},
+			},
+		},
+	}
+	baseline := Report{
+		Dependencies: []DependencyReport{
+			{
+				Name:              "regression",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:     0,
+					Correlation:   RuntimeCorrelationStaticOnly,
+					ParentModules: []RuntimeModuleUsage{{Module: "src/old-parent.js", Count: 1}},
+					Entrypoints:   []RuntimeModuleUsage{{Module: "src/old-entry.js", Count: 1}},
+				},
+			},
+			{
+				Name:              "improvement",
+				Language:          "js-ts",
+				UsedExportsCount:  1,
+				TotalExportsCount: 2,
+				UsedPercent:       50,
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:   3,
+					Correlation: RuntimeCorrelationRuntimeOnly,
+					RuntimeOnly: true,
+				},
+			},
+		},
+	}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if len(comparison.RuntimeRegressions) != 1 || comparison.RuntimeRegressions[0].Name != "regression" {
+		t.Fatalf("expected one runtime regression, got %#v", comparison.RuntimeRegressions)
+	}
+	regressionDelta := comparison.RuntimeRegressions[0].RuntimeDelta
+	if regressionDelta == nil || !regressionDelta.NewRuntimeLoads || !regressionDelta.RuntimeOnlyRegression {
+		t.Fatalf("expected new runtime load and runtime-only regression flags, got %#v", regressionDelta)
+	}
+	if regressionDelta.BaselineCorrelation != RuntimeCorrelationStaticOnly || regressionDelta.CurrentCorrelation != RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected correlation transition, got %#v", regressionDelta)
+	}
+	if len(regressionDelta.ParentModulesAdded) != 1 || len(regressionDelta.ParentModulesRemoved) != 1 {
+		t.Fatalf("expected parent module changes, got %#v", regressionDelta)
+	}
+	if len(regressionDelta.EntrypointsAdded) != 1 || len(regressionDelta.EntrypointsRemoved) != 1 {
+		t.Fatalf("expected entrypoint changes, got %#v", regressionDelta)
+	}
+
+	if len(comparison.RuntimeImprovements) != 1 || comparison.RuntimeImprovements[0].Name != "improvement" {
+		t.Fatalf("expected one runtime improvement, got %#v", comparison.RuntimeImprovements)
+	}
+	improvementDelta := comparison.RuntimeImprovements[0].RuntimeDelta
+	if improvementDelta == nil || !improvementDelta.RemovedRuntimeLoads || !improvementDelta.RuntimeOnlyImprovement {
+		t.Fatalf("expected removed runtime load and runtime-only improvement flags, got %#v", improvementDelta)
+	}
+}
+
 func TestBaselineDiffAdditionalBranches(t *testing.T) {
 	current := Report{
 		Dependencies: []DependencyReport{

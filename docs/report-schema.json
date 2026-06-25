@@ -553,6 +553,14 @@
           "type": "array",
           "items": { "$ref": "#/$defs/dependencyDelta" }
         },
+        "runtimeRegressions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "runtimeImprovements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
         "added": {
           "type": "array",
           "items": { "$ref": "#/$defs/dependencyDelta" }
@@ -615,7 +623,97 @@
         "usedPercentDelta": { "type": "number" },
         "estimatedUnusedBytesDelta": { "type": "integer" },
         "wastePercentDelta": { "type": "number" },
+        "runtimeDelta": { "$ref": "#/$defs/runtimeDelta" },
         "deniedIntroduced": { "type": "boolean" }
+      }
+    },
+    "runtimeDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comparable", "baselinePresent", "currentPresent"],
+      "properties": {
+        "comparable": { "type": "boolean" },
+        "baselinePresent": { "type": "boolean" },
+        "currentPresent": { "type": "boolean" },
+        "baselineLoadCount": { "type": "integer", "minimum": 0 },
+        "currentLoadCount": { "type": "integer", "minimum": 0 },
+        "loadCountDelta": { "type": "integer" },
+        "baselineCorrelation": {
+          "type": "string",
+          "enum": ["static-only", "runtime-only", "overlap"]
+        },
+        "currentCorrelation": {
+          "type": "string",
+          "enum": ["static-only", "runtime-only", "overlap"]
+        },
+        "changeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "load-count",
+              "new-runtime-loads",
+              "removed-runtime-loads",
+              "correlation",
+              "runtime-only-regression",
+              "runtime-only-improvement",
+              "modules",
+              "parent-modules",
+              "entrypoints"
+            ]
+          }
+        },
+        "newRuntimeLoads": { "type": "boolean" },
+        "removedRuntimeLoads": { "type": "boolean" },
+        "runtimeOnlyRegression": { "type": "boolean" },
+        "runtimeOnlyImprovement": { "type": "boolean" },
+        "modulesAdded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "modulesRemoved": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "modulesChanged": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "parentModulesAdded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "parentModulesRemoved": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "parentModulesChanged": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "entrypointsAdded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "entrypointsRemoved": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        },
+        "entrypointsChanged": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtimeModuleDelta" }
+        }
+      }
+    },
+    "runtimeModuleDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "baselineCount", "currentCount", "countDelta"],
+      "properties": {
+        "module": { "type": "string" },
+        "baselineCount": { "type": "integer", "minimum": 0 },
+        "currentCount": { "type": "integer", "minimum": 0 },
+        "countDelta": { "type": "integer" }
       }
     },
     "deniedLicenseDelta": {

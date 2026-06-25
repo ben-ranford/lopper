@@ -160,6 +160,9 @@ func TestNormalizeRuleToken(t *testing.T) {
 
 func sampleSARIFRuntimeAndBaselineReport() Report {
 	wasteIncrease := 1.5
+	baselineLoads := 0
+	currentLoads := 4
+	loadDelta := 4
 	return Report{
 		Dependencies: []DependencyReport{
 			{
@@ -204,7 +207,19 @@ func sampleSARIFRuntimeAndBaselineReport() Report {
 					UsedPercentDelta:          -10,
 					EstimatedUnusedBytesDelta: 512,
 					WastePercentDelta:         10,
-					DeniedIntroduced:          true,
+					RuntimeDelta: &RuntimeDelta{
+						Comparable:            true,
+						BaselinePresent:       true,
+						CurrentPresent:        true,
+						BaselineLoadCount:     &baselineLoads,
+						CurrentLoadCount:      &currentLoads,
+						LoadCountDelta:        &loadDelta,
+						BaselineCorrelation:   RuntimeCorrelationStaticOnly,
+						CurrentCorrelation:    RuntimeCorrelationOverlap,
+						NewRuntimeLoads:       true,
+						RuntimeOnlyRegression: true,
+					},
+					DeniedIntroduced: true,
 				},
 			},
 		},
@@ -272,6 +287,12 @@ func assertSARIFBaselineContext(t *testing.T, baselineValue any, wantDeniedIntro
 	}
 	if baselineContext["deniedIntroduced"] != wantDeniedIntroduced {
 		t.Fatalf("expected deniedIntroduced=%v, got %#v", wantDeniedIntroduced, baselineContext["deniedIntroduced"])
+	}
+	if wantDeniedIntroduced {
+		runtimeDelta, ok := baselineContext["runtimeDelta"].(map[string]any)
+		if !ok || runtimeDelta["newRuntimeLoads"] != true {
+			t.Fatalf("expected runtime delta context, got %#v", baselineContext["runtimeDelta"])
+		}
 	}
 }
 

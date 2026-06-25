@@ -89,6 +89,10 @@ func TestAggregate(t *testing.T) {
 		Dependencies: []report.DependencyReport{
 			{
 				Name: "shared",
+				RuntimeUsage: &report.RuntimeUsage{
+					LoadCount:   2,
+					Correlation: report.RuntimeCorrelationOverlap,
+				},
 				Recommendations: []report.Recommendation{
 					{Code: "remove-unused-dependency"},
 				},
@@ -99,10 +103,23 @@ func TestAggregate(t *testing.T) {
 			{Name: "a-only"},
 		},
 		Summary: &report.Summary{DeniedLicenseCount: 2},
+		BaselineComparison: &report.BaselineComparison{
+			RuntimeRegressions: []report.DependencyDelta{{
+				Kind:     report.DependencyDeltaChanged,
+				Name:     "shared",
+				Language: "js-ts",
+				RuntimeDelta: &report.RuntimeDelta{
+					Comparable:      true,
+					BaselinePresent: true,
+					CurrentPresent:  true,
+					NewRuntimeLoads: true,
+				},
+			}},
+		},
 	}
 	reportB := report.Report{
 		Dependencies: []report.DependencyReport{
-			{Name: "shared"},
+			{Name: "shared", RuntimeUsage: &report.RuntimeUsage{LoadCount: 1, Correlation: report.RuntimeCorrelationOverlap}},
 			{Name: "b-only"},
 		},
 	}
@@ -134,6 +151,15 @@ func TestAggregate(t *testing.T) {
 	}
 	if data.Summary.CriticalCVEs != 1 {
 		t.Fatalf("expected one critical CVE signal, got %+v", data.Summary)
+	}
+	if data.Summary.ReposWithRuntimeTraceData != 2 {
+		t.Fatalf("expected two repos with runtime trace data, got %+v", data.Summary)
+	}
+	if data.Summary.ReposWithRuntimeRegressions != 1 {
+		t.Fatalf("expected one repo with runtime regressions, got %+v", data.Summary)
+	}
+	if !data.Repos[0].RuntimeTraceData || data.Repos[0].RuntimeRegressionCount != 1 {
+		t.Fatalf("expected first repo runtime regression counts, got %+v", data.Repos[0])
 	}
 	if len(data.CrossRepoDeps) != 1 || data.CrossRepoDeps[0].Name != "shared" || data.CrossRepoDeps[0].Count != 3 {
 		t.Fatalf("unexpected cross-repo dependency set: %#v", data.CrossRepoDeps)
@@ -179,6 +205,23 @@ func TestAggregateCrossRepoDuplicatesDistinguishesSameInferredRepoNames(t *testi
 	}
 }
 
+func TestComputeSummaryCountsRuntimeTraceAndRegressionRepos(t *testing.T) {
+	summary := computeSummary(Report{
+		Repos: []RepoResult{
+			{Name: "with-regression", DependencyCount: 1, RuntimeTraceData: true, RuntimeRegressionCount: 1},
+			{Name: "trace-only", DependencyCount: 1, RuntimeTraceData: true},
+			{Name: "no-trace", DependencyCount: 1, RuntimeRegressionCount: 1},
+		},
+	})
+
+	if summary.ReposWithRuntimeTraceData != 2 {
+		t.Fatalf("expected two repos with runtime trace data, got %+v", summary)
+	}
+	if summary.ReposWithRuntimeRegressions != 1 {
+		t.Fatalf("expected one trace-backed runtime regression repo, got %+v", summary)
+	}
+}
+
 func TestAggregateCopiesRemoteRevisionMetadata(t *testing.T) {
 	reportData := Aggregate(time.Date(2026, time.March, 10, 1, 2, 3, 0, time.UTC), []RepoAnalysis{
 		{
@@ -210,29 +253,31 @@ func TestFormatReport(t *testing.T) {
 		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
 		Repos: []RepoResult{
 			{
-				Name:            testRepoA,
-				Path:            "./a",
-				RepoURL:         "https://github.com/example/a.git",
-				Revision:        &RepoRevision{Tag: "v1.0.0"},
-				ResolvedCommit:  "0123456789abcdef0123456789abcdef01234567",
-				DependencyCount: 1,
+				Name:                   testRepoA,
+				Path:                   "./a",
+				RepoURL:                "https://github.com/example/a.git",
+				Revision:               &RepoRevision{Tag: "v1.0.0"},
+				ResolvedCommit:         "0123456789abcdef0123456789abcdef01234567",
+				DependencyCount:        1,
+				RuntimeTraceData:       true,
+				RuntimeRegressionCount: 1,
 			},
 		},
-		Summary: Summary{TotalRepos: 1, TotalDeps: 1},
+		Summary: Summary{TotalRepos: 1, TotalDeps: 1, ReposWithRuntimeTraceData: 1, ReposWithRuntimeRegressions: 1},
 	}
 
 	jsonOutput, err := FormatReport(reportData, FormatJSON)
-	if err != nil || !strings.Contains(jsonOutput, "\"total_repos\": 1") || !strings.Contains(jsonOutput, "\"resolved_commit\": \"0123456789abcdef0123456789abcdef01234567\"") {
+	if err != nil || !strings.Contains(jsonOutput, "\"total_repos\": 1") || !strings.Contains(jsonOutput, "\"repos_with_runtime_regressions\": 1") || !strings.Contains(jsonOutput, "\"resolved_commit\": \"0123456789abcdef0123456789abcdef01234567\"") {
 		t.Fatalf("expected json output, err=%v output=%q", err, jsonOutput)
 	}
 
 	csvOutput, err := FormatReport(reportData, FormatCSV)
-	if err != nil || !strings.Contains(csvOutput, "total_repos,1") || !strings.Contains(csvOutput, "tag:v1.0.0,0123456789abcdef0123456789abcdef01234567") {
+	if err != nil || !strings.Contains(csvOutput, "total_repos,1") || !strings.Contains(csvOutput, "repos_with_runtime_regressions,1") || !strings.Contains(csvOutput, "tag:v1.0.0,0123456789abcdef0123456789abcdef01234567") {
 		t.Fatalf("expected csv output, err=%v output=%q", err, csvOutput)
 	}
 
 	htmlOutput, err := FormatReport(reportData, FormatHTML)
-	if err != nil || !strings.Contains(strings.ToLower(htmlOutput), "<html") || !strings.Contains(htmlOutput, "0123456789abcdef0123456789abcdef01234567") {
+	if err != nil || !strings.Contains(strings.ToLower(htmlOutput), "<html") || !strings.Contains(htmlOutput, "Runtime Regression Repos") || !strings.Contains(htmlOutput, "0123456789abcdef0123456789abcdef01234567") {
 		t.Fatalf("expected html output, err=%v output=%q", err, htmlOutput)
 	}
 }
@@ -312,7 +357,7 @@ func TestFormatReportCSVSanitizesCrossRepoAndRepoFormulaPrefixes(t *testing.T) {
 	repoRow := dashboardCSVRowAfterHeader(rows, "repo_name")
 	crossRepoRow := dashboardCSVRowAfterHeader(rows, "dependency_name")
 
-	if len(repoRow) != 13 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[5] != "go" {
+	if len(repoRow) != 16 || repoRow[0] != "'+repo" || repoRow[1] != "'@path" || repoRow[5] != "go" {
 		t.Fatalf("expected sanitized repo csv row, got %#v", repoRow)
 	}
 	if len(crossRepoRow) != 3 || crossRepoRow[0] != "'-shared" || !strings.Contains(crossRepoRow[2], "'\trepo-d") {
@@ -557,7 +602,7 @@ func dashboardCSVRowAfterHeader(rows [][]string, header string) []string {
 
 func dashboardCSVContainsRepoRow(rows [][]string, name, path string) bool {
 	for _, row := range rows {
-		if len(row) == 13 && row[0] == name && row[1] == path {
+		if len(row) == 16 && row[0] == name && row[1] == path {
 			return true
 		}
 	}

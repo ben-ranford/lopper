@@ -63,6 +63,75 @@ func formatRuntimeUsage(usage *RuntimeUsage) string {
 	return sanitizeTerminalString(strings.Join(parts, "; "))
 }
 
+func formatRuntimeDelta(delta *RuntimeDelta) string {
+	if delta == nil {
+		return "-"
+	}
+	if !delta.Comparable {
+		return formatRuntimeDeltaNotComparable(delta)
+	}
+
+	parts := make([]string, 0, 6)
+	appendRuntimeDeltaPart(&parts, formatRuntimeLoadDelta(delta))
+	appendRuntimeDeltaPart(&parts, runtimeDeltaFlag(delta.NewRuntimeLoads, "new runtime loads"))
+	appendRuntimeDeltaPart(&parts, runtimeDeltaFlag(delta.RemovedRuntimeLoads, "removed runtime loads"))
+	appendRuntimeDeltaPart(&parts, formatRuntimeCorrelationDelta(delta))
+	appendRuntimeDeltaPart(&parts, runtimeDeltaFlag(delta.RuntimeOnlyRegression, "runtime-only regression"))
+	appendRuntimeDeltaPart(&parts, runtimeDeltaFlag(delta.RuntimeOnlyImprovement, "runtime-only improvement"))
+	appendRuntimeDeltaPart(&parts, runtimeModuleGroupDelta("modules", delta.ModulesAdded, delta.ModulesRemoved, delta.ModulesChanged))
+	appendRuntimeDeltaPart(&parts, runtimeModuleGroupDelta("parent modules", delta.ParentModulesAdded, delta.ParentModulesRemoved, delta.ParentModulesChanged))
+	appendRuntimeDeltaPart(&parts, runtimeModuleGroupDelta("entrypoints", delta.EntrypointsAdded, delta.EntrypointsRemoved, delta.EntrypointsChanged))
+	if len(parts) == 0 {
+		return "no runtime delta"
+	}
+	return sanitizeTerminalString(strings.Join(parts, "; "))
+}
+
+func formatRuntimeDeltaNotComparable(delta *RuntimeDelta) string {
+	switch {
+	case !delta.BaselinePresent && delta.CurrentPresent:
+		return "not comparable (baseline runtime data missing)"
+	case delta.BaselinePresent && !delta.CurrentPresent:
+		return "not comparable (current runtime data missing)"
+	default:
+		return "not comparable"
+	}
+}
+
+func formatRuntimeLoadDelta(delta *RuntimeDelta) string {
+	if delta.LoadCountDelta == nil || *delta.LoadCountDelta == 0 {
+		return ""
+	}
+	return fmt.Sprintf("loads %+d", *delta.LoadCountDelta)
+}
+
+func formatRuntimeCorrelationDelta(delta *RuntimeDelta) string {
+	if delta.BaselineCorrelation == delta.CurrentCorrelation {
+		return ""
+	}
+	return fmt.Sprintf("correlation %s -> %s", delta.BaselineCorrelation, delta.CurrentCorrelation)
+}
+
+func runtimeDeltaFlag(enabled bool, label string) string {
+	if !enabled {
+		return ""
+	}
+	return label
+}
+
+func runtimeModuleGroupDelta(label string, added, removed, changed []RuntimeModuleDelta) string {
+	if len(added) == 0 && len(removed) == 0 && len(changed) == 0 {
+		return ""
+	}
+	return label + " changed"
+}
+
+func appendRuntimeDeltaPart(parts *[]string, value string) {
+	if value != "" {
+		*parts = append(*parts, value)
+	}
+}
+
 func formatDependencyLicense(license *DependencyLicense) string {
 	if license == nil {
 		return "unknown"

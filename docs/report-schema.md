@@ -98,7 +98,8 @@ CycloneDX characteristics:
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
-- `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `summaryDelta`, `dependencies`, `added`, `removed`, `regressions`, `progressions`, and `newDeniedLicenses`.
+- `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `summaryDelta`, `dependencies`, `added`, `removed`, `regressions`, `progressions`, `runtimeRegressions`, `runtimeImprovements`, and `newDeniedLicenses`.
+- `baselineComparison.dependencies[].runtimeDelta`: runtime trace comparison for dependencies present in both baseline and current reports when at least one side has runtime data. Comparable deltas include load-count changes, correlation transitions, new/removed runtime loads, runtime-only regressions/improvements, and module/parent/entrypoint changes.
 
 ## Notes
 
@@ -111,6 +112,8 @@ CycloneDX characteristics:
 - `runtimeUsage.modules` lists runtime-loaded module paths seen for a dependency.
 - `runtimeUsage.topSymbols` lists best-effort runtime symbol hits derived from module subpaths.
 - Runtime annotations use the same report fields across supported languages; adapter differences are confined to trace-to-dependency mapping.
+- Runtime baseline deltas are comparable only when both reports contain `runtimeUsage` for the same dependency. If one side lacks runtime data, `runtimeDelta.comparable` is `false`, and load deltas are omitted instead of treating the missing side as zero loads.
+- Added and removed dependencies do not produce `runtimeDelta` or runtime regression/improvement entries; their runtime data remains on the dependency row in the source report, while `baselineComparison.added` and `baselineComparison.removed` describe dependency presence changes.
 - `cache.invalidations` entries identify deterministic invalidation reasons (for example `input-changed`).
 - `usedPercent` values are adapter best-effort based on static analysis signals.
 - `summary.knownLicenseCount`, `summary.unknownLicenseCount`, and `summary.deniedLicenseCount` are mutually exclusive license buckets across dependency rows. Denied dependencies count only as denied, even when they also have an SPDX value or unknown license metadata.

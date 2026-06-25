@@ -207,9 +207,11 @@ export interface LopperSymbolRef {
 
 export interface LopperRuntimeUsage {
   loadCount: number;
-  correlation?: "static-only" | "runtime-only" | "overlap";
+  correlation?: LopperRuntimeCorrelation;
   runtimeOnly?: boolean;
   modules?: LopperRuntimeModuleUsage[];
+  parentModules?: LopperRuntimeModuleUsage[];
+  entrypoints?: LopperRuntimeModuleUsage[];
   topSymbols?: LopperRuntimeSymbolUsage[];
 }
 
@@ -255,6 +257,8 @@ export interface LopperBaselineComparison {
   dependencies?: LopperDependencyDelta[];
   regressions?: LopperDependencyDelta[];
   progressions?: LopperDependencyDelta[];
+  runtimeRegressions?: LopperDependencyDelta[];
+  runtimeImprovements?: LopperDependencyDelta[];
   added?: LopperDependencyDelta[];
   removed?: LopperDependencyDelta[];
   newDeniedLicenses?: LopperDeniedLicenseDelta[];
@@ -282,7 +286,53 @@ export interface LopperDependencyDelta {
   usedPercentDelta: number;
   estimatedUnusedBytesDelta: number;
   wastePercentDelta: number;
+  runtimeDelta?: LopperRuntimeDelta;
   deniedIntroduced?: boolean;
+}
+
+export type LopperRuntimeChangeType =
+  | "load-count"
+  | "new-runtime-loads"
+  | "removed-runtime-loads"
+  | "correlation"
+  | "runtime-only-regression"
+  | "runtime-only-improvement"
+  | "modules"
+  | "parent-modules"
+  | "entrypoints";
+
+export type LopperRuntimeCorrelation = "static-only" | "runtime-only" | "overlap";
+
+export interface LopperRuntimeDelta {
+  comparable: boolean;
+  baselinePresent: boolean;
+  currentPresent: boolean;
+  baselineLoadCount?: number;
+  currentLoadCount?: number;
+  loadCountDelta?: number;
+  baselineCorrelation?: LopperRuntimeCorrelation;
+  currentCorrelation?: LopperRuntimeCorrelation;
+  changeTypes?: LopperRuntimeChangeType[];
+  newRuntimeLoads?: boolean;
+  removedRuntimeLoads?: boolean;
+  runtimeOnlyRegression?: boolean;
+  runtimeOnlyImprovement?: boolean;
+  modulesAdded?: LopperRuntimeModuleDelta[];
+  modulesRemoved?: LopperRuntimeModuleDelta[];
+  modulesChanged?: LopperRuntimeModuleDelta[];
+  parentModulesAdded?: LopperRuntimeModuleDelta[];
+  parentModulesRemoved?: LopperRuntimeModuleDelta[];
+  parentModulesChanged?: LopperRuntimeModuleDelta[];
+  entrypointsAdded?: LopperRuntimeModuleDelta[];
+  entrypointsRemoved?: LopperRuntimeModuleDelta[];
+  entrypointsChanged?: LopperRuntimeModuleDelta[];
+}
+
+export interface LopperRuntimeModuleDelta {
+  module: string;
+  baselineCount: number;
+  currentCount: number;
+  countDelta: number;
 }
 
 export interface LopperDeniedLicenseDelta {

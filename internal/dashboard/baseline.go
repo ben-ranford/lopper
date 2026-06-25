@@ -109,11 +109,13 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 
 	comparison := BaselineComparison{
 		SummaryDelta: SummaryDelta{
-			TotalReposDelta:           current.Summary.TotalRepos - baseline.Summary.TotalRepos,
-			TotalDepsDelta:            current.Summary.TotalDeps - baseline.Summary.TotalDeps,
-			TotalWasteCandidatesDelta: current.Summary.TotalWasteCandidates - baseline.Summary.TotalWasteCandidates,
-			CrossRepoDuplicatesDelta:  current.Summary.CrossRepoDuplicates - baseline.Summary.CrossRepoDuplicates,
-			CriticalCVEsDelta:         current.Summary.CriticalCVEs - baseline.Summary.CriticalCVEs,
+			TotalReposDelta:                  current.Summary.TotalRepos - baseline.Summary.TotalRepos,
+			TotalDepsDelta:                   current.Summary.TotalDeps - baseline.Summary.TotalDeps,
+			TotalWasteCandidatesDelta:        current.Summary.TotalWasteCandidates - baseline.Summary.TotalWasteCandidates,
+			CrossRepoDuplicatesDelta:         current.Summary.CrossRepoDuplicates - baseline.Summary.CrossRepoDuplicates,
+			CriticalCVEsDelta:                current.Summary.CriticalCVEs - baseline.Summary.CriticalCVEs,
+			ReposWithRuntimeTraceDataDelta:   current.Summary.ReposWithRuntimeTraceData - baseline.Summary.ReposWithRuntimeTraceData,
+			ReposWithRuntimeRegressionsDelta: current.Summary.ReposWithRuntimeRegressions - baseline.Summary.ReposWithRuntimeRegressions,
 		},
 	}
 
@@ -159,6 +161,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 		delta.WasteCandidatePercentDelta = curr.WasteCandidatePercent
 		delta.CriticalCVEsDelta = curr.CriticalCVEs
 		delta.DeniedLicenseCountDelta = curr.DeniedLicenseCount
+		delta.RuntimeRegressionCountDelta = curr.RuntimeRegressionCount
+		delta.RuntimeImprovementCountDelta = curr.RuntimeImprovementCount
 		delta.CurrentError = curr.Error
 		return delta, true
 	case !hasCurrent && hasBaseline:
@@ -168,6 +172,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 		delta.WasteCandidatePercentDelta = -base.WasteCandidatePercent
 		delta.CriticalCVEsDelta = -base.CriticalCVEs
 		delta.DeniedLicenseCountDelta = -base.DeniedLicenseCount
+		delta.RuntimeRegressionCountDelta = -base.RuntimeRegressionCount
+		delta.RuntimeImprovementCountDelta = -base.RuntimeImprovementCount
 		delta.BaselineError = base.Error
 		return delta, true
 	default:
@@ -177,6 +183,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 		delta.WasteCandidatePercentDelta = curr.WasteCandidatePercent - base.WasteCandidatePercent
 		delta.CriticalCVEsDelta = curr.CriticalCVEs - base.CriticalCVEs
 		delta.DeniedLicenseCountDelta = curr.DeniedLicenseCount - base.DeniedLicenseCount
+		delta.RuntimeRegressionCountDelta = curr.RuntimeRegressionCount - base.RuntimeRegressionCount
+		delta.RuntimeImprovementCountDelta = curr.RuntimeImprovementCount - base.RuntimeImprovementCount
 		delta.CurrentError = curr.Error
 		delta.BaselineError = base.Error
 		if delta.DependencyCountDelta == 0 &&
@@ -184,6 +192,8 @@ func computeRepoDelta(curr RepoResult, hasCurrent bool, base RepoResult, hasBase
 			delta.WasteCandidatePercentDelta == 0 &&
 			delta.CriticalCVEsDelta == 0 &&
 			delta.DeniedLicenseCountDelta == 0 &&
+			delta.RuntimeRegressionCountDelta == 0 &&
+			delta.RuntimeImprovementCountDelta == 0 &&
 			strings.TrimSpace(curr.Error) == strings.TrimSpace(base.Error) {
 			return RepoDelta{}, false
 		}
@@ -197,11 +207,15 @@ func repoKey(repo RepoResult) string {
 
 func computeSummary(rep Report) Summary {
 	return Summary{
-		TotalRepos:           len(rep.Repos),
-		TotalDeps:            sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.DependencyCount }),
-		TotalWasteCandidates: sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.WasteCandidateCount }),
-		CrossRepoDuplicates:  len(rep.CrossRepoDeps),
-		CriticalCVEs:         sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.CriticalCVEs }),
+		TotalRepos:                len(rep.Repos),
+		TotalDeps:                 sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.DependencyCount }),
+		TotalWasteCandidates:      sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.WasteCandidateCount }),
+		CrossRepoDuplicates:       len(rep.CrossRepoDeps),
+		CriticalCVEs:              sumRepoField(rep.Repos, func(repo RepoResult) int { return repo.CriticalCVEs }),
+		ReposWithRuntimeTraceData: countRepoField(rep.Repos, func(repo RepoResult) bool { return repo.RuntimeTraceData }),
+		ReposWithRuntimeRegressions: countRepoField(rep.Repos, func(repo RepoResult) bool {
+			return repo.RuntimeTraceData && repo.RuntimeRegressionCount > 0
+		}),
 	}
 }
 
@@ -209,6 +223,16 @@ func sumRepoField(repos []RepoResult, selector func(RepoResult) int) int {
 	total := 0
 	for _, repo := range repos {
 		total += selector(repo)
+	}
+	return total
+}
+
+func countRepoField(repos []RepoResult, selector func(RepoResult) bool) int {
+	total := 0
+	for _, repo := range repos {
+		if selector(repo) {
+			total++
+		}
 	}
 	return total
 }
