@@ -230,14 +230,16 @@ func TestSummaryDetailShowsCodemodAction(t *testing.T) {
 	}
 }
 
-func TestParseSummaryActionVariantsAndErrors(t *testing.T) {
+func TestParseSummaryActionIgnoresEmptyAndUnknown(t *testing.T) {
 	if _, ok, err := parseSummaryAction("", nil); ok || err != nil {
 		t.Fatalf("expected empty input to be ignored, ok=%t err=%v", ok, err)
 	}
 	if _, ok, err := parseSummaryAction("noop", nil); ok || err != nil {
 		t.Fatalf("expected unknown input to be ignored, ok=%t err=%v", ok, err)
 	}
+}
 
+func TestParseSummaryCodemodApplyActionVariants(t *testing.T) {
 	action, ok, err := parseSummaryAction("codemod-apply selected dep --confirm", nil)
 	if !ok || err != nil || action.kind != summaryActionApplyCodemod || action.dependency != "selected dep" || !action.confirm {
 		t.Fatalf("unexpected codemod alias parse: action=%#v ok=%t err=%v", action, ok, err)
@@ -249,12 +251,23 @@ func TestParseSummaryActionVariantsAndErrors(t *testing.T) {
 	if _, ok, err := parseSummaryAction("apply-codemod --bad", nil); !ok || err == nil {
 		t.Fatalf("expected unknown apply option error, ok=%t err=%v", ok, err)
 	}
+}
 
-	action, ok, err = parseSummaryAction("baseline save --label nightly --store baselines", nil)
+func TestParseSummaryBaselineSaveActionVariants(t *testing.T) {
+	action, ok, err := parseSummaryAction("baseline save --label nightly --store baselines", nil)
 	if !ok || err != nil || action.kind != summaryActionSaveBaseline || action.baselineLabel != "nightly" || action.baselineStorePath != "baselines" {
 		t.Fatalf("unexpected baseline save parse: action=%#v ok=%t err=%v", action, ok, err)
 	}
-	action, ok, err = parseSummaryAction("baseline compare --key commit:abc --store baselines", nil)
+	if _, ok, err := parseSummaryAction("save-baseline --key commit:abc release", nil); !ok || err == nil {
+		t.Fatalf("expected key plus label conflict, ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := parseSummaryAction("save-baseline --store", nil); !ok || err == nil {
+		t.Fatalf("expected missing store value error, ok=%t err=%v", ok, err)
+	}
+}
+
+func TestParseSummaryBaselineCompareActionVariants(t *testing.T) {
+	action, ok, err := parseSummaryAction("baseline compare --key commit:abc --store baselines", nil)
 	if !ok || err != nil || action.kind != summaryActionCompareBaseline || action.baselineKey != "commit:abc" || action.baselineStorePath != "baselines" {
 		t.Fatalf("unexpected baseline compare parse: action=%#v ok=%t err=%v", action, ok, err)
 	}
@@ -264,12 +277,6 @@ func TestParseSummaryActionVariantsAndErrors(t *testing.T) {
 	action, ok, err = parseSummaryAction("compare-baseline label base", nil)
 	if !ok || err != nil || action.baselineTarget != "label base" {
 		t.Fatalf("unexpected compare positional parse: action=%#v ok=%t err=%v", action, ok, err)
-	}
-	if _, ok, err := parseSummaryAction("save-baseline --key commit:abc release", nil); !ok || err == nil {
-		t.Fatalf("expected key plus label conflict, ok=%t err=%v", ok, err)
-	}
-	if _, ok, err := parseSummaryAction("save-baseline --store", nil); !ok || err == nil {
-		t.Fatalf("expected missing store value error, ok=%t err=%v", ok, err)
 	}
 }
 
@@ -353,7 +360,7 @@ func TestSummaryCodemodApplyReportsNoSafeResults(t *testing.T) {
 	}
 }
 
-func TestBuildSummaryBaselineCompareOptions(t *testing.T) {
+func TestBuildSummaryBaselineCompareFileOptions(t *testing.T) {
 	opts := Options{RepoPath: ".", TopN: 20, Language: "all", BaselineStorePath: "existing", BaselineKey: "commit:prev"}
 
 	nextOpts, target, err := buildSummaryBaselineCompareOptions(opts, summaryAction{kind: summaryActionCompareBaseline, baselineTarget: "/tmp/base.json"})
@@ -364,20 +371,24 @@ func TestBuildSummaryBaselineCompareOptions(t *testing.T) {
 		t.Fatalf("unexpected file compare options: target=%q opts=%#v", target, nextOpts)
 	}
 
-	nextOpts, target, err = buildSummaryBaselineCompareOptions(opts, summaryAction{kind: summaryActionCompareBaseline, baselineKey: "label:nightly", baselineStorePath: "custom"})
-	if err != nil {
-		t.Fatalf("key target: %v", err)
-	}
-	if target != "label:nightly" || nextOpts.BaselineStorePath != "custom" || nextOpts.BaselineKey != "label:nightly" || nextOpts.BaselinePath != "" {
-		t.Fatalf("unexpected key compare options: target=%q opts=%#v", target, nextOpts)
-	}
-
 	nextOpts, target, err = buildSummaryBaselineCompareOptions(opts, summaryAction{kind: summaryActionCompareBaseline, baselinePath: "explicit.json"})
 	if err != nil {
 		t.Fatalf("explicit file option: %v", err)
 	}
 	if target != "explicit.json" || nextOpts.BaselinePath != "explicit.json" || nextOpts.BaselineStorePath != "" || nextOpts.BaselineKey != "" {
 		t.Fatalf("unexpected explicit file options: target=%q opts=%#v", target, nextOpts)
+	}
+}
+
+func TestBuildSummaryBaselineCompareKeyOptions(t *testing.T) {
+	opts := Options{RepoPath: ".", TopN: 20, Language: "all", BaselineStorePath: "existing", BaselineKey: "commit:prev"}
+
+	nextOpts, target, err := buildSummaryBaselineCompareOptions(opts, summaryAction{kind: summaryActionCompareBaseline, baselineKey: "label:nightly", baselineStorePath: "custom"})
+	if err != nil {
+		t.Fatalf("key target: %v", err)
+	}
+	if target != "label:nightly" || nextOpts.BaselineStorePath != "custom" || nextOpts.BaselineKey != "label:nightly" || nextOpts.BaselinePath != "" {
+		t.Fatalf("unexpected key compare options: target=%q opts=%#v", target, nextOpts)
 	}
 
 	nextOpts, target, err = buildSummaryBaselineCompareOptions(opts, summaryAction{kind: summaryActionCompareBaseline})
@@ -387,11 +398,15 @@ func TestBuildSummaryBaselineCompareOptions(t *testing.T) {
 	if target != "commit:prev" || nextOpts.BaselineStorePath != "existing" || nextOpts.BaselineKey != "commit:prev" {
 		t.Fatalf("unexpected stored key fallback: target=%q opts=%#v", target, nextOpts)
 	}
+}
 
+func TestBuildSummaryBaselineCompareRequiresTarget(t *testing.T) {
 	if _, _, err := buildSummaryBaselineCompareOptions(Options{}, summaryAction{kind: summaryActionCompareBaseline}); err == nil {
 		t.Fatalf("expected missing compare target to fail")
 	}
+}
 
+func TestSummaryBaselineTargetLooksLikeFile(t *testing.T) {
 	if summaryBaselineTargetLooksLikeFile("") {
 		t.Fatalf("empty compare target should not look like a file")
 	}
