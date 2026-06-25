@@ -189,7 +189,7 @@ export interface LopperCodemodApplyReport {
 
 export interface LopperCodemodApplyResult {
   file: string;
-  status: "applied" | "skipped" | "failed" | string;
+  status: string;
   patchCount: number;
   message?: string;
 }

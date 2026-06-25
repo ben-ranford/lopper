@@ -49,6 +49,10 @@ interface DiagnosticMetadata {
   suggestion?: LopperCodemodSuggestion;
 }
 
+interface CodemodDiagnosticMetadata extends DiagnosticMetadata {
+  suggestion: LopperCodemodSuggestion;
+}
+
 interface ExtensionApi {
   refreshWorkspace(): Promise<void>;
   getLatestSummary(): string;
@@ -641,55 +645,24 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
 
     const actions: vscode.CodeAction[] = [];
     const fullApplyDependencies = new Set<string>();
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const workspaceAnalysis = folder ? this.analysisByWorkspace.get(folder.uri.toString()) : undefined;
     for (const diagnostic of context.diagnostics) {
-      const code = typeof diagnostic.code === "string" ? diagnostic.code : undefined;
-      if (!code) {
-        continue;
-      }
-      const metadata = documentMetadata.get(code);
-      const suggestion = metadata?.suggestion;
-      if (metadata?.kind !== "codemod" || !suggestion) {
+      const metadata = codemodMetadataForDiagnostic(documentMetadata, diagnostic);
+      if (!metadata) {
         continue;
       }
 
-      const folder = vscode.workspace.getWorkspaceFolder(document.uri);
-      const workspaceAnalysis = folder ? this.analysisByWorkspace.get(folder.uri.toString()) : undefined;
       const codemodSuggestionCount = workspaceAnalysis?.codemodsByDependency.get(metadata.dependency.name)?.suggestions?.length ?? 0;
       if (!fullApplyDependencies.has(metadata.dependency.name)) {
         fullApplyDependencies.add(metadata.dependency.name);
-        const applyAction = new vscode.CodeAction(
-          `Apply Lopper codemod for ${metadata.dependency.name}`,
-          vscode.CodeActionKind.QuickFix,
-        );
-        applyAction.command = {
-          command: "lopper.applyCodemod",
-          title: `Apply Lopper codemod for ${metadata.dependency.name}`,
-          arguments: [metadata.dependency.name, folder?.uri.fsPath],
-        };
-        applyAction.diagnostics = [diagnostic];
-        applyAction.isPreferred = codemodSuggestionCount > 1;
-        actions.push(applyAction);
+        actions.push(createApplyCodemodCodeAction(metadata, diagnostic, folder, codemodSuggestionCount));
       }
 
-      const lineIndex = suggestion.line - 1;
-      if (lineIndex < 0 || lineIndex >= document.lineCount) {
-        continue;
+      const inlineAction = createInlineCodemodCodeAction(document, diagnostic, metadata.suggestion, codemodSuggestionCount);
+      if (inlineAction) {
+        actions.push(inlineAction);
       }
-      const currentLine = document.lineAt(lineIndex).text;
-      if (currentLine !== suggestion.original) {
-        continue;
-      }
-
-      const action = new vscode.CodeAction(
-        `Use ${suggestion.toModule} subpath import`,
-        vscode.CodeActionKind.QuickFix,
-      );
-      action.isPreferred = codemodSuggestionCount <= 1;
-      action.diagnostics = [diagnostic];
-      const edit = new vscode.WorkspaceEdit();
-      edit.replace(document.uri, document.lineAt(lineIndex).range, suggestion.replacement);
-      action.edit = edit;
-      actions.push(action);
     }
 
     return actions;
@@ -983,39 +956,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
 
     try {
       const result = await this.runCodemodApply(folder, targetDependency, scopeMode, options.allowDirty === true);
-      this.renderCodemodApplyResult(result);
-      if (codemodApplyFailed(result.apply)) {
-        await vscode.window.showErrorMessage(formatCodemodApplyNotification(targetDependency, result.apply, "failed"));
-        return;
-      }
-
-      await vscode.window.showInformationMessage(formatCodemodApplyNotification(targetDependency, result.apply, "applied"));
-      if ((result.apply?.appliedFiles ?? 0) > 0) {
-        this.invalidateWorkspaceSession(folder, `codemod applied for ${targetDependency}`);
-        await this.refreshWorkspace({
-          folder,
-          document: this.activeDocumentForFolder(folder),
-          forceFresh: true,
-          revealErrors: false,
-          scopeModeOverride: scopeMode,
-          trigger: "command",
-        });
-      }
+      await this.handleCodemodApplyResult(folder, targetDependency, scopeMode, result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.output.appendLine(`[codemod-apply:error] ${targetDependency}: ${message}`);
-      if (!options.allowDirty && isDirtyWorktreeApplyError(message)) {
-        const choice = await vscode.window.showWarningMessage(
-          `Lopper refused to apply the codemod because the Git worktree is dirty: ${message}`,
-          { modal: true },
-          "Apply Anyway",
-        );
-        if (choice === "Apply Anyway") {
-          await this.applyCodemod(targetDependency, folder.uri.fsPath, { allowDirty: true });
-        }
-        return;
-      }
-      await vscode.window.showErrorMessage(`Lopper codemod apply failed for ${targetDependency}: ${message}`);
+      await this.handleCodemodApplyError(error, targetDependency, folder, options.allowDirty === true);
     }
   }
 
@@ -1220,11 +1163,67 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       this.output.appendLine(`[codemod-apply:rollback] ${result.apply.backupPath}`);
     }
     for (const item of result.apply?.results ?? []) {
-      this.output.appendLine(
-        `[codemod-apply:file] ${item.status} ${item.file} patches=${item.patchCount}${item.message ? ` message=${item.message}` : ""}`,
-      );
+      const message = item.message ? " message=" + item.message : "";
+      this.output.appendLine(`[codemod-apply:file] ${item.status} ${item.file} patches=${item.patchCount}${message}`);
     }
     this.output.show(true);
+  }
+
+  private async handleCodemodApplyResult(
+    folder: vscode.WorkspaceFolder,
+    targetDependency: string,
+    scopeMode: LopperScopeMode,
+    result: WorkspaceCodemodApplyResult,
+  ): Promise<void> {
+    this.renderCodemodApplyResult(result);
+    if (codemodApplyFailed(result.apply)) {
+      await vscode.window.showErrorMessage(formatCodemodApplyNotification(targetDependency, result.apply, "failed"));
+      return;
+    }
+
+    await vscode.window.showInformationMessage(formatCodemodApplyNotification(targetDependency, result.apply, "applied"));
+    if ((result.apply?.appliedFiles ?? 0) === 0) {
+      return;
+    }
+    this.invalidateWorkspaceSession(folder, `codemod applied for ${targetDependency}`);
+    await this.refreshWorkspace({
+      folder,
+      document: this.activeDocumentForFolder(folder),
+      forceFresh: true,
+      revealErrors: false,
+      scopeModeOverride: scopeMode,
+      trigger: "command",
+    });
+  }
+
+  private async handleCodemodApplyError(
+    error: unknown,
+    targetDependency: string,
+    folder: vscode.WorkspaceFolder,
+    allowDirty: boolean,
+  ): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    this.output.appendLine(`[codemod-apply:error] ${targetDependency}: ${message}`);
+    if (!allowDirty && isDirtyWorktreeApplyError(message)) {
+      await this.offerDirtyCodemodRetry(targetDependency, folder, message);
+      return;
+    }
+    await vscode.window.showErrorMessage(`Lopper codemod apply failed for ${targetDependency}: ${message}`);
+  }
+
+  private async offerDirtyCodemodRetry(
+    targetDependency: string,
+    folder: vscode.WorkspaceFolder,
+    message: string,
+  ): Promise<void> {
+    const choice = await vscode.window.showWarningMessage(
+      `Lopper refused to apply the codemod because the Git worktree is dirty: ${message}`,
+      { modal: true },
+      "Apply Anyway",
+    );
+    if (choice === "Apply Anyway") {
+      await this.applyCodemod(targetDependency, folder.uri.fsPath, { allowDirty: true });
+    }
   }
 
   private showDependencyDetailPanel(
@@ -2068,6 +2067,69 @@ function dependencySummaryText(dependency: LopperDependencyReport, analysis: Wor
 
 function hasSafeCodemodSuggestions(analysis: WorkspaceAnalysis | undefined, dependencyName: string): boolean {
   return (analysis?.codemodsByDependency.get(dependencyName)?.suggestions?.length ?? 0) > 0;
+}
+
+function codemodMetadataForDiagnostic(
+  documentMetadata: Map<string, DiagnosticMetadata>,
+  diagnostic: vscode.Diagnostic,
+): CodemodDiagnosticMetadata | undefined {
+  const code = typeof diagnostic.code === "string" ? diagnostic.code : undefined;
+  if (!code) {
+    return undefined;
+  }
+  const metadata = documentMetadata.get(code);
+  if (metadata?.kind !== "codemod" || !metadata.suggestion) {
+    return undefined;
+  }
+  return metadata as CodemodDiagnosticMetadata;
+}
+
+function createApplyCodemodCodeAction(
+  metadata: CodemodDiagnosticMetadata,
+  diagnostic: vscode.Diagnostic,
+  folder: vscode.WorkspaceFolder | undefined,
+  codemodSuggestionCount: number,
+): vscode.CodeAction {
+  const dependencyName = metadata.dependency.name;
+  const action = new vscode.CodeAction(
+    `Apply Lopper codemod for ${dependencyName}`,
+    vscode.CodeActionKind.QuickFix,
+  );
+  action.command = {
+    command: "lopper.applyCodemod",
+    title: `Apply Lopper codemod for ${dependencyName}`,
+    arguments: [dependencyName, folder?.uri.fsPath],
+  };
+  action.diagnostics = [diagnostic];
+  action.isPreferred = codemodSuggestionCount > 1;
+  return action;
+}
+
+function createInlineCodemodCodeAction(
+  document: vscode.TextDocument,
+  diagnostic: vscode.Diagnostic,
+  suggestion: LopperCodemodSuggestion,
+  codemodSuggestionCount: number,
+): vscode.CodeAction | undefined {
+  const lineIndex = suggestion.line - 1;
+  if (lineIndex < 0 || lineIndex >= document.lineCount) {
+    return undefined;
+  }
+  const targetLine = document.lineAt(lineIndex);
+  if (targetLine.text !== suggestion.original) {
+    return undefined;
+  }
+
+  const action = new vscode.CodeAction(
+    `Use ${suggestion.toModule} subpath import`,
+    vscode.CodeActionKind.QuickFix,
+  );
+  action.isPreferred = codemodSuggestionCount <= 1;
+  action.diagnostics = [diagnostic];
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, targetLine.range, suggestion.replacement);
+  action.edit = edit;
+  return action;
 }
 
 function codemodApplyFailed(apply: LopperCodemodApplyReport | undefined): boolean {
