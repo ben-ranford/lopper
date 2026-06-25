@@ -1176,13 +1176,14 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     result: WorkspaceCodemodApplyResult,
   ): Promise<void> {
     this.renderCodemodApplyResult(result);
-    if (codemodApplyFailed(result.apply)) {
+    const failed = codemodApplyFailed(result.apply);
+    if (failed) {
       await vscode.window.showErrorMessage(formatCodemodApplyNotification(targetDependency, result.apply, "failed"));
-      return;
+    } else {
+      await vscode.window.showInformationMessage(formatCodemodApplyNotification(targetDependency, result.apply, "applied"));
     }
 
-    await vscode.window.showInformationMessage(formatCodemodApplyNotification(targetDependency, result.apply, "applied"));
-    if ((result.apply?.appliedFiles ?? 0) === 0) {
+    if (!codemodApplyMutatedFiles(result.apply)) {
       return;
     }
     this.invalidateWorkspaceSession(folder, `codemod applied for ${targetDependency}`);
@@ -2134,6 +2135,10 @@ function createInlineCodemodCodeAction(
 
 function codemodApplyFailed(apply: LopperCodemodApplyReport | undefined): boolean {
   return !apply || (apply.failedFiles ?? 0) > 0;
+}
+
+function codemodApplyMutatedFiles(apply: LopperCodemodApplyReport | undefined): boolean {
+  return (apply?.appliedFiles ?? 0) > 0;
 }
 
 function formatCodemodApplySummary(
