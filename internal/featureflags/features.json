@@ -59,24 +59,28 @@
     "code": "LOP-FEAT-0009",
     "name": "threshold-profiles-preview",
     "description": "Enable built-in threshold profile config scaffolding through the profile command.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.7.0"
   },
   {
     "code": "LOP-FEAT-0010",
     "name": "dashboard-remote-repos-preview",
     "description": "Enable dashboard repoUrl entries by materializing remote Git repositories into a deterministic local checkout cache.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.7.0"
   },
   {
     "code": "LOP-FEAT-0011",
     "name": "python-runtime-trace-preview",
     "description": "Enable preview runtime trace annotations for Python dependencies using shared runtimeUsage report fields.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.7.0"
   },
   {
     "code": "LOP-FEAT-0012",
     "name": "mcp-mutation-tools-preview",
     "description": "Enable explicit MCP mutation tools for codemod apply and baseline snapshot save workflows.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.7.0"
   }
 ]
