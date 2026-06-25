@@ -51,6 +51,7 @@
     "onCommand:lopper.saveBaseline",
     "onCommand:lopper.compareBaseline",
     "onCommand:lopper.analyseDependency",
+    "onCommand:lopper.applyCodemod",
     "onCommand:lopper.exportAnalysis.json",
     "onCommand:lopper.exportAnalysis.csv",
     "onCommand:lopper.exportAnalysis.sarif",
@@ -102,6 +103,10 @@
         "title": "Lopper: Analyse Dependency..."
       },
       {
+        "command": "lopper.applyCodemod",
+        "title": "Lopper: Apply Codemod"
+      },
+      {
         "command": "lopper.exportAnalysis.json",
         "title": "Lopper: Export Analysis as JSON"
       },
@@ -128,6 +133,15 @@
           "id": "lopperExplorer",
           "name": "Lopper",
           "contextualTitle": "Lopper"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "lopper.applyCodemod",
+          "when": "view == lopperExplorer && viewItem == lopperDependency.codemod",
+          "group": "inline"
         }
       ]
     },

@@ -18,11 +18,13 @@ import {
   type WorkspaceAnalysis,
   type WorkspaceAnalysisRequest,
   type WorkspaceAnalysisRunner,
+  type WorkspaceCodemodApplyResult,
 } from "./lopperRunner";
 import { RefreshSessionStore } from "./refreshSession";
 import { lopperScopeModeValues } from "./types";
 import type {
   LopperBaselineComparison,
+  LopperCodemodApplyReport,
   LopperDependencyLicense,
   LopperDependencyDelta,
   LopperEffectivePolicy,
@@ -74,6 +76,7 @@ export interface RefreshWorkspaceOptions {
 interface LopperControllerContract extends vscode.Disposable {
   initialize(): Promise<void>;
   refreshWorkspace(options?: RefreshWorkspaceOptions): Promise<void>;
+  applyCodemod(dependencyName?: string, folderPath?: string, options?: ApplyCodemodCommandOptions): Promise<void>;
   getLatestSummary(): string;
 }
 
@@ -96,6 +99,11 @@ interface RefreshAbortHandle {
   folderName: string;
   runId: number;
   controller: AbortController;
+}
+
+interface ApplyCodemodCommandOptions {
+  allowDirty?: boolean;
+  skipConfirmation?: boolean;
 }
 
 class LopperController implements LopperControllerContract, vscode.HoverProvider, vscode.CodeActionProvider {
@@ -182,6 +190,10 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
         }),
         vscode.commands.registerCommand("lopper.analyseDependency", async (dependencyName?: string, folderPath?: string) => {
           await this.analyseDependency(dependencyName, folderPath);
+        }),
+        vscode.commands.registerCommand("lopper.applyCodemod", async (target?: unknown, folderPath?: string) => {
+          const commandTarget = normalizeApplyCodemodCommandTarget(target, folderPath);
+          await this.applyCodemod(commandTarget.dependencyName, commandTarget.folderPath);
         }),
         vscode.commands.registerCommand("lopper.exportAnalysis.json", async (folderPath?: string) => {
           await this.exportAnalysis("json", folderPath);
@@ -628,6 +640,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     }
 
     const actions: vscode.CodeAction[] = [];
+    const fullApplyDependencies = new Set<string>();
     for (const diagnostic of context.diagnostics) {
       const code = typeof diagnostic.code === "string" ? diagnostic.code : undefined;
       if (!code) {
@@ -637,6 +650,25 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       const suggestion = metadata?.suggestion;
       if (metadata?.kind !== "codemod" || !suggestion) {
         continue;
+      }
+
+      const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+      const workspaceAnalysis = folder ? this.analysisByWorkspace.get(folder.uri.toString()) : undefined;
+      const codemodSuggestionCount = workspaceAnalysis?.codemodsByDependency.get(metadata.dependency.name)?.suggestions?.length ?? 0;
+      if (!fullApplyDependencies.has(metadata.dependency.name)) {
+        fullApplyDependencies.add(metadata.dependency.name);
+        const applyAction = new vscode.CodeAction(
+          `Apply Lopper codemod for ${metadata.dependency.name}`,
+          vscode.CodeActionKind.QuickFix,
+        );
+        applyAction.command = {
+          command: "lopper.applyCodemod",
+          title: `Apply Lopper codemod for ${metadata.dependency.name}`,
+          arguments: [metadata.dependency.name, folder?.uri.fsPath],
+        };
+        applyAction.diagnostics = [diagnostic];
+        applyAction.isPreferred = codemodSuggestionCount > 1;
+        actions.push(applyAction);
       }
 
       const lineIndex = suggestion.line - 1;
@@ -652,7 +684,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
         `Use ${suggestion.toModule} subpath import`,
         vscode.CodeActionKind.QuickFix,
       );
-      action.isPreferred = true;
+      action.isPreferred = codemodSuggestionCount <= 1;
       action.diagnostics = [diagnostic];
       const edit = new vscode.WorkspaceEdit();
       edit.replace(document.uri, document.lineAt(lineIndex).range, suggestion.replacement);
@@ -912,6 +944,81 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     this.showDependencyDetailPanel(folder, focused, focusedDependency, targetDependency);
   }
 
+  async applyCodemod(
+    dependencyName?: string,
+    folderPath?: string,
+    options: ApplyCodemodCommandOptions = {},
+  ): Promise<void> {
+    const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
+    if (!folder) {
+      await vscode.window.showInformationMessage("Open a folder before applying a Lopper codemod.");
+      return;
+    }
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showWarningMessage("Trust this workspace before applying Lopper codemods.");
+      return;
+    }
+
+    const targetDependency = await this.resolveDependencyNameForCodemod(folder, dependencyName);
+    if (!targetDependency) {
+      return;
+    }
+
+    const analysis = this.analysisByWorkspace.get(folder.uri.toString());
+    if (!hasSafeCodemodSuggestions(analysis, targetDependency)) {
+      await vscode.window.showInformationMessage(
+        `No safe Lopper codemod suggestions are currently available for ${targetDependency}. Refresh diagnostics and try again.`,
+      );
+      return;
+    }
+
+    if (!options.skipConfirmation && !await this.confirmCodemodApply(targetDependency, folder, options.allowDirty === true)) {
+      return;
+    }
+
+    const scopeMode = analysis?.scopeMode ?? this.requestedScopeMode(folder);
+    this.output.appendLine(
+      `[codemod-apply:running] ${folder.name} dependency=${targetDependency} scope=${scopeMode}${options.allowDirty ? " allow-dirty" : ""}`,
+    );
+
+    try {
+      const result = await this.runCodemodApply(folder, targetDependency, scopeMode, options.allowDirty === true);
+      this.renderCodemodApplyResult(result);
+      if (codemodApplyFailed(result.apply)) {
+        await vscode.window.showErrorMessage(formatCodemodApplyNotification(targetDependency, result.apply, "failed"));
+        return;
+      }
+
+      await vscode.window.showInformationMessage(formatCodemodApplyNotification(targetDependency, result.apply, "applied"));
+      if ((result.apply?.appliedFiles ?? 0) > 0) {
+        this.invalidateWorkspaceSession(folder, `codemod applied for ${targetDependency}`);
+        await this.refreshWorkspace({
+          folder,
+          document: this.activeDocumentForFolder(folder),
+          forceFresh: true,
+          revealErrors: false,
+          scopeModeOverride: scopeMode,
+          trigger: "command",
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.output.appendLine(`[codemod-apply:error] ${targetDependency}: ${message}`);
+      if (!options.allowDirty && isDirtyWorktreeApplyError(message)) {
+        const choice = await vscode.window.showWarningMessage(
+          `Lopper refused to apply the codemod because the Git worktree is dirty: ${message}`,
+          { modal: true },
+          "Apply Anyway",
+        );
+        if (choice === "Apply Anyway") {
+          await this.applyCodemod(targetDependency, folder.uri.fsPath, { allowDirty: true });
+        }
+        return;
+      }
+      await vscode.window.showErrorMessage(`Lopper codemod apply failed for ${targetDependency}: ${message}`);
+    }
+  }
+
   private async exportAnalysis(format: LopperOutputFormat, folderPath?: string): Promise<void> {
     const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
     if (!folder) {
@@ -1032,6 +1139,92 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       placeHolder: "scope-lib",
     });
     return value?.trim().length ? value.trim() : undefined;
+  }
+
+  private async resolveDependencyNameForCodemod(
+    folder: vscode.WorkspaceFolder,
+    dependencyName?: string,
+  ): Promise<string | undefined> {
+    const trimmed = dependencyName?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+
+    const analysis = this.analysisByWorkspace.get(folder.uri.toString());
+    const candidates = (analysis?.report.dependencies ?? [])
+      .map((dependency) => dependency.name)
+      .filter((name) => hasSafeCodemodSuggestions(analysis, name))
+      .sort((left, right) => left.localeCompare(right));
+    if (candidates.length === 0) {
+      return undefined;
+    }
+    return vscode.window.showQuickPick(candidates, {
+      title: "Apply Lopper codemod",
+      placeHolder: "Choose a dependency with a safe codemod suggestion",
+    });
+  }
+
+  private async confirmCodemodApply(
+    dependencyName: string,
+    folder: vscode.WorkspaceFolder,
+    allowDirty: boolean,
+  ): Promise<boolean> {
+    const detail = allowDirty
+      ? "This will mutate source files even though the Git worktree is dirty. Lopper will still write rollback artifacts for changed files."
+      : "This will mutate source files through the guarded Lopper CLI apply workflow and write rollback artifacts for changed files.";
+    const choice = await vscode.window.showWarningMessage(
+      `Apply Lopper codemod for ${dependencyName} in ${folder.name}?`,
+      { modal: true, detail },
+      "Apply Codemod",
+    );
+    return choice === "Apply Codemod";
+  }
+
+  private async runCodemodApply(
+    folder: vscode.WorkspaceFolder,
+    dependencyName: string,
+    scopeMode: LopperScopeMode,
+    allowDirty: boolean,
+  ): Promise<WorkspaceCodemodApplyResult> {
+    return vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Applying Lopper codemod for ${dependencyName}`,
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        const abortController = new AbortController();
+        const cancellation = token.onCancellationRequested(() => abortController.abort());
+        try {
+          if (token.isCancellationRequested) {
+            abortController.abort();
+          }
+          return await this.runner.applyCodemod(folder, dependencyName, {
+            document: this.activeDocumentForFolder(folder),
+            scopeMode,
+            requestedLanguage: "js-ts",
+            allowDirty,
+            signal: abortController.signal,
+          });
+        } finally {
+          cancellation.dispose();
+        }
+      },
+    );
+  }
+
+  private renderCodemodApplyResult(result: WorkspaceCodemodApplyResult): void {
+    const summary = formatCodemodApplySummary(result.dependencyName, result.apply);
+    this.output.appendLine(`[codemod-apply:result] ${result.folder.name}: ${summary}`);
+    if (result.apply?.backupPath) {
+      this.output.appendLine(`[codemod-apply:rollback] ${result.apply.backupPath}`);
+    }
+    for (const item of result.apply?.results ?? []) {
+      this.output.appendLine(
+        `[codemod-apply:file] ${item.status} ${item.file} patches=${item.patchCount}${item.message ? ` message=${item.message}` : ""}`,
+      );
+    }
+    this.output.show(true);
   }
 
   private showDependencyDetailPanel(
@@ -1399,6 +1592,9 @@ class LopperExtensionBootstrap implements vscode.Disposable {
 export const __testing = {
   createController: (runner: WorkspaceAnalysisRunner): LopperControllerContract =>
     new LopperController({} as vscode.ExtensionContext, runner, { registerWithVSCode: false }),
+  formatCodemodApplySummary,
+  formatCodemodApplyNotification,
+  isDirtyWorktreeApplyError,
   isPathInsideWorkspace,
   resolveWorkspaceFilePath,
 };
@@ -1431,6 +1627,34 @@ interface LopperExplorerNodeData {
   filePath?: string;
   line?: number;
   column?: number;
+}
+
+interface ApplyCodemodCommandTarget {
+  dependencyName?: string;
+  folderPath?: string;
+}
+
+function normalizeApplyCodemodCommandTarget(target: unknown, folderPath?: string): ApplyCodemodCommandTarget {
+  if (typeof target === "string") {
+    return { dependencyName: target, folderPath };
+  }
+  const data = explorerNodeDataFrom(target);
+  if (data) {
+    return { dependencyName: data.dependencyName, folderPath: data.folderPath };
+  }
+  return { folderPath };
+}
+
+function explorerNodeDataFrom(value: unknown): LopperExplorerNodeData | undefined {
+  if (!value || typeof value !== "object" || !("data" in value)) {
+    return undefined;
+  }
+  const candidate = (value as { data?: unknown }).data;
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  const data = candidate as Partial<LopperExplorerNodeData>;
+  return typeof data.folderPath === "string" ? data as LopperExplorerNodeData : undefined;
 }
 
 class LopperExplorerTreeItem extends vscode.TreeItem {
@@ -1607,6 +1831,9 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     };
     item.description = dependencySummaryText(dependency, analysis);
     item.tooltip = buildDependencyTooltip(folder, analysis, dependency);
+    if (hasSafeCodemodSuggestions(analysis, dependency.name)) {
+      item.contextValue = "lopperDependency.codemod";
+    }
     return item;
   }
 
@@ -1625,6 +1852,9 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     }
 
     const children: LopperExplorerTreeItem[] = [];
+    if (hasSafeCodemodSuggestions(analysis, dependency.name)) {
+      children.push(this.createCodemodApplyItem(folder, dependency.name));
+    }
 
     const runtimeLabel = runtimeUsageSummary(dependency.runtimeUsage);
     if (runtimeLabel) {
@@ -1661,6 +1891,25 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     }
 
     return children;
+  }
+
+  private createCodemodApplyItem(
+    folder: vscode.WorkspaceFolder,
+    dependencyName: string,
+  ): LopperExplorerTreeItem {
+    const item = new LopperExplorerTreeItem(
+      "Apply Lopper codemod",
+      { kind: "metric", folderPath: folder.uri.fsPath, dependencyName },
+      vscode.TreeItemCollapsibleState.None,
+    );
+    item.command = {
+      command: "lopper.applyCodemod",
+      title: "Apply Lopper codemod",
+      arguments: [dependencyName, folder.uri.fsPath],
+    };
+    item.iconPath = new vscode.ThemeIcon("wand");
+    item.tooltip = `Run the guarded Lopper codemod apply workflow for ${dependencyName}.`;
+    return item;
   }
 
   private createMetricItem(
@@ -1817,6 +2066,54 @@ function dependencySummaryText(dependency: LopperDependencyReport, analysis: Wor
   return parts.join(" • ");
 }
 
+function hasSafeCodemodSuggestions(analysis: WorkspaceAnalysis | undefined, dependencyName: string): boolean {
+  return (analysis?.codemodsByDependency.get(dependencyName)?.suggestions?.length ?? 0) > 0;
+}
+
+function codemodApplyFailed(apply: LopperCodemodApplyReport | undefined): boolean {
+  return !apply || (apply.failedFiles ?? 0) > 0;
+}
+
+function formatCodemodApplySummary(
+  dependencyName: string,
+  apply: LopperCodemodApplyReport | undefined,
+): string {
+  if (!apply) {
+    return `No codemod changes were applied for ${dependencyName}. Refresh diagnostics and try again.`;
+  }
+  const counts = [
+    `applied ${formatCodemodApplyCount(apply.appliedFiles, apply.appliedPatches)}`,
+    `skipped ${formatCodemodApplyCount(apply.skippedFiles, apply.skippedPatches)}`,
+    `failed ${formatCodemodApplyCount(apply.failedFiles, apply.failedPatches)}`,
+    `rollback ${apply.backupPath && apply.backupPath.length > 0 ? apply.backupPath : "none"}`,
+  ];
+  return `${dependencyName}: ${counts.join(" | ")}`;
+}
+
+function formatCodemodApplyNotification(
+  dependencyName: string,
+  apply: LopperCodemodApplyReport | undefined,
+  status: "applied" | "failed",
+): string {
+  if (!apply) {
+    return `Lopper found no codemod changes for ${dependencyName}.`;
+  }
+  const prefix = status === "failed" ? "Lopper codemod failed" : "Lopper codemod finished";
+  const rollback = apply.backupPath ? ` Rollback: ${apply.backupPath}` : "";
+  return `${prefix} for ${dependencyName}: ${formatCodemodApplyCount(apply.appliedFiles, apply.appliedPatches)} applied, ${formatCodemodApplyCount(apply.skippedFiles, apply.skippedPatches)} skipped, ${formatCodemodApplyCount(apply.failedFiles, apply.failedPatches)} failed.${rollback}`;
+}
+
+function formatCodemodApplyCount(files: number | undefined, patches: number | undefined): string {
+  return `${files ?? 0} files/${patches ?? 0} patches`;
+}
+
+function isDirtyWorktreeApplyError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("codemod apply requires a clean git worktree")
+    || (normalized.includes("uncommitted changes") && normalized.includes("--allow-dirty"))
+    || (normalized.includes("dirty") && normalized.includes("--allow-dirty"));
+}
+
 function buildFolderTooltip(folder: vscode.WorkspaceFolder, analysis: WorkspaceAnalysis): string {
   const summary = analysis.report.summary;
   const lines = [
@@ -1942,7 +2239,7 @@ function renderDependencyDetailHtml(
   const baselineDependency = baseline?.dependencies?.find((item) => item.name === dependencyName);
   const sections = [
     renderDependencyOverviewSection(selectedDependency),
-    renderDependencyActionsSection(folder, dependencyName),
+    renderDependencyActionsSection(folder, dependencyName, hasSafeCodemodSuggestions(analysis, dependencyName)),
     renderDependencyContextSection(report, baseline, baselineDependency),
     renderDependencyMetadataSection(selectedDependency),
     selectedDependency.runtimeUsage ? renderHtmlSection("Runtime usage", renderRuntimeUsage(selectedDependency.runtimeUsage)) : "",
@@ -2053,14 +2350,21 @@ function renderDependencyOverviewSection(dependency: LopperDependencyReport): st
   );
 }
 
-function renderDependencyActionsSection(folder: vscode.WorkspaceFolder, dependencyName: string): string {
-  return renderHtmlSection(
-    "Actions",
-    [
-      `<a class="button" href="${commandUri("lopper.refreshWorkspace", [folder.uri.fsPath])}">Refresh folder</a>`,
-      `<a class="button" href="${commandUri("lopper.analyseDependency", [dependencyName, folder.uri.fsPath])}">Re-run detail analysis</a>`,
-    ].join(" "),
-  );
+function renderDependencyActionsSection(
+  folder: vscode.WorkspaceFolder,
+  dependencyName: string,
+  hasCodemodSuggestions: boolean,
+): string {
+  const actions = [
+    `<a class="button" href="${commandUri("lopper.refreshWorkspace", [folder.uri.fsPath])}">Refresh folder</a>`,
+    `<a class="button" href="${commandUri("lopper.analyseDependency", [dependencyName, folder.uri.fsPath])}">Re-run detail analysis</a>`,
+  ];
+  if (hasCodemodSuggestions) {
+    actions.push(
+      `<a class="button" href="${commandUri("lopper.applyCodemod", [dependencyName, folder.uri.fsPath])}">Apply Lopper codemod</a>`,
+    );
+  }
+  return renderHtmlSection("Actions", actions.join(" "));
 }
 
 function renderDependencyContextSection(

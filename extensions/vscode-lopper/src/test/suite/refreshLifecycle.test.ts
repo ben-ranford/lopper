@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 
 import { __testing, deactivate } from "../../extension";
 import type { RefreshWorkspaceOptions } from "../../extension";
-import type { WorkspaceAnalysis, WorkspaceAnalysisRunner } from "../../lopperRunner";
+import type { WorkspaceAnalysis, WorkspaceAnalysisRunner, WorkspaceCodemodApplyResult } from "../../lopperRunner";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -280,6 +280,35 @@ suite("refresh lifecycle", () => {
       );
     });
   });
+
+  test("formats codemod apply summaries and dirty-worktree guard errors", () => {
+    const apply = {
+      appliedFiles: 1,
+      appliedPatches: 2,
+      skippedFiles: 3,
+      skippedPatches: 4,
+      failedFiles: 0,
+      failedPatches: 0,
+      backupPath: ".artifacts/lopper-codemod-backups/scope-lib.json",
+      results: [{ file: "src/index.ts", status: "applied", patchCount: 2 }],
+    };
+
+    const summary = __testing.formatCodemodApplySummary("scope-lib", apply);
+    assert.match(summary, /scope-lib/);
+    assert.match(summary, /applied 1 files\/2 patches/);
+    assert.match(summary, /skipped 3 files\/4 patches/);
+    assert.match(summary, /failed 0 files\/0 patches/);
+    assert.match(summary, /rollback \.artifacts\/lopper-codemod-backups\/scope-lib\.json/);
+
+    const notification = __testing.formatCodemodApplyNotification("scope-lib", apply, "applied");
+    assert.match(notification, /Rollback: \.artifacts\/lopper-codemod-backups\/scope-lib\.json/);
+    assert.equal(
+      __testing.isDirtyWorktreeApplyError(
+        "codemod apply requires a clean git worktree: detected uncommitted changes in README.md; pass --allow-dirty",
+      ),
+      true,
+    );
+  });
 });
 
 async function withHarness(run: (harness: LifecycleHarness) => Promise<void>): Promise<void> {
@@ -294,10 +323,16 @@ async function withHarness(run: (harness: LifecycleHarness) => Promise<void>): P
 }
 
 async function withController(
-  runner: WorkspaceAnalysisRunner,
+  runner: Omit<WorkspaceAnalysisRunner, "applyCodemod"> & Partial<Pick<WorkspaceAnalysisRunner, "applyCodemod">>,
   run: (controller: TestController) => Promise<void>,
 ): Promise<void> {
-  const controller = __testing.createController(runner);
+  const completeRunner: WorkspaceAnalysisRunner = {
+    applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+      throw new Error("unexpected codemod apply in refresh lifecycle test");
+    },
+    ...runner,
+  };
+  const controller = __testing.createController(completeRunner);
   try {
     await run(controller);
   } finally {

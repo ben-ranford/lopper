@@ -47,6 +47,7 @@ suite("vscode-lopper smoke", () => {
     assert.ok(commands.includes("lopper.saveBaseline"), "expected baseline save command");
     assert.ok(commands.includes("lopper.exportAnalysis.csv"), "expected CSV export command");
     assert.ok(commands.includes("lopper.refreshWorkspace.runtime"), "expected runtime refresh command");
+    assert.ok(commands.includes("lopper.applyCodemod"), "expected codemod apply command");
 
     const primaryDiagnostics = await waitForDiagnostics(primaryFixtureUri, 2);
     const unusedImportDiagnostic = primaryDiagnostics.find((item) => item.message.includes("unused"));

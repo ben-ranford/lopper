@@ -163,6 +163,7 @@ export interface LopperLocation {
 export interface LopperCodemodReport {
   mode: string;
   suggestions?: LopperCodemodSuggestion[];
+  apply?: LopperCodemodApplyReport;
 }
 
 export interface LopperCodemodSuggestion {
@@ -173,6 +174,24 @@ export interface LopperCodemodSuggestion {
   toModule: string;
   original: string;
   replacement: string;
+}
+
+export interface LopperCodemodApplyReport {
+  appliedFiles?: number;
+  appliedPatches?: number;
+  skippedFiles?: number;
+  skippedPatches?: number;
+  failedFiles?: number;
+  failedPatches?: number;
+  backupPath?: string;
+  results?: LopperCodemodApplyResult[];
+}
+
+export interface LopperCodemodApplyResult {
+  file: string;
+  status: "applied" | "skipped" | "failed" | string;
+  patchCount: number;
+  message?: string;
 }
 
 export interface LopperSymbolUsage {
