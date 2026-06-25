@@ -65,7 +65,7 @@
     "code": "LOP-FEAT-0010",
     "name": "dashboard-remote-repos-preview",
     "description": "Enable dashboard repoUrl entries by materializing remote Git repositories into a deterministic local checkout cache.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0011",
