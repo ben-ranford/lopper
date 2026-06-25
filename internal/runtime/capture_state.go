@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -65,13 +66,8 @@ func parseRuntimeTraceState(stateData []byte) (runtimeTraceState, bool) {
 }
 
 func writeRuntimeTraceState(tracePath, command string, provider CaptureProvider) error {
-	payload, err := json.Marshal(runtimeTraceState{
-		Schema:   runtimeTraceStateSchema,
-		Command:  strings.TrimSpace(command),
-		Provider: normalizeCaptureProvider(provider),
-	})
-	if err != nil {
-		return err
-	}
+	payload := []byte(`{"schema":"` + runtimeTraceStateSchema +
+		`","command":` + strconv.Quote(strings.TrimSpace(command)) +
+		`,"provider":` + strconv.Quote(string(normalizeCaptureProvider(provider))) + `}`)
 	return os.WriteFile(runtimeTraceStatePath(tracePath), payload, 0o600)
 }
