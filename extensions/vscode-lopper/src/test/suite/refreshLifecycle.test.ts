@@ -251,6 +251,7 @@ suite("refresh lifecycle", () => {
                       toModule: "scope-lib",
                       original: "import scope-lib from \"scope-lib\";",
                       replacement: "import scope-lib from \"scope-lib\";",
+                      patch: "--- a/../outside.ts\n+++ b/../outside.ts\n@@ -1 +1 @@\n-import scope-lib from \"scope-lib\";\n+import scope-lib from \"scope-lib\";",
                     },
                     {
                       file: validSuggestionPath,
@@ -260,6 +261,7 @@ suite("refresh lifecycle", () => {
                       toModule: "scope-lib/chunk",
                       original: "import chunk from \"scope-lib\";",
                       replacement: "import chunk from \"scope-lib/chunk\";",
+                      patch: "--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-import chunk from \"scope-lib\";\n+import chunk from \"scope-lib/chunk\";",
                     },
                   ],
                 },
@@ -273,7 +275,7 @@ suite("refresh lifecycle", () => {
           await refresh(controller, harness);
 
           const diagnostics = vscode.languages.getDiagnostics(harness.document.uri).filter((item) => item.source === "lopper");
-          const codemodDiagnostics = diagnostics.filter((item) => item.message.includes("subpath import"));
+          const codemodDiagnostics = diagnostics.filter((item) => item.message.includes("safe import remediation"));
           assert.equal(codemodDiagnostics.length, 1);
           assert.equal(diagnostics.length, 2);
         },
@@ -497,6 +499,7 @@ function attachScopeLibCodemod(analysis: WorkspaceAnalysis): void {
 						toModule: "scope-lib/chunk",
 						original: "import chunk from \"scope-lib\";",
 						replacement: "import chunk from \"scope-lib/chunk\";",
+						patch: "--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-import chunk from \"scope-lib\";\n+import chunk from \"scope-lib/chunk\";",
 					},
 				],
 			},

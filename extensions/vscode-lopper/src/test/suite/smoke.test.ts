@@ -58,7 +58,7 @@ suite("vscode-lopper smoke", () => {
 
     await vscode.commands.executeCommand("lopper.refreshWorkspace");
     const secondaryDiagnostics = await waitForDiagnostics(secondaryFixtureUri, 2);
-    const codemodDiagnostic = secondaryDiagnostics.find((item) => item.message.includes("subpath import"));
+    const codemodDiagnostic = secondaryDiagnostics.find((item) => item.message.includes("safe import remediation"));
     assert.ok(codemodDiagnostic, "expected codemod diagnostic");
 
     const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(

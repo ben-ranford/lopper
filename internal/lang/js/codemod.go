@@ -8,11 +8,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-const codemodModeSuggestOnly = "suggest-only"
+const codemodModeSuggestOnly = shared.CodemodModeSuggestOnly
 
 const (
 	codemodReasonSideEffectImport = "side-effect-import"
@@ -96,7 +96,7 @@ func buildCodemodOutcome(repoPath string, dependency string, resolver subpathRes
 		return codemodOutcome{skip: &skip}, "", false
 	}
 
-	lines, warning, loaded := loadSourceLines(repoPath, file.Path, lineCache)
+	lines, warning, loaded := shared.LoadCodemodSourceLines(repoPath, file.Path, lineCache)
 	if !loaded {
 		return codemodOutcome{}, warning, true
 	}
@@ -116,7 +116,9 @@ func buildCodemodOutcome(repoPath string, dependency string, resolver subpathRes
 		return codemodOutcome{}, "", false
 	}
 
-	suggestion := report.CodemodSuggestion{
+	suggestion := shared.NewCodemodSuggestion(shared.CodemodSuggestionSpec{
+		Language:    "js-ts",
+		Dependency:  dependency,
 		File:        file.Path,
 		Line:        imp.Location.Line,
 		ImportName:  imp.ExportName,
@@ -124,22 +126,14 @@ func buildCodemodOutcome(repoPath string, dependency string, resolver subpathRes
 		ToModule:    targetModule,
 		Original:    oldLine,
 		Replacement: newLine,
-		Patch:       buildSingleLinePatch(file.Path, imp.Location.Line, oldLine, newLine),
-	}
+		Patch:       shared.BuildSingleLinePatch(file.Path, imp.Location.Line, oldLine, newLine),
+		SafetyReasonCodes: []string{
+			"deterministic-subpath-target",
+			"single-binding-import",
+			"source-line-match",
+		},
+	})
 	return codemodOutcome{suggestion: &suggestion}, "", false
-}
-
-func loadSourceLines(repoPath, filePath string, lineCache map[string][]string) ([]string, string, bool) {
-	if lines, ok := lineCache[filePath]; ok {
-		return lines, "", true
-	}
-	content, err := safeio.ReadFileUnder(repoPath, filepath.Join(repoPath, filePath))
-	if err != nil {
-		return nil, fmt.Sprintf("codemod preview skipped for %s: %v", filePath, err), false
-	}
-	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
-	lineCache[filePath] = lines
-	return lines, "", true
 }
 
 func codemodSuggestionOrder(item report.CodemodSuggestion) string {
@@ -179,14 +173,16 @@ func isNamedImportUsed(imp ImportBinding, file FileScan) bool {
 }
 
 func newCodemodSkip(file string, imp ImportBinding, reasonCode, message string) report.CodemodSkip {
-	return report.CodemodSkip{
+	return shared.NewCodemodSkip(shared.CodemodSkipSpec{
+		Language:   "js-ts",
+		Dependency: imp.Module,
 		File:       file,
 		Line:       imp.Location.Line,
 		ImportName: imp.ExportName,
 		Module:     imp.Module,
 		ReasonCode: reasonCode,
 		Message:    message,
-	}
+	})
 }
 
 func rewriteImportLine(line, dependency, exportName, targetModule string) (string, bool) {
@@ -205,10 +201,6 @@ func rewriteImportLine(line, dependency, exportName, targetModule string) (strin
 		return fmt.Sprintf("%s%s %s = require(%s%s%s)%s", matches[1], matches[2], exportName, quote, targetModule, quote, matches[7]), true
 	}
 	return "", false
-}
-
-func buildSingleLinePatch(file string, line int, oldLine, newLine string) string {
-	return strings.Join([]string{fmt.Sprintf("--- a/%s", file), fmt.Sprintf("+++ b/%s", file), fmt.Sprintf("@@ -%d +%d @@", line, line), "-" + oldLine, "+" + newLine}, "\n")
 }
 
 type subpathResolver struct {

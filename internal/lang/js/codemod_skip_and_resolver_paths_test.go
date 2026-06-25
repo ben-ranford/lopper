@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -49,7 +50,7 @@ func TestBuildCodemodForFileWithUnsupportedSyntaxProducesSkip(t *testing.T) {
 }
 
 func TestLoadSourceLinesMissingSource(t *testing.T) {
-	lines, warning, loaded := loadSourceLines(t.TempDir(), codemodMissingSource, map[string][]string{})
+	lines, warning, loaded := shared.LoadCodemodSourceLines(t.TempDir(), codemodMissingSource, map[string][]string{})
 	if loaded || len(lines) != 0 || !strings.Contains(warning, codemodMissingSource) {
 		t.Fatalf("expected missing source load failure, got lines=%#v warning=%q loaded=%v", lines, warning, loaded)
 	}
@@ -57,7 +58,7 @@ func TestLoadSourceLinesMissingSource(t *testing.T) {
 
 func TestLoadSourceLinesUsesCache(t *testing.T) {
 	cached := map[string][]string{codemodIndexSource: {"cached"}}
-	lines, warning, loaded := loadSourceLines(t.TempDir(), codemodIndexSource, cached)
+	lines, warning, loaded := shared.LoadCodemodSourceLines(t.TempDir(), codemodIndexSource, cached)
 	if !loaded || warning != "" || len(lines) != 1 || lines[0] != "cached" {
 		t.Fatalf("expected cached source lines, got %#v %q %v", lines, warning, loaded)
 	}

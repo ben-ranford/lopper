@@ -109,6 +109,20 @@ func TestApplySuggestionsToContent(t *testing.T) {
 	}
 }
 
+func TestApplySuggestionsToContentDeleteLine(t *testing.T) {
+	content := "import requests\r\nprint('crlf import removed')\nimport numpy\nprint('done')\r\n"
+	updated, err := applySuggestionsToContent(content, []report.CodemodSuggestion{
+		{File: "main.py", Line: 1, ImportName: "requests", Original: "import requests", DeleteLine: true},
+		{File: "main.py", Line: 3, ImportName: "numpy", Original: "import numpy", DeleteLine: true},
+	})
+	if err != nil {
+		t.Fatalf("delete import lines: %v", err)
+	}
+	if updated != "print('crlf import removed')\nprint('done')\r\n" {
+		t.Fatalf("expected mixed newlines to survive line deletion, got %q", updated)
+	}
+}
+
 func TestPrepareCodemodFiles(t *testing.T) {
 	repo := t.TempDir()
 	writeTextFile(t, filepath.Join(repo, indexJSFile), importLodashLineWithLF, 0o644)

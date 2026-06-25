@@ -58,18 +58,26 @@ type CodemodReport struct {
 }
 
 type CodemodSuggestion struct {
-	File        string `json:"file"`
-	Line        int    `json:"line"`
-	ImportName  string `json:"importName"`
-	FromModule  string `json:"fromModule"`
-	ToModule    string `json:"toModule"`
-	Original    string `json:"original"`
-	Replacement string `json:"replacement"`
-	Patch       string `json:"patch"`
+	Language          string   `json:"language,omitempty"`
+	Dependency        string   `json:"dependency,omitempty"`
+	File              string   `json:"file"`
+	TargetFile        string   `json:"targetFile,omitempty"`
+	Line              int      `json:"line"`
+	ImportName        string   `json:"importName"`
+	FromModule        string   `json:"fromModule"`
+	ToModule          string   `json:"toModule"`
+	Original          string   `json:"original"`
+	Replacement       string   `json:"replacement"`
+	Patch             string   `json:"patch"`
+	SafetyReasonCodes []string `json:"safetyReasonCodes,omitempty"`
+	DeleteLine        bool     `json:"deleteLine,omitempty"`
 }
 
 type CodemodSkip struct {
+	Language   string `json:"language,omitempty"`
+	Dependency string `json:"dependency,omitempty"`
 	File       string `json:"file"`
+	TargetFile string `json:"targetFile,omitempty"`
 	Line       int    `json:"line"`
 	ImportName string `json:"importName"`
 	Module     string `json:"module"`

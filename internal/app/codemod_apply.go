@@ -281,16 +281,40 @@ func prepareCodemodFiles(repoPath string, suggestions []report.CodemodSuggestion
 
 func applySuggestionsToContent(content string, suggestions []report.CodemodSuggestion) (string, error) {
 	lines := splitCodemodContentLines(content)
-	for _, suggestion := range suggestions {
-		if suggestion.Line <= 0 || suggestion.Line > len(lines) {
-			return "", fmt.Errorf("line %d is out of range for %s", suggestion.Line, suggestion.File)
+	if err := validateCodemodSuggestions(lines, suggestions); err != nil {
+		return "", err
+	}
+
+	applied := append([]report.CodemodSuggestion{}, suggestions...)
+	sort.SliceStable(applied, func(i, j int) bool {
+		return applied[i].Line > applied[j].Line
+	})
+	for _, suggestion := range applied {
+		index := suggestion.Line - 1
+		if suggestion.DeleteLine {
+			lines = append(lines[:index], lines[index+1:]...)
+			continue
 		}
-		if lines[suggestion.Line-1].text != suggestion.Original {
-			return "", fmt.Errorf("source line mismatch at %s:%d", suggestion.File, suggestion.Line)
-		}
-		lines[suggestion.Line-1].text = suggestion.Replacement
+		lines[index].text = suggestion.Replacement
 	}
 	return joinCodemodContentLines(lines), nil
+}
+
+func validateCodemodSuggestions(lines []codemodContentLine, suggestions []report.CodemodSuggestion) error {
+	targetedLines := make(map[int]report.CodemodSuggestion, len(suggestions))
+	for _, suggestion := range suggestions {
+		if suggestion.Line <= 0 || suggestion.Line > len(lines) {
+			return fmt.Errorf("line %d is out of range for %s", suggestion.Line, suggestion.File)
+		}
+		if previous, ok := targetedLines[suggestion.Line]; ok {
+			return fmt.Errorf("multiple codemod suggestions target %s:%d (%s, %s)", suggestion.File, suggestion.Line, previous.ImportName, suggestion.ImportName)
+		}
+		targetedLines[suggestion.Line] = suggestion
+		if lines[suggestion.Line-1].text != suggestion.Original {
+			return fmt.Errorf("source line mismatch at %s:%d", suggestion.File, suggestion.Line)
+		}
+	}
+	return nil
 }
 
 func splitCodemodContentLines(content string) []codemodContentLine {

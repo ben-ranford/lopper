@@ -8,19 +8,24 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const CodemodSuggestionsPreviewFeature = "python-codemod-suggestions-preview"
+
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
-	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, buildTopPythonDependencies)
+	buildDependency := func(dependency string, current scanResult) (report.DependencyReport, []string) {
+		return buildDependencyReport(dependency, current, req)
+	}
+	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependency, buildTopPythonDependencies)
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
-		return buildDependencyReport(dependency, scan)
+		return buildDependencyReport(dependency, scan, language.Request{})
 	}
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
-func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
+func buildDependencyReport(dependency string, scan scanResult, req language.Request) (report.DependencyReport, []string) {
 	stats := shared.BuildDependencyStats(dependency, pythonFileUsages(scan), normalizeDependencyID)
 	warnings := make([]string, 0)
 	if !stats.HasImports {
@@ -44,6 +49,15 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 			Severity: "medium",
 			Message:  fmt.Sprintf("found %d wildcard import(s) for this dependency", stats.WildcardImports),
 		})
+	}
+	if req.SuggestOnly {
+		if req.Features.Enabled(CodemodSuggestionsPreviewFeature) {
+			codemod, codemodWarnings := BuildUnusedImportCodemodReport(req.RepoPath, dependency, scan)
+			dep.Codemod = codemod
+			warnings = append(warnings, codemodWarnings...)
+		} else {
+			warnings = append(warnings, fmt.Sprintf("python codemod suggestions require --enable-feature %s", CodemodSuggestionsPreviewFeature))
+		}
 	}
 	dep.Recommendations = buildRecommendations(dep)
 	return dep, warnings

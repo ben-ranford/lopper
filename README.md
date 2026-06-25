@@ -292,6 +292,8 @@ apply-codemod --confirm
 
 `apply-codemod` refuses dirty git worktrees by default; add `--allow-dirty` only when you intentionally want to apply into a dirty tree. The action prints applied, skipped, and failed files plus the rollback backup path. Baselines can also be saved and compared in-session:
 
+Python safe unused-import suggestions are preview-gated; enable them with `--enable-feature python-codemod-suggestions-preview` before using `--suggest-only` or `--apply-codemod` against Python dependencies.
+
 ```text
 save-baseline
 save-baseline release-candidate

@@ -39,8 +39,8 @@ Options:
   --save-baseline            Save current dashboard run as an immutable baseline snapshot
   --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
   --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
-  --suggest-only             Generate deterministic codemod patch previews for safe JS/TS subpath migrations (no source mutation)
-  --apply-codemod            Apply deterministic codemod patch previews for safe JS/TS subpath migrations
+  --suggest-only             Generate deterministic patch previews for safe remediation suggestions (Python suggestions require python-codemod-suggestions-preview)
+  --apply-codemod            Apply deterministic patch previews for safe remediation suggestions (Python suggestions require python-codemod-suggestions-preview)
   --apply-codemod-confirm    Required confirmation flag for --apply-codemod
   --allow-dirty              Allow --apply-codemod to run in a dirty git worktree
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)

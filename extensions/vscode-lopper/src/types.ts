@@ -201,13 +201,19 @@ export interface LopperCodemodReport {
 }
 
 export interface LopperCodemodSuggestion {
+  language?: string;
+  dependency?: string;
   file: string;
+  targetFile?: string;
   line: number;
   importName: string;
   fromModule: string;
   toModule: string;
   original: string;
   replacement: string;
+  patch: string;
+  safetyReasonCodes?: string[];
+  deleteLine?: boolean;
 }
 
 export interface LopperCodemodApplyReport {

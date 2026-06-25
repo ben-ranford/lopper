@@ -125,7 +125,7 @@ func TestPythonDirectoryAndRecommendationsHelpers(t *testing.T) {
 		t.Fatalf("unexpected shouldSkipDir behavior")
 	}
 
-	dep, warnings := buildDependencyReport("requests", scanResult{})
+	dep, warnings := buildDependencyReport("requests", scanResult{}, language.Request{})
 	if dep.Name != "requests" {
 		t.Fatalf("unexpected dependency name: %q", dep.Name)
 	}

@@ -226,6 +226,8 @@ async function buildReport(workspaceRoot, dependencyName, suggestOnly, applyCode
       toModule: "scope-lib/chunk",
       original: 'import { chunk } from "scope-lib";',
       replacement: 'import chunk from "scope-lib/chunk";',
+      patch:
+        '--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-import { chunk } from "scope-lib";\n+import chunk from "scope-lib/chunk";',
     };
     const codemod = {
       mode: applyCodemod ? "apply" : "suggest-only",
