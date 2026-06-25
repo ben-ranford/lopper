@@ -43,7 +43,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 	}
 
 	if req.ReuseIfUnchanged {
-		reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command)
+		reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command, plan.provider)
 		if err == nil && reused {
 			return nil
 		}
@@ -67,7 +67,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 	if err != nil {
 		return formatRuntimeCommandError(err, output)
 	}
-	if err := writeRuntimeTraceState(plan.tracePath, plan.command); err != nil {
+	if err := writeRuntimeTraceState(plan.tracePath, plan.command, plan.provider); err != nil {
 		return fmt.Errorf("write runtime trace state: %w", err)
 	}
 

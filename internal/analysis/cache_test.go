@@ -273,6 +273,60 @@ func TestAnalysisCachePrepareEntryIncludesFeatureFlags(t *testing.T) {
 	}
 }
 
+func TestAnalysisCachePrepareEntryIncludesRuntimeCaptureRequestScope(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	req := Request{
+		RepoPath: repo,
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    filepath.Join(repo, cacheTestDirectoryName),
+		},
+	}
+	cache := newAnalysisCache(req, repo)
+
+	baseReq := Request{
+		RepoPath:           repo,
+		Language:           "all",
+		RuntimeTestCommand: "make test",
+	}
+	baseEntry, err := cache.prepareEntry(baseReq, "python", repo)
+	if err != nil {
+		t.Fatalf("prepare base entry: %v", err)
+	}
+
+	pythonReq := baseReq
+	pythonReq.Language = "python"
+	pythonEntry, err := cache.prepareEntry(pythonReq, "python", repo)
+	if err != nil {
+		t.Fatalf("prepare python entry: %v", err)
+	}
+	if baseEntry.KeyDigest == pythonEntry.KeyDigest {
+		t.Fatalf("expected different cache keys when requested language changes")
+	}
+
+	commandReq := baseReq
+	commandReq.RuntimeTestCommand = "pytest"
+	commandEntry, err := cache.prepareEntry(commandReq, "python", repo)
+	if err != nil {
+		t.Fatalf("prepare command entry: %v", err)
+	}
+	if baseEntry.KeyDigest == commandEntry.KeyDigest {
+		t.Fatalf("expected different cache keys when runtime test command changes")
+	}
+
+	traceReq := baseReq
+	traceReq.RuntimeTracePath = filepath.Join(repo, ".artifacts", "python.ndjson")
+	traceReq.RuntimeTracePathExplicit = true
+	traceEntry, err := cache.prepareEntry(traceReq, "python", repo)
+	if err != nil {
+		t.Fatalf("prepare trace path entry: %v", err)
+	}
+	if baseEntry.KeyDigest == traceEntry.KeyDigest {
+		t.Fatalf("expected different cache keys when runtime trace path changes")
+	}
+}
+
 func TestAnalysisCachePrepareEntryMemoizesInputDigestForSameRootAndConfig(t *testing.T) {
 	repo := t.TempDir()
 	root := filepath.Join(repo, "root")
