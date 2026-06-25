@@ -379,7 +379,7 @@ func mustResolveSwiftCarthagePreviewSet(t *testing.T, enabled bool) featureflags
 	t.Helper()
 	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
 	if enabled {
-		options.Enable = []string{"swift-carthage-preview"}
+		options.Enable = []string{"swift-carthage"}
 	}
 	resolved, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {

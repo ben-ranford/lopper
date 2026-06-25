@@ -12,7 +12,7 @@ import (
 
 const (
 	pyprojectManifestName                          = "pyproject.toml"
-	lockfileDriftEcosystemExpansionPreviewFlagName = "lockfile-drift-ecosystem-expansion-preview"
+	lockfileDriftEcosystemExpansionPreviewFlagName = "lockfile-drift-ecosystem-expansion"
 	dotnetCSharpProjectManifestExt                 = ".csproj"
 	dotnetFSharpProjectManifestExt                 = ".fsproj"
 	pyprojectPoetrySection                         = "tool.poetry"

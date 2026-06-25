@@ -30,15 +30,24 @@ const (
 type Flag struct {
 	Code               string    `json:"code" yaml:"code"`
 	Name               string    `json:"name" yaml:"name"`
+	DeprecatedNames    []string  `json:"deprecatedNames,omitempty" yaml:"deprecatedNames,omitempty"`
 	Description        string    `json:"description" yaml:"description"`
 	Lifecycle          Lifecycle `json:"lifecycle" yaml:"lifecycle"`
 	FirstStableRelease string    `json:"firstStableRelease,omitempty" yaml:"firstStableRelease,omitempty"`
 }
 
+type LookupResult struct {
+	Flag           Flag
+	Reference      string
+	Deprecated     bool
+	ReplacementRef string
+}
+
 type Registry struct {
-	flags  []Flag
-	byCode map[string]Flag
-	byName map[string]Flag
+	flags            []Flag
+	byCode           map[string]Flag
+	byName           map[string]Flag
+	deprecatedByName map[string]Flag
 }
 
 func DefaultRegistry() *Registry {
@@ -54,9 +63,10 @@ func ValidateDefaultRegistry() error {
 
 func NewRegistry(flags []Flag) (*Registry, error) {
 	registry := &Registry{
-		flags:  make([]Flag, 0, len(flags)),
-		byCode: make(map[string]Flag, len(flags)),
-		byName: make(map[string]Flag, len(flags)),
+		flags:            make([]Flag, 0, len(flags)),
+		byCode:           make(map[string]Flag, len(flags)),
+		byName:           make(map[string]Flag, len(flags)),
+		deprecatedByName: make(map[string]Flag),
 	}
 	for _, flag := range flags {
 		normalized, err := normalizeFlag(flag)
@@ -66,12 +76,16 @@ func NewRegistry(flags []Flag) (*Registry, error) {
 		if _, exists := registry.byCode[normalized.Code]; exists {
 			return nil, fmt.Errorf("duplicate feature code: %s", normalized.Code)
 		}
-		if _, exists := registry.byName[normalized.Name]; exists {
-			return nil, fmt.Errorf("duplicate feature name: %s", normalized.Name)
+		if err := registry.registerFeatureName(normalized.Name, normalized, false); err != nil {
+			return nil, err
 		}
 		registry.flags = append(registry.flags, normalized)
 		registry.byCode[normalized.Code] = normalized
-		registry.byName[normalized.Name] = normalized
+		for _, deprecatedName := range normalized.DeprecatedNames {
+			if err := registry.registerFeatureName(deprecatedName, normalized, true); err != nil {
+				return nil, err
+			}
+		}
 	}
 	sort.Slice(registry.flags, func(i, j int) bool {
 		return registry.flags[i].Code < registry.flags[j].Code
@@ -79,11 +93,24 @@ func NewRegistry(flags []Flag) (*Registry, error) {
 	return registry, nil
 }
 
+func (r *Registry) registerFeatureName(name string, flag Flag, deprecated bool) error {
+	if _, exists := r.byName[name]; exists {
+		return fmt.Errorf("duplicate feature name: %s", name)
+	}
+	copied := cloneFlag(flag)
+	r.byName[name] = copied
+	if deprecated {
+		r.deprecatedByName[name] = copied
+	}
+	return nil
+}
+
 func emptyRegistry() *Registry {
 	return &Registry{
-		flags:  []Flag{},
-		byCode: map[string]Flag{},
-		byName: map[string]Flag{},
+		flags:            []Flag{},
+		byCode:           map[string]Flag{},
+		byName:           map[string]Flag{},
+		deprecatedByName: map[string]Flag{},
 	}
 }
 
@@ -92,23 +119,41 @@ func (r *Registry) Flags() []Flag {
 		return nil
 	}
 	flags := make([]Flag, len(r.flags))
-	copy(flags, r.flags)
+	for i, flag := range r.flags {
+		flags[i] = cloneFlag(flag)
+	}
 	return flags
 }
 
 func (r *Registry) Lookup(ref string) (Flag, bool) {
-	if r == nil {
+	result, ok := r.LookupReference(ref)
+	if !ok {
 		return Flag{}, false
+	}
+	return result.Flag, true
+}
+
+func (r *Registry) LookupReference(ref string) (LookupResult, bool) {
+	if r == nil {
+		return LookupResult{}, false
 	}
 	normalized := strings.TrimSpace(ref)
 	if normalized == "" {
-		return Flag{}, false
+		return LookupResult{}, false
 	}
 	if flag, ok := r.byCode[normalized]; ok {
-		return flag, true
+		return LookupResult{Flag: cloneFlag(flag), Reference: normalized}, true
 	}
 	flag, ok := r.byName[normalized]
-	return flag, ok
+	if !ok {
+		return LookupResult{}, false
+	}
+	result := LookupResult{Flag: cloneFlag(flag), Reference: normalized}
+	if _, deprecated := r.deprecatedByName[normalized]; deprecated {
+		result.Deprecated = true
+		result.ReplacementRef = flag.Name
+	}
+	return result, true
 }
 
 func (r *Registry) NextCode() (string, error) {
@@ -165,6 +210,11 @@ func normalizeFlag(flag Flag) (Flag, error) {
 	if err := validateFeatureName(flag.Name); err != nil {
 		return Flag{}, err
 	}
+	deprecatedNames, err := normalizeDeprecatedFeatureNames(flag.Name, flag.DeprecatedNames)
+	if err != nil {
+		return Flag{}, err
+	}
+	flag.DeprecatedNames = deprecatedNames
 	lifecycle, err := NormalizeLifecycle(string(flag.Lifecycle))
 	if err != nil {
 		return Flag{}, fmt.Errorf("feature %s: %w", flag.Code, err)
@@ -176,6 +226,35 @@ func normalizeFlag(flag Flag) (Flag, error) {
 	}
 	flag.FirstStableRelease = firstStableRelease
 	return flag, nil
+}
+
+func normalizeDeprecatedFeatureNames(canonicalName string, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if err := validateFeatureName(name); err != nil {
+			return nil, err
+		}
+		if name == canonicalName {
+			return nil, fmt.Errorf("deprecated feature name %q duplicates canonical name", name)
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
 }
 
 func normalizeStableReleaseVersion(value string) (string, error) {
@@ -231,4 +310,11 @@ func validateFeatureName(name string) error {
 		return fmt.Errorf("invalid feature name %q: use lowercase letters, digits, and hyphens", name)
 	}
 	return nil
+}
+
+func cloneFlag(flag Flag) Flag {
+	if len(flag.DeprecatedNames) > 0 {
+		flag.DeprecatedNames = append([]string{}, flag.DeprecatedNames...)
+	}
+	return flag
 }

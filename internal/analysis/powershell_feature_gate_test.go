@@ -11,7 +11,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 )
 
-const powerShellFeatureName = "powershell-adapter-preview"
+const powerShellFeatureName = "powershell-adapter"
 
 func TestServicePowerShellFeatureGateCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()

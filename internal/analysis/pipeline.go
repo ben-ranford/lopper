@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	pythonRuntimeTracePreviewFeature   = "python-runtime-trace-preview"
+	pythonRuntimeTracePreviewFeature   = "python-runtime-trace"
 	pythonRuntimeCapturePreviewFeature = "python-runtime-capture-preview"
 )
 

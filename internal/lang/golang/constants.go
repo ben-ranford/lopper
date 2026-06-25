@@ -3,7 +3,7 @@ package golang
 const (
 	goModName                          = "go.mod"
 	goWorkName                         = "go.work"
-	goVendoredProvenancePreviewFeature = "go-vendored-provenance-preview"
+	goVendoredProvenancePreviewFeature = "go-vendored-provenance"
 	vendorModulesTxtName               = "vendor/modules.txt"
 	maxScannableGoFile                 = 2 * 1024 * 1024
 )

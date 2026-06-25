@@ -17,7 +17,7 @@ import (
 
 // MutationToolsFeature gates explicit MCP mutation tools. Read-only MCP tools
 // stay available under ServerPreviewFeature and do not use this flag.
-const MutationToolsFeature = "mcp-mutation-tools-preview"
+const MutationToolsFeature = "mcp-mutation-tools"
 
 type MutationRunner interface {
 	ApplyCodemod(context.Context, AnalysisMutationRequest) (report.Report, error)

@@ -91,7 +91,7 @@ func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
 		{"runtime profile", got.RuntimeProfile == "browser-import"},
 		{"scope mode", got.ScopeMode == ScopeModeChangedPackages},
 		{"cache options", got.Cache != nil && !got.Cache.Enabled && got.Cache.Path == "/tmp/lopper-cache" && got.Cache.ReadOnly},
-		{"features", got.Features.Enabled("powershell-adapter-preview")},
+		{"features", got.Features.Enabled("powershell-adapter")},
 		{"suggest only", got.SuggestOnly},
 		{"removal candidate weights", got.RemovalCandidateWeights != nil && got.RemovalCandidateWeights.Usage == 0.6 && got.RemovalCandidateWeights.Impact == 0.2 && got.RemovalCandidateWeights.Confidence == 0.2},
 	}
@@ -110,7 +110,7 @@ func mustEnabledPreviewFeatureSet(t *testing.T) featureflags.Set {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
 		Code:      "LOP-FEAT-0001",
-		Name:      "dart-source-attribution-preview",
+		Name:      "dart-source-attribution",
 		Lifecycle: featureflags.LifecyclePreview,
 	}})
 	if err != nil {
@@ -118,7 +118,7 @@ func mustEnabledPreviewFeatureSet(t *testing.T) featureflags.Set {
 	}
 	features, err := registry.Resolve(featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
-		Enable:  []string{"dart-source-attribution-preview"},
+		Enable:  []string{"dart-source-attribution"},
 	})
 	if err != nil {
 		t.Fatalf("resolve feature set: %v", err)

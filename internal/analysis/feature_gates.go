@@ -32,11 +32,14 @@ func adapterFeatureFlags(registry *featureflags.Registry) map[string]string {
 	flags := registry.Flags()
 	features := make(map[string]string, len(flags))
 	for _, flag := range flags {
-		adapterID, ok := previewAdapterID(flag.Name)
-		if !ok {
-			continue
+		for _, featureName := range append([]string{flag.Name}, flag.DeprecatedNames...) {
+			adapterID, ok := previewAdapterID(featureName)
+			if !ok {
+				continue
+			}
+			features[adapterID] = flag.Name
+			break
 		}
-		features[adapterID] = flag.Name
 	}
 	return features
 }

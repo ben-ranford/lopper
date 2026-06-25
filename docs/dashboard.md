@@ -24,7 +24,7 @@ From config with remote repositories enabled:
 ```bash
 lopper dashboard \
   --config lopper-org.yml \
-  --enable-feature dashboard-remote-repos-preview
+  --enable-feature dashboard-remote-repos
 ```
 
 Supported output formats:
@@ -52,7 +52,7 @@ dashboard:
   output: html
 ```
 
-Remote Git repositories can be configured with `repoUrl` when the `dashboard-remote-repos-preview` feature is enabled:
+Remote Git repositories can be configured with `repoUrl` when the `dashboard-remote-repos` feature is enabled:
 
 ```yaml
 dashboard:

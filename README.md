@@ -191,7 +191,7 @@ Use a dashboard config file:
 lopper dashboard --config lopper-org.yml --format json
 ```
 
-Remote dashboard config entries can use `repoUrl` with the `dashboard-remote-repos-preview` feature and may pin exactly one of `branch`, `tag`, or full `commit` SHA. Unpinned remote entries continue to track remote `HEAD`; dashboard JSON, CSV, HTML, and saved dashboard baselines include the resolved commit SHA for materialized remote repos.
+Remote dashboard config entries can use `repoUrl` with the `dashboard-remote-repos` feature and may pin exactly one of `branch`, `tag`, or full `commit` SHA. Unpinned remote entries continue to track remote `HEAD`; dashboard JSON, CSV, HTML, and saved dashboard baselines include the resolved commit SHA for materialized remote repos.
 
 ## Languages
 

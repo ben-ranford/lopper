@@ -40,14 +40,14 @@ Use a built-in profile to generate a loader-ready config without copying YAML fr
 
 ```bash
 lopper profile apply balanced \
-  --enable-feature threshold-profiles-preview
+  --enable-feature threshold-profiles
 ```
 
 Write a starter repo config:
 
 ```bash
 lopper profile apply strict \
-  --enable-feature threshold-profiles-preview \
+  --enable-feature threshold-profiles \
   --output .lopper.yml
 ```
 
@@ -55,12 +55,12 @@ lopper profile apply strict \
 
 ```bash
 lopper profile apply noise-reduction \
-  --enable-feature threshold-profiles-preview \
+  --enable-feature threshold-profiles \
   --output .lopper.yml \
   --force
 ```
 
-`threshold-profiles-preview` is a preview feature flag. Rolling builds enable preview features by default; dev and release builds require `--enable-feature threshold-profiles-preview` until the command graduates.
+`threshold-profiles` is a stable feature flag and is enabled by default in every build channel. The legacy `threshold-profiles-preview` name remains accepted in v2.0.0 for compatibility and rollback testing.
 
 Use CLI flags for per-run overrides:
 
@@ -133,7 +133,7 @@ Policy precedence is deterministic:
 | `balanced` | You want stable signal without over-triggering. | 2 | 40 | 40 | 0.50 | 0.30 | 0.20 |
 | `noise-reduction` | Your repository currently produces too many warnings or recommendations. | 5 | 25 | 25 | 0.35 | 0.25 | 0.40 |
 
-Use `lopper profile apply NAME --enable-feature threshold-profiles-preview` to print the exact YAML for any profile.
+Use `lopper profile apply NAME --enable-feature threshold-profiles` to print the exact YAML for any profile.
 
 ## How to verify effective values
 
