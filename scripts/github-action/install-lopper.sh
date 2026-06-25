@@ -70,9 +70,14 @@ is_concrete_release_ref() {
   [[ "$value" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([.-][A-Za-z0-9._-]+)?$ || "$value" =~ ^rolling-[A-Za-z0-9._-]+$ ]]
 }
 
+is_floating_release_ref() {
+  local value="$1"
+  [[ "$value" =~ ^v[0-9]+([.][0-9]+)?$ ]]
+}
+
 normalize_explicit_version() {
   local value="$1"
-  if [[ "$value" =~ ^[0-9]+[.][0-9]+[.][0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
+  if [[ "$value" =~ ^[0-9]+([.][0-9]+)?([.][0-9]+([.-][A-Za-z0-9._-]+)?)?$ ]]; then
     value="v${value}"
   fi
   printf '%s' "$value"
@@ -81,9 +86,70 @@ normalize_explicit_version() {
 validate_tag() {
   local tag="$1"
   if [[ ! "$tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    error "Invalid Lopper version '${tag}'. Use latest, action, or a release tag such as v1.7.0."
+    error "Invalid Lopper version '${tag}'. Use latest, action, a floating tag such as v1 or v1.7, or a release tag such as v1.7.0."
     exit 2
   fi
+}
+
+resolve_release_series_tag() {
+  local series="$1"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    error "python3 is required to resolve floating Lopper release ref '${series}'. Use a concrete tag such as v1.7.0 instead."
+    exit 1
+  fi
+
+  local releases_json
+  releases_json="$(curl_with_token -fsSL "https://api.github.com/repos/ben-ranford/lopper/releases?per_page=100")"
+
+  local tag
+  if ! tag="$(
+    SERIES="$series" RELEASES_JSON="$releases_json" python3 - <<'PY'
+import json
+import os
+import re
+import sys
+
+series = os.environ["SERIES"]
+try:
+    releases = json.loads(os.environ.get("RELEASES_JSON", "[]"))
+except json.JSONDecodeError:
+    sys.exit(2)
+
+if not isinstance(releases, list):
+    sys.exit(2)
+
+if series.count(".") == 0:
+    pattern = re.compile(r"^" + re.escape(series) + r"\.[0-9]+\.[0-9]+$")
+else:
+    pattern = re.compile(r"^" + re.escape(series) + r"\.[0-9]+$")
+
+def version_key(tag):
+    return tuple(int(part) for part in tag[1:].split("."))
+
+candidates = []
+for release in releases:
+    if not isinstance(release, dict):
+        continue
+    if release.get("draft") or release.get("prerelease"):
+        continue
+    tag = release.get("tag_name", "")
+    if pattern.fullmatch(tag):
+        candidates.append(tag)
+
+if candidates:
+    print(max(candidates, key=version_key))
+PY
+  )"; then
+    error "Unable to parse GitHub releases while resolving floating ref '${series}'."
+    exit 1
+  fi
+
+  if [[ -z "$tag" ]]; then
+    error "Unable to resolve a stable Lopper release for floating ref '${series}'."
+    exit 1
+  fi
+  printf '%s' "$tag"
 }
 
 resolve_requested_tag() {
@@ -99,6 +165,10 @@ resolve_requested_tag() {
       printf '%s' "$action_ref"
       return
     fi
+    if [[ -n "$action_ref" ]] && is_floating_release_ref "$action_ref"; then
+      resolve_release_series_tag "$action_ref"
+      return
+    fi
     resolve_latest_tag
     return
   fi
@@ -108,7 +178,12 @@ resolve_requested_tag() {
     return
   fi
 
-  normalize_explicit_version "$requested"
+  requested="$(normalize_explicit_version "$requested")"
+  if is_floating_release_ref "$requested"; then
+    resolve_release_series_tag "$requested"
+    return
+  fi
+  printf '%s' "$requested"
 }
 
 detect_os() {
