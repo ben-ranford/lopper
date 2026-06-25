@@ -72,6 +72,7 @@ func ApplyBaselineWithKeys(current, baseline Report, baselineKey, currentKey str
 	comparison := ComputeBaselineComparison(current, baseline)
 	comparison.BaselineKey = strings.TrimSpace(baselineKey)
 	comparison.CurrentKey = strings.TrimSpace(currentKey)
+	current.RemediationItems = annotateRemediationItems(current.RemediationItems, comparison)
 	current.BaselineComparison = &comparison
 	return current, nil
 }
@@ -138,6 +139,11 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 			comparison.Changed = append(comparison.Changed, delta)
 		}
 	}
+	comparison.RemediationItemDeltas,
+		comparison.NewRemediationItems,
+		comparison.RegressedRemediationItems,
+		comparison.ExistingRemediationItems,
+		comparison.RemovedRemediationItems = compareRemediationItems(current.RemediationItems, baseline.RemediationItems)
 
 	return comparison
 }
@@ -261,6 +267,7 @@ func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot
 func normalizeSnapshotReport(rep Report) Report {
 	normalized := rep
 	normalized.Repos = append([]RepoResult(nil), rep.Repos...)
+	normalized.RemediationItems = dedupeAndSortRemediationItems(rep.RemediationItems)
 	sort.Slice(normalized.Repos, func(i, j int) bool {
 		if normalized.Repos[i].Name != normalized.Repos[j].Name {
 			return normalized.Repos[i].Name < normalized.Repos[j].Name

@@ -14,6 +14,9 @@ import (
 const (
 	htmlTableBodyOpen  = "</tr></thead><tbody>"
 	htmlTableBodyClose = "</tbody></table>"
+	htmlPriorityCell   = "<td class=\"priority\">"
+	htmlStatusCell     = "<td class=\"status\">"
+	htmlWrapCell       = "<td class=\"wrap\">"
 )
 
 func FormatReport(reportData Report, format Format) (string, error) {
@@ -41,6 +44,9 @@ func formatCSV(reportData Report) (string, error) {
 		return "", err
 	}
 	if err := writeDashboardRepoRowsCSV(writer.Write, reportData.Repos); err != nil {
+		return "", err
+	}
+	if err := writeDashboardRemediationRowsCSV(writer.Write, reportData.RemediationItems); err != nil {
 		return "", err
 	}
 	if err := writeDashboardCrossRepoRowsCSV(writer.Write, reportData.CrossRepoDeps); err != nil {
@@ -129,6 +135,46 @@ func writeDashboardRepoRowsCSV(write func([]string) error, repos []RepoResult) e
 	return nil
 }
 
+func writeDashboardRemediationRowsCSV(write func([]string) error, items []RemediationItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if err := write(nil); err != nil {
+		return err
+	}
+	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
+		"remediation_id",
+		"baseline_status",
+		"repo",
+		"repo_path",
+		"dependency",
+		"category",
+		"severity",
+		"priority",
+		"evidence",
+		"suggested_action",
+	})); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
+			item.ID,
+			item.BaselineStatus,
+			item.Repo,
+			item.RepoPath,
+			item.Dependency,
+			item.Category,
+			item.Severity,
+			item.Priority,
+			joinDashboardCSVValues(item.Evidence),
+			item.SuggestedAction,
+		})); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeDashboardCrossRepoRowsCSV(write func([]string) error, dependencies []CrossRepoDependency) error {
 	if len(dependencies) == 0 {
 		return nil
@@ -187,7 +233,7 @@ func writeDashboardBaselineRowsCSV(write func([]string) error, comparison *Basel
 		}
 	}
 	if len(comparison.RepoDeltas) == 0 {
-		return nil
+		return writeDashboardBaselineRemediationRowsCSV(write, comparison.RemediationItemDeltas)
 	}
 	if err := write(nil); err != nil {
 		return err
@@ -230,6 +276,50 @@ func writeDashboardBaselineRowsCSV(write func([]string) error, comparison *Basel
 			return err
 		}
 	}
+	return writeDashboardBaselineRemediationRowsCSV(write, comparison.RemediationItemDeltas)
+}
+
+func writeDashboardBaselineRemediationRowsCSV(write func([]string) error, deltas []RemediationItemDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	if err := write(nil); err != nil {
+		return err
+	}
+	if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
+		"remediation_id",
+		"kind",
+		"repo",
+		"repo_path",
+		"dependency",
+		"category",
+		"severity",
+		"priority",
+		"baseline_severity",
+		"baseline_priority",
+		"evidence",
+		"suggested_action",
+	})); err != nil {
+		return err
+	}
+	for _, delta := range deltas {
+		if err := write(csvsanitize.EscapeLeadingFormulaRow([]string{
+			delta.ID,
+			string(delta.Kind),
+			delta.Repo,
+			delta.RepoPath,
+			delta.Dependency,
+			delta.Category,
+			delta.Severity,
+			delta.Priority,
+			delta.BaselineSeverity,
+			delta.BaselinePriority,
+			joinDashboardCSVValues(delta.Evidence),
+			delta.SuggestedAction,
+		})); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -249,6 +339,7 @@ func formatHTML(reportData Report) string {
 	buffer.WriteString(".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}")
 	buffer.WriteString(".metric{background:#f8fafc;border:1px solid #e2e8f0;padding:12px;border-radius:8px}")
 	buffer.WriteString(".metric strong{display:block;font-size:22px}")
+	buffer.WriteString(".priority{text-transform:capitalize;font-weight:600}.status{text-transform:capitalize;color:#334155}.wrap{max-width:360px;white-space:normal}")
 	buffer.WriteString("</style></head><body>")
 	buffer.WriteString("<h1>Lopper Org Dashboard</h1>")
 	buffer.WriteString("<p class=\"meta\">Generated at ")
@@ -265,6 +356,8 @@ func formatHTML(reportData Report) string {
 	buffer.WriteString(metricHTML("Runtime Trace Repos", fmt.Sprintf("%d", reportData.Summary.ReposWithRuntimeTraceData)))
 	buffer.WriteString(metricHTML("Runtime Regression Repos", fmt.Sprintf("%d", reportData.Summary.ReposWithRuntimeRegressions)))
 	buffer.WriteString("</div></section>")
+
+	buffer.WriteString(formatDashboardRemediationHTML(reportData.RemediationItems))
 
 	buffer.WriteString("<h2>Per-Repo Summary</h2><table><thead><tr>")
 	buffer.WriteString("<th>Repo</th><th>Path</th><th>Repo URL</th><th>Revision</th><th>Resolved Commit</th><th>Language</th><th>Deps</th><th>Waste Candidates</th><th>Waste %</th><th>Top Risk</th><th>Critical CVEs</th><th>Vuln Findings</th><th>Reachable Vulns</th><th>Denied Licenses</th><th>Runtime Trace</th><th>Runtime Regressions</th><th>Runtime Improvements</th><th>Error</th>")
@@ -313,6 +406,30 @@ func formatHTML(reportData Report) string {
 	return buffer.String()
 }
 
+func formatDashboardRemediationHTML(items []RemediationItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var buffer strings.Builder
+	buffer.WriteString("<h2>Remediation Queue</h2><table><thead><tr>")
+	buffer.WriteString("<th>Priority</th><th>Category</th><th>Repo</th><th>Dependency</th><th>Evidence</th><th>Suggested Action</th><th>Baseline</th><th>ID</th>")
+	buffer.WriteString(htmlTableBodyOpen)
+	for _, item := range items {
+		buffer.WriteString("<tr>")
+		buffer.WriteString(htmlPriorityCell + html.EscapeString(item.Priority) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.Category) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.Repo) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.Dependency) + "</td>")
+		buffer.WriteString(htmlWrapCell + html.EscapeString(strings.Join(item.Evidence, "; ")) + "</td>")
+		buffer.WriteString(htmlWrapCell + html.EscapeString(item.SuggestedAction) + "</td>")
+		buffer.WriteString(htmlStatusCell + html.EscapeString(item.BaselineStatus) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.ID) + "</td>")
+		buffer.WriteString("</tr>")
+	}
+	buffer.WriteString(htmlTableBodyClose)
+	return buffer.String()
+}
+
 func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 	if comparison == nil {
 		return ""
@@ -357,6 +474,32 @@ func formatDashboardBaselineHTML(comparison *BaselineComparison) string {
 		buffer.WriteString(htmlTableBodyClose)
 	}
 
+	buffer.WriteString(formatDashboardBaselineRemediationHTML(comparison.RemediationItemDeltas))
+
+	return buffer.String()
+}
+
+func formatDashboardBaselineRemediationHTML(deltas []RemediationItemDelta) string {
+	if len(deltas) == 0 {
+		return ""
+	}
+	var buffer strings.Builder
+	buffer.WriteString("<h2>Remediation Queue Baseline</h2><table><thead><tr>")
+	buffer.WriteString("<th>Kind</th><th>Priority</th><th>Baseline Priority</th><th>Category</th><th>Repo</th><th>Dependency</th><th>Suggested Action</th><th>ID</th>")
+	buffer.WriteString(htmlTableBodyOpen)
+	for _, delta := range deltas {
+		buffer.WriteString("<tr>")
+		buffer.WriteString(htmlStatusCell + html.EscapeString(string(delta.Kind)) + "</td>")
+		buffer.WriteString(htmlPriorityCell + html.EscapeString(delta.Priority) + "</td>")
+		buffer.WriteString(htmlPriorityCell + html.EscapeString(delta.BaselinePriority) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(delta.Category) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(delta.Repo) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(delta.Dependency) + "</td>")
+		buffer.WriteString(htmlWrapCell + html.EscapeString(delta.SuggestedAction) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(delta.ID) + "</td>")
+		buffer.WriteString("</tr>")
+	}
+	buffer.WriteString(htmlTableBodyClose)
 	return buffer.String()
 }
 
@@ -369,4 +512,12 @@ func formatRepoRevision(revision *RepoRevision) string {
 		return ""
 	}
 	return revision.Kind() + ":" + revision.Value()
+}
+
+func joinDashboardCSVValues(values []string) string {
+	escaped := make([]string, 0, len(values))
+	for _, value := range values {
+		escaped = append(escaped, csvsanitize.EscapeLeadingFormula(value))
+	}
+	return strings.Join(escaped, "|")
 }

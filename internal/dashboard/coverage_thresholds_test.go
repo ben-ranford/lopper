@@ -19,6 +19,10 @@ func (f *failOnCSVWrite) Write(_ []string) error {
 	return nil
 }
 
+func failingCSVWriter(failOn int) func([]string) error {
+	return (&failOnCSVWrite{failOn: failOn}).Write
+}
+
 func TestWriteDashboardCrossRepoRowsCSVHeaderError(t *testing.T) {
 	writer := &failOnCSVWrite{failOn: 2}
 
@@ -62,22 +66,52 @@ func TestRepoRevisionHelpersCoverAllKinds(t *testing.T) {
 	}
 }
 
-func TestDashboardCSVWriterErrorBranches(t *testing.T) {
-	if err := writeDashboardSummaryCSV((&failOnCSVWrite{failOn: 1}).Write, Report{}); err == nil {
-		t.Fatal("expected summary writer error")
+func requireCSVWriterError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected writer error")
 	}
-	if err := writeDashboardRepoRowsCSV((&failOnCSVWrite{failOn: 1}).Write, nil); err == nil {
-		t.Fatal("expected repo header writer error")
-	}
-	if err := writeDashboardRepoRowsCSV((&failOnCSVWrite{failOn: 2}).Write, []RepoResult{{Name: "api"}}); err == nil {
-		t.Fatal("expected repo row writer error")
-	}
-	if err := writeDashboardCrossRepoRowsCSV((&failOnCSVWrite{failOn: 1}).Write, []CrossRepoDependency{{Name: "shared"}}); err == nil {
-		t.Fatal("expected cross-repo separator writer error")
-	}
-	if err := writeDashboardCrossRepoRowsCSV((&failOnCSVWrite{failOn: 3}).Write, []CrossRepoDependency{{Name: "shared"}}); err == nil {
-		t.Fatal("expected cross-repo row writer error")
-	}
+}
+
+func TestDashboardSummaryAndRepoCSVWriterErrorBranches(t *testing.T) {
+	requireCSVWriterError(t, writeDashboardSummaryCSV(failingCSVWriter(1), Report{}))
+	requireCSVWriterError(t, writeDashboardRepoRowsCSV(failingCSVWriter(1), nil))
+	requireCSVWriterError(t, writeDashboardRepoRowsCSV(failingCSVWriter(2), []RepoResult{{Name: "api"}}))
+}
+
+func TestDashboardCrossRepoCSVWriterErrorBranches(t *testing.T) {
+	deps := []CrossRepoDependency{{Name: "shared"}}
+
+	requireCSVWriterError(t, writeDashboardCrossRepoRowsCSV(failingCSVWriter(1), deps))
+	requireCSVWriterError(t, writeDashboardCrossRepoRowsCSV(failingCSVWriter(3), deps))
+}
+
+func TestDashboardRemediationCSVWriterErrorBranches(t *testing.T) {
+	items := []RemediationItem{{ID: "rqi-test"}}
+
+	requireCSVWriterError(t, writeDashboardRemediationRowsCSV(failingCSVWriter(1), items))
+	requireCSVWriterError(t, writeDashboardRemediationRowsCSV(failingCSVWriter(2), items))
+	requireCSVWriterError(t, writeDashboardRemediationRowsCSV(failingCSVWriter(3), items))
+}
+
+func TestDashboardBaselineCSVWriterErrorBranches(t *testing.T) {
+	keys := &BaselineComparison{BaselineKey: "base", CurrentKey: "head"}
+	summary := &BaselineComparison{BaselineKey: "base"}
+	repos := &BaselineComparison{BaselineKey: "base", RepoDeltas: []RepoDelta{{Name: "api"}}}
+
+	requireCSVWriterError(t, writeDashboardBaselineRowsCSV(failingCSVWriter(2), keys))
+	requireCSVWriterError(t, writeDashboardBaselineRowsCSV(failingCSVWriter(3), keys))
+	requireCSVWriterError(t, writeDashboardBaselineRowsCSV(failingCSVWriter(4), summary))
+	requireCSVWriterError(t, writeDashboardBaselineRowsCSV(failingCSVWriter(13), repos))
+	requireCSVWriterError(t, writeDashboardBaselineRowsCSV(failingCSVWriter(14), repos))
+}
+
+func TestDashboardBaselineRemediationCSVWriterErrorBranches(t *testing.T) {
+	items := []RemediationItemDelta{{ID: "rqi-test"}}
+
+	requireCSVWriterError(t, writeDashboardBaselineRemediationRowsCSV(failingCSVWriter(1), items))
+	requireCSVWriterError(t, writeDashboardBaselineRemediationRowsCSV(failingCSVWriter(2), items))
+	requireCSVWriterError(t, writeDashboardBaselineRemediationRowsCSV(failingCSVWriter(3), items))
 }
 
 func TestFormatReportCSVRevisionKinds(t *testing.T) {
