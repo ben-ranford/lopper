@@ -259,6 +259,24 @@ lopper tui \
   --baseline-key commit:abc123
 ```
 
+Inside the TUI, open a dependency to inspect codemod suggestions and apply safe suggestions without leaving the session:
+
+```text
+open js-ts:lodash
+apply-codemod --confirm
+```
+
+`apply-codemod` refuses dirty git worktrees by default; add `--allow-dirty` only when you intentionally want to apply into a dirty tree. The action prints applied, skipped, and failed files plus the rollback backup path. Baselines can also be saved and compared in-session:
+
+```text
+save-baseline
+save-baseline release-candidate
+compare-baseline label:release-candidate
+compare-baseline --file baseline.json
+```
+
+In-session baseline commands default to `.artifacts/lopper-baselines` and `commit:<HEAD>` when no store or label/key is provided.
+
 ## Runtime trace annotations
 
 ### JS/TS

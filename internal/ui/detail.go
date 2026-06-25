@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/terminal"
 )
 
@@ -135,7 +136,7 @@ func printDependencySections(out io.Writer, dep detailDependencyView) error {
 		func(w io.Writer) error { return printRuntimeDelta(w, dep.RuntimeDelta) },
 		func(w io.Writer) error { return printRiskCues(w, dep.RiskCues) },
 		func(w io.Writer) error { return printRecommendations(w, dep.Recommendations) },
-		func(w io.Writer) error { return printCodemod(w, dep.Codemod) },
+		func(w io.Writer) error { return printCodemod(w, dep.Codemod, detailCodemodActionTarget(dep)) },
 		func(w io.Writer) error { return printImportList(w, "Used imports", dep.UsedImports) },
 		func(w io.Writer) error { return printImportList(w, "Unused imports", dep.UnusedImports) },
 		func(w io.Writer) error { return printExportsList(w, "Unused exports", dep.UnusedExports) },
@@ -230,7 +231,7 @@ func printRecommendations(out io.Writer, recommendations []detailRecommendationV
 	})
 }
 
-func printCodemod(out io.Writer, codemod *detailCodemodView) error {
+func printCodemod(out io.Writer, codemod *detailCodemodView, actionTargets ...string) error {
 	if err := writeln(out, "Codemod preview"); err != nil {
 		return err
 	}
@@ -240,28 +241,111 @@ func printCodemod(out io.Writer, codemod *detailCodemodView) error {
 		}
 		return writeln(out, "")
 	}
-	if codemod.Mode != "" {
-		if err := writef(out, "  - mode: %s\n", codemod.Mode); err != nil {
-			return err
-		}
-	}
-	if err := writef(out, "  - suggestions: %d\n", len(codemod.Suggestions)); err != nil {
+
+	if err := printCodemodMode(out, codemod.Mode); err != nil {
 		return err
 	}
-	for _, suggestion := range codemod.Suggestions {
-		if err := writef(out, "    - %s:%d %s -> %s\n", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule); err != nil {
-			return err
-		}
-	}
-	if err := writef(out, "  - skips: %d\n", len(codemod.Skips)); err != nil {
+	if err := printCodemodSuggestions(out, codemod.Suggestions); err != nil {
 		return err
 	}
-	for _, skip := range codemod.Skips {
-		if err := writef(out, "    - %s:%d [%s] %s\n", skip.File, skip.Line, skip.ReasonCode, skip.Message); err != nil {
-			return err
-		}
+	if err := printCodemodSkips(out, codemod.Skips); err != nil {
+		return err
+	}
+	if err := printCodemodActionHint(out, codemod.Suggestions, actionTargets...); err != nil {
+		return err
+	}
+	if err := printDetailCodemodApply(out, codemod.Apply); err != nil {
+		return err
 	}
 	return writeln(out, "")
+}
+
+func printCodemodMode(out io.Writer, mode string) error {
+	if mode == "" {
+		return nil
+	}
+	return writef(out, "  - mode: %s\n", mode)
+}
+
+func printCodemodSuggestions(out io.Writer, suggestions []detailCodemodSuggestionView) error {
+	lines := make([]string, 0, len(suggestions))
+	for _, suggestion := range suggestions {
+		lines = append(lines, fmt.Sprintf("%s:%d %s -> %s", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule))
+	}
+	return printCodemodLineCollection(out, "suggestions", lines)
+}
+
+func printCodemodSkips(out io.Writer, skips []detailCodemodSkipView) error {
+	lines := make([]string, 0, len(skips))
+	for _, skip := range skips {
+		lines = append(lines, fmt.Sprintf("%s:%d [%s] %s", skip.File, skip.Line, skip.ReasonCode, skip.Message))
+	}
+	return printCodemodLineCollection(out, "skips", lines)
+}
+
+func printCodemodLineCollection(out io.Writer, label string, lines []string) error {
+	if err := writef(out, "  - %s: %d\n", label, len(lines)); err != nil {
+		return err
+	}
+	for _, line := range lines {
+		if err := writef(out, "    - %s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func printCodemodActionHint(out io.Writer, suggestions []detailCodemodSuggestionView, actionTargets ...string) error {
+	if len(suggestions) == 0 {
+		return nil
+	}
+	actionTarget := firstNonEmpty(actionTargets...)
+	if actionTarget == "" {
+		return nil
+	}
+	return writef(out, "  - action: apply-codemod %s --confirm\n", actionTarget)
+}
+
+func detailCodemodActionTarget(dep detailDependencyView) string {
+	if strings.TrimSpace(dep.Name) == "" {
+		return ""
+	}
+	if strings.TrimSpace(dep.Language) == "" {
+		return dep.Name
+	}
+	return dep.Language + ":" + dep.Name
+}
+
+func printDetailCodemodApply(out io.Writer, apply *report.CodemodApplyReport) error {
+	if apply == nil {
+		return nil
+	}
+	if err := writeln(out, "  - apply results:"); err != nil {
+		return err
+	}
+	lines := []string{
+		fmt.Sprintf("    applied: %d file(s), %d patch(es)", apply.AppliedFiles, apply.AppliedPatches),
+		fmt.Sprintf("    skipped: %d file(s), %d patch(es)", apply.SkippedFiles, apply.SkippedPatches),
+		fmt.Sprintf("    failed: %d file(s), %d patch(es)", apply.FailedFiles, apply.FailedPatches),
+	}
+	if apply.BackupPath != "" {
+		lines = append(lines, fmt.Sprintf("    backup: %s", apply.BackupPath))
+	}
+	for _, line := range lines {
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	for _, result := range apply.Results {
+		line := fmt.Sprintf("    - %s %s (%d patch(es))", result.Status, result.File, result.PatchCount)
+		if strings.TrimSpace(result.Message) != "" {
+			line += ": " + result.Message
+		}
+		if err := writeln(out, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func printRuntimeUsage(out io.Writer, usage *detailRuntimeUsageView) error {

@@ -21,8 +21,8 @@ func newSummaryCommandState() *summaryState {
 	return &summaryState{page: 2, pageSize: 10, sortMode: sortByWaste}
 }
 
-func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
-	state := &summaryState{page: 2, pageSize: 10, sortMode: sortByWaste}
+func TestSummaryCommandHandlersHelp(t *testing.T) {
+	state := newSummaryCommandState()
 	var out bytes.Buffer
 
 	if !applySummaryCommand(state, "help", &out) || !state.showHelp {
@@ -31,15 +31,26 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatalf("expected help command to rely on re-render instead of direct output")
 	}
-	if !strings.Contains(summaryHelpText(), "sort name|alpha|waste") {
-		t.Fatalf("expected help text to list alpha sort alias")
-	}
+	assertSummaryHelpContains(t, "sort name|alpha|waste")
+	assertSummaryHelpContains(t, "apply-codemod")
+	assertSummaryHelpContains(t, "save-baseline")
+	assertSummaryHelpContains(t, "compare-baseline")
+}
+
+func TestSummaryCommandHandlersFiltering(t *testing.T) {
+	state := newSummaryCommandState()
+
 	if !applySummaryCommand(state, "filter lodash", io.Discard) || state.filter != "lodash" || state.page != 1 {
 		t.Fatalf("expected filter command to set filter and reset page")
 	}
 	if !applySummaryCommand(state, "filter", io.Discard) || state.filter != "" {
 		t.Fatalf("expected bare filter command to clear filter")
 	}
+}
+
+func TestSummaryCommandHandlersSorting(t *testing.T) {
+	state := newSummaryCommandState()
+
 	if !applySummaryCommand(state, "sort name", io.Discard) || state.sortMode != sortByName {
 		t.Fatalf("expected sort name to apply")
 	}
@@ -51,6 +62,14 @@ func TestSummaryCommandHandlersHelpAndFiltering(t *testing.T) {
 	}
 	if applySummaryCommand(state, "sort nope", io.Discard) {
 		t.Fatalf("expected invalid sort command to fail")
+	}
+}
+
+func assertSummaryHelpContains(t *testing.T, expected string) {
+	t.Helper()
+
+	if !strings.Contains(summaryHelpText(), expected) {
+		t.Fatalf("expected help text to include %q", expected)
 	}
 }
 

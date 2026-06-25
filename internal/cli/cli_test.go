@@ -280,4 +280,7 @@ func TestUsageReturnsText(t *testing.T) {
 	if !strings.Contains(Usage(), "powershell") {
 		t.Fatalf("expected usage text to include powershell adapter id")
 	}
+	if !strings.Contains(Usage(), "apply-codemod [dep] --confirm") || !strings.Contains(Usage(), "compare-baseline <key|file>") {
+		t.Fatalf("expected usage text to include TUI action commands")
+	}
 }

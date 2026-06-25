@@ -82,7 +82,7 @@ func TestRenderSummaryOutputHelpIsOneShot(t *testing.T) {
 	if strings.Contains(out.String(), "Commands:\n  filter <text>") {
 		t.Fatalf("expected second render to omit expanded help, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "Commands: help | open <dependency> | q") {
+	if !strings.Contains(out.String(), "Commands: help | open <dependency> | apply-codemod | save-baseline | compare-baseline | q") {
 		t.Fatalf("expected second render to include compact command hint, got %q", out.String())
 	}
 }

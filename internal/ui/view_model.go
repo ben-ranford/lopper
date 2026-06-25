@@ -245,6 +245,7 @@ type detailCodemodView struct {
 	Mode        string
 	Suggestions []detailCodemodSuggestionView
 	Skips       []detailCodemodSkipView
+	Apply       *report.CodemodApplyReport
 }
 
 type detailCodemodSuggestionView struct {
@@ -389,6 +390,7 @@ func mapDetailCodemod(codemod *report.CodemodReport) *detailCodemodView {
 		Mode:        codemod.Mode,
 		Suggestions: mapDetailCodemodSuggestions(codemod.Suggestions),
 		Skips:       mapDetailCodemodSkips(codemod.Skips),
+		Apply:       codemod.Apply,
 	}
 }
 
