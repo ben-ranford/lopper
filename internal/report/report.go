@@ -14,7 +14,10 @@ const (
 	FormatJSON      Format = "json"
 	FormatSARIF     Format = "sarif"
 	FormatPRComment Format = "pr-comment"
+	FormatCycloneDX Format = "cyclonedx-json"
 )
+
+const SBOMAttestationExportsPreviewFeature = "sbom-attestation-exports-preview"
 
 var ErrUnknownFormat = errors.New("unknown format")
 
@@ -30,6 +33,8 @@ func ParseFormat(value string) (Format, error) {
 		return FormatSARIF, nil
 	case string(FormatPRComment):
 		return FormatPRComment, nil
+	case string(FormatCycloneDX):
+		return FormatCycloneDX, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrUnknownFormat, value)
 	}

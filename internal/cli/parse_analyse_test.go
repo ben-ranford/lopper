@@ -128,6 +128,7 @@ func TestParseArgsAnalyseTop(t *testing.T) {
 		{name: "json", format: "json", want: report.FormatJSON},
 		{name: "sarif", format: "sarif", want: report.FormatSARIF},
 		{name: "pr_comment", format: "pr-comment", want: report.FormatPRComment},
+		{name: "cyclonedx_json", format: "cyclonedx-json", want: report.FormatCycloneDX},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

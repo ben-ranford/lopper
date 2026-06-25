@@ -10,6 +10,10 @@ import (
 type analyseReportStage func(context.Context, report.Report) (report.Report, error)
 
 func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
+	if err := validateAnalyseFormatFeatures(req.Analyse); err != nil {
+		return "", err
+	}
+
 	prepared, err := prepareAnalyseExecution(ctx, req)
 	if err != nil {
 		return "", err
@@ -75,6 +79,12 @@ func analyseValidationStage(validate func(report.Report) error) analyseReportSta
 
 func (a *App) completeAnalyseExecution(ctx context.Context, req AnalyseRequest, reportData report.Report, runErr error) (string, error) {
 	a.appendNotificationWarnings(ctx, req.Notifications, &reportData, buildNotificationOutcome(reportData, runErr))
+	if err := validateAnalyseFormatFeatures(req); err != nil {
+		if runErr != nil {
+			return "", runErr
+		}
+		return "", err
+	}
 	formatted, err := a.Formatter.Format(reportData, req.Format)
 	if err != nil {
 		if runErr != nil {

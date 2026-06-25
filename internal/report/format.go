@@ -22,6 +22,8 @@ func (f *Formatter) Format(report Report, format Format) (string, error) {
 		return formatSARIF(report)
 	case FormatPRComment:
 		return formatPRComment(report), nil
+	case FormatCycloneDX:
+		return formatCycloneDXJSON(report)
 	default:
 		return "", ErrUnknownFormat
 	}

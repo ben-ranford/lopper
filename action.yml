@@ -32,7 +32,7 @@ inputs:
     required: false
     default: package
   format:
-    description: 'Output format: table, csv, json, sarif, or pr-comment.'
+    description: 'Output format: table, csv, json, sarif, pr-comment, or cyclonedx-json. cyclonedx-json requires enable-feature=sbom-attestation-exports-preview.'
     required: false
     default: table
   output:

@@ -212,7 +212,7 @@ func TestUsageReturnsText(t *testing.T) {
 	if !strings.Contains(Usage(), "lopper mcp") {
 		t.Fatalf("expected usage text to include mcp command")
 	}
-	if !strings.Contains(Usage(), "--format table|csv|json|sarif|pr-comment") {
+	if !strings.Contains(Usage(), "--format table|csv|json|sarif|pr-comment|cyclonedx-json") {
 		t.Fatalf("expected usage text to include analyse csv format")
 	}
 	if !strings.Contains(Usage(), "Supported IDs: auto, all, js-ts, python, cpp, jvm, kotlin-android") {
