@@ -46,6 +46,69 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	assertDependencyReport(t, dep, dependencyReportExpectation{language: "python", used: 1, total: 2})
 }
 
+func TestAdapterAnalyseSuggestOnlyPythonUnusedImportCodemod(t *testing.T) {
+	source := "import requests as rq\n" +
+		"from requests import get, post\n" +
+		"from requests import Session, adapters\n" +
+		"Session()\n"
+
+	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "requests", true)
+	codemod := dep.Codemod
+	if codemod == nil {
+		t.Fatal("expected python codemod report in suggest-only mode")
+	}
+	if codemod.Mode != "suggest-only" {
+		t.Fatalf("expected suggest-only mode, got %q", codemod.Mode)
+	}
+	if len(codemod.Suggestions) != 2 {
+		t.Fatalf("expected two safe suggestions, got %#v", codemod.Suggestions)
+	}
+
+	first := codemod.Suggestions[0]
+	if first.Language != "python" || first.Dependency != "requests" || first.File != testMainPy || first.TargetFile != testMainPy {
+		t.Fatalf("expected language-neutral suggestion metadata, got %#v", first)
+	}
+	if !first.DeleteLine || first.Replacement != "" || first.Original != "import requests as rq" {
+		t.Fatalf("expected whole-line import deletion suggestion, got %#v", first)
+	}
+	if !strings.Contains(first.Patch, "-import requests as rq") || !slices.Contains(first.SafetyReasonCodes, pythonCodemodReasonAllImportsUnused) {
+		t.Fatalf("expected delete patch and safety reason codes, got %#v", first)
+	}
+
+	if len(codemod.Skips) != 1 {
+		t.Fatalf("expected one unsafe skip for mixed used/unused line, got %#v", codemod.Skips)
+	}
+	if codemod.Skips[0].ReasonCode != pythonCodemodReasonMixedUsedLine || codemod.Skips[0].ImportName != "adapters" {
+		t.Fatalf("unexpected skip payload: %#v", codemod.Skips[0])
+	}
+}
+
+func TestAdapterAnalyseSuggestOnlyPythonUnsafeSkips(t *testing.T) {
+	source := "import requests, os\n" +
+		"import requests  # keep this context\n"
+
+	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "requests", true)
+	if dep.Codemod == nil {
+		t.Fatal("expected python codemod report")
+	}
+	if len(dep.Codemod.Suggestions) != 0 {
+		t.Fatalf("expected unsafe lines to skip suggestions, got %#v", dep.Codemod.Suggestions)
+	}
+
+	reasons := make(map[string]bool)
+	for _, skip := range dep.Codemod.Skips {
+		if skip.Language != "python" || skip.Dependency != "requests" || skip.TargetFile != testMainPy {
+			t.Fatalf("expected skip metadata, got %#v", skip)
+		}
+		reasons[skip.ReasonCode] = true
+	}
+	for _, want := range []string{pythonCodemodReasonMixedDependencyLine, pythonCodemodReasonInlineComment} {
+		if !reasons[want] {
+			t.Fatalf("expected skip reason %q in %#v", want, dep.Codemod.Skips)
+		}
+	}
+}
+
 func TestAdapterAnalyseDependencyUsesKnownImportAliases(t *testing.T) {
 	bs4Dependency := analysePythonDependency(t, testAliasImportsPy, "beautifulsoup4")
 	assertDependencyReport(t, bs4Dependency, dependencyReportExpectation{name: "beautifulsoup4", language: "python", used: 1, total: 1})
@@ -124,12 +187,20 @@ func assertDependencyNamesInclude(t *testing.T, names []string, dependencies ...
 
 func analysePythonDependency(t *testing.T, source string, dependency string) report.DependencyReport {
 	t.Helper()
+	return analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, dependency, false)
+}
+
+func analysePythonDependencyWithOptions(t *testing.T, files map[string]string, dependency string, suggestOnly bool) report.DependencyReport {
+	t.Helper()
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
+	for name, source := range files {
+		testutil.MustWriteFile(t, filepath.Join(repo, name), source)
+	}
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: dependency,
+		RepoPath:    repo,
+		Dependency:  dependency,
+		SuggestOnly: suggestOnly,
 	})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)

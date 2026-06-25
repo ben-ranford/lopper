@@ -69,6 +69,56 @@ func TestApplyCodemodIfNeededSuccessWritesRollbackAndSummary(t *testing.T) {
 	assertRollbackArtifact(t, repo, applyReport.BackupPath, "lodash", original)
 }
 
+func TestApplyCodemodIfNeededDeleteLineWritesRollbackAndSummary(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "main.py")
+	original := "import requests\r\nprint('ok')\n"
+	writeTextFile(t, sourcePath, original, 0o644)
+
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name:     "requests",
+				Language: "python",
+				Codemod: &report.CodemodReport{
+					Mode: codemodSuggestOnlyMode,
+					Suggestions: []report.CodemodSuggestion{
+						{
+							Language:          "python",
+							Dependency:        "requests",
+							File:              "main.py",
+							TargetFile:        "main.py",
+							Line:              1,
+							ImportName:        "requests",
+							FromModule:        "requests",
+							Original:          "import requests",
+							Replacement:       "",
+							Patch:             "--- a/main.py\n+++ b/main.py\n@@ -1,1 +0,0 @@\n-import requests",
+							SafetyReasonCodes: []string{"all-imports-unused", "single-line-import"},
+							DeleteLine:        true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	updated, err := applyCodemodIfNeeded(context.Background(), reportData, repo, AnalyseRequest{Dependency: "requests", ApplyCodemod: true}, time.Date(2026, time.March, 13, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("apply python codemod: %v", err)
+	}
+	if got := readTextFile(t, sourcePath); got != "print('ok')\n" {
+		t.Fatalf("expected import line deletion, got %q", got)
+	}
+
+	applyReport := requireCodemodApplyReport(t, updated)
+	assertCodemodApplyCounts(t, applyReport, codemodApplyCounts{
+		AppliedFiles:   1,
+		AppliedPatches: 1,
+	})
+	assertRollbackArtifact(t, repo, applyReport.BackupPath, "requests", original)
+}
+
 func TestApplyCodemodIfNeededMismatchReturnsErrorAndNoMutation(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, indexJSFile)

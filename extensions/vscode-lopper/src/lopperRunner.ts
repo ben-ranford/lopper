@@ -570,6 +570,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     binaryPath: string,
     folder: vscode.WorkspaceFolder,
     dependency: LopperDependencyReport,
+    language: LopperLanguage,
     scopeMode: LopperScopeMode,
     options: WorkspaceAnalysisRequest,
     timeoutMs: number | undefined,
@@ -582,7 +583,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
         binaryPath,
         this.buildAnalysisArgs(folder, {
           format: "json",
-          requestedLanguage: "js-ts",
+          requestedLanguage: language,
           scopeMode,
           dependencyName: dependency.name,
           signal: options.signal,
@@ -618,40 +619,42 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     context: CodemodFetchContext,
   ): Promise<Map<string, LopperCodemodReport>> {
     const { binarySignature, requestedLanguage, scopeMode, timeoutMs } = context;
-    const dependencyByCacheKey = new Map<string, LopperDependencyReport>();
+    const dependencyByCacheKey = new Map<string, { dependency: LopperDependencyReport; language: LopperLanguage }>();
     const cacheKeys: string[] = [];
     for (const dependency of dependencies) {
-      if (!shouldFetchCodemod(dependency, requestedLanguage)) {
+      const language = codemodLanguageForDependency(dependency, requestedLanguage);
+      if (!language) {
         continue;
       }
 
-      const cacheKey = codemodCacheKey(binarySignature, scopeMode, dependency.name);
+      const cacheKey = codemodCacheKey(binarySignature, scopeMode, language, dependency.name);
       if (dependencyByCacheKey.has(cacheKey)) {
         continue;
       }
 
-      dependencyByCacheKey.set(cacheKey, dependency);
+      dependencyByCacheKey.set(cacheKey, { dependency, language });
       cacheKeys.push(cacheKey);
     }
 
     const codemodByCacheKey = new Map<string, LopperCodemodReport | undefined>();
     await runWithConcurrency(cacheKeys, codemodAnalysisConcurrency(options), async (cacheKey) => {
-      const dependency = dependencyByCacheKey.get(cacheKey);
-      if (!dependency) {
+      const item = dependencyByCacheKey.get(cacheKey);
+      if (!item) {
         return;
       }
 
-      const codemod = await this.fetchCodemod(binaryPath, folder, dependency, scopeMode, options, timeoutMs);
+      const codemod = await this.fetchCodemod(binaryPath, folder, item.dependency, item.language, scopeMode, options, timeoutMs);
       codemodByCacheKey.set(cacheKey, codemod);
     });
 
     const codemodsByDependency = new Map<string, LopperCodemodReport>();
     for (const dependency of dependencies) {
-      if (!shouldFetchCodemod(dependency, requestedLanguage)) {
+      const language = codemodLanguageForDependency(dependency, requestedLanguage);
+      if (!language) {
         continue;
       }
 
-      const codemod = codemodByCacheKey.get(codemodCacheKey(binarySignature, scopeMode, dependency.name));
+      const codemod = codemodByCacheKey.get(codemodCacheKey(binarySignature, scopeMode, language, dependency.name));
       if (codemod) {
         codemodsByDependency.set(dependency.name, codemod);
       }
@@ -671,8 +674,8 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
   }
 }
 
-function codemodCacheKey(binarySignature: string, scopeMode: LopperScopeMode, dependencyName: string): string {
-  return [binarySignature, scopeMode, dependencyName].join("\0");
+function codemodCacheKey(binarySignature: string, scopeMode: LopperScopeMode, language: LopperLanguage, dependencyName: string): string {
+  return [binarySignature, scopeMode, language, dependencyName].join("\0");
 }
 
 function codemodAnalysisConcurrency(options: WorkspaceAnalysisRequest): number {
@@ -705,12 +708,19 @@ async function runWithConcurrency<T>(
   );
 }
 
-function shouldFetchCodemod(dependency: LopperDependencyReport, requestedLanguage: LopperLanguage): boolean {
+function codemodLanguageForDependency(dependency: LopperDependencyReport, requestedLanguage: LopperLanguage): LopperLanguage | undefined {
   const dependencyLanguage = dependency.language?.trim().toLowerCase();
-  if (dependencyLanguage) {
-    return dependencyLanguage === "js-ts";
+  if (isCodemodCapableLanguage(dependencyLanguage)) {
+    return dependencyLanguage;
   }
-  return requestedLanguage === "js-ts";
+  if (isCodemodCapableLanguage(requestedLanguage)) {
+    return requestedLanguage;
+  }
+  return undefined;
+}
+
+function isCodemodCapableLanguage(value: string | undefined): value is LopperLanguage {
+  return value === "js-ts" || value === "python";
 }
 
 function normalizeScopeMode(scopeMode: LopperScopeMode | undefined): LopperScopeMode {

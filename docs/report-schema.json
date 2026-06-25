@@ -430,14 +430,22 @@
       "additionalProperties": false,
       "required": ["file", "line", "importName", "fromModule", "toModule", "original", "replacement", "patch"],
       "properties": {
+        "language": { "type": "string" },
+        "dependency": { "type": "string" },
         "file": { "type": "string" },
+        "targetFile": { "type": "string" },
         "line": { "type": "integer", "minimum": 1 },
         "importName": { "type": "string" },
         "fromModule": { "type": "string" },
         "toModule": { "type": "string" },
         "original": { "type": "string" },
         "replacement": { "type": "string" },
-        "patch": { "type": "string" }
+        "patch": { "type": "string" },
+        "safetyReasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "deleteLine": { "type": "boolean" }
       }
     },
     "codemodSkip": {
@@ -445,7 +453,10 @@
       "additionalProperties": false,
       "required": ["file", "line", "importName", "module", "reasonCode", "message"],
       "properties": {
+        "language": { "type": "string" },
+        "dependency": { "type": "string" },
         "file": { "type": "string" },
+        "targetFile": { "type": "string" },
         "line": { "type": "integer", "minimum": 1 },
         "importName": { "type": "string" },
         "module": { "type": "string" },

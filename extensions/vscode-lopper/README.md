@@ -1,7 +1,7 @@
 # Lopper for VS Code
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098ff?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=BenRanford.vscode-lopper)
 
-Lopper brings dependency-surface analysis into VS Code with inline diagnostics and hover context across supported adapters, including Kotlin Android and PowerShell, plus safe JS/TS quick fixes powered by the `lopper` CLI.
+Lopper brings dependency-surface analysis into VS Code with inline diagnostics and hover context across supported adapters, including Kotlin Android and PowerShell, plus safe remediation quick fixes powered by the `lopper` CLI.
 
 ## What it does
 
@@ -9,8 +9,8 @@ Lopper brings dependency-surface analysis into VS Code with inline diagnostics a
 - Shows dependency usage, license, provenance, risk cues, and recommendation context in hovers.
 - Surfaces a dependency explorer sidebar with folder summaries, dependency drilldown, and source-navigation links.
 - Supports multi-root workspaces by analyzing each workspace folder independently.
-- Offers deterministic quick fixes for safe `--suggest-only` JS/TS subpath rewrites.
-- Applies available safe JS/TS codemods through the guarded CLI flow and reports rollback artifact paths.
+- Offers deterministic quick fixes for safe `--suggest-only` remediation previews.
+- Applies available safe codemods through the guarded CLI flow and reports rollback artifact paths.
 - Supports `package`, `repo`, and `changed-packages` analysis scope modes directly in VS Code.
 - Keeps a status-bar summary and manual refresh commands, including force-fresh, runtime-aware, baseline, and export workflows.
 

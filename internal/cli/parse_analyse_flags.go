@@ -66,8 +66,8 @@ func newAnalyseFlagSet(req app.Request) (*flag.FlagSet, analyseFlagValues) {
 	values := analyseFlagValues{
 		repoPath:                       fs.String("repo", req.RepoPath, "repository path"),
 		top:                            fs.Int("top", 0, "top N dependencies"),
-		suggestOnly:                    fs.Bool("suggest-only", false, "generate codemod patch previews without mutating source files"),
-		applyCodemod:                   fs.Bool("apply-codemod", req.Analyse.ApplyCodemod, "apply deterministic codemod patch previews for safe JS/TS subpath migrations"),
+		suggestOnly:                    fs.Bool("suggest-only", false, "generate safe remediation patch previews without mutating source files"),
+		applyCodemod:                   fs.Bool("apply-codemod", req.Analyse.ApplyCodemod, "apply deterministic codemod patch previews for safe remediation suggestions"),
 		applyCodemodConfirm:            fs.Bool("apply-codemod-confirm", false, "confirm codemod apply mode will mutate source files"),
 		allowDirty:                     fs.Bool("allow-dirty", req.Analyse.AllowDirty, "allow codemod apply mode to run in a dirty git worktree"),
 		scopeMode:                      fs.String("scope-mode", req.Analyse.ScopeMode, "analysis scope mode"),

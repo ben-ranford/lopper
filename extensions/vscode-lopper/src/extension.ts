@@ -1343,20 +1343,21 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   ): void {
     const codemod = analysis.codemodsByDependency.get(dependency.name);
     for (const suggestion of codemod?.suggestions ?? []) {
-      const resolvedFilePath = resolveWorkspaceFilePath(analysis.folder.uri.fsPath, suggestion.file);
+      const suggestionFile = suggestion.targetFile ?? suggestion.file;
+      const resolvedFilePath = resolveWorkspaceFilePath(analysis.folder.uri.fsPath, suggestionFile);
       if (!resolvedFilePath) {
         this.output.appendLine(
-          `[refresh:skipped] ignoring out-of-workspace codemod suggestion for ${dependency.name}: ${suggestion.file}`,
+          `[refresh:skipped] ignoring out-of-workspace codemod suggestion for ${dependency.name}: ${suggestionFile}`,
         );
         continue;
       }
       const uri = vscode.Uri.file(resolvedFilePath);
       const lineIndex = Math.max(0, suggestion.line - 1);
       const range = new vscode.Range(lineIndex, 0, lineIndex, suggestion.original.length);
-      const key = this.metadataKey(dependency.name, "codemod", suggestion.file, suggestion.line, suggestion.importName);
+      const key = this.metadataKey(dependency.name, "codemod", suggestionFile, suggestion.line, suggestion.importName);
       const diagnostic = new vscode.Diagnostic(
         range,
-        `Use subpath import ${suggestion.toModule} for ${suggestion.importName} to keep imports narrow and deterministic.`,
+        formatCodemodSuggestionDiagnostic(suggestion),
         vscode.DiagnosticSeverity.Information,
       );
       diagnostic.source = "lopper";
@@ -2123,15 +2124,39 @@ function createInlineCodemodCodeAction(
   }
 
   const action = new vscode.CodeAction(
-    `Use ${suggestion.toModule} subpath import`,
+    formatInlineCodemodActionTitle(suggestion),
     vscode.CodeActionKind.QuickFix,
   );
   action.isPreferred = codemodSuggestionCount <= 1;
   action.diagnostics = [diagnostic];
   const edit = new vscode.WorkspaceEdit();
-  edit.replace(document.uri, targetLine.range, suggestion.replacement);
+  if (suggestion.deleteLine) {
+    edit.delete(document.uri, targetLine.rangeIncludingLineBreak);
+  } else {
+    edit.replace(document.uri, targetLine.range, suggestion.replacement);
+  }
   action.edit = edit;
   return action;
+}
+
+function formatCodemodSuggestionDiagnostic(suggestion: LopperCodemodSuggestion): string {
+  if (suggestion.deleteLine) {
+    return `Remove unused import ${suggestion.importName} from ${suggestion.fromModule}.`;
+  }
+  if (suggestion.toModule) {
+    return `Apply safe import remediation for ${suggestion.importName}: ${suggestion.fromModule} -> ${suggestion.toModule}.`;
+  }
+  return `Apply safe remediation for ${suggestion.importName}.`;
+}
+
+function formatInlineCodemodActionTitle(suggestion: LopperCodemodSuggestion): string {
+  if (suggestion.deleteLine) {
+    return `Remove unused import ${suggestion.importName}`;
+  }
+  if (suggestion.toModule) {
+    return `Apply ${suggestion.toModule} remediation`;
+  }
+  return `Apply Lopper remediation`;
 }
 
 function codemodApplyFailed(apply: LopperCodemodApplyReport | undefined): boolean {

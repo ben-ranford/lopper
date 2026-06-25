@@ -43,7 +43,9 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	}
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
 
-	dependencies, warnings := buildRequestedPythonDependencies(req, scanResult)
+	analysisReq := req
+	analysisReq.RepoPath = repoPath
+	dependencies, warnings := buildRequestedPythonDependencies(analysisReq, scanResult)
 	result.Dependencies = dependencies
 	result.Warnings = append(result.Warnings, warnings...)
 	result.Summary = report.ComputeSummary(result.Dependencies)
