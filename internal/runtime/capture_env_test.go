@@ -52,6 +52,41 @@ func TestWithPythonRuntimeTraceEnv(t *testing.T) {
 	}
 }
 
+func TestWithPythonRuntimeTraceEnvWithoutExistingPythonPath(t *testing.T) {
+	tracePath := "/tmp/python-runtime.ndjson"
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil {
+		t.Fatalf("runtime python hook directory: %v", err)
+	}
+
+	env, err := withPythonRuntimeTraceEnv([]string{"PATH=/usr/bin"}, tracePath)
+	if err != nil {
+		t.Fatalf("with python runtime trace env: %v", err)
+	}
+
+	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
+	assertEnvEntryValue(t, env, "PYTHONPATH", hookDir)
+}
+
+func TestRuntimeCaptureProviderValidationBranches(t *testing.T) {
+	if got := normalizeCaptureProvider(""); got != CaptureProviderNode {
+		t.Fatalf("expected default provider to normalize to node, got %q", got)
+	}
+	if got := normalizeCaptureProvider(CaptureProviderPython); got != CaptureProviderPython {
+		t.Fatalf("expected python provider to normalize to python, got %q", got)
+	}
+	if got := normalizeCaptureProvider("ruby"); got != "" {
+		t.Fatalf("expected unsupported provider to normalize empty, got %q", got)
+	}
+
+	if _, err := withRuntimeTraceEnv(nil, "/tmp/runtime.ndjson", "ruby"); err == nil || !strings.Contains(err.Error(), "unsupported runtime capture provider") {
+		t.Fatalf("expected unsupported provider env error, got %v", err)
+	}
+	if _, err := resolveCapturePlan(CaptureRequest{RepoPath: t.TempDir(), Command: "npm test", Provider: "ruby"}); err == nil || !strings.Contains(err.Error(), "unsupported runtime capture provider") {
+		t.Fatalf("expected unsupported provider plan error, got %v", err)
+	}
+}
+
 func assertEnvEntryValue(t *testing.T, env []string, key, want string) {
 	t.Helper()
 
