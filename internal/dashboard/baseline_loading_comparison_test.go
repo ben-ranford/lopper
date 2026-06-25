@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestDashboardBaselineLoadBranches(t *testing.T) {
+func TestDashboardBaselineLoadPreservesRemoteMetadata(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -44,7 +44,12 @@ func TestDashboardBaselineLoadBranches(t *testing.T) {
 	if got := BaselineSnapshotPath(tmp, " label:load "); got != path {
 		t.Fatalf("BaselineSnapshotPath() = %q, want %q", got, path)
 	}
+}
 
+func TestDashboardBaselineLoadLegacyRemoteFieldsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
 	legacyPath := filepath.Join(tmp, "legacy.json")
 	legacyJSON := `{"generated_at":"2026-03-12T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":3,"waste_candidate_count":2,"critical_cves":1}]}`
 	if err := os.WriteFile(legacyPath, []byte(legacyJSON), 0o600); err != nil {
@@ -60,7 +65,12 @@ func TestDashboardBaselineLoadBranches(t *testing.T) {
 	if legacy.Repos[0].RepoURL != "" || legacy.Repos[0].Revision != nil || legacy.Repos[0].ResolvedCommit != "" {
 		t.Fatalf("expected legacy baseline remote metadata fields to remain empty, got %#v", legacy.Repos[0])
 	}
+}
 
+func TestDashboardBaselineLoadRejectsUnsupportedSchema(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
 	badPath := filepath.Join(tmp, "bad-schema.json")
 	badJSON := `{"baselineSchemaVersion":"9.9.9","key":"label:bad","report":{"repos":[]}}`
 	if err := os.WriteFile(badPath, []byte(badJSON), 0o600); err != nil {
@@ -69,7 +79,12 @@ func TestDashboardBaselineLoadBranches(t *testing.T) {
 	if _, _, err := LoadWithKey(badPath); err == nil || !strings.Contains(err.Error(), "unsupported dashboard baseline schema version") {
 		t.Fatalf("expected unsupported schema error, got %v", err)
 	}
+}
 
+func TestDashboardBaselineLoadReportsReadErrors(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
 	if _, err := Load(filepath.Join(tmp, "missing.json")); err == nil {
 		t.Fatalf("expected Load to return missing file error")
 	}

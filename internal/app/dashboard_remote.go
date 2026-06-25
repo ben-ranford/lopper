@@ -20,6 +20,7 @@ const (
 	DashboardRemoteReposPreviewFeature = "dashboard-remote-repos-preview"
 	dashboardRepoCacheEnv              = "LOPPER_DASHBOARD_REPO_CACHE"
 	dashboardRepoCacheHashLength       = 16
+	dashboardGitShallowDepthArg        = "--depth=1"
 )
 
 type dashboardRepoURLSpec struct {
@@ -162,7 +163,7 @@ func (m *dashboardRepoMaterializer) checkoutUsable(ctx context.Context, checkout
 
 func (m *dashboardRepoMaterializer) cloneCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, revision dashboard.RepoRevision) (string, error) {
 	if revision.IsZero() {
-		if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "clone", "--no-tags", "--depth=1", "--", spec.normalized, checkoutPath)...); err != nil {
+		if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "clone", "--no-tags", dashboardGitShallowDepthArg, "--", spec.normalized, checkoutPath)...); err != nil {
 			return "", fmt.Errorf("clone remote repo: %w", err)
 		}
 		return m.pinCheckout(ctx, checkoutPath, spec, "HEAD", revision)
@@ -181,7 +182,7 @@ func (m *dashboardRepoMaterializer) refreshCheckout(ctx context.Context, checkou
 	if !revision.IsZero() {
 		return m.fetchAndPinCheckout(ctx, checkoutPath, spec, revision)
 	}
-	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", "--depth=1", "origin", "HEAD")...); err != nil {
+	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", dashboardGitShallowDepthArg, "origin", "HEAD")...); err != nil {
 		return "", fmt.Errorf("fetch remote repo: %w", err)
 	}
 	return m.pinCheckout(ctx, checkoutPath, spec, "FETCH_HEAD", revision)
@@ -189,7 +190,7 @@ func (m *dashboardRepoMaterializer) refreshCheckout(ctx context.Context, checkou
 
 func (m *dashboardRepoMaterializer) fetchAndPinCheckout(ctx context.Context, checkoutPath string, spec dashboardRepoURLSpec, revision dashboard.RepoRevision) (string, error) {
 	ref := dashboardFetchRef(revision)
-	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", "--no-tags", "--depth=1", "origin", ref)...); err != nil {
+	if _, err := m.runGit(ctx, gitArgsForURL(spec.normalized, "-C", checkoutPath, "fetch", "--prune", "--no-tags", dashboardGitShallowDepthArg, "origin", ref)...); err != nil {
 		return "", fmt.Errorf("fetch remote %s %q: %w", revision.Kind(), revision.Value(), err)
 	}
 	return m.pinCheckout(ctx, checkoutPath, spec, "FETCH_HEAD", revision)
@@ -298,32 +299,47 @@ func validateDashboardRevisionName(kind, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", kind)
 	}
-	if strings.HasPrefix(value, "refs/") {
+	if err := validateDashboardRevisionSyntax(kind, value); err != nil {
+		return err
+	}
+	if err := validateDashboardRevisionPathComponents(kind, value); err != nil {
+		return err
+	}
+	return validateDashboardRevisionCharacters(kind, value)
+}
+
+func validateDashboardRevisionSyntax(kind, value string) error {
+	switch {
+	case strings.HasPrefix(value, "refs/"):
 		return fmt.Errorf("%s must be a name, not a full refs/... ref", kind)
-	}
-	if strings.HasPrefix(value, "-") {
+	case strings.HasPrefix(value, "-"):
 		return fmt.Errorf("%s cannot start with '-'", kind)
-	}
-	if value == "@" || strings.Contains(value, "@{") {
+	case value == "@" || strings.Contains(value, "@{"):
 		return fmt.Errorf("%s cannot use git reflog syntax", kind)
-	}
-	if strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//") {
+	case strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//"):
 		return fmt.Errorf("%s cannot start, end, or repeat '/'", kind)
-	}
-	if strings.Contains(value, "..") {
+	case strings.Contains(value, ".."):
 		return fmt.Errorf("%s cannot contain dot-dot path segments", kind)
-	}
-	if strings.HasSuffix(value, ".") {
+	case strings.HasSuffix(value, "."):
 		return fmt.Errorf("%s cannot end with a dot", kind)
+	default:
+		return nil
 	}
+}
+
+func validateDashboardRevisionPathComponents(kind, value string) error {
 	for _, component := range strings.Split(value, "/") {
-		if strings.HasPrefix(component, ".") {
+		switch {
+		case strings.HasPrefix(component, "."):
 			return fmt.Errorf("%s cannot contain a path component starting with a dot", kind)
-		}
-		if strings.HasSuffix(component, ".lock") {
+		case strings.HasSuffix(component, ".lock"):
 			return fmt.Errorf("%s cannot contain a path component ending with '.lock'", kind)
 		}
 	}
+	return nil
+}
+
+func validateDashboardRevisionCharacters(kind, value string) error {
 	for _, r := range value {
 		if unicode.IsSpace(r) || unicode.IsControl(r) || r == 0x7f {
 			return fmt.Errorf("%s cannot contain whitespace or control characters", kind)
