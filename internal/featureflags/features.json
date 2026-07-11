@@ -123,7 +123,8 @@
     "code": "LOP-FEAT-0013",
     "name": "sbom-attestation-exports-preview",
     "description": "Enable preview CycloneDX SBOM exports with Lopper dependency-surface metadata.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.0"
   },
   {
     "code": "LOP-FEAT-0014",
@@ -132,13 +133,15 @@
       "python-runtime-capture-preview"
     ],
     "description": "Enable first-party Python runtime import capture for runtime-test-command analysis.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.8.0"
   },
   {
     "code": "LOP-FEAT-0015",
     "name": "reachability-vulnerability-prioritization-preview",
     "description": "Enable local advisory ingestion and reachability-weighted vulnerability prioritization for dependency reports.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.0"
   },
   {
     "code": "LOP-FEAT-0016",
@@ -147,12 +150,14 @@
       "python-codemod-suggestions-preview"
     ],
     "description": "Enable Python safe remediation suggestions for deterministic unused import cleanup.",
-    "lifecycle": "stable"
+    "lifecycle": "stable",
+    "firstStableRelease": "v1.8.0"
   },
   {
     "code": "LOP-FEAT-0017",
     "name": "dashboard-remediation-queue-preview",
     "description": "Enable org-level dashboard remediation queue items across errors, vulnerabilities, policy findings, recommendations, runtime regressions, and shared dependency hotspots.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.0"
   }
 ]
