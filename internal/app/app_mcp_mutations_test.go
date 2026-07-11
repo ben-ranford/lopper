@@ -20,6 +20,7 @@ import (
 const (
 	mcpLodashPackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
 	mcpMapSource         = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
+	mcpPythonSource      = "import requests\nprint('ok')\n"
 )
 
 type mcpTestResponse struct {
@@ -68,6 +69,35 @@ func TestExecuteMCPApplyCodemodMutation(t *testing.T) {
 	}
 	if got := readTextFile(t, sourcePath); !strings.Contains(got, "import map from \"lodash/map\";") {
 		t.Fatalf("expected source rewrite, got %q", got)
+	}
+}
+
+func TestExecuteMCPApplyPythonCodemodStableDefault(t *testing.T) {
+	repo, sourcePath := setupMCPGitPythonFixture(t)
+
+	response := executeMCPTool(t, "lopper_apply_codemod", map[string]any{
+		"repoPath":      repo,
+		"dependency":    "requests",
+		"language":      "python",
+		"confirmApply":  true,
+		"cacheEnabled":  false,
+		"timeoutMillis": 10000,
+	})
+	if response.Result == nil || response.Result.IsError {
+		t.Fatalf("expected successful Python codemod mutation, got %#v", response)
+	}
+
+	var payload struct {
+		AppliedFiles   int    `json:"appliedFiles"`
+		AppliedPatches int    `json:"appliedPatches"`
+		BackupPath     string `json:"backupPath"`
+	}
+	decodeMCPStructuredContent(t, response, &payload)
+	if payload.AppliedFiles != 1 || payload.AppliedPatches != 1 || payload.BackupPath == "" {
+		t.Fatalf("unexpected Python codemod payload: %#v", payload)
+	}
+	if got := readTextFile(t, sourcePath); got != "print('ok')\n" {
+		t.Fatalf("expected stable-default Python source rewrite, got %q", got)
 	}
 }
 
@@ -340,6 +370,22 @@ func setupMCPGitLodashFixture(t *testing.T) (string, string) {
 	writeTextFile(t, filepath.Join(dependencyRoot, "package.json"), mcpLodashPackageJSON, 0o644)
 	writeTextFile(t, filepath.Join(dependencyRoot, "index.js"), "export { map } from './map.js'\n", 0o644)
 	writeTextFile(t, filepath.Join(dependencyRoot, "map.js"), "export default function map() {}\n", 0o644)
+
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.email", "test@example.com")
+	testutil.RunGit(t, repo, "config", "user.name", "Test User")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "fixture")
+
+	return repo, sourcePath
+}
+
+func setupMCPGitPythonFixture(t *testing.T) (string, string) {
+	t.Helper()
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "main.py")
+	writeTextFile(t, sourcePath, mcpPythonSource, 0o644)
+	writeTextFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n", 0o644)
 
 	testutil.RunGit(t, repo, "init")
 	testutil.RunGit(t, repo, "config", "user.email", "test@example.com")

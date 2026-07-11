@@ -191,9 +191,10 @@ lopper analyse --top 20 \
 ```
 
 Advisory ingestion is preview-gated and local-only. Lopper does not fetch a proprietary or network
-vulnerability database, and the priority score ranks triage using advisory
-severity plus reachability, runtime, and static import evidence; it is not an
-exploitability claim.
+vulnerability database. The current preview matches package name and ecosystem but does not evaluate
+installed versions against OSV affected ranges, so use a curated local advisory snapshot and treat
+`fixedVersion` as informational. The priority score ranks triage using advisory severity plus
+reachability, runtime, and static import evidence; it is not an exploitability claim.
 
 Generate an org-level dashboard across multiple repos:
 
@@ -292,7 +293,7 @@ apply-codemod --confirm
 
 `apply-codemod` refuses dirty git worktrees by default; add `--allow-dirty` only when you intentionally want to apply into a dirty tree. The action prints applied, skipped, and failed files plus the rollback backup path. Baselines can also be saved and compared in-session:
 
-Python safe unused-import suggestions are preview-gated; enable them with `--enable-feature python-codemod-suggestions-preview` before using `--suggest-only` or `--apply-codemod` against Python dependencies.
+Python safe unused-import suggestions are stable and enabled by default. They are syntactically conservative rather than proof that an import has no module side effects. Mutation still requires `--apply-codemod --apply-codemod-confirm`, refuses a dirty worktree by default, and writes rollback evidence. Use `--disable-feature python-codemod-suggestions` for an explicit rollback.
 
 ```text
 save-baseline
@@ -340,17 +341,16 @@ With runtime traces enabled:
 
 If `--runtime-trace` points to a missing file, analysis continues with static results and adds a warning.
 
-### Python preview
+### Python
 
-First-party Python runtime capture is available behind the `python-runtime-capture-preview` feature flag for conservative test commands:
+First-party Python runtime capture is stable for conservative pytest-family commands:
 
 ```bash
 lopper analyse --top 20 --repo . --language python \
-  --runtime-test-command "pytest" \
-  --enable-feature python-runtime-capture-preview
+  --runtime-test-command "pytest"
 ```
 
-`python -m pytest` and `python3 -m pytest` are also supported. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; it does not install project dependencies or run Python outside the user-provided command.
+`python -m pytest` and `python3 -m pytest` are also supported. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; it does not install project dependencies or run Python outside the user-provided command. Use `--disable-feature python-runtime-capture` for rollback. Additional runner profiles remain separately preview-gated work.
 
 Explicit Python trace consumption remains compatible through `--runtime-trace`.
 

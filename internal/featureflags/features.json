@@ -127,9 +127,12 @@
   },
   {
     "code": "LOP-FEAT-0014",
-    "name": "python-runtime-capture-preview",
+    "name": "python-runtime-capture",
+    "deprecatedNames": [
+      "python-runtime-capture-preview"
+    ],
     "description": "Enable first-party Python runtime import capture for runtime-test-command analysis.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0015",
@@ -139,9 +142,12 @@
   },
   {
     "code": "LOP-FEAT-0016",
-    "name": "python-codemod-suggestions-preview",
-    "description": "Enable preview Python safe remediation suggestions for deterministic unused import cleanup.",
-    "lifecycle": "preview"
+    "name": "python-codemod-suggestions",
+    "deprecatedNames": [
+      "python-codemod-suggestions-preview"
+    ],
+    "description": "Enable Python safe remediation suggestions for deterministic unused import cleanup.",
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0017",

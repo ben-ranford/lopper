@@ -1,4 +1,4 @@
-.TH LOPPER 1 "2026-06-25" "lopper" "User Commands"
+.TH LOPPER 1 "2026-07-11" "lopper" "User Commands"
 .SH NAME
 lopper \- local-first CLI/TUI for dependency surface analysis
 .SH SYNOPSIS
@@ -18,8 +18,8 @@ Usage and options:
 .nf
   lopper [--version] [tui]
   lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY]
-  lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--threshold-reachable-vuln-priority off|low|medium|high|critical] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--suggest-only | (--apply-codemod --apply-codemod-confirm [--allow-dirty])]
-  lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--threshold-reachable-vuln-priority off|low|medium|high|critical] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--fail-on-increase PERCENT]
+  lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--suggest-only | (--apply-codemod --apply-codemod-confirm [--allow-dirty])]
+  lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--fail-on-increase PERCENT]
   lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
   lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
   lopper features [--format table|json] [--channel dev|rolling|release] [--release VERSION]
@@ -45,8 +45,8 @@ Options:
   --save-baseline            Save current run as immutable baseline snapshot
   --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
-  --runtime-test-command CMD Run command with JS/TS or preview Python runtime hooks to capture trace before analysis
-  --advisory-source PATH     Local JSON or YAML advisory file for vulnerability findings (preview-gated by reachability-vulnerability-prioritization-preview)
+  --runtime-test-command CMD Run command with JS/TS or Python runtime hooks to capture trace before analysis
+  --advisory-source PATH     Local vulnerability advisory source (preview-gated by reachability-vulnerability-prioritization-preview)
   --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
   --baseline-store DIR       Directory for immutable keyed dashboard baseline snapshots
   --baseline-key KEY         Baseline snapshot key for dashboard comparison
@@ -54,8 +54,8 @@ Options:
   --save-baseline            Save current dashboard run as an immutable baseline snapshot
   --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
   --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
-  --suggest-only             Generate deterministic patch previews for safe remediation suggestions (Python suggestions require python-codemod-suggestions-preview)
-  --apply-codemod            Apply deterministic patch previews for safe remediation suggestions (Python suggestions require python-codemod-suggestions-preview)
+  --suggest-only             Generate deterministic patch previews for safe remediation suggestions
+  --apply-codemod            Apply deterministic patch previews for safe remediation suggestions
   --apply-codemod-confirm    Required confirmation flag for --apply-codemod
   --allow-dirty              Allow --apply-codemod to run in a dirty git worktree
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
@@ -81,7 +81,7 @@ Options:
   --threshold-max-uncertain-imports N
                               Fail when unresolved dynamic import/require usage count exceeds N
   --threshold-reachable-vuln-priority PRIORITY
-                              Fail when reachable advisory findings meet or exceed off|low|medium|high|critical (same preview gate as --advisory-source)
+                              Fail when reachable vulnerability priority meets off|low|medium|high|critical (same preview gate as --advisory-source)
   --score-weight-usage N      Relative removal-candidate weight for usage signal (default: 0.50)
   --score-weight-impact N     Relative removal-candidate weight for impact signal (default: 0.30)
   --score-weight-confidence N Relative removal-candidate weight for confidence signal (default: 0.20)

@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	pythonRuntimeTracePreviewFeature   = "python-runtime-trace"
-	pythonRuntimeCapturePreviewFeature = "python-runtime-capture-preview"
+	pythonRuntimeTraceFeature   = "python-runtime-trace"
+	pythonRuntimeCaptureFeature = "python-runtime-capture"
 )
 
 type analysisPipeline struct {
@@ -74,12 +74,13 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtimeWarnings, runtimeTracePath := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.cache, p.candidates)
+	runtimeWarnings, runtimeTracePath, pythonRuntimeTraceCaptured := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.cache, p.candidates)
 	p.reports = reports
 	warnings = append(warnings, runtimeWarnings...)
 	p.warnings = warnings
 	p.analyzedRoots = analyzedRoots
 	p.request.RuntimeTracePath = runtimeTracePath
+	p.request.PythonRuntimeTraceCaptured = pythonRuntimeTraceCaptured
 	return nil
 }
 
@@ -122,7 +123,8 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 
 func finalizeReport(req Request, repoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
 	var err error
-	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTracePreviewFeature) || req.Features.Enabled(pythonRuntimeCapturePreviewFeature)
+	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
+		(req.PythonRuntimeTraceCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
 	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData, pythonRuntimeTraceEnabled)
 	if err != nil {
 		return report.Report{}, err

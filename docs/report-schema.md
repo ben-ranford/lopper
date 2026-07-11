@@ -130,7 +130,7 @@ CycloneDX characteristics:
   `priority`, numeric `priorityScore`, `reachable`, and evidence strings.
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
-- `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews, `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are preview-gated by `python-codemod-suggestions-preview`.
+- `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews, `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are stable under `python-codemod-suggestions` and remain explicitly disableable for rollback.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used), including `modules`, `parentModules`, `entrypoints`, and `topSymbols` when available.
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
@@ -144,7 +144,7 @@ CycloneDX characteristics:
 - Signal weights are fixed in v2: runtime correlation `0.20`, export inventory `0.30`, import precision `0.20`, repo usage uncertainty `0.15`, dependency dynamic-loader signal `0.10`, and risk severity `0.05`.
 - `dependencies[].removalCandidate.confidence` remains as a compatibility alias for `dependencies[].reachabilityConfidence.score`.
 - Finding-level `confidenceScore` and `confidenceReasonCodes` fields mirror `dependencies[].reachabilityConfidence.score` and `dependencies[].reachabilityConfidence.rationaleCodes`.
-- `runtimeUsage` annotates JS/TS dependencies and Python dependencies from `{"language":"python",...}` trace events; first-party Python capture is gated by `python-runtime-capture-preview`.
+- `runtimeUsage` annotates JS/TS dependencies and Python dependencies from `{"language":"python",...}` trace events; first-party pytest-family Python capture is stable under `python-runtime-capture`.
 - `runtimeUsage.correlation` distinguishes `static-only`, `runtime-only`, and `overlap` evidence categories.
 - `runtimeUsage.modules` lists runtime-loaded module paths seen for a dependency.
 - `runtimeUsage.topSymbols` lists best-effort runtime symbol hits derived from module subpaths.

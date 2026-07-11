@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.8.0 (Unreleased)
+
+- Added explicit VS Code actions to preview and apply safe dependency codemods with confirmation and rollback reporting.
+- Added local advisory and reachability-priority settings for the v1.8 vulnerability workflow.
+- Enabled stable Python unused-import suggestions for analysis and codemod actions while preserving feature-level rollback controls.
+- Kept first-party Python runtime capture CLI-only until the extension gains a Python runtime-aware refresh workflow.
+- Updated the managed Lopper release target and extension dependencies for the 1.8.0 release.
+
+## 1.7.0 (2026-06-25)
+
+- Hardened dependency explorer, codemod refresh, and managed-binary state handling.
+- Updated VS Code API types while preserving the existing workspace and baseline workflows.
+
+## 1.6.1 (2026-06-15)
+
+- Hardened workspace path validation and managed archive extraction.
+
+## 1.6.0 (2026-06-12)
+
+- Added multi-root analysis, dependency explorer details, baseline commands, and report export workflows.
+- Parallelized codemod refresh analysis and removed synchronous filesystem reads from save handling.
+- Hardened managed Lopper downloads and execution boundaries.
+
 ## [1.5.4](https://github.com/ben-ranford/lopper/compare/v1.5.3...v1.5.4) (2026-06-01)
 
 

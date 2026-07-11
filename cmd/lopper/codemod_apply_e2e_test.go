@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -17,6 +16,7 @@ const (
 	e2eLodashPackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
 	e2eMapSource         = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
 	e2ePythonSource      = "import requests\r\nprint('ok')\n"
+	e2ePythonCodemodFlag = "python-codemod-suggestions"
 )
 
 func TestRunAnalyseApplyCodemodE2E(t *testing.T) {
@@ -109,7 +109,6 @@ func TestRunAnalyseSuggestOnlyPythonCodemodE2E(t *testing.T) {
 		"--language", "python",
 		"--format", "json",
 		"--suggest-only",
-		"--enable-feature", python.CodemodSuggestionsPreviewFeature,
 	}
 	code := run(args, strings.NewReader(""), &out, &errOut)
 	if code != 0 {
@@ -144,7 +143,6 @@ func TestRunAnalyseApplyPythonCodemodE2E(t *testing.T) {
 		"--format", "json",
 		"--apply-codemod",
 		"--apply-codemod-confirm",
-		"--enable-feature", python.CodemodSuggestionsPreviewFeature,
 	}
 	code := run(args, strings.NewReader(""), &out, &errOut)
 	if code != 0 {
@@ -169,6 +167,45 @@ func TestRunAnalyseApplyPythonCodemodE2E(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(apply.BackupPath))); err != nil {
 		t.Fatalf("expected python rollback artifact to exist: %v", err)
+	}
+}
+
+func TestRunAnalyseApplyPythonCodemodExplicitlyDisabledE2E(t *testing.T) {
+	repo, sourcePath := setupPythonFixture(t, true)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	args := []string{
+		"analyse", "requests",
+		"--repo", repo,
+		"--language", "python",
+		"--format", "json",
+		"--apply-codemod",
+		"--apply-codemod-confirm",
+		"--disable-feature", e2ePythonCodemodFlag,
+	}
+	code := run(args, strings.NewReader(""), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected disabled feature to leave analysis successful, got %d stderr=%q", code, errOut.String())
+	}
+
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read source after disabled apply: %v", err)
+	}
+	if string(content) != e2ePythonSource {
+		t.Fatalf("expected disabled feature to leave source unchanged, got %q", string(content))
+	}
+
+	var payload report.Report
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode disabled-feature report: %v", err)
+	}
+	if len(payload.Dependencies) != 1 || payload.Dependencies[0].Codemod != nil {
+		t.Fatalf("expected no codemod payload when feature is disabled, got %#v", payload.Dependencies)
+	}
+	if !strings.Contains(strings.Join(payload.Warnings, "\n"), e2ePythonCodemodFlag) {
+		t.Fatalf("expected disabled-feature warning, got %#v", payload.Warnings)
 	}
 }
 

@@ -30,7 +30,7 @@ Options:
   --save-baseline            Save current run as immutable baseline snapshot
   --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
-  --runtime-test-command CMD Run command with JS/TS or preview Python runtime hooks to capture trace before analysis
+  --runtime-test-command CMD Run command with JS/TS or Python runtime hooks to capture trace before analysis
   --advisory-source PATH     Local vulnerability advisory source (preview-gated by reachability-vulnerability-prioritization-preview)
   --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
   --baseline-store DIR       Directory for immutable keyed dashboard baseline snapshots
@@ -39,8 +39,8 @@ Options:
   --save-baseline            Save current dashboard run as an immutable baseline snapshot
   --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
   --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
-  --suggest-only             Generate deterministic patch previews for safe remediation suggestions (Python suggestions require python-codemod-suggestions-preview)
-  --apply-codemod            Apply deterministic patch previews for safe remediation suggestions (Python suggestions require python-codemod-suggestions-preview)
+  --suggest-only             Generate deterministic patch previews for safe remediation suggestions
+  --apply-codemod            Apply deterministic patch previews for safe remediation suggestions
   --apply-codemod-confirm    Required confirmation flag for --apply-codemod
   --allow-dirty              Allow --apply-codemod to run in a dirty git worktree
   --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)

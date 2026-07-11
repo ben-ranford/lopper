@@ -1,11 +1,51 @@
 package python
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
+
+func BenchmarkBuildUnusedImportCodemodReport(b *testing.B) {
+	repo := b.TempDir()
+	const fileCount = 100
+	files := make([]fileScan, 0, fileCount)
+	for index := range fileCount {
+		path := filepath.Join("pkg", fmt.Sprintf("file-%03d.py", index))
+		absolutePath := filepath.Join(repo, path)
+		if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
+			b.Fatalf("create benchmark fixture directory: %v", err)
+		}
+		if err := os.WriteFile(absolutePath, []byte("import requests\n"), 0o644); err != nil {
+			b.Fatalf("write benchmark fixture: %v", err)
+		}
+		files = append(files, fileScan{
+			Path: path,
+			Imports: []importBinding{{
+				Dependency: "requests",
+				Module:     "requests",
+				Name:       "requests",
+				Local:      "requests",
+				Location:   report.Location{File: path, Line: 1},
+			}},
+			Usage: map[string]int{},
+		})
+	}
+	scan := scanResult{Files: files}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		codemodReport, warnings := BuildUnusedImportCodemodReport(repo, "requests", scan)
+		if len(warnings) != 0 || len(codemodReport.Suggestions) != fileCount {
+			b.Fatalf("unexpected benchmark result: suggestions=%d warnings=%#v", len(codemodReport.Suggestions), warnings)
+		}
+	}
+}
 
 func TestPythonCodemodBuildBranches(t *testing.T) {
 	repo := t.TempDir()

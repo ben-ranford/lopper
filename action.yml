@@ -4,7 +4,7 @@ author: ben-ranford
 
 inputs:
   version:
-    description: Lopper CLI release to install. Use action to match an action tag when possible, latest for the newest stable release, a floating tag such as v1 or v1.7, or a concrete tag such as v1.7.0.
+    description: Lopper CLI release to install. Use action to match an action tag when possible, latest for the newest stable release, a floating tag such as v1 or v1.8, or a concrete tag such as v1.8.0.
     required: false
     default: action
   github-token:

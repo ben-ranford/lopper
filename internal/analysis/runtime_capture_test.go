@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +15,63 @@ import (
 	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
+
+func TestServicePythonRuntimeCaptureIndependentOfTraceFeature(t *testing.T) {
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests\n")
+
+	sitePackages := filepath.Join(t.TempDir(), "lib", "python3.12", "site-packages")
+	if err := os.MkdirAll(filepath.Join(sitePackages, "requests"), 0o750); err != nil {
+		t.Fatalf("create requests package: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(sitePackages, "requests", "__init__.py"), "VALUE = 1\n")
+
+	toolDir := t.TempDir()
+	pytestPath := filepath.Join(toolDir, "pytest")
+	pytestScript := "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import requests'\n"
+	if err := os.WriteFile(pytestPath, []byte(pytestScript), 0o700); err != nil {
+		t.Fatalf("write fake pytest runtime tool: %v", err)
+	}
+	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", toolDir)
+	t.Setenv("PYTHONPATH", sitePackages)
+
+	service := NewService()
+	captured, err := service.Analyse(context.Background(), Request{
+		RepoPath:           repo,
+		TopN:               10,
+		Language:           "python",
+		RuntimeTestCommand: "pytest",
+		Features:           mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse successful Python capture with trace feature disabled: %v", err)
+	}
+	requests := dependencyByLanguageName(t, captured.Dependencies, "python", "requests")
+	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected freshly captured Python trace to be annotated, got %#v", requests.RuntimeUsage)
+	}
+
+	disabled, err := service.Analyse(context.Background(), Request{
+		RepoPath:           repo,
+		TopN:               10,
+		Language:           "python",
+		RuntimeTestCommand: "pytest",
+		Features:           mustResolvePythonRuntimeCaptureAndTraceDisabled(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse with Python capture and trace features disabled: %v", err)
+	}
+	if requests := dependencyByLanguageName(t, disabled.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
+		t.Fatalf("did not expect Python runtime annotation with capture disabled, got %#v", requests.RuntimeUsage)
+	}
+}
 
 func TestServiceRuntimeCaptureReusesTraceOnCacheHit(t *testing.T) {
 	repo := t.TempDir()
@@ -66,25 +124,31 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 		RuntimeTracePath:         explicitTrace,
 		RuntimeTracePathExplicit: true,
 	}
-	warnings, tracePath := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil, nil)
+	warnings, tracePath, captured := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil, nil)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
 		t.Fatalf("expected explicit runtime capture warning, got %#v", warnings)
 	}
 	if tracePath != explicitTrace {
 		t.Fatalf("expected explicit trace path to be preserved, got %q", tracePath)
 	}
+	if captured {
+		t.Fatal("expected failed explicit capture to report captured=false")
+	}
 
 	implicitReq := Request{RuntimeTestCommand: "foobar test"}
-	warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil, nil)
+	warnings, tracePath, captured = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil, nil)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
 		t.Fatalf("expected implicit runtime capture warning, got %#v", warnings)
 	}
 	if tracePath != "" {
 		t.Fatalf("expected implicit trace path to be cleared after failure, got %q", tracePath)
 	}
+	if captured {
+		t.Fatal("expected failed implicit capture to report captured=false")
+	}
 
-	if warnings, tracePath = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil, nil); len(warnings) != 0 || tracePath != "" {
-		t.Fatalf("expected empty runtime command to skip capture, got warnings=%#v tracePath=%q", warnings, tracePath)
+	if warnings, tracePath, captured = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil, nil); len(warnings) != 0 || tracePath != "" || captured {
+		t.Fatalf("expected empty runtime command to skip capture, got warnings=%#v tracePath=%q captured=%v", warnings, tracePath, captured)
 	}
 
 	reuseCases := []struct {
@@ -162,10 +226,8 @@ func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 func mustResolvePythonRuntimeCaptureFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
 	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
-	if enabled {
-		options.Enable = []string{pythonRuntimeCapturePreviewFeature}
-	} else {
-		options.Disable = []string{pythonRuntimeCapturePreviewFeature}
+	if !enabled {
+		options.Disable = []string{pythonRuntimeCaptureFeature}
 	}
 	resolved, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {

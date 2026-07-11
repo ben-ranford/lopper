@@ -13,6 +13,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -864,7 +865,15 @@ func initDashboardRemoteGitRepoWithRefs(t *testing.T) dashboardRemoteGitFixture 
 
 func gitHead(t *testing.T, repo string) string {
 	t.Helper()
-	command := exec.Command("git", "-C", repo, "rev-parse", "--verify", "HEAD")
+	gitPath, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve git path: %v", err)
+	}
+	command, err := gitexec.Command(gitPath, "-C", repo, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		t.Fatalf("construct git rev-parse HEAD: %v", err)
+	}
+	command.Env = gitexec.SanitizedEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git rev-parse HEAD: %v\n%s", err, string(output))

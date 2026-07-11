@@ -10,34 +10,35 @@ import (
 
 const runtimeTraceCommandWarningPrefix = "runtime trace command failed; continuing with static analysis: "
 
-func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath string, cache *analysisCache, candidates []language.Candidate) ([]string, string) {
+func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath string, cache *analysisCache, candidates []language.Candidate) ([]string, string, bool) {
 	tracePath := strings.TrimSpace(req.RuntimeTracePath)
 	command := strings.TrimSpace(req.RuntimeTestCommand)
 	if command == "" {
-		return nil, tracePath
+		return nil, tracePath, false
 	}
 	if tracePath == "" {
 		tracePath = runtime.DefaultTracePath(repoPath)
 	}
 
+	provider := captureProviderForRequest(req, command, candidates)
 	if err := runtime.Capture(ctx, runtime.CaptureRequest{
 		RepoPath:         repoPath,
 		TracePath:        tracePath,
 		Command:          command,
-		Provider:         captureProviderForRequest(req, command, candidates),
+		Provider:         provider,
 		ReuseIfUnchanged: shouldReuseRuntimeTrace(cache),
 	}); err != nil {
 		warning := runtimeTraceCommandWarningPrefix + err.Error()
 		if req.RuntimeTracePathExplicit {
-			return []string{warning}, tracePath
+			return []string{warning}, tracePath, false
 		}
-		return []string{warning}, ""
+		return []string{warning}, "", false
 	}
-	return nil, tracePath
+	return nil, tracePath, provider == runtime.CaptureProviderPython
 }
 
 func captureProviderForRequest(req Request, command string, candidates []language.Candidate) runtime.CaptureProvider {
-	if !req.Features.Enabled(pythonRuntimeCapturePreviewFeature) || !hasPythonRuntimeCandidate(req.Language, candidates) {
+	if !req.Features.Enabled(pythonRuntimeCaptureFeature) || !hasPythonRuntimeCandidate(req.Language, candidates) {
 		return runtime.CaptureProviderNode
 	}
 	if isExplicitPythonLanguage(req.Language) || runtime.IsPythonTestCommand(command) || hasOnlyPythonRuntimeCandidate(candidates) {
