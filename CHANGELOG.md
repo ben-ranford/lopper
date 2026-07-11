@@ -2,6 +2,29 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.0](https://github.com/ben-ranford/lopper/compare/v1.7.0...v1.8.0) (2026-07-11)
+
+
+### Features
+
+* add reachability-weighted vulnerability prioritization ([11bdb30](https://github.com/ben-ranford/lopper/commit/11bdb30669767aac967a6324a82921cf2ad61e8d))
+* **dashboard:** add remediation queue ([e151054](https://github.com/ben-ranford/lopper/commit/e15105466f026ded20651f9583cdf936ec068ffa))
+* **dashboard:** add remediation queue for [#1096](https://github.com/ben-ranford/lopper/issues/1096) ([e151054](https://github.com/ben-ranford/lopper/commit/e15105466f026ded20651f9583cdf936ec068ffa))
+* **featureflags:** add v2 stable aliases ([84b4a33](https://github.com/ben-ranford/lopper/commit/84b4a33801c967d14e2534bfad344891e7f56154))
+* **flags:** graduate qualified v1.8 features ([#1150](https://github.com/ben-ranford/lopper/issues/1150)) ([6a87cdb](https://github.com/ben-ranford/lopper/commit/6a87cdb6d57d173887b36bdae546f81f832ba54e))
+* **remediation:** support python safe codemod suggestions ([e6392af](https://github.com/ben-ranford/lopper/commit/e6392af2969fcc7cd5448e4589351d07b9fc20a8))
+* **report:** add CycloneDX SBOM export ([5ea7cc0](https://github.com/ben-ranford/lopper/commit/5ea7cc02199ff17230110ef14ed450ded5b7d0b0))
+* **report:** add runtime trace baseline diffs ([570de95](https://github.com/ben-ranford/lopper/commit/570de95b2f778dd99f86e394669d1964bc7e2d8a))
+* **report:** add SBOM attestation exports ([#1106](https://github.com/ben-ranford/lopper/issues/1106)) ([5ea7cc0](https://github.com/ben-ranford/lopper/commit/5ea7cc02199ff17230110ef14ed450ded5b7d0b0))
+* **runtime:** capture Python imports during tests ([#1108](https://github.com/ben-ranford/lopper/issues/1108)) ([a2a9744](https://github.com/ben-ranford/lopper/commit/a2a974417d6d148133352eeebcfb4c6e0bdcda77))
+
+
+### Bug Fixes
+
+* **deps:** update dependency adm-zip to ^0.6.0 ([#1128](https://github.com/ben-ranford/lopper/issues/1128)) ([33eaa7c](https://github.com/ben-ranford/lopper/commit/33eaa7c5d2af6123f5763bbe1bce81a8e69fbd13))
+* **deps:** update module github.com/pelletier/go-toml/v2 to v2.4.3 ([#1124](https://github.com/ben-ranford/lopper/issues/1124)) ([31ea825](https://github.com/ben-ranford/lopper/commit/31ea8252ef84913d0f60dfc6dc7107c7f1473af1))
+* **deps:** update module golang.org/x/mod to v0.38.0 ([#1126](https://github.com/ben-ranford/lopper/issues/1126)) ([51759c1](https://github.com/ben-ranford/lopper/commit/51759c1def17c6358666abba8554d2caf2a30fba))
+
 ## [1.7.0](https://github.com/ben-ranford/lopper/compare/v1.6.1...v1.7.0) (2026-06-25)
 
 
