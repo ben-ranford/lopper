@@ -22,6 +22,15 @@
         "major"
       ],
       "automerge": false
+    },
+    {
+      "description": "Keep Go module updates tidy for CI and automerge",
+      "matchManagers": [
+        "gomod"
+      ],
+      "postUpdateOptions": [
+        "gomodTidy"
+      ]
     }
   ]
 }

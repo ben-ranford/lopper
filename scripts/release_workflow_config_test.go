@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -267,6 +268,25 @@ func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 			t.Fatalf("%s updates should retain Renovate automerge=true", updateType)
 		}
 	}
+}
+
+func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
+	t.Parallel()
+
+	var config struct {
+		PackageRules []struct {
+			MatchManagers     []string `json:"matchManagers"`
+			PostUpdateOptions []string `json:"postUpdateOptions"`
+		} `json:"packageRules"`
+	}
+	readJSONConfig(t, "renovate.json", &config)
+
+	for _, rule := range config.PackageRules {
+		if slices.Contains(rule.MatchManagers, "gomod") && slices.Contains(rule.PostUpdateOptions, "gomodTidy") {
+			return
+		}
+	}
+	t.Fatal("Go module updates must run gomodTidy before CI and automerge")
 }
 
 func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
