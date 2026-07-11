@@ -7,15 +7,13 @@ Unreleased feature-flag migration guidance is maintained in the [v2 stable alias
 
 ### Features
 
-* add reachability-weighted vulnerability prioritization ([11bdb30](https://github.com/ben-ranford/lopper/commit/11bdb30669767aac967a6324a82921cf2ad61e8d))
-* **dashboard:** add remediation queue ([e151054](https://github.com/ben-ranford/lopper/commit/e15105466f026ded20651f9583cdf936ec068ffa))
-* **dashboard:** add remediation queue for [#1096](https://github.com/ben-ranford/lopper/issues/1096) ([e151054](https://github.com/ben-ranford/lopper/commit/e15105466f026ded20651f9583cdf936ec068ffa))
+* add preview reachability-weighted vulnerability prioritization ([11bdb30](https://github.com/ben-ranford/lopper/commit/11bdb30669767aac967a6324a82921cf2ad61e8d))
+* **dashboard:** add preview remediation queue for [#1096](https://github.com/ben-ranford/lopper/issues/1096) ([e151054](https://github.com/ben-ranford/lopper/commit/e15105466f026ded20651f9583cdf936ec068ffa))
 * **featureflags:** add v2 stable aliases ([84b4a33](https://github.com/ben-ranford/lopper/commit/84b4a33801c967d14e2534bfad344891e7f56154))
 * **flags:** graduate qualified v1.8 features ([#1150](https://github.com/ben-ranford/lopper/issues/1150)) ([6a87cdb](https://github.com/ben-ranford/lopper/commit/6a87cdb6d57d173887b36bdae546f81f832ba54e))
 * **remediation:** support python safe codemod suggestions ([e6392af](https://github.com/ben-ranford/lopper/commit/e6392af2969fcc7cd5448e4589351d07b9fc20a8))
-* **report:** add CycloneDX SBOM export ([5ea7cc0](https://github.com/ben-ranford/lopper/commit/5ea7cc02199ff17230110ef14ed450ded5b7d0b0))
+* **report:** add preview CycloneDX SBOM export ([#1106](https://github.com/ben-ranford/lopper/issues/1106)) ([5ea7cc0](https://github.com/ben-ranford/lopper/commit/5ea7cc02199ff17230110ef14ed450ded5b7d0b0))
 * **report:** add runtime trace baseline diffs ([570de95](https://github.com/ben-ranford/lopper/commit/570de95b2f778dd99f86e394669d1964bc7e2d8a))
-* **report:** add SBOM attestation exports ([#1106](https://github.com/ben-ranford/lopper/issues/1106)) ([5ea7cc0](https://github.com/ben-ranford/lopper/commit/5ea7cc02199ff17230110ef14ed450ded5b7d0b0))
 * **runtime:** capture Python imports during tests ([#1108](https://github.com/ben-ranford/lopper/issues/1108)) ([a2a9744](https://github.com/ben-ranford/lopper/commit/a2a974417d6d148133352eeebcfb4c6e0bdcda77))
 
 
