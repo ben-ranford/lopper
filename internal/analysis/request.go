@@ -28,6 +28,7 @@ type Request struct {
 	RuntimeProfile                    string
 	RuntimeTracePath                  string
 	RuntimeTracePathExplicit          bool
+	PythonRuntimeTraceCaptured        bool
 	RuntimeTestCommand                string
 	IncludePatterns                   []string
 	ExcludePatterns                   []string

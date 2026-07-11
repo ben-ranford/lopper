@@ -407,9 +407,9 @@ func mustResolvePythonRuntimeTraceFeatureSet(t *testing.T, enabled bool) feature
 	state := "disabled"
 	if enabled {
 		state = "enabled"
-		options.Enable = []string{pythonRuntimeTracePreviewFeature}
+		options.Enable = []string{pythonRuntimeTraceFeature}
 	} else {
-		options.Disable = []string{pythonRuntimeTracePreviewFeature}
+		options.Disable = []string{pythonRuntimeTraceFeature}
 	}
 	resolved, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {
@@ -418,15 +418,27 @@ func mustResolvePythonRuntimeTraceFeatureSet(t *testing.T, enabled bool) feature
 	return resolved
 }
 
-func mustResolvePythonRuntimeCaptureOnlyFeatureSet(t *testing.T) featureflags.Set {
+func mustResolvePythonRuntimeCaptureWithTraceDisabled(t *testing.T) featureflags.Set {
 	t.Helper()
 	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
-		Enable:  []string{pythonRuntimeCapturePreviewFeature},
-		Disable: []string{pythonRuntimeTracePreviewFeature},
+		Enable:  []string{pythonRuntimeCaptureFeature},
+		Disable: []string{pythonRuntimeTraceFeature},
 	})
 	if err != nil {
-		t.Fatalf("resolve Python runtime capture-only feature set: %v", err)
+		t.Fatalf("resolve Python runtime capture with trace disabled: %v", err)
+	}
+	return resolved
+}
+
+func mustResolvePythonRuntimeCaptureAndTraceDisabled(t *testing.T) featureflags.Set {
+	t.Helper()
+	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Disable: []string{pythonRuntimeCaptureFeature, pythonRuntimeTraceFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve Python runtime capture and trace disabled: %v", err)
 	}
 	return resolved
 }
@@ -497,18 +509,18 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
 	}
 
-	captureOnly, err := service.Analyse(context.Background(), Request{
+	captureWithTraceDisabled, err := service.Analyse(context.Background(), Request{
 		RepoPath:         repo,
 		TopN:             10,
 		Language:         "python",
 		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeCaptureOnlyFeatureSet(t),
+		Features:         mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
 	})
 	if err != nil {
-		t.Fatalf("analyse python runtime with capture feature: %v", err)
+		t.Fatalf("analyse Python runtime with trace disabled: %v", err)
 	}
-	if requests := dependencyByLanguageName(t, captureOnly.Dependencies, "python", "requests"); requests.RuntimeUsage == nil {
-		t.Fatalf("expected Python runtime usage when capture feature is enabled")
+	if requests := dependencyByLanguageName(t, captureWithTraceDisabled.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
+		t.Fatalf("did not expect an explicit Python trace to bypass the disabled trace feature, got %#v", requests.RuntimeUsage)
 	}
 
 	stableDefault, err := service.Analyse(context.Background(), Request{

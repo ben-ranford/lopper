@@ -65,6 +65,71 @@ func TestDefaultRegistryAndLookup(t *testing.T) {
 	}
 }
 
+type v180StableFeature struct {
+	code       string
+	name       string
+	legacyName string
+}
+
+func TestV180FeatureQualificationDefaults(t *testing.T) {
+	stable := []v180StableFeature{
+		{code: "LOP-FEAT-0014", name: "python-runtime-capture", legacyName: "python-runtime-capture-preview"},
+		{code: "LOP-FEAT-0016", name: "python-codemod-suggestions", legacyName: "python-codemod-suggestions-preview"},
+	}
+	preview := []string{"LOP-FEAT-0013", "LOP-FEAT-0015", "LOP-FEAT-0017"}
+
+	for _, channel := range []Channel{ChannelDev, ChannelRelease} {
+		t.Run(string(channel), func(t *testing.T) {
+			resolved := mustResolveV180Features(t, ResolveOptions{Channel: channel})
+			for _, want := range stable {
+				assertV180StableFeature(t, channel, resolved, want)
+			}
+			for _, code := range preview {
+				assertV180PreviewFeature(t, channel, resolved, code)
+			}
+		})
+	}
+}
+
+func mustResolveV180Features(t *testing.T, options ResolveOptions) Set {
+	t.Helper()
+	resolved, err := DefaultRegistry().Resolve(options)
+	if err != nil {
+		t.Fatalf("resolve %s features: %v", options.Channel, err)
+	}
+	return resolved
+}
+
+func assertV180StableFeature(t *testing.T, channel Channel, defaults Set, want v180StableFeature) {
+	t.Helper()
+	flag, ok := DefaultRegistry().Lookup(want.code)
+	if !ok || flag.Name != want.name || flag.Lifecycle != LifecycleStable {
+		t.Fatalf("expected %s to be stable as %s, got %#v", want.code, want.name, flag)
+	}
+	if !defaults.Enabled(want.code) {
+		t.Fatalf("expected %s enabled in %s defaults", want.code, channel)
+	}
+	legacy, ok := DefaultRegistry().LookupReference(want.legacyName)
+	if !ok || !legacy.Deprecated || legacy.ReplacementRef != want.name {
+		t.Fatalf("expected deprecated alias %s to point at %s, got %#v", want.legacyName, want.name, legacy)
+	}
+	disabled := mustResolveV180Features(t, ResolveOptions{Channel: channel, Disable: []string{want.name}})
+	if disabled.Enabled(want.code) {
+		t.Fatalf("expected explicit disable to override %s stable default", want.code)
+	}
+}
+
+func assertV180PreviewFeature(t *testing.T, channel Channel, defaults Set, code string) {
+	t.Helper()
+	flag, ok := DefaultRegistry().Lookup(code)
+	if !ok || flag.Lifecycle != LifecyclePreview {
+		t.Fatalf("expected %s to remain preview, got %#v", code, flag)
+	}
+	if defaults.Enabled(code) {
+		t.Fatalf("expected %s disabled in %s defaults", code, channel)
+	}
+}
+
 func TestCatalogParseAndFormat(t *testing.T) {
 	flags, err := ParseCatalog([]byte(`[
 		{"code":"LOP-FEAT-0002","name":"stable-flag","description":"Stable behavior","lifecycle":"stable","firstStableRelease":"1.5.0"},

@@ -90,7 +90,7 @@ The tool does not save baselines. It only loads existing baseline JSON or snapsh
 
 ### `lopper_apply_codemod`
 
-Preview mutation tool. Runs dependency analysis in codemod suggestion mode for one dependency, then applies deterministic safe patch previews through the same app workflow used by `lopper analyse --apply-codemod`.
+Mutation tool. Runs dependency analysis in codemod suggestion mode for one dependency, then applies deterministic safe patch previews through the same app workflow used by `lopper analyse --apply-codemod`. The stable `python-codemod-suggestions` capability supports conservative Python unused-import cleanup in addition to the existing JS/TS provider.
 
 Required input:
 
@@ -104,6 +104,8 @@ Optional input:
 - The same common optional analysis inputs as `lopper_analyse_top_dependencies`, except `topN` and runtime test commands are not supported.
 
 Structured output includes `appliedFiles`, `appliedPatches`, `skippedFiles`, `failedFiles`, `backupPath`, per-file `results`, and the full report containing `dependencies[].codemod.apply`.
+
+Python suggestions are syntactically conservative and do not prove that importing a module has no side effects. Apply still requires explicit confirmation, a clean worktree by default, and rollback evidence.
 
 ### `lopper_save_baseline`
 

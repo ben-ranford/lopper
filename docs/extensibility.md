@@ -87,5 +87,6 @@ Merged output deduplicates by `(language, dependency)` and computes:
 If your adapter can consume runtime traces, extend `internal/runtime` and
 its annotation logic. The implementation keeps runtime annotations in the shared
 `runtimeUsage` report fields; JS/TS and Python trace consumption are supported
-by default, and first-party Python capture is available behind
-`python-runtime-capture-preview`.
+by default, and first-party Python capture is stable under
+`python-runtime-capture` for the documented pytest-family command profiles.
+Additional runner profiles should use a separate preview flag.

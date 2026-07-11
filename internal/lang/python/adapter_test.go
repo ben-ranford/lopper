@@ -110,7 +110,7 @@ func TestAdapterAnalyseSuggestOnlyPythonUnsafeSkips(t *testing.T) {
 	}
 }
 
-func TestAdapterAnalyseSuggestOnlyPythonCodemodRequiresPreviewFeature(t *testing.T) {
+func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
 
@@ -127,10 +127,10 @@ func TestAdapterAnalyseSuggestOnlyPythonCodemodRequiresPreviewFeature(t *testing
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
 	if reportData.Dependencies[0].Codemod != nil {
-		t.Fatalf("expected python codemod report to be preview-gated, got %#v", reportData.Dependencies[0].Codemod)
+		t.Fatalf("expected disabled Python codemod feature to omit suggestions, got %#v", reportData.Dependencies[0].Codemod)
 	}
-	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), CodemodSuggestionsPreviewFeature) {
-		t.Fatalf("expected preview feature warning, got %#v", reportData.Warnings)
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), CodemodSuggestionsFeature) {
+		t.Fatalf("expected disabled feature warning, got %#v", reportData.Warnings)
 	}
 }
 
@@ -249,8 +249,8 @@ func analysePythonDependencyWithFeatureSet(t *testing.T, files map[string]string
 func mustPythonCodemodFeatureSet(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
 	opts := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
-	if enabled {
-		opts.Enable = []string{CodemodSuggestionsPreviewFeature}
+	if !enabled {
+		opts.Disable = []string{CodemodSuggestionsFeature}
 	}
 	features, err := featureflags.DefaultRegistry().Resolve(opts)
 	if err != nil {

@@ -100,6 +100,17 @@ lopper features --format json --channel rolling
 lopper features --format json --channel release --release v1.4.2
 ```
 
+## v1.8 Stable Defaults
+
+The [v1.8 qualification record](v1.8-feature-qualification.md) graduates two narrowly supported capabilities and keeps three future-bound capabilities in preview.
+
+| Code | Stable name | Deprecated compatibility name |
+| --- | --- | --- |
+| `LOP-FEAT-0014` | `python-runtime-capture` | `python-runtime-capture-preview` |
+| `LOP-FEAT-0016` | `python-codemod-suggestions` | `python-codemod-suggestions-preview` |
+
+`LOP-FEAT-0013`, `LOP-FEAT-0015`, and `LOP-FEAT-0017` remain preview until their named correctness blockers are complete. New runner profiles, SBOM formats, vulnerability applicability, remediation routing, and multi-change automation do not inherit the lifecycle of the stable v1.8 scopes.
+
 ## v2 Stable Alias Migration
 
 Use these stable names for v2.0.0 and later. The legacy preview names remain accepted in v2.0.0 and emit deprecation guidance when used as explicit CLI feature overrides.

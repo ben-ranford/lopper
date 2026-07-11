@@ -10,6 +10,7 @@ Lopper brings dependency-surface analysis into VS Code with inline diagnostics a
 - Surfaces a dependency explorer sidebar with folder summaries, dependency drilldown, and source-navigation links.
 - Supports multi-root workspaces by analyzing each workspace folder independently.
 - Offers deterministic quick fixes for safe `--suggest-only` remediation previews.
+- Enables stable Python unused-import suggestions by default while preserving the CLI's explicit feature rollback.
 - Applies available safe codemods through the guarded CLI flow and reports rollback artifact paths.
 - Supports `package`, `repo`, and `changed-packages` analysis scope modes directly in VS Code.
 - Keeps a status-bar summary and manual refresh commands, including force-fresh, runtime-aware, baseline, and export workflows.
@@ -71,6 +72,8 @@ code --install-extension lopper-vscode-<version>.vsix
 Setting `lopper.advisorySourcePath` or a non-`off` reachable vulnerability
 threshold automatically enables the
 `reachability-vulnerability-prioritization-preview` feature for VS Code runs.
+
+Python codemod suggestions use the stable `python-codemod-suggestions` default in Lopper v1.8. First-party Python runtime capture is stable in the CLI but remains outside the extension's JS/TS-only runtime-aware refresh workflow.
 
 ## Commands
 
