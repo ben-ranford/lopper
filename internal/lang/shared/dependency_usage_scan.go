@@ -67,8 +67,12 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 		if imported.Wildcard || imported.Local == "" {
 			continue
 		}
+		declarationHits := imported.DeclarationTokenHits
+		if declarationHits <= 0 {
+			declarationHits = 1
+		}
 		if imported.Location.Line <= 0 {
-			usage[imported.Local]--
+			usage[imported.Local] -= declarationHits
 			continue
 		}
 		if !haveLineStarts {
@@ -76,7 +80,7 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 			haveLineStarts = true
 		}
 		if declarationLineContainsToken(content, lineStarts, imported.Location.Line, imported.Local) {
-			usage[imported.Local]--
+			usage[imported.Local] -= declarationHits
 		}
 	}
 }

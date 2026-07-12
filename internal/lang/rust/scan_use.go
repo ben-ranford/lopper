@@ -3,6 +3,7 @@ package rust
 import (
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -21,14 +22,132 @@ func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) 
 
 func appendUseClauseImports(imports []importBinding, clause string, ctx useImportContext) []importBinding {
 	entries := parseUseClause(clause)
+	nextToken := 0
+	multiline := strings.ContainsRune(clause, '\n')
+	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
 	for _, entry := range entries {
-		binding, ok := makeUseImportBinding(entry, ctx)
+		entryContext := ctx
+		entryContext.DeclarationTokenHits = countRustUseEntryDeclarationTokens(declarationClause, entry)
+		if multiline {
+			entryContext, nextToken = locateMultilineUseEntry(declarationClause, entry, entryContext, nextToken)
+		}
+		binding, ok := makeUseImportBinding(entry, entryContext)
 		if !ok {
 			continue
 		}
 		imports = append(imports, binding)
 	}
 	return imports
+}
+
+func locateMultilineUseEntry(clause string, entry usePathEntry, ctx useImportContext, searchStart int) (useImportContext, int) {
+	if entry.Wildcard {
+		return ctx, advancePastRustUseWildcard(clause, searchStart)
+	}
+	token := useEntryLocalToken(entry)
+	offset := findRustUseEntryToken(clause, entry, token, searchStart)
+	if offset < 0 {
+		return ctx, searchStart
+	}
+	line, column := lineColumn(clause, offset)
+	ctx.Line += line - 1
+	if line == 1 {
+		ctx.Column += column - 1
+	} else {
+		ctx.Column = column
+	}
+	return ctx, offset + len(token)
+}
+
+func countRustUseEntryDeclarationTokens(clause string, entry usePathEntry) int {
+	if entry.Wildcard {
+		return 0
+	}
+	return countRustIdentifierTokens(clause, useEntryLocalToken(entry))
+}
+
+func advancePastRustUseWildcard(clause string, searchStart int) int {
+	if searchStart < 0 || searchStart >= len(clause) {
+		return searchStart
+	}
+	relative := strings.IndexByte(clause[searchStart:], '*')
+	if relative < 0 {
+		return searchStart
+	}
+	return searchStart + relative + 1
+}
+
+func useEntryLocalToken(entry usePathEntry) string {
+	if entry.Local != "" {
+		return entry.Local
+	}
+	return entry.Symbol
+}
+
+func findRustUseEntryToken(clause string, entry usePathEntry, token string, searchStart int) int {
+	if entry.Local != "" {
+		return findRustAliasToken(clause, token, searchStart)
+	}
+	return findRustIdentifierToken(clause, token, searchStart)
+}
+
+func findRustAliasToken(content, alias string, searchStart int) int {
+	for searchStart < len(content) {
+		asOffset := findRustIdentifierToken(content, "as", searchStart)
+		if asOffset < 0 {
+			return -1
+		}
+		aliasOffset := asOffset + len("as")
+		for aliasOffset < len(content) && isRustWhitespace(content[aliasOffset]) {
+			aliasOffset++
+		}
+		if rustIdentifierTokenAt(content, alias, aliasOffset) {
+			return aliasOffset
+		}
+		searchStart = asOffset + len("as")
+	}
+	return -1
+}
+
+func countRustIdentifierTokens(content, token string) int {
+	count := 0
+	for searchStart := 0; searchStart < len(content); {
+		offset := findRustIdentifierToken(content, token, searchStart)
+		if offset < 0 {
+			return count
+		}
+		count++
+		searchStart = offset + len(token)
+	}
+	return count
+}
+
+func findRustIdentifierToken(content, token string, searchStart int) int {
+	if token == "" || searchStart < 0 || searchStart >= len(content) {
+		return -1
+	}
+	for searchStart < len(content) {
+		relative := strings.Index(content[searchStart:], token)
+		if relative < 0 {
+			return -1
+		}
+		offset := searchStart + relative
+		if rustIdentifierTokenAt(content, token, offset) {
+			return offset
+		}
+		searchStart = offset + 1
+	}
+	return -1
+}
+
+func rustIdentifierTokenAt(content, token string, offset int) bool {
+	end := offset + len(token)
+	if token == "" || offset < 0 || end > len(content) || content[offset:end] != token {
+		return false
+	}
+	leftBoundary := offset == 0 || !isRustIdentifierContinue(content[offset-1])
+	rightBoundary := end == len(content) || !isRustIdentifierContinue(content[end])
+	return leftBoundary && rightBoundary
 }
 
 func makeUseImportBinding(entry usePathEntry, ctx useImportContext) (importBinding, bool) {
@@ -52,6 +171,7 @@ func makeUseImportBinding(entry usePathEntry, ctx useImportContext) (importBindi
 			Line:   ctx.Line,
 			Column: ctx.Column,
 		},
+		DeclarationTokenHits: ctx.DeclarationTokenHits,
 	}, true
 }
 

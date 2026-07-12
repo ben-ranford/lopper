@@ -50,12 +50,13 @@ type scanResult struct {
 }
 
 type useImportContext struct {
-	FilePath  string
-	Line      int
-	Column    int
-	CrateRoot string
-	DepLookup map[string]dependencyInfo
-	Scan      *scanResult
+	FilePath             string
+	Line                 int
+	Column               int
+	DeclarationTokenHits int
+	CrateRoot            string
+	DepLookup            map[string]dependencyInfo
+	Scan                 *scanResult
 }
 
 type usePathEntry struct {
