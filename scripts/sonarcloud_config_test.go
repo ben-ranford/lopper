@@ -2,14 +2,17 @@ package scripts
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
 func TestSonarCloudAutomaticAnalysisExcludesOnlyIntentionalJSFixtures(t *testing.T) {
 	t.Parallel()
 
-	const want = "sonar.exclusions=testdata/js/cjs/index.cjs,testdata/js/esm/index.js\n"
-	if got := readConfig(t, ".sonarcloud.properties"); got != want {
+	const want = "sonar.exclusions=testdata/js/cjs/index.cjs,testdata/js/esm/index.js"
+	got := strings.ReplaceAll(readConfig(t, ".sonarcloud.properties"), "\r\n", "\n")
+	got = strings.TrimSuffix(got, "\n")
+	if got != want {
 		t.Fatalf(".sonarcloud.properties = %q, want %q", got, want)
 	}
 
