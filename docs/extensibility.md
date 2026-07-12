@@ -89,4 +89,6 @@ its annotation logic. The implementation keeps runtime annotations in the shared
 `runtimeUsage` report fields; JS/TS and Python trace consumption are supported
 by default, and first-party Python capture is stable under
 `python-runtime-capture` for the documented pytest-family command profiles.
-Additional runner profiles should use a separate preview flag.
+The separately preview-gated `python-runner-profiles` capability adds the
+documented unittest and uv direct-exec profiles without widening the arbitrary
+command boundary.

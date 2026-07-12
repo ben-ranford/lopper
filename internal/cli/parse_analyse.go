@@ -60,10 +60,6 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	if err := validateCodemodApplyFlags(*flags.suggestOnly, *flags.applyCodemod, *flags.applyCodemodConfirm, *flags.allowDirty, dependency, *flags.top); err != nil {
 		return analyseParseState{}, err
 	}
-	if err := runtime.ValidateCommand(*flags.runtimeTestCommand); err != nil {
-		return analyseParseState{}, err
-	}
-
 	format, err := report.ParseFormat(*flags.formatFlag)
 	if err != nil {
 		return analyseParseState{}, err
@@ -84,6 +80,10 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	}
 	resolvedFeatures, err := resolveAnalyseFeatures(visited, flags, configFeatures)
 	if err != nil {
+		return analyseParseState{}, err
+	}
+	commandOptions := runtime.CommandOptions{PythonRunnerProfiles: resolvedFeatures.Enabled(runtime.PythonRunnerProfilesFeature)}
+	if err := runtime.ValidateCommand(*flags.runtimeTestCommand, commandOptions); err != nil {
 		return analyseParseState{}, err
 	}
 	resolvedNotifications, err := resolveAnalyseNotifications(visited, flags, resolvedConfigPath)

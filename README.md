@@ -343,14 +343,47 @@ If `--runtime-trace` points to a missing file, analysis continues with static re
 
 ### Python
 
-First-party Python runtime capture is stable for conservative pytest-family commands:
+First-party Python runtime capture is stable for these conservative pytest-family command forms (runner arguments may follow):
+
+```text
+pytest
+python -m pytest
+python3 -m pytest
+```
 
 ```bash
 lopper analyse --top 20 --repo . --language python \
   --runtime-test-command "pytest"
 ```
 
-`python -m pytest` and `python3 -m pytest` are also supported. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; it does not install project dependencies or run Python outside the user-provided command. Use `--disable-feature python-runtime-capture` for rollback. Additional runner profiles remain separately preview-gated work.
+Enable `python-runner-profiles` to opt into these additional direct-exec forms:
+
+```text
+python -m unittest
+python3 -m unittest
+uv run pytest
+uv run -- pytest
+uv run python -m pytest
+uv run python3 -m pytest
+uv run -- python -m pytest
+uv run -- python3 -m pytest
+uv run python -m unittest
+uv run python3 -m unittest
+uv run -- python -m unittest
+uv run -- python3 -m unittest
+```
+
+For example:
+
+```bash
+lopper analyse --top 20 --repo . --language python \
+  --runtime-test-command "uv run -- python -m unittest discover -s tests" \
+  --enable-feature python-runner-profiles
+```
+
+The optional `--` immediately after `uv run` is the only accepted uv wrapper delimiter. Arguments after the selected `pytest` command or `python[3] -m pytest|unittest` module are forwarded verbatim, including a later `--`; uv wrapper flags, arbitrary uv tools, Python interpreter flags, inline environment assignments, and shell operators are rejected.
+
+Lopper resolves supported executables from trusted absolute `PATH` entries in order, then from its fixed system fallback directories. It rejects writable search directories, writable/non-executable tools, and executables outside the allowlist. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; an existing project `sitecustomize.py` is chained exactly once. It does not install project dependencies or invoke a shell. Use `--disable-feature python-runtime-capture` for rollback.
 
 Explicit Python trace consumption remains compatible through `--runtime-trace`.
 
@@ -377,7 +410,7 @@ Python caveats:
 - Runtime module names map to the top-level import package, with common aliases such as `bs4` -> `beautifulsoup4`.
 - The first-party hook emits third-party imports resolved from `site-packages` or `dist-packages` and filters local modules and stdlib imports.
 - Subprocesses and pytest workers inherit the trace environment when they inherit the parent process environment; concurrent writers append NDJSON lines to the same trace file.
-- Existing project `sitecustomize.py` behavior can be affected while the runtime command is running because Python imports only one `sitecustomize` module from `PYTHONPATH`.
+- Project `sitecustomize.py` runs once before Lopper installs its import wrapper; imports performed only during that startup hook are not included in the trace.
 
 ## Development
 

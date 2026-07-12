@@ -14,6 +14,12 @@ import (
 const runtimeBinDirsEnvKey = "LOPPER_RUNTIME_BIN_DIRS"
 const defaultWindowsPathExt = ".COM;.EXE;.BAT;.CMD"
 
+const PythonRunnerProfilesFeature = "python-runner-profiles"
+
+type CommandOptions struct {
+	PythonRunnerProfiles bool
+}
+
 var runtimeOS = goruntime.GOOS
 
 var runtimeExecutableAllowlist = map[string]struct{}{
@@ -32,15 +38,14 @@ var runtimeExecutableAllowlist = map[string]struct{}{
 	"pytest":  {},
 	"python":  {},
 	"python3": {},
+	"uv":      {},
 }
 
-func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error) {
-	fields, err := parseValidatedCommand(command)
+func buildRuntimeCommand(ctx context.Context, command string, requestedOptions ...CommandOptions) (*exec.Cmd, error) {
+	options := resolveCommandOptions(requestedOptions)
+	fields, err := parseValidatedCommand(command, options)
 	if err != nil {
 		return nil, err
-	}
-	if len(fields) == 0 {
-		return nil, fmt.Errorf("runtime test command is required")
 	}
 
 	executable := fields[0]
@@ -60,12 +65,19 @@ func buildRuntimeCommand(ctx context.Context, command string) (*exec.Cmd, error)
 	return cmd, nil
 }
 
-func ValidateCommand(command string) error {
+func ValidateCommand(command string, requestedOptions ...CommandOptions) error {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	_, err := parseValidatedCommand(command)
+	_, err := parseValidatedCommand(command, resolveCommandOptions(requestedOptions))
 	return err
+}
+
+func resolveCommandOptions(options []CommandOptions) CommandOptions {
+	if len(options) == 0 {
+		return CommandOptions{}
+	}
+	return options[0]
 }
 
 type runtimeCommandParser struct {
@@ -78,6 +90,13 @@ type runtimeCommandParser struct {
 }
 
 func parseRuntimeCommand(command string) ([]string, error) {
+	if isWindowsRuntime() {
+		return parseWindowsRuntimeCommand(command)
+	}
+	return parseUnixRuntimeCommand(command)
+}
+
+func parseUnixRuntimeCommand(command string) ([]string, error) {
 	var parser runtimeCommandParser
 	for _, ch := range command {
 		parser.consume(ch)
@@ -94,18 +113,18 @@ func parseRuntimeCommand(command string) ([]string, error) {
 	return parser.fields, nil
 }
 
-func parseValidatedCommand(command string) ([]string, error) {
+func parseValidatedCommand(command string, options CommandOptions) ([]string, error) {
 	fields, err := parseRuntimeCommand(command)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeCommand(command, fields); err != nil {
+	if err := validateRuntimeCommand(command, fields, options); err != nil {
 		return nil, err
 	}
 	return fields, nil
 }
 
-func validateRuntimeCommand(command string, fields []string) error {
+func validateRuntimeCommand(command string, fields []string, options CommandOptions) error {
 	if containsUnsafeRuntimeCommandSyntax(command) {
 		return fmt.Errorf("runtime test command uses indirect command execution operators; pass a direct executable and arguments instead")
 	}
@@ -113,12 +132,29 @@ func validateRuntimeCommand(command string, fields []string) error {
 	if len(fields) == 0 {
 		return fmt.Errorf("runtime test command is required")
 	}
+	if isInlineEnvironmentAssignment(fields[0]) {
+		return fmt.Errorf("runtime test command uses inline environment assignment %q; configure the environment separately", fields[0])
+	}
 
-	return rejectRuntimeCommandUnsafeFlags(fields[0], fields[1:])
+	return rejectRuntimeCommandUnsafeFlags(fields[0], fields[1:], options)
+}
+
+func isInlineEnvironmentAssignment(token string) bool {
+	name, _, found := strings.Cut(token, "=")
+	if !found || name == "" {
+		return false
+	}
+	for index, ch := range name {
+		if ch == '_' || unicode.IsLetter(ch) || (index > 0 && unicode.IsDigit(ch)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func containsUnsafeRuntimeCommandSyntax(command string) bool {
-	var parser runtimeCommandUnsafeSyntaxParser
+	parser := runtimeCommandUnsafeSyntaxParser{windows: isWindowsRuntime()}
 	runes := []rune(command)
 
 	for i, ch := range runes {
@@ -134,6 +170,7 @@ type runtimeCommandUnsafeSyntaxParser struct {
 	inSingleQuote bool
 	inDoubleQuote bool
 	escaped       bool
+	windows       bool
 }
 
 func (p *runtimeCommandUnsafeSyntaxParser) consume(ch, next rune) bool {
@@ -144,12 +181,18 @@ func (p *runtimeCommandUnsafeSyntaxParser) consume(ch, next rune) bool {
 
 	switch ch {
 	case '\\':
+		if p.windows {
+			return false
+		}
 		if p.inSingleQuote {
 			return false
 		}
 		p.escaped = true
 		return false
 	case '\'':
+		if p.windows {
+			return false
+		}
 		if p.inDoubleQuote {
 			return false
 		}
@@ -195,9 +238,9 @@ func nextRuntimeCommandRune(runes []rune, index int) rune {
 	return runes[index+1]
 }
 
-func rejectRuntimeCommandUnsafeFlags(executable string, args []string) error {
-	if isPythonRuntimeExecutable(executable) {
-		return rejectUnsafePythonRuntimeCommand(executable, args)
+func rejectRuntimeCommandUnsafeFlags(executable string, args []string, options CommandOptions) error {
+	if isPythonRuntimeExecutable(executable) || executable == "uv" {
+		return validatePythonRuntimeProfile(executable, args, options)
 	}
 
 	flags, ok := runtimeCommandUnsafeFlags[executable]
@@ -215,7 +258,7 @@ func rejectRuntimeCommandUnsafeFlags(executable string, args []string) error {
 	return nil
 }
 
-func IsPythonTestCommand(command string) bool {
+func IsPythonTestCommand(command string, requestedOptions ...CommandOptions) bool {
 	fields, err := parseRuntimeCommand(command)
 	if err != nil || len(fields) == 0 {
 		return false
@@ -223,18 +266,11 @@ func IsPythonTestCommand(command string) bool {
 	if fields[0] == "pytest" {
 		return true
 	}
-	return isPythonRuntimeExecutable(fields[0]) && len(fields) >= 2 && fields[1] == "-m" && len(fields) >= 3 && fields[2] == "pytest"
+	return validatePythonRuntimeProfile(fields[0], fields[1:], resolveCommandOptions(requestedOptions)) == nil
 }
 
 func isPythonRuntimeExecutable(executable string) bool {
 	return executable == "python" || executable == "python3"
-}
-
-func rejectUnsafePythonRuntimeCommand(executable string, args []string) error {
-	if len(args) < 2 || args[0] != "-m" || args[1] != "pytest" {
-		return fmt.Errorf("runtime test command for %q may only run '-m pytest'", executable)
-	}
-	return nil
 }
 
 var runtimeCommandUnsafeFlags = map[string][]string{
@@ -351,10 +387,14 @@ func runtimeExecutableCandidates(executable, dir string) []string {
 }
 
 func isTrustedRuntimeExecutable(info os.FileInfo) bool {
+	if !info.Mode().IsRegular() {
+		return false
+	}
 	if isWindowsRuntime() {
 		return true
 	}
-	return info.Mode().Perm()&0o111 != 0
+	permissions := info.Mode().Perm()
+	return permissions&0o111 != 0 && permissions&0o022 == 0
 }
 
 func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
@@ -372,8 +412,25 @@ func runtimeSearchDirs() []string {
 	if configured != "" {
 		return trustedSearchDirs(configured)
 	}
+
+	pathDirs := trustedSearchDirs(os.Getenv("PATH"))
 	defaults := strings.Join(defaultTrustedRuntimeBinDirEntries(), string(os.PathListSeparator))
-	return trustedSearchDirs(defaults)
+	return appendUniqueRuntimeSearchDirs(pathDirs, trustedSearchDirs(defaults))
+}
+
+func appendUniqueRuntimeSearchDirs(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	var dirs []string
+	for _, group := range groups {
+		for _, dir := range group {
+			if _, ok := seen[dir]; ok {
+				continue
+			}
+			seen[dir] = struct{}{}
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 func defaultTrustedRuntimeBinDirEntries() []string {

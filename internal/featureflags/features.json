@@ -159,5 +159,11 @@
     "description": "Enable org-level dashboard remediation queue items across errors, vulnerabilities, policy findings, recommendations, runtime regressions, and shared dependency hotspots.",
     "lifecycle": "preview",
     "firstStableRelease": "v1.8.0"
+  },
+  {
+    "code": "LOP-FEAT-0018",
+    "name": "python-runner-profiles",
+    "description": "Enable safe unittest and uv profiles for Python runtime capture.",
+    "lifecycle": "preview"
   }
 ]

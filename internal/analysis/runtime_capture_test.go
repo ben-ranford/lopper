@@ -170,6 +170,7 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 
 func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 	features := mustResolvePythonRuntimeCaptureFeatureSet(t, true)
+	previewFeatures := mustResolvePythonRuntimeCaptureAndRunnerProfiles(t)
 	pythonCandidate := language.Candidate{Adapter: &stubAdapter{id: "python"}}
 	jsCandidate := language.Candidate{Adapter: &stubAdapter{id: "js-ts"}}
 
@@ -192,6 +193,20 @@ func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 			command:    "pytest",
 			candidates: []language.Candidate{pythonCandidate},
 			want:       runtime.CaptureProviderPython,
+		},
+		{
+			name:       "auto uv command with preview profile and python candidate",
+			req:        Request{Language: "auto", Features: previewFeatures},
+			command:    "uv run pytest",
+			candidates: []language.Candidate{pythonCandidate, jsCandidate},
+			want:       runtime.CaptureProviderPython,
+		},
+		{
+			name:       "auto uv command without preview profile stays on node provider",
+			req:        Request{Language: "auto", Features: features},
+			command:    "uv run pytest",
+			candidates: []language.Candidate{pythonCandidate, jsCandidate},
+			want:       runtime.CaptureProviderNode,
 		},
 		{
 			name:       "python only candidate with make command",
@@ -221,6 +236,18 @@ func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 			t.Fatalf("%s: expected provider %q, got %q", tc.name, tc.want, got)
 		}
 	}
+}
+
+func mustResolvePythonRuntimeCaptureAndRunnerProfiles(t *testing.T) featureflags.Set {
+	t.Helper()
+	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{runtime.PythonRunnerProfilesFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve Python runner profiles feature set: %v", err)
+	}
+	return resolved
 }
 
 func mustResolvePythonRuntimeCaptureFeatureSet(t *testing.T, enabled bool) featureflags.Set {

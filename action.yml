@@ -80,7 +80,7 @@ inputs:
     required: false
     default: ''
   runtime-test-command:
-    description: Optional test command to run with runtime tracing.
+    description: Optional allowlisted test command to run with runtime tracing. unittest and uv forms require enable-feature=python-runner-profiles.
     required: false
     default: ''
   advisory-source:
