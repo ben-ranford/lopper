@@ -282,6 +282,14 @@ func TestParseRuntimeCommandWindowsArgumentConventions(t *testing.T) {
 			want:    []string{"uv", "run", "pytest", `C:\repo\quoted\"name.py`},
 		},
 		{
+			command: `uv run pytest "C:\repo\\"`,
+			want:    []string{"uv", "run", "pytest", `C:\repo\`},
+		},
+		{
+			command: `uv run pytest C:\repo\\tests`,
+			want:    []string{"uv", "run", "pytest", `C:\repo\\tests`},
+		},
+		{
 			command: `uv run pytest ""`,
 			want:    []string{"uv", "run", "pytest", ""},
 		},
