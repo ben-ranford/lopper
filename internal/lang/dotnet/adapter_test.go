@@ -115,6 +115,35 @@ public class Program {
 	}
 }
 
+func TestAdapterAnalyseUnicodeUsingAliasAsUsed(t *testing.T) {
+	repo := t.TempDir()
+	writeManifestFixture(t, filepath.Join(repo, "Api.csproj"), newtonsoftProjectManifest)
+	testutil.MustWriteFile(t, filepath.Join(repo, programSourceFileName), `
+using føø = Newtonsoft.Json.JsonConvert;
+
+public class Program {
+  public static void Main() {
+    _ = føø.SerializeObject(new { Name = "demo" });
+  }
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: newtonsoftDependencyName,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	dep := expectSingleDotNetDependency(t, reportData.Dependencies)
+	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 {
+		t.Fatalf("expected unicode alias usage 1/1, got %d/%d", dep.UsedExportsCount, dep.TotalExportsCount)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unicode alias to stay out of unused imports, got %#v", dep.UnusedImports)
+	}
+}
+
 func TestAdapterAnalyseTopNWithCentralPackages(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFileName), `

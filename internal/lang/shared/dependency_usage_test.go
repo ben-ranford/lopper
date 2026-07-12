@@ -127,29 +127,32 @@ func TestCountUsageHonorsWordBoundaries(t *testing.T) {
 	if usage[testLocalDollarFoo] != 1 {
 		t.Fatalf("expected $foo usage 1, got %d", usage[testLocalDollarFoo])
 	}
-	if usage[testLocalUnicode] != 0 {
-		t.Fatalf("expected føø usage 0 to match regexp word-boundary behavior, got %d", usage[testLocalUnicode])
+	if usage[testLocalUnicode] != 1 {
+		t.Fatalf("expected føø usage 1, got %d", usage[testLocalUnicode])
 	}
 }
 
-func TestCountUsageUnicodeIdentifierPositionsAreIgnored(t *testing.T) {
-	imports := []ImportRecord{{Local: testLocalUnicode}}
-	cases := []struct {
-		name    string
-		content string
-	}{
-		{name: "standalone", content: "føø"},
-		{name: "prefix", content: "føøalpha"},
-		{name: "suffix", content: "alphaføø"},
-		{name: "middle", content: "al føø ph"},
-		{name: "adjacent punctuation", content: "(føø),[føø]"},
+func TestCountUsageUnicodeIdentifierBoundaries(t *testing.T) {
+	imports := []ImportRecord{{
+		Local:    testLocalUnicode,
+		Location: report.Location{File: "main.py", Line: 1, Column: 1},
+	}}
+	cases := map[string]int{
+		"føø":         1,
+		"føøalpha":    0,
+		"alphaføø":    0,
+		"al føø ph":   1,
+		"(føø),[føø]": 2,
 	}
 
-	for _, tc := range cases {
-		usage := CountUsage([]byte(tc.content), imports)
-		if usage[testLocalUnicode] != 0 {
-			t.Fatalf("%s: expected unicode identifier usage 0 with ASCII scanner, got %d", tc.name, usage[testLocalUnicode])
-		}
+	for source, want := range cases {
+		t.Run(source, func(t *testing.T) {
+			content := []byte("import module as føø\n" + source + "\n")
+			usage := CountUsage(content, imports)
+			if usage[testLocalUnicode] != want {
+				t.Fatalf("expected unicode identifier usage %d, got %d", want, usage[testLocalUnicode])
+			}
+		})
 	}
 }
 
@@ -218,6 +221,12 @@ func TestDeclarationAndMaskingHelpers(t *testing.T) {
 	if declarationLineContainsToken([]byte("x"), []int{1, 1}, 1, "x") {
 		t.Fatalf("expected malformed line offsets to be rejected")
 	}
+	if !containsUnicodeIdentifierToken([]byte("call(føø)"), testLocalUnicode) {
+		t.Fatalf("expected unicode token helper to find an exact identifier")
+	}
+	if containsUnicodeIdentifierToken([]byte("føøalpha alphaføø"), testLocalUnicode) {
+		t.Fatalf("expected unicode token helper to honor identifier boundaries")
+	}
 
 	escaped := []byte("\\\"")
 	next, state := scanQuoted(escaped, 0, '"', scannerStateDoubleQuote)
@@ -238,6 +247,16 @@ func TestDeclarationAndMaskingHelpers(t *testing.T) {
 
 func BenchmarkCountUsage(b *testing.B) {
 	imports, content := benchmarkImportsAndContent()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = CountUsage(content, imports)
+	}
+}
+
+func BenchmarkCountUsageUnicode(b *testing.B) {
+	imports, content := benchmarkUnicodeImportsAndContent()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = CountUsage(content, imports)
@@ -264,6 +283,12 @@ func benchmarkImportsAndContent() ([]ImportRecord, []byte) {
 		source.WriteString("();otherToken();")
 	}
 	return imports, []byte(source.String())
+}
+
+func benchmarkUnicodeImportsAndContent() ([]ImportRecord, []byte) {
+	imports, content := benchmarkImportsAndContent()
+	imports = append(imports, ImportRecord{Local: testLocalUnicode})
+	return imports, append(content, []byte("føø();føø();otherToken();")...)
 }
 
 func countUsageRegexPerIdentifier(content []byte, imports []ImportRecord) map[string]int {
