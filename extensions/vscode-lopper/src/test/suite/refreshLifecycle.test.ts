@@ -170,6 +170,45 @@ suite("refresh lifecycle", () => {
     });
   });
 
+  test("does not let a superseded cancellation overwrite a newer running status", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const deferredAnalyses: Array<Deferred<WorkspaceAnalysis>> = [];
+      const signals: AbortSignal[] = [];
+
+      await withController(
+        {
+          analyseWorkspace: async (_folder, options): Promise<WorkspaceAnalysis> => {
+            const next = deferred<WorkspaceAnalysis>();
+            deferredAnalyses.push(next);
+            assert.ok(options?.signal, "expected refresh signal to be forwarded");
+            signals.push(options.signal);
+            return next.promise;
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          const firstRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.equal(deferredAnalyses.length, 1));
+          const secondRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.equal(deferredAnalyses.length, 2));
+
+          deferredAnalyses[0].resolve(makeAnalysis(harness, { dependencyCount: 3, usedPercent: 25 }));
+          await firstRefresh;
+          const statusWhileLatestRunIsPending = controller.getLatestSummary();
+
+          deferredAnalyses[1].resolve(makeAnalysis(harness, { dependencyCount: 0, usedPercent: 0 }));
+          await secondRefresh;
+
+          assert.equal(signals[0].aborted, true, "superseded run should be aborted");
+          assert.match(statusWhileLatestRunIsPending, /analysing/);
+          assert.match(controller.getLatestSummary(), /0 deps/);
+        },
+      );
+    });
+  });
+
   test("forceFresh bypasses cache and starts a new analysis run", async function () {
     this.timeout(30_000);
 
@@ -190,6 +229,135 @@ suite("refresh lifecycle", () => {
 
           assert.equal(analyseCalls, 2, "forceFresh should bypass cache and dedupe");
           assert.doesNotMatch(controller.getLatestSummary(), /cached/);
+        },
+      );
+    });
+  });
+
+  test("preserves the last successful analysis when a fresh refresh is cancelled", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      let analyseCalls = 0;
+      let activeSignal: AbortSignal | undefined;
+
+      await withController(
+        {
+          analyseWorkspace: async (_folder, options): Promise<WorkspaceAnalysis> => {
+            analyseCalls += 1;
+            if (analyseCalls === 1) {
+              return makeAnalysis(harness, { dependencyCount: 1, usedPercent: 50 });
+            }
+
+            assert.ok(options?.signal, "expected fresh refresh signal");
+            activeSignal = options.signal;
+            return new Promise<WorkspaceAnalysis>((_resolve, reject) => {
+              options.signal?.addEventListener(
+                "abort",
+                () => reject(new Error("lopper command was cancelled")),
+                { once: true },
+              );
+            });
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          await refresh(controller, harness);
+          const previousSummary = controller.getLatestSummary();
+          const previousDiagnostics = vscode.languages
+            .getDiagnostics(harness.document.uri)
+            .filter((item) => item.source === "lopper");
+          assert.equal(previousDiagnostics.length, 1);
+
+          const pendingRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.ok(activeSignal, "expected fresh refresh to start"));
+          controller.cancelRefresh();
+          await pendingRefresh;
+
+          const currentDiagnostics = vscode.languages
+            .getDiagnostics(harness.document.uri)
+            .filter((item) => item.source === "lopper");
+          assert.equal(activeSignal?.aborted, true);
+          assert.equal(controller.getLatestSummary(), previousSummary);
+          assert.equal(currentDiagnostics.length, previousDiagnostics.length);
+          assert.deepEqual(
+            currentDiagnostics.map((item) => item.message),
+            previousDiagnostics.map((item) => item.message),
+          );
+        },
+      );
+    });
+  });
+
+  test("returns to idle when the first refresh is cancelled", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      let activeSignal: AbortSignal | undefined;
+
+      await withController(
+        {
+          analyseWorkspace: async (_folder, options): Promise<WorkspaceAnalysis> => {
+            assert.ok(options?.signal, "expected refresh signal");
+            activeSignal = options.signal;
+            return new Promise<WorkspaceAnalysis>((_resolve, reject) => {
+              options.signal?.addEventListener(
+                "abort",
+                () => reject(new Error("lopper command was cancelled")),
+                { once: true },
+              );
+            });
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          const pendingRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.ok(activeSignal, "expected refresh to start"));
+          controller.cancelRefresh();
+          await pendingRefresh;
+
+          assert.equal(activeSignal?.aborted, true);
+          assert.equal(controller.getLatestSummary(), "Lopper: idle");
+          assert.equal(
+            vscode.languages.getDiagnostics(harness.document.uri).filter((item) => item.source === "lopper").length,
+            0,
+          );
+        },
+      );
+    });
+  });
+
+  test("still clears stale state for genuine refresh failures", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      let analyseCalls = 0;
+
+      await withController(
+        {
+          analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+            analyseCalls += 1;
+            if (analyseCalls === 1) {
+              return makeAnalysis(harness, { dependencyCount: 1, usedPercent: 50 });
+            }
+            throw new Error("analysis exploded");
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          await refresh(controller, harness);
+          assert.equal(
+            vscode.languages.getDiagnostics(harness.document.uri).filter((item) => item.source === "lopper").length,
+            1,
+          );
+
+          await refresh(controller, harness, { forceFresh: true });
+
+          assert.match(controller.getLatestSummary(), /unavailable/);
+          assert.equal(
+            vscode.languages.getDiagnostics(harness.document.uri).filter((item) => item.source === "lopper").length,
+            0,
+          );
         },
       );
     });

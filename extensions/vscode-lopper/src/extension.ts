@@ -81,6 +81,7 @@ export interface RefreshWorkspaceOptions {
 interface LopperControllerContract extends vscode.Disposable {
   initialize(): Promise<void>;
   refreshWorkspace(options?: RefreshWorkspaceOptions): Promise<void>;
+  cancelRefresh(reason?: string): void;
   applyCodemod(dependencyName?: string, folderPath?: string, options?: ApplyCodemodCommandOptions): Promise<void>;
   getLatestSummary(): string;
 }
@@ -106,6 +107,26 @@ interface RefreshAbortHandle {
   controller: AbortController;
 }
 
+interface FreshRefreshOptions {
+  folder: vscode.WorkspaceFolder;
+  workspaceKey: string;
+  sessionKey: string;
+  runId: number;
+  revealErrors: boolean;
+  scopeMode: LopperScopeMode;
+  document?: vscode.TextDocument;
+  requestedLanguage: string;
+  runtimeTracePath?: string;
+  runtimeTestCommand?: string;
+  baselinePath?: string;
+  baselineStorePath?: string;
+  baselineKey?: string;
+  baselineLabel?: string;
+  saveBaseline?: boolean;
+  signal?: AbortSignal;
+  abortKey?: string;
+}
+
 interface ApplyCodemodCommandOptions {
   allowDirty?: boolean;
   skipConfirmation?: boolean;
@@ -122,6 +143,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   private readonly refreshSessions = new RefreshSessionStore<WorkspaceAnalysis>();
   private readonly refreshAbortHandles = new Map<string, RefreshAbortHandle>();
   private readonly analysisByWorkspace = new Map<string, WorkspaceAnalysis>();
+  private readonly successfulStatusByWorkspace = new Map<string, { text: string; tooltip: string }>();
   private readonly detailPanels = new Map<string, vscode.WebviewPanel>();
   private readonly explorer: LopperExplorerTreeDataProvider;
   private latestSummary = "Lopper: idle";
@@ -161,7 +183,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
           });
         }),
         vscode.commands.registerCommand("lopper.cancelRefresh", () => {
-          this.cancelActiveRefreshes("user requested cancellation");
+          this.cancelRefresh();
         }),
         vscode.commands.registerCommand("lopper.refreshWorkspace.runtime", async (folderPath?: string) => {
           await this.refreshRuntimeWorkspace(folderPath);
@@ -247,6 +269,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
             this.clearWorkspaceDiagnostics(removedFolder);
             this.refreshSessions.clearFolder(folderKey);
             this.analysisByWorkspace.delete(folderKey);
+            this.successfulStatusByWorkspace.delete(folderKey);
           }
           for (const addedFolder of event.added) {
             if (!vscode.workspace.getConfiguration("lopper", addedFolder.uri).get<boolean>("autoRefresh", true)) {
@@ -436,98 +459,81 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     return false;
   }
 
-  private async executeFreshRefresh(options: {
-    folder: vscode.WorkspaceFolder;
-    workspaceKey: string;
-    sessionKey: string;
-    runId: number;
-    revealErrors: boolean;
-    scopeMode: LopperScopeMode;
-    document?: vscode.TextDocument;
-    requestedLanguage: string;
-    runtimeTracePath?: string;
-    runtimeTestCommand?: string;
-    baselinePath?: string;
-    baselineStorePath?: string;
-    baselineKey?: string;
-    baselineLabel?: string;
-    saveBaseline?: boolean;
-    signal?: AbortSignal;
-    abortKey?: string;
-  }): Promise<void> {
-    const {
-      folder,
-      workspaceKey,
-      sessionKey,
-      runId,
-      revealErrors,
-      scopeMode,
-      document,
-      requestedLanguage,
-      runtimeTracePath,
-      runtimeTestCommand,
-      baselinePath,
-      baselineStorePath,
-      baselineKey,
-      baselineLabel,
-      saveBaseline,
-      signal,
-      abortKey,
-    } = options;
+  private async executeFreshRefresh(options: FreshRefreshOptions): Promise<void> {
+    const { folder, workspaceKey, sessionKey, runId, abortKey } = options;
     try {
       const request: WorkspaceAnalysisRequest = {
-        document,
-        scopeMode,
-        runtimeTracePath,
-        runtimeTestCommand,
-        baselinePath,
-        baselineStorePath,
-        baselineKey,
-        baselineLabel,
-        saveBaseline,
-        signal,
+        document: options.document,
+        scopeMode: options.scopeMode,
+        runtimeTracePath: options.runtimeTracePath,
+        runtimeTestCommand: options.runtimeTestCommand,
+        baselinePath: options.baselinePath,
+        baselineStorePath: options.baselineStorePath,
+        baselineKey: options.baselineKey,
+        baselineLabel: options.baselineLabel,
+        saveBaseline: options.saveBaseline,
+        signal: options.signal,
       };
       const analysis = await this.runner.analyseWorkspace(folder, request);
-      if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
-        this.output.appendLine(
-          `[refresh:stale] ${folder.name} (${requestedLanguage}, ${scopeMode}) run=${runId} ignored in favor of run=${this.refreshSessions.latestRunId(workspaceKey)}`,
-        );
-        this.output.appendLine(`[refresh:cancelled] stale run ${runId} did not update diagnostics`);
-        return;
-      }
-      this.refreshSessions.setCache(workspaceKey, sessionKey, analysis);
-      this.renderAnalysis(analysis, "fresh");
-      this.missingBinaryWarningShown = false;
+      this.completeFreshRefresh(options, analysis);
     } catch (error) {
-      if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
-        this.output.appendLine(
-          `[refresh:stale] ${folder.name} (${requestedLanguage}, ${scopeMode}) run=${runId} failed after supersession`,
-        );
-        this.output.appendLine(`[refresh:cancelled] stale run ${runId} failure ignored`);
-        return;
-      }
-
-      const message = error instanceof Error ? error.message : String(error);
-      this.clearWorkspaceDiagnostics(folder);
-      this.analysisByWorkspace.delete(workspaceKey);
-      this.explorer.refresh();
-      this.updateStatus(`Lopper: unavailable (${scopeMode})`, message);
-      this.output.appendLine(`[refresh:error] ${message}`);
-      if (error instanceof BinaryResolutionError) {
-        if (revealErrors && !this.missingBinaryWarningShown) {
-          this.missingBinaryWarningShown = true;
-          await vscode.window.showWarningMessage(message);
-        }
-        return;
-      }
-      if (revealErrors) {
-        await vscode.window.showErrorMessage(`Lopper refresh failed: ${message}`);
-      }
+      await this.handleFreshRefreshError(options, error);
     } finally {
       this.refreshSessions.clearInFlight(workspaceKey, sessionKey, runId);
       if (abortKey) {
         this.refreshAbortHandles.delete(abortKey);
       }
+    }
+  }
+
+  private completeFreshRefresh(options: FreshRefreshOptions, analysis: WorkspaceAnalysis): void {
+    const { folder, workspaceKey, sessionKey, runId, requestedLanguage, scopeMode, signal } = options;
+    if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
+      this.output.appendLine(
+        `[refresh:stale] ${folder.name} (${requestedLanguage}, ${scopeMode}) run=${runId} ignored in favor of run=${this.refreshSessions.latestRunId(workspaceKey)}`,
+      );
+      this.output.appendLine(`[refresh:cancelled] stale run ${runId} did not update diagnostics`);
+      return;
+    }
+    if (signal?.aborted) {
+      this.restoreStatusAfterCancellation(folder, workspaceKey, scopeMode, runId);
+      return;
+    }
+    this.refreshSessions.setCache(workspaceKey, sessionKey, analysis);
+    this.renderAnalysis(analysis, "fresh");
+    this.missingBinaryWarningShown = false;
+  }
+
+  private async handleFreshRefreshError(options: FreshRefreshOptions, error: unknown): Promise<void> {
+    const { folder, workspaceKey, runId, requestedLanguage, scopeMode, signal, revealErrors } = options;
+    if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
+      this.output.appendLine(
+        `[refresh:stale] ${folder.name} (${requestedLanguage}, ${scopeMode}) run=${runId} failed after supersession`,
+      );
+      this.output.appendLine(`[refresh:cancelled] stale run ${runId} failure ignored`);
+      return;
+    }
+    if (signal?.aborted) {
+      this.restoreStatusAfterCancellation(folder, workspaceKey, scopeMode, runId);
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    this.clearWorkspaceDiagnostics(folder);
+    this.analysisByWorkspace.delete(workspaceKey);
+    this.successfulStatusByWorkspace.delete(workspaceKey);
+    this.explorer.refresh();
+    this.updateStatus(`Lopper: unavailable (${scopeMode})`, message);
+    this.output.appendLine(`[refresh:error] ${message}`);
+    if (error instanceof BinaryResolutionError) {
+      if (revealErrors && !this.missingBinaryWarningShown) {
+        this.missingBinaryWarningShown = true;
+        await vscode.window.showWarningMessage(message);
+      }
+      return;
+    }
+    if (revealErrors) {
+      await vscode.window.showErrorMessage(`Lopper refresh failed: ${message}`);
     }
   }
 
@@ -672,6 +678,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   dispose(): void {
     this.cancelActiveRefreshes("extension disposed");
     this.refreshAbortHandles.clear();
+    this.successfulStatusByWorkspace.clear();
     clearAndroidModuleSignalCache();
     for (const timer of this.refreshTimers.values()) {
       clearTimeout(timer);
@@ -1290,11 +1297,14 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     const warningCount = analysis.report.warnings?.length ?? 0;
     const sourceSummary = source === "cache" ? "cached" : "fresh";
     const warningSummary = warningCount > 0 ? ` | Warnings: ${warningCount}` : "";
-    this.updateStatus(
-      `Lopper: ${dependencyCount} deps | ${usedPercent.toFixed(1)}% used | ${analysis.scopeMode}${source === "cache" ? " | cached" : ""}`,
-      `Folder: ${analysis.folder.name} | Scope: ${analysis.scopeMode} | Adapter: ${analysis.requestedLanguage} | Source: ${sourceSummary} | Binary: ${path.basename(analysis.binaryPath)}${warningSummary}`,
-    );
-    this.analysisByWorkspace.set(analysis.folder.uri.toString(), analysis);
+    const workspaceKey = analysis.folder.uri.toString();
+    const status = {
+      text: `Lopper: ${dependencyCount} deps | ${usedPercent.toFixed(1)}% used | ${analysis.scopeMode}${source === "cache" ? " | cached" : ""}`,
+      tooltip: `Folder: ${analysis.folder.name} | Scope: ${analysis.scopeMode} | Adapter: ${analysis.requestedLanguage} | Source: ${sourceSummary} | Binary: ${path.basename(analysis.binaryPath)}${warningSummary}`,
+    };
+    this.updateStatus(status.text, status.tooltip);
+    this.successfulStatusByWorkspace.set(workspaceKey, status);
+    this.analysisByWorkspace.set(workspaceKey, analysis);
     this.explorer.refresh();
     for (const warning of analysis.report.warnings ?? []) {
       this.output.appendLine(`[refresh:warning] ${analysis.folder.name} (${analysis.scopeMode}): ${warning}`);
@@ -1484,6 +1494,27 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     if (cancelled > 0) {
       this.updateStatus("Lopper: cancelling", "Cancelling active Lopper analysis.");
     }
+  }
+
+  cancelRefresh(reason = "user requested cancellation"): void {
+    this.cancelActiveRefreshes(reason);
+  }
+
+  private restoreStatusAfterCancellation(
+    folder: vscode.WorkspaceFolder,
+    workspaceKey: string,
+    scopeMode: LopperScopeMode,
+    runId: number,
+  ): void {
+    const previousStatus = this.successfulStatusByWorkspace.get(workspaceKey);
+    if (previousStatus) {
+      this.updateStatus(previousStatus.text, previousStatus.tooltip);
+    } else {
+      this.updateStatus("Lopper: idle", `Refresh cancelled for ${folder.name}.`);
+    }
+    this.output.appendLine(
+      `[refresh:cancelled] ${folder.name} (${scopeMode}) run=${runId} kept previous diagnostics`,
+    );
   }
 
   private refreshAbortKey(workspaceKey: string, runId: number): string {
