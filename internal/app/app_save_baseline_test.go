@@ -95,7 +95,7 @@ func TestResolveBaselineComparisonPathsBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baseline store branch: %v", err)
 	}
-	if !shouldApply || key != "label:weekly" || !strings.HasSuffix(path, "label_weekly.json") {
+	if !shouldApply || key != "label:weekly" || path != report.ResolveBaselineSnapshotPath(baselineStorePath, key) {
 		t.Fatalf("unexpected baseline-store resolution: path=%q key=%q shouldApply=%v", path, key, shouldApply)
 	}
 	if currentKey == "" {

@@ -110,6 +110,7 @@ func TestFeatureDeprecationWarningsByMode(t *testing.T) {
 	cases := []app.Request{
 		{Mode: app.ModeAnalyse, Analyse: app.AnalyseRequest{Features: features}},
 		{Mode: app.ModeDashboard, Dashboard: app.DashboardRequest{Features: features}},
+		{Mode: app.ModeBaseline, Baseline: app.BaselineRequest{Features: features}},
 		{Mode: app.ModeProfile, Profile: app.ProfileRequest{Features: features}},
 		{Mode: app.ModeMCP, MCP: app.MCPRequest{Features: features}},
 	}
@@ -278,6 +279,9 @@ func TestUsageReturnsText(t *testing.T) {
 	}
 	if !strings.Contains(Usage(), "lopper mcp") {
 		t.Fatalf("expected usage text to include mcp command")
+	}
+	if !strings.Contains(Usage(), "lopper baseline list") || !strings.Contains(Usage(), "lopper baseline show KEY") {
+		t.Fatalf("expected usage text to include baseline discovery commands")
 	}
 	if !strings.Contains(Usage(), "--format table|csv|json|sarif|pr-comment|cyclonedx-json") {
 		t.Fatalf("expected usage text to include analyse csv format")

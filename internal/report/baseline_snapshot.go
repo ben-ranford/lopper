@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 const BaselineSnapshotSchemaVersion = "1.0.0"
 
 var ErrBaselineAlreadyExists = errors.New("baseline snapshot already exists")
+
+var ErrBaselineKeyMismatch = errors.New("baseline snapshot key does not match requested key")
 
 type BaselineSnapshot struct {
 	BaselineSchemaVersion string    `json:"baselineSchemaVersion"`
@@ -36,7 +39,10 @@ func LoadWithKey(path string) (Report, string, error) {
 	if err != nil {
 		return Report{}, "", err
 	}
+	return decodeBaselineSnapshot(data)
+}
 
+func decodeBaselineSnapshot(data []byte) (Report, string, error) {
 	var snapshot BaselineSnapshot
 	if err := json.Unmarshal(data, &snapshot); err == nil && strings.TrimSpace(snapshot.BaselineSchemaVersion) != "" {
 		if snapshot.BaselineSchemaVersion != BaselineSnapshotSchemaVersion {
@@ -64,6 +70,32 @@ func LoadWithKey(path string) (Report, string, error) {
 	return rep, "", nil
 }
 
+func LoadSnapshot(dir, key string) (Report, string, string, error) {
+	trimmedKey := strings.TrimSpace(key)
+	path := ResolveBaselineSnapshotPath(dir, trimmedKey)
+	data, err := baselineutil.ReadStoreEntry(dir, filepath.Base(path), baselineutil.MaxSnapshotBytes)
+	if err != nil {
+		return Report{}, "", path, err
+	}
+	rep, loadedKey, err := decodeBaselineSnapshot(data)
+	if err != nil {
+		return Report{}, "", path, err
+	}
+	if err := ValidateBaselineSnapshotKey(trimmedKey, loadedKey); err != nil {
+		return Report{}, loadedKey, path, err
+	}
+	return rep, loadedKey, path, nil
+}
+
+func ValidateBaselineSnapshotKey(requestedKey, storedKey string) error {
+	requestedKey = strings.TrimSpace(requestedKey)
+	storedKey = strings.TrimSpace(storedKey)
+	if requestedKey == storedKey && requestedKey != "" {
+		return nil
+	}
+	return fmt.Errorf("%w: requested %q, stored %q", ErrBaselineKeyMismatch, requestedKey, storedKey)
+}
+
 func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
 	return baselineutil.SaveJSON(dir, key, ErrBaselineAlreadyExists, func(trimmedKey string) BaselineSnapshot {
 		return newBaselineSnapshot(trimmedKey, rep, now)
@@ -72,6 +104,10 @@ func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, er
 
 func BaselineSnapshotPath(dir, key string) string {
 	return baselineutil.SnapshotPath(dir, key)
+}
+
+func ResolveBaselineSnapshotPath(dir, key string) string {
+	return baselineutil.ResolveSnapshotPath(dir, key)
 }
 
 func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot {

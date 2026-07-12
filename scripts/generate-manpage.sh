@@ -42,6 +42,8 @@ escape_roff() {
 	printf "lopper analyse --top N [options]\n"
 	printf "lopper analyse <dependency> [options]\n"
 	printf "lopper dashboard [--repos PATH1,PATH2 | --config PATH]\n"
+	printf "lopper baseline list [options]\n"
+	printf "lopper baseline show KEY [options]\n"
 	printf "lopper profile apply strict|balanced|noise-reduction [options]\n"
 	printf "lopper mcp\n"
 	printf ".fi\n"

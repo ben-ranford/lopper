@@ -7,6 +7,8 @@ const usage = `Usage:
   lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--disable-feature NAME] [--fail-on-increase PERCENT]
   lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
   lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
+  lopper baseline list [--store DIR] [--format table|json] [--limit N] [--enable-feature baseline-store-discovery-preview]
+  lopper baseline show KEY [--store DIR] [--format table|json] [--enable-feature baseline-store-discovery-preview]
   lopper features [--format table|json] [--channel dev|rolling|release] [--release VERSION]
   lopper profile apply strict|balanced|noise-reduction [--output PATH] [--force] [--enable-feature threshold-profiles]
   lopper mcp
@@ -44,6 +46,8 @@ Options:
   --baseline-key KEY         Baseline snapshot key for dashboard comparison
   --baseline-label LABEL     Label key to use when saving dashboard baselines
   --save-baseline            Save current dashboard run as an immutable baseline snapshot
+  --store DIR                Baseline discovery store (default: .artifacts/lopper-baselines)
+  --limit N                  Maximum snapshots returned by baseline list (default: 50)
   --include GLOBS            Comma-separated include path globs (repeatable; CLI overrides config scope.include)
   --exclude GLOBS            Comma-separated exclude path globs (repeatable; CLI overrides config scope.exclude)
   --suggest-only             Generate deterministic patch previews for safe remediation suggestions

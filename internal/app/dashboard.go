@@ -46,7 +46,7 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 }
 
 func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, includeRemediationQueue bool) (dashboard.Report, error) {
-	baselinePath, baselineKey, currentKey, shouldApply, err := resolveDashboardBaselinePaths(repoPath, resolved)
+	_, baselineKey, currentKey, shouldApply, err := resolveDashboardBaselinePaths(repoPath, resolved)
 	if err != nil {
 		return reportData, err
 	}
@@ -54,7 +54,7 @@ func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPa
 		return reportData, nil
 	}
 
-	baseline, loadedKey, err := dashboard.LoadWithKey(baselinePath)
+	baseline, loadedKey, _, err := dashboard.LoadSnapshot(resolved.baselineStorePath, baselineKey)
 	if err != nil {
 		if resolved.saveBaseline && errors.Is(err, os.ErrNotExist) {
 			return reportData, nil
@@ -83,7 +83,7 @@ func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPat
 }
 
 func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
-	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromDashboard(resolved), dashboard.BaselineSnapshotPath)
+	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromDashboard(resolved), dashboard.ResolveBaselineSnapshotPath)
 }
 
 func appendDashboardBaselineSaveWarning(reportData dashboard.Report, savedPath string) dashboard.Report {

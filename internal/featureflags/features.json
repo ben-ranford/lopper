@@ -165,5 +165,11 @@
     "name": "python-runner-profiles",
     "description": "Enable safe unittest and uv profiles for Python runtime capture.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0019",
+    "name": "baseline-store-discovery-preview",
+    "description": "Enable safe listing and inspection of immutable local baseline snapshots.",
+    "lifecycle": "preview"
   }
 ]

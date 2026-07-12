@@ -75,6 +75,8 @@ func featureDeprecationWarnings(req app.Request) []string {
 		return req.Analyse.Features.DeprecationWarnings()
 	case app.ModeDashboard:
 		return req.Dashboard.Features.DeprecationWarnings()
+	case app.ModeBaseline:
+		return req.Baseline.Features.DeprecationWarnings()
 	case app.ModeProfile:
 		return req.Profile.Features.DeprecationWarnings()
 	case app.ModeMCP:

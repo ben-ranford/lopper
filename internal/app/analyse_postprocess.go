@@ -21,7 +21,13 @@ func (a *App) applyBaselineIfNeeded(reportData report.Report, repoPath string, r
 		return reportData, nil
 	}
 
-	baseline, loadedKey, err := report.LoadWithKey(baselinePath)
+	var baseline report.Report
+	var loadedKey string
+	if strings.TrimSpace(baselineKey) != "" {
+		baseline, loadedKey, _, err = report.LoadSnapshot(req.BaselineStorePath, baselineKey)
+	} else {
+		baseline, loadedKey, err = report.LoadWithKey(baselinePath)
+	}
 	if err != nil && isBootstrapableMissingBaseline(req, err) {
 		return reportData, nil
 	}
@@ -60,7 +66,7 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 		return strings.TrimSpace(req.BaselinePath), "", resolveCurrentBaselineKey(repoPath), true, nil
 	}
 
-	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.BaselineSnapshotPath)
+	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.ResolveBaselineSnapshotPath)
 }
 
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {

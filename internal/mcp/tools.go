@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -666,7 +667,7 @@ func resolveBaselineComparison(repoPath string, args analysisToolArguments) (str
 		if baselineKey == "" {
 			return "", "", "", errors.New("baselineKey is required with baselineStorePath")
 		}
-		baselinePath = report.BaselineSnapshotPath(baselineStorePath, baselineKey)
+		baselinePath = report.ResolveBaselineSnapshotPath(baselineStorePath, baselineKey)
 	}
 	if baselinePath == "" {
 		return "", "", "", nil
@@ -679,7 +680,14 @@ func resolveBaselineComparison(repoPath string, args analysisToolArguments) (str
 }
 
 func applyBaseline(current report.Report, baselinePath, requestedKey, currentKey string) (report.Report, error) {
-	baseline, loadedKey, err := report.LoadWithKey(baselinePath)
+	var baseline report.Report
+	var loadedKey string
+	var err error
+	if strings.TrimSpace(requestedKey) != "" {
+		baseline, loadedKey, _, err = report.LoadSnapshot(filepath.Dir(baselinePath), requestedKey)
+	} else {
+		baseline, loadedKey, err = report.LoadWithKey(baselinePath)
+	}
 	if err != nil {
 		return current, err
 	}

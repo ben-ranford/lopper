@@ -179,6 +179,20 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2
 ```
 
+List the newest saved snapshots, or inspect one without printing its full report payload. Baseline discovery is preview-gated in v1.8.x:
+
+```bash
+lopper baseline list \
+  --store .artifacts/lopper-baselines \
+  --limit 20 \
+  --enable-feature baseline-store-discovery-preview
+
+lopper baseline show label:release-candidate \
+  --store .artifacts/lopper-baselines \
+  --format json \
+  --enable-feature baseline-store-discovery-preview
+```
+
 Attach local vulnerability advisories for reachability-weighted security triage:
 
 ```bash
