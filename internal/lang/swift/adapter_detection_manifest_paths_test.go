@@ -485,8 +485,20 @@ func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep, map[string]int{}); got["Session"] != 1 {
 		t.Fatalf("expected inferred unqualified usage, got %#v", got)
 	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<Result<Value, Error>>()"), singleDep, map[string]int{}); got["Session"] != 1 {
+		t.Fatalf("expected generic constructor usage to remain attributable, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<Result<Value, Error>>.success"), singleDep, map[string]int{}); got["Session"] != 1 {
+		t.Fatalf("expected generic static-member usage to remain attributable, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<(Value) -> Result>()"), singleDep, map[string]int{}); got["Session"] != 1 {
+		t.Fatalf("expected generic function-type usage to remain attributable, got %#v", got)
+	}
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nfunc render(_ value: UnknownResponse) {}"), singleDep, map[string]int{}); len(got) != 0 {
 		t.Fatalf("expected a bare unknown type annotation to lack attribution evidence, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value: UnknownResponse<Value>"), singleDep, map[string]int{}); len(got) != 0 {
+		t.Fatalf("expected a generic type annotation to lack attribution evidence, got %#v", got)
 	}
 
 	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: URL? = nil"), singleDep) {
@@ -500,6 +512,12 @@ func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
 	}
 	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: UnknownResponse"), singleDep) {
 		t.Fatalf("expected a bare unknown identifier to require stronger usage evidence")
+	}
+	if hasUnqualifiedUsageEvidence("<Value") {
+		t.Fatalf("expected an unterminated generic specialization to lack usage evidence")
+	}
+	if hasUnqualifiedUsageEvidence(" <Value>()") {
+		t.Fatalf("expected whitespace before a comparison-like generic expression to lack usage evidence")
 	}
 }
 
