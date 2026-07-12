@@ -98,7 +98,7 @@ func TestV181FeatureGraduationDefaults(t *testing.T) {
 		{code: "LOP-FEAT-0020", name: "vscode-preview-capability-parity"},
 	}
 
-	for _, channel := range []Channel{ChannelDev, ChannelRelease} {
+	for _, channel := range []Channel{ChannelDev, ChannelRolling, ChannelRelease} {
 		t.Run(string(channel), func(t *testing.T) {
 			resolved := mustResolveV180Features(t, ResolveOptions{Channel: channel})
 			for _, want := range stable {
