@@ -3,6 +3,10 @@ package swift
 import "strings"
 
 func applyUnqualifiedUsageHeuristic(content []byte, imports []importBinding, usage map[string]int) map[string]int {
+	return applyUnqualifiedUsageCandidates(imports, usage, collectPotentialUnqualifiedSymbols(content, imports), nil)
+}
+
+func applyUnqualifiedUsageCandidates(imports []importBinding, usage map[string]int, candidates []string, declaredSymbols map[string]struct{}) map[string]int {
 	if len(imports) == 0 {
 		return usage
 	}
@@ -18,28 +22,51 @@ func applyUnqualifiedUsageHeuristic(content []byte, imports []importBinding, usa
 		if hasQualifiedImportUsage(importsForDependency, usage) {
 			return usage
 		}
-		if !hasPotentialUnqualifiedSymbolUsage(content, importsForDependency) {
+		for _, candidate := range candidates {
+			if _, locallyDeclared := declaredSymbols[candidate]; locallyDeclared {
+				continue
+			}
+			seedUnqualifiedUsage(importsForDependency, usage)
 			return usage
 		}
-		seedUnqualifiedUsage(importsForDependency, usage)
 	}
 	return usage
 }
 
 func hasPotentialUnqualifiedSymbolUsage(content []byte, imports []importBinding) bool {
+	return len(collectPotentialUnqualifiedSymbols(content, imports)) > 0
+}
+
+func collectPotentialUnqualifiedSymbols(content []byte, imports []importBinding) []string {
+	return collectPotentialUnqualifiedSymbolsWithDeclarations(content, imports, collectLocalDeclaredSymbols(content))
+}
+
+func collectPotentialUnqualifiedSymbolsWithDeclarations(content []byte, imports []importBinding, localDeclaredSymbols map[string]struct{}) []string {
 	importModules := importedModuleSet(imports)
-	localDeclaredSymbols := collectLocalDeclaredSymbols(content)
+	seen := make(map[string]struct{})
+	potential := make([]string, 0)
 	lines := swiftSymbolScanLines(content)
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || swiftImportPattern.MatchString(line) {
 			continue
 		}
-		if lineHasPotentialUnqualifiedSymbolUsage(line, importModules, localDeclaredSymbols) {
-			return true
+		for _, location := range swiftUpperIdentifierPattern.FindAllStringIndex(line, -1) {
+			if !hasUnqualifiedUsageEvidence(line[location[1]:]) {
+				continue
+			}
+			key := lookupKey(line[location[0]:location[1]])
+			if isIgnoredUnqualifiedSymbol(key, importModules, localDeclaredSymbols) {
+				continue
+			}
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			potential = append(potential, key)
 		}
 	}
-	return false
+	return potential
 }
 
 func importsByDependency(imports []importBinding) map[string][]importBinding {
@@ -83,15 +110,53 @@ func importedModuleSet(imports []importBinding) map[string]struct{} {
 }
 
 func lineHasPotentialUnqualifiedSymbolUsage(line string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
-	symbols := swiftUpperIdentifierPattern.FindAllString(line, -1)
-	for _, symbol := range symbols {
-		key := lookupKey(symbol)
+	locations := swiftUpperIdentifierPattern.FindAllStringIndex(line, -1)
+	for _, location := range locations {
+		if !hasUnqualifiedUsageEvidence(line[location[1]:]) {
+			continue
+		}
+		key := lookupKey(line[location[0]:location[1]])
 		if isIgnoredUnqualifiedSymbol(key, importModules, localDeclaredSymbols) {
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+func hasUnqualifiedUsageEvidence(afterSymbol string) bool {
+	trimmed := strings.TrimLeft(afterSymbol, " \t")
+	if strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "(") {
+		return true
+	}
+	if !strings.HasPrefix(afterSymbol, "<") {
+		return false
+	}
+	afterSpecialization, ok := trimSwiftGenericSpecialization(afterSymbol)
+	if !ok {
+		return false
+	}
+	afterSpecialization = strings.TrimLeft(afterSpecialization, " \t")
+	return strings.HasPrefix(afterSpecialization, ".") || strings.HasPrefix(afterSpecialization, "(")
+}
+
+func trimSwiftGenericSpecialization(value string) (string, bool) {
+	depth := 0
+	for index, symbol := range value {
+		switch symbol {
+		case '<':
+			depth++
+		case '>':
+			if index > 0 && value[index-1] == '-' {
+				continue
+			}
+			depth--
+			if depth == 0 {
+				return value[index+1:], true
+			}
+		}
+	}
+	return "", false
 }
 
 func isIgnoredUnqualifiedSymbol(key string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
@@ -131,4 +196,46 @@ func collectLocalDeclaredSymbols(content []byte) map[string]struct{} {
 		}
 	}
 	return localDeclaredSymbols
+}
+
+func (s *repoScanner) recordUnqualifiedUsageContext(file fileScan, content []byte) {
+	if s.declaredSymbolsByScope == nil {
+		s.declaredSymbolsByScope = make(map[string]map[string]struct{})
+	}
+	scope := swiftDeclarationScope(file.Path)
+	declared := s.declaredSymbolsByScope[scope]
+	if declared == nil {
+		declared = make(map[string]struct{})
+		s.declaredSymbolsByScope[scope] = declared
+	}
+	localDeclaredSymbols := collectLocalDeclaredSymbols(content)
+	for symbol := range localDeclaredSymbols {
+		declared[symbol] = struct{}{}
+	}
+	s.unqualifiedUsageContexts = append(s.unqualifiedUsageContexts, unqualifiedUsageContext{
+		scope:      scope,
+		candidates: collectPotentialUnqualifiedSymbolsWithDeclarations(content, file.Imports, localDeclaredSymbols),
+	})
+}
+
+func (s *repoScanner) applyUnqualifiedUsageHeuristics() {
+	for i := range s.scan.Files {
+		if i >= len(s.unqualifiedUsageContexts) {
+			return
+		}
+		file := &s.scan.Files[i]
+		context := s.unqualifiedUsageContexts[i]
+		file.Usage = applyUnqualifiedUsageCandidates(file.Imports, file.Usage, context.candidates, s.declaredSymbolsByScope[context.scope])
+	}
+}
+
+func swiftDeclarationScope(filePath string) string {
+	parts := strings.Split(strings.ReplaceAll(filePath, "\\", "/"), "/")
+	if len(parts) >= 2 && (parts[0] == "Sources" || parts[0] == "Tests" || parts[0] == "Plugins") {
+		return strings.Join(parts[:2], "/")
+	}
+	if len(parts) <= 1 {
+		return "."
+	}
+	return strings.Join(parts[:len(parts)-1], "/")
 }

@@ -441,7 +441,11 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	t.Run("empty imports preserve usage", testSwiftUsageHeuristicPreservesExistingUsage)
 	t.Run("multiple dependencies avoid attribution", testSwiftUsageHeuristicAvoidsAttributionWithMultipleDeps)
 	t.Run("single dependency handles usage heuristics", testSwiftUsageHeuristicSingleDependencyBranches)
+	t.Run("generic specializations provide usage evidence", testSwiftUsageHeuristicGenericSpecializations)
+	t.Run("symbol shapes require strong usage evidence", testSwiftUsageHeuristicEvidenceShapes)
 	t.Run("symbol collection detects local declarations", testSwiftUsageHeuristicCollectsLocalSymbols)
+	t.Run("candidate attribution excludes known declarations", testSwiftUsageCandidateAttribution)
+	t.Run("declaration scopes follow Swift targets", testSwiftDeclarationScopes)
 }
 
 func testSwiftUsageHeuristicPreservesExistingUsage(t *testing.T) {
@@ -483,7 +487,33 @@ func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep, map[string]int{}); got["Session"] != 1 {
 		t.Fatalf("expected inferred unqualified usage, got %#v", got)
 	}
+}
 
+func testSwiftUsageHeuristicGenericSpecializations(t *testing.T) {
+	t.Helper()
+
+	singleDep := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<Result<Value, Error>>()"), singleDep, map[string]int{}); got["Session"] != 1 {
+		t.Fatalf("expected generic constructor usage to remain attributable, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<Result<Value, Error>>.success"), singleDep, map[string]int{}); got["Session"] != 1 {
+		t.Fatalf("expected generic static-member usage to remain attributable, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<(Value) -> Result>()"), singleDep, map[string]int{}); got["Session"] != 1 {
+		t.Fatalf("expected generic function-type usage to remain attributable, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nfunc render(_ value: UnknownResponse) {}"), singleDep, map[string]int{}); len(got) != 0 {
+		t.Fatalf("expected a bare unknown type annotation to lack attribution evidence, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value: UnknownResponse<Value>"), singleDep, map[string]int{}); len(got) != 0 {
+		t.Fatalf("expected a generic type annotation to lack attribution evidence, got %#v", got)
+	}
+}
+
+func testSwiftUsageHeuristicEvidenceShapes(t *testing.T) {
+	t.Helper()
+
+	singleDep := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
 	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: URL? = nil"), singleDep) {
 		t.Fatalf("expected standard Swift symbols to be ignored")
 	}
@@ -492,6 +522,15 @@ func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
 	}
 	if !hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep) {
 		t.Fatalf("expected non-standard symbol usage to be detected")
+	}
+	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: UnknownResponse"), singleDep) {
+		t.Fatalf("expected a bare unknown identifier to require stronger usage evidence")
+	}
+	if hasUnqualifiedUsageEvidence("<Value") {
+		t.Fatalf("expected an unterminated generic specialization to lack usage evidence")
+	}
+	if hasUnqualifiedUsageEvidence(" <Value>()") {
+		t.Fatalf("expected whitespace before a comparison-like generic expression to lack usage evidence")
 	}
 }
 
@@ -504,6 +543,42 @@ func testSwiftUsageHeuristicCollectsLocalSymbols(t *testing.T) {
 	}
 	if _, ok := symbols[lookupKey("Runner")]; !ok {
 		t.Fatalf("expected Runner to be collected, got %#v", symbols)
+	}
+}
+
+func testSwiftUsageCandidateAttribution(t *testing.T) {
+	t.Helper()
+
+	imports := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Alamofire"}}
+	candidates := collectPotentialUnqualifiedSymbols([]byte("import Alamofire\nlet first = SharedModel()\nlet second = SharedModel()\n"), imports)
+	if len(candidates) != 1 || candidates[0] != lookupKey("SharedModel") {
+		t.Fatalf("expected one deduplicated candidate, got %#v", candidates)
+	}
+
+	declared := map[string]struct{}{lookupKey("SharedModel"): {}}
+	if got := applyUnqualifiedUsageCandidates(imports, map[string]int{}, candidates, declared); len(got) != 0 {
+		t.Fatalf("expected known declaration to prevent attribution, got %#v", got)
+	}
+	if got := applyUnqualifiedUsageCandidates(imports, map[string]int{}, candidates, nil); got["Alamofire"] != 1 {
+		t.Fatalf("expected unknown candidate to seed usage, got %#v", got)
+	}
+}
+
+func testSwiftDeclarationScopes(t *testing.T) {
+	t.Helper()
+
+	tests := map[string]string{
+		"Sources/App/main.swift":      "Sources/App",
+		"Tests/AppTests/Test.swift":   "Tests/AppTests",
+		"Plugins/Build/main.swift":    "Plugins/Build",
+		"Scripts/Generate/main.swift": "Scripts/Generate",
+		"standalone.swift":            ".",
+		`Sources\Windows\main.swift`:  "Sources/Windows",
+	}
+	for filePath, want := range tests {
+		if got := swiftDeclarationScope(filePath); got != want {
+			t.Fatalf("swiftDeclarationScope(%q) = %q, want %q", filePath, got, want)
+		}
 	}
 }
 

@@ -52,7 +52,9 @@ func (s *repoScanner) scanSwiftFile(path string, entry fs.DirEntry) error {
 	if err != nil {
 		return err
 	}
-	s.scan.Files = append(s.scan.Files, s.buildFileScan(path, entry.Name(), content))
+	file := s.buildFileScan(path, entry.Name(), content)
+	s.scan.Files = append(s.scan.Files, file)
+	s.recordUnqualifiedUsageContext(file, content)
 	return nil
 }
 
@@ -67,7 +69,7 @@ func (s *repoScanner) buildFileScan(path string, fallback string, content []byte
 	return fileScan{
 		Path:    relPath,
 		Imports: mappedImports,
-		Usage:   applyUnqualifiedUsageHeuristic(content, mappedImports, shared.CountUsage(content, mappedImports)),
+		Usage:   shared.CountUsage(content, mappedImports),
 	}
 }
 
