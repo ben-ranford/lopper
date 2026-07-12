@@ -69,6 +69,23 @@ func TestCountUsage(t *testing.T) {
 	}
 }
 
+func TestCountUsageSubtractsKnownDeclarationTokenHits(t *testing.T) {
+	imports := []ImportRecord{{
+		Local:                "de",
+		Location:             report.Location{File: "lib.rs", Line: 1, Column: 31},
+		DeclarationTokenHits: 2,
+	}}
+	tests := map[string]int{
+		"use serde::{de::Deserialize as de};":                     0,
+		"use serde::{de::Deserialize as de}; fn decode(_: de) {}": 1,
+	}
+	for content, want := range tests {
+		if got := CountUsage([]byte(content), imports)["de"]; got != want {
+			t.Errorf("countUsage(%q) = %d, want %d", content, got, want)
+		}
+	}
+}
+
 func TestCountUsageIgnoresCommentsAndStrings(t *testing.T) {
 	imports := []ImportRecord{{Local: testLocalFoo}, {Local: "bar"}}
 	content := []byte("import foo\nimport bar\nfoo()\n\"foo bar\"\n'foo'\n`foo`\n// foo bar\n# foo bar\n/* foo\nbar\n*/\n")
