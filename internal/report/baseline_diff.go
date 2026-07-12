@@ -76,21 +76,27 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 	}
 
 	currentByKey := make(map[string]DependencyReport, len(current.Dependencies))
+	currentByKeyInstances := make(map[string][]DependencyReport, len(current.Dependencies))
 	for _, dep := range current.Dependencies {
-		currentByKey[dependencyKey(dep)] = dep
+		key := dependencyKey(dep)
+		currentByKey[key] = dep
+		currentByKeyInstances[key] = append(currentByKeyInstances[key], dep)
 	}
 	baselineByKey := make(map[string]DependencyReport, len(baseline.Dependencies))
+	baselineByKeyInstances := make(map[string][]DependencyReport, len(baseline.Dependencies))
 	for _, dep := range baseline.Dependencies {
-		baselineByKey[dependencyKey(dep)] = dep
+		key := dependencyKey(dep)
+		baselineByKey[key] = dep
+		baselineByKeyInstances[key] = append(baselineByKeyInstances[key], dep)
 	}
 
-	keys := make([]string, 0, len(currentByKey)+len(baselineByKey))
-	seen := make(map[string]struct{}, len(currentByKey)+len(baselineByKey))
-	for key := range currentByKey {
+	keys := make([]string, 0, len(currentByKeyInstances)+len(baselineByKeyInstances))
+	seen := make(map[string]struct{}, len(currentByKeyInstances)+len(baselineByKeyInstances))
+	for key := range currentByKeyInstances {
 		keys = append(keys, key)
 		seen[key] = struct{}{}
 	}
-	for key := range baselineByKey {
+	for key := range baselineByKeyInstances {
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -99,15 +105,28 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 	sort.Strings(keys)
 
 	for _, key := range keys {
-		curr, hasCurrent := currentByKey[key]
-		base, hasBaseline := baselineByKey[key]
+		currentInstances := currentByKeyInstances[key]
+		baselineInstances := baselineByKeyInstances[key]
+		instanceCount := max(len(currentInstances), len(baselineInstances))
+		for index := range instanceCount {
+			hasCurrent := index < len(currentInstances)
+			hasBaseline := index < len(baselineInstances)
+			curr := DependencyReport{}
+			base := DependencyReport{}
+			if hasCurrent {
+				curr = currentInstances[index]
+			}
+			if hasBaseline {
+				base = baselineInstances[index]
+			}
 
-		delta, ok := dependencyDelta(curr, hasCurrent, base, hasBaseline)
-		if !ok {
-			comparison.UnchangedRows++
-			continue
+			delta, ok := dependencyDelta(curr, hasCurrent, base, hasBaseline)
+			if !ok {
+				comparison.UnchangedRows++
+				continue
+			}
+			appendDependencyDelta(&comparison, delta)
 		}
-		appendDependencyDelta(&comparison, delta)
 	}
 	comparison.NewDeniedLicenses = newlyDeniedLicenses(currentByKey, baselineByKey)
 	comparison.NewReachableVulnerabilities = newlyReachableVulnerabilities(currentByKey, baselineByKey)

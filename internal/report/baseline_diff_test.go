@@ -142,6 +142,25 @@ func TestComputeBaselineComparisonDeterministic(t *testing.T) {
 	}
 }
 
+func TestComputeBaselineComparisonPreservesDuplicateDependencyDeltas(t *testing.T) {
+	current := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "duplicate", UsedExportsCount: 1, TotalExportsCount: 2},
+		{Language: "js-ts", Name: "duplicate", UsedExportsCount: 11, TotalExportsCount: 12},
+	}}
+	baseline := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "duplicate", TotalExportsCount: 2},
+		{Language: "js-ts", Name: "duplicate", UsedExportsCount: 2, TotalExportsCount: 12},
+	}}
+
+	comparison := ComputeBaselineComparison(current, baseline)
+	if len(comparison.Dependencies) != 2 {
+		t.Fatalf("expected both duplicate dependency deltas, got %#v", comparison.Dependencies)
+	}
+	if comparison.Dependencies[0].UsedExportsCountDelta != 1 || comparison.Dependencies[1].UsedExportsCountDelta != 9 {
+		t.Fatalf("expected per-instance duplicate deltas 1 and 9, got %#v", comparison.Dependencies)
+	}
+}
+
 func TestAppendDependencyDeltaClassifiesRegressionsOnlyForChangedDependencies(t *testing.T) {
 	comparison := BaselineComparison{}
 

@@ -361,6 +361,29 @@ func sortedCycloneDXByKey[T any](values []T, key func(T) cycloneDXSortKey) []T {
 	})
 }
 
+type cycloneDXValueWithStringKey[T any] struct {
+	value T
+	key   string
+}
+
+func sortedCycloneDXByCachedStringKey[T any](values []T, key func(T) string) []T {
+	if len(values) == 0 {
+		return nil
+	}
+	keyed := make([]cycloneDXValueWithStringKey[T], len(values))
+	for index, value := range values {
+		keyed[index] = cycloneDXValueWithStringKey[T]{value: value, key: key(value)}
+	}
+	sort.Slice(keyed, func(i, j int) bool {
+		return keyed[i].key < keyed[j].key
+	})
+	sorted := make([]T, len(keyed))
+	for index, value := range keyed {
+		sorted[index] = value.value
+	}
+	return sorted
+}
+
 func sortedCycloneDXWithNormalizedReasons[T any](values []T, key func(T) cycloneDXSortKey, normalize func(*T)) []T {
 	sorted := sortedCycloneDXByKey(values, key)
 	for i := range sorted {
@@ -390,9 +413,7 @@ func sortedCycloneDXProperties(props []cycloneDXProperty) []cycloneDXProperty {
 }
 
 func sortedCycloneDXDependencies(dependencies []DependencyReport) []DependencyReport {
-	return sortedCycloneDXCopy(dependencies, func(left, right DependencyReport) bool {
-		return cycloneDXDependencySortKey(left) < cycloneDXDependencySortKey(right)
-	})
+	return sortedCycloneDXByCachedStringKey(dependencies, cycloneDXDependencySortKey)
 }
 
 func cycloneDXDependencySortKey(dep DependencyReport) string {
@@ -425,9 +446,7 @@ func cycloneDXBaselineDeltasByDependency(reportData Report) map[string][]Depende
 		deltas[key] = append(deltas[key], delta)
 	}
 	for key, values := range deltas {
-		deltas[key] = sortedCycloneDXCopy(values, func(left, right DependencyDelta) bool {
-			return cycloneDXBaselineDeltaSortKey(left) < cycloneDXBaselineDeltaSortKey(right)
-		})
+		deltas[key] = sortedCycloneDXByCachedStringKey(values, cycloneDXBaselineDeltaSortKey)
 	}
 	return deltas
 }

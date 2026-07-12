@@ -378,14 +378,18 @@ func TestFormatCycloneDXJSONKeepsDuplicateComponentsStableAndAttributed(t *testi
 		{
 			Language:          "js-ts",
 			Name:              "dup",
-			UsedExportsCount:  2,
-			TotalExportsCount: 3,
+			UsedExportsCount:  11,
+			TotalExportsCount: 12,
 			UsedImports:       []ImportUse{{Name: "b", Module: "m/b"}},
 		},
 	}
-	deltas := []DependencyDelta{
-		{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "dup", UsedExportsCountDelta: 1},
-		{Kind: DependencyDeltaChanged, Language: "js-ts", Name: "dup", UsedExportsCountDelta: 9},
+	baseline := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "dup", TotalExportsCount: 2},
+		{Language: "js-ts", Name: "dup", UsedExportsCount: 2, TotalExportsCount: 12},
+	}}
+	deltas := ComputeBaselineComparison(Report{Dependencies: dependencies}, baseline).Dependencies
+	if len(deltas) != 2 {
+		t.Fatalf("expected real baseline comparison to preserve duplicate deltas, got %#v", deltas)
 	}
 
 	permutations := []Report{
