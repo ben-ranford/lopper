@@ -96,7 +96,7 @@ func baselineDiscoveryRequest(t *testing.T, dir string) Request {
 	req.Baseline.Action = "list"
 	req.Baseline.StorePath = dir
 	req.Baseline.Limit = 1
-	req.Baseline.Features = enabledBaselineDiscovery(t)
+	req.Baseline.Features = baselineDiscoveryFeatures(t, true)
 	return req
 }
 
@@ -109,10 +109,11 @@ func TestExecuteBaselineValidationAndEmptyStore(t *testing.T) {
 	req.Baseline.Action = "list"
 	req.Baseline.StorePath = filepath.Join(t.TempDir(), "missing")
 
+	req.Baseline.Features = baselineDiscoveryFeatures(t, false)
 	if _, err := application.Execute(context.Background(), req); !errors.Is(err, ErrBaselineFeatureDisabled) {
-		t.Fatalf("expected disabled preview error, got %v", err)
+		t.Fatalf("expected explicit disable error, got %v", err)
 	}
-	req.Baseline.Features = enabledBaselineDiscovery(t)
+	req.Baseline.Features = baselineDiscoveryFeatures(t, true)
 	output, err := application.Execute(context.Background(), req)
 	if err != nil || !strings.Contains(output, "No baseline snapshots found") {
 		t.Fatalf("expected safe empty-store output, output=%q err=%v", output, err)
@@ -205,9 +206,13 @@ func TestAnalyseBaselineStoreRejectsLegacyKeyCollision(t *testing.T) {
 	}
 }
 
-func enabledBaselineDiscovery(t *testing.T) featureflags.Set {
+func baselineDiscoveryFeatures(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
-	features, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{Enable: []string{BaselineStoreDiscoveryPreviewFeature}})
+	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
+	if !enabled {
+		options.Disable = []string{BaselineStoreDiscoveryFeature}
+	}
+	features, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {
 		t.Fatalf("resolve baseline discovery feature: %v", err)
 	}

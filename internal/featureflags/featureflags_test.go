@@ -91,6 +91,23 @@ func TestV180FeatureQualificationDefaults(t *testing.T) {
 	}
 }
 
+func TestV181FeatureGraduationDefaults(t *testing.T) {
+	stable := []v180StableFeature{
+		{code: "LOP-FEAT-0018", name: "python-runner-profiles"},
+		{code: "LOP-FEAT-0019", name: "baseline-store-discovery", legacyName: "baseline-store-discovery-preview"},
+		{code: "LOP-FEAT-0020", name: "vscode-preview-capability-parity"},
+	}
+
+	for _, channel := range []Channel{ChannelDev, ChannelRelease} {
+		t.Run(string(channel), func(t *testing.T) {
+			resolved := mustResolveV180Features(t, ResolveOptions{Channel: channel})
+			for _, want := range stable {
+				assertV180StableFeature(t, channel, resolved, want)
+			}
+		})
+	}
+}
+
 func mustResolveV180Features(t *testing.T, options ResolveOptions) Set {
 	t.Helper()
 	resolved, err := DefaultRegistry().Resolve(options)
@@ -109,9 +126,11 @@ func assertV180StableFeature(t *testing.T, channel Channel, defaults Set, want v
 	if !defaults.Enabled(want.code) {
 		t.Fatalf("expected %s enabled in %s defaults", want.code, channel)
 	}
-	legacy, ok := DefaultRegistry().LookupReference(want.legacyName)
-	if !ok || !legacy.Deprecated || legacy.ReplacementRef != want.name {
-		t.Fatalf("expected deprecated alias %s to point at %s, got %#v", want.legacyName, want.name, legacy)
+	if want.legacyName != "" {
+		legacy, ok := DefaultRegistry().LookupReference(want.legacyName)
+		if !ok || !legacy.Deprecated || legacy.ReplacementRef != want.name {
+			t.Fatalf("expected deprecated alias %s to point at %s, got %#v", want.legacyName, want.name, legacy)
+		}
 	}
 	disabled := mustResolveV180Features(t, ResolveOptions{Channel: channel, Disable: []string{want.name}})
 	if disabled.Enabled(want.code) {

@@ -61,7 +61,7 @@ func validateUVRuntimeProfile(args []string, options CommandOptions) error {
 }
 
 func pythonRunnerProfilesDisabledError(profile string) error {
-	return fmt.Errorf("runtime test command profile %q requires --enable-feature %s", profile, PythonRunnerProfilesFeature)
+	return fmt.Errorf("runtime test command profile %q requires feature %s; remove it from --disable-feature or features.disable", profile, PythonRunnerProfilesFeature)
 }
 
 func unsupportedPythonModuleProfileError(executable string, options CommandOptions) error {

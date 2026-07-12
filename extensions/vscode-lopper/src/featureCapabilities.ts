@@ -32,7 +32,8 @@ export interface LopperFeatureOverrides {
 interface LopperFeatureCapability {
   readonly name: string;
   readonly operations: readonly LopperFeatureOperation[];
-  readonly configurable: boolean;
+  readonly configurableEnable: boolean;
+  readonly configurableDisable: boolean;
 }
 
 interface LopperOperationCapability {
@@ -45,22 +46,26 @@ const featureCapabilities: readonly LopperFeatureCapability[] = [
   {
     name: reachabilityVulnerabilityFeature,
     operations: ["analysis"],
-    configurable: true,
+    configurableEnable: true,
+    configurableDisable: true,
   },
   {
     name: sbomAttestationExportsFeature,
     operations: ["cyclonedx-export"],
-    configurable: true,
+    configurableEnable: true,
+    configurableDisable: true,
   },
   {
     name: pythonRunnerProfilesFeature,
     operations: ["runtime-test"],
-    configurable: true,
+    configurableEnable: true,
+    configurableDisable: true,
   },
   {
     name: vscodePreviewCapabilityParityFeature,
     operations: ["cyclonedx-export", "python-runtime"],
-    configurable: false,
+    configurableEnable: false,
+    configurableDisable: true,
   },
 ];
 
@@ -89,8 +94,12 @@ const operationCapabilities: Readonly<Record<LopperFeatureOperation, LopperOpera
 
 const featureCapabilityByName = new Map(featureCapabilities.map((capability) => [capability.name, capability]));
 
-export const vscodeFeatureNames = featureCapabilities
-  .filter((capability) => capability.configurable)
+export const vscodeEnableFeatureNames = featureCapabilities
+  .filter((capability) => capability.configurableEnable)
+  .map((capability) => capability.name);
+
+export const vscodeDisableFeatureNames = featureCapabilities
+  .filter((capability) => capability.configurableDisable)
   .map((capability) => capability.name);
 
 export function operationRequiresWorkspaceTrust(operation: LopperFeatureOperation): boolean {
@@ -159,8 +168,8 @@ export function resolveFeatureOverrides(
   const requiredNames = normalizeFeatureNames(request.required);
   const manifestByName = new Map(manifest.map((entry) => [entry.name, entry]));
 
-  validateConfiguredFeatureNames(enabledNames, manifestByName);
-  validateConfiguredFeatureNames(disabledNames, manifestByName);
+  validateConfiguredFeatureNames(enabledNames, manifestByName, "enable");
+  validateConfiguredFeatureNames(disabledNames, manifestByName, "disable");
   validateRequiredFeatureNames(requiredNames, manifestByName);
 
   const activeOperations = new Set(request.operations);
@@ -173,7 +182,13 @@ export function resolveFeatureOverrides(
     if (disabled.has(name)) {
       throw new Error(`Lopper feature ${name} is disabled but required for this operation.`);
     }
-    if (!manifestByName.get(name)?.enabledByDefault) {
+    const entry = manifestByName.get(name);
+    if (entry?.enabledByDefault === false && entry.lifecycle === "stable") {
+      throw new Error(
+        `Lopper stable feature ${name} is disabled by the selected binary but required for this operation. Remove its rollback configuration before retrying.`,
+      );
+    }
+    if (!entry?.enabledByDefault) {
       enabled.add(name);
     }
   }
@@ -198,11 +213,16 @@ function normalizeFeatureNames(values: readonly string[]): string[] {
 function validateConfiguredFeatureNames(
   names: readonly string[],
   manifestByName: ReadonlyMap<string, LopperFeatureManifestEntry>,
+  override: "enable" | "disable",
 ): void {
   for (const name of names) {
-    if (featureCapabilityByName.get(name)?.configurable !== true) {
+    const capability = featureCapabilityByName.get(name);
+    const configurable = override === "enable"
+      ? capability?.configurableEnable
+      : capability?.configurableDisable;
+    if (configurable !== true) {
       throw new Error(
-        `Lopper feature ${name} is not available to VS Code. Choose an allowlisted feature from the workspace settings UI.`,
+        `Lopper feature ${name} is not available to VS Code's ${override} setting. Choose an allowlisted feature from the workspace settings UI.`,
       );
     }
     if (!manifestByName.has(name)) {

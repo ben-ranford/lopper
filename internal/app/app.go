@@ -26,7 +26,7 @@ var (
 	ErrCodemodApplyFailed           = errors.New("codemod apply failed")
 	ErrMCPFeatureDisabled           = errors.New("mcp server feature is disabled")
 	ErrProfileFeatureDisabled       = errors.New("threshold profile command feature is disabled; enable threshold-profiles with --enable-feature")
-	ErrBaselineFeatureDisabled      = errors.New("baseline discovery feature is disabled; enable baseline-store-discovery-preview with --enable-feature")
+	ErrBaselineFeatureDisabled      = errors.New("baseline discovery feature is disabled; remove baseline-store-discovery from --disable-feature or features.disable")
 )
 
 type App struct {

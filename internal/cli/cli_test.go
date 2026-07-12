@@ -12,8 +12,9 @@ import (
 )
 
 type fakeRunner struct {
-	output string
-	err    error
+	output  string
+	err     error
+	request app.Request
 }
 
 type failWriter struct{}
@@ -22,7 +23,8 @@ type failOnNthWrite struct {
 	count int
 }
 
-func (f *fakeRunner) Execute(context.Context, app.Request) (string, error) {
+func (f *fakeRunner) Execute(_ context.Context, req app.Request) (string, error) {
+	f.request = req
 	return f.output, f.err
 }
 
@@ -94,6 +96,28 @@ func TestRunWarnsOnDeprecatedFeatureName(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), `feature flag "mcp-server-preview" is deprecated; use "mcp-server" instead`) {
 		t.Fatalf("expected feature deprecation warning, got %q", errOut.String())
+	}
+}
+
+func TestRunWarnsOnDeprecatedBaselineDiscoveryAlias(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	runner := &fakeRunner{}
+	c := New(runner, &out, &errOut)
+
+	code := c.Run(context.Background(), []string{
+		"baseline", "list",
+		"--disable-feature", "baseline-store-discovery-preview",
+	})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d stderr=%q", code, errOut.String())
+	}
+	if runner.request.Baseline.Features.Enabled(app.BaselineStoreDiscoveryFeature) {
+		t.Fatalf("expected deprecated alias to disable canonical baseline discovery feature")
+	}
+	want := `warning: feature flag "baseline-store-discovery-preview" is deprecated; use "baseline-store-discovery" instead`
+	if !strings.Contains(errOut.String(), want) {
+		t.Fatalf("expected baseline discovery deprecation warning, got %q", errOut.String())
 	}
 }
 

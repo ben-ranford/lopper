@@ -304,12 +304,15 @@ func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	req = mustParseArgs(t, []string{
 		"analyse", "--top", "5",
 		"--runtime-test-command", "python3 -m unittest discover -s tests",
-		"--enable-feature", runtime.PythonRunnerProfilesFeature,
 	})
 	if req.Analyse.RuntimeTestCommand != "python3 -m unittest discover -s tests" {
 		t.Fatalf("expected unittest runtime test command, got %q", req.Analyse.RuntimeTestCommand)
 	}
+	if !req.Analyse.Features.Enabled(runtime.PythonRunnerProfilesFeature) {
+		t.Fatalf("expected Python runner profiles to use the stable default")
+	}
 
+	// Explicit enablement remains accepted for compatibility with existing configuration.
 	req = mustParseArgs(t, []string{
 		"analyse", "--top", "5",
 		"--runtime-test-command", "uv run -- python -m pytest tests -- -k smoke",
@@ -332,7 +335,7 @@ func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
 	}
 
 	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "python -m pip install pytest"}, "expected unsafe python module rejection")
-	if !strings.Contains(err.Error(), "may only run '-m pytest'") {
+	if !strings.Contains(err.Error(), "may only run '-m pytest' or '-m unittest'") {
 		t.Fatalf("expected unsafe python module rejection, got %v", err)
 	}
 
@@ -349,7 +352,6 @@ func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
 	unsafeUVArgs := []string{
 		"analyse", "--top", "5",
 		"--runtime-test-command", "uv run --isolated pytest",
-		"--enable-feature", runtime.PythonRunnerProfilesFeature,
 	}
 	err = expectParseArgsError(t, unsafeUVArgs, "expected unsafe uv wrapper rejection")
 	if !strings.Contains(err.Error(), "without uv wrapper flags") {

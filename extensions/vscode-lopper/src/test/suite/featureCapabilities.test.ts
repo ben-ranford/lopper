@@ -13,7 +13,8 @@ import {
   resolveFeatureOverrides,
   sbomAttestationExportsFeature,
   vscodePreviewCapabilityParityFeature,
-  vscodeFeatureNames,
+  vscodeDisableFeatureNames,
+  vscodeEnableFeatureNames,
   type LopperFeatureManifestEntry,
 } from "../../featureCapabilities";
 
@@ -110,6 +111,20 @@ suite("feature capabilities", () => {
       required: [],
     }), /not available to VS Code/);
 
+    assert.throws(() => resolveFeatureOverrides(featureManifest(), {
+      enable: [vscodePreviewCapabilityParityFeature],
+      disable: [],
+      operations: ["cyclonedx-export"],
+      required: requiredFeaturesForOperation("cyclonedx-export"),
+    }), /not available to VS Code's enable setting/);
+
+    assert.throws(() => resolveFeatureOverrides(featureManifest(), {
+      enable: [],
+      disable: [vscodePreviewCapabilityParityFeature],
+      operations: ["cyclonedx-export"],
+      required: requiredFeaturesForOperation("cyclonedx-export"),
+    }), /disabled but required/);
+
     assert.throws(() => resolveFeatureOverrides(featureManifest().slice(1), {
       enable: [sbomAttestationExportsFeature],
       disable: [],
@@ -133,7 +148,7 @@ suite("feature capabilities", () => {
     assert.deepEqual(requiredFeaturesForOperation("python-runtime"), [vscodePreviewCapabilityParityFeature]);
   });
 
-  test("gates VS Code parity in dev, rolling, and release manifests", () => {
+  test("uses stable VS Code parity without redundant flags across channels", () => {
     for (const channel of ["dev", "release"] as const) {
       const overrides = resolveFeatureOverrides(featureManifest(false), {
         enable: [],
@@ -141,7 +156,7 @@ suite("feature capabilities", () => {
         operations: ["cyclonedx-export"],
         required: requiredFeaturesForOperation("cyclonedx-export"),
       });
-      assert.deepEqual(overrides.enable, [sbomAttestationExportsFeature, vscodePreviewCapabilityParityFeature], channel);
+      assert.deepEqual(overrides.enable, [sbomAttestationExportsFeature], channel);
     }
 
     const rollingOverrides = resolveFeatureOverrides(featureManifest(true), {
@@ -151,6 +166,30 @@ suite("feature capabilities", () => {
       required: requiredFeaturesForOperation("cyclonedx-export"),
     });
     assert.deepEqual(rollingOverrides.enable, []);
+  });
+
+  test("does not override a selected binary that reports stable VS Code parity disabled", () => {
+    const manifest = featureManifest().map((entry) => entry.name === vscodePreviewCapabilityParityFeature
+      ? { ...entry, enabledByDefault: false }
+      : entry);
+    assert.throws(() => resolveFeatureOverrides(manifest, {
+      enable: [],
+      disable: [],
+      operations: ["python-runtime"],
+      required: requiredFeaturesForOperation("python-runtime"),
+    }), /stable feature vscode-preview-capability-parity is disabled by the selected binary/);
+  });
+
+  test("preserves explicit rollback for stable Python runner profiles", () => {
+    assert.deepEqual(resolveFeatureOverrides(featureManifest(), {
+      enable: [],
+      disable: [pythonRunnerProfilesFeature],
+      operations: ["analysis", "runtime-test"],
+      required: [],
+    }), {
+      enable: [],
+      disable: [pythonRunnerProfilesFeature],
+    });
   });
 
   test("keeps package setting enums aligned with the capability allowlist", async () => {
@@ -168,9 +207,14 @@ suite("feature capabilities", () => {
       };
     };
     const properties = packageJson.contributes.configuration.properties;
-    const expected = [...vscodeFeatureNames].sort();
-    assert.deepEqual([...(properties["lopper.enableFeatures"].items?.enum ?? [])].sort(), expected);
-    assert.deepEqual([...(properties["lopper.disableFeatures"].items?.enum ?? [])].sort(), expected);
+    assert.deepEqual(
+      [...(properties["lopper.enableFeatures"].items?.enum ?? [])].sort(),
+      [...vscodeEnableFeatureNames].sort(),
+    );
+    assert.deepEqual(
+      [...(properties["lopper.disableFeatures"].items?.enum ?? [])].sort(),
+      [...vscodeDisableFeatureNames].sort(),
+    );
     assert.ok(
       packageJson.capabilities.untrustedWorkspaces.restrictedConfigurations?.includes("lopper.binaryPath"),
       "workspace-selected executable path must be declared restricted",
@@ -198,15 +242,15 @@ function featureManifest(previewEnabledByDefault = false): LopperFeatureManifest
       code: "LOP-FEAT-0018",
       name: pythonRunnerProfilesFeature,
       description: "Python runners",
-      lifecycle: "preview",
-      enabledByDefault: previewEnabledByDefault,
+      lifecycle: "stable",
+      enabledByDefault: true,
     },
     {
       code: "LOP-FEAT-0020",
       name: vscodePreviewCapabilityParityFeature,
       description: "VS Code parity",
-      lifecycle: "preview",
-      enabledByDefault: previewEnabledByDefault,
+      lifecycle: "stable",
+      enabledByDefault: true,
     },
   ];
 }

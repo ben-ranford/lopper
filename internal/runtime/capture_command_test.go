@@ -42,7 +42,7 @@ func TestBuildRuntimeCommandAllowlist(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeCommandAllowsPreviewPythonRunnerProfiles(t *testing.T) {
+func TestBuildRuntimeCommandAllowsPythonRunnerProfiles(t *testing.T) {
 	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeTools(t))
 	options := CommandOptions{PythonRunnerProfiles: true}
 	commands := []string{
@@ -59,7 +59,7 @@ func TestBuildRuntimeCommandAllowsPreviewPythonRunnerProfiles(t *testing.T) {
 	for _, command := range commands {
 		cmd, err := buildRuntimeCommand(context.Background(), command, options)
 		if err != nil {
-			t.Fatalf("expected preview profile %q to be allowlisted: %v", command, err)
+			t.Fatalf("expected enabled runner profile %q to be allowlisted: %v", command, err)
 		}
 		if cmd.Path == "" || !filepath.IsAbs(cmd.Path) {
 			t.Fatalf("expected executable path for command %q", command)
@@ -171,7 +171,7 @@ func TestBuildRuntimeCommandRejectsUnsafeSyntaxAndFlags(t *testing.T) {
 	checkRejects(`PYTHONPATH=/tmp python -m pytest`, "inline environment assignment")
 }
 
-func TestBuildRuntimeCommandRejectsUnsafePreviewProfileShapes(t *testing.T) {
+func TestBuildRuntimeCommandRejectsUnsafePythonRunnerProfileShapes(t *testing.T) {
 	options := CommandOptions{PythonRunnerProfiles: true}
 	commands := []string{
 		"uv --directory /tmp run pytest",
@@ -188,7 +188,7 @@ func TestBuildRuntimeCommandRejectsUnsafePreviewProfileShapes(t *testing.T) {
 	for _, command := range commands {
 		_, err := buildRuntimeCommand(context.Background(), command, options)
 		if err == nil {
-			t.Fatalf("expected unsafe preview profile %q to be rejected", command)
+			t.Fatalf("expected unsafe runner profile %q to be rejected", command)
 		}
 		if !strings.Contains(err.Error(), "may only") {
 			t.Fatalf("expected profile-boundary error for %q, got %v", command, err)
@@ -207,7 +207,7 @@ func TestValidateCommand(t *testing.T) {
 		t.Fatalf("expected python pytest command to validate, got %v", err)
 	}
 	if err := ValidateCommand("python3 -m unittest tests"); err == nil || !strings.Contains(err.Error(), PythonRunnerProfilesFeature) {
-		t.Fatalf("expected disabled preview profile error, got %v", err)
+		t.Fatalf("expected disabled runner profile error, got %v", err)
 	}
 	if err := ValidateCommand("python3 -m unittest tests", CommandOptions{PythonRunnerProfiles: true}); err != nil {
 		t.Fatalf("expected enabled unittest profile to validate, got %v", err)
@@ -224,18 +224,18 @@ func TestValidateCommand(t *testing.T) {
 
 func TestIsPythonTestCommand(t *testing.T) {
 	testCases := []struct {
-		command string
-		preview bool
-		want    bool
+		command        string
+		runnerProfiles bool
+		want           bool
 	}{
 		{command: "pytest", want: true},
 		{command: "pytest tests -q", want: true},
 		{command: "python -m pytest", want: true},
 		{command: "python3 -m pytest tests", want: true},
-		{command: "python -m unittest", preview: true, want: true},
-		{command: "python3 -m unittest discover", preview: true, want: true},
-		{command: "uv run pytest", preview: true, want: true},
-		{command: "uv run -- python -m unittest", preview: true, want: true},
+		{command: "python -m unittest", runnerProfiles: true, want: true},
+		{command: "python3 -m unittest discover", runnerProfiles: true, want: true},
+		{command: "uv run pytest", runnerProfiles: true, want: true},
+		{command: "uv run -- python -m unittest", runnerProfiles: true, want: true},
 		{command: "python -m unittest", want: false},
 		{command: "uv run pytest", want: false},
 		{command: "npm test", want: false},
@@ -244,7 +244,7 @@ func TestIsPythonTestCommand(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		options := CommandOptions{PythonRunnerProfiles: tc.preview}
+		options := CommandOptions{PythonRunnerProfiles: tc.runnerProfiles}
 		if got := IsPythonTestCommand(tc.command, options); got != tc.want {
 			t.Fatalf("IsPythonTestCommand(%q) = %v, want %v", tc.command, got, tc.want)
 		}

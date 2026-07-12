@@ -791,7 +791,7 @@ suite("lopper runner", () => {
     assert.equal(analysisCalls[1]?.cwd, disabledFolder.uri.fsPath);
   });
 
-  test("forwards Python runner profiles only for explicit runtime-test analysis", async () => {
+  test("uses stable Python runner profiles without redundant feature flags", async () => {
     const folder = workspaceFolder();
     const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
     const analysisCalls: string[][] = [];
@@ -802,7 +802,7 @@ suite("lopper runner", () => {
       {
         binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
         binarySignature: async () => "/managed/lopper:1",
-        featureSettings: () => ({ enable: [pythonRunnerProfilesFeature], disable: [] }),
+        featureSettings: () => ({ enable: [], disable: [] }),
         reportExecutor: {
           runCommand: async (): Promise<string> => featureManifestOutput(),
           runReport: async (_binaryPath, args): Promise<LopperReport> => {
@@ -824,10 +824,97 @@ suite("lopper runner", () => {
     });
 
     assert.deepEqual(featureFlagValues(analysisCalls[0] ?? [], "--enable-feature"), []);
-    assert.deepEqual(featureFlagValues(analysisCalls[1] ?? [], "--enable-feature"), [
+    assert.deepEqual(featureFlagValues(analysisCalls[1] ?? [], "--enable-feature"), []);
+  });
+
+  test("scopes an explicit Python runner rollback to runtime-test analysis", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const analysisCalls: string[][] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => "/managed/lopper:1",
+        featureSettings: () => ({ enable: [], disable: [pythonRunnerProfilesFeature] }),
+        reportExecutor: {
+          runCommand: async (): Promise<string> => featureManifestOutput(),
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            analysisCalls.push(args);
+            return { dependencies: [] };
+          },
+        },
+      },
+    );
+
+    await runner.analyseWorkspace(folder);
+    await runner.analyseWorkspace(folder, {
+      document: {
+        fileName: path.join(folder.uri.fsPath, "src", "runtime.py"),
+        isUntitled: false,
+        languageId: "python",
+      } as vscode.TextDocument,
+      runtimeTestCommand: "python -m unittest",
+    });
+
+    assert.deepEqual(featureFlagValues(analysisCalls[0] ?? [], "--disable-feature"), []);
+    assert.deepEqual(featureFlagValues(analysisCalls[1] ?? [], "--enable-feature"), []);
+    assert.deepEqual(featureFlagValues(analysisCalls[1] ?? [], "--disable-feature"), [
       pythonRunnerProfilesFeature,
-      vscodePreviewCapabilityParityFeature,
     ]);
+  });
+
+  test("rejects preview-backed operations when stable VS Code parity is rolled back", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    let exportCalls = 0;
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => "/managed/lopper:1",
+        featureSettings: () => ({ enable: [], disable: [vscodePreviewCapabilityParityFeature] }),
+        reportExecutor: {
+          runCommand: async (): Promise<string> => featureManifestOutput(),
+          runReport: async (): Promise<LopperReport> => {
+            exportCalls += 1;
+            return { dependencies: [] };
+          },
+        },
+      },
+    );
+
+    await assert.rejects(
+      runner.preflightOperation(folder, "cyclonedx-export"),
+      /vscode-preview-capability-parity is disabled but required/,
+    );
+    assert.equal(exportCalls, 0);
+  });
+
+  test("rejects required stable parity reported disabled by the selected binary", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => "/managed/lopper:1",
+        featureSettings: () => ({ enable: [], disable: [] }),
+        reportExecutor: {
+          runCommand: async (): Promise<string> => featureManifestOutput(false),
+          runReport: async (): Promise<LopperReport> => ({ dependencies: [] }),
+        },
+      },
+    );
+
+    await assert.rejects(
+      runner.preflightOperation(folder, "python-runtime"),
+      /stable feature vscode-preview-capability-parity is disabled by the selected binary/,
+    );
   });
 
   test("refreshes the feature catalog when the selected binary signature changes", async () => {
@@ -865,10 +952,7 @@ suite("lopper runner", () => {
     assert.equal(featureCalls, 1);
     assert.equal(exportCalls.length, 2);
     for (const args of exportCalls) {
-      assert.deepEqual(featureFlagValues(args, "--enable-feature"), [
-        sbomAttestationExportsFeature,
-        vscodePreviewCapabilityParityFeature,
-      ]);
+      assert.deepEqual(featureFlagValues(args, "--enable-feature"), [sbomAttestationExportsFeature]);
     }
 
     signature = "/managed/lopper:2";
@@ -1131,7 +1215,7 @@ function restoreEnv(name: string, value: string | undefined): void {
   process.env[name] = value;
 }
 
-function featureManifestOutput(): string {
+function featureManifestOutput(vscodeParityEnabledByDefault = true): string {
   return JSON.stringify([
     {
       code: "LOP-FEAT-0013",
@@ -1151,15 +1235,15 @@ function featureManifestOutput(): string {
       code: "LOP-FEAT-0018",
       name: pythonRunnerProfilesFeature,
       description: "Python runners",
-      lifecycle: "preview",
-      enabledByDefault: false,
+      lifecycle: "stable",
+      enabledByDefault: true,
     },
     {
       code: "LOP-FEAT-0020",
       name: vscodePreviewCapabilityParityFeature,
       description: "VS Code parity",
-      lifecycle: "preview",
-      enabledByDefault: false,
+      lifecycle: "stable",
+      enabledByDefault: vscodeParityEnabledByDefault,
     },
   ]);
 }

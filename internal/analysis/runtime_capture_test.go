@@ -170,7 +170,7 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 
 func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 	features := mustResolvePythonRuntimeCaptureFeatureSet(t, true)
-	previewFeatures := mustResolvePythonRuntimeCaptureAndRunnerProfiles(t)
+	runnerProfilesDisabled := mustResolvePythonRuntimeCaptureWithRunnerProfilesDisabled(t)
 	pythonCandidate := language.Candidate{Adapter: &stubAdapter{id: "python"}}
 	jsCandidate := language.Candidate{Adapter: &stubAdapter{id: "js-ts"}}
 
@@ -195,15 +195,15 @@ func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 			want:       runtime.CaptureProviderPython,
 		},
 		{
-			name:       "auto uv command with preview profile and python candidate",
-			req:        Request{Language: "auto", Features: previewFeatures},
+			name:       "auto uv command with stable runner profile and python candidate",
+			req:        Request{Language: "auto", Features: features},
 			command:    "uv run pytest",
 			candidates: []language.Candidate{pythonCandidate, jsCandidate},
 			want:       runtime.CaptureProviderPython,
 		},
 		{
-			name:       "auto uv command without preview profile stays on node provider",
-			req:        Request{Language: "auto", Features: features},
+			name:       "auto uv command with runner profiles disabled stays on node provider",
+			req:        Request{Language: "auto", Features: runnerProfilesDisabled},
 			command:    "uv run pytest",
 			candidates: []language.Candidate{pythonCandidate, jsCandidate},
 			want:       runtime.CaptureProviderNode,
@@ -238,14 +238,14 @@ func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 	}
 }
 
-func mustResolvePythonRuntimeCaptureAndRunnerProfiles(t *testing.T) featureflags.Set {
+func mustResolvePythonRuntimeCaptureWithRunnerProfilesDisabled(t *testing.T) featureflags.Set {
 	t.Helper()
 	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
 		Channel: featureflags.ChannelDev,
-		Enable:  []string{runtime.PythonRunnerProfilesFeature},
+		Disable: []string{runtime.PythonRunnerProfilesFeature},
 	})
 	if err != nil {
-		t.Fatalf("resolve Python runner profiles feature set: %v", err)
+		t.Fatalf("resolve Python runtime capture with runner profiles disabled: %v", err)
 	}
 	return resolved
 }

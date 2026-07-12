@@ -225,7 +225,7 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 		pythonRunnerProfiles bool
 	}{
 		{name: "existing command", tool: "make", command: "make test"},
-		{name: "preview uv profile", tool: "uv", command: "uv run pytest", provider: CaptureProviderPython, pythonRunnerProfiles: true},
+		{name: "enabled uv runner profile", tool: "uv", command: "uv run pytest", provider: CaptureProviderPython, pythonRunnerProfiles: true},
 	}
 
 	for _, tc := range testCases {
@@ -261,7 +261,7 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestCapturePreviewRunnerUsesRepoWorkingDirectory(t *testing.T) {
+func TestCaptureRunnerProfileUsesRepoWorkingDirectory(t *testing.T) {
 	repo := t.TempDir()
 	workingDirectoryPath := filepath.Join(t.TempDir(), "working-directory.txt")
 	t.Setenv("LOPPER_CAPTURE_WORKING_DIRECTORY", workingDirectoryPath)
@@ -274,7 +274,7 @@ func TestCapturePreviewRunnerUsesRepoWorkingDirectory(t *testing.T) {
 		PythonRunnerProfiles: true,
 	})
 	if err != nil {
-		t.Fatalf("capture preview runner: %v", err)
+		t.Fatalf("capture runner profile: %v", err)
 	}
 	content, err := os.ReadFile(workingDirectoryPath)
 	if err != nil {
@@ -284,11 +284,11 @@ func TestCapturePreviewRunnerUsesRepoWorkingDirectory(t *testing.T) {
 	wantInfo, wantErr := os.Stat(repo)
 	gotInfo, gotErr := os.Stat(got)
 	if wantErr != nil || gotErr != nil || !os.SameFile(wantInfo, gotInfo) {
-		t.Fatalf("expected preview runner working directory %q, got %q (want err=%v, got err=%v)", repo, got, wantErr, gotErr)
+		t.Fatalf("expected runner profile working directory %q, got %q (want err=%v, got err=%v)", repo, got, wantErr, gotErr)
 	}
 }
 
-func TestCaptureReuseDoesNotBypassPreviewGate(t *testing.T) {
+func TestCaptureReuseDoesNotBypassRunnerProfileGate(t *testing.T) {
 	repo := t.TempDir()
 	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
 	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "python", "#!/bin/sh\n: > \"$LOPPER_RUNTIME_TRACE\"\n"))
@@ -301,14 +301,14 @@ func TestCaptureReuseDoesNotBypassPreviewGate(t *testing.T) {
 		PythonRunnerProfiles: true,
 	}
 	if err := Capture(context.Background(), request); err != nil {
-		t.Fatalf("capture enabled preview profile: %v", err)
+		t.Fatalf("capture enabled runner profile: %v", err)
 	}
 
 	request.PythonRunnerProfiles = false
 	request.ReuseIfUnchanged = true
 	err := Capture(context.Background(), request)
 	if err == nil || !strings.Contains(err.Error(), PythonRunnerProfilesFeature) {
-		t.Fatalf("expected disabled preview gate to reject cached trace reuse, got %v", err)
+		t.Fatalf("expected disabled runner profile gate to reject cached trace reuse, got %v", err)
 	}
 }
 

@@ -10,8 +10,8 @@ Flags are registered in `internal/featureflags/features.json`, can be enabled by
 | `preview` | Merged but still under validation, rollout, or API review. | Disabled in `dev` and `release` builds unless explicitly enabled. Enabled by default in `rolling` builds. |
 | `stable` | Accepted as normal behavior for all supported users. | Enabled by default in every build channel. |
 
-Merging a PR does not graduate a feature.
-Graduation is a separate registry change from `preview` to `stable` after the maintainer has evidence that the behavior is ready to be a release default.
+Merging an implementation PR does not by itself graduate a feature.
+When a feature issue is targeted to a stable release, keep that issue open until its registry lifecycle changes from `preview` to `stable` and the behavior is ready to be a release default; do not split graduation into a second issue.
 
 Stable releases can still ship preview features.
 Those preview features stay default-off unless a release-specific lock enables them for that release.
@@ -108,8 +108,11 @@ Use these stable names in v1.8 and later. The deprecated compatibility names rem
 | --- | --- | --- |
 | `LOP-FEAT-0014` | `python-runtime-capture` | `python-runtime-capture-preview` |
 | `LOP-FEAT-0016` | `python-codemod-suggestions` | `python-codemod-suggestions-preview` |
+| `LOP-FEAT-0018` | `python-runner-profiles` | - |
+| `LOP-FEAT-0019` | `baseline-store-discovery` | `baseline-store-discovery-preview` |
+| `LOP-FEAT-0020` | `vscode-preview-capability-parity` | - |
 
-All other v1.8 feature flags remain preview and require explicit enablement.
+`LOP-FEAT-0013`, `LOP-FEAT-0015`, and `LOP-FEAT-0017` remain preview and require explicit enablement.
 
 ## v2 Stable Alias Migration
 
