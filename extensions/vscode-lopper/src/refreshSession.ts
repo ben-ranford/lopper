@@ -15,6 +15,8 @@ interface FolderRefreshSession<TCachedValue, TInFlightValue> {
   inputVersion: number;
   latestRunId: number;
   nextRunId: number;
+  latestRequestId: number;
+  nextRequestId: number;
   inFlightByKey: Map<string, InFlightRefresh<TInFlightValue>>;
   cacheByKey: Map<string, CachedRefresh<TCachedValue>>;
 }
@@ -25,8 +27,29 @@ export class RefreshSessionStore<TCachedValue, TInFlightValue = void> {
   bumpInputVersion(folderKey: string): number {
     const session = this.session(folderKey);
     session.inputVersion += 1;
+    session.inFlightByKey.clear();
     session.cacheByKey.clear();
     return session.inputVersion;
+  }
+
+  inputVersion(folderKey: string): number {
+    return this.session(folderKey).inputVersion;
+  }
+
+  isCurrentInputVersion(folderKey: string, inputVersion: number): boolean {
+    return this.inputVersion(folderKey) === inputVersion;
+  }
+
+  reserveRequest(folderKey: string): number {
+    const session = this.session(folderKey);
+    const requestId = session.nextRequestId + 1;
+    session.nextRequestId = requestId;
+    session.latestRequestId = requestId;
+    return requestId;
+  }
+
+  isLatestRequest(folderKey: string, requestId: number): boolean {
+    return this.session(folderKey).latestRequestId === requestId;
   }
 
   reserveRun(folderKey: string): number {
@@ -101,6 +124,8 @@ export class RefreshSessionStore<TCachedValue, TInFlightValue = void> {
         inputVersion: 0,
         latestRunId: 0,
         nextRunId: 0,
+        latestRequestId: 0,
+        nextRequestId: 0,
         inFlightByKey: new Map<string, InFlightRefresh<TInFlightValue>>(),
         cacheByKey: new Map<string, CachedRefresh<TCachedValue>>(),
       };

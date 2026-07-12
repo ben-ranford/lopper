@@ -1,11 +1,13 @@
 import * as assert from "node:assert/strict";
-import { chmod, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setup, suite, test } from "mocha";
 import * as vscode from "vscode";
 
+import { binaryFileSignature } from "../../binaryIdentity";
 import { __testing, deactivate } from "../../extension";
+import { reachabilityVulnerabilityFeature } from "../../featureCapabilities";
 import type { RefreshWorkspaceOptions } from "../../extension";
 import type { WorkspaceAnalysis, WorkspaceAnalysisRunner, WorkspaceCodemodApplyResult } from "../../lopperRunner";
 
@@ -82,6 +84,44 @@ suite("refresh lifecycle", () => {
     });
   });
 
+  test("invalidates cached analysis after same-path binary replacement with restored mtime", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const fixedTime = new Date(1_700_000_000_000);
+      await utimes(harness.binaryPath, fixedTime, fixedTime);
+      let analyseCalls = 0;
+
+      await withController(
+        {
+          analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+            analyseCalls += 1;
+            return makeWorkspaceAnalysis({
+              folder: harness.folder,
+              binaryPath: harness.binaryPath,
+              binarySignature: await binaryFileSignature(harness.binaryPath),
+              dependencyCount: analyseCalls,
+              usedPercent: 50,
+            });
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          await refresh(controller, harness);
+          await refresh(controller, harness);
+          assert.equal(analyseCalls, 1, "unchanged binary should retain the analysis cache");
+
+          await writeFile(harness.binaryPath, "change", "utf8");
+          await utimes(harness.binaryPath, fixedTime, fixedTime);
+          await refresh(controller, harness);
+
+          assert.equal(analyseCalls, 2, "binary replacement must invalidate cached analysis");
+          assert.doesNotMatch(controller.getLatestSummary(), /cached/);
+        },
+      );
+    });
+  });
+
   test("suppresses stale runs so older completions cannot overwrite latest state", async function () {
     this.timeout(30_000);
 
@@ -99,6 +139,7 @@ suite("refresh lifecycle", () => {
         },
         async (controller) => {
           const firstRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.equal(deferredAnalyses.length, 1));
           const secondRefresh = refresh(controller, harness, { forceFresh: true });
 
           await waitForAssertion(() => {
@@ -150,6 +191,7 @@ suite("refresh lifecycle", () => {
         },
         async (controller) => {
           const firstRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.equal(deferredAnalyses.length, 1));
           const secondRefresh = refresh(controller, harness, { forceFresh: true });
 
           await waitForAssertion(() => {
@@ -231,6 +273,257 @@ suite("refresh lifecycle", () => {
           assert.doesNotMatch(controller.getLatestSummary(), /cached/);
         },
       );
+    });
+  });
+
+  test("older cache validation cannot supersede a newer force-fresh runtime request", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const cacheValidationStarted = deferred<void>();
+      const cacheValidationResult = deferred<string | undefined>();
+      const runtimeAnalysis = deferred<WorkspaceAnalysis>();
+      let analyseCalls = 0;
+      let runtimeSignal: AbortSignal | undefined;
+      let runtimeTracePath: string | undefined;
+      const runner: WorkspaceAnalysisRunner = {
+        analyseWorkspace: async (_folder, options): Promise<WorkspaceAnalysis> => {
+          analyseCalls += 1;
+          if (analyseCalls === 1) {
+            return makeAnalysis(harness, { dependencyCount: 2, usedPercent: 50 });
+          }
+          runtimeSignal = options?.signal;
+          runtimeTracePath = options?.runtimeTracePath;
+          return runtimeAnalysis.promise;
+        },
+        exportWorkspace: async (): Promise<string> => "",
+        applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+          throw new Error("unexpected codemod apply");
+        },
+      };
+      const controller = __testing.createController(runner, {
+        binarySignature: async () => {
+          cacheValidationStarted.resolve(undefined);
+          return cacheValidationResult.promise;
+        },
+      });
+
+      try {
+        await refresh(controller, harness);
+        const ordinaryRefresh = refresh(controller, harness);
+        await cacheValidationStarted.promise;
+
+        const runtimeRefresh = refresh(controller, harness, {
+          forceFresh: true,
+          runtimeTracePath: "runtime.ndjson",
+        });
+        await waitForAssertion(() => assert.equal(analyseCalls, 2));
+        assert.equal(runtimeTracePath, "runtime.ndjson");
+
+        cacheValidationResult.resolve(harness.signature);
+        await ordinaryRefresh;
+        assert.equal(runtimeSignal?.aborted, false, "older cache validation must not cancel the runtime request");
+
+        runtimeAnalysis.resolve(makeAnalysis(harness, {
+          dependencyCount: 0,
+          usedPercent: 0,
+          withUnusedImport: false,
+        }));
+        await runtimeRefresh;
+
+        assert.equal(analyseCalls, 2);
+        assert.match(controller.getLatestSummary(), /0 deps/);
+        assert.doesNotMatch(controller.getLatestSummary(), /cached/);
+      } finally {
+        controller.dispose();
+      }
+    });
+  });
+
+  test("folder configuration invalidation starts fresh work without disturbing siblings", async function () {
+    this.timeout(30_000);
+
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    assert.ok(folders.length >= 2, "expected a multi-root workspace");
+    const [changedFolder, siblingFolder] = folders;
+    assert.ok(changedFolder);
+    assert.ok(siblingFolder);
+    const changedDocument = await workspaceDocument(changedFolder);
+    const siblingDocument = await workspaceDocument(siblingFolder);
+    const changedConfiguration = vscode.workspace.getConfiguration("lopper", changedFolder.uri);
+    const siblingConfiguration = vscode.workspace.getConfiguration("lopper", siblingFolder.uri);
+    await changedConfiguration.update("enableFeatures", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+    await siblingConfiguration.update("enableFeatures", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+    await changedConfiguration.update("language", "js-ts", vscode.ConfigurationTarget.WorkspaceFolder);
+    await siblingConfiguration.update("language", "js-ts", vscode.ConfigurationTarget.WorkspaceFolder);
+    const { binaryPath, signature, cleanup } = await createBinaryFixture();
+    const calls: Array<{
+      folder: vscode.WorkspaceFolder;
+      enabledFeatures: readonly string[];
+      pending: Deferred<WorkspaceAnalysis>;
+      signal: AbortSignal | undefined;
+    }> = [];
+    const runner: WorkspaceAnalysisRunner = {
+      analyseWorkspace: async (folder, options): Promise<WorkspaceAnalysis> => {
+        const pending = deferred<WorkspaceAnalysis>();
+        calls.push({
+          folder,
+          enabledFeatures: vscode.workspace.getConfiguration("lopper", folder.uri).get<string[]>("enableFeatures", []),
+          pending,
+          signal: options?.signal,
+        });
+        return pending.promise;
+      },
+      exportWorkspace: async (): Promise<string> => "",
+      applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+        throw new Error("unexpected codemod apply");
+      },
+    };
+    const controller = __testing.createController(runner);
+
+    try {
+      const changedRefresh = controller.refreshWorkspace({
+        folder: changedFolder,
+        document: changedDocument,
+        revealErrors: false,
+        trigger: "command",
+      });
+      const siblingRefresh = controller.refreshWorkspace({
+        folder: siblingFolder,
+        document: siblingDocument,
+        revealErrors: false,
+        trigger: "command",
+      });
+      await waitForAssertion(() => assert.equal(calls.length, 2));
+
+      const siblingCall = calls.find((call) => call.folder.uri.toString() === siblingFolder.uri.toString());
+      assert.ok(siblingCall);
+      siblingCall.pending.resolve(makeWorkspaceAnalysis({
+        folder: siblingFolder,
+        binaryPath,
+        binarySignature: signature,
+        dependencyCount: 1,
+        usedPercent: 75,
+      }));
+      await waitForPromise(siblingRefresh, "sibling refresh");
+
+      await waitForPromise(changedConfiguration.update(
+        "enableFeatures",
+        [reachabilityVulnerabilityFeature],
+        vscode.ConfigurationTarget.WorkspaceFolder,
+      ), "folder configuration update");
+      const configurationRefresh = controller.handleConfigurationChange({
+        affectsConfiguration: (_section, resource) => resource?.toString() === changedFolder.uri.toString(),
+      });
+      await waitForAssertion(() => {
+        const changedCalls = calls.filter((call) => call.folder.uri.toString() === changedFolder.uri.toString());
+        assert.equal(changedCalls.length, 2, "changed folder must start a post-invalidation run");
+      });
+
+      const changedCalls = calls.filter((call) => call.folder.uri.toString() === changedFolder.uri.toString());
+      assert.deepEqual(changedCalls.map((call) => call.enabledFeatures), [[], [reachabilityVulnerabilityFeature]]);
+      assert.equal(changedCalls[0]?.signal?.aborted, true, "pre-change work should be cancelled");
+      assert.equal(siblingCall.signal?.aborted, false, "sibling work must not be cancelled");
+      assert.equal(
+        calls.filter((call) => call.folder.uri.toString() === siblingFolder.uri.toString()).length,
+        1,
+        "sibling configuration is unchanged",
+      );
+
+      changedCalls[1]?.pending.resolve(makeWorkspaceAnalysis({
+        folder: changedFolder,
+        binaryPath,
+        binarySignature: signature,
+        dependencyCount: 0,
+        usedPercent: 0,
+        withUnusedImport: false,
+      }));
+      await waitForPromise(configurationRefresh, "post-change configuration refresh");
+      await waitForAssertion(() => assert.match(controller.getLatestSummary(), /0 deps/));
+
+      changedCalls[0]?.pending.resolve(makeWorkspaceAnalysis({
+        folder: changedFolder,
+        binaryPath,
+        binarySignature: signature,
+        dependencyCount: 3,
+        usedPercent: 10,
+        withUnusedImport: true,
+      }));
+      await waitForPromise(changedRefresh, "pre-change refresh completion");
+      await waitForPromise(controller.refreshWorkspace({
+        folder: changedFolder,
+        document: changedDocument,
+        revealErrors: false,
+        trigger: "command",
+      }), "post-change cache refresh");
+
+      assert.equal(
+        calls.filter((call) => call.folder.uri.toString() === changedFolder.uri.toString()).length,
+        2,
+        "post-change refresh should reuse only the post-change cache",
+      );
+      assert.match(controller.getLatestSummary(), /0 deps.*cached/);
+      assert.equal(
+        vscode.languages.getDiagnostics(changedDocument.uri).filter((item) => item.source === "lopper").length,
+        0,
+        "stale pre-change analysis must not render",
+      );
+    } finally {
+      controller.dispose();
+      await changedConfiguration.update("enableFeatures", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await siblingConfiguration.update("enableFeatures", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await changedConfiguration.update("language", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await siblingConfiguration.update("language", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await cleanup();
+    }
+  });
+
+  test("configuration invalidation supersedes refreshes still resolving their language", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const configuration = vscode.workspace.getConfiguration("lopper", harness.folder.uri);
+      await configuration.update("autoRefresh", false, vscode.ConfigurationTarget.Workspace);
+      await configuration.update("scopeMode", "package", vscode.ConfigurationTarget.Workspace);
+
+      const pendingLanguage = deferred<"js-ts">();
+      let languageResolutionCalls = 0;
+      let analyseCalls = 0;
+      const runner: WorkspaceAnalysisRunner = {
+        analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+          analyseCalls += 1;
+          return makeAnalysis(harness, { dependencyCount: 1, usedPercent: 50 });
+        },
+        exportWorkspace: async (): Promise<string> => "",
+        applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+          throw new Error("unexpected codemod apply");
+        },
+      };
+      const controller = __testing.createController(runner, {
+        resolveLanguage: async () => {
+          languageResolutionCalls += 1;
+          return pendingLanguage.promise;
+        },
+      });
+
+      try {
+        const staleRefresh = refresh(controller, harness);
+        await waitForAssertion(() => assert.equal(languageResolutionCalls, 1));
+
+        await configuration.update("scopeMode", "repo", vscode.ConfigurationTarget.Workspace);
+        await controller.handleConfigurationChange({
+          affectsConfiguration: (_section, resource) => resource?.toString() === harness.folder.uri.toString(),
+        });
+
+        pendingLanguage.resolve("js-ts");
+        await waitForPromise(staleRefresh, "invalidated language resolution");
+
+        assert.equal(analyseCalls, 0, "configuration changes must cancel pre-invalidation refresh requests");
+      } finally {
+        controller.dispose();
+        await configuration.update("autoRefresh", undefined, vscode.ConfigurationTarget.Workspace);
+        await configuration.update("scopeMode", undefined, vscode.ConfigurationTarget.Workspace);
+      }
     });
   });
 
@@ -610,18 +903,12 @@ async function createBinaryFixture(): Promise<{
   if (process.platform !== "win32") {
     await chmod(binaryPath, 0o755);
   }
-  const signature = await binarySignature(binaryPath);
+  const signature = await binaryFileSignature(binaryPath);
   return {
     binaryPath,
     signature,
     cleanup: async () => rm(tempRoot, { recursive: true, force: true }),
   };
-}
-
-async function binarySignature(binaryPath: string): Promise<string> {
-  const resolvedPath = await realpath(binaryPath);
-  const details = await stat(resolvedPath);
-  return `${resolvedPath}:${Math.floor(details.mtimeMs)}`;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -651,6 +938,22 @@ async function waitForAssertion(assertion: () => void, timeoutMs = 1_000): Promi
   }
   assertion();
 	}
+
+async function waitForPromise<T>(promise: PromiseLike<T>, label: string, timeoutMs = 2_000): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
 
 function attachScopeLibCodemod(analysis: WorkspaceAnalysis): void {
 	analysis.codemodsByDependency = new Map([

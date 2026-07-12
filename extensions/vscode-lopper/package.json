@@ -20,7 +20,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Lopper does not execute workspace-local binaries until the workspace is trusted."
+      "description": "Lopper does not execute workspace-local binaries until the workspace is trusted.",
+      "restrictedConfigurations": [
+        "lopper.binaryPath"
+      ]
     }
   },
   "categories": [
@@ -56,6 +59,7 @@
     "onCommand:lopper.exportAnalysis.csv",
     "onCommand:lopper.exportAnalysis.sarif",
     "onCommand:lopper.exportAnalysis.prComment",
+    "onCommand:lopper.exportAnalysis.cyclonedx",
     "onCommand:lopper.openLocation",
     "onView:lopperExplorer"
   ],
@@ -123,6 +127,10 @@
         "title": "Lopper: Export Analysis as PR Comment"
       },
       {
+        "command": "lopper.exportAnalysis.cyclonedx",
+        "title": "Lopper: Export Analysis as CycloneDX JSON"
+      },
+      {
         "command": "lopper.openLocation",
         "title": "Lopper: Open Location"
       }
@@ -150,6 +158,7 @@
       "properties": {
         "lopper.language": {
           "type": "string",
+          "scope": "resource",
           "default": "auto",
           "enum": [
             "auto",
@@ -238,13 +247,55 @@
         },
         "lopper.runtimeTracePath": {
           "type": "string",
+          "scope": "resource",
           "default": "",
-          "description": "Optional runtime trace file to use for JS/TS runtime-aware analysis."
+          "description": "Optional runtime trace file to use for JS/TS or Python runtime-aware analysis."
         },
         "lopper.runtimeTestCommand": {
           "type": "string",
+          "scope": "resource",
           "default": "",
-          "description": "Optional command to run while capturing a runtime trace for JS/TS analysis."
+          "markdownDescription": "Optional allowlisted command to run while capturing a runtime trace for JS/TS or Python analysis. Test execution occurs only from the explicit runtime refresh command and requires Workspace Trust."
+        },
+        "lopper.enableFeatures": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "uniqueItems": true,
+          "markdownDescription": "Safe CLI feature names to enable for this workspace folder. Lopper validates each name against the selected CLI's feature catalog and forwards it only to its allowlisted VS Code operation.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "python-runner-profiles",
+              "reachability-vulnerability-prioritization-preview",
+              "sbom-attestation-exports-preview"
+            ],
+            "enumDescriptions": [
+              "Enable safe unittest and uv Python runtime runner profiles for an explicit trusted runtime refresh.",
+              "Enable local advisory ingestion and reachability-weighted vulnerability prioritization.",
+              "Enable preview CycloneDX JSON export when the selected CLI still requires the flag."
+            ]
+          }
+        },
+        "lopper.disableFeatures": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "uniqueItems": true,
+          "markdownDescription": "Safe CLI feature names to disable for this workspace folder. Disable entries take precedence over enable entries; an operation that requires a disabled feature is rejected before Lopper runs.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "python-runner-profiles",
+              "reachability-vulnerability-prioritization-preview",
+              "sbom-attestation-exports-preview"
+            ],
+            "enumDescriptions": [
+              "Disable safe unittest and uv Python runtime runner profiles.",
+              "Disable local advisory ingestion and reachability-weighted vulnerability prioritization.",
+              "Disable preview CycloneDX JSON export while this feature remains required by the CLI."
+            ]
+          }
         },
         "lopper.advisorySourcePath": {
           "type": "string",

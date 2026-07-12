@@ -1,8 +1,17 @@
 import { execFile } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
+import { tryBinaryFileSignature } from "./binaryIdentity";
+import {
+  parseFeatureManifest,
+  reachabilityVulnerabilityFeature,
+  requiredFeaturesForOperation,
+  resolveFeatureOverrides,
+  type LopperFeatureManifestEntry,
+  type LopperFeatureOperation,
+  type LopperFeatureSettings,
+} from "./featureCapabilities";
 import { configuredLopperLanguage, resolveLopperLanguage, type LopperLanguage } from "./languageConfiguration";
 import {
   BinaryResolutionError,
@@ -21,11 +30,10 @@ import {
   type LopperScopeMode,
 } from "./types";
 
-export type LopperOutputFormat = "json" | "csv" | "sarif" | "pr-comment";
+export type LopperOutputFormat = "json" | "csv" | "sarif" | "pr-comment" | "cyclonedx-json";
 
 export const defaultLopperRunTimeoutMs = 120_000;
 export const defaultCodemodAnalysisConcurrency = 4;
-const reachabilityVulnerabilityFeature = "reachability-vulnerability-prioritization-preview";
 
 const execFileAsync = promisify(execFile);
 
@@ -40,6 +48,11 @@ export interface WorkspaceAnalysis {
 }
 
 export interface WorkspaceAnalysisRunner {
+  preflightOperation?(
+    folder: vscode.WorkspaceFolder,
+    operation: LopperFeatureOperation,
+    options?: LopperExecutionOptions,
+  ): Promise<void>;
   analyseWorkspace(folder: vscode.WorkspaceFolder, options?: WorkspaceAnalysisRequest): Promise<WorkspaceAnalysis>;
   exportWorkspace(folder: vscode.WorkspaceFolder, format: LopperOutputFormat, options?: WorkspaceExportRequest): Promise<string>;
   applyCodemod(
@@ -117,6 +130,8 @@ export interface ReportCommandExecutor {
 export interface LopperRunnerDeps {
   binaryLifecycle?: BinaryLifecycleManager;
   reportExecutor?: ReportCommandExecutor;
+  featureSettings?: (folder: vscode.WorkspaceFolder) => LopperFeatureSettings;
+  binarySignature?: (binaryPath: string) => Promise<string>;
 }
 
 export interface LopperExecutionOptions {
@@ -252,6 +267,10 @@ export class LopperCliReportExecutor implements ReportCommandExecutor {
 export class LopperRunner implements WorkspaceAnalysisRunner {
   private readonly binaryLifecycle: BinaryLifecycleManager;
   private readonly reportExecutor: ReportCommandExecutor;
+  private readonly featureSettings: (folder: vscode.WorkspaceFolder) => LopperFeatureSettings;
+  private readonly binarySignatureProvider: (binaryPath: string) => Promise<string>;
+  private readonly featureManifestByBinarySignature = new Map<string, LopperFeatureManifestEntry[]>();
+  private readonly featureManifestSignatureByBinaryPath = new Map<string, string>();
 
   constructor(
     private readonly output: Pick<vscode.OutputChannel, "appendLine">,
@@ -291,6 +310,23 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       },
     );
     this.reportExecutor = deps.reportExecutor ?? new LopperCliReportExecutor(output);
+    this.featureSettings = deps.featureSettings ?? configuredFeatureSettings;
+    this.binarySignatureProvider = deps.binarySignature ?? ((binaryPath) => this.readBinarySignature(binaryPath));
+  }
+
+  async preflightOperation(
+    folder: vscode.WorkspaceFolder,
+    operation: LopperFeatureOperation,
+    options: LopperExecutionOptions = {},
+  ): Promise<void> {
+    const binaryPath = await this.resolveBinaryPath(folder);
+    await this.featureArgs(
+      binaryPath,
+      folder,
+      [operation],
+      requiredFeaturesForOperation(operation),
+      { signal: options.signal, timeoutMs: options.timeoutMs ?? this.runTimeoutMs(folder) },
+    );
   }
 
   async analyseWorkspace(
@@ -410,6 +446,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     const configuration = vscode.workspace.getConfiguration("lopper", folder.uri);
     const request: BinaryResolutionRequest = {
       workspaceRoot: folder.uri.fsPath,
+      workspaceRoots: (vscode.workspace.workspaceFolders ?? [folder]).map((workspaceFolder) => workspaceFolder.uri.fsPath),
       workspaceTrusted,
       autoDownloadBinary: configuration.get<boolean>("autoDownloadBinary", true),
       envBinaryPath: process.env.LOPPER_BINARY_PATH,
@@ -441,7 +478,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     folder: vscode.WorkspaceFolder,
     options: AnalysisArgsOptions,
   ): Promise<LopperReport> {
-    const args = this.buildAnalysisArgs(folder, options);
+    const args = await this.buildAnalysisArgs(binaryPath, folder, options);
     return this.reportExecutor.runReport(binaryPath, args, folder.uri.fsPath, {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
@@ -453,17 +490,18 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     folder: vscode.WorkspaceFolder,
     options: AnalysisArgsOptions,
   ): Promise<string> {
-    const args = this.buildAnalysisArgs(folder, options);
+    const args = await this.buildAnalysisArgs(binaryPath, folder, options);
     return this.reportExecutor.runCommand(binaryPath, args, folder.uri.fsPath, {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
     });
   }
 
-  private buildAnalysisArgs(
+  private async buildAnalysisArgs(
+    binaryPath: string,
     folder: vscode.WorkspaceFolder,
     options: AnalysisArgsOptions,
-  ): string[] {
+  ): Promise<string[]> {
     const args = ["analyse"];
     const dependencyName = normalizeDependencyArgument(options.dependencyName);
     if (!dependencyName) {
@@ -480,7 +518,24 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       options.format,
     );
 
-    this.appendThresholdArgs(folder, args);
+    const requiredFeatures = this.appendThresholdArgs(folder, args);
+    const operations: LopperFeatureOperation[] = ["analysis"];
+    if (options.format === "cyclonedx-json") {
+      operations.push("cyclonedx-export");
+    }
+    if (
+      options.requestedLanguage === "python"
+      && (hasValue(options.runtimeTracePath) || hasValue(options.runtimeTestCommand))
+    ) {
+      operations.push("python-runtime");
+    }
+    if (hasValue(options.runtimeTestCommand)) {
+      operations.push("runtime-test");
+    }
+    for (const operation of operations) {
+      requiredFeatures.push(...requiredFeaturesForOperation(operation));
+    }
+    args.push(...await this.featureArgs(binaryPath, folder, operations, requiredFeatures, options));
     this.appendRuntimeArgs(args, options.runtimeTracePath, options.runtimeTestCommand);
     this.appendBaselineArgs(args, options.baselinePath, options.baselineStorePath, options.baselineKey, options.baselineLabel, options.saveBaseline);
     if (options.suggestOnly) {
@@ -498,7 +553,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     return args;
   }
 
-  private appendThresholdArgs(folder: vscode.WorkspaceFolder, args: string[]): void {
+  private appendThresholdArgs(folder: vscode.WorkspaceFolder, args: string[]): string[] {
     const configuration = vscode.workspace.getConfiguration("lopper", folder.uri);
     const thresholdFailOnIncrease = configuration.get<number>("thresholdFailOnIncreasePercent", -1);
     const lowConfidenceWarning = configuration.get<number>("thresholdLowConfidenceWarningPercent", 40);
@@ -523,13 +578,71 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       String(maxUncertainImports),
       "--threshold-reachable-vuln-priority",
       reachableVulnerabilityPriority,
-      ...(enableVulnerabilityFeature ? ["--enable-feature", reachabilityVulnerabilityFeature] : []),
       ...(advisorySourcePath.trim().length > 0 ? ["--advisory-source", advisorySourcePath.trim()] : []),
       ...(licenseDeny.length > 0 ? ["--license-deny", licenseDeny.join(",")] : []),
       ...(licenseFailOnDeny ? ["--license-fail-on-deny"] : []),
       ...(licenseIncludeRegistryProvenance ? ["--license-provenance-registry"] : []),
     ];
     args.push(...thresholdArgs);
+    return enableVulnerabilityFeature ? [reachabilityVulnerabilityFeature] : [];
+  }
+
+  private async featureArgs(
+    binaryPath: string,
+    folder: vscode.WorkspaceFolder,
+    operations: readonly LopperFeatureOperation[],
+    requiredFeatures: readonly string[],
+    options: Pick<AnalysisArgsOptions, "signal" | "timeoutMs">,
+  ): Promise<string[]> {
+    const settings = this.featureSettings(folder);
+    if (settings.enable.length === 0 && settings.disable.length === 0 && requiredFeatures.length === 0) {
+      return [];
+    }
+
+    const manifest = await this.featureManifest(binaryPath, folder, options);
+    const overrides = resolveFeatureOverrides(manifest, {
+      ...settings,
+      operations,
+      required: requiredFeatures,
+    });
+    return [
+      ...overrides.enable.flatMap((name) => ["--enable-feature", name]),
+      ...overrides.disable.flatMap((name) => ["--disable-feature", name]),
+    ];
+  }
+
+  private async featureManifest(
+    binaryPath: string,
+    folder: vscode.WorkspaceFolder,
+    options: Pick<AnalysisArgsOptions, "signal" | "timeoutMs">,
+  ): Promise<LopperFeatureManifestEntry[]> {
+    const binarySignature = await this.binarySignature(binaryPath);
+    const previousSignature = this.featureManifestSignatureByBinaryPath.get(binaryPath);
+    if (previousSignature && previousSignature !== binarySignature) {
+      this.featureManifestByBinarySignature.delete(previousSignature);
+    }
+    this.featureManifestSignatureByBinaryPath.set(binaryPath, binarySignature);
+    const cached = this.featureManifestByBinarySignature.get(binarySignature);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const output = await this.reportExecutor.runCommand(
+        binaryPath,
+        ["features", "--format", "json"],
+        folder.uri.fsPath,
+        options,
+      );
+      const manifest = parseFeatureManifest(output);
+      if (this.featureManifestSignatureByBinaryPath.get(binaryPath) === binarySignature) {
+        this.featureManifestByBinarySignature.set(binarySignature, manifest);
+      }
+      return manifest;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Unable to read features from the selected lopper binary: ${message}`);
+    }
   }
 
   private appendRuntimeArgs(args: string[], runtimeTracePath?: string, runtimeTestCommand?: string): void {
@@ -581,7 +694,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     try {
       const report = await this.reportExecutor.runReport(
         binaryPath,
-        this.buildAnalysisArgs(folder, {
+        await this.buildAnalysisArgs(binaryPath, folder, {
           format: "json",
           requestedLanguage: language,
           scopeMode,
@@ -618,6 +731,11 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     options: WorkspaceAnalysisRequest,
     context: CodemodFetchContext,
   ): Promise<Map<string, LopperCodemodReport>> {
+    if (hasSideEffectingAnalysis(options)) {
+      this.output.appendLine("focused codemod analysis skipped for a side-effecting primary analysis");
+      return new Map();
+    }
+
     const { binarySignature, requestedLanguage, scopeMode, timeoutMs } = context;
     const dependencyByCacheKey = new Map<string, { dependency: LopperDependencyReport; language: LopperLanguage }>();
     const cacheKeys: string[] = [];
@@ -637,7 +755,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
     }
 
     const codemodByCacheKey = new Map<string, LopperCodemodReport | undefined>();
-    await runWithConcurrency(cacheKeys, codemodAnalysisConcurrency(options), async (cacheKey) => {
+    await runWithConcurrency(cacheKeys, defaultCodemodAnalysisConcurrency, async (cacheKey) => {
       const item = dependencyByCacheKey.get(cacheKey);
       if (!item) {
         return;
@@ -664,29 +782,39 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
   }
 
   private async binarySignature(binaryPath: string): Promise<string> {
-    try {
-      const resolvedPath = await realpath(binaryPath);
-      const details = await stat(resolvedPath);
-      return `${resolvedPath}:${Math.floor(details.mtimeMs)}`;
-    } catch {
-      return `${binaryPath}:unknown`;
-    }
+    return this.binarySignatureProvider(binaryPath);
   }
+
+  private async readBinarySignature(binaryPath: string): Promise<string> {
+    return await tryBinaryFileSignature(binaryPath) ?? `${binaryPath}:unknown`;
+  }
+}
+
+function configuredFeatureSettings(folder: vscode.WorkspaceFolder): LopperFeatureSettings {
+  const configuration = vscode.workspace.getConfiguration("lopper", folder.uri);
+  return {
+    enable: configuredFeatureNames(configuration.get<unknown>("enableFeatures", []), "lopper.enableFeatures"),
+    disable: configuredFeatureNames(configuration.get<unknown>("disableFeatures", []), "lopper.disableFeatures"),
+  };
+}
+
+function configuredFeatureNames(value: unknown, settingName: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${settingName} must be an array of feature names.`);
+  }
+  return value;
 }
 
 function codemodCacheKey(binarySignature: string, scopeMode: LopperScopeMode, language: LopperLanguage, dependencyName: string): string {
   return [binarySignature, scopeMode, language, dependencyName].join("\0");
 }
 
-function codemodAnalysisConcurrency(options: WorkspaceAnalysisRequest): number {
-  if (hasValue(options.runtimeTestCommand) || options.saveBaseline) {
-    return 1;
-  }
-  return defaultCodemodAnalysisConcurrency;
-}
-
 function hasValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
+}
+
+function hasSideEffectingAnalysis(options: WorkspaceAnalysisRequest): boolean {
+  return hasValue(options.runtimeTestCommand) || options.saveBaseline === true;
 }
 
 async function runWithConcurrency<T>(

@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { suite, teardown, test } from "mocha";
@@ -46,8 +47,23 @@ suite("vscode-lopper smoke", () => {
     assert.ok(commands.includes("lopper.refreshWorkspace.repo"), "expected repo-scope refresh command");
     assert.ok(commands.includes("lopper.saveBaseline"), "expected baseline save command");
     assert.ok(commands.includes("lopper.exportAnalysis.csv"), "expected CSV export command");
+    assert.ok(commands.includes("lopper.exportAnalysis.cyclonedx"), "expected CycloneDX export command");
     assert.ok(commands.includes("lopper.refreshWorkspace.runtime"), "expected runtime refresh command");
     assert.ok(commands.includes("lopper.applyCodemod"), "expected codemod apply command");
+
+    const cyclonedxPath = path.join(primaryFolder.uri.fsPath, ".artifacts", "lopper-analysis.cdx.json");
+    const restoreSaveDialog = stubSaveDialog(cyclonedxPath);
+    try {
+      await vscode.commands.executeCommand("lopper.exportAnalysis.cyclonedx", primaryFolder.uri.fsPath);
+    } finally {
+      restoreSaveDialog();
+    }
+    const cyclonedx = JSON.parse(await readFile(cyclonedxPath, "utf8")) as {
+      bomFormat?: string;
+      specVersion?: string;
+    };
+    assert.equal(cyclonedx.bomFormat, "CycloneDX");
+    assert.equal(cyclonedx.specVersion, "1.6");
 
     const primaryDiagnostics = await waitForDiagnostics(primaryFixtureUri, 2);
     const unusedImportDiagnostic = primaryDiagnostics.find((item) => item.message.includes("unused"));
@@ -80,6 +96,16 @@ suite("vscode-lopper smoke", () => {
     assert.match(normalizedHoverText, /Provenance:/);
     assert.match(normalizedHoverText, /unknown/i);
 
+    const pythonFixtureUri = vscode.Uri.file(path.join(secondaryFolder.uri.fsPath, "src", "runtime.py"));
+    const pythonTracePath = path.join(secondaryFolder.uri.fsPath, ".artifacts", "python-runtime.ndjson");
+    const pythonConfiguration = vscode.workspace.getConfiguration("lopper", secondaryFolder.uri);
+    await pythonConfiguration.update("language", "python", vscode.ConfigurationTarget.WorkspaceFolder);
+    await pythonConfiguration.update("runtimeTracePath", pythonTracePath, vscode.ConfigurationTarget.WorkspaceFolder);
+    const pythonDocument = await vscode.workspace.openTextDocument(pythonFixtureUri);
+    await vscode.window.showTextDocument(pythonDocument);
+    await vscode.commands.executeCommand("lopper.refreshWorkspace.runtime", secondaryFolder.uri.fsPath);
+    assert.match(api.getLatestSummary(), /package/);
+
     const quickFixes = await waitForCodeActions(primaryFixtureUri, new vscode.Range(0, 0, 0, 10));
     assert.ok(quickFixes && quickFixes.length > 0, "expected quick fixes");
     const codeAction = quickFixes.find(
@@ -95,6 +121,19 @@ suite("vscode-lopper smoke", () => {
     assert.match(updatedText, /import chunk from "scope-lib\/chunk";/);
   });
 });
+
+function stubSaveDialog(filePath: string): () => void {
+  const original = vscode.window.showSaveDialog;
+  const originalInformation = vscode.window.showInformationMessage;
+  (vscode.window as typeof vscode.window & { showSaveDialog: typeof vscode.window.showSaveDialog }).showSaveDialog =
+    (async () => vscode.Uri.file(filePath)) as typeof vscode.window.showSaveDialog;
+  (vscode.window as typeof vscode.window & { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage =
+    (async () => undefined) as typeof vscode.window.showInformationMessage;
+  return () => {
+    (vscode.window as typeof vscode.window & { showSaveDialog: typeof vscode.window.showSaveDialog }).showSaveDialog = original;
+    (vscode.window as typeof vscode.window & { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = originalInformation;
+  };
+}
 
 async function waitForDiagnostics(uri: vscode.Uri, minimumCount: number): Promise<readonly vscode.Diagnostic[]> {
   const timeoutAt = Date.now() + 20_000;

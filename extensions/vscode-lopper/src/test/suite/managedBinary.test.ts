@@ -1,7 +1,7 @@
 import AdmZip from "adm-zip";
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { suite, test } from "mocha";
@@ -524,6 +524,72 @@ suite("managed binary installer", () => {
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
       await rm(binaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects configured binaries under any open root in an untrusted multi-root workspace", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-multiroot-"));
+    const currentRoot = path.join(tempRoot, "current");
+    const siblingRoot = path.join(tempRoot, "sibling");
+    const siblingBinary = path.join(siblingRoot, platformBinaryName());
+
+    try {
+      await mkdir(currentRoot, { recursive: true });
+      await mkdir(siblingRoot, { recursive: true });
+      await writeExecutable(siblingBinary);
+      const lifecycle = createPathFallbackLifecycle();
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot: currentRoot,
+          workspaceRoots: [currentRoot, siblingRoot],
+          workspaceTrusted: false,
+          autoDownloadBinary: false,
+          configuredBinaryPath: siblingBinary,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError
+          && error.message.includes("workspace-local binary in an untrusted workspace"),
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects configured symlinks resolving under a sibling root in an untrusted workspace", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-multiroot-link-"));
+    const currentRoot = path.join(tempRoot, "current");
+    const siblingRoot = path.join(tempRoot, "sibling");
+    const outsideRoot = path.join(tempRoot, "outside");
+    const siblingBinary = path.join(siblingRoot, platformBinaryName());
+    const outsideLink = path.join(outsideRoot, platformBinaryName());
+
+    try {
+      await mkdir(currentRoot, { recursive: true });
+      await mkdir(siblingRoot, { recursive: true });
+      await mkdir(outsideRoot, { recursive: true });
+      await writeExecutable(siblingBinary);
+      await symlink(siblingBinary, outsideLink);
+      const lifecycle = createPathFallbackLifecycle();
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot: currentRoot,
+          workspaceRoots: [currentRoot, siblingRoot],
+          workspaceTrusted: false,
+          autoDownloadBinary: false,
+          configuredBinaryPath: outsideLink,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError
+          && error.message.includes("workspace-local binary in an untrusted workspace"),
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
     }
   });
 

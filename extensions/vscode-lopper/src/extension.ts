@@ -1,8 +1,14 @@
 import { realpathSync } from "node:fs";
-import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { tryBinaryFileSignature } from "./binaryIdentity";
+import {
+  operationRequiresExplicitUserAction,
+  operationRequiresWorkspaceTrust,
+  type LopperFeatureOperation,
+} from "./featureCapabilities";
 import {
   configuredLopperLanguage,
   clearAndroidModuleSignalCache,
@@ -81,6 +87,11 @@ export interface RefreshWorkspaceOptions {
 interface LopperControllerContract extends vscode.Disposable {
   initialize(): Promise<void>;
   refreshWorkspace(options?: RefreshWorkspaceOptions): Promise<void>;
+  refreshRuntimeWorkspace(folderPath?: string): Promise<void>;
+  saveBaselineSnapshot(folderPath?: string): Promise<void>;
+  compareBaselineSnapshot(folderPath?: string): Promise<void>;
+  exportAnalysis(format: LopperOutputFormat, folderPath?: string): Promise<void>;
+  handleConfigurationChange(event: Pick<vscode.ConfigurationChangeEvent, "affectsConfiguration">): Promise<void>;
   cancelRefresh(reason?: string): void;
   applyCodemod(dependencyName?: string, folderPath?: string, options?: ApplyCodemodCommandOptions): Promise<void>;
   getLatestSummary(): string;
@@ -98,6 +109,15 @@ class DefaultLopperControllerFactory implements LopperControllerFactory {
 
 interface LopperControllerOptions {
   registerWithVSCode?: boolean;
+  isWorkspaceTrusted?: () => boolean;
+  binarySignature?: (binaryPath: string) => Promise<string | undefined>;
+  resolveLanguage?: typeof resolveLopperLanguage;
+}
+
+interface ExportTargetDescriptor {
+  readonly defaultFileName: string;
+  readonly filterLabel: string;
+  readonly extensions: readonly string[];
 }
 
 interface RefreshAbortHandle {
@@ -112,6 +132,7 @@ interface FreshRefreshOptions {
   workspaceKey: string;
   sessionKey: string;
   runId: number;
+  inputVersion: number;
   revealErrors: boolean;
   scopeMode: LopperScopeMode;
   document?: vscode.TextDocument;
@@ -149,6 +170,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   private latestSummary = "Lopper: idle";
   private missingBinaryWarningShown = false;
   private readonly disposable: vscode.Disposable;
+  private readonly isWorkspaceTrusted: () => boolean;
+  private readonly binarySignatureProvider: (binaryPath: string) => Promise<string | undefined>;
+  private readonly resolveLanguage: typeof resolveLopperLanguage;
 
   constructor(
     context: vscode.ExtensionContext,
@@ -156,6 +180,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     options: LopperControllerOptions = {},
   ) {
     const registerWithVSCode = options.registerWithVSCode ?? true;
+    this.isWorkspaceTrusted = options.isWorkspaceTrusted ?? (() => vscode.workspace.isTrusted);
+    this.binarySignatureProvider = options.binarySignature ?? tryBinaryFileSignature;
+    this.resolveLanguage = options.resolveLanguage ?? resolveLopperLanguage;
     this.runner = runner ?? new LopperRunner(this.output, context);
     this.explorer = new LopperExplorerTreeDataProvider(
       () => vscode.workspace.workspaceFolders ?? [],
@@ -234,6 +261,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
         vscode.commands.registerCommand("lopper.exportAnalysis.prComment", async (folderPath?: string) => {
           await this.exportAnalysis("pr-comment", folderPath);
         }),
+        vscode.commands.registerCommand("lopper.exportAnalysis.cyclonedx", async (folderPath?: string) => {
+          await this.exportAnalysis("cyclonedx-json", folderPath);
+        }),
         vscode.commands.registerCommand("lopper.openLocation", async (filePath: string, line = 1, column = 1) => {
           await this.openLocation(filePath, line, column);
         }),
@@ -246,21 +276,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
           void this.handleDidSaveTextDocument(document);
         }),
         vscode.workspace.onDidChangeConfiguration((event) => {
-          for (const folder of vscode.workspace.workspaceFolders ?? []) {
-            if (!event.affectsConfiguration("lopper", folder.uri)) {
-              continue;
-            }
-            this.invalidateWorkspaceSession(folder, "lopper settings changed");
-            if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
-              continue;
-            }
-            void this.refreshWorkspace({
-              folder,
-              revealErrors: false,
-              document: this.activeDocumentForFolder(folder),
-              trigger: "config-change",
-            });
-          }
+          void this.handleConfigurationChange(event);
         }),
         vscode.workspace.onDidChangeWorkspaceFolders((event) => {
           for (const removedFolder of event.removed) {
@@ -330,6 +346,26 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     }
   }
 
+  async handleConfigurationChange(event: Pick<vscode.ConfigurationChangeEvent, "affectsConfiguration">): Promise<void> {
+    const refreshes: Promise<void>[] = [];
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      if (!event.affectsConfiguration("lopper", folder.uri)) {
+        continue;
+      }
+      this.invalidateWorkspaceSession(folder, "lopper settings changed");
+      if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
+        continue;
+      }
+      refreshes.push(this.refreshWorkspace({
+        folder,
+        revealErrors: false,
+        document: this.activeDocumentForFolder(folder),
+        trigger: "config-change",
+      }));
+    }
+    await Promise.all(refreshes);
+  }
+
   async refreshWorkspace(options: RefreshWorkspaceOptions = {}): Promise<void> {
     const folder = options.folder ?? await this.resolveWorkspaceFolder();
     const revealErrors = options.revealErrors ?? true;
@@ -350,9 +386,18 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       return;
     }
 
-    const scopeMode = this.requestedScopeMode(folder, options.scopeModeOverride);
-    const requestedLanguage = await resolveLopperLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
     const workspaceKey = folder.uri.toString();
+    const requestId = this.refreshSessions.reserveRequest(workspaceKey);
+    const inputVersion = this.refreshSessions.inputVersion(workspaceKey);
+    const scopeMode = this.requestedScopeMode(folder, options.scopeModeOverride);
+    const requestedLanguage = await this.resolveLanguage(configuredLopperLanguage(folder), document, folder.uri.fsPath);
+    if (
+      !this.refreshSessions.isLatestRequest(workspaceKey, requestId)
+      || !this.refreshSessions.isCurrentInputVersion(workspaceKey, inputVersion)
+    ) {
+      this.output.appendLine(`[refresh:stale] ${folder.name} request=${requestId} superseded before session lookup`);
+      return;
+    }
     const sessionKey = this.sessionKey(workspaceKey, requestedLanguage, scopeMode);
 
     const reuse = this.tryReuseAnalysis({
@@ -363,8 +408,17 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       scopeMode,
       forceFresh,
       trigger,
+      requestId,
+      inputVersion,
     });
     if (reuse === true || (reuse instanceof Promise && await reuse)) {
+      return;
+    }
+    if (
+      !this.refreshSessions.isLatestRequest(workspaceKey, requestId)
+      || !this.refreshSessions.isCurrentInputVersion(workspaceKey, inputVersion)
+    ) {
+      this.output.appendLine(`[refresh:stale] ${folder.name} request=${requestId} superseded during cache validation`);
       return;
     }
 
@@ -392,6 +446,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       workspaceKey,
       sessionKey,
       runId,
+      inputVersion,
       revealErrors,
       scopeMode,
       document,
@@ -406,7 +461,9 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       signal: abortController.signal,
       abortKey,
     });
-    this.refreshSessions.setInFlight(workspaceKey, sessionKey, runId, refreshPromise);
+    if (isStaticAnalysisRefresh(options)) {
+      this.refreshSessions.setInFlight(workspaceKey, sessionKey, runId, refreshPromise);
+    }
     await refreshPromise;
   }
 
@@ -418,13 +475,15 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     scopeMode: LopperScopeMode;
     forceFresh: boolean;
     trigger: RefreshTrigger;
+    requestId: number;
+    inputVersion: number;
   }): boolean | Promise<boolean> {
     if (options.forceFresh) {
       return false;
     }
 
     const inFlight = this.refreshSessions.inFlight(options.workspaceKey, options.sessionKey);
-    if (inFlight) {
+    if (inFlight && this.refreshSessions.isLatestRun(options.workspaceKey, inFlight.runId)) {
       this.output.appendLine(
         `[refresh:reused-running] ${options.folder.name} (${options.requestedLanguage}, ${options.scopeMode}) trigger=${options.trigger}`,
       );
@@ -439,6 +498,13 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     const cached = this.refreshSessions.getCache(options.workspaceKey, options.sessionKey);
     if (cached) {
       return this.canReuseCachedAnalysis(cached.value).then((canReuse) => {
+        if (
+          !this.refreshSessions.isLatestRequest(options.workspaceKey, options.requestId)
+          || !this.refreshSessions.isCurrentInputVersion(options.workspaceKey, options.inputVersion)
+          || !this.refreshSessions.isCurrentInputVersion(options.workspaceKey, cached.inputVersion)
+        ) {
+          return true;
+        }
         if (canReuse) {
           const runId = this.refreshSessions.reserveRun(options.workspaceKey);
           this.abortSupersededRefreshes(options.workspaceKey, runId);
@@ -487,8 +553,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   }
 
   private completeFreshRefresh(options: FreshRefreshOptions, analysis: WorkspaceAnalysis): void {
-    const { folder, workspaceKey, sessionKey, runId, requestedLanguage, scopeMode, signal } = options;
-    if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
+    const { folder, workspaceKey, sessionKey, runId, inputVersion, requestedLanguage, scopeMode, signal } = options;
+    if (!this.isCurrentRefresh(workspaceKey, runId, inputVersion)) {
       this.output.appendLine(
         `[refresh:stale] ${folder.name} (${requestedLanguage}, ${scopeMode}) run=${runId} ignored in favor of run=${this.refreshSessions.latestRunId(workspaceKey)}`,
       );
@@ -499,14 +565,18 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       this.restoreStatusAfterCancellation(folder, workspaceKey, scopeMode, runId);
       return;
     }
-    this.refreshSessions.setCache(workspaceKey, sessionKey, analysis);
+    if (isStaticAnalysisRefresh(options)) {
+      this.refreshSessions.setCache(workspaceKey, sessionKey, analysis);
+    } else {
+      this.output.appendLine(`[refresh:cache-skipped] ${folder.name} transient analysis result`);
+    }
     this.renderAnalysis(analysis, "fresh");
     this.missingBinaryWarningShown = false;
   }
 
   private async handleFreshRefreshError(options: FreshRefreshOptions, error: unknown): Promise<void> {
-    const { folder, workspaceKey, runId, requestedLanguage, scopeMode, signal, revealErrors } = options;
-    if (!this.refreshSessions.isLatestRun(workspaceKey, runId)) {
+    const { folder, workspaceKey, runId, inputVersion, requestedLanguage, scopeMode, signal, revealErrors } = options;
+    if (!this.isCurrentRefresh(workspaceKey, runId, inputVersion)) {
       this.output.appendLine(
         `[refresh:stale] ${folder.name} (${requestedLanguage}, ${scopeMode}) run=${runId} failed after supersession`,
       );
@@ -566,8 +636,15 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   }
 
   private invalidateWorkspaceSession(folder: vscode.WorkspaceFolder, reason: string): void {
-    this.refreshSessions.bumpInputVersion(folder.uri.toString());
+    const workspaceKey = folder.uri.toString();
+    this.refreshSessions.bumpInputVersion(workspaceKey);
+    this.abortWorkspaceRefreshes(workspaceKey, reason);
     this.output.appendLine(`[refresh:invalidate] ${folder.name}: ${reason}`);
+  }
+
+  private isCurrentRefresh(workspaceKey: string, runId: number, inputVersion: number): boolean {
+    return this.refreshSessions.isLatestRun(workspaceKey, runId)
+      && this.refreshSessions.isCurrentInputVersion(workspaceKey, inputVersion);
   }
 
   private async canReuseCachedAnalysis(analysis: WorkspaceAnalysis): Promise<boolean> {
@@ -576,13 +653,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   }
 
   private async binarySignature(binaryPath: string): Promise<string | undefined> {
-    try {
-      const resolvedPath = await realpath(binaryPath);
-      const details = await stat(resolvedPath);
-      return `${resolvedPath}:${Math.floor(details.mtimeMs)}`;
-    } catch {
-      return undefined;
-    }
+    return this.binarySignatureProvider(binaryPath);
   }
 
   getLatestSummary(): string {
@@ -769,7 +840,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     invalidateAndroidModuleSignalCacheForPath(uri.fsPath, folder?.uri.fsPath);
   }
 
-  private async refreshRuntimeWorkspace(folderPath?: string): Promise<void> {
+  async refreshRuntimeWorkspace(folderPath?: string): Promise<void> {
     const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
     if (!folder) {
       await vscode.window.showInformationMessage("Open a folder before running Lopper runtime analysis.");
@@ -781,13 +852,22 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       this.activeDocumentForFolder(folder),
       folder.uri.fsPath,
     );
-    if (requestedLanguage !== "js-ts") {
-      await vscode.window.showInformationMessage("Runtime-aware analysis is currently intended for JS/TS workspaces.");
+    if (!isRuntimeLanguageSupported(requestedLanguage)) {
+      await vscode.window.showInformationMessage("Runtime-aware analysis is available for JS/TS and Python workspaces.");
+      return;
+    }
+    if (requestedLanguage === "python" && !await this.preflightExplicitOperation(folder, "python-runtime")) {
       return;
     }
 
     const runtimeTracePath = await this.resolveRuntimeTracePath(folder);
-    const runtimeTestCommand = runtimeTracePath ? undefined : await this.resolveRuntimeTestCommand(folder);
+    if (!runtimeTracePath && operationRequiresWorkspaceTrust("runtime-test") && !this.isWorkspaceTrusted()) {
+      await vscode.window.showWarningMessage("Trust this workspace before running a Lopper runtime test command.");
+      return;
+    }
+    const runtimeTestCommand = runtimeTracePath
+      ? undefined
+      : await this.resolveRuntimeTestCommand(folder, requestedLanguage);
     if (!runtimeTracePath && !runtimeTestCommand) {
       await vscode.window.showInformationMessage("Provide a runtime trace file or test command to run runtime-aware analysis.");
       return;
@@ -797,13 +877,14 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       folder,
       document: this.activeDocumentForFolder(folder),
       revealErrors: true,
+      forceFresh: true,
       trigger: "command",
       runtimeTracePath,
       runtimeTestCommand,
     });
   }
 
-  private async saveBaselineSnapshot(folderPath?: string): Promise<void> {
+  async saveBaselineSnapshot(folderPath?: string): Promise<void> {
     const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
     if (!folder) {
       await vscode.window.showInformationMessage("Open a folder before saving a baseline snapshot.");
@@ -816,11 +897,15 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       prompt: "Optional label for the saved baseline snapshot.",
       placeHolder: "release-candidate",
     });
+    if (baselineLabel === undefined) {
+      return;
+    }
 
     await this.refreshWorkspace({
       folder,
       document: this.activeDocumentForFolder(folder),
       revealErrors: true,
+      forceFresh: true,
       trigger: "command",
       baselineStorePath,
       baselineLabel: baselineLabel?.trim().length ? baselineLabel.trim() : undefined,
@@ -828,7 +913,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     });
   }
 
-  private async compareBaselineSnapshot(folderPath?: string): Promise<void> {
+  async compareBaselineSnapshot(folderPath?: string): Promise<void> {
     const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
     if (!folder) {
       await vscode.window.showInformationMessage("Open a folder before comparing against a baseline.");
@@ -868,6 +953,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
         folder,
         document: this.activeDocumentForFolder(folder),
         revealErrors: true,
+        forceFresh: true,
         trigger: "command",
         baselinePath,
       });
@@ -887,6 +973,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       folder,
       document: this.activeDocumentForFolder(folder),
       revealErrors: true,
+      forceFresh: true,
       trigger: "command",
       baselineStorePath: this.defaultBaselineStorePath(folder),
       baselineKey: baselineKey.trim(),
@@ -935,7 +1022,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       await vscode.window.showInformationMessage("Open a folder before applying a Lopper codemod.");
       return;
     }
-    if (!vscode.workspace.isTrusted) {
+    if (!this.isWorkspaceTrusted()) {
       await vscode.window.showWarningMessage("Trust this workspace before applying Lopper codemods.");
       return;
     }
@@ -970,10 +1057,13 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     }
   }
 
-  private async exportAnalysis(format: LopperOutputFormat, folderPath?: string): Promise<void> {
+  async exportAnalysis(format: LopperOutputFormat, folderPath?: string): Promise<void> {
     const folder = await this.resolveDependencyWorkspaceFolder(folderPath);
     if (!folder) {
       await vscode.window.showInformationMessage("Open a folder before exporting analysis results.");
+      return;
+    }
+    if (format === "cyclonedx-json" && !await this.preflightExplicitOperation(folder, "cyclonedx-export")) {
       return;
     }
 
@@ -1033,7 +1123,32 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     return selected?.[0]?.fsPath;
   }
 
-  private async resolveRuntimeTestCommand(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+  private async preflightExplicitOperation(
+    folder: vscode.WorkspaceFolder,
+    operation: LopperFeatureOperation,
+  ): Promise<boolean> {
+    if (!operationRequiresExplicitUserAction(operation)) {
+      throw new Error(`Lopper operation ${operation} is not declared as an explicit user action.`);
+    }
+    if (!this.runner.preflightOperation) {
+      return true;
+    }
+    try {
+      await this.runner.preflightOperation(folder, operation);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const unavailable = `Lopper ${operation} is unavailable for ${folder.name}: ${message}`;
+      this.output.appendLine(`[capability:unavailable] ${unavailable}`);
+      await vscode.window.showErrorMessage(unavailable);
+      return false;
+    }
+  }
+
+  private async resolveRuntimeTestCommand(
+    folder: vscode.WorkspaceFolder,
+    requestedLanguage: "js-ts" | "python",
+  ): Promise<string | undefined> {
     const configured = vscode.workspace.getConfiguration("lopper", folder.uri).get<string>("runtimeTestCommand", "");
     if (configured.trim().length > 0) {
       return configured.trim();
@@ -1041,8 +1156,8 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
 
     const command = await vscode.window.showInputBox({
       title: "Runtime test command",
-      prompt: "Command to run while capturing the runtime trace.",
-      placeHolder: "npm test",
+      prompt: "Allowlisted command to run while capturing the runtime trace.",
+      placeHolder: requestedLanguage === "python" ? "pytest" : "npm test",
     });
     return command?.trim().length ? command.trim() : undefined;
   }
@@ -1052,13 +1167,12 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
   }
 
   private async pickExportTarget(folder: vscode.WorkspaceFolder, format: LopperOutputFormat): Promise<string | undefined> {
-    const defaultExtension = format === "pr-comment" ? "md" : format;
-    const defaultFileName = `lopper-analysis.${defaultExtension}`;
+    const descriptor = exportTargetDescriptor(format);
     const target = await vscode.window.showSaveDialog({
       title: `Export Lopper ${format.toUpperCase()} output`,
-      defaultUri: vscode.Uri.file(path.join(folder.uri.fsPath, defaultFileName)),
+      defaultUri: vscode.Uri.file(path.join(folder.uri.fsPath, descriptor.defaultFileName)),
       filters: {
-        [format.toUpperCase()]: [defaultExtension],
+        [descriptor.filterLabel]: [...descriptor.extensions],
       },
     });
     return target?.fsPath;
@@ -1481,6 +1595,16 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     }
   }
 
+  private abortWorkspaceRefreshes(workspaceKey: string, reason: string): void {
+    for (const handle of this.refreshAbortHandles.values()) {
+      if (handle.workspaceKey !== workspaceKey || handle.controller.signal.aborted) {
+        continue;
+      }
+      this.output.appendLine(`[refresh:abort] ${handle.folderName} run=${handle.runId}: ${reason}`);
+      handle.controller.abort();
+    }
+  }
+
   private cancelActiveRefreshes(reason: string): void {
     let cancelled = 0;
     for (const handle of this.refreshAbortHandles.values()) {
@@ -1623,8 +1747,16 @@ class LopperExtensionBootstrap implements vscode.Disposable {
 }
 
 export const __testing = {
-  createController: (runner: WorkspaceAnalysisRunner): LopperControllerContract =>
-    new LopperController({} as vscode.ExtensionContext, runner, { registerWithVSCode: false }),
+  createController: (
+    runner: WorkspaceAnalysisRunner,
+    options: Pick<
+      LopperControllerOptions,
+      "isWorkspaceTrusted" | "registerWithVSCode" | "binarySignature" | "resolveLanguage"
+    > = {},
+  ): LopperControllerContract =>
+    new LopperController({} as vscode.ExtensionContext, runner, { registerWithVSCode: false, ...options }),
+  exportTargetDescriptor,
+  isRuntimeLanguageSupported,
   formatCodemodApplySummary,
   formatCodemodApplyNotification,
   isDirtyWorktreeApplyError,
@@ -1642,12 +1774,54 @@ export function deactivate(): void {
   bootstrap.dispose();
 }
 
+function isStaticAnalysisRefresh(options: Pick<
+  RefreshWorkspaceOptions,
+  | "runtimeTracePath"
+  | "runtimeTestCommand"
+  | "baselinePath"
+  | "baselineStorePath"
+  | "baselineKey"
+  | "baselineLabel"
+  | "saveBaseline"
+>): boolean {
+  return options.runtimeTracePath === undefined
+    && options.runtimeTestCommand === undefined
+    && options.baselinePath === undefined
+    && options.baselineStorePath === undefined
+    && options.baselineKey === undefined
+    && options.baselineLabel === undefined
+    && options.saveBaseline !== true;
+}
+
 function normalizeScopeMode(value: string | undefined): LopperScopeMode {
   const normalized = value?.trim().toLowerCase() as LopperScopeMode | undefined;
   if (normalized && (lopperScopeModeValues as readonly string[]).includes(normalized)) {
     return normalized;
   }
   return "package";
+}
+
+function isRuntimeLanguageSupported(value: string): value is "js-ts" | "python" {
+  return value === "js-ts" || value === "python";
+}
+
+function exportTargetDescriptor(format: LopperOutputFormat): ExportTargetDescriptor {
+  switch (format) {
+    case "pr-comment":
+      return { defaultFileName: "lopper-analysis.md", filterLabel: "PR Comment", extensions: ["md"] };
+    case "cyclonedx-json":
+      return {
+        defaultFileName: "lopper-analysis.cdx.json",
+        filterLabel: "CycloneDX JSON",
+        extensions: ["cdx.json", "json"],
+      };
+    default:
+      return {
+        defaultFileName: `lopper-analysis.${format}`,
+        filterLabel: format.toUpperCase(),
+        extensions: [format],
+      };
+  }
 }
 
 type LopperExplorerNodeKind = "folder" | "summary" | "dependency" | "group" | "import" | "metric";

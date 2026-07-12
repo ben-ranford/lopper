@@ -1,10 +1,16 @@
 import * as assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { suite, test } from "mocha";
 import * as vscode from "vscode";
 
+import {
+  pythonRunnerProfilesFeature,
+  reachabilityVulnerabilityFeature,
+  sbomAttestationExportsFeature,
+  vscodePreviewCapabilityParityFeature,
+} from "../../featureCapabilities";
 import type { BinaryResolutionRequest } from "../../managedBinary";
 import {
   BinaryResolutionError,
@@ -398,11 +404,12 @@ suite("lopper runner", () => {
     ]);
   });
 
-  test("keeps side-effecting codemod refreshes serial", async () => {
+  test("runs a runtime test command exactly once per analysis", async () => {
     const folder = workspaceFolder();
     const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
     let activeCodemods = 0;
     let maxActiveCodemods = 0;
+    let runtimeCommandCalls = 0;
 
     const runner = new LopperRunner(
       { appendLine: () => undefined },
@@ -414,6 +421,9 @@ suite("lopper runner", () => {
         reportExecutor: {
           runCommand: async () => "",
           runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            if (args.includes("--runtime-test-command")) {
+              runtimeCommandCalls += 1;
+            }
             if (args.includes("--suggest-only")) {
               activeCodemods += 1;
               maxActiveCodemods = Math.max(maxActiveCodemods, activeCodemods);
@@ -452,7 +462,113 @@ suite("lopper runner", () => {
 
     await runner.analyseWorkspace(folder, { runtimeTestCommand: "npm test" });
 
-    assert.equal(maxActiveCodemods, 1);
+    assert.equal(runtimeCommandCalls, 1, "an authorized runtime test command must execute once");
+    assert.equal(maxActiveCodemods, 0, "command-backed analysis must not start focused codemod runs");
+  });
+
+  test("keeps focused codemod discovery for trace-file-only runtime analysis", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const reportCalls: string[][] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            reportCalls.push(args);
+            if (args.includes("--suggest-only")) {
+              return {
+                dependencies: [{
+                  name: "scope-lib",
+                  usedExportsCount: 1,
+                  totalExportsCount: 2,
+                  usedPercent: 50,
+                  codemod: { mode: "suggest-only", suggestions: [] },
+                }],
+              };
+            }
+            return {
+              dependencies: [{
+                name: "scope-lib",
+                language: "js-ts",
+                usedExportsCount: 1,
+                totalExportsCount: 2,
+                usedPercent: 50,
+              }],
+            };
+          },
+        },
+      },
+    );
+
+    const analysis = await runner.analyseWorkspace(folder, { runtimeTracePath: "trace.ndjson" });
+
+    assert.equal(reportCalls.length, 2, "trace-only analysis should run primary and focused codemod reports");
+    assert.ok(!reportCalls[0]?.includes("--suggest-only"));
+    assert.ok(reportCalls[1]?.includes("--suggest-only"));
+    for (const args of reportCalls) {
+      assert.ok(args.includes("--runtime-trace"));
+      assert.equal(args[args.indexOf("--runtime-trace") + 1], "trace.ndjson");
+    }
+    assert.ok(analysis.codemodsByDependency.has("scope-lib"));
+  });
+
+  test("saves a baseline exactly once per analysis", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    let baselineSaveCalls = 0;
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: {
+          resolveBinaryPath: async () => path.join(folder.uri.fsPath, ".lopper-managed", "lopper"),
+        },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            if (args.includes("--save-baseline")) {
+              baselineSaveCalls += 1;
+            }
+            if (args.includes("--suggest-only")) {
+              return {
+                dependencies: [{
+                  name: args.at(-1) ?? "unknown",
+                  usedExportsCount: 1,
+                  totalExportsCount: 2,
+                  usedPercent: 50,
+                  codemod: { mode: "suggest-only", suggestions: [] },
+                }],
+              };
+            }
+            return {
+              dependencies: ["scope-a", "scope-b", "scope-c"].map((name) => ({
+                name,
+                language: "js-ts",
+                usedExportsCount: 1,
+                totalExportsCount: 2,
+                usedPercent: 50,
+              })),
+            };
+          },
+        },
+      },
+    );
+
+    await runner.analyseWorkspace(folder, {
+      baselineStorePath: ".artifacts/lopper-baselines",
+      baselineLabel: "release-candidate",
+      saveBaseline: true,
+    });
+
+    assert.equal(baselineSaveCalls, 1, "an explicit baseline save must execute once");
   });
 
   test("skips codemod analysis for flag-shaped dependency names", async () => {
@@ -628,6 +744,295 @@ suite("lopper runner", () => {
     assert.ok(exportArgs.includes("--baseline-key"));
   });
 
+  test("keeps allowlisted feature settings scoped per workspace folder", async () => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    assert.ok(folders.length >= 2, "expected a multi-root workspace");
+    const [enabledFolder, disabledFolder] = folders;
+    assert.ok(enabledFolder);
+    assert.ok(disabledFolder);
+    const context = { globalStorageUri: vscode.Uri.file(enabledFolder.uri.fsPath) } as vscode.ExtensionContext;
+    const analysisCalls: Array<{ cwd: string; args: string[] }> = [];
+    let featureCalls = 0;
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => "/managed/lopper:1",
+        featureSettings: (folder) => folder.uri.toString() === enabledFolder.uri.toString()
+          ? { enable: [reachabilityVulnerabilityFeature], disable: [] }
+          : { enable: [], disable: [reachabilityVulnerabilityFeature] },
+        reportExecutor: {
+          runCommand: async (_binaryPath, args): Promise<string> => {
+            assert.deepEqual(args, ["features", "--format", "json"]);
+            featureCalls += 1;
+            return featureManifestOutput();
+          },
+          runReport: async (_binaryPath, args, cwd): Promise<LopperReport> => {
+            analysisCalls.push({ cwd, args });
+            return { dependencies: [] };
+          },
+        },
+      },
+    );
+
+    await runner.analyseWorkspace(enabledFolder);
+    await runner.analyseWorkspace(disabledFolder);
+
+    assert.equal(featureCalls, 1, "same binary signature should share one catalog lookup");
+    assert.deepEqual(featureFlagValues(analysisCalls[0]?.args ?? [], "--enable-feature"), [
+      reachabilityVulnerabilityFeature,
+    ]);
+    assert.deepEqual(featureFlagValues(analysisCalls[1]?.args ?? [], "--disable-feature"), [
+      reachabilityVulnerabilityFeature,
+    ]);
+    assert.equal(analysisCalls[0]?.cwd, enabledFolder.uri.fsPath);
+    assert.equal(analysisCalls[1]?.cwd, disabledFolder.uri.fsPath);
+  });
+
+  test("forwards Python runner profiles only for explicit runtime-test analysis", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const analysisCalls: string[][] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => "/managed/lopper:1",
+        featureSettings: () => ({ enable: [pythonRunnerProfilesFeature], disable: [] }),
+        reportExecutor: {
+          runCommand: async (): Promise<string> => featureManifestOutput(),
+          runReport: async (_binaryPath, args): Promise<LopperReport> => {
+            analysisCalls.push(args);
+            return { dependencies: [] };
+          },
+        },
+      },
+    );
+
+    await runner.analyseWorkspace(folder);
+    await runner.analyseWorkspace(folder, {
+      document: {
+        fileName: path.join(folder.uri.fsPath, "src", "runtime.py"),
+        isUntitled: false,
+        languageId: "python",
+      } as vscode.TextDocument,
+      runtimeTestCommand: "python -m unittest",
+    });
+
+    assert.deepEqual(featureFlagValues(analysisCalls[0] ?? [], "--enable-feature"), []);
+    assert.deepEqual(featureFlagValues(analysisCalls[1] ?? [], "--enable-feature"), [
+      pythonRunnerProfilesFeature,
+      vscodePreviewCapabilityParityFeature,
+    ]);
+  });
+
+  test("refreshes the feature catalog when the selected binary signature changes", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    let signature = "/managed/lopper:1";
+    let featureCalls = 0;
+    const exportCalls: string[][] = [];
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => signature,
+        featureSettings: () => ({ enable: [], disable: [] }),
+        reportExecutor: {
+          runCommand: async (_binaryPath, args): Promise<string> => {
+            if (args[0] === "features") {
+              featureCalls += 1;
+              return featureCalls === 1
+                ? featureManifestOutput()
+                : JSON.stringify(JSON.parse(featureManifestOutput()).slice(1));
+            }
+            exportCalls.push(args);
+            return "{}";
+          },
+          runReport: async (): Promise<LopperReport> => ({ dependencies: [] }),
+        },
+      },
+    );
+
+    await runner.exportWorkspace(folder, "cyclonedx-json");
+    await runner.exportWorkspace(folder, "cyclonedx-json");
+    assert.equal(featureCalls, 1);
+    assert.equal(exportCalls.length, 2);
+    for (const args of exportCalls) {
+      assert.deepEqual(featureFlagValues(args, "--enable-feature"), [
+        sbomAttestationExportsFeature,
+        vscodePreviewCapabilityParityFeature,
+      ]);
+    }
+
+    signature = "/managed/lopper:2";
+    await assert.rejects(
+      runner.exportWorkspace(folder, "cyclonedx-json"),
+      /selected lopper binary does not report feature/,
+    );
+    assert.equal(featureCalls, 2);
+    assert.equal(exportCalls.length, 2, "stale binary must be rejected before export execution");
+  });
+
+  test("refreshes the feature catalog after same-path binary replacement with restored mtime", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-feature-signature-"));
+    const binaryPath = path.join(tempRoot, "lopper");
+    const fixedTime = new Date(1_700_000_000_000);
+    let featureCalls = 0;
+    let exportCalls = 0;
+
+    try {
+      await writeFile(binaryPath, "first", "utf8");
+      await chmod(binaryPath, 0o755);
+      await utimes(binaryPath, fixedTime, fixedTime);
+      const runner = new LopperRunner(
+        { appendLine: () => undefined },
+        context,
+        {
+          binaryLifecycle: { resolveBinaryPath: async () => binaryPath },
+          featureSettings: () => ({ enable: [], disable: [] }),
+          reportExecutor: {
+            runCommand: async (_binaryPath, args): Promise<string> => {
+              if (args[0] === "features") {
+                featureCalls += 1;
+                return featureCalls === 1
+                  ? featureManifestOutput()
+                  : JSON.stringify(JSON.parse(featureManifestOutput()).slice(1));
+              }
+              exportCalls += 1;
+              return "{}";
+            },
+            runReport: async (): Promise<LopperReport> => ({ dependencies: [] }),
+          },
+        },
+      );
+
+      await runner.exportWorkspace(folder, "cyclonedx-json");
+      assert.equal(featureCalls, 1);
+      assert.equal(exportCalls, 1);
+
+      await writeFile(binaryPath, "other", "utf8");
+      await utimes(binaryPath, fixedTime, fixedTime);
+      await assert.rejects(
+        runner.exportWorkspace(folder, "cyclonedx-json"),
+        /selected lopper binary does not report feature/,
+      );
+      assert.equal(featureCalls, 2, "replaced binary must refresh its catalog");
+      assert.equal(exportCalls, 1, "stale catalog must fail before export execution");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("isolates concurrent feature catalog cancellation across workspace folders", async () => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    assert.ok(folders.length >= 2, "expected a multi-root workspace");
+    const [cancelledFolder, successfulFolder] = folders;
+    assert.ok(cancelledFolder);
+    assert.ok(successfulFolder);
+    const context = { globalStorageUri: vscode.Uri.file(cancelledFolder.uri.fsPath) } as vscode.ExtensionContext;
+    const cancelledController = new AbortController();
+    let featureCalls = 0;
+    let signatureCalls = 0;
+    let resolveFirstCatalogStarted!: () => void;
+    let resolveSecondSignatureRequested!: () => void;
+    const firstCatalogStarted = new Promise<void>((resolve) => {
+      resolveFirstCatalogStarted = resolve;
+    });
+    const secondSignatureRequested = new Promise<void>((resolve) => {
+      resolveSecondSignatureRequested = resolve;
+    });
+
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => {
+          signatureCalls += 1;
+          if (signatureCalls === 2) {
+            resolveSecondSignatureRequested();
+          }
+          return "/managed/lopper:1";
+        },
+        featureSettings: () => ({ enable: [reachabilityVulnerabilityFeature], disable: [] }),
+        reportExecutor: {
+          runCommand: async (_binaryPath, args, _cwd, options): Promise<string> => {
+            assert.deepEqual(args, ["features", "--format", "json"]);
+            featureCalls += 1;
+            if (featureCalls > 1) {
+              return featureManifestOutput();
+            }
+
+            resolveFirstCatalogStarted();
+            const signal = options?.signal;
+            assert.ok(signal, "expected the first catalog lookup to carry its caller's cancellation signal");
+            return new Promise<string>((_resolve, reject) => {
+              const abort = () => reject(new Error("catalog query aborted"));
+              if (signal.aborted) {
+                abort();
+                return;
+              }
+              signal.addEventListener("abort", abort, { once: true });
+            });
+          },
+          runReport: async (): Promise<LopperReport> => ({ dependencies: [] }),
+        },
+      },
+    );
+
+    const cancelledAnalysis = runner.analyseWorkspace(cancelledFolder, { signal: cancelledController.signal });
+    await firstCatalogStarted;
+    const successfulAnalysis = runner.analyseWorkspace(successfulFolder);
+    await secondSignatureRequested;
+    await delay(0);
+    cancelledController.abort();
+
+    await assert.rejects(cancelledAnalysis, /catalog query aborted/);
+    const analysis = await successfulAnalysis;
+    assert.equal(analysis.folder.uri.toString(), successfulFolder.uri.toString());
+    assert.equal(featureCalls, 2, "each in-flight caller must own its cancellable catalog lookup");
+    await runner.analyseWorkspace(cancelledFolder);
+    assert.equal(featureCalls, 2, "an aborted lookup must not evict a concurrently successful catalog");
+  });
+
+  test("rejects arbitrary feature settings before analysis", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    let analysisCalls = 0;
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        binarySignature: async () => "/managed/lopper:1",
+        featureSettings: () => ({ enable: ["mcp-mutation-tools"], disable: [] }),
+        reportExecutor: {
+          runCommand: async (): Promise<string> => featureManifestOutput(),
+          runReport: async (): Promise<LopperReport> => {
+            analysisCalls += 1;
+            return { dependencies: [] };
+          },
+        },
+      },
+    );
+
+    await assert.rejects(runner.analyseWorkspace(folder), /not available to VS Code/);
+    assert.equal(analysisCalls, 0);
+  });
+
   test("times out hung lopper commands", async function () {
     if (process.platform === "win32") {
       this.skip();
@@ -724,4 +1129,47 @@ function restoreEnv(name: string, value: string | undefined): void {
     return;
   }
   process.env[name] = value;
+}
+
+function featureManifestOutput(): string {
+  return JSON.stringify([
+    {
+      code: "LOP-FEAT-0013",
+      name: sbomAttestationExportsFeature,
+      description: "CycloneDX",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+    {
+      code: "LOP-FEAT-0015",
+      name: reachabilityVulnerabilityFeature,
+      description: "Vulnerability priority",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+    {
+      code: "LOP-FEAT-0018",
+      name: pythonRunnerProfilesFeature,
+      description: "Python runners",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+    {
+      code: "LOP-FEAT-0020",
+      name: vscodePreviewCapabilityParityFeature,
+      description: "VS Code parity",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+  ]);
+}
+
+function featureFlagValues(args: readonly string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === flag && args[index + 1]) {
+      values.push(args[index + 1]);
+    }
+  }
+  return values;
 }

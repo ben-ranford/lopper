@@ -41,15 +41,33 @@ suite("refresh session store", () => {
     assert.equal(sessions.inFlight(folderKey, sessionKey), undefined);
   });
 
-  test("invalidates cache when input version changes", () => {
+  test("invalidates cache and in-flight work when input version changes", () => {
     const sessions = new RefreshSessionStore<{ id: string }, void>();
     const folderKey = "workspace://one";
     const sessionKey = "workspace://one|js-ts|repo";
 
+    const runId = sessions.reserveRun(folderKey);
+    sessions.setInFlight(folderKey, sessionKey, runId, Promise.resolve());
     sessions.setCache(folderKey, sessionKey, { id: "report-1" });
+    assert.ok(sessions.inFlight(folderKey, sessionKey));
     assert.equal(sessions.getCache(folderKey, sessionKey)?.value.id, "report-1");
 
-    sessions.bumpInputVersion(folderKey);
+    const inputVersion = sessions.bumpInputVersion(folderKey);
+    assert.equal(inputVersion, 1);
+    assert.equal(sessions.isCurrentInputVersion(folderKey, 0), false);
+    assert.equal(sessions.isCurrentInputVersion(folderKey, 1), true);
+    assert.equal(sessions.inFlight(folderKey, sessionKey), undefined);
     assert.equal(sessions.getCache(folderKey, sessionKey), undefined);
+  });
+
+  test("orders asynchronous cache decisions by refresh request", () => {
+    const sessions = new RefreshSessionStore<string, void>();
+    const folderKey = "workspace://one";
+
+    const ordinaryRequest = sessions.reserveRequest(folderKey);
+    const explicitRuntimeRequest = sessions.reserveRequest(folderKey);
+
+    assert.equal(sessions.isLatestRequest(folderKey, ordinaryRequest), false);
+    assert.equal(sessions.isLatestRequest(folderKey, explicitRuntimeRequest), true);
   });
 });

@@ -31,8 +31,9 @@ The extension shells out to `lopper`.
 - If your repo contains `bin/lopper`, the extension will use that first after you trust the workspace.
 - If no local binary is available, the extension can download a matching GitHub release into extension-managed storage.
 - You can always override detection with `lopper.binaryPath` or `LOPPER_BINARY_PATH`.
-- Workspace-local binaries, including `bin/lopper` and `lopper.binaryPath` values inside the repo, are blocked until the workspace is trusted.
+- Workspace-local binaries, including `bin/lopper`, configured paths, PATH entries, and symlinks resolving under any open workspace root, are blocked until the workspace is trusted.
 - Codemod apply actions are disabled until the workspace is trusted and keep the CLI's clean-worktree protection unless you explicitly retry with the dirty-worktree override.
+- Runtime trace files can be analysed without executing workspace code. Runtime test commands remain unavailable until the workspace is trusted and run only from the explicit runtime refresh command.
 
 ## Install
 
@@ -57,8 +58,10 @@ code --install-extension lopper-vscode-<version>.vsix
 - `lopper.autoRefresh`: refresh on saves that match the selected adapter mode
 - `lopper.autoDownloadBinary`: enable or disable managed binary downloads
 - `lopper.managedBinaryTag`: optional release tag override for managed installs
-- `lopper.runtimeTracePath`: optional runtime trace file for JS/TS runtime-aware analysis
-- `lopper.runtimeTestCommand`: optional command to run while capturing a runtime trace
+- `lopper.runtimeTracePath`: optional runtime trace file for JS/TS or Python runtime-aware analysis
+- `lopper.runtimeTestCommand`: optional allowlisted JS/TS or Python test command; execution requires Workspace Trust and an explicit runtime refresh
+- `lopper.enableFeatures`: per-workspace allowlist of safe CLI preview features to enable
+- `lopper.disableFeatures`: per-workspace allowlist of safe CLI features to disable; disable entries take precedence
 - `lopper.advisorySourcePath`: optional local JSON or YAML advisory file for vulnerability findings
 - `lopper.thresholdFailOnIncreasePercent`: waste increase gate threshold, default `-1`
 - `lopper.thresholdLowConfidenceWarningPercent`: warning threshold for low-confidence dependencies
@@ -73,21 +76,25 @@ Setting `lopper.advisorySourcePath` or a non-`off` reachable vulnerability
 threshold automatically enables the
 `reachability-vulnerability-prioritization-preview` feature for VS Code runs.
 
-Python codemod suggestions use the stable `python-codemod-suggestions` default in Lopper v1.8. First-party Python runtime capture is stable in the CLI but remains outside the extension's JS/TS-only runtime-aware refresh workflow.
+The extension queries the selected binary's `features --format json` catalog before forwarding an explicit feature setting. Only `python-runner-profiles`, `reachability-vulnerability-prioritization-preview`, and `sbom-attestation-exports-preview` are exposed because their VS Code operations are local and explicitly bounded. Dashboard, MCP mutation, and remote-repository capabilities are not accepted by these settings.
+
+Command discoverability is global because each folder in a multi-root window can select a different binary. Execution availability is folder-specific: Python runtime and CycloneDX actions preflight the selected folder's CLI manifest before opening file or input UI, and the `vscode-preview-capability-parity` tracker remains required while this surface is in preview.
+
+Python codemod suggestions and first-party Python runtime capture use their stable Lopper v1.8 defaults. The preview `python-runner-profiles` feature adds the CLI's safe `unittest` and `uv` forms when enabled for a trusted, explicit runtime refresh.
 
 ## Commands
 
 - `Lopper: Refresh Diagnostics`: refresh using the configured scope and session cache.
 - `Lopper: Refresh Diagnostics (Force Fresh)`: bypass cache and re-run analysis.
-- `Lopper: Refresh Diagnostics (Runtime Trace)`: run runtime-aware analysis for JS/TS workspaces.
+- `Lopper: Refresh Diagnostics (Runtime Trace)`: run runtime-aware analysis for JS/TS or Python workspaces.
 - `Lopper: Refresh Diagnostics (Scope: package|repo|changed-packages)`: run using an explicit scope mode.
 - `Lopper: Save Baseline Snapshot`: save the current workspace analysis as a baseline snapshot.
 - `Lopper: Compare Baseline`: compare the current workspace analysis against a saved baseline key or file.
 - `Lopper: Analyse Dependency...`: open a focused dependency analysis and detail view.
 - `Lopper: Apply Codemod`: apply an available safe codemod for a dependency and print applied, skipped, failed, and rollback artifact details.
-- `Lopper: Export Analysis as JSON|CSV|SARIF|PR Comment`: export the current analysis in a machine-readable format.
+- `Lopper: Export Analysis as JSON|CSV|SARIF|PR Comment|CycloneDX JSON`: export the current analysis. CycloneDX defaults to `lopper-analysis.cdx.json` and requests its preview capability only when the selected CLI does not enable it by default.
 
-The extension deduplicates in-flight refreshes per folder/language/scope, prevents stale runs from overwriting newer diagnostics, and logs refresh lifecycle states to the `Lopper` output channel.
+The extension deduplicates ordinary in-flight refreshes per folder/language/scope, prevents stale runs from overwriting newer diagnostics, and logs refresh lifecycle states to the `Lopper` output channel. Explicit runtime and baseline actions always execute fresh and do not replace the ordinary analysis cache.
 
 ## Development
 
