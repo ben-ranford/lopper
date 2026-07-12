@@ -292,3 +292,19 @@ func TestUsageReturnsText(t *testing.T) {
 		t.Fatalf("expected usage text to include TUI action commands")
 	}
 }
+
+func TestUsageAnalyseSynopsesIncludeFeatureOverrides(t *testing.T) {
+	analyseSynopses := 0
+	for _, line := range strings.Split(Usage(), "\n") {
+		if !strings.HasPrefix(line, "  lopper analyse ") {
+			continue
+		}
+		analyseSynopses++
+		if !strings.Contains(line, "[--enable-feature NAME]") || !strings.Contains(line, "[--disable-feature NAME]") {
+			t.Fatalf("analyse synopsis must include both feature overrides: %q", line)
+		}
+	}
+	if analyseSynopses != 2 {
+		t.Fatalf("expected two analyse synopses, got %d", analyseSynopses)
+	}
+}
