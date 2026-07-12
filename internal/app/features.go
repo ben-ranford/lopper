@@ -62,7 +62,7 @@ func formatFeatureTable(manifest []featureflags.ManifestEntry) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("CODE           NAME  LIFECYCLE  RELEASE_DEFAULT\n")
+	b.WriteString("CODE           NAME  LIFECYCLE  ENABLED_BY_DEFAULT\n")
 	for _, entry := range manifest {
 		fmt.Fprintf(&b, "%-14s %-5s %-10s %t\n", entry.Code, entry.Name, entry.Lifecycle, entry.EnabledByDefault)
 	}
