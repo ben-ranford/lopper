@@ -123,6 +123,37 @@ func run() {
 	}
 }
 
+func TestSwiftAdapterDoesNotCountCrossFileLocalTypeUsageAsDependencyUsage(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftDemoPackage(t, repo, []swiftFixtureDependency{swiftNIOFixtureDependency()}, `import NIO
+func render(_ model: SharedModel) {
+  print(model)
+}
+func buildModel() -> SharedModel {
+  SharedModel()
+}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", "SharedModel.swift"), "struct SharedModel {}\n")
+
+	reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: swiftNIOID})
+	if reportData.UsedExportsCount != 0 {
+		t.Fatalf("expected cross-file local symbols to not count as dependency usage, got %#v", reportData)
+	}
+}
+
+func TestSwiftAdapterKeepsUnqualifiedUsageWhenDeclarationIsInAnotherTarget(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftDemoPackage(t, repo, []swiftFixtureDependency{alamofireFixtureDependency()}, `import Alamofire
+func run() {
+  _ = Session.default
+}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Other", "Session.swift"), "struct Session {}\n")
+
+	reportData := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: "alamofire"})
+	if reportData.UsedExportsCount == 0 {
+		t.Fatalf("expected declarations in another target to preserve inferred dependency usage, got %#v", reportData)
+	}
+}
+
 func TestSwiftAdapterParsesResolvedVariants(t *testing.T) {
 	t.Run("v1_object_pins", func(t *testing.T) {
 		repo := t.TempDir()

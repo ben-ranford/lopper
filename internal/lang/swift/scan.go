@@ -24,14 +24,16 @@ func newRepoScanner(repoPath string, catalog dependencyCatalog) *repoScanner {
 		scan.KnownDependencies[dependency] = struct{}{}
 	}
 	return &repoScanner{
-		repoPath:          repoPath,
-		catalog:           catalog,
-		scan:              scan,
-		unresolvedImports: make(map[string]int),
+		repoPath:               repoPath,
+		catalog:                catalog,
+		scan:                   scan,
+		unresolvedImports:      make(map[string]int),
+		declaredSymbolsByScope: make(map[string]map[string]struct{}),
 	}
 }
 
 func (s *repoScanner) finalize() {
+	s.applyUnqualifiedUsageHeuristics()
 	if !s.foundSwift {
 		s.scan.Warnings = append(s.scan.Warnings, "no Swift files found for analysis")
 	}

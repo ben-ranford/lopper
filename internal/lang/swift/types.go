@@ -63,14 +63,21 @@ type scanResult struct {
 	ImportedDependencies map[string]struct{}
 }
 
+type unqualifiedUsageContext struct {
+	scope      string
+	candidates []string
+}
+
 type repoScanner struct {
-	repoPath          string
-	catalog           dependencyCatalog
-	scan              scanResult
-	unresolvedImports map[string]int
-	foundSwift        bool
-	skippedLargeFiles int
-	visited           int
+	repoPath                 string
+	catalog                  dependencyCatalog
+	scan                     scanResult
+	unresolvedImports        map[string]int
+	declaredSymbolsByScope   map[string]map[string]struct{}
+	unqualifiedUsageContexts []unqualifiedUsageContext
+	foundSwift               bool
+	skippedLargeFiles        int
+	visited                  int
 }
 
 type swiftStringScanState struct {
