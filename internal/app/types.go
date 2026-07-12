@@ -14,6 +14,7 @@ const (
 	ModeTUI       Mode = "tui"
 	ModeAnalyse   Mode = "analyse"
 	ModeDashboard Mode = "dashboard"
+	ModeBaseline  Mode = "baseline"
 	ModeFeatures  Mode = "features"
 	ModeProfile   Mode = "profile"
 	ModeMCP       Mode = "mcp"
@@ -29,6 +30,7 @@ type Request struct {
 	Analyse   AnalyseRequest
 	TUI       TUIRequest
 	Dashboard DashboardRequest
+	Baseline  BaselineRequest
 	Features  FeaturesRequest
 	Profile   ProfileRequest
 	MCP       MCPRequest
@@ -98,6 +100,15 @@ type DashboardRequest struct {
 	Features          featureflags.Set
 }
 
+type BaselineRequest struct {
+	Action    string
+	StorePath string
+	Key       string
+	Format    string
+	Limit     int
+	Features  featureflags.Set
+}
+
 type FeaturesRequest struct {
 	Format     string
 	OutputPath string
@@ -138,6 +149,11 @@ func DefaultRequest() Request {
 		Dashboard: DashboardRequest{
 			TopN:            20,
 			DefaultLanguage: "auto",
+		},
+		Baseline: BaselineRequest{
+			StorePath: ".artifacts/lopper-baselines",
+			Format:    "table",
+			Limit:     50,
 		},
 		Features: FeaturesRequest{
 			Format: "table",

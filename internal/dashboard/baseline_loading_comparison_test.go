@@ -1,11 +1,15 @@
 package dashboard
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	baselineutil "github.com/ben-ranford/lopper/internal/baseline"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestDashboardBaselineLoadPreservesRemoteMetadata(t *testing.T) {
@@ -67,6 +71,20 @@ func TestDashboardBaselineLoadLegacyRemoteFieldsEmpty(t *testing.T) {
 	}
 }
 
+func TestDashboardLoadWithKeyPreservesOversizedExplicitBaselineCompatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized-explicit.json")
+	content := `{"generated_at":"2026-03-12T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":3}]}`
+	testutil.MustWritePaddedFile(t, path, content, baselineutil.MaxSnapshotBytes+1)
+
+	rep, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("load oversized explicit dashboard baseline: %v", err)
+	}
+	if key != "" || rep.Summary.TotalDeps != 3 {
+		t.Fatalf("unexpected oversized explicit dashboard baseline: key=%q report=%#v", key, rep)
+	}
+}
+
 func TestDashboardBaselineLoadRejectsUnsupportedSchema(t *testing.T) {
 	t.Parallel()
 
@@ -94,6 +112,51 @@ func TestDashboardBaselineLoadReportsReadErrors(t *testing.T) {
 	}
 	if _, _, err := LoadWithKey(invalidPath); err == nil {
 		t.Fatalf("expected invalid dashboard json error")
+	}
+}
+
+func TestDashboardKeyedBaselineLoadCompatibilityAndIdentity(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	now := time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC)
+	path, err := SaveSnapshot(dir, "label:current", Report{GeneratedAt: now, Repos: []RepoResult{{Name: "api"}}}, now)
+	if err != nil {
+		t.Fatalf("save current snapshot: %v", err)
+	}
+	loaded, key, resolvedPath, err := LoadSnapshot(dir, "label:current")
+	if err != nil || key != "label:current" || resolvedPath != path || loaded.Summary.TotalRepos != 1 {
+		t.Fatalf("keyed load failed: key=%q path=%q report=%#v err=%v", key, resolvedPath, loaded, err)
+	}
+	if ResolveBaselineSnapshotPath(dir, "label:current") != path {
+		t.Fatalf("expected current snapshot path resolution")
+	}
+	if _, _, _, err := LoadSnapshot(dir, "label:missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing keyed snapshot error, got %v", err)
+	}
+
+	legacyDir := t.TempDir()
+	newPath, err := SaveSnapshot(legacyDir, "label:a/b", Report{GeneratedAt: now}, now)
+	if err != nil {
+		t.Fatalf("save legacy fixture: %v", err)
+	}
+	legacyPath := baselineutil.LegacySnapshotPath(legacyDir, "label:a/b")
+	if err := os.Rename(newPath, legacyPath); err != nil {
+		t.Fatalf("move snapshot to legacy path: %v", err)
+	}
+	if _, key, resolvedPath, err := LoadSnapshot(legacyDir, "label:a/b"); err != nil || key != "label:a/b" || resolvedPath != legacyPath {
+		t.Fatalf("legacy keyed load failed: key=%q path=%q err=%v", key, resolvedPath, err)
+	}
+	if _, _, _, err := LoadSnapshot(legacyDir, "label:a?b"); !errors.Is(err, ErrBaselineKeyMismatch) {
+		t.Fatalf("expected colliding dashboard key mismatch, got %v", err)
+	}
+
+	corruptName := baselineutil.SnapshotFileName("label:corrupt")
+	if err := os.WriteFile(filepath.Join(legacyDir, corruptName), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write corrupt keyed snapshot: %v", err)
+	}
+	if _, _, _, err := LoadSnapshot(legacyDir, "label:corrupt"); err == nil {
+		t.Fatalf("expected corrupt keyed snapshot error")
 	}
 }
 

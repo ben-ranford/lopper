@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -53,7 +52,7 @@ func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save baseline action: %v", err)
 	}
-	if !strings.Contains(savedPath, "label_nightly.json") {
+	if savedPath != report.BaselineSnapshotPath(store, "label:nightly") {
 		t.Fatalf("expected label-based snapshot path, got %q", savedPath)
 	}
 	if _, err := os.Stat(savedPath); err != nil {

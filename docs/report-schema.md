@@ -159,4 +159,4 @@ CycloneDX characteristics:
   findings under `baselineComparison.newReachableVulnerabilities`.
 - Stored reports or baselines created before the mutually exclusive license-bucket summary should be regenerated, or consumers should recompute `summary` from `dependencies`, before comparing license deltas.
 - `schemaVersion` is currently pinned to `0.1.0`.
-- Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed.
+- Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed. `lopper baseline list` and `lopper baseline show KEY` expose bounded snapshot metadata when `baseline-store-discovery-preview` is enabled; they do not print dependency rows from the stored report.

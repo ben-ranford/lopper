@@ -10,6 +10,7 @@ import (
 	"time"
 
 	baselineutil "github.com/ben-ranford/lopper/internal/baseline"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const testLabelX = "label:x"
@@ -125,6 +126,20 @@ func TestLoadWithKeySupportsLegacyReportFile(t *testing.T) {
 	}
 }
 
+func TestLoadWithKeyPreservesOversizedExplicitBaselineCompatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized-explicit.json")
+	content := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[]}`
+	testutil.MustWritePaddedFile(t, path, content, baselineutil.MaxSnapshotBytes+1)
+
+	rep, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("load oversized explicit baseline: %v", err)
+	}
+	if key != "" || rep.RepoPath != "." {
+		t.Fatalf("unexpected oversized explicit baseline: key=%q report=%#v", key, rep)
+	}
+}
+
 func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "snapshot.json")
@@ -149,7 +164,7 @@ func TestSaveSnapshotValidationErrors(t *testing.T) {
 
 func TestBaselineSnapshotPathSanitizesKey(t *testing.T) {
 	path := BaselineSnapshotPath("/tmp/baselines", " label:release candidate/1 ")
-	if !strings.HasSuffix(path, "label_release_candidate_1.json") {
+	if filepath.Base(path) != baselineutil.SnapshotFileName("label:release candidate/1") {
 		t.Fatalf("expected sanitized snapshot path, got %q", path)
 	}
 }

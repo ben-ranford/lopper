@@ -33,6 +33,8 @@ func ParseArgs(args []string) (app.Request, error) {
 		return parseAnalyse(args[1:], req)
 	case "dashboard":
 		return parseDashboard(args[1:], req)
+	case "baseline":
+		return parseBaseline(args[1:], req)
 	case "features":
 		return parseFeatures(args[1:], req)
 	case "profile":

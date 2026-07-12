@@ -32,6 +32,49 @@ func MustWriteFileMode(t *testing.T, path string, content string, perm os.FileMo
 	}
 }
 
+func MustWritePaddedFile(t *testing.T, path string, content string, minBytes int64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("open root for %s: %v", path, err)
+	}
+	file, err := root.OpenFile(filepath.Base(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		closeErr := root.Close()
+		t.Fatalf("open %s: %v (close root: %v)", path, err, closeErr)
+	}
+	written, err := file.WriteString(content)
+	if err != nil || written != len(content) {
+		closeErr := file.Close()
+		rootCloseErr := root.Close()
+		t.Fatalf("write %s: wrote %d of %d bytes: %v (close: %v; close root: %v)", path, written, len(content), err, closeErr, rootCloseErr)
+	}
+	padding := strings.Repeat(" ", 1<<20)
+	for remaining := minBytes - int64(len(content)); remaining > 0; {
+		chunk := padding
+		if int64(len(chunk)) > remaining {
+			chunk = chunk[:remaining]
+		}
+		written, writeErr := file.WriteString(chunk)
+		if writeErr != nil || written != len(chunk) {
+			closeErr := file.Close()
+			rootCloseErr := root.Close()
+			t.Fatalf("pad %s: wrote %d of %d bytes: %v (close: %v; close root: %v)", path, written, len(chunk), writeErr, closeErr, rootCloseErr)
+		}
+		remaining -= int64(written)
+	}
+	if err := file.Close(); err != nil {
+		rootCloseErr := root.Close()
+		t.Fatalf("close %s: %v (close root: %v)", path, err, rootCloseErr)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close root for %s: %v", path, err)
+	}
+}
+
 func WriteNumberedTextFiles(t *testing.T, dir string, count int) {
 	t.Helper()
 	for i := 0; i < count; i++ {

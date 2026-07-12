@@ -522,7 +522,13 @@ func applySummaryBaselineIfNeeded(reportData report.Report, opts Options) (repor
 		return reportData, nil
 	}
 
-	baseline, loadedKey, err := report.LoadWithKey(baselinePath)
+	var baseline report.Report
+	var loadedKey string
+	if strings.TrimSpace(baselineKey) != "" {
+		baseline, loadedKey, _, err = report.LoadSnapshot(opts.BaselineStorePath, baselineKey)
+	} else {
+		baseline, loadedKey, err = report.LoadWithKey(baselinePath)
+	}
 	if err != nil {
 		return reportData, err
 	}
@@ -550,7 +556,7 @@ func resolveSummaryBaselinePaths(repoPath string, opts Options) (string, string,
 		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
 	}
 
-	return report.BaselineSnapshotPath(storePath, baselineKey), baselineKey, resolveSummaryCurrentBaselineKey(repoPath), true, nil
+	return report.ResolveBaselineSnapshotPath(storePath, baselineKey), baselineKey, resolveSummaryCurrentBaselineKey(repoPath), true, nil
 }
 
 func resolveSummaryCurrentBaselineKey(repoPath string) string {

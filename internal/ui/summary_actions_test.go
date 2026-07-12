@@ -496,7 +496,7 @@ func TestSummaryBaselineActionMessagesAndErrors(t *testing.T) {
 	if err := summary.runSummaryBaselineSave(context.Background(), &opts, nil, summaryAction{kind: summaryActionSaveBaseline, baselineLabel: "nightly", baselineStorePath: "store"}); err != nil {
 		t.Fatalf("save with fallback path: %v", err)
 	}
-	if !strings.Contains(out.String(), "store/label_nightly.json") {
+	if !strings.Contains(out.String(), report.BaselineSnapshotPath("store", "label:nightly")) {
 		t.Fatalf("expected fallback saved path in output, got %q", out.String())
 	}
 }
