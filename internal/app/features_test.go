@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,51 @@ func TestExecuteFeaturesJSON(t *testing.T) {
 	if !strings.Contains(output, `"code": "LOP-FEAT-0001"`) || !strings.Contains(output, `"enabledByDefault": true`) {
 		t.Fatalf("unexpected feature manifest output: %s", output)
 	}
+}
+
+func TestExecuteFeaturesBaselineStoreDiscoveryUsesCanonicalManifest(t *testing.T) {
+	t.Parallel()
+
+	for _, channel := range []string{"dev", "rolling", "release"} {
+		channel := channel
+		t.Run(channel, func(t *testing.T) {
+			t.Parallel()
+
+			req := DefaultRequest()
+			req.Mode = ModeFeatures
+			req.Features.Format = "json"
+			req.Features.Channel = channel
+			req.Features.Release = "v1.8.1"
+
+			output, err := (&App{}).Execute(context.Background(), req)
+			if err != nil {
+				t.Fatalf("execute %s features: %v", channel, err)
+			}
+			assertCanonicalBaselineStoreManifest(t, output)
+		})
+	}
+}
+
+func assertCanonicalBaselineStoreManifest(t *testing.T, output string) {
+	t.Helper()
+
+	var manifest []featureflags.ManifestEntry
+	if err := json.Unmarshal([]byte(output), &manifest); err != nil {
+		t.Fatalf("decode feature manifest: %v", err)
+	}
+	for _, entry := range manifest {
+		if entry.Name == "baseline-store-discovery-preview" {
+			t.Fatalf("deprecated baseline discovery alias leaked into manifest: %#v", entry)
+		}
+		if entry.Code != "LOP-FEAT-0019" {
+			continue
+		}
+		if entry.Name != "baseline-store-discovery" || entry.Lifecycle != featureflags.LifecycleStable || !entry.EnabledByDefault {
+			t.Fatalf("unexpected canonical baseline discovery manifest entry: %#v", entry)
+		}
+		return
+	}
+	t.Fatalf("canonical baseline discovery entry missing from manifest: %s", output)
 }
 
 func TestExecuteFeaturesOutputFile(t *testing.T) {

@@ -9,10 +9,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/terminal"
 )
 
-const BaselineStoreDiscoveryPreviewFeature = "baseline-store-discovery-preview"
+const BaselineStoreDiscoveryFeature = "baseline-store-discovery"
 
 func (a *App) executeBaseline(req Request) (string, error) {
-	if !req.Baseline.Features.Enabled(BaselineStoreDiscoveryPreviewFeature) {
+	if !req.Baseline.Features.Enabled(BaselineStoreDiscoveryFeature) {
 		return "", ErrBaselineFeatureDisabled
 	}
 	format := strings.ToLower(strings.TrimSpace(req.Baseline.Format))

@@ -17,7 +17,6 @@ func TestParseBaselineList(t *testing.T) {
 		"--baseline-store", "./snapshots",
 		"--format", "json",
 		"--limit", "7",
-		"--enable-feature", app.BaselineStoreDiscoveryPreviewFeature,
 	})
 	if req.Mode != app.ModeBaseline || req.Baseline.Action != "list" {
 		t.Fatalf("unexpected baseline mode/action: %#v", req.Baseline)
@@ -25,8 +24,8 @@ func TestParseBaselineList(t *testing.T) {
 	if req.Baseline.StorePath != "./snapshots" || req.Baseline.Format != "json" || req.Baseline.Limit != 7 {
 		t.Fatalf("unexpected baseline list options: %#v", req.Baseline)
 	}
-	if !req.Baseline.Features.Enabled(app.BaselineStoreDiscoveryPreviewFeature) {
-		t.Fatalf("expected explicit preview feature enablement")
+	if !req.Baseline.Features.Enabled(app.BaselineStoreDiscoveryFeature) {
+		t.Fatalf("expected stable baseline discovery default")
 	}
 }
 
@@ -39,6 +38,35 @@ func TestParseBaselineShowAndDefaults(t *testing.T) {
 	}
 	if req.Baseline.StorePath != ".artifacts/lopper-baselines" || req.Baseline.Limit != 50 {
 		t.Fatalf("unexpected baseline defaults: %#v", req.Baseline)
+	}
+	if !req.Baseline.Features.Enabled(app.BaselineStoreDiscoveryFeature) {
+		t.Fatalf("expected stable baseline discovery default")
+	}
+
+	disabled := mustParseArgs(t, []string{
+		"baseline", "show", "label:nightly",
+		"--disable-feature", app.BaselineStoreDiscoveryFeature,
+	})
+	if disabled.Baseline.Features.Enabled(app.BaselineStoreDiscoveryFeature) {
+		t.Fatalf("expected explicit disable to override baseline discovery default")
+	}
+}
+
+func TestParseBaselineDeprecatedAliasPreservesDisableRollback(t *testing.T) {
+	t.Parallel()
+
+	const deprecatedName = "baseline-store-discovery-preview"
+	req := mustParseArgs(t, []string{
+		"baseline", "list",
+		"--disable-feature", deprecatedName,
+	})
+	if req.Baseline.Features.Enabled(app.BaselineStoreDiscoveryFeature) || req.Baseline.Features.Enabled(deprecatedName) {
+		t.Fatalf("expected deprecated alias to disable canonical baseline discovery feature")
+	}
+	warnings := req.Baseline.Features.DeprecationWarnings()
+	want := `feature flag "baseline-store-discovery-preview" is deprecated; use "baseline-store-discovery" instead`
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("expected exact baseline discovery deprecation warning, got %#v", warnings)
 	}
 }
 

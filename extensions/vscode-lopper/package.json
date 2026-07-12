@@ -262,7 +262,7 @@
           "scope": "resource",
           "default": [],
           "uniqueItems": true,
-          "markdownDescription": "Safe CLI feature names to enable for this workspace folder. Lopper validates each name against the selected CLI's feature catalog and forwards it only to its allowlisted VS Code operation.",
+          "markdownDescription": "Safe CLI feature names to enable explicitly for this workspace folder. Lopper validates each name against the selected CLI's feature catalog and forwards it only to its allowlisted VS Code operation; current stable defaults do not require an override.",
           "items": {
             "type": "string",
             "enum": [
@@ -271,7 +271,7 @@
               "sbom-attestation-exports-preview"
             ],
             "enumDescriptions": [
-              "Enable safe unittest and uv Python runtime runner profiles for an explicit trusted runtime refresh.",
+              "Explicitly enable safe unittest and uv Python runtime runner profiles for compatibility with binaries that do not enable this stable capability by default.",
               "Enable local advisory ingestion and reachability-weighted vulnerability prioritization.",
               "Enable preview CycloneDX JSON export when the selected CLI still requires the flag."
             ]
@@ -288,12 +288,14 @@
             "enum": [
               "python-runner-profiles",
               "reachability-vulnerability-prioritization-preview",
-              "sbom-attestation-exports-preview"
+              "sbom-attestation-exports-preview",
+              "vscode-preview-capability-parity"
             ],
             "enumDescriptions": [
-              "Disable safe unittest and uv Python runtime runner profiles.",
+              "Disable the stable, default-on unittest and uv Python runtime runner profiles as a rollback control.",
               "Disable local advisory ingestion and reachability-weighted vulnerability prioritization.",
-              "Disable preview CycloneDX JSON export while this feature remains required by the CLI."
+              "Disable preview CycloneDX JSON export while this feature remains required by the CLI.",
+              "Disable stable VS Code routing for preview-backed Python runtime and CycloneDX operations; those actions remain unavailable until the rollback is removed."
             ]
           }
         },

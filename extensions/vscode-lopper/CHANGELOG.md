@@ -2,6 +2,7 @@
 
 ## 1.8.1 (Unreleased)
 
+- Graduated Python unittest and uv runner profiles plus VS Code preview-capability routing to stable, default-on features with explicit rollback support.
 - Added safe per-workspace preview capability controls, CycloneDX JSON export, and Python runtime-aware refresh.
 - Added selected-binary capability preflight before Python runtime and CycloneDX file-selection UI.
 - Fixed refresh invalidation and request ordering so stale cached or in-flight analysis cannot replace explicit runtime or configuration-driven work.

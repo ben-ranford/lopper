@@ -21,9 +21,9 @@ if (command !== "analyse") {
 if (
   options.language === "python"
   && (options["runtime-trace"] || options["runtime-test-command"])
-  && !(options["enable-feature"] ?? []).includes("vscode-preview-capability-parity")
+  && (options["disable-feature"] ?? []).includes("vscode-preview-capability-parity")
 ) {
-  process.stderr.write("python runtime parity requires vscode-preview-capability-parity\n");
+  process.stderr.write("python runtime parity is disabled by vscode-preview-capability-parity\n");
   process.exit(2);
 }
 
@@ -349,9 +349,10 @@ function renderExport(commandName, parsedOptions, workspaceRoot) {
 
   if (format === "cyclonedx-json") {
     const enabledFeatures = parsedOptions["enable-feature"] ?? [];
+    const disabledFeatures = parsedOptions["disable-feature"] ?? [];
     if (
       !enabledFeatures.includes("sbom-attestation-exports-preview")
-      || !enabledFeatures.includes("vscode-preview-capability-parity")
+      || disabledFeatures.includes("vscode-preview-capability-parity")
     ) {
       process.stderr.write("cyclonedx-json requires SBOM and VS Code parity capabilities\n");
       process.exit(2);
@@ -412,15 +413,15 @@ function featureManifest() {
       code: "LOP-FEAT-0018",
       name: "python-runner-profiles",
       description: "Enable safe unittest and uv profiles for Python runtime capture.",
-      lifecycle: "preview",
-      enabledByDefault: false,
+      lifecycle: "stable",
+      enabledByDefault: true,
     },
     {
       code: "LOP-FEAT-0020",
       name: "vscode-preview-capability-parity",
       description: "Enable VS Code controls for safe CLI preview capabilities.",
-      lifecycle: "preview",
-      enabledByDefault: false,
+      lifecycle: "stable",
+      enabledByDefault: true,
     },
   ];
 }

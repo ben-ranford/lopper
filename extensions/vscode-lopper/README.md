@@ -60,8 +60,8 @@ code --install-extension lopper-vscode-<version>.vsix
 - `lopper.managedBinaryTag`: optional release tag override for managed installs
 - `lopper.runtimeTracePath`: optional runtime trace file for JS/TS or Python runtime-aware analysis
 - `lopper.runtimeTestCommand`: optional allowlisted JS/TS or Python test command; execution requires Workspace Trust and an explicit runtime refresh
-- `lopper.enableFeatures`: per-workspace allowlist of safe CLI preview features to enable
-- `lopper.disableFeatures`: per-workspace allowlist of safe CLI features to disable; disable entries take precedence
+- `lopper.enableFeatures`: per-workspace allowlist of safe CLI capabilities to enable explicitly
+- `lopper.disableFeatures`: per-workspace allowlist of safe CLI features to disable; includes stable rollback controls and disable entries take precedence
 - `lopper.advisorySourcePath`: optional local JSON or YAML advisory file for vulnerability findings
 - `lopper.thresholdFailOnIncreasePercent`: waste increase gate threshold, default `-1`
 - `lopper.thresholdLowConfidenceWarningPercent`: warning threshold for low-confidence dependencies
@@ -76,11 +76,11 @@ Setting `lopper.advisorySourcePath` or a non-`off` reachable vulnerability
 threshold automatically enables the
 `reachability-vulnerability-prioritization-preview` feature for VS Code runs.
 
-The extension queries the selected binary's `features --format json` catalog before forwarding an explicit feature setting. Only `python-runner-profiles`, `reachability-vulnerability-prioritization-preview`, and `sbom-attestation-exports-preview` are exposed because their VS Code operations are local and explicitly bounded. Dashboard, MCP mutation, and remote-repository capabilities are not accepted by these settings.
+The extension queries the selected binary's `features --format json` catalog before forwarding an explicit feature setting. `lopper.enableFeatures` exposes only `python-runner-profiles`, `reachability-vulnerability-prioritization-preview`, and `sbom-attestation-exports-preview` because their VS Code operations are local and explicitly bounded. `lopper.disableFeatures` additionally exposes `vscode-preview-capability-parity` as a stable rollback control. Stable capabilities already enabled by the selected binary are not forwarded redundantly. Dashboard, MCP mutation, and remote-repository capabilities are not accepted by these settings.
 
-Command discoverability is global because each folder in a multi-root window can select a different binary. Execution availability is folder-specific: Python runtime and CycloneDX actions preflight the selected folder's CLI manifest before opening file or input UI, and the `vscode-preview-capability-parity` tracker remains required while this surface is in preview.
+Command discoverability is global because each folder in a multi-root window can select a different binary. Execution availability is folder-specific: Python runtime and CycloneDX actions preflight the selected folder's CLI manifest before opening file or input UI. The stable, default-on `vscode-preview-capability-parity` tracker remains required when routing those preview-backed operations; explicitly disabling it makes those actions unavailable before any file or input prompt opens.
 
-Python codemod suggestions and first-party Python runtime capture use their stable Lopper v1.8 defaults. The preview `python-runner-profiles` feature adds the CLI's safe `unittest` and `uv` forms when enabled for a trusted, explicit runtime refresh.
+Python codemod suggestions and first-party Python runtime capture use their stable Lopper v1.8 defaults. In v1.8.1, the stable `python-runner-profiles` capability enables the CLI's safe `unittest` and `uv` forms by default for a trusted, explicit runtime refresh; `lopper.disableFeatures` remains available as a rollback control.
 
 ## Commands
 

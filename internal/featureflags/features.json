@@ -164,18 +164,21 @@
     "code": "LOP-FEAT-0018",
     "name": "python-runner-profiles",
     "description": "Enable safe unittest and uv profiles for Python runtime capture.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0019",
-    "name": "baseline-store-discovery-preview",
+    "name": "baseline-store-discovery",
+    "deprecatedNames": [
+      "baseline-store-discovery-preview"
+    ],
     "description": "Enable safe listing and inspection of immutable local baseline snapshots.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   },
   {
     "code": "LOP-FEAT-0020",
     "name": "vscode-preview-capability-parity",
     "description": "Enable VS Code controls for safe CLI preview capabilities, CycloneDX export, and Python runtime refresh parity.",
-    "lifecycle": "preview"
+    "lifecycle": "stable"
   }
 ]

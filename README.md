@@ -179,18 +179,16 @@ lopper analyse --top 20 \
   --threshold-fail-on-increase 2
 ```
 
-List the newest saved snapshots, or inspect one without printing its full report payload. Baseline discovery is preview-gated in v1.8.x:
+List the newest saved snapshots, or inspect one without printing its full report payload. Baseline discovery is stable in v1.8.1:
 
 ```bash
 lopper baseline list \
   --store .artifacts/lopper-baselines \
-  --limit 20 \
-  --enable-feature baseline-store-discovery-preview
+  --limit 20
 
 lopper baseline show label:release-candidate \
   --store .artifacts/lopper-baselines \
-  --format json \
-  --enable-feature baseline-store-discovery-preview
+  --format json
 ```
 
 Attach local vulnerability advisories for reachability-weighted security triage:
@@ -370,7 +368,7 @@ lopper analyse --top 20 --repo . --language python \
   --runtime-test-command "pytest"
 ```
 
-Enable `python-runner-profiles` to opt into these additional direct-exec forms:
+The stable `python-runner-profiles` feature adds these direct-exec forms:
 
 ```text
 python -m unittest
@@ -391,13 +389,12 @@ For example:
 
 ```bash
 lopper analyse --top 20 --repo . --language python \
-  --runtime-test-command "uv run -- python -m unittest discover -s tests" \
-  --enable-feature python-runner-profiles
+  --runtime-test-command "uv run -- python -m unittest discover -s tests"
 ```
 
 The optional `--` immediately after `uv run` is the only accepted uv wrapper delimiter. Arguments after the selected `pytest` command or `python[3] -m pytest|unittest` module are forwarded verbatim, including a later `--`; uv wrapper flags, arbitrary uv tools, Python interpreter flags, inline environment assignments, and shell operators are rejected.
 
-Lopper resolves supported executables from trusted absolute `PATH` entries in order, then from its fixed system fallback directories. It rejects writable search directories, writable/non-executable tools, and executables outside the allowlist. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; an existing project `sitecustomize.py` is chained exactly once. It does not install project dependencies or invoke a shell. Use `--disable-feature python-runtime-capture` for rollback.
+Lopper resolves supported executables from trusted absolute `PATH` entries in order, then from its fixed system fallback directories. It rejects writable search directories, writable/non-executable tools, and executables outside the allowlist. Lopper injects its import hook only into the runtime command environment by prepending the shipped `scripts/runtime/sitecustomize.py` directory to `PYTHONPATH`; an existing project `sitecustomize.py` is chained exactly once. It does not install project dependencies or invoke a shell. Use `--disable-feature python-runtime-capture` or `--disable-feature python-runner-profiles` for rollback.
 
 Explicit Python trace consumption remains compatible through `--runtime-trace`.
 
