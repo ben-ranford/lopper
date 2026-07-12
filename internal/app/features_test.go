@@ -165,29 +165,34 @@ func TestExecuteFeaturesTableReportsChannelDefaults(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.channel, func(t *testing.T) {
-			req := DefaultRequest()
-			req.Mode = ModeFeatures
-			req.Features.Format = "table"
-			req.Features.Channel = test.channel
-			req.Features.Release = "v999.0.0"
-
-			output, err := application.Execute(context.Background(), req)
-			if err != nil {
-				t.Fatalf("execute %s feature table: %v", test.channel, err)
-			}
-			lines := strings.Split(strings.TrimSpace(output), "\n")
-			if len(lines) != 3 || !strings.HasSuffix(lines[0], "ENABLED_BY_DEFAULT") || strings.Contains(lines[0], "RELEASE_DEFAULT") {
-				t.Fatalf("unexpected feature table heading for %s: %q", test.channel, output)
-			}
-			previewFields := strings.Fields(lines[1])
-			stableFields := strings.Fields(lines[2])
-			if len(previewFields) != 4 || previewFields[3] != test.previewWant {
-				t.Fatalf("unexpected preview default for %s: %q", test.channel, lines[1])
-			}
-			if len(stableFields) != 4 || stableFields[3] != "true" {
-				t.Fatalf("unexpected stable default for %s: %q", test.channel, lines[2])
-			}
+			assertFeatureTableChannelDefaults(t, application, test.channel, test.previewWant)
 		})
+	}
+}
+
+func assertFeatureTableChannelDefaults(t *testing.T, application *App, channel, previewWant string) {
+	t.Helper()
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "table"
+	req.Features.Channel = channel
+	req.Features.Release = "v999.0.0"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute %s feature table: %v", channel, err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], "ENABLED_BY_DEFAULT") || strings.Contains(lines[0], "RELEASE_DEFAULT") {
+		t.Fatalf("unexpected feature table heading for %s: %q", channel, output)
+	}
+	previewFields := strings.Fields(lines[1])
+	stableFields := strings.Fields(lines[2])
+	if len(previewFields) != 4 || previewFields[3] != previewWant {
+		t.Fatalf("unexpected preview default for %s: %q", channel, lines[1])
+	}
+	if len(stableFields) != 4 || stableFields[3] != "true" {
+		t.Fatalf("unexpected stable default for %s: %q", channel, lines[2])
 	}
 }
 
