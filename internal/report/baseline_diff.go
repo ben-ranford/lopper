@@ -75,44 +75,71 @@ func ComputeBaselineComparison(current, baseline Report) BaselineComparison {
 		},
 	}
 
-	currentByKey := make(map[string]DependencyReport, len(current.Dependencies))
-	for _, dep := range current.Dependencies {
-		currentByKey[dependencyKey(dep)] = dep
+	currentIndex := indexDependencyInstances(current.Dependencies)
+	baselineIndex := indexDependencyInstances(baseline.Dependencies)
+	for _, key := range sortedDependencyInstanceKeys(currentIndex.instances, baselineIndex.instances) {
+		appendDependencyInstanceDeltas(&comparison, currentIndex.instances[key], baselineIndex.instances[key])
 	}
-	baselineByKey := make(map[string]DependencyReport, len(baseline.Dependencies))
-	for _, dep := range baseline.Dependencies {
-		baselineByKey[dependencyKey(dep)] = dep
-	}
+	comparison.NewDeniedLicenses = newlyDeniedLicenses(currentIndex.latest, baselineIndex.latest)
+	comparison.NewReachableVulnerabilities = newlyReachableVulnerabilities(currentIndex.latest, baselineIndex.latest)
 
-	keys := make([]string, 0, len(currentByKey)+len(baselineByKey))
-	seen := make(map[string]struct{}, len(currentByKey)+len(baselineByKey))
-	for key := range currentByKey {
+	return comparison
+}
+
+type dependencyInstanceIndex struct {
+	latest    map[string]DependencyReport
+	instances map[string][]DependencyReport
+}
+
+func indexDependencyInstances(dependencies []DependencyReport) dependencyInstanceIndex {
+	index := dependencyInstanceIndex{
+		latest:    make(map[string]DependencyReport, len(dependencies)),
+		instances: make(map[string][]DependencyReport, len(dependencies)),
+	}
+	for _, dep := range dependencies {
+		key := dependencyKey(dep)
+		index.latest[key] = dep
+		index.instances[key] = append(index.instances[key], dep)
+	}
+	return index
+}
+
+func sortedDependencyInstanceKeys(current, baseline map[string][]DependencyReport) []string {
+	keys := make([]string, 0, len(current)+len(baseline))
+	seen := make(map[string]struct{}, len(current)+len(baseline))
+	for key := range current {
 		keys = append(keys, key)
 		seen[key] = struct{}{}
 	}
-	for key := range baselineByKey {
-		if _, ok := seen[key]; ok {
-			continue
+	for key := range baseline {
+		if _, ok := seen[key]; !ok {
+			keys = append(keys, key)
 		}
-		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	return keys
+}
 
-	for _, key := range keys {
-		curr, hasCurrent := currentByKey[key]
-		base, hasBaseline := baselineByKey[key]
-
-		delta, ok := dependencyDelta(curr, hasCurrent, base, hasBaseline)
+func appendDependencyInstanceDeltas(comparison *BaselineComparison, current, baseline []DependencyReport) {
+	for index := range max(len(current), len(baseline)) {
+		hasCurrent := index < len(current)
+		hasBaseline := index < len(baseline)
+		currentDependency := dependencyInstanceAt(current, index)
+		baselineDependency := dependencyInstanceAt(baseline, index)
+		delta, ok := dependencyDelta(currentDependency, hasCurrent, baselineDependency, hasBaseline)
 		if !ok {
 			comparison.UnchangedRows++
 			continue
 		}
-		appendDependencyDelta(&comparison, delta)
+		appendDependencyDelta(comparison, delta)
 	}
-	comparison.NewDeniedLicenses = newlyDeniedLicenses(currentByKey, baselineByKey)
-	comparison.NewReachableVulnerabilities = newlyReachableVulnerabilities(currentByKey, baselineByKey)
+}
 
-	return comparison
+func dependencyInstanceAt(dependencies []DependencyReport, index int) DependencyReport {
+	if index >= len(dependencies) {
+		return DependencyReport{}
+	}
+	return dependencies[index]
 }
 
 func appendDependencyDelta(comparison *BaselineComparison, delta DependencyDelta) {

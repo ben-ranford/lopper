@@ -91,12 +91,20 @@ func formatCycloneDXMetadata(reportData Report) *cycloneDXMetadata {
 }
 
 func formatCycloneDXComponents(reportData Report) []cycloneDXComponent {
-	dependencies := sortedDependenciesForCSV(reportData.Dependencies)
+	dependencies := sortedCycloneDXDependencies(reportData.Dependencies)
 	components := make([]cycloneDXComponent, 0, len(dependencies))
-	baselineDeltas := cycloneDXBaselineDeltaByDependency(reportData)
+	baselineDeltas := cycloneDXBaselineDeltasByDependency(reportData)
+	baselineDeltaIndexes := make(map[string]int, len(baselineDeltas))
 	seenRefs := map[string]int{}
 
 	for _, dep := range dependencies {
+		key := dependencyKey(dep)
+		delta := DependencyDelta{}
+		if deltaIndex := baselineDeltaIndexes[key]; deltaIndex < len(baselineDeltas[key]) {
+			delta = baselineDeltas[key][deltaIndex]
+			baselineDeltaIndexes[key] = deltaIndex + 1
+		}
+
 		ref := cycloneDXBOMRef(dep)
 		seenRefs[ref]++
 		if seenRefs[ref] > 1 {
@@ -108,7 +116,7 @@ func formatCycloneDXComponents(reportData Report) []cycloneDXComponent {
 			Type:       "library",
 			Name:       cycloneDXComponentName(dep),
 			Licenses:   formatCycloneDXLicenses(dep.License),
-			Properties: formatCycloneDXComponentProperties(dep, baselineDeltas[dependencyKey(dep)]),
+			Properties: formatCycloneDXComponentProperties(dep, delta),
 		}
 		components = append(components, component)
 	}
@@ -353,6 +361,29 @@ func sortedCycloneDXByKey[T any](values []T, key func(T) cycloneDXSortKey) []T {
 	})
 }
 
+type cycloneDXValueWithStringKey[T any] struct {
+	value T
+	key   string
+}
+
+func sortedCycloneDXByCachedStringKey[T any](values []T, key func(T) string) []T {
+	if len(values) == 0 {
+		return nil
+	}
+	keyed := make([]cycloneDXValueWithStringKey[T], len(values))
+	for index, value := range values {
+		keyed[index] = cycloneDXValueWithStringKey[T]{value: value, key: key(value)}
+	}
+	sort.Slice(keyed, func(i, j int) bool {
+		return keyed[i].key < keyed[j].key
+	})
+	sorted := make([]T, len(keyed))
+	for index, value := range keyed {
+		sorted[index] = value.value
+	}
+	return sorted
+}
+
 func sortedCycloneDXWithNormalizedReasons[T any](values []T, key func(T) cycloneDXSortKey, normalize func(*T)) []T {
 	sorted := sortedCycloneDXByKey(values, key)
 	for i := range sorted {
@@ -381,16 +412,65 @@ func sortedCycloneDXProperties(props []cycloneDXProperty) []cycloneDXProperty {
 	})
 }
 
-func cycloneDXBaselineDeltaByDependency(reportData Report) map[string]DependencyDelta {
+func sortedCycloneDXDependencies(dependencies []DependencyReport) []DependencyReport {
+	return sortedCycloneDXByCachedStringKey(dependencies, cycloneDXDependencySortKey)
+}
+
+func cycloneDXDependencySortKey(dep DependencyReport) string {
+	component := cycloneDXComponent{
+		BOMRef:     cycloneDXBOMRef(dep),
+		Type:       "library",
+		Name:       cycloneDXComponentName(dep),
+		Licenses:   formatCycloneDXLicenses(dep.License),
+		Properties: formatCycloneDXComponentProperties(dep, DependencyDelta{}),
+	}
+	parts := []string{dep.Language, dep.Name, component.BOMRef, component.Type, component.Name, strconv.Itoa(len(component.Licenses))}
+	for _, license := range component.Licenses {
+		parts = append(parts, license.License.Name)
+	}
+	parts = append(parts, strconv.Itoa(len(component.Properties)))
+	for _, property := range component.Properties {
+		parts = append(parts, property.Name, property.Value)
+	}
+	return cycloneDXSortKeyFromParts(parts)
+}
+
+func cycloneDXBaselineDeltasByDependency(reportData Report) map[string][]DependencyDelta {
 	if reportData.BaselineComparison == nil || len(reportData.BaselineComparison.Dependencies) == 0 {
 		return nil
 	}
-	deltas := make(map[string]DependencyDelta, len(reportData.BaselineComparison.Dependencies))
+	deltas := make(map[string][]DependencyDelta, len(reportData.BaselineComparison.Dependencies))
 	for _, delta := range reportData.BaselineComparison.Dependencies {
 		dep := DependencyReport{Name: delta.Name, Language: delta.Language}
-		deltas[dependencyKey(dep)] = delta
+		key := dependencyKey(dep)
+		deltas[key] = append(deltas[key], delta)
+	}
+	for key, values := range deltas {
+		deltas[key] = sortedCycloneDXByCachedStringKey(values, cycloneDXBaselineDeltaSortKey)
 	}
 	return deltas
+}
+
+func cycloneDXBaselineDeltaSortKey(delta DependencyDelta) string {
+	properties := make([]cycloneDXProperty, 0, 10)
+	appendCycloneDXBaselineDeltaProperties(&properties, delta)
+	properties = sortedCycloneDXProperties(properties)
+	parts := make([]string, 0, 1+(len(properties)*2))
+	parts = append(parts, strconv.Itoa(len(properties)))
+	for _, property := range properties {
+		parts = append(parts, property.Name, property.Value)
+	}
+	return cycloneDXSortKeyFromParts(parts)
+}
+
+func cycloneDXSortKeyFromParts(parts []string) string {
+	var key strings.Builder
+	for _, part := range parts {
+		key.WriteString(strconv.Itoa(len(part)))
+		key.WriteByte(':')
+		key.WriteString(part)
+	}
+	return key.String()
 }
 
 func sortedStrings(values []string) []string {

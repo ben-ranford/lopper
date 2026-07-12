@@ -365,3 +365,64 @@ func TestAppendCycloneDXJSONPropertySkipsMarshalErrors(t *testing.T) {
 		t.Fatalf("expected marshal error to leave properties unchanged, got %#v", props)
 	}
 }
+
+func TestFormatCycloneDXJSONKeepsDuplicateComponentsStableAndAttributed(t *testing.T) {
+	dependencies := []DependencyReport{
+		{
+			Language:          "js-ts",
+			Name:              "dup",
+			UsedExportsCount:  1,
+			TotalExportsCount: 2,
+			UsedImports:       []ImportUse{{Name: "a", Module: "m/a"}},
+		},
+		{
+			Language:          "js-ts",
+			Name:              "dup",
+			UsedExportsCount:  11,
+			TotalExportsCount: 12,
+			UsedImports:       []ImportUse{{Name: "b", Module: "m/b"}},
+		},
+	}
+	baseline := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "dup", TotalExportsCount: 2},
+		{Language: "js-ts", Name: "dup", UsedExportsCount: 2, TotalExportsCount: 12},
+	}}
+	deltas := ComputeBaselineComparison(Report{Dependencies: dependencies}, baseline).Dependencies
+	if len(deltas) != 2 {
+		t.Fatalf("expected real baseline comparison to preserve duplicate deltas, got %#v", deltas)
+	}
+
+	permutations := []Report{
+		{Dependencies: dependencies, BaselineComparison: &BaselineComparison{Dependencies: deltas}},
+		{Dependencies: []DependencyReport{dependencies[1], dependencies[0]}, BaselineComparison: &BaselineComparison{Dependencies: deltas}},
+		{Dependencies: dependencies, BaselineComparison: &BaselineComparison{Dependencies: []DependencyDelta{deltas[1], deltas[0]}}},
+		{Dependencies: []DependencyReport{dependencies[1], dependencies[0]}, BaselineComparison: &BaselineComparison{Dependencies: []DependencyDelta{deltas[1], deltas[0]}}},
+	}
+
+	var firstOutput string
+	for index, reportData := range permutations {
+		output, err := NewFormatter().Format(reportData, FormatCycloneDX)
+		if err != nil {
+			t.Fatalf("format permutation %d: %v", index, err)
+		}
+		if index == 0 {
+			firstOutput = output
+			continue
+		}
+		if output != firstOutput {
+			t.Fatalf("permutation %d changed CycloneDX output\nfirst:\n%s\npermuted:\n%s", index, firstOutput, output)
+		}
+	}
+
+	bom := decodeCycloneDXBOM(t, firstOutput)
+	if len(bom.Components) != 2 {
+		t.Fatalf("expected two duplicate components, got %#v", bom.Components)
+	}
+	if bom.Components[0].BOMRef != "lopper:dependency:js-ts:dup" || bom.Components[1].BOMRef != "lopper:dependency:js-ts:dup:2" {
+		t.Fatalf("expected stable unique duplicate refs, got %q and %q", bom.Components[0].BOMRef, bom.Components[1].BOMRef)
+	}
+	requireCycloneDXProperty(t, bom.Components[0].Properties, "lopper:used-imports", `[{"name":"a","module":"m/a"}]`)
+	requireCycloneDXProperty(t, bom.Components[0].Properties, "lopper:baseline:used-exports-count-delta", "1")
+	requireCycloneDXProperty(t, bom.Components[1].Properties, "lopper:used-imports", `[{"name":"b","module":"m/b"}]`)
+	requireCycloneDXProperty(t, bom.Components[1].Properties, "lopper:baseline:used-exports-count-delta", "9")
+}
