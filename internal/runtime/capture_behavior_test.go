@@ -217,30 +217,98 @@ func TestCaptureCommandFailureWithoutOutput(t *testing.T) {
 }
 
 func TestCaptureHonorsContextCancellation(t *testing.T) {
+	testCases := []struct {
+		name                 string
+		tool                 string
+		command              string
+		provider             CaptureProvider
+		pythonRunnerProfiles bool
+	}{
+		{name: "existing command", tool: "make", command: "make test"},
+		{name: "preview uv profile", tool: "uv", command: "uv run pytest", provider: CaptureProviderPython, pythonRunnerProfiles: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			markerPath := filepath.Join(repo, "started.txt")
+			t.Setenv("LOPPER_CAPTURE_MARKER", markerPath)
+			t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, tc.tool, "#!/bin/sh\nsleep 5\nprintf started > \"$LOPPER_CAPTURE_MARKER\"\n"))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+
+			start := time.Now()
+			err := Capture(ctx, CaptureRequest{
+				RepoPath:             repo,
+				Command:              tc.command,
+				Provider:             tc.provider,
+				PythonRunnerProfiles: tc.pythonRunnerProfiles,
+			})
+			if err == nil {
+				t.Fatalf("expected capture cancellation error")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "signal: killed") {
+				t.Fatalf("expected context cancellation error, got %v", err)
+			}
+			if elapsed := time.Since(start); elapsed >= time.Second {
+				t.Fatalf("expected cancelled command to stop quickly, took %v", elapsed)
+			}
+			if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
+				t.Fatalf("expected cancelled command to stop before creating marker, stat err = %v", statErr)
+			}
+		})
+	}
+}
+
+func TestCapturePreviewRunnerUsesRepoWorkingDirectory(t *testing.T) {
 	repo := t.TempDir()
-	markerPath := filepath.Join(repo, "started.txt")
-	t.Setenv("LOPPER_CAPTURE_MARKER", markerPath)
-	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "make", "#!/bin/sh\nsleep 5\nprintf started > \"$LOPPER_CAPTURE_MARKER\"\n"))
+	workingDirectoryPath := filepath.Join(t.TempDir(), "working-directory.txt")
+	t.Setenv("LOPPER_CAPTURE_WORKING_DIRECTORY", workingDirectoryPath)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "uv", "#!/bin/sh\npwd > \"$LOPPER_CAPTURE_WORKING_DIRECTORY\"\n"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	start := time.Now()
-	err := Capture(ctx, CaptureRequest{
-		RepoPath: repo,
-		Command:  "make test",
+	err := Capture(context.Background(), CaptureRequest{
+		RepoPath:             repo,
+		Command:              "uv run pytest",
+		Provider:             CaptureProviderPython,
+		PythonRunnerProfiles: true,
 	})
-	if err == nil {
-		t.Fatalf("expected capture cancellation error")
+	if err != nil {
+		t.Fatalf("capture preview runner: %v", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "signal: killed") {
-		t.Fatalf("expected context cancellation error, got %v", err)
+	content, err := os.ReadFile(workingDirectoryPath)
+	if err != nil {
+		t.Fatalf("read captured working directory: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed >= time.Second {
-		t.Fatalf("expected cancelled command to stop quickly, took %v", elapsed)
+	got := strings.TrimSpace(string(content))
+	wantInfo, wantErr := os.Stat(repo)
+	gotInfo, gotErr := os.Stat(got)
+	if wantErr != nil || gotErr != nil || !os.SameFile(wantInfo, gotInfo) {
+		t.Fatalf("expected preview runner working directory %q, got %q (want err=%v, got err=%v)", repo, got, wantErr, gotErr)
 	}
-	if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
-		t.Fatalf("expected cancelled command to stop before creating marker, stat err = %v", statErr)
+}
+
+func TestCaptureReuseDoesNotBypassPreviewGate(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "python", "#!/bin/sh\n: > \"$LOPPER_RUNTIME_TRACE\"\n"))
+
+	request := CaptureRequest{
+		RepoPath:             repo,
+		TracePath:            tracePath,
+		Command:              "python -m unittest",
+		Provider:             CaptureProviderPython,
+		PythonRunnerProfiles: true,
+	}
+	if err := Capture(context.Background(), request); err != nil {
+		t.Fatalf("capture enabled preview profile: %v", err)
+	}
+
+	request.PythonRunnerProfiles = false
+	request.ReuseIfUnchanged = true
+	err := Capture(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), PythonRunnerProfilesFeature) {
+		t.Fatalf("expected disabled preview gate to reject cached trace reuse, got %v", err)
 	}
 }
 

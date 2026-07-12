@@ -21,12 +21,14 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 	}
 
 	provider := captureProviderForRequest(req, command, candidates)
+	pythonRunnerProfiles := req.Features.Enabled(runtime.PythonRunnerProfilesFeature)
 	if err := runtime.Capture(ctx, runtime.CaptureRequest{
-		RepoPath:         repoPath,
-		TracePath:        tracePath,
-		Command:          command,
-		Provider:         provider,
-		ReuseIfUnchanged: shouldReuseRuntimeTrace(cache),
+		RepoPath:             repoPath,
+		TracePath:            tracePath,
+		Command:              command,
+		Provider:             provider,
+		ReuseIfUnchanged:     shouldReuseRuntimeTrace(cache),
+		PythonRunnerProfiles: pythonRunnerProfiles,
 	}); err != nil {
 		warning := runtimeTraceCommandWarningPrefix + err.Error()
 		if req.RuntimeTracePathExplicit {
@@ -41,7 +43,8 @@ func captureProviderForRequest(req Request, command string, candidates []languag
 	if !req.Features.Enabled(pythonRuntimeCaptureFeature) || !hasPythonRuntimeCandidate(req.Language, candidates) {
 		return runtime.CaptureProviderNode
 	}
-	if isExplicitPythonLanguage(req.Language) || runtime.IsPythonTestCommand(command) || hasOnlyPythonRuntimeCandidate(candidates) {
+	commandOptions := runtime.CommandOptions{PythonRunnerProfiles: req.Features.Enabled(runtime.PythonRunnerProfilesFeature)}
+	if isExplicitPythonLanguage(req.Language) || runtime.IsPythonTestCommand(command, commandOptions) || hasOnlyPythonRuntimeCandidate(candidates) {
 		return runtime.CaptureProviderPython
 	}
 	return runtime.CaptureProviderNode

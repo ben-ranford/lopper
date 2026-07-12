@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import builtins
+import importlib.machinery
+import importlib.util
 import json
 import os
 import sys
@@ -158,6 +160,25 @@ def _slash_path(path: str) -> str:
     return _abs_path(path).replace(os.sep, "/")
 
 
+def _chain_project_sitecustomize() -> None:
+    hook_dir = _real_path(os.path.dirname(__file__))
+    search_path = [entry for entry in sys.path if _real_path(entry) != hook_dir]
+    spec = importlib.machinery.PathFinder.find_spec("sitecustomize", search_path)
+    if spec is None or spec.loader is None:
+        return
+    if _real_path(getattr(spec, "origin", "")) == _real_path(__file__):
+        return
+    project_hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(project_hook)
+
+
+def _real_path(path: str) -> str:
+    candidate = path or os.getcwd()
+    return os.path.normcase(os.path.realpath(os.path.abspath(candidate)))
+
+
 if TRACE_PATH:
     ENTRYPOINT = _entrypoint()
+    _chain_project_sitecustomize()
+    ORIGINAL_IMPORT = builtins.__import__
     builtins.__import__ = _patched_import

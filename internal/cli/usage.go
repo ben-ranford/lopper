@@ -30,7 +30,14 @@ Options:
   --save-baseline            Save current run as immutable baseline snapshot
   --baseline-label LABEL     Label key to use when saving baseline snapshots
   --runtime-trace PATH       Runtime import trace (NDJSON) for annotations
-  --runtime-test-command CMD Run command with JS/TS or Python runtime hooks to capture trace before analysis
+  --runtime-test-command CMD Run an allowlisted command with runtime hooks before analysis
+                             Stable Python forms: pytest; python -m pytest; python3 -m pytest
+                             With python-runner-profiles enabled: python -m unittest; python3 -m unittest;
+                             uv run pytest; uv run -- pytest; uv run python -m pytest;
+                             uv run python3 -m pytest; uv run -- python -m pytest;
+                             uv run -- python3 -m pytest; uv run python -m unittest;
+                             uv run python3 -m unittest; uv run -- python -m unittest;
+                             uv run -- python3 -m unittest (runner arguments may follow each form)
   --advisory-source PATH     Local vulnerability advisory source (preview-gated by reachability-vulnerability-prioritization-preview)
   --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
   --baseline-store DIR       Directory for immutable keyed dashboard baseline snapshots

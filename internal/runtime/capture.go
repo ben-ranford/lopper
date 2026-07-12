@@ -11,11 +11,12 @@ import (
 const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
 
 type CaptureRequest struct {
-	RepoPath         string
-	TracePath        string
-	Command          string
-	Provider         CaptureProvider
-	ReuseIfUnchanged bool
+	RepoPath             string
+	TracePath            string
+	Command              string
+	Provider             CaptureProvider
+	ReuseIfUnchanged     bool
+	PythonRunnerProfiles bool
 }
 
 type CaptureProvider string
@@ -26,10 +27,11 @@ const (
 )
 
 type capturePlan struct {
-	repoPath  string
-	tracePath string
-	command   string
-	provider  CaptureProvider
+	repoPath             string
+	tracePath            string
+	command              string
+	provider             CaptureProvider
+	pythonRunnerProfiles bool
 }
 
 func DefaultTracePath(repoPath string) string {
@@ -39,6 +41,10 @@ func DefaultTracePath(repoPath string) string {
 func Capture(ctx context.Context, req CaptureRequest) error {
 	plan, err := resolveCapturePlan(req)
 	if err != nil {
+		return err
+	}
+	commandOptions := CommandOptions{PythonRunnerProfiles: plan.pythonRunnerProfiles}
+	if err := ValidateCommand(plan.command, commandOptions); err != nil {
 		return err
 	}
 
@@ -53,7 +59,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 		return err
 	}
 
-	cmd, err := buildRuntimeCommand(ctx, plan.command)
+	cmd, err := buildRuntimeCommand(ctx, plan.command, commandOptions)
 	if err != nil {
 		return err
 	}
@@ -63,9 +69,12 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 		return err
 	}
 
-	output, err := cmd.CombinedOutput()
+	output := newRuntimeCommandOutput()
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err = cmd.Run()
 	if err != nil {
-		return formatRuntimeCommandError(err, output)
+		return formatRuntimeCommandError(err, output.diagnostic())
 	}
 	if err := writeRuntimeTraceState(plan.tracePath, plan.command, plan.provider); err != nil {
 		return fmt.Errorf("write runtime trace state: %w", err)
@@ -76,10 +85,11 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 
 func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
 	plan := capturePlan{
-		repoPath:  strings.TrimSpace(req.RepoPath),
-		tracePath: strings.TrimSpace(req.TracePath),
-		command:   strings.TrimSpace(req.Command),
-		provider:  normalizeCaptureProvider(req.Provider),
+		repoPath:             strings.TrimSpace(req.RepoPath),
+		tracePath:            strings.TrimSpace(req.TracePath),
+		command:              strings.TrimSpace(req.Command),
+		provider:             normalizeCaptureProvider(req.Provider),
+		pythonRunnerProfiles: req.PythonRunnerProfiles,
 	}
 	if plan.repoPath == "" {
 		return capturePlan{}, fmt.Errorf("repo path is required")

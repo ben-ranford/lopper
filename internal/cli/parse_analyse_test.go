@@ -11,6 +11,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
@@ -299,6 +300,24 @@ func TestParseArgsAnalyseRuntimeTestCommand(t *testing.T) {
 	if req.Analyse.RuntimeTestCommand != "python3 -m pytest tests" {
 		t.Fatalf("expected python runtime test command, got %q", req.Analyse.RuntimeTestCommand)
 	}
+
+	req = mustParseArgs(t, []string{
+		"analyse", "--top", "5",
+		"--runtime-test-command", "python3 -m unittest discover -s tests",
+		"--enable-feature", runtime.PythonRunnerProfilesFeature,
+	})
+	if req.Analyse.RuntimeTestCommand != "python3 -m unittest discover -s tests" {
+		t.Fatalf("expected unittest runtime test command, got %q", req.Analyse.RuntimeTestCommand)
+	}
+
+	req = mustParseArgs(t, []string{
+		"analyse", "--top", "5",
+		"--runtime-test-command", "uv run -- python -m pytest tests -- -k smoke",
+		"--enable-feature", runtime.PythonRunnerProfilesFeature,
+	})
+	if req.Analyse.RuntimeTestCommand != "uv run -- python -m pytest tests -- -k smoke" {
+		t.Fatalf("expected uv runtime test command, got %q", req.Analyse.RuntimeTestCommand)
+	}
 }
 
 func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
@@ -315,6 +334,30 @@ func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
 	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "python -m pip install pytest"}, "expected unsafe python module rejection")
 	if !strings.Contains(err.Error(), "may only run '-m pytest'") {
 		t.Fatalf("expected unsafe python module rejection, got %v", err)
+	}
+
+	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "python -m unittest"}, "expected disabled runner profile rejection")
+	if !strings.Contains(err.Error(), runtime.PythonRunnerProfilesFeature) {
+		t.Fatalf("expected runner profile feature guidance, got %v", err)
+	}
+
+	unsafeUVArgs := []string{
+		"analyse", "--top", "5",
+		"--runtime-test-command", "uv run --isolated pytest",
+		"--enable-feature", runtime.PythonRunnerProfilesFeature,
+	}
+	err = expectParseArgsError(t, unsafeUVArgs, "expected unsafe uv wrapper rejection")
+	if !strings.Contains(err.Error(), "without uv wrapper flags") {
+		t.Fatalf("expected uv wrapper boundary rejection, got %v", err)
+	}
+
+	inlineEnvironmentArgs := []string{
+		"analyse", "--top", "5",
+		"--runtime-test-command", "PYTHONPATH=/tmp python -m pytest",
+	}
+	err = expectParseArgsError(t, inlineEnvironmentArgs, "expected inline environment rejection")
+	if !strings.Contains(err.Error(), "inline environment assignment") {
+		t.Fatalf("expected inline environment rejection, got %v", err)
 	}
 }
 
