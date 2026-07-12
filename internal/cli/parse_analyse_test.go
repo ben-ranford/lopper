@@ -336,7 +336,12 @@ func TestParseArgsAnalyseRuntimeTestCommandRejectsUnsafeShape(t *testing.T) {
 		t.Fatalf("expected unsafe python module rejection, got %v", err)
 	}
 
-	err = expectParseArgsError(t, []string{"analyse", "--top", "5", "--runtime-test-command", "python -m unittest"}, "expected disabled runner profile rejection")
+	disabledProfileArgs := []string{
+		"analyse", "--top", "5",
+		"--runtime-test-command", "python -m unittest",
+		"--disable-feature", runtime.PythonRunnerProfilesFeature,
+	}
+	err = expectParseArgsError(t, disabledProfileArgs, "expected disabled runner profile rejection")
 	if !strings.Contains(err.Error(), runtime.PythonRunnerProfilesFeature) {
 		t.Fatalf("expected runner profile feature guidance, got %v", err)
 	}
