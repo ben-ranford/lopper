@@ -208,11 +208,15 @@ func TestAnalyseBaselineStoreRejectsLegacyKeyCollision(t *testing.T) {
 
 func baselineDiscoveryFeatures(t *testing.T, enabled bool) featureflags.Set {
 	t.Helper()
-	options := featureflags.ResolveOptions{Channel: featureflags.ChannelDev}
-	if !enabled {
-		options.Disable = []string{BaselineStoreDiscoveryFeature}
-	}
-	features, err := featureflags.DefaultRegistry().Resolve(options)
+	features, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Disable: func() []string {
+			if enabled {
+				return nil
+			}
+			return []string{BaselineStoreDiscoveryFeature}
+		}(),
+	})
 	if err != nil {
 		t.Fatalf("resolve baseline discovery feature: %v", err)
 	}
