@@ -170,6 +170,45 @@ suite("refresh lifecycle", () => {
     });
   });
 
+  test("does not let a superseded cancellation overwrite a newer running status", async function () {
+    this.timeout(30_000);
+
+    await withHarness(async (harness) => {
+      const deferredAnalyses: Array<Deferred<WorkspaceAnalysis>> = [];
+      const signals: AbortSignal[] = [];
+
+      await withController(
+        {
+          analyseWorkspace: async (_folder, options): Promise<WorkspaceAnalysis> => {
+            const next = deferred<WorkspaceAnalysis>();
+            deferredAnalyses.push(next);
+            assert.ok(options?.signal, "expected refresh signal to be forwarded");
+            signals.push(options.signal);
+            return next.promise;
+          },
+          exportWorkspace: async (): Promise<string> => "",
+        },
+        async (controller) => {
+          const firstRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.equal(deferredAnalyses.length, 1));
+          const secondRefresh = refresh(controller, harness, { forceFresh: true });
+          await waitForAssertion(() => assert.equal(deferredAnalyses.length, 2));
+
+          deferredAnalyses[0].resolve(makeAnalysis(harness, { dependencyCount: 3, usedPercent: 25 }));
+          await firstRefresh;
+          const statusWhileLatestRunIsPending = controller.getLatestSummary();
+
+          deferredAnalyses[1].resolve(makeAnalysis(harness, { dependencyCount: 0, usedPercent: 0 }));
+          await secondRefresh;
+
+          assert.equal(signals[0].aborted, true, "superseded run should be aborted");
+          assert.match(statusWhileLatestRunIsPending, /analysing/);
+          assert.match(controller.getLatestSummary(), /0 deps/);
+        },
+      );
+    });
+  });
+
   test("forceFresh bypasses cache and starts a new analysis run", async function () {
     this.timeout(30_000);
 
