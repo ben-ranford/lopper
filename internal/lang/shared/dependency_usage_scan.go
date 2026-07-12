@@ -3,20 +3,28 @@ package shared
 import (
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	importCount := make(map[string]int)
+	hasUnicodeLocal := false
 	for _, imported := range imports {
 		if imported.Wildcard || imported.Local == "" {
 			continue
 		}
 		importCount[imported.Local]++
+		hasUnicodeLocal = hasUnicodeLocal || containsNonASCII(imported.Local)
 	}
 
 	usage := make(map[string]int, len(importCount))
 	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
-	scanTokenUsage(scannable, importCount, usage)
+	if hasUnicodeLocal {
+		scanUnicodeTokenUsage(scannable, importCount, usage)
+	} else {
+		scanTokenUsage(scannable, importCount, usage)
+	}
 	subtractDeclarationTokenHits(scannable, imports, usage)
 	clampUsageCounts(importCount, usage)
 	return usage
@@ -36,6 +44,19 @@ func scanTokenUsage(content []byte, importCount map[string]int, usage map[string
 		if _, ok := importCount[token]; ok {
 			usage[token]++
 		}
+	}
+}
+
+func scanUnicodeTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
+	for index := 0; index < len(content); {
+		start, end, ok := nextUnicodeIdentifier(content, index)
+		if !ok {
+			return
+		}
+		if token := string(content[start:end]); importCount[token] > 0 {
+			usage[token]++
+		}
+		index = end
 	}
 }
 
@@ -80,6 +101,9 @@ func declarationLineContainsToken(content []byte, lineStarts []int, line int, to
 	if lineStart < 0 || lineStart >= lineEnd || lineEnd > len(content) {
 		return false
 	}
+	if containsNonASCII(token) {
+		return containsUnicodeIdentifierToken(content[lineStart:lineEnd], token)
+	}
 	return containsWordToken(content[lineStart:lineEnd], token)
 }
 
@@ -105,6 +129,61 @@ func containsWordToken(content []byte, token string) bool {
 			i++
 		}
 		if string(content[start:i]) == token {
+			return true
+		}
+	}
+	return false
+}
+
+func containsUnicodeIdentifierToken(content []byte, token string) bool {
+	for index := 0; index < len(content); {
+		start, end, ok := nextUnicodeIdentifier(content, index)
+		if !ok {
+			return false
+		}
+		if string(content[start:end]) == token {
+			return true
+		}
+		index = end
+	}
+	return false
+}
+
+func nextUnicodeIdentifier(content []byte, index int) (int, int, bool) {
+	for index < len(content) {
+		current, size := utf8.DecodeRune(content[index:])
+		if isUnicodeIdentifierRune(current) {
+			break
+		}
+		index += size
+	}
+	if index >= len(content) {
+		return 0, 0, false
+	}
+
+	start := index
+	for index < len(content) {
+		current, size := utf8.DecodeRune(content[index:])
+		if !isUnicodeIdentifierRune(current) {
+			break
+		}
+		index += size
+	}
+	return start, index, true
+}
+
+func isUnicodeIdentifierRune(value rune) bool {
+	if value < utf8.RuneSelf {
+		return isWordByte(byte(value))
+	}
+	return unicode.IsLetter(value) ||
+		unicode.IsDigit(value) ||
+		unicode.In(value, unicode.Mn, unicode.Mc, unicode.Pc, unicode.Nl, unicode.Other_ID_Start, unicode.Other_ID_Continue)
+}
+
+func containsNonASCII(value string) bool {
+	for index := 0; index < len(value); index++ {
+		if value[index] >= utf8.RuneSelf {
 			return true
 		}
 	}
@@ -320,10 +399,9 @@ func maskNonNewline(content []byte, index int) {
 	content[index] = ' '
 }
 
-// isWordByte implements an ASCII-only token scanner for import local names.
-// It intentionally treats '$' as part of identifiers (common in JS/PHP), so
-// tokens such as "$foo" and "foo$bar" can be matched. Non-ASCII bytes are not
-// considered word characters and therefore split/ignore Unicode identifiers.
+// isWordByte implements the fast path for ASCII-only import local names. It
+// intentionally treats '$' as part of identifiers (common in JS/PHP), so
+// tokens such as "$foo" and "foo$bar" can be matched.
 func isWordByte(ch byte) bool {
 	return ch == '$' || ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }

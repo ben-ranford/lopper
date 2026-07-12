@@ -47,6 +47,21 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	assertDependencyReport(t, dep, dependencyReportExpectation{language: "python", used: 1, total: 2})
 }
 
+func TestAdapterAnalyseUnicodeImportAliasAsUsed(t *testing.T) {
+	source := "import requests as føø\nprint(føø.__name__)\n"
+	dep := analysePythonDependency(t, source, "requests")
+
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 1, total: 1})
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unicode alias to stay out of unused imports, got %#v", dep.UnusedImports)
+	}
+	for _, recommendation := range dep.Recommendations {
+		if recommendation.Code == "remove-unused-dependency" {
+			t.Fatalf("did not expect removal recommendation for used unicode alias, got %#v", dep.Recommendations)
+		}
+	}
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonUnusedImportCodemod(t *testing.T) {
 	source := "import requests as rq\n" +
 		"from requests import get, post\n" +
