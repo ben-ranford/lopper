@@ -441,6 +441,8 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	t.Run("empty imports preserve usage", testSwiftUsageHeuristicPreservesExistingUsage)
 	t.Run("multiple dependencies avoid attribution", testSwiftUsageHeuristicAvoidsAttributionWithMultipleDeps)
 	t.Run("single dependency handles usage heuristics", testSwiftUsageHeuristicSingleDependencyBranches)
+	t.Run("generic specializations provide usage evidence", testSwiftUsageHeuristicGenericSpecializations)
+	t.Run("symbol shapes require strong usage evidence", testSwiftUsageHeuristicEvidenceShapes)
 	t.Run("symbol collection detects local declarations", testSwiftUsageHeuristicCollectsLocalSymbols)
 	t.Run("candidate attribution excludes known declarations", testSwiftUsageCandidateAttribution)
 	t.Run("declaration scopes follow Swift targets", testSwiftDeclarationScopes)
@@ -485,6 +487,12 @@ func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkSession()"), singleDep, map[string]int{}); got["Session"] != 1 {
 		t.Fatalf("expected inferred unqualified usage, got %#v", got)
 	}
+}
+
+func testSwiftUsageHeuristicGenericSpecializations(t *testing.T) {
+	t.Helper()
+
+	singleDep := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = NetworkResponse<Result<Value, Error>>()"), singleDep, map[string]int{}); got["Session"] != 1 {
 		t.Fatalf("expected generic constructor usage to remain attributable, got %#v", got)
 	}
@@ -500,7 +508,12 @@ func testSwiftUsageHeuristicSingleDependencyBranches(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value: UnknownResponse<Value>"), singleDep, map[string]int{}); len(got) != 0 {
 		t.Fatalf("expected a generic type annotation to lack attribution evidence, got %#v", got)
 	}
+}
 
+func testSwiftUsageHeuristicEvidenceShapes(t *testing.T) {
+	t.Helper()
+
+	singleDep := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
 	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: URL? = nil"), singleDep) {
 		t.Fatalf("expected standard Swift symbols to be ignored")
 	}
