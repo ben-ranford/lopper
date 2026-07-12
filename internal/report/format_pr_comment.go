@@ -17,23 +17,23 @@ func formatPRComment(report Report) string {
 	buffer.WriteString("## Lopper (Delta)\n\n")
 	buffer.WriteString("| Metric delta | Value |\n")
 	buffer.WriteString("| --- | --- |\n")
-	buffer.WriteString(fmt.Sprintf("| Dependency count | %s |\n", signedInt(comparison.SummaryDelta.DependencyCountDelta)))
-	buffer.WriteString(fmt.Sprintf("| Used percent | %s |\n", signedPct(comparison.SummaryDelta.UsedPercentDelta)))
-	buffer.WriteString(fmt.Sprintf("| Waste percent | %s |\n", signedPct(comparison.SummaryDelta.WastePercentDelta)))
-	buffer.WriteString(fmt.Sprintf("| Estimated unused bytes | %s |\n", signedBytes(comparison.SummaryDelta.UnusedBytesDelta)))
-	buffer.WriteString(fmt.Sprintf("| Known licenses | %s |\n", signedInt(comparison.SummaryDelta.KnownLicenseCountDelta)))
-	buffer.WriteString(fmt.Sprintf("| Unknown licenses | %s |\n", signedInt(comparison.SummaryDelta.UnknownLicenseCountDelta)))
-	buffer.WriteString(fmt.Sprintf("| Denied licenses | %s |\n", signedInt(comparison.SummaryDelta.DeniedLicenseCountDelta)))
-	buffer.WriteString(fmt.Sprintf("| Reachable vulnerabilities | %s |\n", signedInt(comparison.SummaryDelta.ReachableVulnerabilityCountDelta)))
+	fmt.Fprintf(&buffer, "| Dependency count | %s |\n", signedInt(comparison.SummaryDelta.DependencyCountDelta))
+	fmt.Fprintf(&buffer, "| Used percent | %s |\n", signedPct(comparison.SummaryDelta.UsedPercentDelta))
+	fmt.Fprintf(&buffer, "| Waste percent | %s |\n", signedPct(comparison.SummaryDelta.WastePercentDelta))
+	fmt.Fprintf(&buffer, "| Estimated unused bytes | %s |\n", signedBytes(comparison.SummaryDelta.UnusedBytesDelta))
+	fmt.Fprintf(&buffer, "| Known licenses | %s |\n", signedInt(comparison.SummaryDelta.KnownLicenseCountDelta))
+	fmt.Fprintf(&buffer, "| Unknown licenses | %s |\n", signedInt(comparison.SummaryDelta.UnknownLicenseCountDelta))
+	fmt.Fprintf(&buffer, "| Denied licenses | %s |\n", signedInt(comparison.SummaryDelta.DeniedLicenseCountDelta))
+	fmt.Fprintf(&buffer, "| Reachable vulnerabilities | %s |\n", signedInt(comparison.SummaryDelta.ReachableVulnerabilityCountDelta))
 	buffer.WriteString("\n")
 	buffer.WriteString("| Changed | Regressions | Progressions | Added | Removed | Unchanged |\n")
 	buffer.WriteString("| --- | --- | --- | --- | --- | --- |\n")
-	buffer.WriteString(fmt.Sprintf("| %d | %d | %d | %d | %d | %d |\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows))
+	fmt.Fprintf(&buffer, "| %d | %d | %d | %d | %d | %d |\n", len(comparison.Dependencies), len(comparison.Regressions), len(comparison.Progressions), len(comparison.Added), len(comparison.Removed), comparison.UnchangedRows)
 	if len(comparison.RuntimeRegressions) > 0 || len(comparison.RuntimeImprovements) > 0 {
 		buffer.WriteString("\n| Runtime trace deltas | Count |\n")
 		buffer.WriteString("| --- | --- |\n")
-		buffer.WriteString(fmt.Sprintf("| Runtime regressions | %d |\n", len(comparison.RuntimeRegressions)))
-		buffer.WriteString(fmt.Sprintf("| Runtime improvements | %d |\n", len(comparison.RuntimeImprovements)))
+		fmt.Fprintf(&buffer, "| Runtime regressions | %d |\n", len(comparison.RuntimeRegressions))
+		fmt.Fprintf(&buffer, "| Runtime improvements | %d |\n", len(comparison.RuntimeImprovements))
 	}
 
 	if len(comparison.NewDeniedLicenses) > 0 {
@@ -41,7 +41,7 @@ func formatPRComment(report Report) string {
 		buffer.WriteString("| # | Dependency | Language | SPDX |\n")
 		buffer.WriteString("| --- | --- | --- | --- |\n")
 		for i, denied := range comparison.NewDeniedLicenses {
-			buffer.WriteString(fmt.Sprintf("| %d | `%s` | %s | %s |\n", i+1, escapeMarkdownTable(denied.Name), escapeMarkdownTable(denied.Language), escapeMarkdownTable(denied.SPDX)))
+			fmt.Fprintf(&buffer, "| %d | `%s` | %s | %s |\n", i+1, escapeMarkdownTable(denied.Name), escapeMarkdownTable(denied.Language), escapeMarkdownTable(denied.SPDX))
 		}
 	}
 
