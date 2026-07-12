@@ -1,6 +1,16 @@
 # Changelog
 
-## 1.8.0 (Unreleased)
+## 1.8.1 (Unreleased)
+
+- Added safe per-workspace preview capability controls, CycloneDX JSON export, and Python runtime-aware refresh.
+- Added selected-binary capability preflight before Python runtime and CycloneDX file-selection UI.
+- Fixed refresh invalidation and request ordering so stale cached or in-flight analysis cannot replace explicit runtime or configuration-driven work.
+- Fixed binary freshness and multi-root Workspace Trust checks for configured, linked, and discovered executables.
+- Fixed runtime test commands and baseline saves repeating during focused codemod discovery.
+- Fixed transient runtime and baseline actions reusing or replacing static cached and in-flight analysis.
+- Fixed cancelling the Save Baseline label prompt still writing an unlabelled snapshot.
+
+## 1.8.0 (2026-07-11)
 
 - Added explicit VS Code actions to preview and apply safe dependency codemods with confirmation and rollback reporting.
 - Added local advisory and reachability-priority settings for the v1.8 vulnerability workflow.

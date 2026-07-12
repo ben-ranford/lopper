@@ -55,6 +55,7 @@ interface LopperBinaryLifecycleDeps {
 
 export interface BinaryResolutionRequest {
   workspaceRoot: string;
+  workspaceRoots?: readonly string[];
   workspaceTrusted: boolean;
   autoDownloadBinary: boolean;
   envBinaryPath?: string;
@@ -254,7 +255,12 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
     const envBinaryPath = request.envBinaryPath?.trim();
     if (envBinaryPath) {
       const binaryPath = await this.ensureConfiguredBinaryExists(envBinaryPath, "LOPPER_BINARY_PATH");
-      await this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "LOPPER_BINARY_PATH", request.workspaceTrusted);
+      await this.ensureWorkspaceTrustedForBinary(
+        binaryPath,
+        workspaceRootsForRequest(request),
+        "LOPPER_BINARY_PATH",
+        request.workspaceTrusted,
+      );
       return binaryPath;
     }
 
@@ -267,7 +273,12 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       ? configuredBinaryPath
       : path.join(request.workspaceRoot, configuredBinaryPath);
     const binaryPath = await this.ensureConfiguredBinaryExists(resolvedPath, "lopper.binaryPath");
-    await this.ensureWorkspaceTrustedForBinary(binaryPath, request.workspaceRoot, "lopper.binaryPath", request.workspaceTrusted);
+    await this.ensureWorkspaceTrustedForBinary(
+      binaryPath,
+      workspaceRootsForRequest(request),
+      "lopper.binaryPath",
+      request.workspaceTrusted,
+    );
     return binaryPath;
   }
 
@@ -298,7 +309,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
     }
 
     return findExecutableInPath(binaryFileName(this.platform), this.platform, async (candidatePath) => {
-      if (!(await this.isWorkspaceLocalBinary(candidatePath, request.workspaceRoot))) {
+      if (!(await this.isWorkspaceLocalBinary(candidatePath, workspaceRootsForRequest(request)))) {
         return true;
       }
 
@@ -383,11 +394,11 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
 
   private async ensureWorkspaceTrustedForBinary(
     binaryPath: string,
-    workspaceRoot: string,
+    workspaceRoots: readonly string[],
     source: string,
     workspaceTrusted: boolean,
   ): Promise<void> {
-    if (workspaceTrusted || !(await this.isWorkspaceLocalBinary(binaryPath, workspaceRoot))) {
+    if (workspaceTrusted || !(await this.isWorkspaceLocalBinary(binaryPath, workspaceRoots))) {
       return;
     }
 
@@ -396,21 +407,25 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
     );
   }
 
-  private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoot: string): Promise<boolean> {
+  private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoots: readonly string[]): Promise<boolean> {
     try {
-      const [canonicalBinaryPath, canonicalWorkspaceRoot] = await Promise.all([
+      const [canonicalBinaryPath, ...canonicalWorkspaceRoots] = await Promise.all([
         this.canonicalizePath(binaryPath),
-        this.canonicalizePath(workspaceRoot),
+        ...workspaceRoots.map((workspaceRoot) => this.canonicalizePath(workspaceRoot)),
       ]);
-      return isPathInsideWorkspace(canonicalBinaryPath, canonicalWorkspaceRoot);
+      return canonicalWorkspaceRoots.some((workspaceRoot) => isPathInsideWorkspace(canonicalBinaryPath, workspaceRoot));
     } catch (error) {
       const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
       this.output.appendLine(
-        `treating lopper binary as workspace-local because path canonicalization failed while checking ${binaryPath} against workspace ${workspaceRoot}${detail}`,
+        `treating lopper binary as workspace-local because path canonicalization failed while checking ${binaryPath} against open workspace roots ${workspaceRoots.join(", ")}${detail}`,
       );
       return true;
     }
   }
+}
+
+function workspaceRootsForRequest(request: BinaryResolutionRequest): string[] {
+  return Array.from(new Set([request.workspaceRoot, ...(request.workspaceRoots ?? [])]));
 }
 
 export async function findExecutableInPath(

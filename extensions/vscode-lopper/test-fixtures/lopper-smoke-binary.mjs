@@ -8,9 +8,23 @@ const options = parseArgs(args.slice(1));
 const cwd = process.cwd();
 const format = options.format ?? "json";
 
+if (command === "features") {
+  process.stdout.write(JSON.stringify(featureManifest(), null, 2));
+  process.exit(0);
+}
+
 if (command !== "analyse") {
   process.stdout.write(renderExport(command, options, cwd));
   process.exit(0);
+}
+
+if (
+  options.language === "python"
+  && (options["runtime-trace"] || options["runtime-test-command"])
+  && !(options["enable-feature"] ?? []).includes("vscode-preview-capability-parity")
+) {
+  process.stderr.write("python runtime parity requires vscode-preview-capability-parity\n");
+  process.exit(2);
 }
 
 if (format !== "json") {
@@ -36,7 +50,11 @@ function parseArgs(tokens) {
       const key = token.slice(2);
       const next = tokens[index + 1];
       if (next !== undefined && !next.startsWith("--")) {
-        parsed[key] = next;
+        if (key === "enable-feature" || key === "disable-feature") {
+          parsed[key] = [...(parsed[key] ?? []), next];
+        } else {
+          parsed[key] = next;
+        }
         index += 1;
       } else {
         parsed[key] = "";
@@ -329,6 +347,40 @@ function renderExport(commandName, parsedOptions, workspaceRoot) {
     ].join("\n");
   }
 
+  if (format === "cyclonedx-json") {
+    const enabledFeatures = parsedOptions["enable-feature"] ?? [];
+    if (
+      !enabledFeatures.includes("sbom-attestation-exports-preview")
+      || !enabledFeatures.includes("vscode-preview-capability-parity")
+    ) {
+      process.stderr.write("cyclonedx-json requires SBOM and VS Code parity capabilities\n");
+      process.exit(2);
+    }
+    return JSON.stringify(
+      {
+        bomFormat: "CycloneDX",
+        specVersion: "1.6",
+        serialNumber: "urn:uuid:00000000-0000-4000-8000-000000000001",
+        version: 1,
+        metadata: {
+          component: {
+            type: "application",
+            name: path.basename(workspaceRoot),
+          },
+        },
+        components: [
+          {
+            type: "library",
+            name: "scope-lib",
+            properties: [{ name: "lopper:usedPercent", value: "50.0" }],
+          },
+        ],
+      },
+      null,
+      2,
+    );
+  }
+
   return JSON.stringify(
     {
       command: commandName,
@@ -338,6 +390,39 @@ function renderExport(commandName, parsedOptions, workspaceRoot) {
     null,
     2,
   );
+}
+
+function featureManifest() {
+  return [
+    {
+      code: "LOP-FEAT-0013",
+      name: "sbom-attestation-exports-preview",
+      description: "Enable preview CycloneDX SBOM exports with Lopper dependency-surface metadata.",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+    {
+      code: "LOP-FEAT-0015",
+      name: "reachability-vulnerability-prioritization-preview",
+      description: "Enable local advisory ingestion and reachability-weighted vulnerability prioritization.",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+    {
+      code: "LOP-FEAT-0018",
+      name: "python-runner-profiles",
+      description: "Enable safe unittest and uv profiles for Python runtime capture.",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+    {
+      code: "LOP-FEAT-0020",
+      name: "vscode-preview-capability-parity",
+      description: "Enable VS Code controls for safe CLI preview capabilities.",
+      lifecycle: "preview",
+      enabledByDefault: false,
+    },
+  ];
 }
 
 function escapeCsv(value) {

@@ -29,6 +29,7 @@ async function main() {
     await rm(path.join(workspacePathTwo, ".lopper-cache"), { recursive: true, force: true });
     await mkdir(path.join(workspacePath, "src"), { recursive: true });
     await mkdir(path.join(workspacePathTwo, "src"), { recursive: true });
+    await mkdir(path.join(workspacePathTwo, ".artifacts"), { recursive: true });
     await mkdir(outsideLocationPath, { recursive: true });
     await writeFile(
       path.join(workspacePath, "src", "index.ts"),
@@ -52,6 +53,9 @@ async function main() {
       ].join("\n"),
       "utf8",
     );
+    const pythonTracePath = path.join(workspacePathTwo, ".artifacts", "python-runtime.ndjson");
+    await writeFile(path.join(workspacePathTwo, "src", "runtime.py"), "import scope_lib\n", "utf8");
+    await writeFile(pythonTracePath, "", "utf8");
     await writeFile(path.join(outsideLocationPath, "escape.ts"), 'export const escaped = "outside";\n', "utf8");
     await symlink(outsideLocationPath, path.join(workspacePath, "linked-outside"));
 

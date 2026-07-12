@@ -171,5 +171,11 @@
     "name": "baseline-store-discovery-preview",
     "description": "Enable safe listing and inspection of immutable local baseline snapshots.",
     "lifecycle": "preview"
+  },
+  {
+    "code": "LOP-FEAT-0020",
+    "name": "vscode-preview-capability-parity",
+    "description": "Enable VS Code controls for safe CLI preview capabilities, CycloneDX export, and Python runtime refresh parity.",
+    "lifecycle": "preview"
   }
 ]
