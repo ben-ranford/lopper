@@ -2072,7 +2072,6 @@ func TestRollingWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 		workflowPath:       ".github/workflows/rolling.yml",
 		validationJobName:  "validate-homebrew-tap-rolling",
 		updateJobName:      "update-homebrew-tap-rolling",
-		checkoutUses:       "actions/checkout@v7",
 		regenerateStepName: "Regenerate lopper-rolling formula",
 		pushStepName:       "Regenerate and push rolling formula changes",
 		formulaPath:        "Formula/lopper-rolling.rb",
@@ -2088,7 +2087,6 @@ func TestReleaseWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 		workflowPath:       ".github/workflows/release.yml",
 		validationJobName:  "validate-homebrew-tap",
 		updateJobName:      "update-homebrew-tap",
-		checkoutUses:       "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
 		regenerateStepName: "Regenerate lopper formula",
 		pushStepName:       "Regenerate and push formula changes",
 		formulaPath:        "Formula/lopper.rb",
@@ -2102,7 +2100,6 @@ type homebrewTapWorkflowCase struct {
 	workflowPath       string
 	validationJobName  string
 	updateJobName      string
-	checkoutUses       string
 	regenerateStepName string
 	pushStepName       string
 	formulaPath        string
@@ -2131,23 +2128,69 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 func assertTokenlessValidationJob(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
 	t.Helper()
 
-	validationCheckout := workflowStepByName(t, jobs, tc.validationJobName, "Checkout tap repository")
-	if validationCheckout.Uses != tc.checkoutUses {
-		t.Fatalf("%s validation tap checkout uses %q, want %q", tc.workflowPath, validationCheckout.Uses, tc.checkoutUses)
-	}
-	if _, ok := validationCheckout.With["token"]; ok {
-		t.Fatalf("%s validation tap checkout must not pass HOMEBREW_TAP_TOKEN to actions/checkout", tc.workflowPath)
-	}
-	if validationCheckout.With["persist-credentials"] != "false" {
-		t.Fatalf("%s validation tap checkout persist-credentials = %q, want false", tc.workflowPath, validationCheckout.With["persist-credentials"])
-	}
-
 	validationJob, ok := jobs[tc.validationJobName]
 	if !ok {
 		t.Fatalf("workflow must define job %s", tc.validationJobName)
 	}
+	assertAnonymousValidationCloneStep(t, validationJob, tc)
 	assertJobDoesNotReceiveTapToken(t, validationJob, tc)
 	assertValidationRegenerationStep(t, jobs, tc)
+}
+
+func assertAnonymousValidationCloneStep(t *testing.T, job workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		if step.Name == "Checkout tap repository" || strings.Contains(step.Uses, "actions/checkout") {
+			t.Fatalf("%s validation job must not use actions/checkout for tap validation", tc.workflowPath)
+		}
+	}
+
+	cloneStep := workflowStepByName(t, map[string]workflowJobConfig{tc.validationJobName: job}, tc.validationJobName, "Clone tap repository anonymously")
+	if cloneStep.Uses != "" {
+		t.Fatalf("%s validation clone step must be a run step, got uses %q", tc.workflowPath, cloneStep.Uses)
+	}
+	if cloneStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("%s validation clone step shell = %q", tc.workflowPath, cloneStep.Shell)
+	}
+
+	for _, want := range []string{
+		"git_bin=/usr/bin/git",
+		"mktemp_bin=/usr/bin/mktemp",
+		`export PATH=/usr/bin:/bin`,
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`trap 'rm -rf "${git_home}"' EXIT`,
+		"env -i",
+		`HOME="${git_home}"`,
+		`PATH="${PATH}"`,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		`-c core.hooksPath=/dev/null`,
+		`-c protocol.file.allow=never`,
+		`-c protocol.ext.allow=never`,
+		`clone --origin origin --branch main --single-branch`,
+		`https://github.com/ben-ranford/homebrew-tap.git homebrew-tap`,
+	} {
+		if !strings.Contains(cloneStep.Run, want) {
+			t.Fatalf("%s validation clone step must contain %q", tc.workflowPath, want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"actions/checkout",
+		"github.token",
+		"GITHUB_TOKEN",
+		"HOMEBREW_TAP_TOKEN",
+		"persist-credentials",
+		"credential.helper",
+		"http.https://github.com/.extraheader",
+		"x-access-token:",
+		"AUTHORIZATION: basic",
+	} {
+		if strings.Contains(cloneStep.Run, forbidden) {
+			t.Fatalf("%s validation clone step must not contain %q", tc.workflowPath, forbidden)
+		}
+	}
 }
 
 func assertJobDoesNotReceiveTapToken(t *testing.T, job workflowJobConfig, tc homebrewTapWorkflowCase) {
