@@ -439,13 +439,13 @@ jobs:
 
           major_tag="v${BASH_REMATCH[1]}"
           minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git tag --force "${major_tag}" "${RELEASE_SHA}"
           git tag --force "${minor_tag}" "${RELEASE_SHA}"
-          git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
+          git push --force "${push_url}" "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
 
   update-homebrew-tap:
     needs:

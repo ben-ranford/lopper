@@ -220,14 +220,18 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 		`major_tag="v${BASH_REMATCH[1]}"`,
 		`minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"`,
 		`git tag --force "${major_tag}" "${RELEASE_SHA}"`,
+		`push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"`,
 		`git tag --force "${minor_tag}" "${RELEASE_SHA}"`,
-		`git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
+		`git push --force "${push_url}" "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
 	} {
 		if !strings.Contains(step.Run, want) {
 			t.Fatalf("action floating tag step must contain %q", want)
 		}
 	}
 
+	if strings.Contains(step.Run, "git remote set-url origin") {
+		t.Fatal("action floating tag step must not persist push credentials in .git/config")
+	}
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
 		t.Fatal("release notes must include the concrete GitHub Action ref")
