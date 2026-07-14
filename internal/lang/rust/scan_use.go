@@ -25,9 +25,10 @@ func appendUseClauseImports(imports []importBinding, clause string, ctx useImpor
 	nextToken := 0
 	multiline := strings.ContainsRune(clause, '\n')
 	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
+	declarationTokenHits := countRustDeclarationTokens(declarationClause)
 	for _, entry := range entries {
 		entryContext := ctx
-		entryContext.DeclarationTokenHits = countRustUseEntryDeclarationTokens(declarationClause, entry)
+		entryContext.DeclarationTokenHits = declarationTokenHits[useEntryLocalToken(entry)]
 		if multiline {
 			entryContext, nextToken = locateMultilineUseEntry(declarationClause, entry, entryContext, nextToken)
 		}
@@ -59,11 +60,22 @@ func locateMultilineUseEntry(clause string, entry usePathEntry, ctx useImportCon
 	return ctx, offset + len(token)
 }
 
-func countRustUseEntryDeclarationTokens(clause string, entry usePathEntry) int {
-	if entry.Wildcard {
-		return 0
+func countRustDeclarationTokens(clause string) map[string]int {
+	hits := make(map[string]int)
+	for index := 0; index < len(clause); {
+		if !isRustIdentifierStart(clause[index]) {
+			index++
+			continue
+		}
+
+		start := index
+		index++
+		for index < len(clause) && isRustIdentifierContinue(clause[index]) {
+			index++
+		}
+		hits[clause[start:index]]++
 	}
-	return countRustIdentifierTokens(clause, useEntryLocalToken(entry))
+	return hits
 }
 
 func advancePastRustUseWildcard(clause string, searchStart int) int {

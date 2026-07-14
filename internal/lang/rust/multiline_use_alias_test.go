@@ -247,6 +247,12 @@ func TestFindRustIdentifierTokenBoundaries(t *testing.T) {
 	if got := countRustIdentifierTokens(collidingAlias, "de"); got != 2 {
 		t.Fatalf("declaration token count = %d, want 2", got)
 	}
+	if got := countRustDeclarationTokens(collidingAlias)["de"]; got != 2 {
+		t.Fatalf("precomputed declaration token count = %d, want 2", got)
+	}
+	if got := countRustDeclarationTokens("serde::{Deserialize as De, de::Visitor as De}")["De"]; got != 2 {
+		t.Fatalf("precomputed alias declaration token count = %d, want 2", got)
+	}
 	for _, test := range []struct {
 		token string
 		start int
