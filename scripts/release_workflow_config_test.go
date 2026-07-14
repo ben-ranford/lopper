@@ -38,6 +38,7 @@ type workflowJobConfig struct {
 type workflowStepConfig struct {
 	Name  string            `yaml:"name"`
 	ID    string            `yaml:"id"`
+	Uses  string            `yaml:"uses"`
 	Run   string            `yaml:"run"`
 	Shell string            `yaml:"shell"`
 	Env   map[string]string `yaml:"env"`
@@ -245,11 +246,11 @@ func TestReleaseWorkflowFeatureHistoryStepLabelsAndAuthHeader(t *testing.T) {
 	if strings.Contains(workflowText, "Stamp first stable release history") {
 		t.Fatal("release workflow must not use the stale stable-history label in the feature history job")
 	}
-	if !strings.Contains(workflowText, `auth_header="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"`) {
-		t.Fatal("feature history push must use the standard Basic auth scheme when constructing the extraheader")
+	if !strings.Contains(workflowText, `auth_header="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | "${BASE64_BIN}" -w0)"`) {
+		t.Fatal("trusted feature history push must use the standard Basic auth scheme when constructing the extraheader")
 	}
 	if strings.Contains(workflowText, "AUTHORIZATION: basic") {
-		t.Fatal("feature history push must not use a lowercase basic auth scheme")
+		t.Fatal("trusted feature history push must not use a lowercase basic auth scheme")
 	}
 }
 
@@ -267,6 +268,69 @@ func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
 	}
 	if got := workflowStepWithString(t, step, "persist-credentials"); got != "false" {
 		t.Fatalf("manual release checkout persist-credentials = %q, want false", got)
+	}
+}
+
+func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	stampArtifact := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Upload stamped feature release history artifact")
+	if stampArtifact.Uses != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" {
+		t.Fatalf("stamp artifact step uses = %q", stampArtifact.Uses)
+	}
+	if got := workflowStepWithString(t, stampArtifact, "name"); got != "feature-release-history" {
+		t.Fatalf("stamp artifact name = %q, want feature-release-history", got)
+	}
+
+	checkout := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Checkout trusted main branch")
+	if got := workflowStepWithString(t, checkout, "ref"); got != "main" {
+		t.Fatalf("trusted checkout ref = %q, want main", got)
+	}
+	if got := workflowStepWithString(t, checkout, "token"); got != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("trusted checkout token = %q, want GITHUB_TOKEN-only checkout", got)
+	}
+	if got := workflowStepWithString(t, checkout, "persist-credentials"); got != "false" {
+		t.Fatalf("trusted checkout persist-credentials = %q, want false", got)
+	}
+
+	download := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download stamped feature release history artifact")
+	if download.Uses != "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" {
+		t.Fatalf("trusted artifact download uses = %q", download.Uses)
+	}
+	if got := workflowStepWithString(t, download, "name"); got != "feature-release-history" {
+		t.Fatalf("trusted artifact download name = %q, want feature-release-history", got)
+	}
+
+	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate and commit trusted feature release history")
+	for _, want := range []string{
+		`git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"`,
+		`git checkout -B trusted-feature-release-history origin/main`,
+		`cp .artifacts/feature-release-history/features.json internal/featureflags/features.json`,
+		`go run ./tools/featureflag validate`,
+		`echo "commit_created=false" >> "$GITHUB_OUTPUT"`,
+		`git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`,
+	} {
+		if !strings.Contains(validate.Run, want) {
+			t.Fatalf("trusted feature history validation step must contain %q", want)
+		}
+	}
+
+	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push trusted feature release history")
+	for _, want := range []string{
+		`export PATH="/usr/bin:/bin"`,
+		`GIT_BIN="/usr/bin/git"`,
+		`BASE64_BIN="/usr/bin/base64"`,
+		`"${GIT_BIN}" -c protocol.ext.allow=never -c credential.helper= fetch origin main:refs/remotes/origin/main`,
+		`"${GIT_BIN}" -c core.hooksPath=/dev/null -c protocol.ext.allow=never -c credential.helper= -c http.https://github.com/.extraheader="${auth_header}" push --no-verify origin HEAD:main`,
+	} {
+		if !strings.Contains(push.Run, want) {
+			t.Fatalf("trusted feature history push step must contain %q", want)
+		}
 	}
 }
 
