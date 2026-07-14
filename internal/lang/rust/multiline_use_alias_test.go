@@ -298,11 +298,10 @@ func TestCollectUseEntryLocalTokens(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("wanted two tracked local tokens, got %#v", got)
 	}
-	if _, ok := got["Deserialize"]; !ok {
-		t.Fatalf("expected symbol fallback token to be tracked, got %#v", got)
-	}
-	if _, ok := got["De"]; !ok {
-		t.Fatalf("expected explicit alias token to be tracked, got %#v", got)
+	for _, token := range []string{"Deserialize", "De"} {
+		if _, ok := got[token]; !ok {
+			t.Fatalf("expected token %q to be tracked, got %#v", token, got)
+		}
 	}
 	if got := countRustDeclarationTokens("serde::Deserialize as De", map[string]struct{}{}); len(got) != 0 {
 		t.Fatalf("expected empty wanted token set to remain empty, got %#v", got)
@@ -325,44 +324,49 @@ func TestMultilineUseAliasSupportsUnicodeLocalNames(t *testing.T) {
 	if got := shared.CountUsage([]byte(content), imports)["føø"]; got != 1 {
 		t.Fatalf("usage[føø] = %d, want 1", got)
 	}
-	if got := findRustAliasToken("Deserialize as føø", "føø", 0); got != len("Deserialize as ") {
-		t.Fatalf("unicode alias token offset = %d, want %d", got, len("Deserialize as "))
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{name: "alias offset", got: findRustAliasToken("Deserialize as føø", "føø", 0), want: len("Deserialize as ")},
+		{name: "identifier offset", got: findRustIdentifierToken("føø bar", "føø", 0), want: 0},
+		{name: "substring offset", got: findRustIdentifierToken("føøbar", "føø", 0), want: -1},
+	} {
+		if tc.got != tc.want {
+			t.Fatalf("%s = %d, want %d", tc.name, tc.got, tc.want)
+		}
 	}
-	if got := findRustIdentifierToken("føø bar", "føø", 0); got != 0 {
-		t.Fatalf("unicode identifier offset = %d, want 0", got)
-	}
-	if got := findRustIdentifierToken("føøbar", "føø", 0); got != -1 {
-		t.Fatalf("unicode substring offset = %d, want -1", got)
-	}
-	if rustIdentifierTokenAt("xføø", "føø", 1) {
-		t.Fatalf("did not expect unicode token with identifier prefix to match")
-	}
-	if rustIdentifierTokenAt("føøx", "føø", 0) {
-		t.Fatalf("did not expect unicode token with identifier suffix to match")
+	for _, tc := range []struct {
+		content string
+		offset  int
+	}{
+		{content: "xføø", offset: 1},
+		{content: "føøx", offset: 0},
+	} {
+		if rustIdentifierTokenAt(tc.content, "føø", tc.offset) {
+			t.Fatalf("did not expect unicode boundary match for %q at %d", tc.content, tc.offset)
+		}
 	}
 }
 
 func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
-	if got := advancePastRustUseWildcard("serde::de", 0); got != 0 {
-		t.Fatalf("wildcard advance without wildcard = %d, want 0", got)
-	}
-	if got := advancePastRustUseWildcard("serde::*", -1); got != -1 {
-		t.Fatalf("wildcard advance with negative start = %d, want -1", got)
-	}
-	if got := findRustAliasToken("Deserialize as other as føø", "føø", 0); got != len("Deserialize as other as ") {
-		t.Fatalf("unicode alias second match offset = %d, want %d", got, len("Deserialize as other as "))
-	}
-	if got := countRustIdentifierTokens("føø bar føø", "føø"); got != 2 {
-		t.Fatalf("unicode identifier count = %d, want 2", got)
-	}
-	if got := countRustIdentifierTokens("bar baz", "føø"); got != 0 {
-		t.Fatalf("missing unicode identifier count = %d, want 0", got)
-	}
-	if got := findRustIdentifierToken("xx føø", "føø", 1); got != len("xx ") {
-		t.Fatalf("unicode identifier offset after search start = %d, want %d", got, len("xx "))
-	}
-	if got := findRustIdentifierToken("xx", "føø", 0); got != -1 {
-		t.Fatalf("missing unicode identifier offset = %d, want -1", got)
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{name: "wildcard advance without wildcard", got: advancePastRustUseWildcard("serde::de", 0), want: 0},
+		{name: "wildcard advance with negative start", got: advancePastRustUseWildcard("serde::*", -1), want: -1},
+		{name: "alias second match offset", got: findRustAliasToken("Deserialize as other as føø", "føø", 0), want: len("Deserialize as other as ")},
+		{name: "unicode identifier count", got: countRustIdentifierTokens("føø bar føø", "føø"), want: 2},
+		{name: "missing unicode identifier count", got: countRustIdentifierTokens("bar baz", "føø"), want: 0},
+		{name: "unicode identifier offset after search start", got: findRustIdentifierToken("xx føø", "føø", 1), want: len("xx ")},
+		{name: "missing unicode identifier offset", got: findRustIdentifierToken("xx", "føø", 0), want: -1},
+	} {
+		if tc.got != tc.want {
+			t.Fatalf("%s = %d, want %d", tc.name, tc.got, tc.want)
+		}
 	}
 	invalidClause := string([]byte{0xff, ' ', 'f', 'o', 'o', ' ', '1', '2', '3'})
 	if got := countRustDeclarationTokens(invalidClause, map[string]struct{}{"foo": {}})["foo"]; got != 1 {

@@ -538,29 +538,24 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	if _, ok := buildRustUseStatement([]byte("use serde::de::DeserializeOwned"), 0, 1, 0, []byte("use serde::de::DeserializeOwned")); ok {
 		t.Fatalf("did not expect use statement without semicolon to parse")
 	}
-	if _, _, ok := consumeRustIdentifier([]byte("9serde")); ok {
-		t.Fatalf("did not expect identifier starting with a digit to parse")
+	for _, raw := range [][]byte{[]byte("9serde"), nil, []byte(" \t "), {0xff, 'x'}} {
+		if _, _, ok := consumeRustIdentifier(raw); ok {
+			t.Fatalf("did not expect invalid identifier to parse: %q", raw)
+		}
 	}
-	if _, _, ok := consumeRustIdentifier(nil); ok {
-		t.Fatalf("did not expect empty identifier to parse")
-	}
-	if _, _, ok := consumeRustIdentifier([]byte(" \t ")); ok {
-		t.Fatalf("did not expect whitespace-only identifier to parse")
-	}
-	if _, _, ok := consumeRustIdentifier([]byte{0xff, 'x'}); ok {
-		t.Fatalf("did not expect invalid utf-8 identifier prefix to parse")
-	}
-	if ident, next, ok := consumeRustIdentifier([]byte("føø extra")); !ok || ident != "føø" || next != len("føø") {
-		t.Fatalf("unexpected unicode identifier parse: ident=%q next=%d ok=%v", ident, next, ok)
-	}
-	if ident, next, ok := consumeRustIdentifier([]byte("føø-bar")); !ok || ident != "føø" || next != len("føø") {
-		t.Fatalf("unexpected unicode identifier delimiter parse: ident=%q next=%d ok=%v", ident, next, ok)
-	}
-	if ident, next, ok := consumeRustIdentifier([]byte("føø123")); !ok || ident != "føø123" || next != len("føø123") {
-		t.Fatalf("unexpected unicode identifier digit parse: ident=%q next=%d ok=%v", ident, next, ok)
-	}
-	if ident, next, ok := consumeRustIdentifier([]byte("føø\xfftail")); !ok || ident != "føø" || next != len("føø") {
-		t.Fatalf("unexpected unicode identifier invalid-tail parse: ident=%q next=%d ok=%v", ident, next, ok)
+	for _, tc := range []struct {
+		raw      []byte
+		want     string
+		wantNext int
+	}{
+		{raw: []byte("føø extra"), want: "føø", wantNext: len("føø")},
+		{raw: []byte("føø-bar"), want: "føø", wantNext: len("føø")},
+		{raw: []byte("føø123"), want: "føø123", wantNext: len("føø123")},
+		{raw: []byte("føø\xfftail"), want: "føø", wantNext: len("føø")},
+	} {
+		if ident, next, ok := consumeRustIdentifier(tc.raw); !ok || ident != tc.want || next != tc.wantNext {
+			t.Fatalf("unexpected unicode identifier parse for %q: ident=%q next=%d ok=%v", tc.raw, ident, next, ok)
+		}
 	}
 
 	content := pubCrateSerdeStmt
