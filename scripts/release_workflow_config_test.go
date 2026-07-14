@@ -217,6 +217,18 @@ func TestReleaseWorkflowManualDispatchValidatesTagBeforeFetch(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowManualDispatchFallsBackToDraftReleaseLookup(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if !strings.Contains(workflowText, `gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases"`) {
+		t.Fatal("manual release flow must fall back to listing releases when the tag lookup misses a draft release")
+	}
+	if !strings.Contains(workflowText, `jq -ce --arg tag "$tag" '.[].[] | select(.tag_name == $tag)'`) {
+		t.Fatal("manual release flow must filter the release list by the requested tag")
+	}
+}
+
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 

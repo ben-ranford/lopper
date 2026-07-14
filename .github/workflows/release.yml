@@ -70,7 +70,24 @@ jobs:
 
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           release_json="$(mktemp)"
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>/dev/null; then
+          gh_err_file="$(mktemp)"
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>"${gh_err_file}"
+          gh_status=$?
+          set -e
+          if [ "${gh_status}" -ne 0 ]; then
+            if grep -q "HTTP 404" "${gh_err_file}"; then
+              gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
+                | jq -ce --arg tag "$tag" '.[].[] | select(.tag_name == $tag)' \
+                | head -n1 >"${release_json}" || true
+            else
+              cat "${gh_err_file}" >&2
+              rm -f "${gh_err_file}" "${release_json}"
+              exit "${gh_status}"
+            fi
+          fi
+          rm -f "${gh_err_file}"
+          if ! [ -s "${release_json}" ]; then
             echo "::error::Manual release promotion can only retry an existing GitHub release for ${tag}." >&2
             rm -f "${release_json}"
             exit 1
