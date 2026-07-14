@@ -226,23 +226,14 @@ func TestLocateMultilineUseEntryPaths(t *testing.T) {
 	}
 }
 
-func TestFindRustIdentifierTokenBoundaries(t *testing.T) {
+func TestFindRustIdentifierTokenPositiveBoundaries(t *testing.T) {
 	const content = "Deserialize De"
-	if got := findRustIdentifierToken(content, "Deserialize", 0); got != 0 {
-		t.Fatalf("full token offset = %d, want 0", got)
-	}
-	if got := findRustIdentifierToken(content, "De", 0); got != len("Deserialize ") {
-		t.Fatalf("alias token offset = %d, want %d", got, len("Deserialize "))
-	}
-	if got := findRustIdentifierToken("Deserialize", "De", 0); got != -1 {
-		t.Fatalf("substring offset = %d, want -1", got)
-	}
+	assertRustIdentifierTokenOffset(t, content, "Deserialize", 0, 0)
+	assertRustIdentifierTokenOffset(t, content, "De", 0, len("Deserialize "))
+
 	const collidingAlias = "de::Deserialize as de"
 	if got := findRustAliasToken(collidingAlias, "de", 0); got != len("de::Deserialize as ") {
 		t.Fatalf("alias token offset = %d, want %d", got, len("de::Deserialize as "))
-	}
-	if got := findRustAliasToken("de::Deserialize as other", "de", 0); got != -1 {
-		t.Fatalf("mismatched alias token offset = %d, want -1", got)
 	}
 	if got := countRustIdentifierTokens(collidingAlias, "de"); got != 2 {
 		t.Fatalf("declaration token count = %d, want 2", got)
@@ -259,6 +250,10 @@ func TestFindRustIdentifierTokenBoundaries(t *testing.T) {
 	if got := countRustDeclarationTokens("serde::{Deserialize as De, de::Visitor as De}", map[string]struct{}{"Missing": {}}); len(got) != 0 {
 		t.Fatalf("expected missing token filter to remain empty, got %#v", got)
 	}
+}
+
+func TestFindRustIdentifierTokenInvalidStarts(t *testing.T) {
+	const content = "Deserialize De"
 	for _, test := range []struct {
 		token string
 		start int
@@ -267,23 +262,40 @@ func TestFindRustIdentifierTokenBoundaries(t *testing.T) {
 		{token: "De", start: -1},
 		{token: "De", start: len(content)},
 	} {
-		if got := findRustIdentifierToken(content, test.token, test.start); got != -1 {
-			t.Errorf("findRustIdentifierToken(%q, %d) = %d, want -1", test.token, test.start, got)
-		}
+		assertRustIdentifierTokenOffset(t, content, test.token, test.start, -1)
+	}
+}
+
+func TestFindRustIdentifierTokenNegativeBoundaries(t *testing.T) {
+	assertRustIdentifierTokenOffset(t, "Deserialize", "De", 0, -1)
+	if got := findRustAliasToken("de::Deserialize as other", "de", 0); got != -1 {
+		t.Fatalf("mismatched alias token offset = %d, want -1", got)
 	}
 	for _, test := range []struct {
 		content string
 		token   string
 		offset  int
 	}{
-		{content: content, token: "", offset: 0},
-		{content: content, token: "De", offset: -1},
-		{content: content, token: "De", offset: len(content)},
-		{content: content, token: "Other", offset: 0},
+		{content: "Deserialize De", token: "", offset: 0},
+		{content: "Deserialize De", token: "De", offset: -1},
+		{content: "Deserialize De", token: "De", offset: len("Deserialize De")},
+		{content: "Deserialize De", token: "Other", offset: 0},
 	} {
-		if rustIdentifierTokenAt(test.content, test.token, test.offset) {
-			t.Errorf("rustIdentifierTokenAt(%q, %q, %d) unexpectedly matched", test.content, test.token, test.offset)
-		}
+		assertRustIdentifierTokenMismatch(t, test.content, test.token, test.offset)
+	}
+}
+
+func assertRustIdentifierTokenOffset(t *testing.T, content, token string, start, want int) {
+	t.Helper()
+	if got := findRustIdentifierToken(content, token, start); got != want {
+		t.Fatalf("findRustIdentifierToken(%q, %d) = %d, want %d", token, start, got, want)
+	}
+}
+
+func assertRustIdentifierTokenMismatch(t *testing.T, content, token string, offset int) {
+	t.Helper()
+	if rustIdentifierTokenAt(content, token, offset) {
+		t.Fatalf("rustIdentifierTokenAt(%q, %q, %d) unexpectedly matched", content, token, offset)
 	}
 }
 
