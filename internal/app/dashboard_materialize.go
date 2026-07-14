@@ -48,6 +48,10 @@ func absoluteCommandOutputRoot(outputPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve output path: %w", err)
 	}
+	workspaceRoot, err := trustedCommandOutputRoot(outputAbs)
+	if err != nil {
+		return "", err
+	}
 
 	current := filepath.Dir(outputAbs)
 	for {
@@ -58,6 +62,12 @@ func absoluteCommandOutputRoot(outputPath string) (string, error) {
 			}
 			if !info.IsDir() {
 				return "", fmt.Errorf("output root is not a directory: %s", current)
+			}
+			if workspaceRoot != "" {
+				if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
+					return "", err
+				}
+				return workspaceRoot, nil
 			}
 			return current, nil
 		}
@@ -71,6 +81,29 @@ func absoluteCommandOutputRoot(outputPath string) (string, error) {
 		}
 		current = parent
 	}
+}
+
+func trustedCommandOutputRoot(outputAbs string) (string, error) {
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve output workspace: %w", err)
+	}
+	withinWorkspace, err := pathWithinRoot(workspaceRoot, outputAbs)
+	if err != nil {
+		return "", err
+	}
+	if !withinWorkspace {
+		return "", nil
+	}
+	return workspaceRoot, nil
+}
+
+func pathWithinRoot(rootAbs, targetAbs string) (bool, error) {
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return false, fmt.Errorf("compute output path: %w", err)
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))), nil
 }
 
 func ensureCommandOutputParent(rootDir, outputPath string) error {
@@ -101,6 +134,14 @@ func ensureCommandOutputParent(rootDir, outputPath string) error {
 }
 
 func rejectSymlinkedOutputParent(rootAbs, parentAbs string) error {
+	return rejectSymlinkedPath(rootAbs, parentAbs, "output parent escapes workspace: %s", "output parent contains symlink: %s")
+}
+
+func rejectSymlinkedOutputRoot(rootAbs, parentAbs string) error {
+	return rejectSymlinkedPath(rootAbs, parentAbs, "output root escapes workspace: %s", "output root contains symlink: %s")
+}
+
+func rejectSymlinkedPath(rootAbs, parentAbs, escapeFormat, symlinkFormat string) error {
 	rel, err := filepath.Rel(rootAbs, parentAbs)
 	if err != nil {
 		return fmt.Errorf("compute output parent: %w", err)
@@ -109,7 +150,7 @@ func rejectSymlinkedOutputParent(rootAbs, parentAbs string) error {
 		return nil
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("output parent escapes workspace: %s", parentAbs)
+		return fmt.Errorf(escapeFormat, parentAbs)
 	}
 
 	current := rootAbs
@@ -126,7 +167,7 @@ func rejectSymlinkedOutputParent(rootAbs, parentAbs string) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("output parent contains symlink: %s", current)
+			return fmt.Errorf(symlinkFormat, current)
 		}
 	}
 	return nil
