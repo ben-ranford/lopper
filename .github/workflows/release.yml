@@ -10,10 +10,6 @@ on:
         description: Release tag or version to publish, such as v1.6.0 or 1.6.0
         required: true
         type: string
-      source_sha:
-        description: Release source ref or SHA; defaults to the selected workflow ref when omitted
-        required: false
-        type: string
 
 concurrency:
   # Serialize release runs so newer commits queue behind in-flight releases.
@@ -62,13 +58,12 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Checkout manual release source
+      - name: Checkout release metadata
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: ${{ inputs.source_sha || github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare manual release
@@ -90,7 +85,6 @@ jobs:
             tag="v${tag}"
           fi
 
-          resolved_sha="$(git rev-parse HEAD)"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           release_lookup_error="$(mktemp)"
           set +e
@@ -145,18 +139,11 @@ jobs:
               echo "::error::Existing release ${tag} target commit could not be verified." >&2
               exit 1
             fi
-            if [ "${existing_commit}" != "${resolved_sha}" ]; then
-              echo "::error::Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}." >&2
-              exit 1
-            fi
+            resolved_sha="${existing_commit}"
           elif grep -q "HTTP 404" "${release_lookup_error}"; then
             rm -f "${release_lookup_error}"
-            gh release create "${tag}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${resolved_sha}" \
-              --draft \
-              --title "Release ${tag}" \
-              --notes ""
+            echo "::error::Manual release promotion can only retry an existing GitHub release for ${tag}." >&2
+            exit 1
           else
             cat "${release_lookup_error}" >&2
             rm -f "${release_lookup_error}"
