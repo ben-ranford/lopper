@@ -97,11 +97,7 @@ func TestEnsureCommandOutputParentRejectsEscapingPath(t *testing.T) {
 }
 
 func TestEnsureCommandOutputParentPropagatesMkdirAllError(t *testing.T) {
-	root := t.TempDir()
-	blocker := filepath.Join(root, "blocked")
-	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
+	root, blocker := blockedPathFixture(t)
 
 	err := ensureCommandOutputParent(root, filepath.Join(blocker, "report.json"))
 	if err == nil {
@@ -136,14 +132,21 @@ func TestRejectSymlinkedOutputParentAllowsMissingTail(t *testing.T) {
 }
 
 func TestRejectSymlinkedOutputParentPropagatesLookupError(t *testing.T) {
-	root := t.TempDir()
-	blocker := filepath.Join(root, "blocked")
-	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
+	root, blocker := blockedPathFixture(t)
 
 	err := rejectSymlinkedOutputParent(root, filepath.Join(blocker, "nested"))
 	if err == nil {
 		t.Fatal("expected lookup error under regular file")
 	}
+}
+
+func blockedPathFixture(t *testing.T) (string, string) {
+	t.Helper()
+
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	return root, blocker
 }
