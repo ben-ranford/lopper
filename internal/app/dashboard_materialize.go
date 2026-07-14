@@ -53,34 +53,50 @@ func absoluteCommandOutputRoot(outputPath string) (string, error) {
 		return "", err
 	}
 
+	existingRoot, err := resolveExistingOutputRoot(outputAbs, outputPath)
+	if err != nil {
+		return "", err
+	}
+	if workspaceRoot == "" {
+		return existingRoot, nil
+	}
+	if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
+		return "", err
+	}
+	return workspaceRoot, nil
+}
+
+func resolveExistingOutputRoot(outputAbs, outputPath string) (string, error) {
 	current := filepath.Dir(outputAbs)
 	for {
-		info, err := os.Lstat(current)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return "", fmt.Errorf("output root contains symlink: %s", current)
-			}
-			if !info.IsDir() {
-				return "", fmt.Errorf("output root is not a directory: %s", current)
-			}
-			if workspaceRoot != "" {
-				if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
-					return "", err
-				}
-				return workspaceRoot, nil
-			}
-			return current, nil
+		next, done, err := inspectOutputRootPath(current, outputPath)
+		if done || err != nil {
+			return next, err
 		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("resolve output root for %s: no existing parent directory", outputPath)
-		}
-		current = parent
+		current = next
 	}
+}
+
+func inspectOutputRootPath(current, outputPath string) (string, bool, error) {
+	info, err := os.Lstat(current)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", true, fmt.Errorf("output root contains symlink: %s", current)
+		}
+		if !info.IsDir() {
+			return "", true, fmt.Errorf("output root is not a directory: %s", current)
+		}
+		return current, true, nil
+	case !os.IsNotExist(err):
+		return "", true, err
+	}
+
+	parent := filepath.Dir(current)
+	if parent == current {
+		return "", true, fmt.Errorf("resolve output root for %s: no existing parent directory", outputPath)
+	}
+	return parent, false, nil
 }
 
 func trustedCommandOutputRoot(outputAbs string) (string, error) {
