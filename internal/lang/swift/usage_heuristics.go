@@ -165,41 +165,6 @@ func swiftGenericSpecializationEnds(line string) map[int]int {
 	return ends
 }
 
-func hasUnqualifiedUsageEvidence(afterSymbol string) bool {
-	trimmed := strings.TrimLeft(afterSymbol, " \t")
-	if strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "(") {
-		return true
-	}
-	if !strings.HasPrefix(afterSymbol, "<") {
-		return false
-	}
-	afterSpecialization, ok := trimSwiftGenericSpecialization(afterSymbol)
-	if !ok {
-		return false
-	}
-	afterSpecialization = strings.TrimLeft(afterSpecialization, " \t")
-	return strings.HasPrefix(afterSpecialization, ".") || strings.HasPrefix(afterSpecialization, "(")
-}
-
-func trimSwiftGenericSpecialization(value string) (string, bool) {
-	depth := 0
-	for index, symbol := range value {
-		switch symbol {
-		case '<':
-			depth++
-		case '>':
-			if index > 0 && value[index-1] == '-' {
-				continue
-			}
-			depth--
-			if depth == 0 {
-				return value[index+1:], true
-			}
-		}
-	}
-	return "", false
-}
-
 func isIgnoredUnqualifiedSymbol(key string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
 	if key == "" {
 		return true

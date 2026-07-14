@@ -510,6 +510,9 @@ func testSwiftUsageHeuristicGenericSpecializations(t *testing.T) {
 	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value: UnknownResponse<Value>"), singleDep, map[string]int{}); len(got) != 0 {
 		t.Fatalf("expected a generic type annotation to lack attribution evidence, got %#v", got)
 	}
+	if got := applyUnqualifiedUsageHeuristic([]byte("import Alamofire\nlet value = UnknownResponse <Value>()"), singleDep, map[string]int{}); len(got) != 0 {
+		t.Fatalf("expected whitespace before a comparison-like generic expression to lack attribution evidence, got %#v", got)
+	}
 }
 
 func testSwiftUsageHeuristicEvidenceShapes(t *testing.T) {
@@ -527,27 +530,6 @@ func testSwiftUsageHeuristicEvidenceShapes(t *testing.T) {
 	}
 	if hasPotentialUnqualifiedSymbolUsage([]byte("import Alamofire\nlet value: UnknownResponse"), singleDep) {
 		t.Fatalf("expected a bare unknown identifier to require stronger usage evidence")
-	}
-	if hasUnqualifiedUsageEvidence("<Value") {
-		t.Fatalf("expected an unterminated generic specialization to lack usage evidence")
-	}
-	if hasUnqualifiedUsageEvidence(" <Value>()") {
-		t.Fatalf("expected whitespace before a comparison-like generic expression to lack usage evidence")
-	}
-	if !hasUnqualifiedUsageEvidence("<Result<Value, Error>>.success") {
-		t.Fatalf("expected nested generic specializations to preserve static-member evidence")
-	}
-	if !hasUnqualifiedUsageEvidence("<(Value) -> Result>()") {
-		t.Fatalf("expected function-type generics to preserve call evidence")
-	}
-	if after, ok := trimSwiftGenericSpecialization("<Result<Value, Error>>.success"); !ok || after != ".success" {
-		t.Fatalf("expected nested generic specialization to trim to member access, got after=%q ok=%v", after, ok)
-	}
-	if after, ok := trimSwiftGenericSpecialization("<(Value) -> Result>()"); !ok || after != "()" {
-		t.Fatalf("expected function-type generic specialization to trim to call site, got after=%q ok=%v", after, ok)
-	}
-	if after, ok := trimSwiftGenericSpecialization("<Result<Value, Error>"); ok || after != "" {
-		t.Fatalf("expected unterminated generic specialization trim to fail, got after=%q ok=%v", after, ok)
 	}
 }
 
