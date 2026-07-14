@@ -10,10 +10,6 @@ on:
         description: Release tag or version to publish, such as v1.6.0 or 1.6.0
         required: true
         type: string
-      source_sha:
-        description: Release source ref or SHA; defaults to the selected workflow ref when omitted
-        required: false
-        type: string
 
 concurrency:
   # Serialize release runs so newer commits queue behind in-flight releases.
@@ -42,12 +38,11 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Checkout manual release source
+      - name: Checkout release metadata
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_sha || github.sha }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare manual release
@@ -69,37 +64,27 @@ jobs:
             tag="v${tag}"
           fi
 
-          resolved_sha="$(git rev-parse HEAD)"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           release_json="$(mktemp)"
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>/dev/null; then
-            echo "Reusing existing GitHub release ${tag}."
-            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>/dev/null; then
+            echo "::error::Manual release promotion can only retry an existing GitHub release for ${tag}." >&2
+            rm -f "${release_json}"
+            exit 1
+          fi
 
-            existing_commit=""
-            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
-              existing_commit="$(git rev-list -n 1 "${tag}")"
-            else
-              existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"
-              if [ -n "${existing_target}" ] && git rev-parse -q --verify "${existing_target}^{commit}" >/dev/null 2>&1; then
-                existing_commit="$(git rev-parse "${existing_target}^{commit}")"
-              fi
-            fi
+          echo "Reusing existing GitHub release ${tag}."
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          resolved_sha="$(git rev-list -n 1 "refs/tags/${tag}")"
+          release_target="$(jq -r '.target_commitish // empty' "${release_json}")"
+          rm -f "${release_json}"
 
-            if [ -n "${existing_commit}" ] && [ "${existing_commit}" != "${resolved_sha}" ]; then
-              echo "::error::Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}." >&2
-              rm -f "${release_json}"
+          if [ -n "${release_target}" ] && git rev-parse -q --verify "${release_target}^{commit}" >/dev/null 2>&1; then
+            release_target_sha="$(git rev-parse "${release_target}^{commit}")"
+            if [ "${release_target_sha}" != "${resolved_sha}" ]; then
+              echo "::error::GitHub release ${tag} targets ${release_target_sha}, but tag ${tag} points to ${resolved_sha}." >&2
               exit 1
             fi
-          else
-            gh release create "${tag}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${resolved_sha}" \
-              --draft \
-              --title "Release ${tag}" \
-              --notes ""
           fi
-          rm -f "${release_json}"
 
           {
             echo "release_created=true"
