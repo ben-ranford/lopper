@@ -42,7 +42,7 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return persistDashboardOutput(formatted, resolved.outputPath)
+	return persistDashboardOutput(formatted, resolved.outputPath, dashboardOutputTrustedRoots(executionPlan)...)
 }
 
 func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, includeRemediationQueue bool) (dashboard.Report, error) {
@@ -89,4 +89,21 @@ func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRe
 func appendDashboardBaselineSaveWarning(reportData dashboard.Report, savedPath string) dashboard.Report {
 	reportData.SourceWarnings = append(reportData.SourceWarnings, "saved immutable dashboard baseline snapshot: "+savedPath)
 	return reportData
+}
+
+func dashboardOutputTrustedRoots(plan dashboardExecutionPlan) []string {
+	roots := make([]string, 0, len(plan.initialResults))
+	seen := make(map[string]struct{}, len(plan.initialResults))
+	for _, result := range plan.initialResults {
+		path := strings.TrimSpace(result.Input.Path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		roots = append(roots, path)
+	}
+	return roots
 }

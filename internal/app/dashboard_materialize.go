@@ -10,11 +10,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func persistDashboardOutput(formatted, outputPath string) (string, error) {
-	return persistCommandOutput(formatted, outputPath, "dashboard report")
+func persistDashboardOutput(formatted, outputPath string, trustedRoots ...string) (string, error) {
+	return persistCommandOutput(formatted, outputPath, "dashboard report", trustedRoots...)
 }
 
-func persistCommandOutput(formatted, outputPath, label string) (string, error) {
+func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...string) (string, error) {
 	trimmedOutputPath := strings.TrimSpace(outputPath)
 	if trimmedOutputPath == "" || trimmedOutputPath == "-" {
 		return formatted, nil
@@ -23,7 +23,7 @@ func persistCommandOutput(formatted, outputPath, label string) (string, error) {
 		return "", fmt.Errorf("output path must name a file: %s", trimmedOutputPath)
 	}
 
-	outputRoot, err := commandOutputRoot(trimmedOutputPath)
+	outputRoot, err := commandOutputRoot(trimmedOutputPath, trustedRoots...)
 	if err != nil {
 		return "", err
 	}
@@ -36,35 +36,47 @@ func persistCommandOutput(formatted, outputPath, label string) (string, error) {
 	return label + " written to " + trimmedOutputPath, nil
 }
 
-func commandOutputRoot(outputPath string) (string, error) {
-	return rootedCommandOutputRoot(outputPath)
+func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
+	return rootedCommandOutputRoot(outputPath, trustedRoots...)
 }
 
 func absoluteCommandOutputRoot(outputPath string) (string, error) {
 	return rootedCommandOutputRoot(outputPath)
 }
 
-func rootedCommandOutputRoot(outputPath string) (string, error) {
+func rootedCommandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
 	outputAbs, err := filepath.Abs(outputPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve output path: %w", err)
 	}
-	workspaceRoot, err := trustedCommandOutputRoot(outputAbs)
+
+	trustedRoot, err := trustedCommandOutputRootForRoots(outputAbs, trustedRoots...)
 	if err != nil {
 		return "", err
+	}
+	if trustedRoot != "" {
+		if err := rejectSymlinkedOutputRoot(trustedRoot, filepath.Dir(outputAbs)); err != nil {
+			return "", err
+		}
+		return trustedRoot, nil
+	}
+
+	workspaceRoot, workspaceErr := trustedCommandOutputRoot(outputAbs)
+	if workspaceErr != nil {
+		return "", workspaceErr
+	}
+	if workspaceRoot != "" {
+		if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
+			return "", err
+		}
+		return workspaceRoot, nil
 	}
 
 	existingRoot, err := resolveExistingOutputRoot(outputAbs, outputPath)
 	if err != nil {
 		return "", err
 	}
-	if workspaceRoot == "" {
-		return existingRoot, nil
-	}
-	if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
-		return "", err
-	}
-	return workspaceRoot, nil
+	return existingRoot, nil
 }
 
 func resolveExistingOutputRoot(outputAbs, outputPath string) (string, error) {
@@ -130,6 +142,46 @@ func trustedCommandOutputRoot(outputAbs string) (string, error) {
 		return aliasedWorkspaceRoot, nil
 	}
 	return workspaceRoot, nil
+}
+
+func trustedCommandOutputRootForRoots(outputAbs string, roots ...string) (string, error) {
+	for _, root := range roots {
+		trustedRoot, err := trustedCommandOutputRootForRoot(outputAbs, root)
+		if err != nil {
+			return "", err
+		}
+		if trustedRoot != "" {
+			return trustedRoot, nil
+		}
+	}
+	return "", nil
+}
+
+func trustedCommandOutputRootForRoot(outputAbs, root string) (string, error) {
+	trimmedRoot := strings.TrimSpace(root)
+	if trimmedRoot == "" {
+		return "", nil
+	}
+	rootAbs, err := filepath.Abs(trimmedRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve trusted output workspace: %w", err)
+	}
+	withinWorkspace, err := pathWithinRoot(rootAbs, outputAbs)
+	if err != nil {
+		return "", err
+	}
+	if withinWorkspace {
+		return rootAbs, nil
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("resolve trusted output workspace symlinks: %w", err)
+	}
+	return resolveAliasedWorkspaceRoot(outputAbs, resolvedRoot)
 }
 
 func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error) {

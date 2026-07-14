@@ -68,6 +68,27 @@ func TestRootedCommandOutputRootPropagatesOutputPathResolutionError(t *testing.T
 	})
 }
 
+func TestRootedCommandOutputRootPropagatesWorkspaceLookupErrorForAbsolutePath(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+	withUnreadableWorkingDirectory(t, func() {
+		_, err := rootedCommandOutputRoot(outputPath)
+		if err == nil || !strings.Contains(err.Error(), "resolve output workspace") {
+			t.Fatalf("expected workspace lookup failure, got %v", err)
+		}
+	})
+}
+
+func TestRootedCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	writeBlockedFile(t, blocker)
+
+	_, err := rootedCommandOutputRoot(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(blocker, "repo"))
+	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace symlinks") {
+		t.Fatalf("expected trusted root lookup failure, got %v", err)
+	}
+}
+
 func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
 	workspace := t.TempDir()
 	chdirCanonicalWorkspace(t, workspace)
@@ -218,6 +239,92 @@ func TestTrustedCommandOutputRootUsesWorkspaceAlias(t *testing.T) {
 	}
 	if root != workspaceAlias {
 		t.Fatalf("expected workspace alias root %q, got %q", workspaceAlias, root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootsUsesFirstMatchingRoot(t *testing.T) {
+	workspace := t.TempDir()
+	outputPath := filepath.Join(workspace, "reports", "output.json")
+	root, err := trustedCommandOutputRootForRoots(outputPath, "", filepath.Join(t.TempDir(), "other"), workspace)
+	if err != nil {
+		t.Fatalf("trusted command output root for roots: %v", err)
+	}
+	if root != workspace {
+		t.Fatalf("expected matching trusted root %q, got %q", workspace, root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootsReturnsEmptyWhenRootsDoNotMatch(t *testing.T) {
+	root, err := trustedCommandOutputRootForRoots(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(t.TempDir(), "repo"))
+	if err != nil {
+		t.Fatalf("trusted command output root for roots: %v", err)
+	}
+	if root != "" {
+		t.Fatalf("expected no trusted root, got %q", root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootIgnoresMissingRootOutsideOutputPath(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+	root, err := trustedCommandOutputRootForRoot(outputPath, filepath.Join(t.TempDir(), "missing", "repo"))
+	if err != nil {
+		t.Fatalf("trusted command output root for missing root: %v", err)
+	}
+	if root != "" {
+		t.Fatalf("expected no trusted root for missing path, got %q", root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
+	workspace := t.TempDir()
+	workspaceAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+
+	root, err := trustedCommandOutputRootForRoot(filepath.Join(workspaceAlias, "reports", "output.json"), workspaceAlias)
+	if err != nil {
+		t.Fatalf("trusted command output root for alias: %v", err)
+	}
+	if root != workspaceAlias {
+		t.Fatalf("expected alias trusted root %q, got %q", workspaceAlias, root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootsPropagatesRootError(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	writeBlockedFile(t, blocker)
+
+	_, err := trustedCommandOutputRootForRoots(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(blocker, "repo"))
+	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace symlinks") {
+		t.Fatalf("expected trusted root resolution error, got %v", err)
+	}
+}
+
+func TestPersistCommandOutputAllowsNewDirectoriesThroughWorkspaceAlias(t *testing.T) {
+	workspace := t.TempDir()
+	workspaceAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+	chdirCanonicalWorkspace(t, workspace)
+
+	outputPath := filepath.Join(workspaceAlias, "new", "report.json")
+	status, err := persistCommandOutput("{}", outputPath, "dashboard report")
+	if err != nil {
+		t.Fatalf("persist command output: %v", err)
+	}
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, "new", "report.json"))
+	if err != nil {
+		t.Fatalf("read aliased output: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Fatalf("unexpected aliased output content: %q", string(data))
 	}
 }
 

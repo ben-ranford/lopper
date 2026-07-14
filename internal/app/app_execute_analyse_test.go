@@ -122,6 +122,48 @@ func TestExecuteAnalyseOutputFile(t *testing.T) {
 	}
 }
 
+func TestExecuteAnalyseRejectsAbsoluteOutputUnderRequestedRepoSymlinkOutsideWorkingDirectory(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir outside nested: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "reports")); err != nil {
+		t.Fatalf("create repo reports symlink: %v", err)
+	}
+	cwd := t.TempDir()
+	chdirCanonicalWorkspace(t, cwd)
+
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: repo,
+			Dependencies: []report.DependencyReport{
+				{Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	outputPath := filepath.Join(repo, "reports", "nested", "analyse.json")
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.OutputPath = outputPath
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected repo-root symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "nested", "analyse.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside analyse output to remain absent, got err=%v", statErr)
+	}
+}
+
 func TestExecuteAnalyseForwardsRustRecommendationThreshold(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
@@ -409,7 +451,7 @@ func TestCompleteAnalyseExecutionPrefersRunErrorOverFeatureValidationError(t *te
 	runErr := errors.New("post-stage failed")
 	req := AnalyseRequest{Format: report.FormatCycloneDX}
 
-	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, runErr)
+	_, err := application.completeAnalyseExecution(context.Background(), "", req, report.Report{}, runErr)
 	if !errors.Is(err, runErr) {
 		t.Fatalf("expected run error to win, got %v", err)
 	}
@@ -419,7 +461,7 @@ func TestCompleteAnalyseExecutionReturnsFeatureValidationErrorWithoutRunError(t 
 	application := &App{Formatter: report.NewFormatter()}
 	req := AnalyseRequest{Format: report.FormatCycloneDX}
 
-	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, nil)
+	_, err := application.completeAnalyseExecution(context.Background(), "", req, report.Report{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "requires --enable-feature") {
 		t.Fatalf("expected feature validation error, got %v", err)
 	}
@@ -430,7 +472,7 @@ func TestCompleteAnalyseExecutionPrefersRunErrorOverFormatError(t *testing.T) {
 	runErr := errors.New("post-stage failed")
 	req := AnalyseRequest{Format: report.Format("weird")}
 
-	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, runErr)
+	_, err := application.completeAnalyseExecution(context.Background(), "", req, report.Report{}, runErr)
 	if !errors.Is(err, runErr) {
 		t.Fatalf("expected run error to win, got %v", err)
 	}
@@ -440,7 +482,7 @@ func TestCompleteAnalyseExecutionReturnsFormatErrorWithoutRunError(t *testing.T)
 	application := &App{Formatter: report.NewFormatter()}
 	req := AnalyseRequest{Format: report.Format("weird")}
 
-	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, nil)
+	_, err := application.completeAnalyseExecution(context.Background(), "", req, report.Report{}, nil)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown format") {
 		t.Fatalf("expected format error, got %v", err)
 	}
@@ -458,7 +500,7 @@ func TestCompleteAnalyseExecutionReturnsPersistError(t *testing.T) {
 		OutputPath: filepath.Join(workspace, "reports", "analyse.json"),
 	}
 
-	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, nil)
+	_, err := application.completeAnalyseExecution(context.Background(), workspace, req, report.Report{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
 		t.Fatalf("expected persist error, got %v", err)
 	}

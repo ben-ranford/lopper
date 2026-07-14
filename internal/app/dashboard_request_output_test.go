@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
@@ -49,6 +50,25 @@ func TestDashboardRequestAdditionalBranches(t *testing.T) {
 	absoluteBaselineStore := filepath.Join(t.TempDir(), "baselines")
 	if got := resolveDashboardConfigPath(configDir, absoluteBaselineStore); got != absoluteBaselineStore {
 		t.Fatalf("expected absolute dashboard config path to pass through, got %q", got)
+	}
+}
+
+func TestDashboardOutputTrustedRootsDedupesAndSkipsBlankPaths(t *testing.T) {
+	plan := dashboardExecutionPlan{
+		initialResults: []dashboard.RepoAnalysis{
+			{Input: dashboard.RepoInput{Path: "  "}},
+			{Input: dashboard.RepoInput{Path: "/repo/a"}},
+			{Input: dashboard.RepoInput{Path: "/repo/a"}},
+			{Input: dashboard.RepoInput{Path: "/repo/b"}},
+		},
+	}
+
+	roots := dashboardOutputTrustedRoots(plan)
+	if len(roots) != 2 {
+		t.Fatalf("expected two unique trusted roots, got %#v", roots)
+	}
+	if roots[0] != "/repo/a" || roots[1] != "/repo/b" {
+		t.Fatalf("unexpected trusted roots: %#v", roots)
 	}
 }
 
@@ -229,5 +249,42 @@ func TestPersistDashboardOutputRejectsAbsoluteSymlinkedNestedParentViaWorkspaceA
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "nested", "org-report.json")); !os.IsNotExist(statErr) {
 		t.Fatalf("expected outside nested report to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestExecuteDashboardRejectsAbsoluteOutputUnderRequestedRepoSymlinkOutsideWorkingDirectory(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir outside nested: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "reports")); err != nil {
+		t.Fatalf("create reports symlink: %v", err)
+	}
+	chdirCanonicalWorkspace(t, t.TempDir())
+
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			repo: {Dependencies: []report.DependencyReport{{Name: "dep"}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{{Name: "repo", Path: repo}}
+	req.Dashboard.OutputPath = filepath.Join(repo, "reports", "nested", "org-report.json")
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected dashboard repo-root symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "nested", "org-report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside dashboard output to remain absent, got err=%v", statErr)
 	}
 }

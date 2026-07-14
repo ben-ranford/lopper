@@ -27,7 +27,7 @@ func (a *App) executeAnalyse(ctx context.Context, req Request) (string, error) {
 	decorateAnalyseReport(&reportData, prepared)
 	reportData, err = a.runAnalysePostStages(ctx, req.RepoPath, req.Analyse, reportData)
 
-	return a.completeAnalyseExecution(ctx, req.Analyse, reportData, err)
+	return a.completeAnalyseExecution(ctx, req.RepoPath, req.Analyse, reportData, err)
 }
 
 func (a *App) invokeAnalyse(ctx context.Context, prepared preparedAnalyseExecution) (report.Report, error) {
@@ -83,7 +83,7 @@ func analyseValidationStage(validate func(report.Report) error) analyseReportSta
 	}
 }
 
-func (a *App) completeAnalyseExecution(ctx context.Context, req AnalyseRequest, reportData report.Report, runErr error) (string, error) {
+func (a *App) completeAnalyseExecution(ctx context.Context, repoPath string, req AnalyseRequest, reportData report.Report, runErr error) (string, error) {
 	a.appendNotificationWarnings(ctx, req.Notifications, &reportData, buildNotificationOutcome(reportData, runErr))
 	if err := validateAnalyseFeatures(req); err != nil {
 		if runErr != nil {
@@ -99,7 +99,7 @@ func (a *App) completeAnalyseExecution(ctx context.Context, req AnalyseRequest, 
 		return "", err
 	}
 
-	output, err := persistCommandOutput(formatted, req.OutputPath, "analyse report")
+	output, err := persistCommandOutput(formatted, req.OutputPath, "analyse report", repoPath)
 	if err != nil {
 		return "", err
 	}
