@@ -240,9 +240,6 @@ func TestFindRustIdentifierTokenPositiveBoundaries(t *testing.T) {
 	if got := findRustAliasToken(collidingAlias, "de", 0); got != len("de::Deserialize as ") {
 		t.Fatalf("alias token offset = %d, want %d", got, len("de::Deserialize as "))
 	}
-	if got := countRustIdentifierTokens(collidingAlias, "de"); got != 2 {
-		t.Fatalf("declaration token count = %d, want 2", got)
-	}
 	if got := countRustDeclarationTokens(collidingAlias, map[string]struct{}{"de": {}})["de"]; got != 2 {
 		t.Fatalf("precomputed declaration token count = %d, want 2", got)
 	}
@@ -547,8 +544,8 @@ func assertRustIdentifierHelperCase(t *testing.T, tc otherIDRustIdentifierCase) 
 	if got := findRustIdentifierToken(tc.wantNoMatch, tc.token, 0); got != -1 {
 		t.Fatalf("embedded match offset = %d, want -1", got)
 	}
-	if got := countRustIdentifierTokens(tc.content, tc.token); got != tc.wantCount {
-		t.Fatalf("countRustIdentifierTokens(%q) = %d, want %d", tc.token, got, tc.wantCount)
+	if got := countRustDeclarationTokens(tc.content, map[string]struct{}{tc.token: {}})[tc.token]; got != tc.wantCount {
+		t.Fatalf("countRustDeclarationTokens(%q) = %d, want %d", tc.token, got, tc.wantCount)
 	}
 	if got := countRustDeclarationTokens(tc.token+"::Thing as "+tc.token, map[string]struct{}{tc.token: {}})[tc.token]; got != tc.wantHits {
 		t.Fatalf("countRustDeclarationTokens(%q) = %d, want %d", tc.token, got, tc.wantHits)
@@ -565,8 +562,8 @@ func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
 		{name: "wildcard advance with negative start", got: advancePastRustUseWildcard("serde::*", -1), want: -1},
 		{name: "alias second match offset", got: findRustAliasToken("Deserialize as other as føø", "føø", 0), want: len("Deserialize as other as ")},
 		{name: "alias skips non-identifier candidate", got: findRustAliasToken("Deserialize as = as føø", "føø", 0), want: len("Deserialize as = as ")},
-		{name: "unicode identifier count", got: countRustIdentifierTokens("føø bar føø", "føø"), want: 2},
-		{name: "missing unicode identifier count", got: countRustIdentifierTokens("bar baz", "føø"), want: 0},
+		{name: "unicode identifier count", got: countRustDeclarationTokens("føø bar føø", map[string]struct{}{"føø": {}})["føø"], want: 2},
+		{name: "missing unicode identifier count", got: countRustDeclarationTokens("bar baz", map[string]struct{}{"føø": {}})["føø"], want: 0},
 		{name: "unicode identifier offset after search start", got: findRustIdentifierToken("xx føø", "føø", 1), want: len("xx ")},
 		{name: "missing unicode identifier offset", got: findRustIdentifierToken("xx", "føø", 0), want: -1},
 		{name: "identifier skips embedded match before full token", got: findRustIdentifierToken("détail dé", "dé", 0), want: len("détail ")},

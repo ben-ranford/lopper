@@ -198,19 +198,6 @@ func findRustAliasToken(content, alias string, searchStart int) int {
 	return -1
 }
 
-func countRustIdentifierTokens(content, token string) int {
-	count := 0
-	for searchStart := 0; searchStart < len(content); {
-		offset := findRustIdentifierToken(content, token, searchStart)
-		if offset < 0 {
-			return count
-		}
-		count++
-		searchStart = offset + len(token)
-	}
-	return count
-}
-
 func findRustIdentifierToken(content, token string, searchStart int) int {
 	if token == "" || searchStart < 0 || searchStart >= len(content) {
 		return -1
