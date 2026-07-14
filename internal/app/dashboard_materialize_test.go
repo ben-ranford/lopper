@@ -59,21 +59,21 @@ func TestPersistCommandOutputRejectsTrailingSeparator(t *testing.T) {
 	}
 }
 
-func TestRootedCommandOutputRootPropagatesOutputPathResolutionError(t *testing.T) {
+func TestCommandOutputRootPropagatesOutputPathResolutionError(t *testing.T) {
 	withUnreadableWorkingDirectory(t, func() {
-		_, err := rootedCommandOutputRoot("report.json")
+		_, err := commandOutputRoot("report.json")
 		if err == nil || !strings.Contains(err.Error(), "resolve output path") {
 			t.Fatalf("expected output path resolution failure, got %v", err)
 		}
 	})
 }
 
-func TestRootedCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *testing.T) {
+func TestCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
 	withUnreadableWorkingDirectory(t, func() {
-		root, err := rootedCommandOutputRoot(outputPath)
+		root, err := commandOutputRoot(outputPath)
 		if err != nil {
-			t.Fatalf("rooted command output root: %v", err)
+			t.Fatalf("command output root: %v", err)
 		}
 		wantRoot := filepath.Dir(filepath.Dir(outputPath))
 		if root != wantRoot {
@@ -82,12 +82,12 @@ func TestRootedCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *te
 	})
 }
 
-func TestRootedCommandOutputRootAllowsAbsolutePathWhenRelativeTrustedRootLookupFails(t *testing.T) {
+func TestCommandOutputRootAllowsAbsolutePathWhenRelativeTrustedRootLookupFails(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
 	withRemovedWorkingDirectory(t, func() {
-		root, err := rootedCommandOutputRoot(outputPath, ".")
+		root, err := commandOutputRoot(outputPath, ".")
 		if err != nil {
-			t.Fatalf("rooted command output root: %v", err)
+			t.Fatalf("command output root: %v", err)
 		}
 		wantRoot := filepath.Dir(filepath.Dir(outputPath))
 		if root != wantRoot {
@@ -96,19 +96,19 @@ func TestRootedCommandOutputRootAllowsAbsolutePathWhenRelativeTrustedRootLookupF
 	})
 }
 
-func TestRootedCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
+func TestCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
 	assertTrustedRootLookupError(t, "trusted root lookup failure", func(outputPath, trustedRoot string) error {
-		_, err := rootedCommandOutputRoot(outputPath, trustedRoot)
+		_, err := commandOutputRoot(outputPath, trustedRoot)
 		return err
 	})
 }
 
-func TestRootedCommandOutputRootUsesTrustedRoot(t *testing.T) {
+func TestCommandOutputRootUsesTrustedRoot(t *testing.T) {
 	trustedRoot := t.TempDir()
 
-	root, err := rootedCommandOutputRoot(filepath.Join(trustedRoot, "reports", "output.json"), trustedRoot)
+	root, err := commandOutputRoot(filepath.Join(trustedRoot, "reports", "output.json"), trustedRoot)
 	if err != nil {
-		t.Fatalf("rooted command output root: %v", err)
+		t.Fatalf("command output root: %v", err)
 	}
 	if root != trustedRoot {
 		t.Fatalf("expected trusted root %q, got %q", trustedRoot, root)
@@ -294,20 +294,20 @@ func TestCommandOutputRootAllowsKnownDarwinSystemAliasRoots(t *testing.T) {
 	}
 }
 
-func TestAbsoluteCommandOutputRootRejectsSymlinkBoundary(t *testing.T) {
+func TestCommandOutputRootRejectsSymlinkBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
 		t.Fatalf("create reports symlink: %v", err)
 	}
 
-	_, err := absoluteCommandOutputRoot(filepath.Join(workspace, "reports", "output.json"))
+	_, err := commandOutputRoot(filepath.Join(workspace, "reports", "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
 		t.Fatalf("expected symlink boundary rejection, got %v", err)
 	}
 }
 
-func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryWhenTargetNestedExists(t *testing.T) {
+func TestCommandOutputRootRejectsSymlinkBoundaryWhenTargetNestedExists(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside")
 	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
@@ -318,13 +318,13 @@ func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryWhenTargetNestedExists(t
 	}
 	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
 
-	_, err := absoluteCommandOutputRoot(filepath.Join(canonicalWorkspace, "reports", "nested", "output.json"))
+	_, err := commandOutputRoot(filepath.Join(canonicalWorkspace, "reports", "nested", "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
 		t.Fatalf("expected nested symlink boundary rejection, got %v", err)
 	}
 }
 
-func TestAbsoluteCommandOutputRootUsesWorkspaceBoundary(t *testing.T) {
+func TestCommandOutputRootUsesWorkspaceBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
 	outputPath := filepath.Join(canonicalWorkspace, "reports", "existing", "output.json")
@@ -332,9 +332,9 @@ func TestAbsoluteCommandOutputRootUsesWorkspaceBoundary(t *testing.T) {
 		t.Fatalf("mkdir output parent: %v", err)
 	}
 
-	root, err := absoluteCommandOutputRoot(outputPath)
+	root, err := commandOutputRoot(outputPath)
 	if err != nil {
-		t.Fatalf("absolute command output root: %v", err)
+		t.Fatalf("command output root: %v", err)
 	}
 	if root != canonicalWorkspace {
 		t.Fatalf("expected workspace root %q, got %q", canonicalWorkspace, root)
@@ -602,18 +602,18 @@ func TestTrustedCommandOutputRootPropagatesWorkspaceLookupError(t *testing.T) {
 	})
 }
 
-func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
+func TestCommandOutputRootRejectsFileBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	blocker := filepath.Join(workspace, "reports")
 	writeBlockedFile(t, blocker)
 
-	_, err := absoluteCommandOutputRoot(filepath.Join(blocker, "output.json"))
+	_, err := commandOutputRoot(filepath.Join(blocker, "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root is not a directory") {
 		t.Fatalf("expected file boundary rejection, got %v", err)
 	}
 }
 
-func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryViaWorkspaceSubdirectoryAlias(t *testing.T) {
+func TestCommandOutputRootRejectsSymlinkBoundaryViaWorkspaceSubdirectoryAlias(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside")
 	if err := os.MkdirAll(filepath.Join(workspace, "reports"), 0o755); err != nil {
@@ -631,18 +631,18 @@ func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryViaWorkspaceSubdirectory
 	}
 	chdirCanonicalWorkspace(t, workspace)
 
-	_, err := absoluteCommandOutputRoot(filepath.Join(reportsAlias, "link", "nested", "output.json"))
+	_, err := commandOutputRoot(filepath.Join(reportsAlias, "link", "nested", "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
 		t.Fatalf("expected symlink boundary rejection via subdirectory alias, got %v", err)
 	}
 }
 
-func TestAbsoluteCommandOutputRootPropagatesLookupError(t *testing.T) {
+func TestCommandOutputRootPropagatesLookupError(t *testing.T) {
 	workspace := t.TempDir()
 	locked := filepath.Join(workspace, "locked")
 	writeBlockedFile(t, locked)
 
-	_, err := absoluteCommandOutputRoot(filepath.Join(locked, "missing", "output.json"))
+	_, err := commandOutputRoot(filepath.Join(locked, "missing", "output.json"))
 	if err == nil {
 		t.Fatal("expected lookup error for inaccessible parent")
 	}

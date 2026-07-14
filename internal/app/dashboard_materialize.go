@@ -37,14 +37,6 @@ func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...s
 }
 
 func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
-	return rootedCommandOutputRoot(outputPath, trustedRoots...)
-}
-
-func absoluteCommandOutputRoot(outputPath string) (string, error) {
-	return rootedCommandOutputRoot(outputPath)
-}
-
-func rootedCommandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
 	outputAbs, err := filepath.Abs(outputPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve output path: %w", err)
