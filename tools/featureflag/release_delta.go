@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -62,7 +63,14 @@ func runExportReleaseDelta(args []string) error {
 		return err
 	}
 	absoluteOutput := filepath.Join(root, options.output)
-	if err := os.MkdirAll(filepath.Dir(absoluteOutput), 0o750); err != nil {
+	if err := func() error {
+		outputRoot, err := os.OpenRoot(root)
+		if err != nil {
+			return err
+		}
+		mkdirErr := outputRoot.MkdirAll(filepath.Dir(filepath.Clean(options.output)), 0o750)
+		return errors.Join(mkdirErr, outputRoot.Close())
+	}(); err != nil {
 		return fmt.Errorf("create release delta output directory: %w", err)
 	}
 	if err := writeFileUnderFn(root, absoluteOutput, data, 0o644); err != nil {

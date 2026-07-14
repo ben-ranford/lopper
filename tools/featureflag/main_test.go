@@ -284,6 +284,20 @@ func TestRunExportReleaseDeltaUsesTrustedCatalogInput(t *testing.T) {
 	}
 }
 
+func TestRunExportReleaseDeltaRejectsOutputPathTraversalWithoutCreatingDirectories(t *testing.T) {
+	root := t.TempDir()
+	writeFeatureCatalog(t, root, graduateFeatureCatalog)
+	t.Chdir(root)
+
+	outsideDir := filepath.Join(filepath.Dir(root), filepath.Base(root)+"-outside")
+	if err := run([]string{"export-release-delta", "--release", testReleaseVersion, "--output", filepath.Join("..", filepath.Base(outsideDir), "release-delta.json")}); err == nil || !strings.Contains(err.Error(), "create release delta output directory") {
+		t.Fatalf("expected output path traversal error, got %v", err)
+	}
+	if _, err := os.Stat(outsideDir); !os.IsNotExist(err) {
+		t.Fatalf("expected outside directory to remain absent, got err=%v", err)
+	}
+}
+
 func TestRunApplyReleaseDeltaStampsOnlyReleaseDerivedFlags(t *testing.T) {
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, `[
