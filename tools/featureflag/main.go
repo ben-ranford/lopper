@@ -38,7 +38,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: featureflag add|graduate|stamp-release|validate|manifest|report|pr-enforce|release-pr-comment")
+		return fmt.Errorf("usage: featureflag add|graduate|stamp-release|export-release-delta|apply-release-delta|validate|manifest|report|pr-enforce|release-pr-comment")
 	}
 	switch args[0] {
 	case "add":
@@ -47,6 +47,10 @@ func run(args []string) error {
 		return runGraduate(args[1:])
 	case "stamp-release":
 		return runStampRelease(args[1:])
+	case "export-release-delta":
+		return runExportReleaseDelta(args[1:])
+	case "apply-release-delta":
+		return runApplyReleaseDelta(args[1:])
 	case "validate":
 		return runValidate()
 	case "manifest":
