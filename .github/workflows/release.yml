@@ -613,25 +613,43 @@ jobs:
           go-version-file: go.mod
 
       - name: Stamp first stable release history
+        id: stamp_history
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
+          go run ./tools/featureflag validate
+
+          if git diff --quiet -- internal/featureflags/features.json; then
+            echo "No feature release history changes to commit"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit stamped feature release history
+        if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
-          go run ./tools/featureflag validate
-
           git add internal/featureflags/features.json
-          if git diff --cached --quiet; then
-            echo "No feature release history changes to commit"
-            exit 0
-          fi
-
           git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
-          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Push stamped feature release history
+        if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        env:
+          PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for feature release history"
             if ! git fetch origin main:refs/remotes/origin/main; then
@@ -645,7 +663,7 @@ jobs:
               sleep 2
               continue
             fi
-            if git push origin HEAD:main; then
+            if git push "${push_url}" HEAD:main; then
               exit 0
             fi
             sleep 2

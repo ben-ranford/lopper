@@ -38,6 +38,7 @@ type workflowJobConfig struct {
 type workflowStepConfig struct {
 	Name  string            `yaml:"name"`
 	ID    string            `yaml:"id"`
+	If    string            `yaml:"if"`
 	Run   string            `yaml:"run"`
 	Shell string            `yaml:"shell"`
 	Env   map[string]string `yaml:"env"`
@@ -219,8 +220,8 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 		`^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$`,
 		`major_tag="v${BASH_REMATCH[1]}"`,
 		`minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"`,
-		`git tag --force "${major_tag}" "${RELEASE_SHA}"`,
 		`push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"`,
+		`git tag --force "${major_tag}" "${RELEASE_SHA}"`,
 		`git tag --force "${minor_tag}" "${RELEASE_SHA}"`,
 		`git push --force "${push_url}" "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
 	} {
@@ -228,17 +229,16 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 			t.Fatalf("action floating tag step must contain %q", want)
 		}
 	}
-
 	if strings.Contains(step.Run, "git remote set-url origin") {
 		t.Fatal("action floating tag step must not persist push credentials in .git/config")
 	}
+
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
 		t.Fatal("release notes must include the concrete GitHub Action ref")
 	}
 }
 
-func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 func TestReleaseWorkflowHomebrewPushUsesEphemeralAuthenticatedRemote(t *testing.T) {
 	t.Parallel()
 
@@ -261,6 +261,73 @@ func TestReleaseWorkflowHomebrewPushUsesEphemeralAuthenticatedRemote(t *testing.
 	if strings.Contains(step.Run, "git remote set-url origin") {
 		t.Fatal("homebrew push step must not persist tap credentials in .git/config")
 	}
+}
+
+func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	stampStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Stamp first stable release history")
+	if stampStep.ID != "stamp_history" {
+		t.Fatalf("stamp history step id = %q, want stamp_history", stampStep.ID)
+	}
+	if _, ok := stampStep.Env["PUSH_TOKEN"]; ok {
+		t.Fatal("stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
+	}
+	for _, want := range []string{
+		`go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`,
+		`go run ./tools/featureflag validate`,
+		`echo "changed=true" >> "$GITHUB_OUTPUT"`,
+	} {
+		if !strings.Contains(stampStep.Run, want) {
+			t.Fatalf("stamp history step must contain %q", want)
+		}
+	}
+	if strings.Contains(stampStep.Run, "git push") {
+		t.Fatal("stamp history step must not push while running repository-controlled tools")
+	}
+
+	commitStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Commit stamped feature release history")
+	if commitStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
+		t.Fatalf("commit stamped history step if = %q", commitStep.If)
+	}
+	if commitStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
+		t.Fatalf("commit stamped history step RELEASE_TAG env = %q", commitStep.Env["RELEASE_TAG"])
+	}
+	if !strings.Contains(commitStep.Run, `git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`) {
+		t.Fatal("commit stamped history step must create the release history commit without a push token")
+	}
+	if _, ok := commitStep.Env["PUSH_TOKEN"]; ok {
+		t.Fatal("commit stamped history step must not expose PUSH_TOKEN")
+	}
+
+	pushStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Push stamped feature release history")
+	if pushStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
+		t.Fatalf("push stamped history step if = %q", pushStep.If)
+	}
+	if pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("push stamped history step PUSH_TOKEN env = %q", pushStep.Env["PUSH_TOKEN"])
+	}
+	for _, want := range []string{
+		`push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"`,
+		`git fetch origin main:refs/remotes/origin/main`,
+		`git rebase origin/main`,
+		`git push "${push_url}" HEAD:main`,
+	} {
+		if !strings.Contains(pushStep.Run, want) {
+			t.Fatalf("push stamped history step must contain %q", want)
+		}
+	}
+	if strings.Contains(pushStep.Run, "git remote set-url origin") {
+		t.Fatal("push stamped history step must not persist push credentials in .git/config")
+	}
+}
+
+func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
