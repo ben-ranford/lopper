@@ -573,15 +573,15 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 
 func TestRollingWorkflowUsesTapTokenOnlyForPush(t *testing.T) {
 	t.Parallel()
-	assertTapTokenReservedForPush(t, ".github/workflows/rolling.yml", "update-homebrew-tap-rolling", "actions/checkout@v7", "Commit and push rolling formula changes")
+	assertTapTokenReservedForFinalNetworkStep(t, ".github/workflows/rolling.yml", "update-homebrew-tap-rolling", "actions/checkout@v7", "Commit rolling formula changes", "Push rolling formula changes")
 }
 
 func TestReleaseWorkflowUsesTapTokenOnlyForPush(t *testing.T) {
 	t.Parallel()
-	assertTapTokenReservedForPush(t, ".github/workflows/release.yml", "update-homebrew-tap", "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd", "Commit and push formula changes")
+	assertTapTokenReservedForFinalNetworkStep(t, ".github/workflows/release.yml", "update-homebrew-tap", "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd", "Commit formula changes", "Push formula changes")
 }
 
-func assertTapTokenReservedForPush(t *testing.T, workflowPath string, jobName string, checkoutUses string, pushStepName string) {
+func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string, jobName string, checkoutUses string, commitStepName string, pushStepName string) {
 	t.Helper()
 
 	var workflow struct {
@@ -600,12 +600,54 @@ func assertTapTokenReservedForPush(t *testing.T, workflowPath string, jobName st
 		t.Fatalf("%s tap checkout persist-credentials = %q, want false", workflowPath, checkoutStep.With["persist-credentials"])
 	}
 
+	commitStep := workflowStepByName(t, workflow.Jobs, jobName, commitStepName)
+	if _, ok := commitStep.Env["HOMEBREW_TAP_TOKEN"]; ok {
+		t.Fatalf("%s commit step must not receive HOMEBREW_TAP_TOKEN", workflowPath)
+	}
+	for _, want := range []string{
+		"git_bin=/usr/bin/git",
+		"-c core.hooksPath=/dev/null",
+		"-c protocol.file.allow=never",
+		"-c protocol.ext.allow=never",
+		"git_safe add ",
+		"git_safe diff --cached --quiet",
+		"git_safe commit --no-verify",
+	} {
+		if !strings.Contains(commitStep.Run, want) {
+			t.Fatalf("%s commit step must contain %q", workflowPath, want)
+		}
+	}
+
 	pushStep := workflowStepByName(t, workflow.Jobs, jobName, pushStepName)
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("%s tap push step HOMEBREW_TAP_TOKEN env = %q", workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
-	if !strings.Contains(pushStep.Run, `git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"`) {
-		t.Fatalf("%s tap push step must still authenticate the final push with HOMEBREW_TAP_TOKEN", workflowPath)
+	for _, want := range []string{
+		"git_bin=/usr/bin/git",
+		"auth_header=\"$(printf 'x-access-token:%s' \"${HOMEBREW_TAP_TOKEN}\" | base64 | tr -d '\\n')\"",
+		"unset HOMEBREW_TAP_TOKEN",
+		"-c credential.helper=",
+		"-c core.hooksPath=/dev/null",
+		"-c protocol.file.allow=never",
+		"-c protocol.ext.allow=never",
+		`-c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}"`,
+		"env -u HOMEBREW_TAP_TOKEN",
+		"git_network fetch origin main:refs/remotes/origin/main",
+		"git_local rebase origin/main",
+		"git_local rebase --abort || true",
+		"git_network push origin HEAD:main",
+	} {
+		if !strings.Contains(pushStep.Run, want) {
+			t.Fatalf("%s push step must contain %q", workflowPath, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"git remote set-url origin ",
+		"x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git",
+	} {
+		if strings.Contains(pushStep.Run, forbidden) {
+			t.Fatalf("%s push step must not contain %q", workflowPath, forbidden)
+		}
 	}
 }
 
