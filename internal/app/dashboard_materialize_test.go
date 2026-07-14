@@ -434,6 +434,18 @@ func TestTrustedCommandOutputRootForRootIgnoresRelativeRootWhenLookupFailsForAbs
 	})
 }
 
+func TestTrustedCommandOutputRootForRootRejectsFileRoot(t *testing.T) {
+	rootFile := filepath.Join(t.TempDir(), "repo")
+	if err := os.WriteFile(rootFile, []byte("not-a-dir"), 0o600); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+
+	_, err := trustedCommandOutputRootForRoot(filepath.Join(rootFile, "reports", "output.json"), rootFile)
+	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is not a directory") {
+		t.Fatalf("expected file-root rejection, got %v", err)
+	}
+}
+
 func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
 	_, workspaceAlias := createWorkspaceAlias(t)
 
@@ -802,6 +814,28 @@ func TestPathVolumeNameFallsBackToWindowsDrivePrefix(t *testing.T) {
 	}
 	if got := pathVolumeName("/tmp/report.json"); got != "" {
 		t.Fatalf("expected no volume for posix path, got %q", got)
+	}
+}
+
+func TestFallbackCommandOutputRootPropagatesRelativeWorkspaceError(t *testing.T) {
+	outputAbs := filepath.Join(t.TempDir(), "reports", "output.json")
+	workspaceErr := errors.New("workspace lookup failed")
+
+	_, err := fallbackCommandOutputRoot(outputAbs, filepath.Join("reports", "output.json"), workspaceErr)
+	if !errors.Is(err, workspaceErr) {
+		t.Fatalf("expected workspace lookup error, got %v", err)
+	}
+}
+
+func TestValidateTrustedCommandOutputRootRejectsFile(t *testing.T) {
+	rootFile := filepath.Join(t.TempDir(), "repo")
+	if err := os.WriteFile(rootFile, []byte("not-a-dir"), 0o600); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+
+	err := validateTrustedCommandOutputRoot(rootFile)
+	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is not a directory") {
+		t.Fatalf("expected trusted root file rejection, got %v", err)
 	}
 }
 
