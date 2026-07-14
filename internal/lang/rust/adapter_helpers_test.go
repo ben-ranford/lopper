@@ -547,6 +547,9 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	if _, _, ok := consumeRustIdentifier([]byte(" \t ")); ok {
 		t.Fatalf("did not expect whitespace-only identifier to parse")
 	}
+	if _, _, ok := consumeRustIdentifier([]byte{0xff, 'x'}); ok {
+		t.Fatalf("did not expect invalid utf-8 identifier prefix to parse")
+	}
 	if ident, next, ok := consumeRustIdentifier([]byte("føø extra")); !ok || ident != "føø" || next != len("føø") {
 		t.Fatalf("unexpected unicode identifier parse: ident=%q next=%d ok=%v", ident, next, ok)
 	}
@@ -555,6 +558,9 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	}
 	if ident, next, ok := consumeRustIdentifier([]byte("føø123")); !ok || ident != "føø123" || next != len("føø123") {
 		t.Fatalf("unexpected unicode identifier digit parse: ident=%q next=%d ok=%v", ident, next, ok)
+	}
+	if ident, next, ok := consumeRustIdentifier([]byte("føø\xfftail")); !ok || ident != "føø" || next != len("føø") {
+		t.Fatalf("unexpected unicode identifier invalid-tail parse: ident=%q next=%d ok=%v", ident, next, ok)
 	}
 
 	content := pubCrateSerdeStmt

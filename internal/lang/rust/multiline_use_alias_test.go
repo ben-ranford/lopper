@@ -364,6 +364,10 @@ func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
 	if got := findRustIdentifierToken("xx", "føø", 0); got != -1 {
 		t.Fatalf("missing unicode identifier offset = %d, want -1", got)
 	}
+	invalidClause := string([]byte{0xff, ' ', 'f', 'o', 'o', ' ', '1', '2', '3'})
+	if got := countRustDeclarationTokens(invalidClause, map[string]struct{}{"foo": {}})["foo"]; got != 1 {
+		t.Fatalf("invalid utf-8 declaration token count = %d, want 1", got)
+	}
 }
 
 func multilineAliasDependencyLookup() map[string]dependencyInfo {
