@@ -406,11 +406,11 @@ func isRustIdentifierContinue(b byte) bool {
 }
 
 func isRustIdentifierStartRune(r rune) bool {
-	return r == '_' || unicode.IsLetter(r)
+	return r == '_' || unicode.In(r, unicode.L, unicode.Nl)
 }
 
 func isRustIdentifierContinueRune(r rune) bool {
-	return isRustIdentifierStartRune(r) || unicode.IsDigit(r)
+	return r == '_' || unicode.In(r, unicode.L, unicode.Nl, unicode.Nd, unicode.Mn, unicode.Mc, unicode.Me, unicode.Pc)
 }
 
 func firstContentByteIndex(line []byte) int {

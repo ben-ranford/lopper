@@ -350,6 +350,34 @@ func TestMultilineUseAliasSupportsUnicodeLocalNames(t *testing.T) {
 	}
 }
 
+func TestMultilineUseAliasSupportsUnicodeCombiningMarks(t *testing.T) {
+	const alias = "e\u0301"
+	content := "use serde::de::Deserialize as " + alias + ";\nfn decode(_: " + alias + ") {}\n"
+	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
+	if len(imports) != 1 {
+		t.Fatalf("expected one import, got %#v", imports)
+	}
+	imported := imports[0]
+	if imported.Local != alias {
+		t.Fatalf("local alias = %q, want %q", imported.Local, alias)
+	}
+	if imported.DeclarationTokenHits != 1 {
+		t.Fatalf("declaration token hits = %d, want 1", imported.DeclarationTokenHits)
+	}
+	if got := shared.CountUsage([]byte(content), imports)[alias]; got != 1 {
+		t.Fatalf("usage[%s] = %d, want 1", alias, got)
+	}
+	if got := findRustAliasToken("Deserialize as "+alias, alias, 0); got != len("Deserialize as ") {
+		t.Fatalf("unicode combining alias offset = %d, want %d", got, len("Deserialize as "))
+	}
+	if got := findRustIdentifierToken(alias+" bar", alias, 0); got != 0 {
+		t.Fatalf("unicode combining identifier offset = %d, want 0", got)
+	}
+	if rustIdentifierTokenAt("x"+alias, alias, 1) {
+		t.Fatalf("did not expect combining-mark alias to match inside a larger identifier")
+	}
+}
+
 func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
 	for _, tc := range []struct {
 		name string

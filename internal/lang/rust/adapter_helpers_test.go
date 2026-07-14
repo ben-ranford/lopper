@@ -549,6 +549,7 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 		wantNext int
 	}{
 		{raw: []byte("føø extra"), want: "føø", wantNext: len("føø")},
+		{raw: []byte("e\u0301 extra"), want: "e\u0301", wantNext: len("e\u0301")},
 		{raw: []byte("føø-bar"), want: "føø", wantNext: len("føø")},
 		{raw: []byte("føø123"), want: "føø123", wantNext: len("føø123")},
 		{raw: []byte("føø\xfftail"), want: "føø", wantNext: len("føø")},
