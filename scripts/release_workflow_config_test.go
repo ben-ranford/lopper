@@ -284,72 +284,95 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	}
 
 	checkout := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Checkout trusted main branch")
-	if got := workflowStepWithString(t, checkout, "ref"); got != "main" {
-		t.Fatalf("trusted checkout ref = %q, want main", got)
-	}
-	if got := workflowStepWithString(t, checkout, "token"); got != "${{ secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("trusted checkout token = %q, want GITHUB_TOKEN-only checkout", got)
-	}
-	if got := workflowStepWithString(t, checkout, "persist-credentials"); got != "false" {
-		t.Fatalf("trusted checkout persist-credentials = %q, want false", got)
-	}
+	assertWorkflowStepValue(t, checkout, "ref", "main", "trusted checkout ref")
+	assertWorkflowStepValue(t, checkout, "token", "${{ secrets.GITHUB_TOKEN }}", "trusted checkout token")
+	assertWorkflowStepValue(t, checkout, "persist-credentials", "false", "trusted checkout persist-credentials")
 
-	for _, step := range workflow.Jobs["push-feature-release-history"].Steps {
-		if strings.Contains(step.Uses, "upload-artifact") || strings.Contains(step.Uses, "download-artifact") {
-			t.Fatalf("push-feature-release-history must not retain artifact handoff steps, found %q", step.Uses)
-		}
-	}
+	pushFeatureHistoryJob := workflow.Jobs["push-feature-release-history"]
+	assertNoArtifactHandoffSteps(t, pushFeatureHistoryJob)
 
 	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate and commit trusted feature release history")
-	for _, want := range []string{
+	assertStepRunContainsAll(t, validate, "trusted feature history validation step", []string{
 		`git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"`,
 		`git checkout -B trusted-feature-release-history origin/main`,
 		`go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`,
 		`go run ./tools/featureflag validate`,
 		`echo "commit_created=false" >> "$GITHUB_OUTPUT"`,
 		`git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`,
-	} {
-		if !strings.Contains(validate.Run, want) {
-			t.Fatalf("trusted feature history validation step must contain %q", want)
-		}
-	}
+	})
 	if strings.Contains(validate.Run, ".artifacts/feature-release-history/features.json") {
 		t.Fatal("trusted feature history validation step must not copy a stamped artifact over current main")
 	}
 	if _, ok := validate.Env["PUSH_TOKEN"]; ok {
 		t.Fatal("trusted feature history validation step must not receive PUSH_TOKEN")
 	}
-	fetchIndex := strings.Index(validate.Run, `git fetch origin main:refs/remotes/origin/main`)
-	checkoutIndex := strings.Index(validate.Run, `git checkout -B trusted-feature-release-history origin/main`)
-	stampIndex := strings.Index(validate.Run, `go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`)
+	assertTrustedFeatureHistoryStampOrder(t, validate.Run)
+
+	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push trusted feature release history")
+	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("trusted feature history push token env = %q", got)
+	}
+	assertPushTokenScopedToFinalStep(t, pushFeatureHistoryJob, push.Name)
+	assertStepRunContainsAll(t, push, "trusted feature history push step", []string{
+		`export PATH="/usr/bin:/bin"`,
+		`GIT_BIN="/usr/bin/git"`,
+		`BASE64_BIN="/usr/bin/base64"`,
+		`"${GIT_BIN}" -c protocol.ext.allow=never -c credential.helper= fetch origin main:refs/remotes/origin/main`,
+		`"${GIT_BIN}" -c core.hooksPath=/dev/null -c protocol.ext.allow=never -c credential.helper= -c http.https://github.com/.extraheader="${auth_header}" push --no-verify origin HEAD:main`,
+	})
+}
+
+func assertWorkflowStepValue(t *testing.T, step workflowStepConfig, key string, want string, label string) {
+	t.Helper()
+
+	if got := workflowStepWithString(t, step, key); got != want {
+		t.Fatalf("%s = %q, want %s", label, got, want)
+	}
+}
+
+func assertNoArtifactHandoffSteps(t *testing.T, job workflowJobConfig) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		if strings.Contains(step.Uses, "upload-artifact") || strings.Contains(step.Uses, "download-artifact") {
+			t.Fatalf("push-feature-release-history must not retain artifact handoff steps, found %q", step.Uses)
+		}
+	}
+}
+
+func assertStepRunContainsAll(t *testing.T, step workflowStepConfig, label string, wants []string) {
+	t.Helper()
+
+	for _, want := range wants {
+		if !strings.Contains(step.Run, want) {
+			t.Fatalf("%s must contain %q", label, want)
+		}
+	}
+}
+
+func assertTrustedFeatureHistoryStampOrder(t *testing.T, run string) {
+	t.Helper()
+
+	fetchIndex := strings.Index(run, `git fetch origin main:refs/remotes/origin/main`)
+	checkoutIndex := strings.Index(run, `git checkout -B trusted-feature-release-history origin/main`)
+	stampIndex := strings.Index(run, `go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`)
 	if fetchIndex == -1 || checkoutIndex == -1 || stampIndex == -1 {
 		t.Fatal("trusted feature history validation step must fetch current origin/main, check it out, then stamp it in that order")
 	}
 	if fetchIndex >= checkoutIndex || checkoutIndex >= stampIndex {
 		t.Fatal("trusted feature history validation step must fetch current origin/main, check it out, then stamp it in that order")
 	}
+}
 
-	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push trusted feature release history")
-	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("trusted feature history push token env = %q", got)
-	}
-	for _, step := range workflow.Jobs["push-feature-release-history"].Steps {
-		if step.Name == push.Name {
+func assertPushTokenScopedToFinalStep(t *testing.T, job workflowJobConfig, pushStepName string) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		if step.Name == pushStepName {
 			continue
 		}
 		if _, ok := step.Env["PUSH_TOKEN"]; ok {
 			t.Fatalf("%s must not receive PUSH_TOKEN", step.Name)
-		}
-	}
-	for _, want := range []string{
-		`export PATH="/usr/bin:/bin"`,
-		`GIT_BIN="/usr/bin/git"`,
-		`BASE64_BIN="/usr/bin/base64"`,
-		`"${GIT_BIN}" -c protocol.ext.allow=never -c credential.helper= fetch origin main:refs/remotes/origin/main`,
-		`"${GIT_BIN}" -c core.hooksPath=/dev/null -c protocol.ext.allow=never -c credential.helper= -c http.https://github.com/.extraheader="${auth_header}" push --no-verify origin HEAD:main`,
-	} {
-		if !strings.Contains(push.Run, want) {
-			t.Fatalf("trusted feature history push step must contain %q", want)
 		}
 	}
 }
