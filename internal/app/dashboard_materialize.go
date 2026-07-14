@@ -19,6 +19,9 @@ func persistCommandOutput(formatted, outputPath, label string) (string, error) {
 	if trimmedOutputPath == "" || trimmedOutputPath == "-" {
 		return formatted, nil
 	}
+	if hasTrailingOutputPathSeparator(trimmedOutputPath) {
+		return "", fmt.Errorf("output path must name a file: %s", trimmedOutputPath)
+	}
 
 	outputRoot, err := commandOutputRoot(trimmedOutputPath)
 	if err != nil {
@@ -189,6 +192,10 @@ func pathVolumeName(path string) string {
 		}
 	}
 	return strings.ToLower(volume)
+}
+
+func hasTrailingOutputPathSeparator(path string) bool {
+	return path != "" && os.IsPathSeparator(path[len(path)-1])
 }
 
 func ensureCommandOutputParent(rootDir, outputPath string) error {

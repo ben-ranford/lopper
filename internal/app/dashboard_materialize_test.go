@@ -34,6 +34,31 @@ func TestPersistCommandOutputBypassesFileWritesForEmptyAndDash(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputRejectsTrailingSeparator(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+
+	existingFile := filepath.Join(workspace, "existing-file")
+	if err := os.WriteFile(existingFile, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+
+	for _, outputPath := range []string{"reports/", "existing-file/"} {
+		_, err := persistCommandOutput("{}", outputPath, "dashboard report")
+		if err == nil || !strings.Contains(err.Error(), "output path must name a file") {
+			t.Fatalf("expected trailing-separator rejection for %q, got %v", outputPath, err)
+		}
+	}
+
+	data, err := os.ReadFile(existingFile)
+	if err != nil {
+		t.Fatalf("read existing file: %v", err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("expected existing file to remain unchanged, got %q", string(data))
+	}
+}
+
 func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
 	workspace := t.TempDir()
 	chdirCanonicalWorkspace(t, workspace)
@@ -465,6 +490,15 @@ func TestPathVolumeNameFallsBackToWindowsDrivePrefix(t *testing.T) {
 	}
 	if got := pathVolumeName("/tmp/report.json"); got != "" {
 		t.Fatalf("expected no volume for posix path, got %q", got)
+	}
+}
+
+func TestHasTrailingOutputPathSeparator(t *testing.T) {
+	if !hasTrailingOutputPathSeparator("reports/") {
+		t.Fatal("expected trailing slash to be treated as a path separator")
+	}
+	if hasTrailingOutputPathSeparator("report.json") {
+		t.Fatal("expected ordinary file path to remain valid")
 	}
 }
 
