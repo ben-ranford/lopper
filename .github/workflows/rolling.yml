@@ -361,28 +361,47 @@ jobs:
         working-directory: homebrew-tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          set -euo pipefail
           git_bin=/usr/bin/git
-          if [ ! -x "${git_bin}" ]; then
-            echo "::error::Trusted git binary not found at ${git_bin}" >&2
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for the authenticated push step" >&2
             exit 1
           fi
+          export PATH=/usr/bin:/bin
 
-          auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | base64 | tr -d '\n')"
+          auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
           unset HOMEBREW_TAP_TOKEN
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
 
           git_network() {
-            "${git_bin}" \
-              -c core.hooksPath=/dev/null \
-              -c credential.helper= \
-              -c protocol.file.allow=never \
-              -c protocol.ext.allow=never \
-              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
               "$@"
           }
           git_local() {
-            env -u HOMEBREW_TAP_TOKEN \
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
               "${git_bin}" \
               -c core.hooksPath=/dev/null \
               -c credential.helper= \
@@ -395,19 +414,19 @@ jobs:
             echo "Push attempt ${attempt} for rolling Homebrew formula"
             if ! git_network fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
-              sleep 2
+              /bin/sleep 2
               continue
             fi
             if ! git_local rebase origin/main; then
               echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
               git_local rebase --abort || true
-              sleep 2
+              /bin/sleep 2
               continue
             fi
             if git_network push origin HEAD:main; then
               exit 0
             fi
-            sleep 2
+            /bin/sleep 2
           done
 
           echo "Failed to push rolling Homebrew formula after retries" >&2
