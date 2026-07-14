@@ -2143,7 +2143,7 @@ func TestReleaseWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 	}
 }
 
-func TestHomebrewTapWorkflowsUseImmutablePreparedSourceSHA(t *testing.T) {
+func TestHomebrewTapWorkflowsUseImmutablePreparedSourceBindings(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range homebrewTapWorkflowCases() {
@@ -2162,6 +2162,14 @@ func TestHomebrewTapWorkflowsUseImmutablePreparedSourceSHA(t *testing.T) {
 			}
 			if validationJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
 				t.Fatalf("%s validation job FORMULA_VERSION env = %q", tc.workflowPath, validationJob.Env["FORMULA_VERSION"])
+			}
+			if validationJob.Env["SOURCE_REPO"] != "${{ github.repository }}" {
+				t.Fatalf("%s validation job SOURCE_REPO env = %q", tc.workflowPath, validationJob.Env["SOURCE_REPO"])
+			}
+			for _, deadEnv := range []string{"RELEASE_TAG", "ROLLING_TAG"} {
+				if _, ok := validationJob.Env[deadEnv]; ok {
+					t.Fatalf("%s validation job must not retain unused %s env", tc.workflowPath, deadEnv)
+				}
 			}
 			updateJob := workflow.Jobs[tc.updateJobName]
 			if updateJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {

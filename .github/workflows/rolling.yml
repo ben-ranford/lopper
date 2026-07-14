@@ -258,7 +258,6 @@ jobs:
     permissions:
       contents: read
     env:
-      ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
       FORMULA_VERSION: ${{ needs.prepare-rolling.outputs.tag }}
       SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
       SOURCE_REPO: ${{ github.repository }}
