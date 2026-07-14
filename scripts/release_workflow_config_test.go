@@ -2168,6 +2168,53 @@ func TestReleaseWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 	})
 }
 
+func TestHomebrewTapWorkflowsVerifyTagStillMatchesPreparedSourceSHA(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []homebrewTapWorkflowCase{
+		{
+			workflowPath:       ".github/workflows/rolling.yml",
+			validationJobName:  "validate-homebrew-tap-rolling",
+			updateJobName:      "update-homebrew-tap-rolling",
+			regenerateStepName: "Regenerate lopper-rolling formula",
+			pushStepName:       "Regenerate and push rolling formula changes",
+			expectedTagVar:     "ROLLING_TAG",
+			sourceSHAExpr:      "${{ needs.prepare-rolling.outputs.source_sha }}",
+		},
+		{
+			workflowPath:       ".github/workflows/release.yml",
+			validationJobName:  "validate-homebrew-tap",
+			updateJobName:      "update-homebrew-tap",
+			regenerateStepName: "Regenerate lopper formula",
+			pushStepName:       "Regenerate and push formula changes",
+			expectedTagVar:     "RELEASE_TAG",
+			sourceSHAExpr:      "${{ needs.prepare-release.outputs.sha }}",
+		},
+	} {
+		tc := tc
+		t.Run(tc.workflowPath, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow struct {
+				Jobs map[string]workflowJobConfig `yaml:"jobs"`
+			}
+			readYAMLConfig(t, tc.workflowPath, &workflow)
+
+			validationJob := workflow.Jobs[tc.validationJobName]
+			if validationJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
+				t.Fatalf("%s validation job SOURCE_SHA env = %q", tc.workflowPath, validationJob.Env["SOURCE_SHA"])
+			}
+			updateJob := workflow.Jobs[tc.updateJobName]
+			if updateJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
+				t.Fatalf("%s update job SOURCE_SHA env = %q", tc.workflowPath, updateJob.Env["SOURCE_SHA"])
+			}
+
+			assertTagIntegrityCheck(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName).Run, tc.expectedTagVar)
+			assertTagIntegrityCheck(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.updateJobName, tc.pushStepName).Run, tc.expectedTagVar)
+		})
+	}
+}
+
 type homebrewTapWorkflowCase struct {
 	workflowPath       string
 	validationJobName  string
@@ -2178,6 +2225,8 @@ type homebrewTapWorkflowCase struct {
 	sourceURLLine      string
 	commitMessageLine  string
 	updateNeedsLine    string
+	expectedTagVar     string
+	sourceSHAExpr      string
 }
 
 func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTapWorkflowCase) {
@@ -2381,6 +2430,24 @@ func assertPrivilegedStepOmitsUnsafePatterns(t *testing.T, pushStep workflowStep
 	} {
 		if strings.Contains(pushStep.Run, forbidden) {
 			t.Fatalf("%s privileged tap update step must not contain %q", tc.workflowPath, forbidden)
+		}
+	}
+}
+
+func assertTagIntegrityCheck(t *testing.T, workflowPath string, run string, tagVar string) {
+	t.Helper()
+
+	for _, want := range []string{
+		"resolve_source_tag_commit() {",
+		`refs/tags/${source_tag}^{}`,
+		`refs/tags/${source_tag}`,
+		`source_tag_commit="$(resolve_source_tag_commit "${` + tagVar + `}")" || {`,
+		`echo "::error::Source tag ${` + tagVar + `} was not found on ${SOURCE_REPO}" >&2`,
+		`if [ "${source_tag_commit}" != "${SOURCE_SHA}" ]; then`,
+		`echo "::error::Source tag ${` + tagVar + `} moved to ${source_tag_commit}; expected ${SOURCE_SHA}" >&2`,
+	} {
+		if !strings.Contains(run, want) {
+			t.Fatalf("%s step must contain %q", workflowPath, want)
 		}
 	}
 }
