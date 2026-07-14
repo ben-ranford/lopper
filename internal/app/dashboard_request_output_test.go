@@ -117,7 +117,31 @@ func TestExecuteDashboardOutputPathErrors(t *testing.T) {
 	})
 }
 
-func TestPersistDashboardOutputDoesNotFollowSymlinkTarget(t *testing.T) {
+func TestPersistDashboardOutputPreservesExistingFileMode(t *testing.T) {
+	workspace := t.TempDir()
+	outputPath := filepath.Join(workspace, "org-report.html")
+	if err := os.WriteFile(outputPath, []byte("before"), 0o644); err != nil {
+		t.Fatalf("seed report file: %v", err)
+	}
+	if err := os.Chmod(outputPath, 0o644); err != nil {
+		t.Fatalf("chmod report file: %v", err)
+	}
+
+	chdirCanonicalWorkspace(t, workspace)
+
+	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err != nil {
+		t.Fatalf("persist dashboard output: %v", err)
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatalf("stat dashboard output: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("expected existing dashboard output mode 0644 to be preserved, got %#o", info.Mode().Perm())
+	}
+}
+
+func TestPersistDashboardOutputRejectsSymlinkTarget(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
@@ -130,8 +154,8 @@ func TestPersistDashboardOutputDoesNotFollowSymlinkTarget(t *testing.T) {
 
 	chdirCanonicalWorkspace(t, workspace)
 
-	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err != nil {
-		t.Fatalf("persist dashboard output: %v", err)
+	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err == nil {
+		t.Fatal("expected symlink target to be rejected")
 	}
 	data, err := os.ReadFile(outside)
 	if err != nil {
@@ -140,12 +164,12 @@ func TestPersistDashboardOutputDoesNotFollowSymlinkTarget(t *testing.T) {
 	if string(data) != "secret" {
 		t.Fatalf("expected symlink target to remain unchanged, got %q", string(data))
 	}
-	written, err := os.ReadFile(outputPath)
+	info, err := os.Lstat(outputPath)
 	if err != nil {
-		t.Fatalf("read dashboard output: %v", err)
+		t.Fatalf("lstat dashboard output: %v", err)
 	}
-	if string(written) != "<html>report</html>" {
-		t.Fatalf("expected report at output path, got %q", string(written))
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected dashboard output path to remain a symlink, got mode %v", info.Mode())
 	}
 }
 

@@ -44,6 +44,36 @@ func TestWriteFileUnderWritesFileInsideRoot(t *testing.T) {
 	}
 }
 
+func TestWriteFileUnderPreservesExistingRegularFileMode(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o644); err != nil {
+		t.Fatalf("seed target file: %v", err)
+	}
+	if err := os.Chmod(targetPath, 0o644); err != nil {
+		t.Fatalf("chmod target file: %v", err)
+	}
+
+	if err := WriteFileUnder(rootDir, targetPath, []byte("after"), 0o600); err != nil {
+		t.Fatalf("WriteFileUnder returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read replaced file: %v", err)
+	}
+	if string(data) != "after" {
+		t.Fatalf("unexpected content: got %q", string(data))
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat replaced file: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("expected existing file mode 0644 to be preserved, got %#o", info.Mode().Perm())
+	}
+}
+
 func TestWriteFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	parentDir := t.TempDir()
 	rootDir := filepath.Join(parentDir, "root")
@@ -96,7 +126,7 @@ func TestWriteFileUnderRejectsNonDirectoryRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when root is not a directory")
 	}
-	if !strings.Contains(err.Error(), "open root") {
+	if !strings.Contains(err.Error(), "open root") && !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
 }
@@ -154,6 +184,37 @@ func TestWriteFileUnderRejectsExistingDirectoryTarget(t *testing.T) {
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {
 		t.Fatal("expected directory target error")
+	}
+}
+
+func TestWriteFileUnderRejectsSymlinkTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsidePath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("seed outside file: %v", err)
+	}
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.Symlink(outsidePath, targetPath); err != nil {
+		t.Fatalf("create target symlink: %v", err)
+	}
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
+	if err == nil {
+		t.Fatal("expected symlink target error")
+	}
+	data, readErr := os.ReadFile(outsidePath)
+	if readErr != nil {
+		t.Fatalf("read outside file: %v", readErr)
+	}
+	if string(data) != "secret" {
+		t.Fatalf("expected outside file to remain unchanged, got %q", string(data))
+	}
+	info, statErr := os.Lstat(targetPath)
+	if statErr != nil {
+		t.Fatalf("lstat target symlink: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected target path to remain a symlink, got mode %v", info.Mode())
 	}
 }
 

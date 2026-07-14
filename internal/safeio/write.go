@@ -21,6 +21,10 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	if err != nil {
 		return err
 	}
+	writePerm, err := resolvedWriteFilePerm(target, perm)
+	if err != nil {
+		return err
+	}
 
 	root, err := fileSystem.OpenRoot(target.rootAbs)
 	if err != nil {
@@ -32,7 +36,7 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		}
 	}()
 
-	session, err := newAtomicWriteSession(root, target.rel, perm)
+	session, err := newAtomicWriteSession(root, target.rel, writePerm)
 	if err != nil {
 		return err
 	}
@@ -43,7 +47,25 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		}
 	}()
 
-	return session.writeAndCommit(data, perm)
+	return session.writeAndCommit(data, writePerm)
+}
+
+func resolvedWriteFilePerm(target rootedTarget, requestedPerm os.FileMode) (os.FileMode, error) {
+	info, err := os.Lstat(target.abs)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			return 0, fmt.Errorf("target path is a symlink: %s", target.abs)
+		}
+		if !info.Mode().IsRegular() {
+			return 0, fmt.Errorf("target path is not a regular file: %s", target.abs)
+		}
+		return info.Mode().Perm(), nil
+	case os.IsNotExist(err):
+		return requestedPerm, nil
+	default:
+		return 0, err
+	}
 }
 
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
