@@ -31,6 +31,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Compute build metadata
@@ -95,6 +96,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Compute build metadata
@@ -164,6 +166,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Compute image metadata
@@ -233,6 +236,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Compute image metadata
@@ -305,6 +309,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Compute image name

@@ -46,6 +46,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.source_sha || github.sha }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
@@ -134,6 +135,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Setup Go
@@ -188,6 +190,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Compute build metadata
@@ -256,6 +259,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.sha }}
 
@@ -424,6 +428,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+          PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -437,6 +442,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git tag --force "${major_tag}" "${RELEASE_SHA}"
           git tag --force "${minor_tag}" "${RELEASE_SHA}"
           git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
@@ -472,6 +478,7 @@ jobs:
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           repository: ben-ranford/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
@@ -539,6 +546,8 @@ jobs:
       - name: Commit and push formula changes
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -551,6 +560,7 @@ jobs:
           fi
 
           git commit -m "lopper ${{ needs.prepare-release.outputs.tag }}"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
             if ! git fetch origin main:refs/remotes/origin/main; then
@@ -592,6 +602,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.sha }}
           token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
@@ -604,6 +615,7 @@ jobs:
       - name: Stamp first stable release history
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -619,6 +631,7 @@ jobs:
           fi
 
           git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for feature release history"
             if ! git fetch origin main:refs/remotes/origin/main; then
