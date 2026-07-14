@@ -31,6 +31,13 @@ func TestTUIActionRunnerUsesAnalysePipelineForCodemodApply(t *testing.T) {
 	}
 }
 
+func TestTUIActionRunnerNilAppReturnsNil(t *testing.T) {
+	var application *App
+	if runner := application.tuiActionRunner(); runner != nil {
+		t.Fatalf("expected nil runner, got %#v", runner)
+	}
+}
+
 func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
@@ -60,5 +67,35 @@ func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 	}
 	if analyzer.lastReq.TopN != 5 || analyzer.lastReq.Language != "all" {
 		t.Fatalf("expected TUI baseline save to forward summary options, got %#v", analyzer.lastReq)
+	}
+}
+
+func TestTUIActionRunnerSavesBaselineWithKey(t *testing.T) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			SchemaVersion: report.SchemaVersion,
+			Dependencies:  []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	runner := application.tuiActionRunner()
+
+	store := t.TempDir()
+	_, savedPath, err := runner.SaveBaseline(context.Background(), ui.BaselineSaveRequest{
+		RepoPath:          ".",
+		TopN:              3,
+		Language:          "go",
+		BaselineStorePath: store,
+		BaselineLabel:     "   ",
+		BaselineKey:       "commit:abc123",
+	})
+	if err != nil {
+		t.Fatalf("save baseline action: %v", err)
+	}
+	if savedPath != report.BaselineSnapshotPath(store, "commit:abc123") {
+		t.Fatalf("expected key-based snapshot path, got %q", savedPath)
+	}
+	if analyzer.lastReq.TopN != 3 || analyzer.lastReq.Language != "go" {
+		t.Fatalf("expected TUI baseline save with key to forward summary options, got %#v", analyzer.lastReq)
 	}
 }

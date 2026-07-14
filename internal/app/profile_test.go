@@ -129,6 +129,33 @@ func TestExecuteProfileErrorPaths(t *testing.T) {
 	}
 }
 
+func TestPersistProfileConfigPropagatesStatError(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	_, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), false)
+	if err == nil {
+		t.Fatal("expected stat error under regular file")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "stat" || pathErr.Path != filepath.Join(blocker, "profile.yaml") {
+		t.Fatalf("expected propagated stat path error, got %v", err)
+	}
+}
+
+func TestPersistProfileConfigPropagatesMkdirAllError(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	if _, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), true); err == nil {
+		t.Fatal("expected mkdir error under regular file")
+	}
+}
+
 func mustProfileFeatureSet(t *testing.T) featureflags.Set {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{{

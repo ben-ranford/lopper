@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,21 +145,17 @@ func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 func TestAbsoluteCommandOutputRootPropagatesLookupError(t *testing.T) {
 	workspace := t.TempDir()
 	locked := filepath.Join(workspace, "locked")
-	if err := os.MkdirAll(locked, 0o700); err != nil {
-		t.Fatalf("mkdir locked: %v", err)
+	if err := os.WriteFile(locked, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write locked: %v", err)
 	}
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatalf("chmod locked: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(locked, 0o700); err != nil {
-			t.Errorf("restore locked perms: %v", err)
-		}
-	})
 
 	_, err := absoluteCommandOutputRoot(filepath.Join(locked, "missing", "output.json"))
 	if err == nil {
 		t.Fatal("expected lookup error for inaccessible parent")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "lstat" || pathErr.Path != filepath.Join(locked, "missing") {
+		t.Fatalf("expected propagated lstat path error for child under file, got %v", err)
 	}
 }
 
