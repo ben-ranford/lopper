@@ -259,6 +259,7 @@ jobs:
       contents: read
     env:
       ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+      FORMULA_VERSION: ${{ needs.prepare-rolling.outputs.tag }}
       SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
       SOURCE_REPO: ${{ github.repository }}
     steps:
@@ -296,47 +297,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          resolve_source_tag_commit() {
-            local source_tag="$1"
-            local peeled_commit=""
-            local direct_commit=""
-
-            peeled_commit="$(
-              /usr/bin/git ls-remote --refs --tags "https://github.com/${SOURCE_REPO}.git" "refs/tags/${source_tag}^{}" \
-                | /usr/bin/awk 'NR == 1 { print $1 }'
-            )"
-            if [ -n "${peeled_commit}" ]; then
-              printf '%s\n' "${peeled_commit}"
-              return 0
-            fi
-
-            direct_commit="$(
-              /usr/bin/git ls-remote --refs --tags "https://github.com/${SOURCE_REPO}.git" "refs/tags/${source_tag}" \
-                | /usr/bin/awk 'NR == 1 { print $1 }'
-            )"
-            if [ -n "${direct_commit}" ]; then
-              printf '%s\n' "${direct_commit}"
-              return 0
-            fi
-
-            return 1
-          }
-
-          source_tag_commit="$(resolve_source_tag_commit "${ROLLING_TAG}")" || {
-            echo "::error::Source tag ${ROLLING_TAG} was not found on ${SOURCE_REPO}" >&2
-            exit 1
-          }
-          if [ "${source_tag_commit}" != "${SOURCE_SHA}" ]; then
-            echo "::error::Source tag ${ROLLING_TAG} moved to ${source_tag_commit}; expected ${SOURCE_SHA}" >&2
-            exit 1
-          fi
-
-          source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${ROLLING_TAG}.tar.gz"
+          source_url="https://codeload.github.com/${SOURCE_REPO}/tar.gz/${SOURCE_SHA}"
           curl --fail --show-error --silent --location \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "$source_url" -o /tmp/lopper-rolling-source.tar.gz
-          source_sha="$(sha256sum /tmp/lopper-rolling-source.tar.gz | awk '{print $1}')"
+          read -r source_sha _ < <(sha256sum /tmp/lopper-rolling-source.tar.gz)
 
           mkdir -p Formula
           cat > Formula/lopper-rolling.rb <<RUBY
@@ -344,6 +310,7 @@ jobs:
             desc "Local-first CLI/TUI for measuring dependency surface area"
             homepage "https://github.com/ben-ranford/lopper"
             url "${source_url}"
+            version "${FORMULA_VERSION}"
             sha256 "${source_sha}"
             license "MIT"
 
@@ -394,6 +361,7 @@ jobs:
       contents: read
     env:
       ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+      FORMULA_VERSION: ${{ needs.prepare-rolling.outputs.tag }}
       SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
       SOURCE_REPO: ${{ github.repository }}
     steps:
@@ -403,13 +371,12 @@ jobs:
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
-          awk_bin=/usr/bin/awk
           curl_bin=/usr/bin/curl
           sha256sum_bin=/usr/bin/sha256sum
           base64_bin=/usr/bin/base64
           tr_bin=/usr/bin/tr
           mktemp_bin=/usr/bin/mktemp
-          if [ ! -x "${git_bin}" ] || [ ! -x "${awk_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+          if [ ! -x "${git_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
             echo "::error::Trusted binaries are not available for the isolated rolling Homebrew tap update step" >&2
             exit 1
           fi
@@ -463,41 +430,12 @@ jobs:
 
           git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"
 
-          resolve_source_tag_commit() {
-            local source_tag="$1"
-            local peeled_commit=""
-            local direct_commit=""
-
-            peeled_commit="$(git_safe ls-remote --refs --tags "https://github.com/${SOURCE_REPO}.git" "refs/tags/${source_tag}^{}" | "${awk_bin}" 'NR == 1 { print $1 }')"
-            if [ -n "${peeled_commit}" ]; then
-              printf '%s\n' "${peeled_commit}"
-              return 0
-            fi
-
-            direct_commit="$(git_safe ls-remote --refs --tags "https://github.com/${SOURCE_REPO}.git" "refs/tags/${source_tag}" | "${awk_bin}" 'NR == 1 { print $1 }')"
-            if [ -n "${direct_commit}" ]; then
-              printf '%s\n' "${direct_commit}"
-              return 0
-            fi
-
-            return 1
-          }
-
-          source_tag_commit="$(resolve_source_tag_commit "${ROLLING_TAG}")" || {
-            echo "::error::Source tag ${ROLLING_TAG} was not found on ${SOURCE_REPO}" >&2
-            exit 1
-          }
-          if [ "${source_tag_commit}" != "${SOURCE_SHA}" ]; then
-            echo "::error::Source tag ${ROLLING_TAG} moved to ${source_tag_commit}; expected ${SOURCE_SHA}" >&2
-            exit 1
-          fi
-
-          source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${ROLLING_TAG}.tar.gz"
+          source_url="https://codeload.github.com/${SOURCE_REPO}/tar.gz/${SOURCE_SHA}"
           "${curl_bin}" --fail --show-error --silent --location \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "${source_url}" -o "${source_archive}"
-          source_sha="$("${sha256sum_bin}" "${source_archive}" | awk '{print $1}')"
+          read -r source_sha _ < <("${sha256sum_bin}" "${source_archive}")
 
           mkdir -p "${tap_repo}/Formula"
           cat > "${tap_repo}/Formula/lopper-rolling.rb" <<RUBY
@@ -505,6 +443,7 @@ jobs:
             desc "Local-first CLI/TUI for measuring dependency surface area"
             homepage "https://github.com/ben-ranford/lopper"
             url "${source_url}"
+            version "${FORMULA_VERSION}"
             sha256 "${source_sha}"
             license "MIT"
 

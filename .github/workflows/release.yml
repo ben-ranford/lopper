@@ -20,9 +20,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  HOMEBREW_TAP_TOKEN_CONFIGURED: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
-
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
@@ -1327,13 +1324,12 @@ jobs:
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
-          awk_bin=/usr/bin/awk
           curl_bin=/usr/bin/curl
           sha256sum_bin=/usr/bin/sha256sum
           base64_bin=/usr/bin/base64
           tr_bin=/usr/bin/tr
           mktemp_bin=/usr/bin/mktemp
-          if [ ! -x "${git_bin}" ] || [ ! -x "${awk_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+          if [ ! -x "${git_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
             echo "::error::Trusted binaries are not available for the isolated Homebrew tap update step" >&2
             exit 1
           fi
