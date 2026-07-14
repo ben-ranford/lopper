@@ -83,14 +83,10 @@ func TestRootedCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *te
 }
 
 func TestRootedCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
-	root := t.TempDir()
-	blocker := filepath.Join(root, "blocked")
-	writeBlockedFile(t, blocker)
-
-	_, err := rootedCommandOutputRoot(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(blocker, "repo"))
-	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace symlinks") {
-		t.Fatalf("expected trusted root lookup failure, got %v", err)
-	}
+	assertTrustedRootLookupError(t, "trusted root lookup failure", func(outputPath string, trustedRoot string) error {
+		_, err := rootedCommandOutputRoot(outputPath, trustedRoot)
+		return err
+	})
 }
 
 func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
@@ -107,25 +103,11 @@ func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
 }
 
 func TestPersistCommandOutputAllowsAbsoluteExternalPathWhenWorkingDirectoryRemoved(t *testing.T) {
-	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+	assertPersistCommandOutputWritesAbsolutePath(t, withRemovedWorkingDirectory)
+}
 
-	withRemovedWorkingDirectory(t, func() {
-		status, err := persistCommandOutput("{}", outputPath, "dashboard report")
-		if err != nil {
-			t.Fatalf("persist command output: %v", err)
-		}
-		if status != "dashboard report written to "+outputPath {
-			t.Fatalf("unexpected status: %q", status)
-		}
-	})
-
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "{}" {
-		t.Fatalf("unexpected output content: %q", string(data))
-	}
+func TestPersistCommandOutputAllowsAbsoluteExternalPathWhenWorkingDirectoryUnreadable(t *testing.T) {
+	assertPersistCommandOutputWritesAbsolutePath(t, withUnreadableWorkingDirectory)
 }
 
 func TestPersistCommandOutputPropagatesDirectoryTargetError(t *testing.T) {
@@ -302,11 +284,7 @@ func TestTrustedCommandOutputRootForRootIgnoresMissingRootOutsideOutputPath(t *t
 }
 
 func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
-	workspace := t.TempDir()
-	workspaceAlias := filepath.Join(t.TempDir(), "repo")
-	if err := os.Symlink(workspace, workspaceAlias); err != nil {
-		t.Fatalf("create workspace alias: %v", err)
-	}
+	_, workspaceAlias := createWorkspaceAlias(t)
 
 	root, err := trustedCommandOutputRootForRoot(filepath.Join(workspaceAlias, "reports", "output.json"), workspaceAlias)
 	if err != nil {
@@ -317,15 +295,23 @@ func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
 	}
 }
 
-func TestTrustedCommandOutputRootForRootsPropagatesRootError(t *testing.T) {
-	root := t.TempDir()
-	blocker := filepath.Join(root, "blocked")
-	writeBlockedFile(t, blocker)
+func TestTrustedCommandOutputRootForRootUsesResolvedRootForRealPath(t *testing.T) {
+	workspace, workspaceAlias := createWorkspaceAlias(t)
 
-	_, err := trustedCommandOutputRootForRoots(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(blocker, "repo"))
-	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace symlinks") {
-		t.Fatalf("expected trusted root resolution error, got %v", err)
+	root, err := trustedCommandOutputRootForRoot(filepath.Join(workspace, "reports", "output.json"), workspaceAlias)
+	if err != nil {
+		t.Fatalf("trusted command output root for real path: %v", err)
 	}
+	if root != workspace {
+		t.Fatalf("expected resolved trusted root %q, got %q", workspace, root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootsPropagatesRootError(t *testing.T) {
+	assertTrustedRootLookupError(t, "trusted root resolution error", func(outputPath string, trustedRoot string) error {
+		_, err := trustedCommandOutputRootForRoots(outputPath, trustedRoot)
+		return err
+	})
 }
 
 func TestPersistCommandOutputAllowsNewDirectoriesThroughWorkspaceAlias(t *testing.T) {
@@ -803,6 +789,53 @@ func withRemovedWorkingDirectory(t *testing.T, fn func()) {
 	})
 
 	fn()
+}
+
+func assertPersistCommandOutputWritesAbsolutePath(t *testing.T, withWorkspaceFailure func(*testing.T, func())) {
+	t.Helper()
+
+	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+	withWorkspaceFailure(t, func() {
+		status, err := persistCommandOutput("{}", outputPath, "dashboard report")
+		if err != nil {
+			t.Fatalf("persist command output: %v", err)
+		}
+		if status != "dashboard report written to "+outputPath {
+			t.Fatalf("unexpected status: %q", status)
+		}
+	})
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Fatalf("unexpected output content: %q", string(data))
+	}
+}
+
+func assertTrustedRootLookupError(t *testing.T, label string, lookup func(outputPath string, trustedRoot string) error) {
+	t.Helper()
+
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	writeBlockedFile(t, blocker)
+
+	err := lookup(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(blocker, "repo"))
+	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace symlinks") {
+		t.Fatalf("expected %s, got %v", label, err)
+	}
+}
+
+func createWorkspaceAlias(t *testing.T) (string, string) {
+	t.Helper()
+
+	workspace := t.TempDir()
+	workspaceAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+	return workspace, workspaceAlias
 }
 
 func TestRejectSymlinkedOutputParentRejectsSymlink(t *testing.T) {
