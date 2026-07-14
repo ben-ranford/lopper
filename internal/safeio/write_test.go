@@ -74,6 +74,48 @@ func TestWriteFileUnderPreservesExistingRegularFileMode(t *testing.T) {
 	}
 }
 
+func TestWriteFileUnderRejectsReadOnlyExistingRegularFile(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed target file: %v", err)
+	}
+	if err := os.Chmod(targetPath, 0o400); err != nil {
+		t.Fatalf("chmod target file read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(targetPath, 0o600); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore target file permissions: %v", err)
+		}
+	})
+
+	probe, probeErr := os.OpenFile(targetPath, os.O_WRONLY, 0)
+	if probeErr == nil {
+		if err := probe.Close(); err != nil {
+			t.Fatalf("close writability probe: %v", err)
+		}
+		t.Skip("effective privileges bypass read-only file permissions")
+	}
+	if !os.IsPermission(probeErr) {
+		t.Skipf("read-only file semantics are not testable: %v", probeErr)
+	}
+
+	err := WriteFileUnder(rootDir, targetPath, []byte("after"), 0o600)
+	if err == nil {
+		t.Fatal("expected read-only existing file to be rejected")
+	}
+	if !os.IsPermission(err) {
+		t.Fatalf("expected permission error, got %v", err)
+	}
+	data, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		t.Fatalf("read target file: %v", readErr)
+	}
+	if string(data) != "before" {
+		t.Fatalf("expected read-only target to remain unchanged, got %q", string(data))
+	}
+}
+
 func TestWriteFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	parentDir := t.TempDir()
 	rootDir := filepath.Join(parentDir, "root")

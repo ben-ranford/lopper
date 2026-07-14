@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,42 +30,10 @@ func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...s
 	if err := ensureCommandOutputParent(outputRoot, trimmedOutputPath); err != nil {
 		return "", err
 	}
-	if err := ensureExistingCommandOutputWritable(outputRoot, trimmedOutputPath); err != nil {
-		return "", err
-	}
 	if err := safeio.WriteFileUnder(outputRoot, trimmedOutputPath, []byte(formatted), 0o600); err != nil {
 		return "", err
 	}
 	return label + " written to " + trimmedOutputPath, nil
-}
-
-func ensureExistingCommandOutputWritable(rootDir, outputPath string) (returnErr error) {
-	outputAbs, err := filepath.Abs(outputPath)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(rootDir, outputAbs)
-	if err != nil {
-		return err
-	}
-	root, err := os.OpenRoot(rootDir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, root.Close())
-	}()
-
-	info, err := root.Lstat(rel)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil
-	}
-
-	file, err := root.OpenFile(rel, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	return file.Close()
 }
 
 func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
