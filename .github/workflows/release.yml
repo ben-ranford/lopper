@@ -78,8 +78,8 @@ jobs:
           if [ "${gh_status}" -ne 0 ]; then
             if grep -q "HTTP 404" "${gh_err_file}"; then
               gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
-                | jq -ce --arg tag "$tag" '.[].[] | select(.tag_name == $tag)' \
-                | head -n1 >"${release_json}" || true
+                | jq -c --arg tag "$tag" '.[].[] | select(.tag_name == $tag)' \
+                | head -n1 >"${release_json}"
             else
               cat "${gh_err_file}" >&2
               rm -f "${gh_err_file}" "${release_json}"
