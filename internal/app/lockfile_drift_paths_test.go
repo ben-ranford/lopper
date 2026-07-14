@@ -140,6 +140,25 @@ func TestGitDiffNameOnlyRejectsMalformedCheckAttrOutput(t *testing.T) {
 	}
 }
 
+func TestLockfileDriftFilterAmbiguityErrorNamesAffectedPathsAndDrivers(t *testing.T) {
+	err := newLockfileDriftFilterAmbiguityError([]gitFilterPathDriver{
+		{path: "package.json", driver: "pwn"},
+		{path: "nested/package-lock.json", driver: "drv=with.equals"},
+	})
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	for _, want := range []string{
+		"cannot safely evaluate lockfile drift",
+		"package.json (pwn)",
+		"nested/package-lock.json (drv=with.equals)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected ambiguity error to contain %q, got %v", want, err)
+		}
+	}
+}
+
 func TestGitAttributeCandidatePathsHandlesNilContextAndCommandFailure(t *testing.T) {
 	t.Run("nil context", func(t *testing.T) {
 		repo := configureFakeGitRepo(t, "filterdriver")
@@ -162,6 +181,42 @@ func TestGitAttributeCandidatePathsHandlesNilContextAndCommandFailure(t *testing
 	})
 }
 
+func TestCollectLockfileGitContextSkipsIrrelevantPathsAndFailsClosed(t *testing.T) {
+	t.Run("non git worktree", func(t *testing.T) {
+		gitContext, err := collectLockfileGitContext(context.Background(), t.TempDir(), []lockfileRule{lockfileRules[0]})
+		if err != nil {
+			t.Fatalf("collectLockfileGitContext: %v", err)
+		}
+		if gitContext.hasGitContext || len(gitContext.changedFiles) != 0 {
+			t.Fatalf("expected empty git context, got %#v", gitContext)
+		}
+	})
+
+	t.Run("no relevant candidates", func(t *testing.T) {
+		repo := configureFakeGitRepo(t, "filterdriver")
+		writeFile(t, filepath.Join(repo, "README.md"), "hello\n")
+
+		gitContext, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+		if err != nil {
+			t.Fatalf("collectLockfileGitContext: %v", err)
+		}
+		if !gitContext.hasGitContext || len(gitContext.changedFiles) != 0 {
+			t.Fatalf("expected empty candidate-only git context, got %#v", gitContext)
+		}
+	})
+
+	t.Run("custom filters on relevant candidates fail closed", func(t *testing.T) {
+		repo := configureFakeGitRepo(t, "pathscope-filterdriver")
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+
+		_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+		if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), "package.json (pwn)") {
+			t.Fatalf("expected relevant filter ambiguity error, got %v", err)
+		}
+	})
+}
+
 func TestGitActiveFilterDriversHandlesEmptyPaths(t *testing.T) {
 	drivers, err := gitActiveFilterDrivers(context.Background(), t.TempDir(), nil)
 	if err != nil {
@@ -169,6 +224,47 @@ func TestGitActiveFilterDriversHandlesEmptyPaths(t *testing.T) {
 	}
 	if len(drivers) != 0 {
 		t.Fatalf("expected no drivers for empty path set, got %#v", drivers)
+	}
+}
+
+func TestGitActiveFilterDriversDeduplicatesAssignments(t *testing.T) {
+	repo := configureFakeGitRepo(t, "filterdriverdupe")
+	drivers, err := gitActiveFilterDrivers(context.Background(), repo, []string{"package.json", "package-lock.json"})
+	if err != nil {
+		t.Fatalf("expected duplicate filter drivers to parse, got %v", err)
+	}
+	if len(drivers) != 1 || drivers[0] != "foo.bar" {
+		t.Fatalf("expected duplicate filter drivers to deduplicate, got %#v", drivers)
+	}
+}
+
+func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
+	assignments, err := gitActiveFilterPathDrivers(context.Background(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("expected empty path set to skip git check-attr, got %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("expected no assignments for empty path set, got %#v", assignments)
+	}
+
+	repo := configureFakeGitRepo(t, "checkattrfail")
+	if _, err := gitActiveFilterPathDrivers(context.Background(), repo, []string{"package.json"}); err == nil || !strings.Contains(err.Error(), "check-attr") {
+		t.Fatalf("expected check-attr failure for non-empty path set, got %v", err)
+	}
+
+	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json"}, []byte("package.json\x00filter\x00pwn=drv\x00package-lock.json\x00filter\x00 \x00"))
+	if err != nil {
+		t.Fatalf("expected valid path-driver output to parse, got %v", err)
+	}
+	if len(assignments) != 1 || assignments[0].path != "package.json" || assignments[0].driver != "pwn=drv" {
+		t.Fatalf("unexpected parsed assignments %#v", assignments)
+	}
+
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
+	t.Cleanup(func() { resolveGitBinaryPathFn = original })
+	if _, err := gitActiveFilterPathDrivers(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected command construction failure for non-empty path set, got %v", err)
 	}
 }
 
@@ -311,6 +407,10 @@ if printf '%s' "$args" | grep -q 'rev-parse --verify --quiet HEAD'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
+  if [ "$mode" = "pathscope-filterdriver" ] || [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ] || [ "$mode" = "checkattrwrongorder" ]; then
+    echo "scoped untracked listing should not run before filter validation" >&2
+    exit 1
+  fi
   if [ "$mode" = "lsfail" ]; then
     echo "ls-files failed" >&2
     exit 1
@@ -318,6 +418,10 @@ if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard -z'; then
+  if [ "$mode" = "pathscope-filterdriver" ]; then
+    echo "repo-wide attribute candidate listing should not run" >&2
+    exit 1
+  fi
   if [ "$mode" = "lsfilescachedfail" ]; then
     echo "ls-files cached failed" >&2
     exit 1
@@ -341,6 +445,11 @@ if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard 
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
+  if [ "$mode" = "pathscope-filterdriver" ]; then
+    cat >/dev/null
+    printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000pwn\000'
+    exit 0
+  fi
   if [ "$mode" = "checkattrfail" ]; then
     echo "check-attr failed" >&2
     exit 1
@@ -370,9 +479,18 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
     printf 'package.json\000filter\000foo.bar\000'
     exit 0
   fi
+  if [ "$mode" = "filterdriverdupe" ]; then
+    cat >/dev/null
+    printf 'package.json\000filter\000foo.bar\000package-lock.json\000filter\000foo.bar\000'
+    exit 0
+  fi
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
+  if [ "$mode" = "pathscope-filterdriver" ]; then
+    echo "scoped git diff should not run after filter ambiguity" >&2
+    exit 1
+  fi
   if [ "$mode" = "filterdriver" ]; then
     if printf '%s' "$args" | grep -q -- '--attr-source='; then
       echo "unexpected attr-source flag" >&2

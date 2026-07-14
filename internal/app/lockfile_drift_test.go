@@ -581,7 +581,7 @@ func TestDetectLockfileDriftInvalidRepoPath(t *testing.T) {
 func TestDetectLockfileDriftWithFeaturesPropagatesGitContextError(t *testing.T) {
 	repo := t.TempDir()
 	original := collectLockfileGitContextFn
-	collectLockfileGitContextFn = func(context.Context, string) (lockfileGitContext, error) {
+	collectLockfileGitContextFn = func(context.Context, string, []lockfileRule) (lockfileGitContext, error) {
 		return lockfileGitContext{}, errors.New("forced git context failure")
 	}
 	defer func() { collectLockfileGitContextFn = original }()

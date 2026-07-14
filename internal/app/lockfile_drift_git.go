@@ -24,7 +24,28 @@ type lockfileGitContext struct {
 	hasGitContext bool
 }
 
-func collectLockfileGitContext(ctx context.Context, repoPath string) (lockfileGitContext, error) {
+type gitFilterPathDriver struct {
+	path   string
+	driver string
+}
+
+func collectLockfileGitContext(ctx context.Context, repoPath string, rules []lockfileRule) (lockfileGitContext, error) {
+	if !isGitWorktree(ctx, repoPath) {
+		return lockfileGitContext{}, nil
+	}
+
+	candidatePaths, err := collectLockfileManifestChangeCandidatePaths(ctx, repoPath, rules)
+	if err != nil {
+		return lockfileGitContext{}, err
+	}
+	filteredPaths, err := gitActiveFilterPathDrivers(ctx, repoPath, candidatePaths)
+	if err != nil {
+		return lockfileGitContext{}, err
+	}
+	if len(filteredPaths) > 0 {
+		return lockfileGitContext{}, newLockfileDriftFilterAmbiguityError(filteredPaths)
+	}
+
 	changedFiles, hasGitContext, err := gitChangedFiles(ctx, repoPath)
 	if err != nil {
 		return lockfileGitContext{}, err
@@ -244,6 +265,14 @@ func gitAttributeCandidatePaths(ctx context.Context, repoPath string) ([]string,
 }
 
 func gitActiveFilterDrivers(ctx context.Context, repoPath string, paths []string) ([]string, error) {
+	assignments, err := gitActiveFilterPathDrivers(ctx, repoPath, paths)
+	if err != nil {
+		return nil, err
+	}
+	return uniqueFilterDrivers(assignments), nil
+}
+
+func gitActiveFilterPathDrivers(ctx context.Context, repoPath string, paths []string) ([]gitFilterPathDriver, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
@@ -257,14 +286,43 @@ func gitActiveFilterDrivers(ctx context.Context, repoPath string, paths []string
 	if err != nil {
 		return nil, fmt.Errorf("run git check-attr --stdin -z filter: %w", err)
 	}
-	drivers, err := parseGitCheckAttrFilterDrivers(paths, output)
+	assignments, err := parseGitCheckAttrFilterPathDrivers(paths, output)
 	if err != nil {
 		return nil, fmt.Errorf("parse git check-attr --stdin -z filter output: %w", err)
 	}
-	return drivers, nil
+	return assignments, nil
+}
+
+func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) error {
+	parts := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		parts = append(parts, fmt.Sprintf("%s (%s)", assignment.path, assignment.driver))
+	}
+	return fmt.Errorf("cannot safely evaluate lockfile drift: active custom git filter drivers on %s", strings.Join(parts, ", "))
 }
 
 func parseGitCheckAttrFilterDrivers(paths []string, output []byte) ([]string, error) {
+	assignments, err := parseGitCheckAttrFilterPathDrivers(paths, output)
+	if err != nil {
+		return nil, err
+	}
+	return uniqueFilterDrivers(assignments), nil
+}
+
+func uniqueFilterDrivers(assignments []gitFilterPathDriver) []string {
+	drivers := make([]string, 0, len(assignments))
+	seen := make(map[string]struct{}, len(assignments))
+	for _, assignment := range assignments {
+		if _, ok := seen[assignment.driver]; ok {
+			continue
+		}
+		seen[assignment.driver] = struct{}{}
+		drivers = append(drivers, assignment.driver)
+	}
+	return drivers
+}
+
+func parseGitCheckAttrFilterPathDrivers(paths []string, output []byte) ([]gitFilterPathDriver, error) {
 	if len(output) == 0 || output[len(output)-1] != 0 {
 		return nil, errors.New("truncated output: missing trailing NUL terminator")
 	}
@@ -275,8 +333,7 @@ func parseGitCheckAttrFilterDrivers(paths []string, output []byte) ([]string, er
 		return nil, fmt.Errorf("expected %d NUL-delimited fields for %d paths, got %d", expectedFields, len(paths), len(fields))
 	}
 
-	drivers := make([]string, 0, len(fields)/3)
-	seen := make(map[string]struct{}, len(fields)/3)
+	assignments := make([]gitFilterPathDriver, 0, len(fields)/3)
 	for index, expectedPath := range paths {
 		fieldIndex := index * 3
 		path := fields[fieldIndex]
@@ -293,13 +350,12 @@ func parseGitCheckAttrFilterDrivers(paths []string, output []byte) ([]string, er
 		case "", "set", "unset", "unspecified":
 			continue
 		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		drivers = append(drivers, value)
+		assignments = append(assignments, gitFilterPathDriver{
+			path:   path,
+			driver: value,
+		})
 	}
-	return drivers, nil
+	return assignments, nil
 }
 
 func sanitizedGitEnv() []string {
