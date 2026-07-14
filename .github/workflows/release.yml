@@ -594,7 +594,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.sha }}
-          token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -602,6 +603,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Stamp first stable release history
+        id: stamp_history
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
@@ -615,13 +617,27 @@ jobs:
           git add internal/featureflags/features.json
           if git diff --cached --quiet; then
             echo "No feature release history changes to commit"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push feature release history
+        if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        env:
+          PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PUSH_TOKEN}" ]; then
+            echo "::error::No token is available to push feature release history." >&2
+            exit 1
+          fi
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for feature release history"
-            if ! git fetch origin main:refs/remotes/origin/main; then
+            if ! git -c http.https://github.com/.extraheader="${auth_header}" fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
               sleep 2
               continue
@@ -632,7 +648,7 @@ jobs:
               sleep 2
               continue
             fi
-            if git push origin HEAD:main; then
+            if git -c http.https://github.com/.extraheader="${auth_header}" push origin HEAD:main; then
               exit 0
             fi
             sleep 2
