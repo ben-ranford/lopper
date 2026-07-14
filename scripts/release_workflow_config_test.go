@@ -2124,7 +2124,14 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 		t.Fatalf("%s must make %s depend on the tokenless validation job", tc.workflowPath, tc.updateJobName)
 	}
 
-	validationCheckout := workflowStepByName(t, workflow.Jobs, tc.validationJobName, "Checkout tap repository")
+	assertTokenlessValidationJob(t, workflow.Jobs, tc)
+	assertFreshPrivilegedTapUpdateJob(t, workflow.Jobs, tc)
+}
+
+func assertTokenlessValidationJob(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	validationCheckout := workflowStepByName(t, jobs, tc.validationJobName, "Checkout tap repository")
 	if validationCheckout.Uses != tc.checkoutUses {
 		t.Fatalf("%s validation tap checkout uses %q, want %q", tc.workflowPath, validationCheckout.Uses, tc.checkoutUses)
 	}
@@ -2135,18 +2142,30 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 		t.Fatalf("%s validation tap checkout persist-credentials = %q, want false", tc.workflowPath, validationCheckout.With["persist-credentials"])
 	}
 
-	validationJob, ok := workflow.Jobs[tc.validationJobName]
+	validationJob, ok := jobs[tc.validationJobName]
 	if !ok {
 		t.Fatalf("workflow must define job %s", tc.validationJobName)
 	}
-	for _, step := range validationJob.Steps {
+	assertJobDoesNotReceiveTapToken(t, validationJob, tc)
+	assertValidationRegenerationStep(t, jobs, tc)
+}
+
+func assertJobDoesNotReceiveTapToken(t *testing.T, job workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, step := range job.Steps {
 		for key, value := range step.Env {
 			if strings.Contains(key, "HOMEBREW_TAP_TOKEN") || strings.Contains(value, "HOMEBREW_TAP_TOKEN") {
 				t.Fatalf("%s validation step %q must not receive HOMEBREW_TAP_TOKEN", tc.workflowPath, step.Name)
 			}
 		}
 	}
-	validationRegenerate := workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName)
+}
+
+func assertValidationRegenerationStep(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	validationRegenerate := workflowStepByName(t, jobs, tc.validationJobName, tc.regenerateStepName)
 	for _, want := range []string{
 		tc.sourceURLLine,
 		`cat > ` + tc.formulaPath + ` <<RUBY`,
@@ -2155,8 +2174,12 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 			t.Fatalf("%s validation regenerate step must contain %q", tc.workflowPath, want)
 		}
 	}
+}
 
-	updateJob, ok := workflow.Jobs[tc.updateJobName]
+func assertFreshPrivilegedTapUpdateJob(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	updateJob, ok := jobs[tc.updateJobName]
 	if !ok {
 		t.Fatalf("workflow must define job %s", tc.updateJobName)
 	}
@@ -2166,13 +2189,21 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 		}
 	}
 
-	pushStep := workflowStepByName(t, workflow.Jobs, tc.updateJobName, tc.pushStepName)
+	pushStep := workflowStepByName(t, jobs, tc.updateJobName, tc.pushStepName)
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("%s privileged tap update step HOMEBREW_TAP_TOKEN env = %q", tc.workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
 	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("%s privileged tap update step shell = %q", tc.workflowPath, pushStep.Shell)
 	}
+
+	assertPrivilegedStepContainsRequiredHardening(t, pushStep, tc)
+	assertPrivilegedStepOmitsUnsafePatterns(t, pushStep, tc)
+}
+
+func assertPrivilegedStepContainsRequiredHardening(t *testing.T, pushStep workflowStepConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
 	for _, want := range []string{
 		"git_bin=/usr/bin/git",
 		"curl_bin=/usr/bin/curl",
@@ -2212,6 +2243,11 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 			t.Fatalf("%s privileged tap update step must contain %q", tc.workflowPath, want)
 		}
 	}
+}
+
+func assertPrivilegedStepOmitsUnsafePatterns(t *testing.T, pushStep workflowStepConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
 	for _, forbidden := range []string{
 		"brew audit --strict --online",
 		"brew install --build-from-source",
