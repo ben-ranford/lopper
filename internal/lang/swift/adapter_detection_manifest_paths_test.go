@@ -445,6 +445,7 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	t.Run("symbol shapes require strong usage evidence", testSwiftUsageHeuristicEvidenceShapes)
 	t.Run("symbol collection detects local declarations", testSwiftUsageHeuristicCollectsLocalSymbols)
 	t.Run("candidate attribution excludes known declarations", testSwiftUsageCandidateAttribution)
+	t.Run("unterminated generic candidate scan stays bounded", testSwiftUsageHeuristicUnterminatedGenericScan)
 	t.Run("declaration scopes follow Swift targets", testSwiftDeclarationScopes)
 }
 
@@ -561,6 +562,16 @@ func testSwiftUsageCandidateAttribution(t *testing.T) {
 	}
 	if got := applyUnqualifiedUsageCandidates(imports, map[string]int{}, candidates, nil); got["Alamofire"] != 1 {
 		t.Fatalf("expected unknown candidate to seed usage, got %#v", got)
+	}
+}
+
+func testSwiftUsageHeuristicUnterminatedGenericScan(t *testing.T) {
+	t.Helper()
+
+	imports := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
+	content := []byte("import Alamofire\nlet value = A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<A<\n")
+	if candidates := collectPotentialUnqualifiedSymbols(content, imports); len(candidates) != 0 {
+		t.Fatalf("expected unterminated generic chain to lack usage candidates, got %#v", candidates)
 	}
 }
 
