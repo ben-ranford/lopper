@@ -803,6 +803,9 @@ func TestDashboardCheckoutHelpers(t *testing.T) {
 	if !pathWithinDir(root, root) {
 		t.Fatalf("expected cache root to be within itself")
 	}
+	if pathWithinDir("relative", filepath.Join(root, "child")) {
+		t.Fatalf("expected mixed relative and absolute paths to be rejected")
+	}
 	if _, err := dashboardCheckoutPath("relative", spec, dashboard.RepoRevision{}); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("expected relative checkout root error, got %v", err)
 	}

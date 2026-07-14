@@ -170,3 +170,42 @@ func TestPersistDashboardOutputRejectsSymlinkedParent(t *testing.T) {
 		t.Fatalf("expected outside report to remain absent, got err=%v", statErr)
 	}
 }
+
+func TestPersistDashboardOutputAllowsAbsolutePathUnderSystemSymlinkPrefix(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "reports", "org-report.json")
+
+	if _, err := persistDashboardOutput(`{"report":true}`, outputPath); err != nil {
+		t.Fatalf("persist dashboard output: %v", err)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read dashboard output: %v", err)
+	}
+	if string(data) != `{"report":true}` {
+		t.Fatalf("expected dashboard report content, got %q", string(data))
+	}
+	root, err := commandOutputRoot(outputPath)
+	if err != nil {
+		t.Fatalf("resolve command output root: %v", err)
+	}
+	if root == string(os.PathSeparator) {
+		t.Fatalf("expected absolute output root to stop at existing parent directory, got %q", root)
+	}
+}
+
+func TestPersistDashboardOutputRejectsAbsoluteSymlinkedParent(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	outputPath := filepath.Join(workspace, "reports", "org-report.json")
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create parent symlink: %v", err)
+	}
+
+	_, err := persistDashboardOutput(`{"report":true}`, outputPath)
+	if err == nil {
+		t.Fatal("expected absolute symlinked parent to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "org-report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside report to remain absent, got err=%v", statErr)
+	}
+}

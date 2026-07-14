@@ -34,14 +34,43 @@ func persistCommandOutput(formatted, outputPath, label string) (string, error) {
 
 func commandOutputRoot(outputPath string) (string, error) {
 	if filepath.IsAbs(outputPath) {
-		volume := filepath.VolumeName(outputPath)
-		return volume + string(os.PathSeparator), nil
+		return absoluteCommandOutputRoot(outputPath)
 	}
 	workspaceRoot, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("resolve output workspace: %w", err)
 	}
 	return workspaceRoot, nil
+}
+
+func absoluteCommandOutputRoot(outputPath string) (string, error) {
+	outputAbs, err := filepath.Abs(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve output path: %w", err)
+	}
+
+	current := filepath.Dir(outputAbs)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("output root contains symlink: %s", current)
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("output root is not a directory: %s", current)
+			}
+			return current, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve output root for %s: no existing parent directory", outputPath)
+		}
+		current = parent
+	}
 }
 
 func ensureCommandOutputParent(rootDir, outputPath string) error {

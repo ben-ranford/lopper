@@ -172,6 +172,22 @@ func TestExecuteFeaturesDefaultReleaseAndStdoutOutputPath(t *testing.T) {
 	}
 }
 
+func TestExecuteFeaturesDefaultsBlankChannel(t *testing.T) {
+	application := &App{Features: mustFeatureRegistry(t)}
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.Channel = "   "
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute features with blank channel: %v", err)
+	}
+	if !strings.Contains(output, `"code": "LOP-FEAT-0002"`) {
+		t.Fatalf("expected feature manifest output, got %q", output)
+	}
+}
+
 func TestExecuteFeaturesTableAndInvalidFormat(t *testing.T) {
 	application := &App{Features: mustFeatureRegistry(t)}
 	req := DefaultRequest()

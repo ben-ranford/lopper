@@ -403,3 +403,63 @@ func TestExecuteAnalyseBootstrapBaselineStoreOnFirstSave(t *testing.T) {
 		t.Fatalf("expected initial baseline snapshot to be written: %v", err)
 	}
 }
+
+func TestCompleteAnalyseExecutionPrefersRunErrorOverFeatureValidationError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	runErr := errors.New("post-stage failed")
+	req := AnalyseRequest{Format: report.FormatCycloneDX}
+
+	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, runErr)
+	if !errors.Is(err, runErr) {
+		t.Fatalf("expected run error to win, got %v", err)
+	}
+}
+
+func TestCompleteAnalyseExecutionReturnsFeatureValidationErrorWithoutRunError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	req := AnalyseRequest{Format: report.FormatCycloneDX}
+
+	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires --enable-feature") {
+		t.Fatalf("expected feature validation error, got %v", err)
+	}
+}
+
+func TestCompleteAnalyseExecutionPrefersRunErrorOverFormatError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	runErr := errors.New("post-stage failed")
+	req := AnalyseRequest{Format: report.Format("weird")}
+
+	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, runErr)
+	if !errors.Is(err, runErr) {
+		t.Fatalf("expected run error to win, got %v", err)
+	}
+}
+
+func TestCompleteAnalyseExecutionReturnsFormatErrorWithoutRunError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	req := AnalyseRequest{Format: report.Format("weird")}
+
+	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, nil)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown format") {
+		t.Fatalf("expected format error, got %v", err)
+	}
+}
+
+func TestCompleteAnalyseExecutionReturnsPersistError(t *testing.T) {
+	application := &App{Formatter: report.NewFormatter()}
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create reports symlink: %v", err)
+	}
+	req := AnalyseRequest{
+		Format:     report.FormatJSON,
+		OutputPath: filepath.Join(workspace, "reports", "analyse.json"),
+	}
+
+	_, err := application.completeAnalyseExecution(context.Background(), req, report.Report{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected persist error, got %v", err)
+	}
+}
