@@ -409,12 +409,13 @@ func TestParseNULTerminatedGitFields(t *testing.T) {
 	}
 }
 
-func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
+func TestParseGitCheckAttrFilterPathDriversAndDeduplicates(t *testing.T) {
 	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
-	got, err := parseGitCheckAttrFilterDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
+	assignments, err := parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
 	if err != nil {
 		t.Fatalf("expected valid check-attr output to parse, got %v", err)
 	}
+	got := uniqueFilterDrivers(assignments)
 	want := []string{"foo.bar", "foo/bar"}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d filter drivers, got %#v", len(want), got)
@@ -425,24 +426,26 @@ func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
 		}
 	}
 
-	got, err = parseGitCheckAttrFilterDrivers([]string{"package.json", "package-lock.json", "nested/package.json"}, []byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00"))
+	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json"}, []byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00"))
 	if err != nil {
 		t.Fatalf("expected ignorable filter values to parse, got %v", err)
 	}
+	got = uniqueFilterDrivers(assignments)
 	if len(got) != 0 {
 		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", got)
 	}
 
-	got, err = parseGitCheckAttrFilterDrivers([]string{"a.json", "package.json"}, []byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00"))
+	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"a.json", "package.json"}, []byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00"))
 	if err != nil {
 		t.Fatalf("expected empty filter value to preserve later triplets, got %v", err)
 	}
+	got = uniqueFilterDrivers(assignments)
 	if len(got) != 1 || got[0] != "pwn=drv" {
 		t.Fatalf("expected empty filter value to preserve later triplets, got %#v", got)
 	}
 }
 
-func TestParseGitCheckAttrFilterDriversRejectsMalformedOutput(t *testing.T) {
+func TestParseGitCheckAttrFilterPathDriversRejectsMalformedOutput(t *testing.T) {
 	cases := []struct {
 		name       string
 		paths      []string
@@ -483,7 +486,7 @@ func TestParseGitCheckAttrFilterDriversRejectsMalformedOutput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseGitCheckAttrFilterDrivers(tc.paths, tc.output)
+			_, err := parseGitCheckAttrFilterPathDrivers(tc.paths, tc.output)
 			if err == nil || !strings.Contains(err.Error(), tc.errContain) {
 				t.Fatalf("expected error containing %q, got %v", tc.errContain, err)
 			}

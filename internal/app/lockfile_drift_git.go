@@ -398,14 +398,6 @@ func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) err
 	return fmt.Errorf("cannot safely evaluate lockfile drift: active custom git filter drivers on %s", strings.Join(parts, ", "))
 }
 
-func parseGitCheckAttrFilterDrivers(paths []string, output []byte) ([]string, error) {
-	assignments, err := parseGitCheckAttrFilterPathDrivers(paths, output)
-	if err != nil {
-		return nil, err
-	}
-	return uniqueFilterDrivers(assignments), nil
-}
-
 func uniqueFilterDrivers(assignments []gitFilterPathDriver) []string {
 	drivers := make([]string, 0, len(assignments))
 	seen := make(map[string]struct{}, len(assignments))
