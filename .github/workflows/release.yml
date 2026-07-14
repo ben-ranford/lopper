@@ -602,7 +602,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Stamp first stable release history
+      - name: Stamp feature release history
         id: stamp_history
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
@@ -634,7 +634,7 @@ jobs:
             echo "::error::No token is available to push feature release history." >&2
             exit 1
           fi
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
+          auth_header="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for feature release history"
             if ! git -c http.https://github.com/.extraheader="${auth_header}" fetch origin main:refs/remotes/origin/main; then

@@ -234,6 +234,24 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowFeatureHistoryStepLabelsAndAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if !strings.Contains(workflowText, "Stamp feature release history") {
+		t.Fatal("release workflow must use the feature release history step label")
+	}
+	if strings.Contains(workflowText, "Stamp first stable release history") {
+		t.Fatal("release workflow must not use the stale stable-history label in the feature history job")
+	}
+	if !strings.Contains(workflowText, `auth_header="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"`) {
+		t.Fatal("feature history push must use the standard Basic auth scheme when constructing the extraheader")
+	}
+	if strings.Contains(workflowText, "AUTHORIZATION: basic") {
+		t.Fatal("feature history push must not use a lowercase basic auth scheme")
+	}
+}
+
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 	t.Parallel()
 
