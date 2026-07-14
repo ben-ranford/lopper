@@ -17,6 +17,10 @@ var execGitCommandContextFn = gitexec.CommandContext
 
 const (
 	gitRevParseSubcommand = "rev-parse"
+	gitLsFilesSubcommand  = "ls-files"
+	gitOthersFlag         = "--others"
+	gitExcludeStandardArg = "--exclude-standard"
+	gitCachedFlag         = "--cached"
 )
 
 type lockfileGitContext struct {
@@ -133,7 +137,7 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 		return gitDiffNameOnly(ctx, repoPath, "HEAD")
 	}
 	// Unborn HEAD: derive tracked changes from staged + working tree diffs.
-	staged, err := gitDiffNameOnly(ctx, repoPath, "--cached")
+	staged, err := gitDiffNameOnly(ctx, repoPath, gitCachedFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +160,7 @@ func gitTrackedChangesForPaths(ctx context.Context, repoPath string, paths []str
 		return gitDiffNameOnlyForPaths(ctx, repoPath, paths, "HEAD")
 	}
 	// Unborn HEAD: derive tracked changes from staged + working tree diffs.
-	staged, err := gitDiffNameOnlyForPaths(ctx, repoPath, paths, "--cached")
+	staged, err := gitDiffNameOnlyForPaths(ctx, repoPath, paths, gitCachedFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -230,13 +234,13 @@ func mergeGitPaths(groups ...[]string) []string {
 }
 
 func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
-	command, err := gitCommandContext(ctx, repoPath, "ls-files", "--others", "--exclude-standard")
+	command, err := gitCommandContext(ctx, repoPath, gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg)
 	if err != nil {
 		return nil, err
 	}
 	output, err := command.Output()
 	if err != nil {
-		return nil, fmt.Errorf("run git ls-files --others --exclude-standard: %w", err)
+		return nil, fmt.Errorf("run git %s %s %s: %w", gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, err)
 	}
 	return parseGitOutputLines(output), nil
 }
@@ -245,7 +249,7 @@ func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []str
 	if len(paths) == 0 {
 		return nil, nil
 	}
-	args := []string{"ls-files", "--others", "--exclude-standard", "-z"}
+	args := []string{gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, "-z"}
 	args = append(args, "--")
 	args = append(args, paths...)
 	command, err := gitCommandContext(ctx, repoPath, args...)
