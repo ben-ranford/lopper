@@ -121,57 +121,34 @@ func nextRustIdentifierToken(content string, searchStart int) (string, int, bool
 }
 
 func mergeASCIIWordTokenHits(content string, wanted map[string]struct{}, hits map[string]int) {
-	for token := range wanted {
-		if !isASCIIWordToken(token) {
-			continue
-		}
-		if count := countASCIIWordTokens(content, token); count > hits[token] {
+	asciiHits := countASCIIWordTokenHits(content, wanted)
+	for token, count := range asciiHits {
+		if count > hits[token] {
 			hits[token] = count
 		}
 	}
 }
 
-func isASCIIWordToken(token string) bool {
-	if token == "" {
-		return false
+func countASCIIWordTokenHits(content string, wanted map[string]struct{}) map[string]int {
+	hits := make(map[string]int, len(wanted))
+	if len(wanted) == 0 {
+		return hits
 	}
-	for index := 0; index < len(token); index++ {
-		if token[index] >= utf8.RuneSelf {
-			return false
-		}
-	}
-	return true
-}
-
-func countASCIIWordTokens(content, token string) int {
-	if token == "" {
-		return 0
-	}
-	count := 0
-	for searchStart := 0; searchStart < len(content); {
-		relative := strings.Index(content[searchStart:], token)
-		if relative < 0 {
-			return count
-		}
-		offset := searchStart + relative
-		if asciiWordTokenAt(content, token, offset) {
-			count++
-			searchStart = offset + len(token)
+	for offset := 0; offset < len(content); {
+		if !isASCIIUsageWordByte(content[offset]) {
+			offset++
 			continue
 		}
-		searchStart = offset + 1
+		start := offset
+		for offset < len(content) && isASCIIUsageWordByte(content[offset]) {
+			offset++
+		}
+		token := content[start:offset]
+		if _, ok := wanted[token]; ok {
+			hits[token]++
+		}
 	}
-	return count
-}
-
-func asciiWordTokenAt(content, token string, offset int) bool {
-	end := offset + len(token)
-	if token == "" || offset < 0 || end > len(content) || content[offset:end] != token {
-		return false
-	}
-	leftBoundary := offset == 0 || !isASCIIUsageWordByte(content[offset-1])
-	rightBoundary := end == len(content) || !isASCIIUsageWordByte(content[end])
-	return leftBoundary && rightBoundary
+	return hits
 }
 
 func isASCIIUsageWordByte(b byte) bool {

@@ -320,6 +320,19 @@ func TestCollectUseEntryLocalTokens(t *testing.T) {
 	}
 }
 
+func TestCountASCIIWordTokenHits(t *testing.T) {
+	got := countASCIIWordTokenHits("serde::{de::Visitor as de, fmt::Debug as Debug, MissingX}", map[string]struct{}{"de": {}, "Debug": {}, "Missing": {}, "føø": {}})
+	if len(got) != 2 || got["de"] != 2 || got["Debug"] != 2 {
+		t.Fatalf("unexpected ASCII word token hits: %#v", got)
+	}
+	if got["Missing"] != 0 {
+		t.Fatalf("expected Missing token to remain absent, got %#v", got)
+	}
+	if got["føø"] != 0 {
+		t.Fatalf("expected non-ASCII token to remain absent, got %#v", got)
+	}
+}
+
 func TestMultilineUseAliasSupportsUnicodeLocalNames(t *testing.T) {
 	const content = "use serde::de::Deserialize as føø;\nfn decode(_: føø) {}\n"
 	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
