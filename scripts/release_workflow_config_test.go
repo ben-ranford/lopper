@@ -275,18 +275,12 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	if stampStep.ID != "stamp_history" {
 		t.Fatalf("stamp history step id = %q, want stamp_history", stampStep.ID)
 	}
-	if _, ok := stampStep.Env["PUSH_TOKEN"]; ok {
-		t.Fatal("stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
-	}
-	for _, want := range []string{
+	assertWorkflowStepEnvMissing(t, stampStep, "PUSH_TOKEN", "stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
+	assertWorkflowStepRunContainsAll(t, stampStep, "stamp history step", []string{
 		`go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`,
 		`go run ./tools/featureflag validate`,
 		`echo "changed=true" >> "$GITHUB_OUTPUT"`,
-	} {
-		if !strings.Contains(stampStep.Run, want) {
-			t.Fatalf("stamp history step must contain %q", want)
-		}
-	}
+	})
 	if strings.Contains(stampStep.Run, "git push") {
 		t.Fatal("stamp history step must not push while running repository-controlled tools")
 	}
@@ -301,9 +295,7 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	if !strings.Contains(commitStep.Run, `git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`) {
 		t.Fatal("commit stamped history step must create the release history commit without a push token")
 	}
-	if _, ok := commitStep.Env["PUSH_TOKEN"]; ok {
-		t.Fatal("commit stamped history step must not expose PUSH_TOKEN")
-	}
+	assertWorkflowStepEnvMissing(t, commitStep, "PUSH_TOKEN", "commit stamped history step must not expose PUSH_TOKEN")
 
 	pushStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Push stamped feature release history")
 	if pushStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
@@ -312,16 +304,12 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	if pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("push stamped history step PUSH_TOKEN env = %q", pushStep.Env["PUSH_TOKEN"])
 	}
-	for _, want := range []string{
+	assertWorkflowStepRunContainsAll(t, pushStep, "push stamped history step", []string{
 		`push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"`,
 		`git fetch origin main:refs/remotes/origin/main`,
 		`git rebase origin/main`,
 		`git push "${push_url}" HEAD:main`,
-	} {
-		if !strings.Contains(pushStep.Run, want) {
-			t.Fatalf("push stamped history step must contain %q", want)
-		}
-	}
+	})
 	if strings.Contains(pushStep.Run, "git remote set-url origin") {
 		t.Fatal("push stamped history step must not persist push credentials in .git/config")
 	}
@@ -704,6 +692,24 @@ func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName
 	}
 	t.Fatalf("%s must define step %q", jobName, stepName)
 	return workflowStepConfig{}
+}
+
+func assertWorkflowStepRunContainsAll(t *testing.T, step workflowStepConfig, stepLabel string, wants []string) {
+	t.Helper()
+
+	for _, want := range wants {
+		if !strings.Contains(step.Run, want) {
+			t.Fatalf("%s must contain %q", stepLabel, want)
+		}
+	}
+}
+
+func assertWorkflowStepEnvMissing(t *testing.T, step workflowStepConfig, key string, message string) {
+	t.Helper()
+
+	if _, ok := step.Env[key]; ok {
+		t.Fatal(message)
+	}
 }
 
 func readJSONConfig(t *testing.T, path string, target any) {
