@@ -144,7 +144,7 @@ func countASCIIWordTokenHits(content string, wanted map[string]struct{}) map[str
 			offset++
 		}
 		token := content[start:offset]
-		if _, ok := wanted[token]; ok {
+		if _, ok := wanted[token]; ok && rustIdentifierTokenAt(content, token, start) {
 			hits[token]++
 		}
 	}

@@ -333,6 +333,13 @@ func TestCountASCIIWordTokenHits(t *testing.T) {
 	}
 }
 
+func TestCountASCIIWordTokenHitsHonorsRustIdentifierBoundaries(t *testing.T) {
+	got := countASCIIWordTokenHits("serde::{deø as de, foo as føø}", map[string]struct{}{"de": {}, "foo": {}})
+	if len(got) != 2 || got["de"] != 1 || got["foo"] != 1 {
+		t.Fatalf("unexpected Unicode-boundary ASCII token hits: %#v", got)
+	}
+}
+
 func TestMultilineUseAliasSupportsUnicodeLocalNames(t *testing.T) {
 	const content = "use serde::de::Deserialize as føø;\nfn decode(_: føø) {}\n"
 	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
@@ -441,11 +448,41 @@ func TestRustDeclarationCountsASCIIAliasAgainstUnicodePathSegment(t *testing.T) 
 	if imported.Local != "de" {
 		t.Fatalf("local alias = %q, want %q", imported.Local, "de")
 	}
-	if imported.DeclarationTokenHits != 2 {
-		t.Fatalf("declaration token hits = %d, want 2", imported.DeclarationTokenHits)
+	if imported.DeclarationTokenHits != 1 {
+		t.Fatalf("declaration token hits = %d, want 1", imported.DeclarationTokenHits)
 	}
 	if got := shared.CountUsage([]byte(content), imports)["de"]; got != 0 {
 		t.Fatalf("usage[de] = %d, want 0", got)
+	}
+}
+
+func TestRustUnicodeUsageScanKeepsASCIIAliasReference(t *testing.T) {
+	const content = "use serde::{deø as de, foo as føø};\nfn f(_: de) {}\n"
+	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
+	if len(imports) != 2 {
+		t.Fatalf("expected two imports, got %#v", imports)
+	}
+
+	usage := shared.CountUsage([]byte(content), imports)
+	for _, imported := range imports {
+		switch imported.Local {
+		case "de":
+			if imported.DeclarationTokenHits != 1 {
+				t.Fatalf("de declaration token hits = %d, want 1", imported.DeclarationTokenHits)
+			}
+			if usage["de"] != 1 {
+				t.Fatalf("usage[de] = %d, want 1", usage["de"])
+			}
+		case "føø":
+			if imported.DeclarationTokenHits != 1 {
+				t.Fatalf("føø declaration token hits = %d, want 1", imported.DeclarationTokenHits)
+			}
+			if usage["føø"] != 0 {
+				t.Fatalf("usage[føø] = %d, want 0", usage["føø"])
+			}
+		default:
+			t.Fatalf("unexpected import local %q", imported.Local)
+		}
 	}
 }
 
