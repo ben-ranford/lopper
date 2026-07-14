@@ -535,7 +535,7 @@ func TestBuildRustExternCrateStatementRequiresSemicolon(t *testing.T) {
 	}
 }
 
-func TestRustByteScannerEdgeHelpers(t *testing.T) {
+func TestRustByteScannerByteEdges(t *testing.T) {
 	if got := firstContentByteIndex([]byte(" \t")); got != 2 {
 		t.Fatalf("expected blank line content index to equal length, got %d", got)
 	}
@@ -556,6 +556,9 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 			t.Fatalf("did not expect invalid identifier to parse: %q", raw)
 		}
 	}
+}
+
+func TestRustByteScannerUnicodeConsumption(t *testing.T) {
 	for _, tc := range []struct {
 		raw      []byte
 		want     string
@@ -563,8 +566,10 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	}{
 		{raw: []byte("_hidden"), want: "_hidden", wantNext: len("_hidden")},
 		{raw: []byte("Ⅰvalue tail"), want: "Ⅰvalue", wantNext: len("Ⅰvalue")},
+		{raw: []byte("ᢅvalue tail"), want: "ᢅvalue", wantNext: len("ᢅvalue")},
 		{raw: []byte("føø extra"), want: "føø", wantNext: len("føø")},
 		{raw: []byte("e\u0301 extra"), want: "e\u0301", wantNext: len("e\u0301")},
+		{raw: []byte("x·y tail"), want: "x·y", wantNext: len("x·y")},
 		{raw: []byte("føø-bar"), want: "føø", wantNext: len("føø")},
 		{raw: []byte("føø123"), want: "føø123", wantNext: len("føø123")},
 		{raw: []byte("føø\xfftail"), want: "føø", wantNext: len("føø")},
@@ -573,7 +578,9 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 			t.Fatalf("unexpected unicode identifier parse for %q: ident=%q next=%d ok=%v", tc.raw, ident, next, ok)
 		}
 	}
+}
 
+func TestRustByteScannerParseUseHelpers(t *testing.T) {
 	content := pubCrateSerdeStmt
 	clauseStart := strings.Index(content, "serde")
 	clauseEnd := strings.Index(content, ";")
@@ -746,7 +753,7 @@ func TestBuildRequestedRustDependenciesNoTargetAndLineColumn(t *testing.T) {
 	}
 }
 
-func TestRefactorHelperBranches(t *testing.T) {
+func TestWorkspaceMemberParsingHelpers(t *testing.T) {
 	meta := manifestMeta{}
 	if parseWorkspaceMembersLine(`members = ["a"]`, "package", false, &meta) {
 		t.Fatalf("expected false outside workspace section")
@@ -772,7 +779,9 @@ func TestRefactorHelperBranches(t *testing.T) {
 	if matched, err := workspaceMemberPatternMatches("crates/*", ""); err != nil || matched {
 		t.Fatalf("expected empty workspace candidate to miss, got matched=%v err=%v", matched, err)
 	}
+}
 
+func TestDependencyLineGuardHelpers(t *testing.T) {
 	deps := map[string]dependencyInfo{}
 	addDependencyFromLine(deps, "package", `serde = "1.0"`)
 	if len(deps) != 0 {
@@ -781,14 +790,18 @@ func TestRefactorHelperBranches(t *testing.T) {
 	if _, _, ok := parseDependencyInfo(`"" = "1.0"`); ok {
 		t.Fatalf("expected invalid empty alias from quoted key")
 	}
+}
 
+func TestParseUseStatementIndexBounds(t *testing.T) {
 	if _, _, _, ok := parseUseStatementIndex("abc", []int{0, 1, 0}); ok {
 		t.Fatalf("expected parseUseStatementIndex false for short index")
 	}
 	if _, _, _, ok := parseUseStatementIndex("abc", []int{0, 1, 0, 99}); ok {
 		t.Fatalf("expected parseUseStatementIndex false for invalid bounds")
 	}
+}
 
+func TestScanRepoFileEntryBehavior(t *testing.T) {
 	repo := t.TempDir()
 	root := filepath.Join(repo, "crate")
 	writeFile(t, filepath.Join(root, "src", rustLibFile), rustRunFn)
