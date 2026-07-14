@@ -393,14 +393,77 @@ func TestDetectLockfileDriftDoesNotExecuteLocalGitHelpers(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
 	}
-	cases := []struct {
+	helperPathInRepo := func(repo string) string { return filepath.Join(repo, "helper.sh") }
+	cleanFilterScript := func(markerPath string) string {
+		return "#!/bin/sh\necho clean-filter-ran >> \"" + markerPath + "\"\ncat\n"
+	}
+	processFilterScript := func(markerPath string) string {
+		return "#!/bin/sh\necho process-filter-ran >> \"" + markerPath + "\"\nprintf 'git-filter-client\\n'\n"
+	}
+	configureCleanFilter := func(t *testing.T, repo, driver string) {
+		t.Helper()
+		runGit(t, repo, "config", "filter."+driver+".clean", "./helper.sh")
+		runGit(t, repo, "config", "filter."+driver+".required", "true")
+	}
+	configureProcessFilter := func(t *testing.T, repo, driver string) {
+		t.Helper()
+		runGit(t, repo, "config", "filter."+driver+".process", "./helper.sh")
+		runGit(t, repo, "config", "filter."+driver+".required", "true")
+	}
+	type helperCase struct {
 		name          string
 		markerName    string
 		helperPath    func(string) string
 		helperScript  func(string) string
 		beforeInit    func(*testing.T, string)
 		configureRepo func(*testing.T, string, string)
-	}{
+	}
+	filterCase := func(name, markerName, driver string, helperScript func(string) string, beforeInit, repoSetup func(*testing.T, string), configureFilter func(*testing.T, string, string)) helperCase {
+		return helperCase{
+			name:         name,
+			markerName:   markerName,
+			helperPath:   helperPathInRepo,
+			helperScript: helperScript,
+			beforeInit:   beforeInit,
+			configureRepo: func(t *testing.T, repo, helperPath string) {
+				t.Helper()
+				if repoSetup != nil {
+					repoSetup(t, repo)
+				}
+				configureFilter(t, repo, driver)
+			},
+		}
+	}
+	cleanFilterBeforeInit := func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn\n")
+	}
+	cleanFilterWithEqualsBeforeInit := func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn=drv\n")
+	}
+	cleanFilterAfterEmptyAttributeBeforeInit := func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, "a.json"), "{}\n")
+		writeFile(t, filepath.Join(repo, ".gitattributes"), "a.json filter=\n"+manifestFileName+" filter=pwn\n")
+	}
+	processFilterInfoAttributesSetup := func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter=pwn\n")
+	}
+	cleanFilterAttributesFileSetup := func(t *testing.T, repo string) {
+		t.Helper()
+		attributesPath := filepath.Join(t.TempDir(), "global.attributes")
+		writeFile(t, attributesPath, manifestFileName+" filter=pwn\n")
+		runGit(t, repo, "config", "core.attributesFile", attributesPath)
+	}
+	cleanFilterCase := filterCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit, nil, configureCleanFilter)
+	cleanFilterWithEqualsDriverCase := filterCase("clean filter with equals driver", "clean-filter-equals-driver.marker", "pwn=drv", cleanFilterScript, cleanFilterWithEqualsBeforeInit, nil, configureCleanFilter)
+	cleanFilterAfterEmptyAttributeCase := filterCase("clean filter after empty attribute value", "clean-filter-after-empty-attr.marker", "pwn", cleanFilterScript, cleanFilterAfterEmptyAttributeBeforeInit, nil, configureCleanFilter)
+	processFilterFromInfoAttributesCase := filterCase("process filter from info attributes", "process-filter-info.marker", "pwn", processFilterScript, nil, processFilterInfoAttributesSetup, configureProcessFilter)
+	cleanFilterFromAttributesFileCase := filterCase("clean filter from core.attributesFile", "clean-filter-attributes-file.marker", "pwn", cleanFilterScript, nil, cleanFilterAttributesFileSetup, configureCleanFilter)
+
+	cases := []helperCase{
 		{
 			name:       "fsmonitor",
 			markerName: "fsmonitor.marker",
@@ -413,53 +476,11 @@ func TestDetectLockfileDriftDoesNotExecuteLocalGitHelpers(t *testing.T) {
 				runGit(t, repo, "config", "core.fsmonitor", helperPath)
 			},
 		},
-		{
-			name:       "clean filter",
-			markerName: "clean-filter.marker",
-			helperPath: func(repo string) string { return filepath.Join(repo, "helper.sh") },
-			helperScript: func(markerPath string) string {
-				return "#!/bin/sh\necho clean-filter-ran >> \"" + markerPath + "\"\ncat\n"
-			},
-			beforeInit: func(t *testing.T, repo string) {
-				t.Helper()
-				writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn\n")
-			},
-			configureRepo: func(t *testing.T, repo, helperPath string) {
-				t.Helper()
-				runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
-				runGit(t, repo, "config", "filter.pwn.required", "true")
-			},
-		},
-		{
-			name:       "process filter from info attributes",
-			markerName: "process-filter-info.marker",
-			helperPath: func(repo string) string { return filepath.Join(repo, "helper.sh") },
-			helperScript: func(markerPath string) string {
-				return "#!/bin/sh\necho process-filter-ran >> \"" + markerPath + "\"\nprintf 'git-filter-client\\n'\n"
-			},
-			configureRepo: func(t *testing.T, repo, helperPath string) {
-				t.Helper()
-				writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter=pwn\n")
-				runGit(t, repo, "config", "filter.pwn.process", "./helper.sh")
-				runGit(t, repo, "config", "filter.pwn.required", "true")
-			},
-		},
-		{
-			name:       "clean filter from core.attributesFile",
-			markerName: "clean-filter-attributes-file.marker",
-			helperPath: func(repo string) string { return filepath.Join(repo, "helper.sh") },
-			helperScript: func(markerPath string) string {
-				return "#!/bin/sh\necho clean-filter-ran >> \"" + markerPath + "\"\ncat\n"
-			},
-			configureRepo: func(t *testing.T, repo, helperPath string) {
-				t.Helper()
-				attributesPath := filepath.Join(t.TempDir(), "global.attributes")
-				writeFile(t, attributesPath, manifestFileName+" filter=pwn\n")
-				runGit(t, repo, "config", "core.attributesFile", attributesPath)
-				runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
-				runGit(t, repo, "config", "filter.pwn.required", "true")
-			},
-		},
+		cleanFilterCase,
+		cleanFilterWithEqualsDriverCase,
+		cleanFilterAfterEmptyAttributeCase,
+		processFilterFromInfoAttributesCase,
+		cleanFilterFromAttributesFileCase,
 	}
 
 	for _, tc := range cases {

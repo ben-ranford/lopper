@@ -108,17 +108,18 @@ func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 }
 
 func gitDiffNameOnly(ctx context.Context, repoPath string, diffArgs ...string) ([]string, error) {
-	filterArgs, err := gitFilterDriverConfigArgs(ctx, repoPath)
+	filterDrivers, err := gitDiffFilterDrivers(ctx, repoPath)
 	if err != nil {
 		return nil, err
 	}
-	args := append(append([]string{}, filterArgs...), "diff", "--no-ext-diff", "--no-textconv")
+	args := []string{"diff", "--no-ext-diff", "--no-textconv"}
 	args = append(args, diffArgs...)
 	args = append(args, "--name-only", "--")
 	command, err := gitCommandContext(ctx, repoPath, args...)
 	if err != nil {
 		return nil, err
 	}
+	command.Env = gitexec.SanitizedEnvWithFilterDrivers(filterDrivers)
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
@@ -183,6 +184,22 @@ func parseGitOutputLines(output []byte) []string {
 }
 
 func parseNULTerminatedGitOutput(output []byte) []string {
+	fields := parseNULTerminatedGitFields(output)
+	if len(fields) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		lines = append(lines, field)
+	}
+	return lines
+}
+
+func parseNULTerminatedGitFields(output []byte) []string {
 	if len(output) == 0 {
 		return nil
 	}
@@ -194,15 +211,12 @@ func parseNULTerminatedGitOutput(output []byte) []string {
 
 	lines := make([]string, 0, len(fields))
 	for _, field := range fields {
-		if len(field) == 0 {
-			continue
-		}
 		lines = append(lines, string(field))
 	}
 	return lines
 }
 
-func gitFilterDriverConfigArgs(ctx context.Context, repoPath string) ([]string, error) {
+func gitDiffFilterDrivers(ctx context.Context, repoPath string) ([]string, error) {
 	paths, err := gitAttributeCandidatePaths(ctx, repoPath)
 	if err != nil {
 		return nil, err
@@ -211,7 +225,7 @@ func gitFilterDriverConfigArgs(ctx context.Context, repoPath string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	return gitexec.FilterDriverConfigArgs(drivers), nil
+	return drivers, nil
 }
 
 func gitAttributeCandidatePaths(ctx context.Context, repoPath string) ([]string, error) {
@@ -247,7 +261,7 @@ func gitActiveFilterDrivers(ctx context.Context, repoPath string, paths []string
 }
 
 func parseGitCheckAttrFilterDrivers(output []byte) []string {
-	fields := parseNULTerminatedGitOutput(output)
+	fields := parseNULTerminatedGitFields(output)
 	if len(fields) < 3 {
 		return nil
 	}

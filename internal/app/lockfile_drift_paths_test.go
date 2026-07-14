@@ -150,6 +150,19 @@ func TestParseNULTerminatedGitOutput(t *testing.T) {
 	}
 }
 
+func TestParseNULTerminatedGitFields(t *testing.T) {
+	got := parseNULTerminatedGitFields([]byte("a\x00\x00b\x00"))
+	want := []string{"a", "", "b"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d nul-delimited fields, got %#v", len(want), got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("expected field %q at index %d, got %#v", want[index], index, got)
+		}
+	}
+}
+
 func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
 	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
 	got := parseGitCheckAttrFilterDrivers(output)
@@ -165,6 +178,9 @@ func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
 
 	if got := parseGitCheckAttrFilterDrivers([]byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00")); len(got) != 0 {
 		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", got)
+	}
+	if got := parseGitCheckAttrFilterDrivers([]byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00")); len(got) != 1 || got[0] != "pwn=drv" {
+		t.Fatalf("expected empty filter value to preserve later triplets, got %#v", got)
 	}
 	if got := parseGitCheckAttrFilterDrivers([]byte("package.json\x00filter")); len(got) != 0 {
 		t.Fatalf("expected incomplete check-attr output to be ignored, got %#v", got)
@@ -247,9 +263,13 @@ if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
       echo "unexpected attr-source flag" >&2
       exit 1
     fi
-    for expected in 'filter.foo.bar.clean=' 'filter.foo.bar.process=' 'filter.foo.bar.required=false'; do
-      if ! printf '%s' "$args" | grep -q "$expected"; then
-        echo "missing filter override: $expected" >&2
+    for expected in \
+      'GIT_CONFIG_KEY_5=filter.foo.bar.clean' \
+      'GIT_CONFIG_KEY_6=filter.foo.bar.process' \
+      'GIT_CONFIG_KEY_7=filter.foo.bar.required' \
+      'GIT_CONFIG_VALUE_7=false'; do
+      if ! env | grep -q "$expected"; then
+        echo "missing filter override env: $expected" >&2
         exit 1
       fi
     done

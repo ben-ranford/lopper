@@ -22,25 +22,54 @@ func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
 	}
 }
 
-func TestFilterDriverConfigArgsNeutralizesUniqueDrivers(t *testing.T) {
-	args := FilterDriverConfigArgs([]string{"foo.bar", "foo/bar", "foo.bar", "", "foo:bar"})
+func TestSanitizedEnvWithFilterDriversNeutralizesUniqueDrivers(t *testing.T) {
+	t.Setenv("KEEP_ME", "1")
+
+	env := SanitizedEnvWithFilterDrivers([]string{"foo.bar", "foo/bar", "foo=bar", "", "foo:bar"})
 	for _, expected := range []string{
-		"filter.foo.bar.clean=",
-		"filter.foo.bar.process=",
-		"filter.foo.bar.required=false",
-		"filter.foo/bar.clean=",
-		"filter.foo/bar.process=",
-		"filter.foo/bar.required=false",
-		"filter.foo:bar.clean=",
-		"filter.foo:bar.process=",
-		"filter.foo:bar.required=false",
+		"GIT_CONFIG_COUNT=17",
+		"GIT_CONFIG_KEY_5=filter.foo.bar.clean",
+		"GIT_CONFIG_VALUE_5=",
+		"GIT_CONFIG_KEY_6=filter.foo.bar.process",
+		"GIT_CONFIG_KEY_7=filter.foo.bar.required",
+		"GIT_CONFIG_VALUE_7=false",
+		"GIT_CONFIG_KEY_8=filter.foo/bar.clean",
+		"GIT_CONFIG_KEY_11=filter.foo=bar.clean",
+		"GIT_CONFIG_KEY_12=filter.foo=bar.process",
+		"GIT_CONFIG_KEY_13=filter.foo=bar.required",
+		"GIT_CONFIG_KEY_14=filter.foo:bar.clean",
+		"GIT_CONFIG_KEY_16=filter.foo:bar.required",
 	} {
-		if !containsArgPair(args, "-c", expected) {
-			t.Fatalf("expected filter driver override %q in %#v", expected, args)
+		if !containsEnv(env, expected) {
+			t.Fatalf("expected filter driver env override %q in %#v", expected, env)
 		}
 	}
-	if got, want := len(args), 18; got != want {
-		t.Fatalf("expected %d arg entries, got %d (%#v)", want, got, args)
+	if !containsEnv(env, keepMeEnvEntry) {
+		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)
+	}
+}
+
+func TestFilterDriverConfigOverridesSkipEmptyAndDuplicateDrivers(t *testing.T) {
+	if got := filterDriverConfigOverrides(nil); len(got) != 0 {
+		t.Fatalf("expected nil driver set to produce nil overrides, got %#v", got)
+	}
+
+	overrides := filterDriverConfigOverrides([]string{" pwn ", "", "pwn", "other"})
+	if got, want := len(overrides), 6; got != want {
+		t.Fatalf("expected %d filter overrides, got %#v", want, overrides)
+	}
+	wantKeys := []string{
+		"filter.pwn.clean",
+		"filter.pwn.process",
+		"filter.pwn.required",
+		"filter.other.clean",
+		"filter.other.process",
+		"filter.other.required",
+	}
+	for index, want := range wantKeys {
+		if overrides[index].key != want {
+			t.Fatalf("expected override key %q at index %d, got %#v", want, index, overrides)
+		}
 	}
 }
 
@@ -135,12 +164,13 @@ func TestSanitizedEnv(t *testing.T) {
 }
 
 func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
-	env := sanitizedEnvEntries([]string{
+	input := []string{
 		"BROKEN",
 		keepMeEnvEntry,
 		"PATH=/tmp/custom-bin",
 		attackerGlobalConfigEnvEntry,
-	})
+	}
+	env := sanitizedEnvEntries(input, nil)
 
 	if !containsEnv(env, "BROKEN") {
 		t.Fatalf("expected malformed env entry to be preserved, got %#v", env)
