@@ -46,13 +46,13 @@ func collectLockfileGitContext(ctx context.Context, repoPath string, rules []loc
 		return lockfileGitContext{}, newLockfileDriftFilterAmbiguityError(filteredPaths)
 	}
 
-	changedFiles, hasGitContext, err := gitChangedFiles(ctx, repoPath)
+	changedFiles, err := gitChangedFilesForPaths(ctx, repoPath, candidatePaths)
 	if err != nil {
 		return lockfileGitContext{}, err
 	}
 	return lockfileGitContext{
 		changedFiles:  changedFiles,
-		hasGitContext: hasGitContext,
+		hasGitContext: true,
 	}, nil
 }
 
@@ -60,11 +60,18 @@ func gitChangedFiles(ctx context.Context, repoPath string) (map[string]struct{},
 	if !isGitWorktree(ctx, repoPath) {
 		return nil, false, nil
 	}
+	changed, err := gitChangedFilesInWorktree(ctx, repoPath)
+	if err != nil {
+		return nil, true, err
+	}
+	return changed, true, nil
+}
 
+func gitChangedFilesInWorktree(ctx context.Context, repoPath string) (map[string]struct{}, error) {
 	changed := map[string]struct{}{}
 	tracked, err := gitTrackedChanges(ctx, repoPath)
 	if err != nil {
-		return nil, true, err
+		return nil, err
 	}
 	for _, path := range tracked {
 		changed[path] = struct{}{}
@@ -72,13 +79,37 @@ func gitChangedFiles(ctx context.Context, repoPath string) (map[string]struct{},
 
 	untracked, err := gitUntrackedFiles(ctx, repoPath)
 	if err != nil {
-		return nil, true, err
+		return nil, err
 	}
 	for _, path := range untracked {
 		changed[path] = struct{}{}
 	}
 
-	return changed, true, nil
+	return changed, nil
+}
+
+func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []string) (map[string]struct{}, error) {
+	if len(paths) == 0 {
+		return map[string]struct{}{}, nil
+	}
+	changed := map[string]struct{}{}
+	tracked, err := gitTrackedChangesForPaths(ctx, repoPath, paths)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range tracked {
+		changed[path] = struct{}{}
+	}
+
+	untracked, err := gitUntrackedFilesForPaths(ctx, repoPath, paths)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range untracked {
+		changed[path] = struct{}{}
+	}
+
+	return changed, nil
 }
 
 func isGitWorktree(ctx context.Context, repoPath string) bool {
@@ -113,6 +144,29 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 	return mergeGitPaths(staged, unstaged), nil
 }
 
+func gitTrackedChangesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	hasHead, err := gitHasVerifiedHead(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if hasHead {
+		return gitDiffNameOnlyForPaths(ctx, repoPath, paths, "HEAD")
+	}
+	// Unborn HEAD: derive tracked changes from staged + working tree diffs.
+	staged, err := gitDiffNameOnlyForPaths(ctx, repoPath, paths, "--cached")
+	if err != nil {
+		return nil, err
+	}
+	unstaged, err := gitDiffNameOnlyForPaths(ctx, repoPath, paths)
+	if err != nil {
+		return nil, err
+	}
+	return mergeGitPaths(staged, unstaged), nil
+}
+
 func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 	command, err := gitCommandContext(ctx, repoPath, gitRevParseSubcommand, "--verify", "--quiet", "HEAD")
 	if err != nil {
@@ -133,9 +187,18 @@ func gitDiffNameOnly(ctx context.Context, repoPath string, diffArgs ...string) (
 	if err != nil {
 		return nil, err
 	}
+	return gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, filterDrivers, nil, diffArgs...)
+}
+
+func gitDiffNameOnlyForPaths(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
+	return gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, nil, paths, diffArgs...)
+}
+
+func gitDiffNameOnlyWithFilterDrivers(ctx context.Context, repoPath string, filterDrivers, paths []string, diffArgs ...string) ([]string, error) {
 	args := []string{"diff", "--no-ext-diff", "--no-textconv"}
 	args = append(args, diffArgs...)
 	args = append(args, "--name-only", "--")
+	args = append(args, paths...)
 	command, err := gitCommandContext(ctx, repoPath, args...)
 	if err != nil {
 		return nil, err
@@ -176,6 +239,24 @@ func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
 		return nil, fmt.Errorf("run git ls-files --others --exclude-standard: %w", err)
 	}
 	return parseGitOutputLines(output), nil
+}
+
+func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	args := []string{"ls-files", "--others", "--exclude-standard", "-z"}
+	args = append(args, "--")
+	args = append(args, paths...)
+	command, err := gitCommandContext(ctx, repoPath, args...)
+	if err != nil {
+		return nil, err
+	}
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
+	}
+	return parseNULTerminatedGitOutput(output), nil
 }
 
 func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {

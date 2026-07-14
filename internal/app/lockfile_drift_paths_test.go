@@ -217,6 +217,38 @@ func TestCollectLockfileGitContextSkipsIrrelevantPathsAndFailsClosed(t *testing.
 	})
 }
 
+func TestCollectLockfileGitContextScopesTrackedAndUntrackedCommandsToCandidatePaths(t *testing.T) {
+	cases := []struct {
+		name        string
+		mode        string
+		wantChanged []string
+	}{
+		{name: "head", mode: "pathscope-head", wantChanged: []string{"package.json"}},
+		{name: "unborn head", mode: "pathscope-unborn", wantChanged: []string{"package-lock.json", "package.json"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := configureFakeGitRepo(t, tc.mode)
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, "README.md"), "hello\n")
+
+			gitContext, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+			if err != nil {
+				t.Fatalf("collectLockfileGitContext: %v", err)
+			}
+			if !gitContext.hasGitContext {
+				t.Fatal("expected git context")
+			}
+			assertChangedPathsPresent(t, gitContext.changedFiles, tc.wantChanged...)
+			if len(gitContext.changedFiles) != len(tc.wantChanged) {
+				t.Fatalf("expected only candidate-path changes %#v, got %#v", tc.wantChanged, gitContext.changedFiles)
+			}
+		})
+	}
+}
+
 func TestGitActiveFilterDriversHandlesEmptyPaths(t *testing.T) {
 	drivers, err := gitActiveFilterDrivers(context.Background(), t.TempDir(), nil)
 	if err != nil {
@@ -265,6 +297,83 @@ func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
 	t.Cleanup(func() { resolveGitBinaryPathFn = original })
 	if _, err := gitActiveFilterPathDrivers(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected command construction failure for non-empty path set, got %v", err)
+	}
+}
+
+func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
+	changed, err := gitChangedFilesForPaths(context.Background(), t.TempDir(), nil)
+	if err != nil || len(changed) != 0 {
+		t.Fatalf("expected empty scoped changed set, got %#v err=%v", changed, err)
+	}
+	tracked, err := gitTrackedChangesForPaths(context.Background(), t.TempDir(), nil)
+	if err != nil || len(tracked) != 0 {
+		t.Fatalf("expected empty scoped tracked set, got %#v err=%v", tracked, err)
+	}
+	untracked, err := gitUntrackedFilesForPaths(context.Background(), t.TempDir(), nil)
+	if err != nil || len(untracked) != 0 {
+		t.Fatalf("expected empty scoped untracked set, got %#v err=%v", untracked, err)
+	}
+
+	cases := []struct {
+		name    string
+		mode    string
+		run     func(string) error
+		wantSub string
+	}{
+		{
+			name: "tracked HEAD diff failure",
+			mode: "difffail-head",
+			run: func(repo string) error {
+				_, err := gitTrackedChangesForPaths(context.Background(), repo, []string{"package.json"})
+				return err
+			},
+			wantSub: lockfileRunGitErr,
+		},
+		{
+			name: "tracked cached diff failure",
+			mode: "difffail-cached",
+			run: func(repo string) error {
+				_, err := gitTrackedChangesForPaths(context.Background(), repo, []string{"package.json"})
+				return err
+			},
+			wantSub: lockfileRunGitErr,
+		},
+		{
+			name: "tracked unstaged diff failure",
+			mode: "difffail-unstaged",
+			run: func(repo string) error {
+				_, err := gitTrackedChangesForPaths(context.Background(), repo, []string{"package.json"})
+				return err
+			},
+			wantSub: lockfileRunGitErr,
+		},
+		{
+			name: "untracked ls-files failure",
+			mode: "lsfail",
+			run: func(repo string) error {
+				_, err := gitUntrackedFilesForPaths(context.Background(), repo, []string{"package.json"})
+				return err
+			},
+			wantSub: "ls-files",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(configureFakeGitRepo(t, tc.mode)); err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantSub, err)
+			}
+		})
+	}
+
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
+	t.Cleanup(func() { resolveGitBinaryPathFn = original })
+	if _, err := gitDiffNameOnlyForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected scoped diff command construction failure, got %v", err)
+	}
+	if _, err := gitUntrackedFilesForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected scoped untracked command construction failure, got %v", err)
 	}
 }
 
@@ -401,12 +510,22 @@ if printf '%s' "$args" | grep -q 'rev-parse --is-inside-work-tree'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'rev-parse --verify --quiet HEAD'; then
-  if [ "$mode" = "difffail-cached" ] || [ "$mode" = "difffail-unstaged" ]; then
+  if [ "$mode" = "difffail-cached" ] || [ "$mode" = "difffail-unstaged" ] || [ "$mode" = "pathscope-unborn" ]; then
     exit 1
   fi
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
+  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ]; then
+    if ! printf '%s' "$args" | grep -q -- 'ls-files --others --exclude-standard -z -- package-lock.json package.json'; then
+      echo "missing pathspec-scoped untracked args: $args" >&2
+      exit 1
+    fi
+    if [ "$mode" = "pathscope-unborn" ]; then
+      printf 'package-lock.json\000'
+    fi
+    exit 0
+  fi
   if [ "$mode" = "pathscope-filterdriver" ] || [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ] || [ "$mode" = "checkattrwrongorder" ]; then
     echo "scoped untracked listing should not run before filter validation" >&2
     exit 1
@@ -418,7 +537,7 @@ if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard -z'; then
-  if [ "$mode" = "pathscope-filterdriver" ]; then
+  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ] || [ "$mode" = "pathscope-filterdriver" ]; then
     echo "repo-wide attribute candidate listing should not run" >&2
     exit 1
   fi
@@ -445,6 +564,11 @@ if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard 
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
+  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ]; then
+    cat >/dev/null
+    printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000unspecified\000'
+    exit 0
+  fi
   if [ "$mode" = "pathscope-filterdriver" ]; then
     cat >/dev/null
     printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000pwn\000'
@@ -487,6 +611,30 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
+  if [ "$mode" = "pathscope-head" ]; then
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv HEAD --name-only -- package-lock.json package.json'; then
+      echo "missing pathspec-scoped head diff args: $args" >&2
+      exit 1
+    fi
+    printf 'package.json\n'
+    exit 0
+  fi
+  if [ "$mode" = "pathscope-unborn" ]; then
+    if printf '%s' "$args" | grep -q -- '--cached'; then
+      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -- package-lock.json package.json'; then
+        echo "missing pathspec-scoped cached diff args: $args" >&2
+        exit 1
+      fi
+      printf 'package.json\n'
+      exit 0
+    fi
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -- package-lock.json package.json'; then
+      echo "missing pathspec-scoped unstaged diff args: $args" >&2
+      exit 1
+    fi
+    printf 'package-lock.json\n'
+    exit 0
+  fi
   if [ "$mode" = "pathscope-filterdriver" ]; then
     echo "scoped git diff should not run after filter ambiguity" >&2
     exit 1
