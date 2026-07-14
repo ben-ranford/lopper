@@ -155,7 +155,8 @@ func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*e
 	if err != nil {
 		return nil, err
 	}
-	commandArgs := append([]string{"-C", repoPath}, args...)
+	commandArgs := append(gitexec.SafeConfigArgs(), "-C", repoPath)
+	commandArgs = append(commandArgs, args...)
 	command, err := execGitCommandContextFn(ctx, gitPath, commandArgs...)
 	if err != nil {
 		return nil, err

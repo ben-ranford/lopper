@@ -13,6 +13,15 @@ const versionArg = "--version"
 const attackerGlobalConfigEnvEntry = "GIT_CONFIG_GLOBAL=/tmp/attacker-global"
 const keepMeEnvEntry = "KEEP_ME=1"
 
+func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
+	args := SafeConfigArgs()
+	for _, expected := range []string{"core.fsmonitor=false", "diff.external="} {
+		if !containsArgPair(args, "-c", expected) {
+			t.Fatalf("expected safe config arg %q in %#v", expected, args)
+		}
+	}
+}
+
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
 	if err != nil {
@@ -195,4 +204,13 @@ func testKnownGitPaths(t *testing.T, build func(string) (*exec.Cmd, error)) {
 			}
 		})
 	}
+}
+
+func containsArgPair(args []string, key, value string) bool {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == key && args[index+1] == value {
+			return true
+		}
+	}
+	return false
 }

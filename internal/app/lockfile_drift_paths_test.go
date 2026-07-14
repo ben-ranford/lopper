@@ -104,9 +104,13 @@ func writeFakeGitBinary(t *testing.T) string {
 	script := `#!/bin/sh
 args="$*"
 mode="${FAKE_GIT_MODE}"
-if [ "$1" = "-C" ] && [ -f "$2/.fake-git-mode" ]; then
-  mode="$(cat "$2/.fake-git-mode")"
-fi
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-C" ] && [ -n "$2" ] && [ -f "$2/.fake-git-mode" ]; then
+    mode="$(cat "$2/.fake-git-mode")"
+    break
+  fi
+  shift
+done
 if printf '%s' "$args" | grep -q 'rev-parse --is-inside-work-tree'; then
   echo true
   exit 0

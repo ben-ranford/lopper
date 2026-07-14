@@ -389,6 +389,34 @@ func TestSanitizedGitEnvPinsSafePath(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftDoesNotExecuteLocalFsmonitor(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "fsmonitor.marker")
+	helperPath := filepath.Join(repo, ".git", "hooks", "pwn-fsmonitor")
+	writeFile(t, helperPath, "#!/bin/sh\necho fsmonitor-ran >> \""+markerPath+"\"\nprintf 'version 2\\n\\n'\nexit 0\n")
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod fsmonitor helper: %v", err)
+	}
+	runGit(t, repo, "config", "core.fsmonitor", helperPath)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected local fsmonitor helper to never execute, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
 func TestDetectLockfileDriftStopOnFirst(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)

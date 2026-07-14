@@ -27,6 +27,14 @@ var forcedGitConfigOverrides = []gitConfigOverride{
 	{key: "core.pager", value: "cat"},
 }
 
+func SafeConfigArgs() []string {
+	args := make([]string, 0, len(forcedGitConfigOverrides)*2)
+	for _, override := range forcedGitConfigOverrides {
+		args = append(args, "-c", fmt.Sprintf("%s=%s", override.key, override.value))
+	}
+	return args
+}
+
 func ResolveBinaryPath() (string, error) {
 	return resolveBinaryPath(ExecutablePrimary, ExecutableFallback, ExecutableAvailable)
 }
