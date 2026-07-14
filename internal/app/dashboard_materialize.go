@@ -218,6 +218,9 @@ func trustedCommandOutputRootForRoot(outputAbs, root string) (string, error) {
 	}
 	rootAbs, err := filepath.Abs(trimmedRoot)
 	if err != nil {
+		if filepath.IsAbs(outputAbs) && !filepath.IsAbs(trimmedRoot) {
+			return "", nil
+		}
 		return "", fmt.Errorf("resolve trusted output workspace: %w", err)
 	}
 	withinWorkspace, err := pathWithinRoot(rootAbs, outputAbs)

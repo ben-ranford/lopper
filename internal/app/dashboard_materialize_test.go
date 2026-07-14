@@ -82,6 +82,20 @@ func TestRootedCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *te
 	})
 }
 
+func TestRootedCommandOutputRootAllowsAbsolutePathWhenRelativeTrustedRootLookupFails(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+	withRemovedWorkingDirectory(t, func() {
+		root, err := rootedCommandOutputRoot(outputPath, ".")
+		if err != nil {
+			t.Fatalf("rooted command output root: %v", err)
+		}
+		wantRoot := filepath.Dir(filepath.Dir(outputPath))
+		if root != wantRoot {
+			t.Fatalf("expected fallback output root %q, got %q", wantRoot, root)
+		}
+	})
+}
+
 func TestRootedCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
 	assertTrustedRootLookupError(t, "trusted root lookup failure", func(outputPath, trustedRoot string) error {
 		_, err := rootedCommandOutputRoot(outputPath, trustedRoot)
@@ -380,6 +394,19 @@ func TestTrustedCommandOutputRootForRootIgnoresMissingRootOutsideOutputPath(t *t
 	if root != "" {
 		t.Fatalf("expected no trusted root for missing path, got %q", root)
 	}
+}
+
+func TestTrustedCommandOutputRootForRootIgnoresRelativeRootWhenLookupFailsForAbsoluteOutput(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+	withRemovedWorkingDirectory(t, func() {
+		root, err := trustedCommandOutputRootForRoot(outputPath, ".")
+		if err != nil {
+			t.Fatalf("trusted command output root for relative root: %v", err)
+		}
+		if root != "" {
+			t.Fatalf("expected no trusted root when relative lookup fails, got %q", root)
+		}
+	})
 }
 
 func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
