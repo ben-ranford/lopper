@@ -724,15 +724,39 @@ jobs:
           path: .artifacts
 
       - name: Push trusted feature release history
+        shell: bash --noprofile --norc {0}
         env:
           PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          PATH: /usr/bin:/bin
+          HOME: ${{ runner.temp }}/trusted-feature-release-history-home
+          BASH_ENV: ""
+          ENV: ""
+          CDPATH: ""
+          PROMPT_COMMAND: ""
+          GIT_TRACE: ""
+          GIT_TRACE_PACKET: ""
+          GIT_TRACE_PERFORMANCE: ""
+          GIT_TRACE_SETUP: ""
+          GIT_TRACE_CURL: ""
+          GIT_TRACE_CURL_NO_DATA: ""
+          GIT_TRACE2: ""
+          GIT_TRACE2_EVENT: ""
+          GIT_TRACE2_PERF: ""
+          GIT_CURL_VERBOSE: ""
+          GIT_ASKPASS: ""
+          GIT_PAGER: cat
+          PAGER: cat
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           GIT_BIN="/usr/bin/git"
           BASE64_BIN="/usr/bin/base64"
+          MKDIR_BIN="/bin/mkdir"
           PATCH_FILE="${GITHUB_WORKSPACE}/.artifacts/feature-release-history.patch"
-          if [ ! -x "${GIT_BIN}" ] || [ ! -x "${BASE64_BIN}" ]; then
-            echo "::error::Trusted git/base64 binaries are unavailable." >&2
+          if [ ! -x "${GIT_BIN}" ] || [ ! -x "${BASE64_BIN}" ] || [ ! -x "${MKDIR_BIN}" ]; then
+            echo "::error::Trusted git/base64/mkdir binaries are unavailable." >&2
             exit 1
           fi
           if [ ! -f "${PATCH_FILE}" ]; then
@@ -744,6 +768,7 @@ jobs:
             exit 1
           fi
 
+          "${MKDIR_BIN}" -p "${HOME}"
           auth_header="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | "${BASE64_BIN}" -w0)"
           export GIT_CONFIG_COUNT=4
           export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"

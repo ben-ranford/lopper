@@ -347,6 +347,21 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("trusted feature history push token env = %q", got)
 	}
+	if push.Shell != "bash --noprofile --norc {0}" {
+		t.Fatalf("trusted feature history push shell = %q, want bash --noprofile --norc {0}", push.Shell)
+	}
+	for key, want := range map[string]string{
+		"PATH":                "/usr/bin:/bin",
+		"BASH_ENV":            "",
+		"ENV":                 "",
+		"GIT_CONFIG_GLOBAL":   "/dev/null",
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_TERMINAL_PROMPT": "0",
+	} {
+		if got := push.Env[key]; got != want {
+			t.Fatalf("trusted feature history push env %s = %q, want %q", key, got, want)
+		}
+	}
 	assertPushTokenScopedToFinalStep(t, pushFeatureHistoryJob, push.Name)
 	assertStepRunContainsAll(t, push, "trusted feature history push step", []string{
 		`GIT_BIN="/usr/bin/git"`,
