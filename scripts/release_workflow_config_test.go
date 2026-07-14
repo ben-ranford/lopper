@@ -301,6 +301,27 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowManualDispatchValidatesTagBeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	validation := `git check-ref-format --normalize "refs/tags/${tag}" >/dev/null 2>&1`
+	lookup := `encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"`
+
+	validationIndex := strings.Index(workflowText, validation)
+	if validationIndex == -1 {
+		t.Fatal("manual release flow must validate the user-supplied tag before using it as a ref")
+	}
+
+	lookupIndex := strings.Index(workflowText, lookup)
+	if lookupIndex == -1 {
+		t.Fatal("manual release flow must encode the validated release tag")
+	}
+	if validationIndex > lookupIndex {
+		t.Fatal("manual release flow must validate the user-supplied tag before looking it up")
+	}
+}
+
 func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *testing.T) {
 	t.Parallel()
 
@@ -318,9 +339,9 @@ func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *
 		`case "${existing_ref_type}" in`,
 		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then`,
 		`if [ -z "${existing_commit}" ]; then`,
-		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
+		`resolved_sha="${existing_commit}"`,
 	})
-	for _, forbidden := range []string{"target_commitish", `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`, `[ -n "${existing_commit}" ] &&`} {
+	for _, forbidden := range []string{"target_commitish", `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`, `resolved_sha="$(git rev-parse HEAD)"`, `[ -n "${existing_commit}" ] &&`} {
 		if strings.Contains(manualStep.Run, forbidden) {
 			t.Fatalf("manual release flow must not contain stale validation path %q", forbidden)
 		}
