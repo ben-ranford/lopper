@@ -89,6 +89,18 @@ func TestRootedCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
 	})
 }
 
+func TestRootedCommandOutputRootUsesTrustedRoot(t *testing.T) {
+	trustedRoot := t.TempDir()
+
+	root, err := rootedCommandOutputRoot(filepath.Join(trustedRoot, "reports", "output.json"), trustedRoot)
+	if err != nil {
+		t.Fatalf("rooted command output root: %v", err)
+	}
+	if root != trustedRoot {
+		t.Fatalf("expected trusted root %q, got %q", trustedRoot, root)
+	}
+}
+
 func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
 	workspace := t.TempDir()
 	chdirCanonicalWorkspace(t, workspace)
@@ -120,6 +132,19 @@ func TestPersistCommandOutputPropagatesDirectoryTargetError(t *testing.T) {
 	_, err := persistCommandOutput("{}", "reports", "dashboard report")
 	if err == nil {
 		t.Fatal("expected directory target error")
+	}
+}
+
+func TestPersistCommandOutputPropagatesParentCreationError(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "reports"), []byte("block"), 0o600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+
+	_, err := persistCommandOutput("{}", filepath.Join("reports", "output.json"), "dashboard report")
+	if err == nil {
+		t.Fatal("expected parent creation error")
 	}
 }
 
