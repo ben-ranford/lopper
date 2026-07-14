@@ -157,30 +157,25 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	if !tag.Required {
 		t.Fatal("manual release dispatch must require a release tag or version")
 	}
-	if strings.Contains(strings.ToLower(tag.Description), "existing release tag") {
-		t.Fatal("manual release dispatch should not require a pre-existing release tag")
-	}
-
-	sourceSHA, ok := workflow.On.WorkflowDispatch.Inputs["source_sha"]
-	if !ok {
-		t.Fatal("release workflow must define the source_sha input")
-	}
-	if strings.Contains(strings.ToLower(sourceSHA.Description), "defaults to tag") {
-		t.Fatal("manual release source should not fall back to the tag name")
+	if _, ok := workflow.On.WorkflowDispatch.Inputs["source_sha"]; ok {
+		t.Fatal("release workflow must not expose a source_sha manual dispatch input")
 	}
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if strings.Contains(workflowText, "inputs.source_sha || inputs.tag") {
 		t.Fatal("manual release jobs must not fall back to tag names for source checkout")
 	}
-	if !strings.Contains(workflowText, "gh release create \"${tag}\"") {
-		t.Fatal("manual release flow must create a draft GitHub release when one is missing")
+	if strings.Contains(workflowText, "gh release create \"${tag}\"") {
+		t.Fatal("manual release flow must not create a new GitHub release during a retry")
 	}
-	if !strings.Contains(workflowText, "--target \"${resolved_sha}\"") {
-		t.Fatal("manual release flow must target the resolved source SHA")
+	if !strings.Contains(workflowText, "Manual release promotion can only retry an existing GitHub release for ${tag}.") {
+		t.Fatal("manual release flow must require an existing GitHub release to retry")
 	}
-	if !strings.Contains(workflowText, "Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}.") {
-		t.Fatal("manual release flow must fail when an existing release tag points to a different commit")
+	if !strings.Contains(workflowText, `resolved_sha="$(git rev-list -n 1 "refs/tags/${tag}")"`) {
+		t.Fatal("manual release flow must resolve the source SHA from the requested release tag")
+	}
+	if !strings.Contains(workflowText, "GitHub release ${tag} targets ${release_target_sha}, but tag ${tag} points to ${resolved_sha}.") {
+		t.Fatal("manual release flow must fail when release metadata disagrees with the tag target")
 	}
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
