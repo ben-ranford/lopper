@@ -69,7 +69,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.source_sha || github.sha }}
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare manual release
         if: ${{ github.event_name == 'workflow_dispatch' }}

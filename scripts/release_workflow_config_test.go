@@ -1310,6 +1310,23 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "feature history push")
 }
 
+func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout manual release source")
+	if got := workflowStepWithString(t, step, "token"); got != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("manual release checkout token = %q, want GITHUB_TOKEN-only checkout", got)
+	}
+	if got := workflowStepWithString(t, step, "persist-credentials"); got != "false" {
+		t.Fatalf("manual release checkout persist-credentials = %q, want false", got)
+	}
+}
+
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 	t.Parallel()
 
@@ -2850,6 +2867,16 @@ func assertWorkflowJobCheckoutsDisablePersistedCredentials(t *testing.T, job wor
 	if checkoutCount == 0 {
 		t.Fatalf("%s must contain a checkout step", jobLabel)
 	}
+}
+
+func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) string {
+	t.Helper()
+
+	value, ok := step.With[key]
+	if !ok {
+		t.Fatalf("workflow step %q must define with.%s", step.Name, key)
+	}
+	return value
 }
 
 func readJSONConfig(t *testing.T, path string, target any) {
