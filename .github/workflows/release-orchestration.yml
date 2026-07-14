@@ -600,12 +600,6 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          persist-credentials: false
-
       - name: Compute image name
         id: image
         run: |
@@ -613,13 +607,39 @@ jobs:
           echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
 
       - name: Compute manifest image tags
+        id: image_tags
         shell: bash
         env:
           IMAGE_TAGS: ${{ inputs.image_tags }}
           IMAGE_NAME: ${{ steps.image.outputs.name }}
         run: |
           set -euo pipefail
-          bash scripts/release-image-tags.sh > image-tags.txt
+          valid_image_tag_pattern='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+          declare -a sanitized_tags=()
+          while IFS= read -r raw_tag || [[ -n "$raw_tag" ]]; do
+            tag="${raw_tag%$'\r'}"
+            tag="${tag#"${tag%%[![:space:]]*}"}"
+            tag="${tag%"${tag##*[![:space:]]}"}"
+            if [[ -z "$tag" ]]; then
+              continue
+            fi
+            if [[ ! "$tag" =~ $valid_image_tag_pattern ]]; then
+              printf '::error::Malformed image tag rejected. Tags must match %s.\n' "$valid_image_tag_pattern" >&2
+              printf 'Rejected image tag: %q\n' "$tag" >&2
+              exit 1
+            fi
+            sanitized_tags+=("$tag")
+          done <<< "$IMAGE_TAGS"
+          if [[ "${#sanitized_tags[@]}" -eq 0 ]]; then
+            printf '::error::No valid image tags were provided.\n' >&2
+            exit 1
+          fi
+
+          image_tags_file="$(mktemp)"
+          for tag in "${sanitized_tags[@]}"; do
+            printf '%s:%s\n' "$IMAGE_NAME" "$tag" >> "$image_tags_file"
+          done
+          echo "file=$image_tags_file" >> "$GITHUB_OUTPUT"
 
       - name: Prepare manifest publication payload
         shell: bash
@@ -627,11 +647,12 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           IMAGE_NAME: ${{ steps.image.outputs.name }}
           RELEASE_TAG: ${{ inputs.tag }}
+          IMAGE_TAGS_FILE: ${{ steps.image_tags.outputs.file }}
         run: |
           set -euo pipefail
           payload_root="${RUNNER_TEMP}/ghcr-manifest-publication"
           mkdir -p "${payload_root}"
-          install -m 0600 image-tags.txt "${payload_root}/image-tags.txt"
+          install -m 0600 "${IMAGE_TAGS_FILE}" "${payload_root}/image-tags.txt"
           jq -n \
             --arg source_sha "${SOURCE_SHA}" \
             --arg image_name "${IMAGE_NAME}" \
