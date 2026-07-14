@@ -191,6 +191,23 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowManualDispatchTreatsBranchTargetsAsMutableRetryMetadata(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+
+	for _, want := range []string{
+		`if [[ "${release_target}" == refs/heads/* || "${release_target}" == refs/remotes/* ]]; then`,
+		`elif git show-ref --verify --quiet "refs/heads/${release_target}" || git show-ref --verify --quiet "refs/remotes/origin/${release_target}"; then`,
+		`echo "GitHub release ${tag} target_commitish ${release_target} is branch-valued; using tag ${tag} as the immutable retry source."`,
+		`elif [ "${release_target_kind}" = "immutable" ]; then`,
+	} {
+		if !strings.Contains(workflowText, want) {
+			t.Fatalf("manual release flow must classify branch-valued target_commitish metadata: missing %q", want)
+		}
+	}
+}
+
 func TestReleaseWorkflowManualDispatchValidatesTagBeforeFetch(t *testing.T) {
 	t.Parallel()
 

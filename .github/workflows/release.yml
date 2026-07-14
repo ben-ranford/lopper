@@ -99,7 +99,22 @@ jobs:
           release_target="$(jq -r '.target_commitish // empty' "${release_json}")"
           rm -f "${release_json}"
 
-          if [ -n "${release_target}" ] && git rev-parse -q --verify "${release_target}^{commit}" >/dev/null 2>&1; then
+          release_target_kind=""
+          if [[ "${release_target}" == refs/heads/* || "${release_target}" == refs/remotes/* ]]; then
+            release_target_kind="branch"
+          elif [[ "${release_target}" == refs/tags/* ]]; then
+            release_target_kind="immutable"
+          elif git show-ref --verify --quiet "refs/heads/${release_target}" || git show-ref --verify --quiet "refs/remotes/origin/${release_target}"; then
+            release_target_kind="branch"
+          elif git show-ref --verify --quiet "refs/tags/${release_target}" || [[ "${release_target}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            release_target_kind="immutable"
+          elif [ -n "${release_target}" ] && git rev-parse -q --verify "${release_target}^{commit}" >/dev/null 2>&1; then
+            release_target_kind="immutable"
+          fi
+
+          if [ "${release_target_kind}" = "branch" ]; then
+            echo "GitHub release ${tag} target_commitish ${release_target} is branch-valued; using tag ${tag} as the immutable retry source."
+          elif [ "${release_target_kind}" = "immutable" ]; then
             release_target_sha="$(git rev-parse "${release_target}^{commit}")"
             if [ "${release_target_sha}" != "${resolved_sha}" ]; then
               echo "::error::GitHub release ${tag} targets ${release_target_sha}, but tag ${tag} points to ${resolved_sha}." >&2
