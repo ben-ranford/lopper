@@ -2128,39 +2128,44 @@ func TestHomebrewTapWorkflowsUseImmutablePreparedSourceBindings(t *testing.T) {
 		tc := tc
 		t.Run(tc.workflowPath, func(t *testing.T) {
 			t.Parallel()
-
-			var workflow struct {
-				Jobs map[string]workflowJobConfig `yaml:"jobs"`
-			}
-			readYAMLConfig(t, tc.workflowPath, &workflow)
-
-			validationJob := workflow.Jobs[tc.validationJobName]
-			if validationJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
-				t.Fatalf("%s validation job SOURCE_SHA env = %q", tc.workflowPath, validationJob.Env["SOURCE_SHA"])
-			}
-			if validationJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
-				t.Fatalf("%s validation job FORMULA_VERSION env = %q", tc.workflowPath, validationJob.Env["FORMULA_VERSION"])
-			}
-			if validationJob.Env["SOURCE_REPO"] != "${{ github.repository }}" {
-				t.Fatalf("%s validation job SOURCE_REPO env = %q", tc.workflowPath, validationJob.Env["SOURCE_REPO"])
-			}
-			for _, deadEnv := range []string{"RELEASE_TAG", "ROLLING_TAG"} {
-				if _, ok := validationJob.Env[deadEnv]; ok {
-					t.Fatalf("%s validation job must not retain unused %s env", tc.workflowPath, deadEnv)
-				}
-			}
-			updateJob := workflow.Jobs[tc.updateJobName]
-			if updateJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
-				t.Fatalf("%s update job SOURCE_SHA env = %q", tc.workflowPath, updateJob.Env["SOURCE_SHA"])
-			}
-			if updateJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
-				t.Fatalf("%s update job FORMULA_VERSION env = %q", tc.workflowPath, updateJob.Env["FORMULA_VERSION"])
-			}
-
-			assertImmutableSourceBinding(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName).Run, tc)
-			assertImmutableSourceBinding(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.updateJobName, tc.pushStepName).Run, tc)
+			assertImmutablePreparedSourceBindings(t, tc)
 		})
 	}
+}
+
+func assertImmutablePreparedSourceBindings(t *testing.T, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, tc.workflowPath, &workflow)
+
+	validationJob := workflow.Jobs[tc.validationJobName]
+	if validationJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
+		t.Fatalf("%s validation job SOURCE_SHA env = %q", tc.workflowPath, validationJob.Env["SOURCE_SHA"])
+	}
+	if validationJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
+		t.Fatalf("%s validation job FORMULA_VERSION env = %q", tc.workflowPath, validationJob.Env["FORMULA_VERSION"])
+	}
+	if validationJob.Env["SOURCE_REPO"] != "${{ github.repository }}" {
+		t.Fatalf("%s validation job SOURCE_REPO env = %q", tc.workflowPath, validationJob.Env["SOURCE_REPO"])
+	}
+	for _, deadEnv := range []string{"RELEASE_TAG", "ROLLING_TAG"} {
+		if _, ok := validationJob.Env[deadEnv]; ok {
+			t.Fatalf("%s validation job must not retain unused %s env", tc.workflowPath, deadEnv)
+		}
+	}
+	updateJob := workflow.Jobs[tc.updateJobName]
+	if updateJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
+		t.Fatalf("%s update job SOURCE_SHA env = %q", tc.workflowPath, updateJob.Env["SOURCE_SHA"])
+	}
+	if updateJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
+		t.Fatalf("%s update job FORMULA_VERSION env = %q", tc.workflowPath, updateJob.Env["FORMULA_VERSION"])
+	}
+
+	assertImmutableSourceBinding(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName).Run, tc)
+	assertImmutableSourceBinding(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.updateJobName, tc.pushStepName).Run, tc)
 }
 
 type homebrewTapWorkflowCase struct {
