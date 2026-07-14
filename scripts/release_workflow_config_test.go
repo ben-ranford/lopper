@@ -2107,6 +2107,9 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 		"git_safe add ",
 		"git_safe diff --cached --quiet",
 		"git_safe commit --no-verify",
+		`patch_path="${RUNNER_TEMP}/`,
+		"git_safe format-patch --stdout -1 HEAD >",
+		`echo "patch_path=${patch_path}" >> "$GITHUB_OUTPUT"`,
 	} {
 		if !strings.Contains(commitStep.Run, want) {
 			t.Fatalf("%s commit step must contain %q", workflowPath, want)
@@ -2117,7 +2120,10 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("%s tap push step HOMEBREW_TAP_TOKEN env = %q", workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
-	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if pushStep.Env["FORMULA_PATCH_PATH"] == "" {
+		t.Fatalf("%s push step must receive the exported patch path", workflowPath)
+	}
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("%s push step shell = %q", workflowPath, pushStep.Shell)
 	}
 	for _, want := range []string{
@@ -2129,7 +2135,8 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 		"auth_header=\"$(printf 'x-access-token:%s' \"${HOMEBREW_TAP_TOKEN}\" | \"${base64_bin}\" | \"${tr_bin}\" -d '\\n')\"",
 		"unset HOMEBREW_TAP_TOKEN",
 		`git_home="$("${mktemp_bin}" -d)"`,
-		`trap 'rm -rf "${git_home}"' EXIT`,
+		`push_repo="$("${mktemp_bin}" -d)"`,
+		`trap 'rm -rf "${git_home}" "${push_repo}"' EXIT`,
 		"env -i",
 		`HOME="${git_home}"`,
 		`PATH="${PATH}"`,
@@ -2137,10 +2144,12 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 		"GIT_CONFIG_COUNT=5",
 		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
-		"git_network fetch origin main:refs/remotes/origin/main",
-		"git_local rebase origin/main",
-		"git_local rebase --abort || true",
-		"git_network push origin HEAD:main",
+		`git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${push_repo}"`,
+		`git_safe -C "${push_repo}" am --no-verify "${FORMULA_PATCH_PATH}"`,
+		`git_network -C "${push_repo}" fetch origin main:refs/remotes/origin/main`,
+		`git_safe -C "${push_repo}" rebase origin/main`,
+		`git_safe -C "${push_repo}" rebase --abort || true`,
+		`git_network -C "${push_repo}" push origin HEAD:main`,
 		"/bin/sleep 2",
 	} {
 		if !strings.Contains(pushStep.Run, want) {
@@ -2152,6 +2161,7 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 		"x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git",
 		`-c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}"`,
 		"env -u HOMEBREW_TAP_TOKEN",
+		"git_local()",
 	} {
 		if strings.Contains(pushStep.Run, forbidden) {
 			t.Fatalf("%s push step must not contain %q", workflowPath, forbidden)
