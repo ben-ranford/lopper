@@ -59,6 +59,15 @@ func TestPersistCommandOutputRejectsTrailingSeparator(t *testing.T) {
 	}
 }
 
+func TestRootedCommandOutputRootPropagatesOutputPathResolutionError(t *testing.T) {
+	withUnreadableWorkingDirectory(t, func() {
+		_, err := rootedCommandOutputRoot("report.json")
+		if err == nil || !strings.Contains(err.Error(), "resolve output path") {
+			t.Fatalf("expected output path resolution failure, got %v", err)
+		}
+	})
+}
+
 func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
 	workspace := t.TempDir()
 	chdirCanonicalWorkspace(t, workspace)
@@ -302,6 +311,15 @@ func TestTrustedCommandOutputRootReturnsWorkspaceForWorkspaceRootPath(t *testing
 	}
 }
 
+func TestTrustedCommandOutputRootPropagatesWorkspaceLookupError(t *testing.T) {
+	withUnreadableWorkingDirectory(t, func() {
+		_, err := trustedCommandOutputRoot(filepath.Join(t.TempDir(), "reports", "output.json"))
+		if err == nil || !strings.Contains(err.Error(), "resolve output workspace") {
+			t.Fatalf("expected workspace lookup failure, got %v", err)
+		}
+	})
+}
+
 func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	blocker := filepath.Join(workspace, "reports")
@@ -352,6 +370,21 @@ func TestAbsoluteCommandOutputRootPropagatesLookupError(t *testing.T) {
 	}
 }
 
+func TestInspectOutputRootPathPropagatesLookupError(t *testing.T) {
+	workspace := t.TempDir()
+	locked := filepath.Join(workspace, "locked")
+	writeBlockedFile(t, locked)
+
+	_, _, err := inspectOutputRootPath(filepath.Join(locked, "missing"), "output.json")
+	if err == nil {
+		t.Fatal("expected lookup error for child under file")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "lstat" || pathErr.Path != filepath.Join(locked, "missing") {
+		t.Fatalf("expected propagated lstat path error for child under file, got %v", err)
+	}
+}
+
 func TestEnsureCommandOutputParentRejectsEscapingPath(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -363,6 +396,15 @@ func TestEnsureCommandOutputParentRejectsEscapingPath(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "output path escapes workspace") {
 		t.Fatalf("expected escaping output path rejection, got %v", err)
 	}
+}
+
+func TestEnsureCommandOutputParentPropagatesRootResolutionError(t *testing.T) {
+	withUnreadableWorkingDirectory(t, func() {
+		err := ensureCommandOutputParent("reports", "report.json")
+		if err == nil || !strings.Contains(err.Error(), "resolve output root") {
+			t.Fatalf("expected output root resolution failure, got %v", err)
+		}
+	})
 }
 
 func TestEnsureCommandOutputParentCreatesNestedDirectories(t *testing.T) {
@@ -528,6 +570,21 @@ func TestResolveAliasedWorkspaceRootPropagatesBrokenAliasError(t *testing.T) {
 	}
 }
 
+func TestResolveAliasedWorkspaceRootPropagatesLookupError(t *testing.T) {
+	workspace := t.TempDir()
+	locked := filepath.Join(t.TempDir(), "locked")
+	writeBlockedFile(t, locked)
+
+	_, err := resolveAliasedWorkspaceRoot(filepath.Join(locked, "reports", "output.json"), workspace)
+	if err == nil {
+		t.Fatal("expected lookup error for child under file")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "lstat" || pathErr.Path != filepath.Join(locked, "reports") {
+		t.Fatalf("expected propagated lstat path error for child under file, got %v", err)
+	}
+}
+
 func TestResolveAliasedWorkspaceRootReturnsTopmostWorkspaceAlias(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspace, "reports", "existing"), 0o755); err != nil {
@@ -558,6 +615,35 @@ func blockedPathFixture(t *testing.T) (string, string) {
 	blocker := filepath.Join(root, "blocked")
 	writeBlockedFile(t, blocker)
 	return root, blocker
+}
+
+func withUnreadableWorkingDirectory(t *testing.T, fn func()) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("working directory permission errors are not stable on windows")
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	workspace := t.TempDir()
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir unreadable workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+		if err := os.Chmod(workspace, 0o755); err != nil {
+			t.Errorf("restore workspace permissions: %v", err)
+		}
+	})
+	if err := os.Chmod(workspace, 0); err != nil {
+		t.Fatalf("chmod unreadable workspace: %v", err)
+	}
+
+	fn()
 }
 
 func TestRejectSymlinkedOutputParentRejectsSymlink(t *testing.T) {
