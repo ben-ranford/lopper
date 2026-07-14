@@ -1327,6 +1327,31 @@ func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	assertWorkflowStepRunContainsAll(t, step, "manual release existing-tag verification step", []string{
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then`,
+		`existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"`,
+		`case "${existing_ref_type}" in`,
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then`,
+		`echo "::error::Existing release ${tag} target commit could not be verified." >&2`,
+		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
+	})
+	if strings.Contains(step.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`) {
+		t.Fatal("manual release existing-tag verification must not rely on an unauthenticated tag fetch")
+	}
+	if strings.Contains(step.Run, `target_commitish`) {
+		t.Fatal("manual release existing-tag verification must fail closed instead of trusting release target_commitish metadata")
+	}
+}
+
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
 	t.Parallel()
 
