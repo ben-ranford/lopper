@@ -945,7 +945,7 @@ func withUnreadableWorkingDirectory(t *testing.T, fn func()) {
 		if err := os.Chdir(originalWD); err != nil {
 			t.Errorf("restore cwd: %v", err)
 		}
-		if err := os.Chmod(workspace, 0o755); err != nil {
+		if err := restoreWorkingDirectoryPermissions(workspace); err != nil {
 			t.Errorf("restore workspace permissions: %v", err)
 		}
 	})
@@ -962,6 +962,13 @@ func withUnreadableWorkingDirectory(t *testing.T, fn func()) {
 	}
 
 	fn()
+}
+
+func restoreWorkingDirectoryPermissions(workspace string) error {
+	if err := os.Chmod(workspace, 0o755); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func withRemovedWorkingDirectory(t *testing.T, fn func()) {
@@ -1036,6 +1043,17 @@ func createWorkspaceAlias(t *testing.T) (string, string) {
 		t.Fatalf("create workspace alias: %v", err)
 	}
 	return workspace, workspaceAlias
+}
+
+func TestRestoreWorkingDirectoryPermissionsIgnoresRemovedDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.RemoveAll(workspace); err != nil {
+		t.Fatalf("remove workspace: %v", err)
+	}
+
+	if err := restoreWorkingDirectoryPermissions(workspace); err != nil {
+		t.Fatalf("restore working directory permissions: %v", err)
+	}
 }
 
 func TestRejectSymlinkedOutputParentRejectsSymlink(t *testing.T) {
