@@ -62,6 +62,26 @@ func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+type workflowJobNeeds []string
+
+func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var need string
+		if err := node.Decode(&need); err != nil {
+			return err
+		}
+		*n = []string{need}
+		return nil
+	}
+
+	var decoded []string
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*n = decoded
+	return nil
+}
+
 type workflowStepConfig struct {
 	Name             string            `yaml:"name"`
 	ID               string            `yaml:"id"`
@@ -2269,6 +2289,17 @@ func assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t *testing.T, tc homebrew
 	if tc.requiredIfFragment != "" && !strings.Contains(validationJob.If, tc.requiredIfFragment) {
 		t.Fatalf("%s job %s must preserve %q", tc.workflowPath, tc.validationJobName, tc.requiredIfFragment)
 	}
+
+	updateJob, ok := workflow.Jobs[tc.updateJobName]
+	if !ok {
+		t.Fatalf("%s must define job %s", tc.workflowPath, tc.updateJobName)
+	}
+	if !slices.Contains(updateJob.Needs, tc.validationJobName) {
+		t.Fatalf("%s job %s must depend on token-gated job %s", tc.workflowPath, tc.updateJobName, tc.validationJobName)
+	}
+	if strings.Contains(updateJob.If, "always()") {
+		t.Fatalf("%s job %s must not bypass a skipped token-gated dependency", tc.workflowPath, tc.updateJobName)
+	}
 }
 
 func assertTokenlessValidationJob(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
@@ -2402,7 +2433,6 @@ func assertPrivilegedStepContainsRequiredHardening(t *testing.T, pushStep workfl
 		"tr_bin=/usr/bin/tr",
 		"mktemp_bin=/usr/bin/mktemp",
 		"export PATH=/usr/bin:/bin",
-		`if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
 		`git_home="$("${mktemp_bin}" -d)"`,
 		`work_root="$("${mktemp_bin}" -d)"`,
 		`tap_repo="${work_root}/homebrew-tap"`,
@@ -2455,6 +2485,8 @@ func assertPrivilegedStepOmitsUnsafePatterns(t *testing.T, pushStep workflowStep
 		"env -u HOMEBREW_TAP_TOKEN",
 		"git_local()",
 		"awk_bin=",
+		`if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
+		"HOMEBREW_TAP_TOKEN not configured; skipping",
 	} {
 		if strings.Contains(pushStep.Run, forbidden) {
 			t.Fatalf("%s privileged tap update step must not contain %q", tc.workflowPath, forbidden)

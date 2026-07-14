@@ -382,11 +382,6 @@ jobs:
           fi
           export PATH=/usr/bin:/bin
 
-          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
-            echo "HOMEBREW_TAP_TOKEN not configured; skipping rolling tap update."
-            exit 0
-          fi
-
           git_home="$("${mktemp_bin}" -d)"
           work_root="$("${mktemp_bin}" -d)"
           tap_repo="${work_root}/homebrew-tap"
