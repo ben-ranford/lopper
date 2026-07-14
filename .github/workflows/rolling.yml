@@ -263,6 +263,7 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Update lopper-rolling formula
         if: ${{ steps.tap_token.outputs.available == 'true' }}
@@ -327,10 +328,14 @@ jobs:
       - name: Commit and push rolling formula changes
         if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"
+          trap 'git remote set-url origin https://github.com/ben-ranford/homebrew-tap.git' EXIT
 
           git add Formula/lopper-rolling.rb
           if git diff --cached --quiet; then
