@@ -116,7 +116,7 @@ func parseExportReleaseDeltaArgs(args []string) (exportReleaseDeltaOptions, erro
 func buildReleaseDelta(release string, flags []featureflags.Flag) releaseDelta {
 	delta := releaseDelta{Release: release}
 	for _, flag := range flags {
-		if flag.Lifecycle != featureflags.LifecycleStable || flag.FirstStableRelease != "" {
+		if flag.FirstStableRelease != "" {
 			continue
 		}
 		delta.Updates = append(delta.Updates, releaseDeltaUpdate{

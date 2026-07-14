@@ -188,7 +188,7 @@ func TestRunExportReleaseDelta(t *testing.T) {
   {
     "code": "LOP-FEAT-0002",
     "name": "released-preview-flag",
-    "description": "Preview flags must not be stamped from the release catalog",
+    "description": "Preview flags shipped in the target SHA need release history stamps too",
     "lifecycle": "preview"
   },
   {
@@ -207,7 +207,7 @@ func TestRunExportReleaseDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run export-release-delta: %v", err)
 	}
-	if !strings.Contains(output, "exported 1 feature release delta update(s) for v1.5.0") {
+	if !strings.Contains(output, "exported 2 feature release delta update(s) for v1.5.0") {
 		t.Fatalf("expected export delta output, got %q", output)
 	}
 
@@ -222,11 +222,15 @@ func TestRunExportReleaseDelta(t *testing.T) {
 	if delta.Release != "v1.5.0" {
 		t.Fatalf("release delta release = %q, want v1.5.0", delta.Release)
 	}
-	if len(delta.Updates) != 1 {
-		t.Fatalf("release delta updates = %#v, want exactly one update", delta.Updates)
+	if len(delta.Updates) != 2 {
+		t.Fatalf("release delta updates = %#v, want exactly two updates", delta.Updates)
 	}
-	if delta.Updates[0].Code != "LOP-FEAT-0001" || delta.Updates[0].FirstStableRelease != "v1.5.0" {
-		t.Fatalf("unexpected release delta update: %#v", delta.Updates[0])
+	updatesByCode := make(map[string]string, len(delta.Updates))
+	for _, update := range delta.Updates {
+		updatesByCode[update.Code] = update.FirstStableRelease
+	}
+	if updatesByCode["LOP-FEAT-0001"] != "v1.5.0" || updatesByCode["LOP-FEAT-0002"] != "v1.5.0" {
+		t.Fatalf("unexpected release delta updates: %#v", delta.Updates)
 	}
 }
 
