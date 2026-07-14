@@ -418,6 +418,24 @@ func TestMultilineUseAliasSupportsOtherIDLocals(t *testing.T) {
 	}
 }
 
+func TestRustDeclarationCountsASCIIAliasAgainstUnicodePathSegment(t *testing.T) {
+	const content = "use serde::deø as de;\n"
+	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
+	if len(imports) != 1 {
+		t.Fatalf("expected one import, got %#v", imports)
+	}
+	imported := imports[0]
+	if imported.Local != "de" {
+		t.Fatalf("local alias = %q, want %q", imported.Local, "de")
+	}
+	if imported.DeclarationTokenHits != 2 {
+		t.Fatalf("declaration token hits = %d, want 2", imported.DeclarationTokenHits)
+	}
+	if got := shared.CountUsage([]byte(content), imports)["de"]; got != 0 {
+		t.Fatalf("usage[de] = %d, want 0", got)
+	}
+}
+
 func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
 	for _, tc := range []otherIDRustIdentifierCase{
 		{

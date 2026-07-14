@@ -88,6 +88,7 @@ func countRustDeclarationTokens(clause string, wanted map[string]struct{}) map[s
 		}
 		index = next
 	}
+	mergeASCIIWordTokenHits(clause, wanted, hits)
 	return hits
 }
 
@@ -117,6 +118,64 @@ func nextRustIdentifierToken(content string, searchStart int) (string, int, bool
 		return content[start:searchStart], searchStart, true
 	}
 	return "", searchStart, false
+}
+
+func mergeASCIIWordTokenHits(content string, wanted map[string]struct{}, hits map[string]int) {
+	for token := range wanted {
+		if !isASCIIWordToken(token) {
+			continue
+		}
+		if count := countASCIIWordTokens(content, token); count > hits[token] {
+			hits[token] = count
+		}
+	}
+}
+
+func isASCIIWordToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for index := 0; index < len(token); index++ {
+		if token[index] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+func countASCIIWordTokens(content, token string) int {
+	if token == "" {
+		return 0
+	}
+	count := 0
+	for searchStart := 0; searchStart < len(content); {
+		relative := strings.Index(content[searchStart:], token)
+		if relative < 0 {
+			return count
+		}
+		offset := searchStart + relative
+		if asciiWordTokenAt(content, token, offset) {
+			count++
+			searchStart = offset + len(token)
+			continue
+		}
+		searchStart = offset + 1
+	}
+	return count
+}
+
+func asciiWordTokenAt(content, token string, offset int) bool {
+	end := offset + len(token)
+	if token == "" || offset < 0 || end > len(content) || content[offset:end] != token {
+		return false
+	}
+	leftBoundary := offset == 0 || !isASCIIUsageWordByte(content[offset-1])
+	rightBoundary := end == len(content) || !isASCIIUsageWordByte(content[end])
+	return leftBoundary && rightBoundary
+}
+
+func isASCIIUsageWordByte(b byte) bool {
+	return b == '$' || b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func advancePastRustUseWildcard(clause string, searchStart int) int {
