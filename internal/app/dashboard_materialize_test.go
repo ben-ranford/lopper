@@ -83,7 +83,7 @@ func TestRootedCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *te
 }
 
 func TestRootedCommandOutputRootPropagatesTrustedRootLookupError(t *testing.T) {
-	assertTrustedRootLookupError(t, "trusted root lookup failure", func(outputPath string, trustedRoot string) error {
+	assertTrustedRootLookupError(t, "trusted root lookup failure", func(outputPath, trustedRoot string) error {
 		_, err := rootedCommandOutputRoot(outputPath, trustedRoot)
 		return err
 	})
@@ -407,7 +407,7 @@ func TestTrustedCommandOutputRootForRootUsesResolvedRootForRealPath(t *testing.T
 }
 
 func TestTrustedCommandOutputRootForRootsPropagatesRootError(t *testing.T) {
-	assertTrustedRootLookupError(t, "trusted root resolution error", func(outputPath string, trustedRoot string) error {
+	assertTrustedRootLookupError(t, "trusted root resolution error", func(outputPath, trustedRoot string) error {
 		_, err := trustedCommandOutputRootForRoots(outputPath, trustedRoot)
 		return err
 	})

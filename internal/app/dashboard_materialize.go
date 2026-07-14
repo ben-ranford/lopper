@@ -50,30 +50,37 @@ func rootedCommandOutputRoot(outputPath string, trustedRoots ...string) (string,
 		return "", fmt.Errorf("resolve output path: %w", err)
 	}
 
-	trustedRoot, err := trustedCommandOutputRootForRoots(outputAbs, trustedRoots...)
-	if err != nil {
-		return "", err
-	}
-	if trustedRoot != "" {
-		if err := rejectSymlinkedOutputRoot(trustedRoot, filepath.Dir(outputAbs)); err != nil {
-			return "", err
-		}
-		return trustedRoot, nil
+	trustedRoot, err := resolvedCommandOutputRoot(outputAbs, func() (string, error) {
+		return trustedCommandOutputRootForRoots(outputAbs, trustedRoots...)
+	})
+	if trustedRoot != "" || err != nil {
+		return trustedRoot, err
 	}
 
-	workspaceRoot, workspaceErr := trustedCommandOutputRoot(outputAbs)
-	if workspaceErr == nil && workspaceRoot != "" {
-		if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
-			return "", err
-		}
+	workspaceRoot, workspaceErr := resolvedCommandOutputRoot(outputAbs, func() (string, error) {
+		return trustedCommandOutputRoot(outputAbs)
+	})
+	if workspaceRoot != "" {
 		return workspaceRoot, nil
 	}
 
+	return fallbackCommandOutputRoot(outputAbs, outputPath, workspaceErr)
+}
+
+func resolvedCommandOutputRoot(outputAbs string, resolve func() (string, error)) (string, error) {
+	root, err := resolve()
+	if err != nil || root == "" {
+		return root, err
+	}
+	if err := rejectSymlinkedOutputRoot(root, filepath.Dir(outputAbs)); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func fallbackCommandOutputRoot(outputAbs, outputPath string, workspaceErr error) (string, error) {
 	existingRoot, err := resolveExistingOutputRoot(outputAbs, outputPath)
 	if err != nil {
-		if workspaceErr != nil && filepath.IsAbs(outputPath) {
-			return "", err
-		}
 		return "", err
 	}
 	if workspaceErr != nil && filepath.IsAbs(outputPath) {
