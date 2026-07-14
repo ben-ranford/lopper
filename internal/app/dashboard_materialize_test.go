@@ -68,12 +68,16 @@ func TestRootedCommandOutputRootPropagatesOutputPathResolutionError(t *testing.T
 	})
 }
 
-func TestRootedCommandOutputRootPropagatesWorkspaceLookupErrorForAbsolutePath(t *testing.T) {
+func TestRootedCommandOutputRootAllowsAbsolutePathWhenWorkspaceLookupFails(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
 	withUnreadableWorkingDirectory(t, func() {
-		_, err := rootedCommandOutputRoot(outputPath)
-		if err == nil || !strings.Contains(err.Error(), "resolve output workspace") {
-			t.Fatalf("expected workspace lookup failure, got %v", err)
+		root, err := rootedCommandOutputRoot(outputPath)
+		if err != nil {
+			t.Fatalf("rooted command output root: %v", err)
+		}
+		wantRoot := filepath.Dir(filepath.Dir(outputPath))
+		if root != wantRoot {
+			t.Fatalf("expected fallback output root %q, got %q", wantRoot, root)
 		}
 	})
 }
@@ -99,6 +103,28 @@ func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
 	}
 	if status != "dashboard report written to report.json" {
 		t.Fatalf("unexpected status: %q", status)
+	}
+}
+
+func TestPersistCommandOutputAllowsAbsoluteExternalPathWhenWorkingDirectoryRemoved(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
+
+	withRemovedWorkingDirectory(t, func() {
+		status, err := persistCommandOutput("{}", outputPath, "dashboard report")
+		if err != nil {
+			t.Fatalf("persist command output: %v", err)
+		}
+		if status != "dashboard report written to "+outputPath {
+			t.Fatalf("unexpected status: %q", status)
+		}
+	})
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Fatalf("unexpected output content: %q", string(data))
 	}
 }
 
@@ -749,6 +775,32 @@ func withUnreadableWorkingDirectory(t *testing.T, fn func()) {
 	if err := os.Chmod(workspace, 0); err != nil {
 		t.Fatalf("chmod unreadable workspace: %v", err)
 	}
+
+	fn()
+}
+
+func withRemovedWorkingDirectory(t *testing.T, fn func()) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("removed working directory semantics are not stable on windows")
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	workspace := t.TempDir()
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir removed workspace: %v", err)
+	}
+	if err := os.RemoveAll(workspace); err != nil {
+		t.Fatalf("remove workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
 
 	fn()
 }

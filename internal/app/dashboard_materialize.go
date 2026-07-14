@@ -62,10 +62,7 @@ func rootedCommandOutputRoot(outputPath string, trustedRoots ...string) (string,
 	}
 
 	workspaceRoot, workspaceErr := trustedCommandOutputRoot(outputAbs)
-	if workspaceErr != nil {
-		return "", workspaceErr
-	}
-	if workspaceRoot != "" {
+	if workspaceErr == nil && workspaceRoot != "" {
 		if err := rejectSymlinkedOutputRoot(workspaceRoot, filepath.Dir(outputAbs)); err != nil {
 			return "", err
 		}
@@ -74,7 +71,16 @@ func rootedCommandOutputRoot(outputPath string, trustedRoots ...string) (string,
 
 	existingRoot, err := resolveExistingOutputRoot(outputAbs, outputPath)
 	if err != nil {
+		if workspaceErr != nil && filepath.IsAbs(outputPath) {
+			return "", err
+		}
 		return "", err
+	}
+	if workspaceErr != nil && filepath.IsAbs(outputPath) {
+		return existingRoot, nil
+	}
+	if workspaceErr != nil {
+		return "", workspaceErr
 	}
 	return existingRoot, nil
 }
