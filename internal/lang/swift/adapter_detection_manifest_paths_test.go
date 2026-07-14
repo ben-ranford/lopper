@@ -444,6 +444,7 @@ func TestSwiftUsageHeuristicBranches(t *testing.T) {
 	t.Run("generic specializations provide usage evidence", testSwiftUsageHeuristicGenericSpecializations)
 	t.Run("symbol shapes require strong usage evidence", testSwiftUsageHeuristicEvidenceShapes)
 	t.Run("symbol collection detects local declarations", testSwiftUsageHeuristicCollectsLocalSymbols)
+	t.Run("context collection stays bounded to attributable files", testSwiftUsageHeuristicContextCollection)
 	t.Run("candidate attribution excludes known declarations", testSwiftUsageCandidateAttribution)
 	t.Run("unterminated generic candidate scan stays bounded", testSwiftUsageHeuristicUnterminatedGenericScan)
 	t.Run("declaration scopes follow Swift targets", testSwiftDeclarationScopes)
@@ -533,6 +534,21 @@ func testSwiftUsageHeuristicEvidenceShapes(t *testing.T) {
 	if hasUnqualifiedUsageEvidence(" <Value>()") {
 		t.Fatalf("expected whitespace before a comparison-like generic expression to lack usage evidence")
 	}
+	if !hasUnqualifiedUsageEvidence("<Result<Value, Error>>.success") {
+		t.Fatalf("expected nested generic specializations to preserve static-member evidence")
+	}
+	if !hasUnqualifiedUsageEvidence("<(Value) -> Result>()") {
+		t.Fatalf("expected function-type generics to preserve call evidence")
+	}
+	if after, ok := trimSwiftGenericSpecialization("<Result<Value, Error>>.success"); !ok || after != ".success" {
+		t.Fatalf("expected nested generic specialization to trim to member access, got after=%q ok=%v", after, ok)
+	}
+	if after, ok := trimSwiftGenericSpecialization("<(Value) -> Result>()"); !ok || after != "()" {
+		t.Fatalf("expected function-type generic specialization to trim to call site, got after=%q ok=%v", after, ok)
+	}
+	if after, ok := trimSwiftGenericSpecialization("<Result<Value, Error>"); ok || after != "" {
+		t.Fatalf("expected unterminated generic specialization trim to fail, got after=%q ok=%v", after, ok)
+	}
 }
 
 func testSwiftUsageHeuristicCollectsLocalSymbols(t *testing.T) {
@@ -544,6 +560,61 @@ func testSwiftUsageHeuristicCollectsLocalSymbols(t *testing.T) {
 	}
 	if _, ok := symbols[lookupKey("Runner")]; !ok {
 		t.Fatalf("expected Runner to be collected, got %#v", symbols)
+	}
+}
+
+func testSwiftUsageHeuristicContextCollection(t *testing.T) {
+	t.Helper()
+
+	singleDep := []importBinding{{Dependency: "alamofire", Module: "Alamofire", Local: "Session"}}
+	multipleDeps := append([]importBinding{}, singleDep...)
+	multipleDeps = append(multipleDeps, importBinding{Dependency: "kingfisher", Module: "Kingfisher", Local: "KingfisherManager"})
+
+	if shouldCollectUnqualifiedUsageCandidates(nil, map[string]int{}) {
+		t.Fatalf("expected empty imports to skip candidate collection")
+	}
+	if shouldCollectUnqualifiedUsageCandidates(multipleDeps, map[string]int{}) {
+		t.Fatalf("expected multi-dependency imports to skip candidate collection")
+	}
+	if shouldCollectUnqualifiedUsageCandidates([]importBinding{{Module: "Alamofire", Local: "Session"}}, map[string]int{}) {
+		t.Fatalf("expected imports without a dependency key to skip candidate collection")
+	}
+	if shouldCollectUnqualifiedUsageCandidates(singleDep, map[string]int{"Session": 1}) {
+		t.Fatalf("expected existing qualified usage to skip candidate collection")
+	}
+	if !shouldCollectUnqualifiedUsageCandidates(singleDep, map[string]int{}) {
+		t.Fatalf("expected a single dependency without qualified usage to collect candidates")
+	}
+
+	scanner := repoScanner{}
+	scanner.recordUnqualifiedUsageContext(fileScan{Path: "Sources/App/main.swift", Imports: singleDep, Usage: map[string]int{"Session": 1}}, []byte("import Alamofire\nlet value = SharedModel()\n"))
+	if len(scanner.unqualifiedUsageContexts) != 1 {
+		t.Fatalf("expected one recorded context, got %#v", scanner.unqualifiedUsageContexts)
+	}
+	if len(scanner.unqualifiedUsageContexts[0].candidates) != 0 {
+		t.Fatalf("expected qualified usage to avoid candidate collection, got %#v", scanner.unqualifiedUsageContexts[0].candidates)
+	}
+
+	scanner = repoScanner{
+		scan: scanResult{
+			Files: []fileScan{
+				{Path: "Sources/App/main.swift", Imports: singleDep, Usage: map[string]int{}},
+				{Path: "Sources/App/other.swift", Imports: singleDep, Usage: map[string]int{}},
+			},
+		},
+		declaredSymbolsByScope: map[string]map[string]struct{}{
+			"Sources/App": {},
+		},
+		unqualifiedUsageContexts: []unqualifiedUsageContext{
+			{scope: "Sources/App", candidates: []string{lookupKey("SharedModel")}},
+		},
+	}
+	scanner.applyUnqualifiedUsageHeuristics()
+	if scanner.scan.Files[0].Usage["Session"] != 1 {
+		t.Fatalf("expected first file to receive inferred usage, got %#v", scanner.scan.Files[0].Usage)
+	}
+	if len(scanner.scan.Files[1].Usage) != 0 {
+		t.Fatalf("expected files without a matching recorded context to remain unchanged, got %#v", scanner.scan.Files[1].Usage)
 	}
 }
 
