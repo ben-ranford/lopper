@@ -141,6 +141,46 @@ func TestPersistDashboardOutputPreservesExistingFileMode(t *testing.T) {
 	}
 }
 
+func TestPersistDashboardOutputRejectsReadOnlyExistingFile(t *testing.T) {
+	workspace := t.TempDir()
+	outputPath := filepath.Join(workspace, "org-report.html")
+	if err := os.WriteFile(outputPath, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed report file: %v", err)
+	}
+	if err := os.Chmod(outputPath, 0o400); err != nil {
+		t.Fatalf("chmod report file read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(outputPath, 0o600); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore report file permissions: %v", err)
+		}
+	})
+
+	probe, probeErr := os.OpenFile(outputPath, os.O_WRONLY, 0)
+	if probeErr == nil {
+		if err := probe.Close(); err != nil {
+			t.Fatalf("close writability probe: %v", err)
+		}
+		t.Skip("effective privileges bypass read-only file permissions")
+	}
+	if !os.IsPermission(probeErr) {
+		t.Skipf("read-only file semantics are not testable: %v", probeErr)
+	}
+
+	chdirCanonicalWorkspace(t, workspace)
+
+	if _, err := persistDashboardOutput("<html>after</html>", "org-report.html"); err == nil {
+		t.Fatal("expected read-only dashboard output to be rejected")
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read dashboard output: %v", err)
+	}
+	if string(data) != "before" {
+		t.Fatalf("expected read-only dashboard output to remain unchanged, got %q", string(data))
+	}
+}
+
 func TestPersistDashboardOutputRejectsSymlinkTarget(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
