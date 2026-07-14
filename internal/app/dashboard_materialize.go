@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -33,17 +34,14 @@ func persistCommandOutput(formatted, outputPath, label string) (string, error) {
 }
 
 func commandOutputRoot(outputPath string) (string, error) {
-	if filepath.IsAbs(outputPath) {
-		return absoluteCommandOutputRoot(outputPath)
-	}
-	workspaceRoot, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("resolve output workspace: %w", err)
-	}
-	return workspaceRoot, nil
+	return rootedCommandOutputRoot(outputPath)
 }
 
 func absoluteCommandOutputRoot(outputPath string) (string, error) {
+	return rootedCommandOutputRoot(outputPath)
+}
+
+func rootedCommandOutputRoot(outputPath string) (string, error) {
 	outputAbs, err := filepath.Abs(outputPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve output path: %w", err)
@@ -78,6 +76,12 @@ func resolveExistingOutputRoot(outputAbs, outputPath string) (string, error) {
 }
 
 func inspectOutputRootPath(current, outputPath string) (string, bool, error) {
+	if isKnownSystemAliasRoot(current) {
+		if _, err := os.Stat(current); err == nil {
+			return current, true, nil
+		}
+	}
+
 	info, err := os.Lstat(current)
 	switch {
 	case err == nil:
@@ -151,11 +155,35 @@ func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error
 }
 
 func pathWithinRoot(rootAbs, targetAbs string) (bool, error) {
+	if pathsUseDifferentWindowsVolumes(rootAbs, targetAbs) {
+		return false, nil
+	}
 	rel, err := filepath.Rel(rootAbs, targetAbs)
 	if err != nil {
 		return false, fmt.Errorf("compute output path: %w", err)
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))), nil
+}
+
+func isKnownSystemAliasRoot(path string) bool {
+	return runtime.GOOS == "darwin" && (path == "/tmp" || path == "/var")
+}
+
+func pathsUseDifferentWindowsVolumes(rootAbs, targetAbs string) bool {
+	rootVolume := pathVolumeName(rootAbs)
+	targetVolume := pathVolumeName(targetAbs)
+	return rootVolume != "" && targetVolume != "" && rootVolume != targetVolume
+}
+
+func pathVolumeName(path string) string {
+	volume := filepath.VolumeName(path)
+	if volume == "" && len(path) >= 2 && path[1] == ':' {
+		drive := path[0]
+		if ('a' <= drive && drive <= 'z') || ('A' <= drive && drive <= 'Z') {
+			volume = path[:2]
+		}
+	}
+	return strings.ToLower(volume)
 }
 
 func ensureCommandOutputParent(rootDir, outputPath string) error {

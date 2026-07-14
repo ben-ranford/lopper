@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,44 @@ func TestCommandOutputRootRelativePathUsesWorkspace(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputBypassesFileWritesForEmptyAndDash(t *testing.T) {
+	for _, outputPath := range []string{"   ", " - "} {
+		status, err := persistCommandOutput("formatted output", outputPath, "dashboard report")
+		if err != nil {
+			t.Fatalf("persist command output %q: %v", outputPath, err)
+		}
+		if status != "formatted output" {
+			t.Fatalf("expected passthrough output for %q, got %q", outputPath, status)
+		}
+	}
+}
+
+func TestPersistDashboardOutputUsesDashboardLabel(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+
+	status, err := persistDashboardOutput("{}", "report.json")
+	if err != nil {
+		t.Fatalf("persist dashboard output: %v", err)
+	}
+	if status != "dashboard report written to report.json" {
+		t.Fatalf("unexpected status: %q", status)
+	}
+}
+
+func TestPersistCommandOutputPropagatesDirectoryTargetError(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+	if err := os.MkdirAll(filepath.Join(workspace, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+
+	_, err := persistCommandOutput("{}", "reports", "dashboard report")
+	if err == nil {
+		t.Fatal("expected directory target error")
+	}
+}
+
 func TestCommandOutputRootAbsolutePathUsesExistingParentOutsideWorkspace(t *testing.T) {
 	outputRoot := filepath.Join(t.TempDir(), "reports")
 	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
@@ -33,6 +72,51 @@ func TestCommandOutputRootAbsolutePathUsesExistingParentOutsideWorkspace(t *test
 	}
 	if root != outputRoot {
 		t.Fatalf("expected absolute output root %q, got %q", outputRoot, root)
+	}
+}
+
+func TestCommandOutputRootAllowsRelativeParentOutsideWorkspace(t *testing.T) {
+	workspaceParent := t.TempDir()
+	workspace := filepath.Join(workspaceParent, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	chdirCanonicalWorkspace(t, workspace)
+
+	outputPath := filepath.Join("..", "reports", "output.json")
+	status, err := persistCommandOutput("{}", outputPath, "dashboard report")
+	if err != nil {
+		t.Fatalf("persist command output: %v", err)
+	}
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+
+	outputAbs := filepath.Join(workspaceParent, "reports", "output.json")
+	data, err := os.ReadFile(outputAbs)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Fatalf("unexpected output content: %q", string(data))
+	}
+}
+
+func TestCommandOutputRootAllowsKnownDarwinSystemAliasRoots(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("known system alias roots only apply on darwin")
+	}
+
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+
+	outputPath := filepath.Join("/tmp", "lopper-command-output-root", t.Name(), "report.json")
+	root, err := commandOutputRoot(outputPath)
+	if err != nil {
+		t.Fatalf("command output root: %v", err)
+	}
+	if root != "/tmp" {
+		t.Fatalf("expected /tmp root, got %q", root)
 	}
 }
 
@@ -160,6 +244,19 @@ func TestTrustedCommandOutputRootReturnsEmptyOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestTrustedCommandOutputRootReturnsWorkspaceForWorkspaceRootPath(t *testing.T) {
+	workspace := t.TempDir()
+	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
+
+	root, err := trustedCommandOutputRoot(canonicalWorkspace)
+	if err != nil {
+		t.Fatalf("trusted command output root: %v", err)
+	}
+	if root != canonicalWorkspace {
+		t.Fatalf("expected trusted workspace root %q, got %q", canonicalWorkspace, root)
+	}
+}
+
 func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	blocker := filepath.Join(workspace, "reports")
@@ -210,6 +307,19 @@ func TestEnsureCommandOutputParentCreatesNestedDirectories(t *testing.T) {
 		t.Fatalf("stat output parent: %v", err)
 	} else if !info.IsDir() {
 		t.Fatalf("expected output parent directory, got mode %v", info.Mode())
+	}
+}
+
+func TestEnsureCommandOutputParentRejectsSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "reports")); err != nil {
+		t.Fatalf("create reports symlink: %v", err)
+	}
+
+	err := ensureCommandOutputParent(root, filepath.Join(root, "reports", "report.json"))
+	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
+		t.Fatalf("expected symlinked parent rejection, got %v", err)
 	}
 }
 
@@ -280,6 +390,53 @@ func TestPathWithinRoot(t *testing.T) {
 	}
 }
 
+func TestPathWithinRootAllowsRootPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	within, err := pathWithinRoot(root, root)
+	if err != nil {
+		t.Fatalf("pathWithinRoot root path: %v", err)
+	}
+	if !within {
+		t.Fatal("expected root path to remain within root")
+	}
+}
+
+func TestPathWithinRootTreatsDifferentWindowsVolumesAsOutside(t *testing.T) {
+	within, err := pathWithinRoot(`C:\repo`, `D:\reports\output.json`)
+	if err != nil {
+		t.Fatalf("pathWithinRoot different volumes: %v", err)
+	}
+	if within {
+		t.Fatal("expected different-volume path to be treated as outside root")
+	}
+}
+
+func TestPathVolumeNameFallsBackToWindowsDrivePrefix(t *testing.T) {
+	if got := pathVolumeName(`D:\reports\output.json`); got != "d:" {
+		t.Fatalf("expected windows drive prefix, got %q", got)
+	}
+	if got := pathVolumeName("/tmp/report.json"); got != "" {
+		t.Fatalf("expected no volume for posix path, got %q", got)
+	}
+}
+
+func TestIsKnownSystemAliasRoot(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		for _, path := range []string{"/tmp", "/var"} {
+			if !isKnownSystemAliasRoot(path) {
+				t.Fatalf("expected %q to be treated as a known system alias root", path)
+			}
+		}
+	}
+	if isKnownSystemAliasRoot("reports") {
+		t.Fatal("expected relative path to be rejected as a known system alias root")
+	}
+}
+
 func TestResolveAliasedWorkspaceRootPropagatesBrokenAliasError(t *testing.T) {
 	workspace := t.TempDir()
 	brokenAlias := filepath.Join(t.TempDir(), "repo")
@@ -300,4 +457,18 @@ func blockedPathFixture(t *testing.T) (string, string) {
 	blocker := filepath.Join(root, "blocked")
 	writeBlockedFile(t, blocker)
 	return root, blocker
+}
+
+func TestRejectSymlinkedOutputParentRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "reports")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("create reports symlink: %v", err)
+	}
+
+	err := rejectSymlinkedOutputParent(root, filepath.Join(link, "nested"))
+	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
 }
