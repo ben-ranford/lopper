@@ -251,6 +251,31 @@ func TestCommandOutputRootAllowsRelativeParentOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputRejectsRelativeParentSymlinkEscape(t *testing.T) {
+	workspaceParent := t.TempDir()
+	workspace := filepath.Join(workspaceParent, "workspace")
+	if err := os.MkdirAll(filepath.Join(workspace, "app"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace app: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir outside nested: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create reports symlink: %v", err)
+	}
+	chdirCanonicalWorkspace(t, filepath.Join(workspace, "app"))
+
+	outputPath := filepath.Join("..", "reports", "nested", "output.json")
+	_, err := persistCommandOutput("{}", outputPath, "dashboard report")
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected parent-relative symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "nested", "output.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	}
+}
+
 func TestCommandOutputRootAllowsKnownDarwinSystemAliasRoots(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("known system alias roots only apply on darwin")
@@ -892,6 +917,14 @@ func withUnreadableWorkingDirectory(t *testing.T, fn func()) {
 	})
 	if err := os.Chmod(workspace, 0); err != nil {
 		t.Fatalf("chmod unreadable workspace: %v", err)
+	}
+	if _, err := os.Getwd(); err == nil {
+		if err := os.Chmod(workspace, 0o755); err != nil {
+			t.Fatalf("restore workspace permissions for removal: %v", err)
+		}
+		if err := os.RemoveAll(workspace); err != nil {
+			t.Fatalf("remove unreadable workspace fallback: %v", err)
+		}
 	}
 
 	fn()
