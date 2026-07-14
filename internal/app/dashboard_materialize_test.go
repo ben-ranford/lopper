@@ -43,10 +43,10 @@ func TestPersistCommandOutputRejectsTrailingSeparator(t *testing.T) {
 		t.Fatalf("write existing file: %v", err)
 	}
 
-	for _, outputPath := range []string{"reports/", "existing-file/"} {
+	for _, outputPath := range []string{"reports/", "existing-file/", "reports/.", "existing-file/."} {
 		_, err := persistCommandOutput("{}", outputPath, "dashboard report")
 		if err == nil || !strings.Contains(err.Error(), "output path must name a file") {
-			t.Fatalf("expected trailing-separator rejection for %q, got %v", outputPath, err)
+			t.Fatalf("expected directory-style output rejection for %q, got %v", outputPath, err)
 		}
 	}
 
@@ -780,11 +780,17 @@ func TestPathVolumeNameFallsBackToWindowsDrivePrefix(t *testing.T) {
 	}
 }
 
-func TestHasTrailingOutputPathSeparator(t *testing.T) {
+func TestHasDirectoryStyleOutputPath(t *testing.T) {
 	if !hasTrailingOutputPathSeparator("reports/") {
 		t.Fatal("expected trailing slash to be treated as a path separator")
 	}
-	if hasTrailingOutputPathSeparator("report.json") {
+	if !hasDirectoryStyleOutputPath("reports/.") {
+		t.Fatal("expected trailing dot path element to be rejected")
+	}
+	if !hasDirectoryStyleOutputPath("reports/..") {
+		t.Fatal("expected trailing dotdot path element to be rejected")
+	}
+	if hasDirectoryStyleOutputPath(filepath.Join("reports", "out.json")) {
 		t.Fatal("expected ordinary file path to remain valid")
 	}
 }

@@ -19,7 +19,7 @@ func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...s
 	if trimmedOutputPath == "" || trimmedOutputPath == "-" {
 		return formatted, nil
 	}
-	if hasTrailingOutputPathSeparator(trimmedOutputPath) {
+	if hasDirectoryStyleOutputPath(trimmedOutputPath) {
 		return "", fmt.Errorf("output path must name a file: %s", trimmedOutputPath)
 	}
 
@@ -316,6 +316,21 @@ func pathVolumeName(path string) string {
 
 func hasTrailingOutputPathSeparator(path string) bool {
 	return path != "" && os.IsPathSeparator(path[len(path)-1])
+}
+
+func hasDirectoryStyleOutputPath(path string) bool {
+	if hasTrailingOutputPathSeparator(path) {
+		return true
+	}
+	last := 0
+	for i := len(path) - 1; i >= 0; i-- {
+		if os.IsPathSeparator(path[i]) {
+			last = i + 1
+			break
+		}
+	}
+	base := path[last:]
+	return base == "." || base == ".."
 }
 
 func ensureCommandOutputParent(rootDir, outputPath string) error {
