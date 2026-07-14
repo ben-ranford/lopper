@@ -2,6 +2,7 @@ package rust
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -25,7 +26,7 @@ func appendUseClauseImports(imports []importBinding, clause string, ctx useImpor
 	nextToken := 0
 	multiline := strings.ContainsRune(clause, '\n')
 	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
-	declarationTokenHits := countRustDeclarationTokens(declarationClause)
+	declarationTokenHits := countRustDeclarationTokens(declarationClause, collectUseEntryLocalTokens(entries))
 	for _, entry := range entries {
 		entryContext := ctx
 		entryContext.DeclarationTokenHits = declarationTokenHits[useEntryLocalToken(entry)]
@@ -60,20 +61,49 @@ func locateMultilineUseEntry(clause string, entry usePathEntry, ctx useImportCon
 	return ctx, offset + len(token)
 }
 
-func countRustDeclarationTokens(clause string) map[string]int {
-	hits := make(map[string]int)
+func collectUseEntryLocalTokens(entries []usePathEntry) map[string]struct{} {
+	wanted := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		token := useEntryLocalToken(entry)
+		if token == "" {
+			continue
+		}
+		wanted[token] = struct{}{}
+	}
+	return wanted
+}
+
+func countRustDeclarationTokens(clause string, wanted map[string]struct{}) map[string]int {
+	hits := make(map[string]int, len(wanted))
+	if len(wanted) == 0 {
+		return hits
+	}
 	for index := 0; index < len(clause); {
-		if !isRustIdentifierStart(clause[index]) {
-			index++
+		r, width := utf8.DecodeRuneInString(clause[index:])
+		if r == utf8.RuneError && width == 0 {
+			break
+		}
+		if !isRustIdentifierStartRune(r) {
+			index += width
 			continue
 		}
 
 		start := index
-		index++
-		for index < len(clause) && isRustIdentifierContinue(clause[index]) {
-			index++
+		index += width
+		for index < len(clause) {
+			next, nextWidth := utf8.DecodeRuneInString(clause[index:])
+			if next == utf8.RuneError && nextWidth == 0 {
+				break
+			}
+			if !isRustIdentifierContinueRune(next) {
+				break
+			}
+			index += nextWidth
 		}
-		hits[clause[start:index]]++
+		token := clause[start:index]
+		if _, ok := wanted[token]; ok {
+			hits[token]++
+		}
 	}
 	return hits
 }

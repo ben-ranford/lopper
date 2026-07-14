@@ -2,6 +2,7 @@ package rust
 
 import (
 	"bytes"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -391,6 +392,14 @@ func isRustIdentifierStart(b byte) bool {
 
 func isRustIdentifierContinue(b byte) bool {
 	return isRustIdentifierStart(b) || (b >= '0' && b <= '9')
+}
+
+func isRustIdentifierStartRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r)
+}
+
+func isRustIdentifierContinueRune(r rune) bool {
+	return isRustIdentifierStartRune(r) || unicode.IsDigit(r)
 }
 
 func firstContentByteIndex(line []byte) int {

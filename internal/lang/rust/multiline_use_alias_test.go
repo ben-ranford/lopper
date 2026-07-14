@@ -247,11 +247,17 @@ func TestFindRustIdentifierTokenBoundaries(t *testing.T) {
 	if got := countRustIdentifierTokens(collidingAlias, "de"); got != 2 {
 		t.Fatalf("declaration token count = %d, want 2", got)
 	}
-	if got := countRustDeclarationTokens(collidingAlias)["de"]; got != 2 {
+	if got := countRustDeclarationTokens(collidingAlias, map[string]struct{}{"de": {}})["de"]; got != 2 {
 		t.Fatalf("precomputed declaration token count = %d, want 2", got)
 	}
-	if got := countRustDeclarationTokens("serde::{Deserialize as De, de::Visitor as De}")["De"]; got != 2 {
+	if got := countRustDeclarationTokens("serde::{Deserialize as De, de::Visitor as De}", map[string]struct{}{"De": {}})["De"]; got != 2 {
 		t.Fatalf("precomputed alias declaration token count = %d, want 2", got)
+	}
+	if got := countRustDeclarationTokens("serde::{Deserialize as De, de::Visitor as De}", map[string]struct{}{"serde": {}, "De": {}}); len(got) != 2 || got["serde"] != 1 || got["De"] != 2 {
+		t.Fatalf("unexpected filtered declaration token counts: %#v", got)
+	}
+	if got := countRustDeclarationTokens("serde::{Deserialize as De, de::Visitor as De}", map[string]struct{}{"Missing": {}}); len(got) != 0 {
+		t.Fatalf("expected missing token filter to remain empty, got %#v", got)
 	}
 	for _, test := range []struct {
 		token string
@@ -278,6 +284,28 @@ func TestFindRustIdentifierTokenBoundaries(t *testing.T) {
 		if rustIdentifierTokenAt(test.content, test.token, test.offset) {
 			t.Errorf("rustIdentifierTokenAt(%q, %q, %d) unexpectedly matched", test.content, test.token, test.offset)
 		}
+	}
+}
+
+func TestCollectUseEntryLocalTokens(t *testing.T) {
+	entries := []usePathEntry{
+		{Symbol: "Deserialize"},
+		{Local: "De"},
+		{Local: "De"},
+		{},
+	}
+	got := collectUseEntryLocalTokens(entries)
+	if len(got) != 2 {
+		t.Fatalf("wanted two tracked local tokens, got %#v", got)
+	}
+	if _, ok := got["Deserialize"]; !ok {
+		t.Fatalf("expected symbol fallback token to be tracked, got %#v", got)
+	}
+	if _, ok := got["De"]; !ok {
+		t.Fatalf("expected explicit alias token to be tracked, got %#v", got)
+	}
+	if got := countRustDeclarationTokens("serde::Deserialize as De", map[string]struct{}{}); len(got) != 0 {
+		t.Fatalf("expected empty wanted token set to remain empty, got %#v", got)
 	}
 }
 
