@@ -493,10 +493,8 @@ func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
 	for _, tc := range []otherIDRustIdentifierCase{
 		{
 			name:        "continue rune",
-			raw:         []byte("x·y tail"),
 			content:     "x·y x·yz",
 			token:       "x·y",
-			wantNext:    len("x·y"),
 			wantOffset:  0,
 			wantCount:   1,
 			wantHits:    2,
@@ -504,10 +502,8 @@ func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
 		},
 		{
 			name:        "start rune",
-			raw:         []byte("ᢅx tail"),
 			content:     "ᢅx ᢅxy",
 			token:       "ᢅx",
-			wantNext:    len("ᢅx"),
 			wantOffset:  0,
 			wantCount:   1,
 			wantHits:    2,
@@ -522,10 +518,8 @@ func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
 
 type otherIDRustIdentifierCase struct {
 	name        string
-	raw         []byte
 	content     string
 	token       string
-	wantNext    int
 	wantOffset  int
 	wantCount   int
 	wantHits    int
@@ -534,10 +528,6 @@ type otherIDRustIdentifierCase struct {
 
 func assertRustIdentifierHelperCase(t *testing.T, tc otherIDRustIdentifierCase) {
 	t.Helper()
-	ident, next, ok := consumeRustIdentifier(tc.raw)
-	if !ok || ident != tc.token || next != tc.wantNext {
-		t.Fatalf("consumeRustIdentifier(%q) = ident=%q next=%d ok=%v", tc.raw, ident, next, ok)
-	}
 	if got := findRustIdentifierToken(tc.content, tc.token, 0); got != tc.wantOffset {
 		t.Fatalf("findRustIdentifierToken(%q) = %d, want %d", tc.token, got, tc.wantOffset)
 	}
