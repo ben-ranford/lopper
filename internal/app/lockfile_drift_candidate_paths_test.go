@@ -30,67 +30,65 @@ func assertCandidatePaths(t *testing.T, got, want []string) {
 	}
 }
 
-func TestLockfileManifestChangeCandidatePathsRuleRelevance(t *testing.T) {
-	t.Run("requires a matching lockfile", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+func TestLockfileManifestChangeCandidatePathsRequiresMatchingLockfile(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
 
-		snapshot, err := readLockfileDirSnapshot(repo, repo)
-		if err != nil {
-			t.Fatalf("read lockfile snapshot: %v", err)
-		}
-		got, err := lockfileManifestChangeCandidatePaths(snapshot, []lockfileRule{mustLockfileRule(t, "npm", manifestFileName)})
-		if err != nil {
-			t.Fatalf("lockfileManifestChangeCandidatePaths: %v", err)
-		}
-		assertCandidatePaths(t, got, nil)
-	})
+	snapshot, err := readLockfileDirSnapshot(repo, repo)
+	if err != nil {
+		t.Fatalf("read lockfile snapshot: %v", err)
+	}
+	got, err := lockfileManifestChangeCandidatePaths(snapshot, []lockfileRule{mustLockfileRule(t, "npm", manifestFileName)})
+	if err != nil {
+		t.Fatalf("lockfileManifestChangeCandidatePaths: %v", err)
+	}
+	assertCandidatePaths(t, got, nil)
+}
 
-	t.Run("matches only relevant pyproject sections", func(t *testing.T) {
-		cases := []struct {
-			name    string
-			content string
-			want    []string
-		}{
-			{name: "non matching section", content: "[project]\nname = \"demo\"\n", want: nil},
-			{name: "matching poetry section", content: "[tool.poetry]\nname = \"demo\"\n", want: []string{poetryLockName, pyprojectManifestName}},
-		}
+func TestLockfileManifestChangeCandidatePathsPyprojectSectionRelevance(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{name: "non matching section", content: "[project]\nname = \"demo\"\n", want: nil},
+		{name: "matching poetry section", content: "[tool.poetry]\nname = \"demo\"\n", want: []string{poetryLockName, pyprojectManifestName}},
+	}
 
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				repo := t.TempDir()
-				writeFile(t, filepath.Join(repo, pyprojectManifestName), tc.content)
-				writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, pyprojectManifestName), tc.content)
+			writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
 
-				snapshot, err := readLockfileDirSnapshot(repo, repo)
-				if err != nil {
-					t.Fatalf("read lockfile snapshot: %v", err)
-				}
-				got, err := lockfileManifestChangeCandidatePaths(snapshot, []lockfileRule{mustLockfileRule(t, "Poetry", pyprojectManifestName)})
-				if err != nil {
-					t.Fatalf("lockfileManifestChangeCandidatePaths: %v", err)
-				}
-				assertCandidatePaths(t, got, tc.want)
-			})
-		}
-	})
+			snapshot, err := readLockfileDirSnapshot(repo, repo)
+			if err != nil {
+				t.Fatalf("read lockfile snapshot: %v", err)
+			}
+			got, err := lockfileManifestChangeCandidatePaths(snapshot, []lockfileRule{mustLockfileRule(t, "Poetry", pyprojectManifestName)})
+			if err != nil {
+				t.Fatalf("lockfileManifestChangeCandidatePaths: %v", err)
+			}
+			assertCandidatePaths(t, got, tc.want)
+		})
+	}
+}
 
-	t.Run("includes distributed dotnet lockfiles", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
-		writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project></Project>\n")
-		writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{}\n")
+func TestLockfileManifestChangeCandidatePathsIncludesDistributedDotnetLockfiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, dotnetCentralManifest), "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", dotnetProjectManifest), "<Project></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", dotnetLockfileName), "{}\n")
 
-		snapshot, err := readLockfileDirSnapshot(repo, repo)
-		if err != nil {
-			t.Fatalf("read lockfile snapshot: %v", err)
-		}
-		got, err := lockfileManifestChangeCandidatePaths(snapshot, []lockfileRule{mustLockfileRule(t, ".NET", dotnetCentralManifest)})
-		if err != nil {
-			t.Fatalf("lockfileManifestChangeCandidatePaths: %v", err)
-		}
-		assertCandidatePaths(t, got, []string{dotnetCentralManifest, filepath.ToSlash(filepath.Join("src", "App", dotnetLockfileName))})
-	})
+	snapshot, err := readLockfileDirSnapshot(repo, repo)
+	if err != nil {
+		t.Fatalf("read lockfile snapshot: %v", err)
+	}
+	got, err := lockfileManifestChangeCandidatePaths(snapshot, []lockfileRule{mustLockfileRule(t, ".NET", dotnetCentralManifest)})
+	if err != nil {
+		t.Fatalf("lockfileManifestChangeCandidatePaths: %v", err)
+	}
+	assertCandidatePaths(t, got, []string{dotnetCentralManifest, filepath.ToSlash(filepath.Join("src", "App", dotnetLockfileName))})
 }
 
 func TestLockfileManifestChangeCandidatePathsDeduplicatesAndPropagatesErrors(t *testing.T) {

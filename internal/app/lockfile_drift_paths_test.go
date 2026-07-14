@@ -181,54 +181,52 @@ func TestGitAttributeCandidatePathsHandlesNilContextAndCommandFailure(t *testing
 	})
 }
 
-func TestCollectLockfileGitContextSkipsIrrelevantPathsAndFailsClosed(t *testing.T) {
-	t.Run("non git worktree", func(t *testing.T) {
-		gitContext, err := collectLockfileGitContext(context.Background(), t.TempDir(), []lockfileRule{lockfileRules[0]})
-		if err != nil {
-			t.Fatalf("collectLockfileGitContext: %v", err)
-		}
-		if gitContext.hasGitContext || len(gitContext.changedFiles) != 0 {
-			t.Fatalf("expected empty git context, got %#v", gitContext)
-		}
-	})
+func TestCollectLockfileGitContextReturnsEmptyForNonGitWorktree(t *testing.T) {
+	gitContext, err := collectLockfileGitContext(context.Background(), t.TempDir(), []lockfileRule{lockfileRules[0]})
+	if err != nil {
+		t.Fatalf("collectLockfileGitContext: %v", err)
+	}
+	if gitContext.hasGitContext || len(gitContext.changedFiles) != 0 {
+		t.Fatalf("expected empty git context, got %#v", gitContext)
+	}
+}
 
-	t.Run("no relevant candidates", func(t *testing.T) {
-		repo := configureFakeGitRepo(t, "filterdriver")
-		writeFile(t, filepath.Join(repo, "README.md"), "hello\n")
+func TestCollectLockfileGitContextIgnoresIrrelevantCandidates(t *testing.T) {
+	repo := configureFakeGitRepo(t, "filterdriver")
+	writeFile(t, filepath.Join(repo, "README.md"), "hello\n")
 
-		gitContext, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
-		if err != nil {
-			t.Fatalf("collectLockfileGitContext: %v", err)
-		}
-		if !gitContext.hasGitContext || len(gitContext.changedFiles) != 0 {
-			t.Fatalf("expected empty candidate-only git context, got %#v", gitContext)
-		}
-	})
+	gitContext, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+	if err != nil {
+		t.Fatalf("collectLockfileGitContext: %v", err)
+	}
+	if !gitContext.hasGitContext || len(gitContext.changedFiles) != 0 {
+		t.Fatalf("expected empty candidate-only git context, got %#v", gitContext)
+	}
+}
 
-	t.Run("custom filters on relevant candidates fail closed", func(t *testing.T) {
-		repo := configureFakeGitRepo(t, "pathscope-filterdriver")
-		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+func TestCollectLockfileGitContextFailsClosedForRelevantCustomFilters(t *testing.T) {
+	repo := configureFakeGitRepo(t, "pathscope-filterdriver")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
 
-		_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
-		if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), "package.json (pwn)") {
-			t.Fatalf("expected relevant filter ambiguity error, got %v", err)
-		}
-	})
+	_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), "package.json (pwn)") {
+		t.Fatalf("expected relevant filter ambiguity error, got %v", err)
+	}
+}
 
-	t.Run("malformed check-attr output stays fail closed", func(t *testing.T) {
-		repo := configureFakeGitRepo(t, "checkattrwrongfieldcount")
-		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+func TestCollectLockfileGitContextFailsClosedForMalformedCheckAttr(t *testing.T) {
+	repo := configureFakeGitRepo(t, "checkattrwrongfieldcount")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
 
-		_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
-		if err == nil || !strings.Contains(err.Error(), "parse git check-attr --stdin -z filter output") {
-			t.Fatalf("expected malformed check-attr failure, got %v", err)
-		}
-		if strings.Contains(err.Error(), "run git diff") {
-			t.Fatalf("expected malformed check-attr output to abort before git diff, got %v", err)
-		}
-	})
+	_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+	if err == nil || !strings.Contains(err.Error(), "parse git check-attr --stdin -z filter output") {
+		t.Fatalf("expected malformed check-attr failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), "run git diff") {
+		t.Fatalf("expected malformed check-attr output to abort before git diff, got %v", err)
+	}
 }
 
 func TestCollectLockfileGitContextScopesTrackedAndUntrackedCommandsToCandidatePaths(t *testing.T) {
