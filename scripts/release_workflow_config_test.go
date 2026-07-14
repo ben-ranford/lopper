@@ -2066,97 +2066,162 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 	}
 }
 
-func TestRollingWorkflowUsesTapTokenOnlyForPush(t *testing.T) {
+func TestRollingWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 	t.Parallel()
-	assertTapTokenReservedForFinalNetworkStep(t, ".github/workflows/rolling.yml", "update-homebrew-tap-rolling", "actions/checkout@v7", "Commit rolling formula changes", "Push rolling formula changes")
+	assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, homebrewTapWorkflowCase{
+		workflowPath:       ".github/workflows/rolling.yml",
+		validationJobName:  "validate-homebrew-tap-rolling",
+		updateJobName:      "update-homebrew-tap-rolling",
+		checkoutUses:       "actions/checkout@v7",
+		regenerateStepName: "Regenerate lopper-rolling formula",
+		pushStepName:       "Regenerate and push rolling formula changes",
+		formulaPath:        "Formula/lopper-rolling.rb",
+		sourceURLLine:      `source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${ROLLING_TAG}.tar.gz"`,
+		commitMessageLine:  `git_safe -C "${tap_repo}" commit --no-verify -m "lopper-rolling ${ROLLING_TAG}"`,
+		updateNeedsLine:    "  update-homebrew-tap-rolling:\n    needs:\n      - prepare-rolling\n      - publish-rolling\n      - validate-homebrew-tap-rolling",
+	})
 }
 
-func TestReleaseWorkflowUsesTapTokenOnlyForPush(t *testing.T) {
+func TestReleaseWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 	t.Parallel()
-	assertTapTokenReservedForFinalNetworkStep(t, ".github/workflows/release.yml", "update-homebrew-tap", "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd", "Commit formula changes", "Push formula changes")
+	assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, homebrewTapWorkflowCase{
+		workflowPath:       ".github/workflows/release.yml",
+		validationJobName:  "validate-homebrew-tap",
+		updateJobName:      "update-homebrew-tap",
+		checkoutUses:       "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+		regenerateStepName: "Regenerate lopper formula",
+		pushStepName:       "Regenerate and push formula changes",
+		formulaPath:        "Formula/lopper.rb",
+		sourceURLLine:      `source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${RELEASE_TAG}.tar.gz"`,
+		commitMessageLine:  `git_safe -C "${tap_repo}" commit --no-verify -m "lopper ${RELEASE_TAG}"`,
+		updateNeedsLine:    "  update-homebrew-tap:\n    needs:\n      - prepare-release\n      - publish\n      - validate-homebrew-tap",
+	})
 }
 
-func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string, jobName string, checkoutUses string, commitStepName string, pushStepName string) {
+type homebrewTapWorkflowCase struct {
+	workflowPath       string
+	validationJobName  string
+	updateJobName      string
+	checkoutUses       string
+	regenerateStepName string
+	pushStepName       string
+	formulaPath        string
+	sourceURLLine      string
+	commitMessageLine  string
+	updateNeedsLine    string
+}
+
+func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTapWorkflowCase) {
 	t.Helper()
 
 	var workflow struct {
 		Jobs map[string]workflowJobConfig `yaml:"jobs"`
 	}
-	readYAMLConfig(t, workflowPath, &workflow)
+	readYAMLConfig(t, tc.workflowPath, &workflow)
+	workflowText := readConfig(t, tc.workflowPath)
 
-	checkoutStep := workflowStepByName(t, workflow.Jobs, jobName, "Checkout tap repository")
-	if checkoutStep.Uses != checkoutUses {
-		t.Fatalf("%s tap checkout uses %q, want %q", workflowPath, checkoutStep.Uses, checkoutUses)
-	}
-	if _, ok := checkoutStep.With["token"]; ok {
-		t.Fatalf("%s tap checkout must not pass HOMEBREW_TAP_TOKEN to actions/checkout", workflowPath)
-	}
-	if checkoutStep.With["persist-credentials"] != "false" {
-		t.Fatalf("%s tap checkout persist-credentials = %q, want false", workflowPath, checkoutStep.With["persist-credentials"])
+	if !strings.Contains(workflowText, tc.updateNeedsLine) {
+		t.Fatalf("%s must make %s depend on the tokenless validation job", tc.workflowPath, tc.updateJobName)
 	}
 
-	commitStep := workflowStepByName(t, workflow.Jobs, jobName, commitStepName)
-	if _, ok := commitStep.Env["HOMEBREW_TAP_TOKEN"]; ok {
-		t.Fatalf("%s commit step must not receive HOMEBREW_TAP_TOKEN", workflowPath)
+	validationCheckout := workflowStepByName(t, workflow.Jobs, tc.validationJobName, "Checkout tap repository")
+	if validationCheckout.Uses != tc.checkoutUses {
+		t.Fatalf("%s validation tap checkout uses %q, want %q", tc.workflowPath, validationCheckout.Uses, tc.checkoutUses)
 	}
+	if _, ok := validationCheckout.With["token"]; ok {
+		t.Fatalf("%s validation tap checkout must not pass HOMEBREW_TAP_TOKEN to actions/checkout", tc.workflowPath)
+	}
+	if validationCheckout.With["persist-credentials"] != "false" {
+		t.Fatalf("%s validation tap checkout persist-credentials = %q, want false", tc.workflowPath, validationCheckout.With["persist-credentials"])
+	}
+
+	validationJob, ok := workflow.Jobs[tc.validationJobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", tc.validationJobName)
+	}
+	for _, step := range validationJob.Steps {
+		for key, value := range step.Env {
+			if strings.Contains(key, "HOMEBREW_TAP_TOKEN") || strings.Contains(value, "HOMEBREW_TAP_TOKEN") {
+				t.Fatalf("%s validation step %q must not receive HOMEBREW_TAP_TOKEN", tc.workflowPath, step.Name)
+			}
+		}
+	}
+	validationRegenerate := workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName)
 	for _, want := range []string{
-		"git_bin=/usr/bin/git",
-		"-c core.hooksPath=/dev/null",
-		"-c protocol.file.allow=never",
-		"-c protocol.ext.allow=never",
-		"git_safe add ",
-		"git_safe diff --cached --quiet",
-		"git_safe commit --no-verify",
-		`patch_path="${RUNNER_TEMP}/`,
-		"git_safe format-patch --stdout -1 HEAD >",
-		`echo "patch_path=${patch_path}" >> "$GITHUB_OUTPUT"`,
+		tc.sourceURLLine,
+		`cat > ` + tc.formulaPath + ` <<RUBY`,
 	} {
-		if !strings.Contains(commitStep.Run, want) {
-			t.Fatalf("%s commit step must contain %q", workflowPath, want)
+		if !strings.Contains(validationRegenerate.Run, want) {
+			t.Fatalf("%s validation regenerate step must contain %q", tc.workflowPath, want)
 		}
 	}
 
-	pushStep := workflowStepByName(t, workflow.Jobs, jobName, pushStepName)
+	updateJob, ok := workflow.Jobs[tc.updateJobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", tc.updateJobName)
+	}
+	for _, step := range updateJob.Steps {
+		if step.Name == "Checkout tap repository" {
+			t.Fatalf("%s privileged job must use a fresh git clone instead of actions/checkout", tc.workflowPath)
+		}
+	}
+
+	pushStep := workflowStepByName(t, workflow.Jobs, tc.updateJobName, tc.pushStepName)
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
-		t.Fatalf("%s tap push step HOMEBREW_TAP_TOKEN env = %q", workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
+		t.Fatalf("%s privileged tap update step HOMEBREW_TAP_TOKEN env = %q", tc.workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
-	if pushStep.Env["FORMULA_PATCH_PATH"] == "" {
-		t.Fatalf("%s push step must receive the exported patch path", workflowPath)
-	}
-	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
-		t.Fatalf("%s push step shell = %q", workflowPath, pushStep.Shell)
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("%s privileged tap update step shell = %q", tc.workflowPath, pushStep.Shell)
 	}
 	for _, want := range []string{
 		"git_bin=/usr/bin/git",
+		"curl_bin=/usr/bin/curl",
+		"sha256sum_bin=/usr/bin/sha256sum",
 		"base64_bin=/usr/bin/base64",
 		"tr_bin=/usr/bin/tr",
 		"mktemp_bin=/usr/bin/mktemp",
 		"export PATH=/usr/bin:/bin",
+		`if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`work_root="$("${mktemp_bin}" -d)"`,
+		`tap_repo="${work_root}/homebrew-tap"`,
+		`trap 'rm -rf "${git_home}" "${work_root}"' EXIT`,
 		"auth_header=\"$(printf 'x-access-token:%s' \"${HOMEBREW_TAP_TOKEN}\" | \"${base64_bin}\" | \"${tr_bin}\" -d '\\n')\"",
 		"unset HOMEBREW_TAP_TOKEN",
-		`git_home="$("${mktemp_bin}" -d)"`,
-		`push_repo="$("${mktemp_bin}" -d)"`,
-		`trap 'rm -rf "${git_home}" "${push_repo}"' EXIT`,
 		"env -i",
 		`HOME="${git_home}"`,
 		`PATH="${PATH}"`,
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_COUNT=5",
 		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
-		`git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${push_repo}"`,
-		`git_safe -C "${push_repo}" am --no-verify "${FORMULA_PATCH_PATH}"`,
-		`git_network -C "${push_repo}" fetch origin main:refs/remotes/origin/main`,
-		`git_safe -C "${push_repo}" rebase origin/main`,
-		`git_safe -C "${push_repo}" rebase --abort || true`,
-		`git_network -C "${push_repo}" push origin HEAD:main`,
+		`git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"`,
+		tc.sourceURLLine,
+		`cat > "${tap_repo}/` + tc.formulaPath + `" <<RUBY`,
+		`git_safe -C "${tap_repo}" add ` + tc.formulaPath,
+		`git_safe -C "${tap_repo}" diff --cached --quiet`,
+		tc.commitMessageLine,
+		`git_network -C "${tap_repo}" fetch origin main:refs/remotes/origin/main`,
+		`git_safe -C "${tap_repo}" rebase origin/main`,
+		`git_safe -C "${tap_repo}" rebase --abort || true`,
+		`git_network -C "${tap_repo}" push origin HEAD:main`,
 		"/bin/sleep 2",
 	} {
 		if !strings.Contains(pushStep.Run, want) {
-			t.Fatalf("%s push step must contain %q", workflowPath, want)
+			t.Fatalf("%s privileged tap update step must contain %q", tc.workflowPath, want)
 		}
 	}
 	for _, forbidden := range []string{
+		"brew audit --strict --online",
+		"brew install --build-from-source",
+		"brew test ben-ranford/tap/",
+		"RUNNER_TEMP",
+		"patch_path=",
+		"commit_sha=",
+		"format-patch --stdout",
+		`am --no-verify`,
+		"FORMULA_PATCH_PATH",
 		"git remote set-url origin ",
 		"x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git",
 		`-c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}"`,
@@ -2164,7 +2229,7 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 		"git_local()",
 	} {
 		if strings.Contains(pushStep.Run, forbidden) {
-			t.Fatalf("%s push step must not contain %q", workflowPath, forbidden)
+			t.Fatalf("%s privileged tap update step must not contain %q", tc.workflowPath, forbidden)
 		}
 	}
 }
