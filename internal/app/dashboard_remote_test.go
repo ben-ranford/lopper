@@ -788,24 +788,12 @@ func TestDashboardCheckoutHelpers(t *testing.T) {
 	if branchCheckout == first || tagCheckout == first || branchCheckout == tagCheckout {
 		t.Fatalf("expected distinct checkout paths for unpinned, branch, and tag pins: %q %q %q", first, branchCheckout, tagCheckout)
 	}
-	if sanitized := sanitizeDashboardCheckoutName(" ../repo name:with/slash "); sanitized != "repo-name-with-slash" {
-		t.Fatalf("unexpected sanitized checkout name: %q", sanitized)
-	}
-	if sanitized := sanitizeDashboardCheckoutName("!!!"); sanitized != "repo" {
-		t.Fatalf("expected empty sanitized name fallback, got %q", sanitized)
-	}
-	if pathWithinDir(root, filepath.Dir(root)) {
-		t.Fatalf("expected parent directory to be outside cache root")
-	}
-	if !pathWithinDir(root, filepath.Join(root, "child")) {
-		t.Fatalf("expected child directory to be within cache root")
-	}
-	if !pathWithinDir(root, root) {
-		t.Fatalf("expected cache root to be within itself")
-	}
-	if pathWithinDir("relative", filepath.Join(root, "child")) {
-		t.Fatalf("expected mixed relative and absolute paths to be rejected")
-	}
+	assertDashboardCheckoutName(t, " ../repo name:with/slash ", "repo-name-with-slash")
+	assertDashboardCheckoutName(t, "!!!", "repo")
+	assertPathWithinDir(t, root, filepath.Dir(root), false, "expected parent directory to be outside cache root")
+	assertPathWithinDir(t, root, filepath.Join(root, "child"), true, "expected child directory to be within cache root")
+	assertPathWithinDir(t, root, root, true, "expected cache root to be within itself")
+	assertPathWithinDir(t, "relative", filepath.Join(root, "child"), false, "expected mixed relative and absolute paths to be rejected")
 	if _, err := dashboardCheckoutPath("relative", spec, dashboard.RepoRevision{}); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("expected relative checkout root error, got %v", err)
 	}
@@ -816,6 +804,20 @@ func TestDashboardCheckoutHelpers(t *testing.T) {
 	}
 	if args := gitArgsForURL(testHTTPSRepoURL, "status"); len(args) != 1 || args[0] != "status" {
 		t.Fatalf("expected passthrough https git args, got %#v", args)
+	}
+}
+
+func assertDashboardCheckoutName(t *testing.T, input, want string) {
+	t.Helper()
+	if got := sanitizeDashboardCheckoutName(input); got != want {
+		t.Fatalf("sanitizeDashboardCheckoutName(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func assertPathWithinDir(t *testing.T, root, candidate string, want bool, message string) {
+	t.Helper()
+	if got := pathWithinDir(root, candidate); got != want {
+		t.Fatalf("%s: pathWithinDir(%q, %q) = %t", message, root, candidate, got)
 	}
 }
 
