@@ -456,13 +456,31 @@ jobs:
       - name: Set up Homebrew
         uses: Homebrew/actions/setup-homebrew@fc695c54c2032716dd4cedd007489c8e32fc8a5d
 
-      - name: Checkout tap repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          repository: ben-ranford/homebrew-tap
-          path: homebrew-tap
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Clone tap repository anonymously
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for anonymous Homebrew tap validation" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
+
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
+
+          env -i \
+            HOME="${git_home}" \
+            PATH="${PATH}" \
+            GIT_TERMINAL_PROMPT=0 \
+            GIT_CONFIG_NOSYSTEM=1 \
+            "${git_bin}" \
+            -c core.hooksPath=/dev/null \
+            -c protocol.file.allow=never \
+            -c protocol.ext.allow=never \
+            clone --origin origin --branch main --single-branch \
+            https://github.com/ben-ranford/homebrew-tap.git homebrew-tap
 
       - name: Regenerate lopper formula
         working-directory: homebrew-tap
