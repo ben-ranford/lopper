@@ -240,8 +240,8 @@ func TestReleaseWorkflowFeatureHistoryStepLabelsAndAuthHeader(t *testing.T) {
 	t.Parallel()
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
-	if !strings.Contains(workflowText, "Stamp feature release history") {
-		t.Fatal("release workflow must use the feature release history step label")
+	if !strings.Contains(workflowText, "Validate and commit trusted feature release history") {
+		t.Fatal("release workflow must use the trusted feature release history validation label")
 	}
 	if strings.Contains(workflowText, "Stamp first stable release history") {
 		t.Fatal("release workflow must not use the stale stable-history label in the feature history job")
@@ -279,12 +279,8 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	}
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	stampArtifact := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Upload stamped feature release history artifact")
-	if stampArtifact.Uses != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" {
-		t.Fatalf("stamp artifact step uses = %q", stampArtifact.Uses)
-	}
-	if got := workflowStepWithString(t, stampArtifact, "name"); got != "feature-release-history" {
-		t.Fatalf("stamp artifact name = %q, want feature-release-history", got)
+	if _, ok := workflow.Jobs["stamp-feature-release-history"]; ok {
+		t.Fatal("feature release history stamping must run from trusted main without an artifact handoff job")
 	}
 
 	checkout := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Checkout trusted main branch")
@@ -298,19 +294,17 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 		t.Fatalf("trusted checkout persist-credentials = %q, want false", got)
 	}
 
-	download := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download stamped feature release history artifact")
-	if download.Uses != "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" {
-		t.Fatalf("trusted artifact download uses = %q", download.Uses)
-	}
-	if got := workflowStepWithString(t, download, "name"); got != "feature-release-history" {
-		t.Fatalf("trusted artifact download name = %q, want feature-release-history", got)
+	for _, step := range workflow.Jobs["push-feature-release-history"].Steps {
+		if strings.Contains(step.Uses, "upload-artifact") || strings.Contains(step.Uses, "download-artifact") {
+			t.Fatalf("push-feature-release-history must not retain artifact handoff steps, found %q", step.Uses)
+		}
 	}
 
 	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate and commit trusted feature release history")
 	for _, want := range []string{
 		`git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"`,
 		`git checkout -B trusted-feature-release-history origin/main`,
-		`cp .artifacts/feature-release-history/features.json internal/featureflags/features.json`,
+		`go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`,
 		`go run ./tools/featureflag validate`,
 		`echo "commit_created=false" >> "$GITHUB_OUTPUT"`,
 		`git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`,
@@ -319,8 +313,34 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 			t.Fatalf("trusted feature history validation step must contain %q", want)
 		}
 	}
+	if strings.Contains(validate.Run, ".artifacts/feature-release-history/features.json") {
+		t.Fatal("trusted feature history validation step must not copy a stamped artifact over current main")
+	}
+	if _, ok := validate.Env["PUSH_TOKEN"]; ok {
+		t.Fatal("trusted feature history validation step must not receive PUSH_TOKEN")
+	}
+	fetchIndex := strings.Index(validate.Run, `git fetch origin main:refs/remotes/origin/main`)
+	checkoutIndex := strings.Index(validate.Run, `git checkout -B trusted-feature-release-history origin/main`)
+	stampIndex := strings.Index(validate.Run, `go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`)
+	if fetchIndex == -1 || checkoutIndex == -1 || stampIndex == -1 {
+		t.Fatal("trusted feature history validation step must fetch current origin/main, check it out, then stamp it in that order")
+	}
+	if fetchIndex >= checkoutIndex || checkoutIndex >= stampIndex {
+		t.Fatal("trusted feature history validation step must fetch current origin/main, check it out, then stamp it in that order")
+	}
 
 	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push trusted feature release history")
+	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("trusted feature history push token env = %q", got)
+	}
+	for _, step := range workflow.Jobs["push-feature-release-history"].Steps {
+		if step.Name == push.Name {
+			continue
+		}
+		if _, ok := step.Env["PUSH_TOKEN"]; ok {
+			t.Fatalf("%s must not receive PUSH_TOKEN", step.Name)
+		}
+	}
 	for _, want := range []string{
 		`export PATH="/usr/bin:/bin"`,
 		`GIT_BIN="/usr/bin/git"`,

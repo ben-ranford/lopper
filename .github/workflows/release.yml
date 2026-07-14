@@ -578,69 +578,11 @@ jobs:
         if: ${{ steps.tap_token.outputs.available != 'true' }}
         run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
 
-  stamp-feature-release-history:
+  push-feature-release-history:
     needs:
       - prepare-release
       - publish
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    outputs:
-      changed: ${{ steps.stamp_history.outputs.changed }}
-    concurrency:
-      group: feature-release-history-main
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout release source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare-release.outputs.sha }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
-        with:
-          go-version-file: go.mod
-
-      - name: Stamp feature release history
-        id: stamp_history
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
-          go run ./tools/featureflag validate
-
-          git add internal/featureflags/features.json
-          if git diff --cached --quiet; then
-            echo "No feature release history changes to commit"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          mkdir -p .artifacts/feature-release-history
-          cp internal/featureflags/features.json .artifacts/feature-release-history/features.json
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Upload stamped feature release history artifact
-        if: ${{ steps.stamp_history.outputs.changed == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: feature-release-history
-          path: .artifacts/feature-release-history/features.json
-          if-no-files-found: error
-
-  push-feature-release-history:
-    needs:
-      - prepare-release
-      - stamp-feature-release-history
-    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.stamp-feature-release-history.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: feature-release-history-main
@@ -661,12 +603,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Download stamped feature release history artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: feature-release-history
-          path: .artifacts/feature-release-history
-
       - name: Validate and commit trusted feature release history
         id: trusted_history
         env:
@@ -679,7 +615,7 @@ jobs:
           git fetch origin main:refs/remotes/origin/main
           git checkout -B trusted-feature-release-history origin/main
 
-          cp .artifacts/feature-release-history/features.json internal/featureflags/features.json
+          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
           go run ./tools/featureflag validate
 
           git add internal/featureflags/features.json
