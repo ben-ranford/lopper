@@ -25,52 +25,43 @@ type releaseDeltaUpdate struct {
 	FirstStableRelease string `json:"firstStableRelease"`
 }
 
-func runExportReleaseDelta(args []string) error {
-	fs := flag.NewFlagSet("export-release-delta", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	release := fs.String("release", strings.TrimSpace(os.Getenv("RELEASE")), "stable release version to export")
-	output := fs.String("output", strings.TrimSpace(os.Getenv("OUTPUT")), "output path for the release delta JSON")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if len(fs.Args()) > 0 {
-		return fmt.Errorf("too many arguments for featureflag export-release-delta")
-	}
+type exportReleaseDeltaOptions struct {
+	release string
+	output  string
+	catalog string
+}
 
-	resolvedRelease := normalizeReleaseVersion(*release)
-	if resolvedRelease == "" {
-		return fmt.Errorf("release version is required")
-	}
-	outputPath := strings.TrimSpace(*output)
-	if outputPath == "" {
-		return fmt.Errorf("release delta output path is required")
+type applyReleaseDeltaOptions struct {
+	release string
+	delta   string
+}
+
+type releaseDeltaSource struct {
+	root string
+	path string
+}
+
+func runExportReleaseDelta(args []string) error {
+	options, err := parseExportReleaseDeltaArgs(args)
+	if err != nil {
+		return err
 	}
 
 	root, err := getwdFn()
 	if err != nil {
 		return fmt.Errorf(resolveWorkingDirectoryError, err)
 	}
-	flags, err := readCatalog(root)
+	flags, err := readCatalogFromPath(catalogSource{root: root, path: options.catalog})
 	if err != nil {
 		return err
 	}
 
-	delta := releaseDelta{Release: resolvedRelease}
-	for _, flag := range flags {
-		if flag.FirstStableRelease != "" {
-			continue
-		}
-		delta.Updates = append(delta.Updates, releaseDeltaUpdate{
-			Code:               flag.Code,
-			FirstStableRelease: resolvedRelease,
-		})
-	}
-
+	delta := buildReleaseDelta(options.release, flags)
 	data, err := formatReleaseDelta(delta)
 	if err != nil {
 		return err
 	}
-	absoluteOutput := filepath.Join(root, outputPath)
+	absoluteOutput := filepath.Join(root, options.output)
 	if err := os.MkdirAll(filepath.Dir(absoluteOutput), 0o750); err != nil {
 		return fmt.Errorf("create release delta output directory: %w", err)
 	}
@@ -78,24 +69,60 @@ func runExportReleaseDelta(args []string) error {
 		return fmt.Errorf("write release delta: %w", err)
 	}
 
-	_, err = fmt.Fprintf(os.Stdout, "exported %d feature release delta update(s) for %s\n", len(delta.Updates), resolvedRelease)
+	_, err = fmt.Fprintf(os.Stdout, "exported %d feature release delta update(s) for %s\n", len(delta.Updates), options.release)
 	return err
 }
 
-func runApplyReleaseDelta(args []string) error {
-	fs := flag.NewFlagSet("apply-release-delta", flag.ContinueOnError)
+func parseExportReleaseDeltaArgs(args []string) (exportReleaseDeltaOptions, error) {
+	fs := flag.NewFlagSet("export-release-delta", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	deltaPath := fs.String("delta", strings.TrimSpace(os.Getenv("DELTA")), "release delta JSON path")
+	release := fs.String("release", strings.TrimSpace(os.Getenv("RELEASE")), "stable release version to export")
+	output := fs.String("output", strings.TrimSpace(os.Getenv("OUTPUT")), "output path for the release delta JSON")
+	catalog := fs.String("catalog", strings.TrimSpace(os.Getenv("CATALOG")), "feature catalog path to derive the release delta from")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return exportReleaseDeltaOptions{}, err
 	}
 	if len(fs.Args()) > 0 {
-		return fmt.Errorf("too many arguments for featureflag apply-release-delta")
+		return exportReleaseDeltaOptions{}, fmt.Errorf("too many arguments for featureflag export-release-delta")
 	}
 
-	resolvedDeltaPath := strings.TrimSpace(*deltaPath)
-	if resolvedDeltaPath == "" {
-		return fmt.Errorf("release delta path is required")
+	resolvedRelease := normalizeReleaseVersion(*release)
+	if resolvedRelease == "" {
+		return exportReleaseDeltaOptions{}, fmt.Errorf("release version is required")
+	}
+	outputPath := strings.TrimSpace(*output)
+	if outputPath == "" {
+		return exportReleaseDeltaOptions{}, fmt.Errorf("release delta output path is required")
+	}
+	catalogPathValue := strings.TrimSpace(*catalog)
+	if catalogPathValue == "" {
+		catalogPathValue = catalogPath
+	}
+	return exportReleaseDeltaOptions{
+		release: resolvedRelease,
+		output:  outputPath,
+		catalog: catalogPathValue,
+	}, nil
+}
+
+func buildReleaseDelta(release string, flags []featureflags.Flag) releaseDelta {
+	delta := releaseDelta{Release: release}
+	for _, flag := range flags {
+		if flag.Lifecycle != featureflags.LifecycleStable || flag.FirstStableRelease != "" {
+			continue
+		}
+		delta.Updates = append(delta.Updates, releaseDeltaUpdate{
+			Code:               flag.Code,
+			FirstStableRelease: release,
+		})
+	}
+	return delta
+}
+
+func runApplyReleaseDelta(args []string) error {
+	options, err := parseApplyReleaseDeltaArgs(args)
+	if err != nil {
+		return err
 	}
 
 	root, err := getwdFn()
@@ -106,47 +133,20 @@ func runApplyReleaseDelta(args []string) error {
 	if err != nil {
 		return err
 	}
-	delta, err := readReleaseDelta(root, resolvedDeltaPath)
+	delta, err := readReleaseDelta(releaseDeltaSource{root: root, path: options.delta})
+	if err != nil {
+		return err
+	}
+	if err := validateReleaseDeltaRelease(delta, options.release); err != nil {
+		return err
+	}
+	applied, err := applyReleaseDeltaUpdates(flags, delta)
 	if err != nil {
 		return err
 	}
 
-	updatesByCode := make(map[string]releaseDeltaUpdate, len(delta.Updates))
-	for _, update := range delta.Updates {
-		if _, exists := updatesByCode[update.Code]; exists {
-			return fmt.Errorf("duplicate release delta update for feature %s", update.Code)
-		}
-		updatesByCode[update.Code] = update
-	}
-
-	applied := 0
-	for i := range flags {
-		update, ok := updatesByCode[flags[i].Code]
-		if !ok {
-			continue
-		}
-		switch flags[i].FirstStableRelease {
-		case "":
-			flags[i].FirstStableRelease = update.FirstStableRelease
-			applied++
-		case update.FirstStableRelease:
-		default:
-			return fmt.Errorf("feature %s already records first stable release %s; cannot apply release delta %s", flags[i].Code, flags[i].FirstStableRelease, update.FirstStableRelease)
-		}
-		delete(updatesByCode, flags[i].Code)
-	}
-
-	if len(updatesByCode) > 0 {
-		missing := make([]string, 0, len(updatesByCode))
-		for code := range updatesByCode {
-			missing = append(missing, code)
-		}
-		slices.Sort(missing)
-		return fmt.Errorf("release delta references missing features: %s", strings.Join(missing, ", "))
-	}
-
 	if applied == 0 {
-		_, err = fmt.Fprintf(os.Stdout, "no feature release delta updates to apply from %s\n", resolvedDeltaPath)
+		_, err = fmt.Fprintf(os.Stdout, "no feature release delta updates to apply from %s\n", options.delta)
 		return err
 	}
 
@@ -158,12 +158,114 @@ func runApplyReleaseDelta(args []string) error {
 		return fmt.Errorf("write feature catalog: %w", err)
 	}
 
-	_, err = fmt.Fprintf(os.Stdout, "applied %d feature release delta update(s) from %s\n", applied, resolvedDeltaPath)
+	_, err = fmt.Fprintf(os.Stdout, "applied %d feature release delta update(s) from %s\n", applied, options.delta)
 	return err
 }
 
-func readReleaseDelta(root string, path string) (releaseDelta, error) {
-	data, err := safeio.ReadFileUnder(root, filepath.Join(root, path))
+func parseApplyReleaseDeltaArgs(args []string) (applyReleaseDeltaOptions, error) {
+	fs := flag.NewFlagSet("apply-release-delta", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	release := fs.String("release", strings.TrimSpace(os.Getenv("RELEASE")), "stable release version expected in the release delta")
+	deltaPath := fs.String("delta", strings.TrimSpace(os.Getenv("DELTA")), "release delta JSON path")
+	if err := fs.Parse(args); err != nil {
+		return applyReleaseDeltaOptions{}, err
+	}
+	if len(fs.Args()) > 0 {
+		return applyReleaseDeltaOptions{}, fmt.Errorf("too many arguments for featureflag apply-release-delta")
+	}
+
+	resolvedRelease := normalizeReleaseVersion(*release)
+	if resolvedRelease == "" {
+		return applyReleaseDeltaOptions{}, fmt.Errorf("release version is required")
+	}
+
+	resolvedDeltaPath := strings.TrimSpace(*deltaPath)
+	if resolvedDeltaPath == "" {
+		return applyReleaseDeltaOptions{}, fmt.Errorf("release delta path is required")
+	}
+	return applyReleaseDeltaOptions{release: resolvedRelease, delta: resolvedDeltaPath}, nil
+}
+
+func validateReleaseDeltaRelease(delta releaseDelta, expectedRelease string) error {
+	if delta.Release != expectedRelease {
+		return fmt.Errorf("release delta targets %s; expected %s", delta.Release, expectedRelease)
+	}
+	return nil
+}
+
+func applyReleaseDeltaUpdates(flags []featureflags.Flag, delta releaseDelta) (int, error) {
+	updatesByCode, err := indexReleaseDeltaUpdates(delta.Updates)
+	if err != nil {
+		return 0, err
+	}
+
+	applied, err := applyIndexedReleaseDeltaUpdates(flags, updatesByCode)
+	if err != nil {
+		return 0, err
+	}
+	if err := ensureAllReleaseDeltaUpdatesApplied(updatesByCode); err != nil {
+		return 0, err
+	}
+	return applied, nil
+}
+
+func indexReleaseDeltaUpdates(updates []releaseDeltaUpdate) (map[string]releaseDeltaUpdate, error) {
+	updatesByCode := make(map[string]releaseDeltaUpdate, len(updates))
+	for _, update := range updates {
+		if _, exists := updatesByCode[update.Code]; exists {
+			return nil, fmt.Errorf("duplicate release delta update for feature %s", update.Code)
+		}
+		updatesByCode[update.Code] = update
+	}
+	return updatesByCode, nil
+}
+
+func applyIndexedReleaseDeltaUpdates(flags []featureflags.Flag, updatesByCode map[string]releaseDeltaUpdate) (int, error) {
+	applied := 0
+	for i := range flags {
+		update, ok := updatesByCode[flags[i].Code]
+		if !ok {
+			continue
+		}
+		stamped, err := applyIndexedReleaseDeltaUpdate(&flags[i], update)
+		if err != nil {
+			return 0, err
+		}
+		if stamped {
+			applied++
+		}
+		delete(updatesByCode, flags[i].Code)
+	}
+	return applied, nil
+}
+
+func applyIndexedReleaseDeltaUpdate(flag *featureflags.Flag, update releaseDeltaUpdate) (bool, error) {
+	switch flag.FirstStableRelease {
+	case "":
+		flag.FirstStableRelease = update.FirstStableRelease
+		return true, nil
+	case update.FirstStableRelease:
+		return false, nil
+	default:
+		return false, fmt.Errorf("feature %s already records first stable release %s; cannot apply release delta %s", flag.Code, flag.FirstStableRelease, update.FirstStableRelease)
+	}
+}
+
+func ensureAllReleaseDeltaUpdatesApplied(updatesByCode map[string]releaseDeltaUpdate) error {
+	if len(updatesByCode) == 0 {
+		return nil
+	}
+
+	missing := make([]string, 0, len(updatesByCode))
+	for code := range updatesByCode {
+		missing = append(missing, code)
+	}
+	slices.Sort(missing)
+	return fmt.Errorf("release delta references missing features: %s", strings.Join(missing, ", "))
+}
+
+func readReleaseDelta(source releaseDeltaSource) (releaseDelta, error) {
+	data, err := safeio.ReadFileUnder(source.root, filepath.Join(source.root, source.path))
 	if err != nil {
 		return releaseDelta{}, fmt.Errorf("read release delta: %w", err)
 	}
