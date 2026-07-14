@@ -28,7 +28,8 @@ type workflowOnConfig struct {
 }
 
 type workflowConfig struct {
-	On workflowOnConfig `yaml:"on"`
+	On   workflowOnConfig             `yaml:"on"`
+	Jobs map[string]workflowJobConfig `yaml:"jobs"`
 }
 
 type workflowJobConfig struct {
@@ -182,6 +183,20 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 	if !strings.Contains(workflowText, "Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}.") {
 		t.Fatal("manual release flow must fail when an existing release tag points to a different commit")
+	}
+	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
+		`existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"`,
+		`if ! fetch_error="$(git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>&1)"; then`,
+		`if [[ "${fetch_error}" == *"couldn't find remote ref refs/tags/${tag}"* ]]; then`,
+		`echo "Remote tag ${tag} does not exist; validating the release target instead."`,
+		`echo "::error::Failed to fetch existing release tag ${tag}." >&2
+      printf '%s\n' "${fetch_error}" >&2
+      rm -f "${release_json}"
+      exit 1`,
+	})
+	if strings.Contains(manualStep.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true`) {
+		t.Fatal("manual release flow must not swallow operational failures while fetching an existing release tag")
 	}
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")

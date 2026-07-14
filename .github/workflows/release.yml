@@ -75,7 +75,16 @@ jobs:
           release_json="$(mktemp)"
           if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>/dev/null; then
             echo "Reusing existing GitHub release ${tag}."
-            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
+            if ! fetch_error="$(git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>&1)"; then
+              if [[ "${fetch_error}" == *"couldn't find remote ref refs/tags/${tag}"* ]]; then
+                echo "Remote tag ${tag} does not exist; validating the release target instead."
+              else
+                echo "::error::Failed to fetch existing release tag ${tag}." >&2
+                printf '%s\n' "${fetch_error}" >&2
+                rm -f "${release_json}"
+                exit 1
+              fi
+            fi
 
             existing_commit=""
             if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
