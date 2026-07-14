@@ -131,6 +131,7 @@ func trustedCommandOutputRoot(outputAbs string) (string, error) {
 
 func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error) {
 	current := filepath.Dir(filepath.Clean(outputAbs))
+	var aliasRoot string
 	for {
 		_, err := os.Lstat(current)
 		switch {
@@ -139,8 +140,12 @@ func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error
 			if err != nil {
 				return "", err
 			}
-			if resolvedCurrent == workspaceRoot {
-				return current, nil
+			withinWorkspace, err := pathWithinRoot(workspaceRoot, resolvedCurrent)
+			if err != nil {
+				return "", err
+			}
+			if withinWorkspace {
+				aliasRoot = current
 			}
 		case !os.IsNotExist(err):
 			return "", err
@@ -148,7 +153,7 @@ func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error
 
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", nil
+			return aliasRoot, nil
 		}
 		current = parent
 	}

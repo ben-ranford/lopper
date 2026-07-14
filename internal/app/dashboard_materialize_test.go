@@ -187,6 +187,26 @@ func TestTrustedCommandOutputRootUsesWorkspaceAlias(t *testing.T) {
 	}
 }
 
+func TestTrustedCommandOutputRootUsesWorkspaceSubdirectoryAlias(t *testing.T) {
+	workspace := t.TempDir()
+	workspaceAlias := filepath.Join(t.TempDir(), "reports-alias")
+	if err := os.MkdirAll(filepath.Join(workspace, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(workspace, "reports"), workspaceAlias); err != nil {
+		t.Fatalf("create reports alias: %v", err)
+	}
+	chdirCanonicalWorkspace(t, workspace)
+
+	root, err := trustedCommandOutputRoot(filepath.Join(workspaceAlias, "nested", "output.json"))
+	if err != nil {
+		t.Fatalf("trusted command output root: %v", err)
+	}
+	if root != workspaceAlias {
+		t.Fatalf("expected workspace subdirectory alias root %q, got %q", workspaceAlias, root)
+	}
+}
+
 func TestTrustedCommandOutputRootUsesResolvedWorkspaceForRealPathWhenCwdIsAlias(t *testing.T) {
 	workspace := t.TempDir()
 	workspaceAlias := filepath.Join(t.TempDir(), "repo")
@@ -265,6 +285,30 @@ func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 	_, err := absoluteCommandOutputRoot(filepath.Join(blocker, "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root is not a directory") {
 		t.Fatalf("expected file boundary rejection, got %v", err)
+	}
+}
+
+func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryViaWorkspaceSubdirectoryAlias(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(workspace, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir outside nested: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports", "link")); err != nil {
+		t.Fatalf("create reports link symlink: %v", err)
+	}
+	reportsAlias := filepath.Join(t.TempDir(), "reports-alias")
+	if err := os.Symlink(filepath.Join(workspace, "reports"), reportsAlias); err != nil {
+		t.Fatalf("create reports alias: %v", err)
+	}
+	chdirCanonicalWorkspace(t, workspace)
+
+	_, err := absoluteCommandOutputRoot(filepath.Join(reportsAlias, "link", "nested", "output.json"))
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected symlink boundary rejection via subdirectory alias, got %v", err)
 	}
 }
 
@@ -447,6 +491,29 @@ func TestResolveAliasedWorkspaceRootPropagatesBrokenAliasError(t *testing.T) {
 	_, err := resolveAliasedWorkspaceRoot(filepath.Join(brokenAlias, "reports", "output.json"), workspace)
 	if err == nil {
 		t.Fatal("expected broken alias resolution to fail")
+	}
+}
+
+func TestResolveAliasedWorkspaceRootReturnsTopmostWorkspaceAlias(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "reports", "existing"), 0o755); err != nil {
+		t.Fatalf("mkdir reports existing: %v", err)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatalf("resolve workspace symlinks: %v", err)
+	}
+	reportsAlias := filepath.Join(t.TempDir(), "reports-alias")
+	if err := os.Symlink(filepath.Join(workspace, "reports"), reportsAlias); err != nil {
+		t.Fatalf("create reports alias: %v", err)
+	}
+
+	root, err := resolveAliasedWorkspaceRoot(filepath.Join(reportsAlias, "existing", "output.json"), resolvedWorkspace)
+	if err != nil {
+		t.Fatalf("resolve aliased workspace root: %v", err)
+	}
+	if root != reportsAlias {
+		t.Fatalf("expected topmost workspace alias %q, got %q", reportsAlias, root)
 	}
 }
 
