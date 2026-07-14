@@ -622,20 +622,31 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("%s tap push step HOMEBREW_TAP_TOKEN env = %q", workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("%s push step shell = %q", workflowPath, pushStep.Shell)
+	}
 	for _, want := range []string{
 		"git_bin=/usr/bin/git",
-		"auth_header=\"$(printf 'x-access-token:%s' \"${HOMEBREW_TAP_TOKEN}\" | base64 | tr -d '\\n')\"",
+		"base64_bin=/usr/bin/base64",
+		"tr_bin=/usr/bin/tr",
+		"mktemp_bin=/usr/bin/mktemp",
+		"export PATH=/usr/bin:/bin",
+		"auth_header=\"$(printf 'x-access-token:%s' \"${HOMEBREW_TAP_TOKEN}\" | \"${base64_bin}\" | \"${tr_bin}\" -d '\\n')\"",
 		"unset HOMEBREW_TAP_TOKEN",
-		"-c credential.helper=",
-		"-c core.hooksPath=/dev/null",
-		"-c protocol.file.allow=never",
-		"-c protocol.ext.allow=never",
-		`-c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}"`,
-		"env -u HOMEBREW_TAP_TOKEN",
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`trap 'rm -rf "${git_home}"' EXIT`,
+		"env -i",
+		`HOME="${git_home}"`,
+		`PATH="${PATH}"`,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_COUNT=5",
+		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
+		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
 		"git_network fetch origin main:refs/remotes/origin/main",
 		"git_local rebase origin/main",
 		"git_local rebase --abort || true",
 		"git_network push origin HEAD:main",
+		"/bin/sleep 2",
 	} {
 		if !strings.Contains(pushStep.Run, want) {
 			t.Fatalf("%s push step must contain %q", workflowPath, want)
@@ -644,6 +655,8 @@ func assertTapTokenReservedForFinalNetworkStep(t *testing.T, workflowPath string
 	for _, forbidden := range []string{
 		"git remote set-url origin ",
 		"x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git",
+		`-c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}"`,
+		"env -u HOMEBREW_TAP_TOKEN",
 	} {
 		if strings.Contains(pushStep.Run, forbidden) {
 			t.Fatalf("%s push step must not contain %q", workflowPath, forbidden)
