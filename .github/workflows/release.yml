@@ -578,11 +578,130 @@ jobs:
         if: ${{ steps.tap_token.outputs.available != 'true' }}
         run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
 
-  push-feature-release-history:
+  prepare-feature-release-history-delta:
     needs:
       - prepare-release
       - publish
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      delta_created: ${{ steps.export_delta.outputs.delta_created }}
+    steps:
+      - name: Checkout release source for feature history delta
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare-release.outputs.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+
+      - name: Export release-derived feature history delta
+        id: export_delta
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+
+          go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --output .artifacts/feature-release-history-delta.json
+
+          delta_updates=$(python3 - <<'PY'
+          import json
+
+          with open(".artifacts/feature-release-history-delta.json", "r", encoding="utf-8") as handle:
+              print(len(json.load(handle)["updates"]))
+          PY
+          )
+          if [ "${delta_updates}" = "0" ]; then
+            echo "Release-derived feature history delta is empty"
+            echo "delta_created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "delta_created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release-derived feature history delta
+        if: ${{ steps.export_delta.outputs.delta_created == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: feature-release-history-delta
+          path: .artifacts/feature-release-history-delta.json
+
+  commit-feature-release-history:
+    needs:
+      - prepare-release
+      - publish
+      - prepare-feature-release-history-delta
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history-delta.outputs.delta_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_created: ${{ steps.prepare_patch.outputs.commit_created }}
+    steps:
+      - name: Checkout trusted main branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Download release-derived feature history delta
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: feature-release-history-delta
+          path: .artifacts
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+
+      - name: Validate and commit trusted feature release history
+        id: prepare_patch
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B trusted-feature-release-history
+
+          go run ./tools/featureflag apply-release-delta --delta .artifacts/feature-release-history-delta.json
+          go run ./tools/featureflag validate
+
+          git add internal/featureflags/features.json
+          if git diff --cached --quiet; then
+            echo "Trusted feature release history is already up to date"
+            echo "commit_created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git -c core.hooksPath=/dev/null commit --no-verify -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
+          git format-patch --stdout --binary --full-index HEAD^! > .artifacts/feature-release-history.patch
+          echo "commit_created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload trusted feature release history patch
+        if: ${{ steps.prepare_patch.outputs.commit_created == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: feature-release-history-patch
+          path: .artifacts/feature-release-history.patch
+
+  push-feature-release-history:
+    needs:
+      - prepare-release
+      - publish
+      - commit-feature-release-history
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.commit-feature-release-history.outputs.commit_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: feature-release-history-main
@@ -598,70 +717,64 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: false
 
-      - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+      - name: Download trusted feature release history patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          go-version-file: go.mod
-
-      - name: Validate and commit trusted feature release history
-        id: trusted_history
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch origin main:refs/remotes/origin/main
-          git checkout -B trusted-feature-release-history origin/main
-
-          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
-          go run ./tools/featureflag validate
-
-          git add internal/featureflags/features.json
-          if git diff --cached --quiet; then
-            echo "Trusted feature release history is already up to date"
-            echo "commit_created=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
-          echo "commit_created=true" >> "$GITHUB_OUTPUT"
+          name: feature-release-history-patch
+          path: .artifacts
 
       - name: Push trusted feature release history
-        if: ${{ steps.trusted_history.outputs.commit_created == 'true' }}
         env:
           PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          export PATH="/usr/bin:/bin"
           GIT_BIN="/usr/bin/git"
           BASE64_BIN="/usr/bin/base64"
+          PATCH_FILE="${GITHUB_WORKSPACE}/.artifacts/feature-release-history.patch"
           if [ ! -x "${GIT_BIN}" ] || [ ! -x "${BASE64_BIN}" ]; then
             echo "::error::Trusted git/base64 binaries are unavailable." >&2
+            exit 1
+          fi
+          if [ ! -f "${PATCH_FILE}" ]; then
+            echo "::error::Trusted feature release history patch is missing." >&2
             exit 1
           fi
           if [ -z "${PUSH_TOKEN}" ]; then
             echo "::error::No token is available to push feature release history." >&2
             exit 1
           fi
+
           auth_header="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | "${BASE64_BIN}" -w0)"
+          export GIT_CONFIG_COUNT=4
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="${auth_header}"
+          export GIT_CONFIG_KEY_1="core.hooksPath"
+          export GIT_CONFIG_VALUE_1="/dev/null"
+          export GIT_CONFIG_KEY_2="protocol.ext.allow"
+          export GIT_CONFIG_VALUE_2="never"
+          export GIT_CONFIG_KEY_3="credential.helper"
+          export GIT_CONFIG_VALUE_3=""
+
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for trusted feature release history"
-            if ! "${GIT_BIN}" -c protocol.ext.allow=never -c credential.helper= fetch origin main:refs/remotes/origin/main; then
+            if ! "${GIT_BIN}" fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
               sleep 2
               continue
             fi
-            if ! "${GIT_BIN}" rebase origin/main; then
-              echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              "${GIT_BIN}" rebase --abort || true
+
+            "${GIT_BIN}" checkout -B trusted-feature-release-history origin/main
+            if ! "${GIT_BIN}" am --3way --no-verify "${PATCH_FILE}"; then
+              echo "git am failed on attempt ${attempt}; aborting apply and retrying" >&2
+              "${GIT_BIN}" am --abort || true
               sleep 2
               continue
             fi
-            if "${GIT_BIN}" -c core.hooksPath=/dev/null -c protocol.ext.allow=never -c credential.helper= -c http.https://github.com/.extraheader="${auth_header}" push --no-verify origin HEAD:main; then
+
+            if "${GIT_BIN}" push --no-verify origin HEAD:main; then
               exit 0
             fi
+
             sleep 2
           done
 
