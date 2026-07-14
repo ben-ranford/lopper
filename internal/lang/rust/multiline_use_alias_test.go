@@ -419,17 +419,7 @@ func TestMultilineUseAliasSupportsOtherIDLocals(t *testing.T) {
 }
 
 func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		raw         []byte
-		content     string
-		token       string
-		wantNext    int
-		wantOffset  int
-		wantCount   int
-		wantHits    int
-		wantNoMatch string
-	}{
+	for _, tc := range []otherIDRustIdentifierCase{
 		{
 			name:        "continue rune",
 			raw:         []byte("x·y tail"),
@@ -454,28 +444,40 @@ func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assertRustIdentifierHelperCase(t, tc.raw, tc.content, tc.token, tc.wantNext, tc.wantOffset, tc.wantCount, tc.wantHits, tc.wantNoMatch)
+			assertRustIdentifierHelperCase(t, tc)
 		})
 	}
 }
 
-func assertRustIdentifierHelperCase(t *testing.T, raw []byte, content, token string, wantNext, wantOffset, wantCount, wantHits int, wantNoMatch string) {
+type otherIDRustIdentifierCase struct {
+	name        string
+	raw         []byte
+	content     string
+	token       string
+	wantNext    int
+	wantOffset  int
+	wantCount   int
+	wantHits    int
+	wantNoMatch string
+}
+
+func assertRustIdentifierHelperCase(t *testing.T, tc otherIDRustIdentifierCase) {
 	t.Helper()
-	ident, next, ok := consumeRustIdentifier(raw)
-	if !ok || ident != token || next != wantNext {
-		t.Fatalf("consumeRustIdentifier(%q) = ident=%q next=%d ok=%v", raw, ident, next, ok)
+	ident, next, ok := consumeRustIdentifier(tc.raw)
+	if !ok || ident != tc.token || next != tc.wantNext {
+		t.Fatalf("consumeRustIdentifier(%q) = ident=%q next=%d ok=%v", tc.raw, ident, next, ok)
 	}
-	if got := findRustIdentifierToken(content, token, 0); got != wantOffset {
-		t.Fatalf("findRustIdentifierToken(%q) = %d, want %d", token, got, wantOffset)
+	if got := findRustIdentifierToken(tc.content, tc.token, 0); got != tc.wantOffset {
+		t.Fatalf("findRustIdentifierToken(%q) = %d, want %d", tc.token, got, tc.wantOffset)
 	}
-	if got := findRustIdentifierToken(wantNoMatch, token, 0); got != -1 {
+	if got := findRustIdentifierToken(tc.wantNoMatch, tc.token, 0); got != -1 {
 		t.Fatalf("embedded match offset = %d, want -1", got)
 	}
-	if got := countRustIdentifierTokens(content, token); got != wantCount {
-		t.Fatalf("countRustIdentifierTokens(%q) = %d, want %d", token, got, wantCount)
+	if got := countRustIdentifierTokens(tc.content, tc.token); got != tc.wantCount {
+		t.Fatalf("countRustIdentifierTokens(%q) = %d, want %d", tc.token, got, tc.wantCount)
 	}
-	if got := countRustDeclarationTokens(token+"::Thing as "+token, map[string]struct{}{token: {}})[token]; got != wantHits {
-		t.Fatalf("countRustDeclarationTokens(%q) = %d, want %d", token, got, wantHits)
+	if got := countRustDeclarationTokens(tc.token+"::Thing as "+tc.token, map[string]struct{}{tc.token: {}})[tc.token]; got != tc.wantHits {
+		t.Fatalf("countRustDeclarationTokens(%q) = %d, want %d", tc.token, got, tc.wantHits)
 	}
 }
 
