@@ -239,6 +239,28 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 }
 
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
+func TestReleaseWorkflowHomebrewPushUsesEphemeralAuthenticatedRemote(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap", "Commit and push formula changes")
+	for _, want := range []string{
+		`push_url="https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"`,
+		`git fetch origin main:refs/remotes/origin/main`,
+		`git rebase origin/main`,
+		`git push "${push_url}" HEAD:main`,
+	} {
+		if !strings.Contains(step.Run, want) {
+			t.Fatalf("homebrew push step must contain %q", want)
+		}
+	}
+	if strings.Contains(step.Run, "git remote set-url origin") {
+		t.Fatal("homebrew push step must not persist tap credentials in .git/config")
+	}
 	t.Parallel()
 
 	var config struct {

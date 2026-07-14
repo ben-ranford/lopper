@@ -550,6 +550,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
+          push_url="https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -560,7 +561,6 @@ jobs:
           fi
 
           git commit -m "lopper ${{ needs.prepare-release.outputs.tag }}"
-          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
             if ! git fetch origin main:refs/remotes/origin/main; then
@@ -574,7 +574,7 @@ jobs:
               sleep 2
               continue
             fi
-            if git push origin HEAD:main; then
+            if git push "${push_url}" HEAD:main; then
               exit 0
             fi
             sleep 2
