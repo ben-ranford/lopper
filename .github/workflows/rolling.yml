@@ -260,7 +260,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ben-ranford/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
           fetch-depth: 0
           persist-credentials: false

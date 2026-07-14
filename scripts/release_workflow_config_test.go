@@ -38,9 +38,11 @@ type workflowJobConfig struct {
 type workflowStepConfig struct {
 	Name  string            `yaml:"name"`
 	ID    string            `yaml:"id"`
+	Uses  string            `yaml:"uses"`
 	Run   string            `yaml:"run"`
 	Shell string            `yaml:"shell"`
 	Env   map[string]string `yaml:"env"`
+	With  map[string]string `yaml:"with"`
 }
 
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
@@ -566,6 +568,34 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 				})
 			}
 		})
+	}
+}
+
+func TestRollingWorkflowUsesTapTokenOnlyForPush(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
+
+	checkoutStep := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap-rolling", "Checkout tap repository")
+	if checkoutStep.Uses != "actions/checkout@v7" {
+		t.Fatalf("rolling tap checkout uses %q, want actions/checkout@v7", checkoutStep.Uses)
+	}
+	if _, ok := checkoutStep.With["token"]; ok {
+		t.Fatal("rolling tap checkout must not pass HOMEBREW_TAP_TOKEN to actions/checkout")
+	}
+	if checkoutStep.With["persist-credentials"] != "false" {
+		t.Fatalf("rolling tap checkout persist-credentials = %q, want false", checkoutStep.With["persist-credentials"])
+	}
+
+	pushStep := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap-rolling", "Commit and push rolling formula changes")
+	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
+		t.Fatalf("rolling tap push step HOMEBREW_TAP_TOKEN env = %q", pushStep.Env["HOMEBREW_TAP_TOKEN"])
+	}
+	if !strings.Contains(pushStep.Run, `git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"`) {
+		t.Fatal("rolling tap push step must still authenticate the final push with HOMEBREW_TAP_TOKEN")
 	}
 }
 
