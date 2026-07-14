@@ -2,6 +2,32 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.1](https://github.com/ben-ranford/lopper/compare/v1.8.0...v1.8.1) (2026-07-14)
+
+
+### Features
+
+* **baseline:** add safe snapshot discovery ([#1170](https://github.com/ben-ranford/lopper/issues/1170)) ([98ad74e](https://github.com/ben-ranford/lopper/commit/98ad74e3e5338ae763e3a63be9f02733caf55b16))
+* **flags:** graduate targeted v1.8.1 features ([#1191](https://github.com/ben-ranford/lopper/issues/1191)) ([4405146](https://github.com/ben-ranford/lopper/commit/4405146efdb944fa43a6cdd4d66b46153c751b48))
+* **runtime:** support safe Python runner profiles ([#1167](https://github.com/ben-ranford/lopper/issues/1167)) ([2d61350](https://github.com/ben-ranford/lopper/commit/2d613501ccb83f020c921bfc2d19e8102076b66c))
+* **vscode:** add preview capability parity ([#1180](https://github.com/ben-ranford/lopper/issues/1180)) ([93a0954](https://github.com/ben-ranford/lopper/commit/93a0954085917acc7e9283ce2383b0b00c0d306a))
+
+
+### Bug Fixes
+
+* **cli:** align feature defaults and help ([#1169](https://github.com/ben-ranford/lopper/issues/1169)) ([b39102d](https://github.com/ben-ranford/lopper/commit/b39102d6a2d0544d53dc4d6a69efb48c89fa35b5))
+* **report:** validate and stabilize CycloneDX exports ([#1166](https://github.com/ben-ranford/lopper/issues/1166)) ([69c4525](https://github.com/ben-ranford/lopper/commit/69c4525f78848497a4574a8875dde3f426ba53dd))
+* **rust:** ignore multiline alias declaration hits ([#1171](https://github.com/ben-ranford/lopper/issues/1171)) ([8b98f76](https://github.com/ben-ranford/lopper/commit/8b98f76a49ea5b8c2a12be956d6c42c7278ef0fd))
+* **shared:** count Unicode import aliases as used ([#1165](https://github.com/ben-ranford/lopper/issues/1165)) ([bcf01d1](https://github.com/ben-ranford/lopper/commit/bcf01d1b6141e7c719c2b5b45c9789a73ded0886))
+* **sonar:** exclude intentional dependency fixtures ([#1182](https://github.com/ben-ranford/lopper/issues/1182)) ([22b85eb](https://github.com/ben-ranford/lopper/commit/22b85eb225f5c86854d8859b2e9fee77a3bb8414))
+* **swift:** exclude cross-file local types from usage ([#1168](https://github.com/ben-ranford/lopper/issues/1168)) ([1f84518](https://github.com/ben-ranford/lopper/commit/1f845182ca6a6062ce461c9d232d7a5f94dbeb17))
+* **vscode:** preserve diagnostics when refresh is cancelled ([#1164](https://github.com/ben-ranford/lopper/issues/1164)) ([589eeb3](https://github.com/ben-ranford/lopper/commit/589eeb350d4bc6c1df2d39dbbedaf77e2d4fdcc2))
+
+
+### Code Refactoring
+
+* **report:** make PR-comment formatter lint-clean ([#1152](https://github.com/ben-ranford/lopper/issues/1152)) ([f8051d1](https://github.com/ben-ranford/lopper/commit/f8051d1c0cadeb1908758a75698c343d661d6356))
+
 ## [1.8.0](https://github.com/ben-ranford/lopper/compare/v1.7.0...v1.8.0) (2026-07-11)
 
 
