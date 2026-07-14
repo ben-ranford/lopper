@@ -328,7 +328,7 @@ func TestReleaseWorkflowManualDispatchFallsBackToDraftReleaseLookup(t *testing.T
 		t.Fatal("manual release flow must filter the release list by the requested tag")
 	}
 	if strings.Contains(workflowText, `head -n1 >"${release_metadata_file}" || true`) {
-		t.Fatal("manual release draft lookup must not mask API or JSON failures")
+		t.Fatal("manual release draft lookup must not mask API or JSON failures as a missing release")
 	}
 }
 
