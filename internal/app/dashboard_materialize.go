@@ -89,8 +89,14 @@ func resolveExistingOutputRoot(outputAbs, outputPath string) (string, error) {
 	current := filepath.Dir(outputAbs)
 	for {
 		next, done, err := inspectOutputRootPath(current, outputPath)
-		if done || err != nil {
-			return next, err
+		if err != nil {
+			return "", err
+		}
+		if done {
+			if err := rejectLexicalOutputRootSymlinks(next); err != nil {
+				return "", err
+			}
+			return next, nil
 		}
 		current = next
 	}
@@ -122,6 +128,41 @@ func inspectOutputRootPath(current, outputPath string) (string, bool, error) {
 		return "", true, fmt.Errorf("resolve output root for %s: no existing parent directory", outputPath)
 	}
 	return parent, false, nil
+}
+
+func rejectLexicalOutputRootSymlinks(existingRoot string) error {
+	ancestors := []string{filepath.Clean(existingRoot)}
+	for {
+		parent := filepath.Dir(ancestors[len(ancestors)-1])
+		if parent == ancestors[len(ancestors)-1] {
+			break
+		}
+		ancestors = append(ancestors, parent)
+	}
+
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		if err := rejectLexicalOutputRootPath(ancestors[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectLexicalOutputRootPath(path string) error {
+	if isKnownSystemAliasRoot(path) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("output root contains symlink: %s", path)
+	}
+	return nil
 }
 
 func trustedCommandOutputRoot(outputAbs string) (string, error) {

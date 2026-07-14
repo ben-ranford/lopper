@@ -163,6 +163,53 @@ func TestCommandOutputRootAbsolutePathUsesExistingParentOutsideWorkspace(t *test
 	}
 }
 
+func TestPersistCommandOutputRejectsAbsolutePathWithLexicalAncestorSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+
+	base := filepath.Join(t.TempDir(), "base")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir outside nested: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "link")); err != nil {
+		t.Fatalf("create escaping symlink: %v", err)
+	}
+
+	outputPath := filepath.Join(base, "link", "nested", "output.json")
+	_, err := persistCommandOutput("{}", outputPath, "dashboard report")
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected lexical ancestor symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "nested", "output.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestRejectLexicalOutputRootSymlinksAllowsRegularExistingPath(t *testing.T) {
+	existingRoot := filepath.Join(t.TempDir(), "base", "nested")
+	if err := os.MkdirAll(existingRoot, 0o755); err != nil {
+		t.Fatalf("mkdir existing root: %v", err)
+	}
+
+	if err := rejectLexicalOutputRootSymlinks(existingRoot); err != nil {
+		t.Fatalf("reject lexical output root symlinks: %v", err)
+	}
+}
+
+func TestRejectLexicalOutputRootSymlinksAllowsKnownDarwinAliasRoot(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("known system alias roots only apply on darwin")
+	}
+
+	if err := rejectLexicalOutputRootSymlinks("/tmp"); err != nil {
+		t.Fatalf("reject lexical output root symlinks: %v", err)
+	}
+}
+
 func TestCommandOutputRootAllowsRelativeParentOutsideWorkspace(t *testing.T) {
 	workspaceParent := t.TempDir()
 	workspace := filepath.Join(workspaceParent, "workspace")
