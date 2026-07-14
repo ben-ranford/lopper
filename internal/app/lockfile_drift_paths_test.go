@@ -111,6 +111,35 @@ func TestGitDiffNameOnlyNeutralizesFilterDriversWithoutAttrSource(t *testing.T) 
 	}
 }
 
+func TestGitDiffNameOnlyRejectsMalformedCheckAttrOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "truncated output", mode: "checkattrtruncated"},
+		{name: "wrong field count", mode: "checkattrwrongfieldcount"},
+		{name: "wrong attribute", mode: "checkattrwrongattr"},
+		{name: "wrong path order", mode: "checkattrwrongorder"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := configureFakeGitRepo(t, tc.mode)
+
+			_, err := gitDiffNameOnly(context.Background(), repo)
+			if err == nil {
+				t.Fatal("expected malformed check-attr output to fail closed")
+			}
+			if !strings.Contains(err.Error(), "parse git check-attr --stdin -z filter output") {
+				t.Fatalf("expected parse error from malformed check-attr output, got %v", err)
+			}
+			if strings.Contains(err.Error(), "run git diff") {
+				t.Fatalf("expected malformed check-attr output to abort before git diff, got %v", err)
+			}
+		})
+	}
+}
+
 func TestGitAttributeCandidatePathsHandlesNilContextAndCommandFailure(t *testing.T) {
 	t.Run("nil context", func(t *testing.T) {
 		repo := configureFakeGitRepo(t, "filterdriver")
@@ -165,7 +194,10 @@ func TestParseNULTerminatedGitFields(t *testing.T) {
 
 func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
 	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
-	got := parseGitCheckAttrFilterDrivers(output)
+	got, err := parseGitCheckAttrFilterDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
+	if err != nil {
+		t.Fatalf("expected valid check-attr output to parse, got %v", err)
+	}
 	want := []string{"foo.bar", "foo/bar"}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d filter drivers, got %#v", len(want), got)
@@ -176,14 +208,69 @@ func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
 		}
 	}
 
-	if got := parseGitCheckAttrFilterDrivers([]byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00")); len(got) != 0 {
+	got, err = parseGitCheckAttrFilterDrivers([]string{"package.json", "package-lock.json", "nested/package.json"}, []byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00"))
+	if err != nil {
+		t.Fatalf("expected ignorable filter values to parse, got %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", got)
 	}
-	if got := parseGitCheckAttrFilterDrivers([]byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00")); len(got) != 1 || got[0] != "pwn=drv" {
+
+	got, err = parseGitCheckAttrFilterDrivers([]string{"a.json", "package.json"}, []byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00"))
+	if err != nil {
+		t.Fatalf("expected empty filter value to preserve later triplets, got %v", err)
+	}
+	if len(got) != 1 || got[0] != "pwn=drv" {
 		t.Fatalf("expected empty filter value to preserve later triplets, got %#v", got)
 	}
-	if got := parseGitCheckAttrFilterDrivers([]byte("package.json\x00filter")); len(got) != 0 {
-		t.Fatalf("expected incomplete check-attr output to be ignored, got %#v", got)
+}
+
+func TestParseGitCheckAttrFilterDriversRejectsMalformedOutput(t *testing.T) {
+	cases := []struct {
+		name       string
+		paths      []string
+		output     []byte
+		errContain string
+	}{
+		{
+			name:       "truncated output",
+			paths:      []string{"package.json"},
+			output:     []byte("package.json\x00filter"),
+			errContain: "truncated output",
+		},
+		{
+			name:       "wrong field count",
+			paths:      []string{"package.json"},
+			output:     []byte("package.json\x00filter\x00foo.bar\x00extra\x00"),
+			errContain: "expected 3 NUL-delimited fields",
+		},
+		{
+			name:       "wrong attribute name",
+			paths:      []string{"package.json"},
+			output:     []byte("package.json\x00eol\x00lf\x00"),
+			errContain: "attribute 0 mismatch",
+		},
+		{
+			name:       "wrong path",
+			paths:      []string{"package.json"},
+			output:     []byte("package-lock.json\x00filter\x00foo.bar\x00"),
+			errContain: "path 0 mismatch",
+		},
+		{
+			name:       "wrong path order",
+			paths:      []string{"package.json", "package-lock.json"},
+			output:     []byte("package-lock.json\x00filter\x00foo.bar\x00package.json\x00filter\x00foo.baz\x00"),
+			errContain: "path 0 mismatch",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseGitCheckAttrFilterDrivers(tc.paths, tc.output)
+			if err == nil || !strings.Contains(err.Error(), tc.errContain) {
+				t.Fatalf("expected error containing %q, got %v", tc.errContain, err)
+			}
+		})
 	}
 }
 
@@ -239,6 +326,14 @@ if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard 
     printf 'package.json\000'
     exit 0
   fi
+  if [ "$mode" = "checkattrwrongorder" ]; then
+    printf 'package.json\000package-lock.json\000'
+    exit 0
+  fi
+  if [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ]; then
+    printf 'package.json\000'
+    exit 0
+  fi
   if [ "$mode" = "filterdriver" ]; then
     printf 'package.json\000'
     exit 0
@@ -249,6 +344,26 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
   if [ "$mode" = "checkattrfail" ]; then
     echo "check-attr failed" >&2
     exit 1
+  fi
+  if [ "$mode" = "checkattrtruncated" ]; then
+    cat >/dev/null
+    printf 'package.json\000filter\000foo.bar'
+    exit 0
+  fi
+  if [ "$mode" = "checkattrwrongfieldcount" ]; then
+    cat >/dev/null
+    printf 'package.json\000filter\000foo.bar\000extra\000'
+    exit 0
+  fi
+  if [ "$mode" = "checkattrwrongattr" ]; then
+    cat >/dev/null
+    printf 'package.json\000eol\000lf\000'
+    exit 0
+  fi
+  if [ "$mode" = "checkattrwrongorder" ]; then
+    cat >/dev/null
+    printf 'package-lock.json\000filter\000foo.bar\000package.json\000filter\000foo.baz\000'
+    exit 0
   fi
   if [ "$mode" = "filterdriver" ]; then
     cat >/dev/null
@@ -274,6 +389,10 @@ if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
       fi
     done
     exit 0
+  fi
+  if [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ] || [ "$mode" = "checkattrwrongorder" ]; then
+    echo "git diff should not run after malformed check-attr output" >&2
+    exit 1
   fi
   if printf '%s' "$args" | grep -q -- '--cached'; then
     if [ "$mode" = "difffail-cached" ]; then

@@ -257,19 +257,38 @@ func gitActiveFilterDrivers(ctx context.Context, repoPath string, paths []string
 	if err != nil {
 		return nil, fmt.Errorf("run git check-attr --stdin -z filter: %w", err)
 	}
-	return parseGitCheckAttrFilterDrivers(output), nil
+	drivers, err := parseGitCheckAttrFilterDrivers(paths, output)
+	if err != nil {
+		return nil, fmt.Errorf("parse git check-attr --stdin -z filter output: %w", err)
+	}
+	return drivers, nil
 }
 
-func parseGitCheckAttrFilterDrivers(output []byte) []string {
+func parseGitCheckAttrFilterDrivers(paths []string, output []byte) ([]string, error) {
+	if len(output) == 0 || output[len(output)-1] != 0 {
+		return nil, errors.New("truncated output: missing trailing NUL terminator")
+	}
+
 	fields := parseNULTerminatedGitFields(output)
-	if len(fields) < 3 {
-		return nil
+	expectedFields := len(paths) * 3
+	if len(fields) != expectedFields {
+		return nil, fmt.Errorf("expected %d NUL-delimited fields for %d paths, got %d", expectedFields, len(paths), len(fields))
 	}
 
 	drivers := make([]string, 0, len(fields)/3)
 	seen := make(map[string]struct{}, len(fields)/3)
-	for index := 0; index+2 < len(fields); index += 3 {
-		value := strings.TrimSpace(fields[index+2])
+	for index, expectedPath := range paths {
+		fieldIndex := index * 3
+		path := fields[fieldIndex]
+		if path != expectedPath {
+			return nil, fmt.Errorf("path %d mismatch: expected %q, got %q", index, expectedPath, path)
+		}
+		attribute := fields[fieldIndex+1]
+		if attribute != "filter" {
+			return nil, fmt.Errorf("attribute %d mismatch for %q: expected %q, got %q", index, expectedPath, "filter", attribute)
+		}
+
+		value := strings.TrimSpace(fields[fieldIndex+2])
 		switch value {
 		case "", "set", "unset", "unspecified":
 			continue
@@ -280,7 +299,7 @@ func parseGitCheckAttrFilterDrivers(output []byte) []string {
 		seen[value] = struct{}{}
 		drivers = append(drivers, value)
 	}
-	return drivers
+	return drivers, nil
 }
 
 func sanitizedGitEnv() []string {
