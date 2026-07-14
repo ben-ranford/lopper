@@ -119,44 +119,59 @@ func lockfileManifestChangeCandidatePaths(snapshot lockfileDirSnapshot, rules []
 	seen := make(map[string]struct{}, len(rules))
 	manifestCache := newLockfileManifestCache(snapshot)
 	for _, rule := range rules {
-		manifests := findRuleManifests(snapshot.files, rule)
-		if len(manifests) == 0 {
-			continue
-		}
-		lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
-		lockfiles, err := findDistributedRuleLockfiles(snapshot, rule, manifests, lockfiles)
+		ruleCandidates, err := lockfileManifestChangeCandidatePathsForRule(snapshot, rule, manifestCache)
 		if err != nil {
 			return nil, err
 		}
-		if len(lockfiles) == 0 {
-			continue
-		}
-		matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifests[0], manifestCache)
-		if err != nil {
-			return nil, err
-		}
-		if !matchesManifest {
-			continue
-		}
-		for _, manifest := range manifests {
-			path := relativeFilePath(snapshot.repoPath, snapshot.path, manifest)
-			if _, ok := seen[path]; ok {
-				continue
-			}
-			seen[path] = struct{}{}
-			candidates = append(candidates, path)
-		}
-		for _, lockfile := range lockfiles {
-			path := relativeFilePath(snapshot.repoPath, snapshot.path, lockfile.name)
-			if _, ok := seen[path]; ok {
-				continue
-			}
-			seen[path] = struct{}{}
-			candidates = append(candidates, path)
-		}
+		candidates = appendUniqueLockfilePaths(candidates, seen, ruleCandidates)
 	}
 	sort.Strings(candidates)
 	return candidates, nil
+}
+
+func lockfileManifestChangeCandidatePathsForRule(snapshot lockfileDirSnapshot, rule lockfileRule, manifestCache *lockfileManifestCache) ([]string, error) {
+	manifests := findRuleManifests(snapshot.files, rule)
+	if len(manifests) == 0 {
+		return nil, nil
+	}
+	lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
+	lockfiles, err := findDistributedRuleLockfiles(snapshot, rule, manifests, lockfiles)
+	if err != nil {
+		return nil, err
+	}
+	if len(lockfiles) == 0 {
+		return nil, nil
+	}
+	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifests[0], manifestCache)
+	if err != nil {
+		return nil, err
+	}
+	if !matchesManifest {
+		return nil, nil
+	}
+	return relativeLockfileCandidatePaths(snapshot, manifests, lockfiles), nil
+}
+
+func relativeLockfileCandidatePaths(snapshot lockfileDirSnapshot, manifests []string, lockfiles []presentLockfile) []string {
+	paths := make([]string, 0, len(manifests)+len(lockfiles))
+	for _, manifest := range manifests {
+		paths = append(paths, relativeFilePath(snapshot.repoPath, snapshot.path, manifest))
+	}
+	for _, lockfile := range lockfiles {
+		paths = append(paths, relativeFilePath(snapshot.repoPath, snapshot.path, lockfile.name))
+	}
+	return paths
+}
+
+func appendUniqueLockfilePaths(candidates []string, seen map[string]struct{}, paths []string) []string {
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		candidates = append(candidates, path)
+	}
+	return candidates
 }
 
 func processLockfileDir(ctx context.Context, path string, entry fs.DirEntry, walkErr error, state lockfileWalkState) error {
