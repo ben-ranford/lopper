@@ -46,46 +46,6 @@ func TestLockfileDriftAdditionalPathAndWalkBranches(t *testing.T) {
 	}
 }
 
-func TestLockfileDriftGitErrorBranches(t *testing.T) {
-	original := resolveGitBinaryPathFn
-	defer func() { resolveGitBinaryPathFn = original }()
-
-	repo := t.TempDir()
-	fakeGit := writeFakeGitBinary(t)
-	resolveGitBinaryPathFn = func() (string, error) { return fakeGit, nil }
-	useFakeGitCommandContext(t)
-
-	writeFakeGitMode(t, repo, "lsfail")
-	if _, _, err := gitChangedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "ls-files") {
-		t.Fatalf("expected gitChangedFiles to surface ls-files failure, got %v", err)
-	}
-
-	writeFakeGitMode(t, repo, "checkattrfail")
-	if _, err := gitDiffNameOnly(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "check-attr") {
-		t.Fatalf("expected gitDiffNameOnly to surface check-attr failure, got %v", err)
-	}
-
-	writeFakeGitMode(t, repo, "difffail-head")
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
-		t.Fatalf("expected gitTrackedChanges HEAD diff failure, got %v", err)
-	}
-
-	writeFakeGitMode(t, repo, "difffail-unstaged")
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
-		t.Fatalf("expected gitTrackedChanges unstaged diff failure, got %v", err)
-	}
-
-	writeFakeGitMode(t, repo, "difffail-cached")
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
-		t.Fatalf("expected gitTrackedChanges cached diff failure, got %v", err)
-	}
-
-	resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
-	if _, err := gitDiffNameOnly(context.Background(), repo); err == nil {
-		t.Fatalf("expected gitDiffNameOnly to surface git command creation failure")
-	}
-}
-
 func TestGitCommandContextConstructorError(t *testing.T) {
 	originalResolve := resolveGitBinaryPathFn
 	originalExec := execGitCommandContextFn
@@ -100,43 +60,6 @@ func TestGitCommandContextConstructorError(t *testing.T) {
 
 	if _, err := gitCommandContext(context.Background(), t.TempDir(), "status"); err == nil || !strings.Contains(err.Error(), "construct git") {
 		t.Fatalf("expected gitCommandContext to return constructor error, got %v", err)
-	}
-}
-
-func TestGitDiffNameOnlyNeutralizesFilterDriversWithoutAttrSource(t *testing.T) {
-	repo := configureFakeGitRepo(t, "filterdriver")
-
-	if _, err := gitDiffNameOnly(context.Background(), repo); err != nil {
-		t.Fatalf("expected gitDiffNameOnly to construct a portable hardened diff command, got %v", err)
-	}
-}
-
-func TestGitDiffNameOnlyRejectsMalformedCheckAttrOutput(t *testing.T) {
-	cases := []struct {
-		name string
-		mode string
-	}{
-		{name: "truncated output", mode: "checkattrtruncated"},
-		{name: "wrong field count", mode: "checkattrwrongfieldcount"},
-		{name: "wrong attribute", mode: "checkattrwrongattr"},
-		{name: "wrong path order", mode: "checkattrwrongorder"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := configureFakeGitRepo(t, tc.mode)
-
-			_, err := gitDiffNameOnly(context.Background(), repo)
-			if err == nil {
-				t.Fatal("expected malformed check-attr output to fail closed")
-			}
-			if !strings.Contains(err.Error(), "parse git check-attr --stdin -z filter output") {
-				t.Fatalf("expected parse error from malformed check-attr output, got %v", err)
-			}
-			if strings.Contains(err.Error(), "run git diff") {
-				t.Fatalf("expected malformed check-attr output to abort before git diff, got %v", err)
-			}
-		})
 	}
 }
 
@@ -157,28 +80,6 @@ func TestLockfileDriftFilterAmbiguityErrorNamesAffectedPathsAndDrivers(t *testin
 			t.Fatalf("expected ambiguity error to contain %q, got %v", want, err)
 		}
 	}
-}
-
-func TestGitAttributeCandidatePathsHandlesNilContextAndCommandFailure(t *testing.T) {
-	t.Run("nil context", func(t *testing.T) {
-		repo := configureFakeGitRepo(t, "filterdriver")
-
-		paths, err := gitAttributeCandidatePaths(testNilContext(), repo)
-		if err != nil {
-			t.Fatalf("expected gitAttributeCandidatePaths with nil context to succeed, got %v", err)
-		}
-		if len(paths) != 1 || paths[0] != "package.json" {
-			t.Fatalf("unexpected attribute candidate paths %#v", paths)
-		}
-	})
-
-	t.Run("command failure", func(t *testing.T) {
-		repo := configureFakeGitRepo(t, "lsfilescachedfail")
-
-		if _, err := gitAttributeCandidatePaths(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "ls-files --cached --others --exclude-standard -z") {
-			t.Fatalf("expected cached ls-files failure, got %v", err)
-		}
-	})
 }
 
 func TestCollectLockfileGitContextReturnsEmptyForNonGitWorktree(t *testing.T) {
@@ -261,27 +162,6 @@ func TestCollectLockfileGitContextScopesTrackedAndUntrackedCommandsToCandidatePa
 	}
 }
 
-func TestGitActiveFilterDriversHandlesEmptyPaths(t *testing.T) {
-	drivers, err := gitActiveFilterDrivers(context.Background(), t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("expected empty path set to skip git check-attr, got %v", err)
-	}
-	if len(drivers) != 0 {
-		t.Fatalf("expected no drivers for empty path set, got %#v", drivers)
-	}
-}
-
-func TestGitActiveFilterDriversDeduplicatesAssignments(t *testing.T) {
-	repo := configureFakeGitRepo(t, "filterdriverdupe")
-	drivers, err := gitActiveFilterDrivers(context.Background(), repo, []string{"package.json", "package-lock.json"})
-	if err != nil {
-		t.Fatalf("expected duplicate filter drivers to parse, got %v", err)
-	}
-	if len(drivers) != 1 || drivers[0] != "foo.bar" {
-		t.Fatalf("expected duplicate filter drivers to deduplicate, got %#v", drivers)
-	}
-}
-
 func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
 	assignments, err := gitActiveFilterPathDrivers(context.Background(), t.TempDir(), nil)
 	if err != nil {
@@ -333,10 +213,10 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name: "tracked HEAD diff failure",
+			name: "changed files tracked HEAD diff failure",
 			mode: "difffail-head",
 			run: func(repo string) error {
-				_, err := gitTrackedChangesForPaths(context.Background(), repo, []string{"package.json"})
+				_, err := gitChangedFilesForPaths(context.Background(), repo, []string{"package.json"})
 				return err
 			},
 			wantSub: lockfileRunGitErr,
@@ -381,6 +261,9 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 	original := resolveGitBinaryPathFn
 	resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
 	t.Cleanup(func() { resolveGitBinaryPathFn = original })
+	if _, err := gitTrackedChangesForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected scoped tracked command construction failure, got %v", err)
+	}
 	if _, err := gitDiffNameOnlyForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected scoped diff command construction failure, got %v", err)
 	}
@@ -409,20 +292,23 @@ func TestParseNULTerminatedGitFields(t *testing.T) {
 	}
 }
 
-func TestParseGitCheckAttrFilterPathDriversAndDeduplicates(t *testing.T) {
+func TestParseGitCheckAttrFilterPathDrivers(t *testing.T) {
 	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
 	assignments, err := parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
 	if err != nil {
 		t.Fatalf("expected valid check-attr output to parse, got %v", err)
 	}
-	got := uniqueFilterDrivers(assignments)
-	want := []string{"foo.bar", "foo/bar"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d filter drivers, got %#v", len(want), got)
+	want := []gitFilterPathDriver{
+		{path: "package.json", driver: "foo.bar"},
+		{path: "nested/package.json", driver: "foo/bar"},
+		{path: "package.json", driver: "foo.bar"},
+	}
+	if len(assignments) != len(want) {
+		t.Fatalf("expected %d path-driver assignments, got %#v", len(want), assignments)
 	}
 	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("expected filter driver %q at index %d, got %#v", want[index], index, got)
+		if assignments[index] != want[index] {
+			t.Fatalf("expected assignment %#v at index %d, got %#v", want[index], index, assignments)
 		}
 	}
 
@@ -430,18 +316,16 @@ func TestParseGitCheckAttrFilterPathDriversAndDeduplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected ignorable filter values to parse, got %v", err)
 	}
-	got = uniqueFilterDrivers(assignments)
-	if len(got) != 0 {
-		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", got)
+	if len(assignments) != 0 {
+		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", assignments)
 	}
 
 	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"a.json", "package.json"}, []byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00"))
 	if err != nil {
 		t.Fatalf("expected empty filter value to preserve later triplets, got %v", err)
 	}
-	got = uniqueFilterDrivers(assignments)
-	if len(got) != 1 || got[0] != "pwn=drv" {
-		t.Fatalf("expected empty filter value to preserve later triplets, got %#v", got)
+	if len(assignments) != 1 || assignments[0].path != "package.json" || assignments[0].driver != "pwn=drv" {
+		t.Fatalf("expected empty filter value to preserve later triplets, got %#v", assignments)
 	}
 }
 
@@ -556,10 +440,6 @@ if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard 
     echo "repo-wide attribute candidate listing should not run" >&2
     exit 1
   fi
-  if [ "$mode" = "lsfilescachedfail" ]; then
-    echo "ls-files cached failed" >&2
-    exit 1
-  fi
   if [ "$mode" = "checkattrfail" ]; then
     printf 'package.json\000'
     exit 0
@@ -621,11 +501,6 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
   if [ "$mode" = "filterdriver" ]; then
     cat >/dev/null
     printf 'package.json\000filter\000foo.bar\000'
-    exit 0
-  fi
-  if [ "$mode" = "filterdriverdupe" ]; then
-    cat >/dev/null
-    printf 'package.json\000filter\000foo.bar\000package-lock.json\000filter\000foo.bar\000'
     exit 0
   fi
   exit 0
@@ -718,8 +593,4 @@ func useFakeGitCommandContext(t *testing.T) {
 	t.Cleanup(func() {
 		execGitCommandContextFn = original
 	})
-}
-
-func testNilContext() context.Context {
-	return nil
 }

@@ -14,42 +14,13 @@ func TestDetectLockfileDriftPropagatesGitContextErrors(t *testing.T) {
 	resolveGitBinaryPathFn = func() (string, error) { return writeFakeGitBinary(t), nil }
 	useFakeGitCommandContext(t)
 
-	cases := []struct {
-		name    string
-		mode    string
-		wantSub string
-		run     func(context.Context, string) error
-	}{
-		{
-			name:    "detect lockfile drift propagates git context errors",
-			mode:    "lsfail",
-			wantSub: "ls-files",
-			run: func(ctx context.Context, repo string) error {
-				_, err := detectLockfileDrift(ctx, repo, false)
-				return err
-			},
-		},
-		{
-			name:    "git changed files propagates tracked change failures",
-			mode:    "difffail-head",
-			wantSub: "run git",
-			run: func(ctx context.Context, repo string) error {
-				_, _, err := gitChangedFiles(ctx, repo)
-				return err
-			},
-		},
-	}
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFakeGitMode(t, repo, "lsfail")
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
-			writeFakeGitMode(t, repo, tc.mode)
-			err := tc.run(context.Background(), repo)
-			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
-				t.Fatalf("expected %q error, got %v", tc.wantSub, err)
-			}
-		})
+	_, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil || !strings.Contains(err.Error(), "ls-files") {
+		t.Fatalf("expected ls-files error, got %v", err)
 	}
 }

@@ -61,38 +61,6 @@ func collectLockfileGitContext(ctx context.Context, repoPath string, rules []loc
 	}, nil
 }
 
-func gitChangedFiles(ctx context.Context, repoPath string) (map[string]struct{}, bool, error) {
-	if !isGitWorktree(ctx, repoPath) {
-		return nil, false, nil
-	}
-	changed, err := gitChangedFilesInWorktree(ctx, repoPath)
-	if err != nil {
-		return nil, true, err
-	}
-	return changed, true, nil
-}
-
-func gitChangedFilesInWorktree(ctx context.Context, repoPath string) (map[string]struct{}, error) {
-	changed := map[string]struct{}{}
-	tracked, err := gitTrackedChanges(ctx, repoPath)
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range tracked {
-		changed[path] = struct{}{}
-	}
-
-	untracked, err := gitUntrackedFiles(ctx, repoPath)
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range untracked {
-		changed[path] = struct{}{}
-	}
-
-	return changed, nil
-}
-
 func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []string) (map[string]struct{}, error) {
 	if len(paths) == 0 {
 		return map[string]struct{}{}, nil
@@ -127,26 +95,6 @@ func isGitWorktree(ctx context.Context, repoPath string) bool {
 		return false
 	}
 	return strings.TrimSpace(string(output)) == "true"
-}
-
-func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
-	hasHead, err := gitHasVerifiedHead(ctx, repoPath)
-	if err != nil {
-		return nil, err
-	}
-	if hasHead {
-		return gitDiffNameOnly(ctx, repoPath, "HEAD")
-	}
-	// Unborn HEAD: derive tracked changes from staged + working tree diffs.
-	staged, err := gitDiffNameOnly(ctx, repoPath, gitCachedFlag)
-	if err != nil {
-		return nil, err
-	}
-	unstaged, err := gitDiffNameOnly(ctx, repoPath)
-	if err != nil {
-		return nil, err
-	}
-	return mergeGitPaths(staged, unstaged), nil
 }
 
 func gitTrackedChangesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
@@ -187,19 +135,11 @@ func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 	return true, nil
 }
 
-func gitDiffNameOnly(ctx context.Context, repoPath string, diffArgs ...string) ([]string, error) {
-	filterDrivers, err := gitDiffFilterDrivers(ctx, repoPath)
-	if err != nil {
-		return nil, err
-	}
-	return gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, filterDrivers, nil, diffArgs...)
-}
-
 func gitDiffNameOnlyForPaths(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
-	return gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, nil, paths, diffArgs...)
+	return gitDiffNameOnly(ctx, repoPath, paths, diffArgs...)
 }
 
-func gitDiffNameOnlyWithFilterDrivers(ctx context.Context, repoPath string, filterDrivers, paths []string, diffArgs ...string) ([]string, error) {
+func gitDiffNameOnly(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
 	args := []string{"diff", "--no-ext-diff", "--no-textconv"}
 	args = append(args, diffArgs...)
 	args = append(args, "--name-only", "--")
@@ -208,7 +148,7 @@ func gitDiffNameOnlyWithFilterDrivers(ctx context.Context, repoPath string, filt
 	if err != nil {
 		return nil, err
 	}
-	command.Env = gitexec.SanitizedEnvWithFilterDrivers(filterDrivers)
+	command.Env = gitexec.SanitizedEnv()
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
@@ -334,41 +274,6 @@ func parseNULTerminatedGitFields(output []byte) []string {
 	return lines
 }
 
-func gitDiffFilterDrivers(ctx context.Context, repoPath string) ([]string, error) {
-	paths, err := gitAttributeCandidatePaths(ctx, repoPath)
-	if err != nil {
-		return nil, err
-	}
-	drivers, err := gitActiveFilterDrivers(ctx, repoPath, paths)
-	if err != nil {
-		return nil, err
-	}
-	return drivers, nil
-}
-
-func gitAttributeCandidatePaths(ctx context.Context, repoPath string) ([]string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	command, err := gitCommandContext(ctx, repoPath, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return nil, err
-	}
-	output, err := command.Output()
-	if err != nil {
-		return nil, fmt.Errorf("run git ls-files --cached --others --exclude-standard -z: %w", err)
-	}
-	return parseNULTerminatedGitOutput(output), nil
-}
-
-func gitActiveFilterDrivers(ctx context.Context, repoPath string, paths []string) ([]string, error) {
-	assignments, err := gitActiveFilterPathDrivers(ctx, repoPath, paths)
-	if err != nil {
-		return nil, err
-	}
-	return uniqueFilterDrivers(assignments), nil
-}
-
 func gitActiveFilterPathDrivers(ctx context.Context, repoPath string, paths []string) ([]gitFilterPathDriver, error) {
 	if len(paths) == 0 {
 		return nil, nil
@@ -396,19 +301,6 @@ func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) err
 		parts = append(parts, fmt.Sprintf("%s (%s)", assignment.path, assignment.driver))
 	}
 	return fmt.Errorf("cannot safely evaluate lockfile drift: active custom git filter drivers on %s", strings.Join(parts, ", "))
-}
-
-func uniqueFilterDrivers(assignments []gitFilterPathDriver) []string {
-	drivers := make([]string, 0, len(assignments))
-	seen := make(map[string]struct{}, len(assignments))
-	for _, assignment := range assignments {
-		if _, ok := seen[assignment.driver]; ok {
-			continue
-		}
-		seen[assignment.driver] = struct{}{}
-		drivers = append(drivers, assignment.driver)
-	}
-	return drivers
 }
 
 func parseGitCheckAttrFilterPathDrivers(paths []string, output []byte) ([]gitFilterPathDriver, error) {

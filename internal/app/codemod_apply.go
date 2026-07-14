@@ -208,14 +208,14 @@ func gitTrackedChangesForCodemod(ctx context.Context, repoPath string) ([]string
 		return nil, err
 	}
 	if hasHead {
-		return gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, nil, nil, "HEAD")
+		return gitDiffNameOnly(ctx, repoPath, nil, "HEAD")
 	}
 
-	staged, err := gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, nil, nil, gitCachedFlag)
+	staged, err := gitDiffNameOnly(ctx, repoPath, nil, gitCachedFlag)
 	if err != nil {
 		return nil, err
 	}
-	unstaged, err := gitDiffNameOnlyWithFilterDrivers(ctx, repoPath, nil, nil)
+	unstaged, err := gitDiffNameOnly(ctx, repoPath, nil)
 	if err != nil {
 		return nil, err
 	}

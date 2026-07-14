@@ -740,9 +740,6 @@ func TestScanLockfileDriftMissingRepoPath(t *testing.T) {
 
 func TestGitHelperErrors(t *testing.T) {
 	repo := t.TempDir()
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil {
-		t.Fatalf("expected tracked changes command to fail outside git repo")
-	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
 		t.Fatalf("expected untracked files command to fail outside git repo")
 	}
@@ -753,10 +750,6 @@ func TestGitHelperErrors(t *testing.T) {
 
 func TestGitHelperNilContextErrors(t *testing.T) {
 	repo := t.TempDir()
-	//nolint:staticcheck // Deliberate nil context validation coverage.
-	if _, err := gitTrackedChanges(nil, repo); err == nil {
-		t.Fatalf("expected tracked changes command with nil context to fail outside git repo")
-	}
 	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitUntrackedFiles(nil, repo); err == nil {
 		t.Fatalf("expected untracked files command with nil context to fail outside git repo")
@@ -776,9 +769,6 @@ func TestGitHelpersWhenGitUnavailable(t *testing.T) {
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected git worktree=false when git is unavailable")
 	}
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
-		t.Fatalf("expected tracked changes error for missing git executable, got %v", err)
-	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected untracked files error for missing git executable, got %v", err)
 	}
@@ -793,62 +783,9 @@ func TestGitHelpersFallbackExecutableBranch(t *testing.T) {
 	if isGitWorktree(context.Background(), repo) {
 		t.Fatalf("expected non-git temp dir to not be worktree when fallback git is used")
 	}
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil {
-		t.Fatalf("expected tracked changes command to fail outside git repo with fallback git")
-	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
 		t.Fatalf("expected untracked files command to fail outside git repo with fallback git")
 	}
-}
-
-func TestGitChangedFilesOutsideGitRepo(t *testing.T) {
-	repo := t.TempDir()
-	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("gitChangedFiles outside git repo: %v", err)
-	}
-	if hasGit {
-		t.Fatalf("expected hasGit=false for non-git repo")
-	}
-	if len(changed) != 0 {
-		t.Fatalf("expected no changed files for non-git repo, got %#v", changed)
-	}
-}
-
-func TestGitChangedFilesInGitRepo(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-	initGitRepo(t, repo)
-
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdatedV2)
-	writeFile(t, filepath.Join(repo, newUntrackedFileName), "untracked\n")
-
-	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("gitChangedFiles in git repo: %v", err)
-	}
-	if !hasGit {
-		t.Fatalf("expected hasGit=true for git repo")
-	}
-	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
-}
-
-func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
-	repo := t.TempDir()
-	runGit(t, repo, "init")
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-	runGit(t, repo, "add", manifestFileName)
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
-	writeFile(t, filepath.Join(repo, newUntrackedFileName), "untracked\n")
-
-	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("expected gitChangedFiles to succeed when HEAD is missing, got %v", err)
-	}
-	if !hasGit {
-		t.Fatalf("expected hasGit=true when inside git worktree")
-	}
-	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
 }
 
 func TestDetectLockfileDriftNoHeadDoesNotReturnGitError(t *testing.T) {
