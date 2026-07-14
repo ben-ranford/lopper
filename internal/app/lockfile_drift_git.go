@@ -21,6 +21,7 @@ const (
 	gitOthersFlag         = "--others"
 	gitExcludeStandardArg = "--exclude-standard"
 	gitCachedFlag         = "--cached"
+	gitLiteralPathPrefix  = ":(literal)"
 )
 
 type lockfileGitContext struct {
@@ -202,7 +203,7 @@ func gitDiffNameOnlyWithFilterDrivers(ctx context.Context, repoPath string, filt
 	args := []string{"diff", "--no-ext-diff", "--no-textconv"}
 	args = append(args, diffArgs...)
 	args = append(args, "--name-only", "--")
-	args = append(args, paths...)
+	args = append(args, gitLiteralPathspecs(paths)...)
 	command, err := gitCommandContext(ctx, repoPath, args...)
 	if err != nil {
 		return nil, err
@@ -233,6 +234,17 @@ func mergeGitPaths(groups ...[]string) []string {
 	return merged
 }
 
+func gitLiteralPathspecs(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	literalPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		literalPaths = append(literalPaths, gitLiteralPathPrefix+path)
+	}
+	return literalPaths
+}
+
 func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
 	command, err := gitCommandContext(ctx, repoPath, gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg)
 	if err != nil {
@@ -251,7 +263,7 @@ func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []str
 	}
 	args := []string{gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, "-z"}
 	args = append(args, "--")
-	args = append(args, paths...)
+	args = append(args, gitLiteralPathspecs(paths)...)
 	command, err := gitCommandContext(ctx, repoPath, args...)
 	if err != nil {
 		return nil, err

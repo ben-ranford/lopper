@@ -529,7 +529,7 @@ if printf '%s' "$args" | grep -q 'rev-parse --verify --quiet HEAD'; then
 fi
 if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
   if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ]; then
-    if ! printf '%s' "$args" | grep -q -- 'ls-files --others --exclude-standard -z -- package-lock.json package.json'; then
+    if ! printf '%s' "$args" | grep -q -- 'ls-files --others --exclude-standard -z -- :(literal)package-lock.json :(literal)package.json'; then
       echo "missing pathspec-scoped untracked args: $args" >&2
       exit 1
     fi
@@ -629,7 +629,7 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
 fi
 if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
   if [ "$mode" = "pathscope-head" ]; then
-    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv HEAD --name-only -- package-lock.json package.json'; then
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv HEAD --name-only -- :(literal)package-lock.json :(literal)package.json'; then
       echo "missing pathspec-scoped head diff args: $args" >&2
       exit 1
     fi
@@ -638,14 +638,14 @@ if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
   fi
   if [ "$mode" = "pathscope-unborn" ]; then
     if printf '%s' "$args" | grep -q -- '--cached'; then
-      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -- package-lock.json package.json'; then
+      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -- :(literal)package-lock.json :(literal)package.json'; then
         echo "missing pathspec-scoped cached diff args: $args" >&2
         exit 1
       fi
       printf 'package.json\n'
       exit 0
     fi
-    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -- package-lock.json package.json'; then
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -- :(literal)package-lock.json :(literal)package.json'; then
       echo "missing pathspec-scoped unstaged diff args: $args" >&2
       exit 1
     fi
