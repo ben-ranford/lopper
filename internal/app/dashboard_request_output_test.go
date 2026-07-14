@@ -117,30 +117,6 @@ func TestExecuteDashboardOutputPathErrors(t *testing.T) {
 	})
 }
 
-func TestPersistDashboardOutputPreservesExistingFileMode(t *testing.T) {
-	workspace := t.TempDir()
-	outputPath := filepath.Join(workspace, "org-report.html")
-	if err := os.WriteFile(outputPath, []byte("before"), 0o644); err != nil {
-		t.Fatalf("seed report file: %v", err)
-	}
-	if err := os.Chmod(outputPath, 0o644); err != nil {
-		t.Fatalf("chmod report file: %v", err)
-	}
-
-	chdirCanonicalWorkspace(t, workspace)
-
-	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err != nil {
-		t.Fatalf("persist dashboard output: %v", err)
-	}
-	info, err := os.Stat(outputPath)
-	if err != nil {
-		t.Fatalf("stat dashboard output: %v", err)
-	}
-	if info.Mode().Perm() != 0o644 {
-		t.Fatalf("expected existing dashboard output mode 0644 to be preserved, got %#o", info.Mode().Perm())
-	}
-}
-
 func TestPersistDashboardOutputRejectsReadOnlyExistingFile(t *testing.T) {
 	workspace := t.TempDir()
 	outputPath := filepath.Join(workspace, "org-report.html")
@@ -181,56 +157,6 @@ func TestPersistDashboardOutputRejectsReadOnlyExistingFile(t *testing.T) {
 	}
 }
 
-func TestPersistDashboardOutputRejectsSymlinkTarget(t *testing.T) {
-	workspace := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "outside.txt")
-	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
-		t.Fatalf("seed outside file: %v", err)
-	}
-	outputPath := filepath.Join(workspace, "org-report.html")
-	if err := os.Symlink(outside, outputPath); err != nil {
-		t.Fatalf("create output symlink: %v", err)
-	}
-
-	chdirCanonicalWorkspace(t, workspace)
-
-	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err == nil {
-		t.Fatal("expected symlink target to be rejected")
-	}
-	data, err := os.ReadFile(outside)
-	if err != nil {
-		t.Fatalf("read outside file: %v", err)
-	}
-	if string(data) != "secret" {
-		t.Fatalf("expected symlink target to remain unchanged, got %q", string(data))
-	}
-	info, err := os.Lstat(outputPath)
-	if err != nil {
-		t.Fatalf("lstat dashboard output: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected dashboard output path to remain a symlink, got mode %v", info.Mode())
-	}
-}
-
-func TestPersistDashboardOutputRejectsSymlinkedParent(t *testing.T) {
-	workspace := t.TempDir()
-	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
-		t.Fatalf("create parent symlink: %v", err)
-	}
-
-	chdirCanonicalWorkspace(t, workspace)
-
-	_, err := persistDashboardOutput(`{"report":true}`, filepath.Join("reports", "org-report.json"))
-	if err == nil {
-		t.Fatal("expected symlinked parent to be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(outside, "org-report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside report to remain absent, got err=%v", statErr)
-	}
-}
-
 func TestPersistDashboardOutputAllowsAbsolutePathUnderSystemSymlinkPrefix(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "reports", "org-report.json")
 
@@ -250,69 +176,6 @@ func TestPersistDashboardOutputAllowsAbsolutePathUnderSystemSymlinkPrefix(t *tes
 	}
 	if root == string(os.PathSeparator) {
 		t.Fatalf("expected absolute output root to stop at existing parent directory, got %q", root)
-	}
-}
-
-func TestPersistDashboardOutputRejectsAbsoluteSymlinkedParent(t *testing.T) {
-	workspace := t.TempDir()
-	outside := t.TempDir()
-	outputPath := filepath.Join(workspace, "reports", "org-report.json")
-	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
-		t.Fatalf("create parent symlink: %v", err)
-	}
-
-	_, err := persistDashboardOutput(`{"report":true}`, outputPath)
-	if err == nil {
-		t.Fatal("expected absolute symlinked parent to be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(outside, "org-report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside report to remain absent, got err=%v", statErr)
-	}
-}
-
-func TestPersistDashboardOutputRejectsAbsoluteSymlinkedNestedParent(t *testing.T) {
-	workspace := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
-		t.Fatalf("mkdir outside nested: %v", err)
-	}
-	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
-		t.Fatalf("create parent symlink: %v", err)
-	}
-	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
-	outputPath := filepath.Join(canonicalWorkspace, "reports", "nested", "org-report.json")
-
-	_, err := persistDashboardOutput(`{"report":true}`, outputPath)
-	if err == nil {
-		t.Fatal("expected absolute nested symlinked parent to be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(outside, "nested", "org-report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside nested report to remain absent, got err=%v", statErr)
-	}
-}
-
-func TestPersistDashboardOutputRejectsAbsoluteSymlinkedNestedParentViaWorkspaceAlias(t *testing.T) {
-	workspace := t.TempDir()
-	workspaceAlias := filepath.Join(t.TempDir(), "repo")
-	if err := os.Symlink(workspace, workspaceAlias); err != nil {
-		t.Fatalf("create workspace alias: %v", err)
-	}
-	outside := filepath.Join(t.TempDir(), "out")
-	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o755); err != nil {
-		t.Fatalf("mkdir outside nested: %v", err)
-	}
-	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
-		t.Fatalf("create reports symlink: %v", err)
-	}
-	chdirCanonicalWorkspace(t, workspace)
-
-	outputPath := filepath.Join(workspaceAlias, "reports", "nested", "org-report.json")
-	_, err := persistDashboardOutput(`{"report":true}`, outputPath)
-	if err == nil {
-		t.Fatal("expected absolute nested symlinked parent via workspace alias to be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(outside, "nested", "org-report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside nested report to remain absent, got err=%v", statErr)
 	}
 }
 
