@@ -90,69 +90,79 @@ jobs:
           fi
 
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
+          release_metadata_file="$(mktemp)"
           release_lookup_error="$(mktemp)"
+          trap 'rm -f "${release_metadata_file}" "${release_lookup_error}"' EXIT
           set +e
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_metadata_file}" 2>"${release_lookup_error}"
           release_lookup_status=$?
           set -e
-          if [ "${release_lookup_status}" -eq 0 ]; then
-            rm -f "${release_lookup_error}"
-            echo "Reusing existing GitHub release ${tag}."
-            release_ref_json="$(mktemp)"
-            if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then
-              echo "::error::Existing release ${tag} tag ref could not be verified." >&2
-              rm -f "${release_ref_json}"
-              exit 1
-            fi
-
-            existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"
-            existing_ref_sha="$(jq -r '.object.sha // empty' "${release_ref_json}")"
-            existing_commit=""
-
-            case "${existing_ref_type}" in
-              commit)
-                existing_commit="${existing_ref_sha}"
-                ;;
-              tag)
-                annotated_tag_json="$(mktemp)"
-                if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then
-                  echo "::error::Existing release ${tag} annotated tag target could not be verified." >&2
-                  rm -f "${annotated_tag_json}" "${release_ref_json}"
-                  exit 1
-                fi
-
-                annotated_target_type="$(jq -r '.object.type // empty' "${annotated_tag_json}")"
-                if [ "${annotated_target_type}" != "commit" ]; then
-                  echo "::error::Existing release ${tag} tag target type ${annotated_target_type} is not a commit." >&2
-                  rm -f "${annotated_tag_json}" "${release_ref_json}"
-                  exit 1
-                fi
-
-                existing_commit="$(jq -r '.object.sha // empty' "${annotated_tag_json}")"
-                rm -f "${annotated_tag_json}"
-                ;;
-              *)
-                echo "::error::Existing release ${tag} tag ref type ${existing_ref_type} is not supported." >&2
-                rm -f "${release_ref_json}"
+          if [ "${release_lookup_status}" -ne 0 ]; then
+            if grep -q "HTTP 404" "${release_lookup_error}"; then
+              if ! gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
+                | jq -c --arg tag "$tag" '.[].[] | select(.tag_name == $tag)' \
+                | head -n1 >"${release_metadata_file}"; then
+                echo "::error::Failed to search draft GitHub releases for ${tag}." >&2
                 exit 1
-                ;;
-            esac
-
-            rm -f "${release_ref_json}"
-            if [ -z "${existing_commit}" ]; then
-              echo "::error::Existing release ${tag} target commit could not be verified." >&2
-              exit 1
+              fi
+            else
+              cat "${release_lookup_error}" >&2
+              echo "::error::Failed to look up GitHub release ${tag}." >&2
+              exit "${release_lookup_status}"
             fi
-            resolved_sha="${existing_commit}"
-          elif grep -q "HTTP 404" "${release_lookup_error}"; then
-            rm -f "${release_lookup_error}"
+          fi
+          if ! [ -s "${release_metadata_file}" ]; then
             echo "::error::Manual release promotion can only retry an existing GitHub release for ${tag}." >&2
             exit 1
-          else
-            cat "${release_lookup_error}" >&2
-            rm -f "${release_lookup_error}"
-            exit "${release_lookup_status}"
           fi
+
+          echo "Reusing existing GitHub release ${tag}."
+          release_ref_json="$(mktemp)"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then
+            echo "::error::Existing release ${tag} tag ref could not be verified." >&2
+            rm -f "${release_ref_json}"
+            exit 1
+          fi
+
+          existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"
+          existing_ref_sha="$(jq -r '.object.sha // empty' "${release_ref_json}")"
+          existing_commit=""
+
+          case "${existing_ref_type}" in
+            commit)
+              existing_commit="${existing_ref_sha}"
+              ;;
+            tag)
+              annotated_tag_json="$(mktemp)"
+              if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then
+                echo "::error::Existing release ${tag} annotated tag target could not be verified." >&2
+                rm -f "${annotated_tag_json}" "${release_ref_json}"
+                exit 1
+              fi
+
+              annotated_target_type="$(jq -r '.object.type // empty' "${annotated_tag_json}")"
+              if [ "${annotated_target_type}" != "commit" ]; then
+                echo "::error::Existing release ${tag} tag target type ${annotated_target_type} is not a commit." >&2
+                rm -f "${annotated_tag_json}" "${release_ref_json}"
+                exit 1
+              fi
+
+              existing_commit="$(jq -r '.object.sha // empty' "${annotated_tag_json}")"
+              rm -f "${annotated_tag_json}"
+              ;;
+            *)
+              echo "::error::Existing release ${tag} tag ref type ${existing_ref_type} is not supported." >&2
+              rm -f "${release_ref_json}"
+              exit 1
+              ;;
+          esac
+
+          rm -f "${release_ref_json}"
+          if [ -z "${existing_commit}" ]; then
+            echo "::error::Existing release ${tag} target commit could not be verified." >&2
+            exit 1
+          fi
+          resolved_sha="${existing_commit}"
 
           {
             echo "release_created=true"
