@@ -22,6 +22,28 @@ func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
 	}
 }
 
+func TestFilterDriverConfigArgsNeutralizesUniqueDrivers(t *testing.T) {
+	args := FilterDriverConfigArgs([]string{"foo.bar", "foo/bar", "foo.bar", "", "foo:bar"})
+	for _, expected := range []string{
+		"filter.foo.bar.clean=",
+		"filter.foo.bar.process=",
+		"filter.foo.bar.required=false",
+		"filter.foo/bar.clean=",
+		"filter.foo/bar.process=",
+		"filter.foo/bar.required=false",
+		"filter.foo:bar.clean=",
+		"filter.foo:bar.process=",
+		"filter.foo:bar.required=false",
+	} {
+		if !containsArgPair(args, "-c", expected) {
+			t.Fatalf("expected filter driver override %q in %#v", expected, args)
+		}
+	}
+	if got, want := len(args), 18; got != want {
+		t.Fatalf("expected %d arg entries, got %d (%#v)", want, got, args)
+	}
+}
+
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
 	if err != nil {

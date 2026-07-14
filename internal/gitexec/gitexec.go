@@ -28,11 +28,33 @@ var forcedGitConfigOverrides = []gitConfigOverride{
 }
 
 func SafeConfigArgs() []string {
-	args := make([]string, 0, len(forcedGitConfigOverrides)*2)
-	for _, override := range forcedGitConfigOverrides {
-		args = append(args, "-c", fmt.Sprintf("%s=%s", override.key, override.value))
+	return configArgs(forcedGitConfigOverrides)
+}
+
+func FilterDriverConfigArgs(drivers []string) []string {
+	if len(drivers) == 0 {
+		return nil
 	}
-	return args
+
+	overrides := make([]gitConfigOverride, 0, len(drivers)*3)
+	seen := make(map[string]struct{}, len(drivers))
+	for _, driver := range drivers {
+		driver = strings.TrimSpace(driver)
+		if driver == "" {
+			continue
+		}
+		if _, ok := seen[driver]; ok {
+			continue
+		}
+		seen[driver] = struct{}{}
+		cleanKey := fmt.Sprintf("filter.%s.clean", driver)
+		processKey := fmt.Sprintf("filter.%s.process", driver)
+		requiredKey := fmt.Sprintf("filter.%s.required", driver)
+		overrides = append(overrides, gitConfigOverride{key: cleanKey, value: ""})
+		overrides = append(overrides, gitConfigOverride{key: processKey, value: ""})
+		overrides = append(overrides, gitConfigOverride{key: requiredKey, value: "false"})
+	}
+	return configArgs(overrides)
 }
 
 func ResolveBinaryPath() (string, error) {
@@ -116,6 +138,14 @@ func safeGitConfigEnvEntries() []string {
 		entries = append(entries, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", index, override.key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, override.value))
 	}
 	return entries
+}
+
+func configArgs(overrides []gitConfigOverride) []string {
+	args := make([]string, 0, len(overrides)*2)
+	for _, override := range overrides {
+		args = append(args, "-c", fmt.Sprintf("%s=%s", override.key, override.value))
+	}
+	return args
 }
 
 func ExecutableAvailable(path string) bool {

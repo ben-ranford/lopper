@@ -60,6 +60,11 @@ func TestLockfileDriftGitErrorBranches(t *testing.T) {
 		t.Fatalf("expected gitChangedFiles to surface ls-files failure, got %v", err)
 	}
 
+	writeFakeGitMode(t, repo, "checkattrfail")
+	if _, err := gitDiffNameOnly(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "check-attr") {
+		t.Fatalf("expected gitDiffNameOnly to surface check-attr failure, got %v", err)
+	}
+
 	writeFakeGitMode(t, repo, "difffail-head")
 	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), lockfileRunGitErr) {
 		t.Fatalf("expected gitTrackedChanges HEAD diff failure, got %v", err)
@@ -98,57 +103,75 @@ func TestGitCommandContextConstructorError(t *testing.T) {
 	}
 }
 
-func TestGitDiffNameOnlyRejectsUnsupportedObjectFormat(t *testing.T) {
-	repo := configureFakeGitObjectFormatRepo(t, "objectformat-bad")
+func TestGitDiffNameOnlyNeutralizesFilterDriversWithoutAttrSource(t *testing.T) {
+	repo := configureFakeGitRepo(t, "filterdriver")
 
-	if _, err := gitDiffNameOnly(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "unsupported git object format") {
-		t.Fatalf("expected unsupported git object format error, got %v", err)
+	if _, err := gitDiffNameOnly(context.Background(), repo); err != nil {
+		t.Fatalf("expected gitDiffNameOnly to construct a portable hardened diff command, got %v", err)
 	}
 }
 
-func TestGitObjectFormatErrorBranches(t *testing.T) {
-	t.Run("resolver error", func(t *testing.T) {
-		originalResolve := resolveGitBinaryPathFn
-		originalExec := execGitCommandContextFn
-		resolveGitBinaryPathFn = func() (string, error) { return "", errors.New("missing git") }
-		t.Cleanup(func() {
-			resolveGitBinaryPathFn = originalResolve
-			execGitCommandContextFn = originalExec
-		})
+func TestGitAttributeCandidatePathsHandlesNilContextAndCommandFailure(t *testing.T) {
+	t.Run("nil context", func(t *testing.T) {
+		repo := configureFakeGitRepo(t, "filterdriver")
 
-		var nilCtx context.Context
-		if _, err := gitObjectFormat(nilCtx, t.TempDir()); err == nil || !strings.Contains(err.Error(), "missing git") {
-			t.Fatalf("expected resolver error, got %v", err)
+		paths, err := gitAttributeCandidatePaths(testNilContext(), repo)
+		if err != nil {
+			t.Fatalf("expected gitAttributeCandidatePaths with nil context to succeed, got %v", err)
+		}
+		if len(paths) != 1 || paths[0] != "package.json" {
+			t.Fatalf("unexpected attribute candidate paths %#v", paths)
 		}
 	})
 
-	t.Run("constructor error", func(t *testing.T) {
-		originalResolve := resolveGitBinaryPathFn
-		originalExec := execGitCommandContextFn
-		resolveGitBinaryPathFn = func() (string, error) { return writeFakeGitBinary(t), nil }
-		execGitCommandContextFn = func(context.Context, string, ...string) (*exec.Cmd, error) {
-			return nil, errors.New("construct git")
-		}
-		t.Cleanup(func() {
-			resolveGitBinaryPathFn = originalResolve
-			execGitCommandContextFn = originalExec
-		})
+	t.Run("command failure", func(t *testing.T) {
+		repo := configureFakeGitRepo(t, "lsfilescachedfail")
 
-		if _, err := gitObjectFormat(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "construct git") {
-			t.Fatalf("expected constructor error, got %v", err)
-		}
-	})
-
-	t.Run("command output error", func(t *testing.T) {
-		repo := configureFakeGitObjectFormatRepo(t, "objectformatfail")
-
-		if _, err := gitObjectFormat(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "run git rev-parse --show-object-format") {
-			t.Fatalf("expected git object format command failure, got %v", err)
+		if _, err := gitAttributeCandidatePaths(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "ls-files --cached --others --exclude-standard -z") {
+			t.Fatalf("expected cached ls-files failure, got %v", err)
 		}
 	})
 }
 
-func configureFakeGitObjectFormatRepo(t *testing.T, mode string) string {
+func TestGitActiveFilterDriversHandlesEmptyPaths(t *testing.T) {
+	drivers, err := gitActiveFilterDrivers(context.Background(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("expected empty path set to skip git check-attr, got %v", err)
+	}
+	if len(drivers) != 0 {
+		t.Fatalf("expected no drivers for empty path set, got %#v", drivers)
+	}
+}
+
+func TestParseNULTerminatedGitOutput(t *testing.T) {
+	got := parseNULTerminatedGitOutput([]byte("a\x00b\x00\x00"))
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("unexpected nul-delimited parse result %#v", got)
+	}
+}
+
+func TestParseGitCheckAttrFilterDrivers(t *testing.T) {
+	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
+	got := parseGitCheckAttrFilterDrivers(output)
+	want := []string{"foo.bar", "foo/bar"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d filter drivers, got %#v", len(want), got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("expected filter driver %q at index %d, got %#v", want[index], index, got)
+		}
+	}
+
+	if got := parseGitCheckAttrFilterDrivers([]byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00")); len(got) != 0 {
+		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", got)
+	}
+	if got := parseGitCheckAttrFilterDrivers([]byte("package.json\x00filter")); len(got) != 0 {
+		t.Fatalf("expected incomplete check-attr output to be ignored, got %#v", got)
+	}
+}
+
+func configureFakeGitRepo(t *testing.T, mode string) string {
 	t.Helper()
 
 	original := resolveGitBinaryPathFn
@@ -184,18 +207,6 @@ if printf '%s' "$args" | grep -q 'rev-parse --verify --quiet HEAD'; then
   fi
   exit 0
 fi
-if printf '%s' "$args" | grep -q 'rev-parse --show-object-format'; then
-  if [ "$mode" = "objectformatfail" ]; then
-    echo "show-object-format failed" >&2
-    exit 1
-  fi
-  if [ "$mode" = "objectformat-bad" ]; then
-    echo sha512
-    exit 0
-  fi
-  echo sha1
-  exit 0
-fi
 if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
   if [ "$mode" = "lsfail" ]; then
     echo "ls-files failed" >&2
@@ -203,7 +214,47 @@ if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
   fi
   exit 0
 fi
+if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard -z'; then
+  if [ "$mode" = "lsfilescachedfail" ]; then
+    echo "ls-files cached failed" >&2
+    exit 1
+  fi
+  if [ "$mode" = "checkattrfail" ]; then
+    printf 'package.json\000'
+    exit 0
+  fi
+  if [ "$mode" = "filterdriver" ]; then
+    printf 'package.json\000'
+    exit 0
+  fi
+  exit 0
+fi
+if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
+  if [ "$mode" = "checkattrfail" ]; then
+    echo "check-attr failed" >&2
+    exit 1
+  fi
+  if [ "$mode" = "filterdriver" ]; then
+    cat >/dev/null
+    printf 'package.json\000filter\000foo.bar\000'
+    exit 0
+  fi
+  exit 0
+fi
 if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
+  if [ "$mode" = "filterdriver" ]; then
+    if printf '%s' "$args" | grep -q -- '--attr-source='; then
+      echo "unexpected attr-source flag" >&2
+      exit 1
+    fi
+    for expected in 'filter.foo.bar.clean=' 'filter.foo.bar.process=' 'filter.foo.bar.required=false'; do
+      if ! printf '%s' "$args" | grep -q "$expected"; then
+        echo "missing filter override: $expected" >&2
+        exit 1
+      fi
+    done
+    exit 0
+  fi
   if printf '%s' "$args" | grep -q -- '--cached'; then
     if [ "$mode" = "difffail-cached" ]; then
       echo "diff failed" >&2
@@ -242,4 +293,8 @@ func useFakeGitCommandContext(t *testing.T) {
 	t.Cleanup(func() {
 		execGitCommandContextFn = original
 	})
+}
+
+func testNilContext() context.Context {
+	return nil
 }

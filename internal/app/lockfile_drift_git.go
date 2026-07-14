@@ -1,9 +1,8 @@
 package app
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -17,11 +16,7 @@ var collectLockfileGitContextFn = collectLockfileGitContext
 var execGitCommandContextFn = gitexec.CommandContext
 
 const (
-	gitObjectFormatSHA1   = "sha1"
-	gitObjectFormatSHA256 = "sha256"
 	gitRevParseSubcommand = "rev-parse"
-	emptyGitTreeSHA1      = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-	emptyGitTreePayload   = "tree 0\x00"
 )
 
 type lockfileGitContext struct {
@@ -113,11 +108,11 @@ func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 }
 
 func gitDiffNameOnly(ctx context.Context, repoPath string, diffArgs ...string) ([]string, error) {
-	attrSourceArg, err := gitEmptyTreeAttrSourceArg(ctx, repoPath)
+	filterArgs, err := gitFilterDriverConfigArgs(ctx, repoPath)
 	if err != nil {
 		return nil, err
 	}
-	args := []string{attrSourceArg, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv"}
+	args := append(append([]string{}, filterArgs...), "diff", "--no-ext-diff", "--no-textconv")
 	args = append(args, diffArgs...)
 	args = append(args, "--name-only", "--")
 	command, err := gitCommandContext(ctx, repoPath, args...)
@@ -187,50 +182,91 @@ func parseGitOutputLines(output []byte) []string {
 	return lines
 }
 
-func gitEmptyTreeAttrSourceArg(ctx context.Context, repoPath string) (string, error) {
-	objectFormat, err := gitObjectFormat(ctx, repoPath)
-	if err != nil {
-		return "", err
+func parseNULTerminatedGitOutput(output []byte) []string {
+	if len(output) == 0 {
+		return nil
 	}
-	objectID, err := emptyTreeObjectID(objectFormat)
-	if err != nil {
-		return "", err
+
+	fields := bytes.Split(output, []byte{0})
+	if len(fields) > 0 && len(fields[len(fields)-1]) == 0 {
+		fields = fields[:len(fields)-1]
 	}
-	return "--attr-source=" + objectID, nil
+
+	lines := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if len(field) == 0 {
+			continue
+		}
+		lines = append(lines, string(field))
+	}
+	return lines
 }
 
-func gitObjectFormat(ctx context.Context, repoPath string) (string, error) {
+func gitFilterDriverConfigArgs(ctx context.Context, repoPath string) ([]string, error) {
+	paths, err := gitAttributeCandidatePaths(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	drivers, err := gitActiveFilterDrivers(ctx, repoPath, paths)
+	if err != nil {
+		return nil, err
+	}
+	return gitexec.FilterDriverConfigArgs(drivers), nil
+}
+
+func gitAttributeCandidatePaths(ctx context.Context, repoPath string) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	gitPath, err := resolveGitBinaryPathFn()
+	command, err := gitCommandContext(ctx, repoPath, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	commandArgs := append(gitexec.SafeConfigArgs(), "-C", repoPath, gitRevParseSubcommand, "--show-object-format")
-	command, err := execGitCommandContextFn(ctx, gitPath, commandArgs...)
-	if err != nil {
-		return "", err
-	}
-	command.Env = sanitizedGitEnv()
 	output, err := command.Output()
 	if err != nil {
-		return "", fmt.Errorf("run git rev-parse --show-object-format: %w", err)
+		return nil, fmt.Errorf("run git ls-files --cached --others --exclude-standard -z: %w", err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return parseNULTerminatedGitOutput(output), nil
 }
 
-func emptyTreeObjectID(objectFormat string) (string, error) {
-	payload := []byte(emptyGitTreePayload)
-	switch strings.ToLower(strings.TrimSpace(objectFormat)) {
-	case gitObjectFormatSHA1:
-		return emptyGitTreeSHA1, nil
-	case gitObjectFormatSHA256:
-		sum := sha256.Sum256(payload)
-		return hex.EncodeToString(sum[:]), nil
-	default:
-		return "", fmt.Errorf("unsupported git object format: %q", objectFormat)
+func gitActiveFilterDrivers(ctx context.Context, repoPath string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
 	}
+
+	command, err := gitCommandContext(ctx, repoPath, "check-attr", "--stdin", "-z", "filter")
+	if err != nil {
+		return nil, err
+	}
+	command.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("run git check-attr --stdin -z filter: %w", err)
+	}
+	return parseGitCheckAttrFilterDrivers(output), nil
+}
+
+func parseGitCheckAttrFilterDrivers(output []byte) []string {
+	fields := parseNULTerminatedGitOutput(output)
+	if len(fields) < 3 {
+		return nil
+	}
+
+	drivers := make([]string, 0, len(fields)/3)
+	seen := make(map[string]struct{}, len(fields)/3)
+	for index := 0; index+2 < len(fields); index += 3 {
+		value := strings.TrimSpace(fields[index+2])
+		switch value {
+		case "", "set", "unset", "unspecified":
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		drivers = append(drivers, value)
+	}
+	return drivers
 }
 
 func sanitizedGitEnv() []string {

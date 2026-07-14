@@ -427,6 +427,37 @@ func TestDetectLockfileDriftDoesNotExecuteLocalGitHelpers(t *testing.T) {
 			configureRepo: func(t *testing.T, repo, helperPath string) {
 				t.Helper()
 				runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+				runGit(t, repo, "config", "filter.pwn.required", "true")
+			},
+		},
+		{
+			name:       "process filter from info attributes",
+			markerName: "process-filter-info.marker",
+			helperPath: func(repo string) string { return filepath.Join(repo, "helper.sh") },
+			helperScript: func(markerPath string) string {
+				return "#!/bin/sh\necho process-filter-ran >> \"" + markerPath + "\"\nprintf 'git-filter-client\\n'\n"
+			},
+			configureRepo: func(t *testing.T, repo, helperPath string) {
+				t.Helper()
+				writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter=pwn\n")
+				runGit(t, repo, "config", "filter.pwn.process", "./helper.sh")
+				runGit(t, repo, "config", "filter.pwn.required", "true")
+			},
+		},
+		{
+			name:       "clean filter from core.attributesFile",
+			markerName: "clean-filter-attributes-file.marker",
+			helperPath: func(repo string) string { return filepath.Join(repo, "helper.sh") },
+			helperScript: func(markerPath string) string {
+				return "#!/bin/sh\necho clean-filter-ran >> \"" + markerPath + "\"\ncat\n"
+			},
+			configureRepo: func(t *testing.T, repo, helperPath string) {
+				t.Helper()
+				attributesPath := filepath.Join(t.TempDir(), "global.attributes")
+				writeFile(t, attributesPath, manifestFileName+" filter=pwn\n")
+				runGit(t, repo, "config", "core.attributesFile", attributesPath)
+				runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+				runGit(t, repo, "config", "filter.pwn.required", "true")
 			},
 		},
 	}
@@ -459,6 +490,22 @@ func TestDetectLockfileDriftDoesNotExecuteLocalGitHelpers(t *testing.T) {
 				t.Fatalf("expected local git helper to never execute, markerPath=%q statErr=%v", markerPath, err)
 			}
 		})
+	}
+}
+
+func TestDetectLockfileDriftPreservesTrackedCRLFNormalization(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "*.json text eol=crlf\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), "{\r\n  \"name\": \"demo\"\r\n}\r\n")
+	writeFile(t, filepath.Join(repo, lockfileName), "{\r\n  \"lockfileVersion\": 3\r\n}\r\n")
+	initGitRepo(t, repo)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected clean CRLF-normalized repo to produce no lockfile drift warnings, got %#v", warnings)
 	}
 }
 
@@ -644,34 +691,6 @@ func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
 		t.Fatalf("expected hasGit=true when inside git worktree")
 	}
 	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
-}
-
-func TestEmptyTreeObjectIDSupportsGitHashFormats(t *testing.T) {
-	t.Run(gitObjectFormatSHA1, func(t *testing.T) {
-		got, err := emptyTreeObjectID(gitObjectFormatSHA1)
-		if err != nil {
-			t.Fatalf("empty tree sha1: %v", err)
-		}
-		if got != "4b825dc642cb6eb9a060e54bf8d69288fbee4904" {
-			t.Fatalf("unexpected sha1 empty tree object id %q", got)
-		}
-	})
-
-	t.Run(gitObjectFormatSHA256, func(t *testing.T) {
-		got, err := emptyTreeObjectID(gitObjectFormatSHA256)
-		if err != nil {
-			t.Fatalf("empty tree sha256: %v", err)
-		}
-		if got != "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" {
-			t.Fatalf("unexpected sha256 empty tree object id %q", got)
-		}
-	})
-}
-
-func TestEmptyTreeObjectIDRejectsUnsupportedGitHashFormat(t *testing.T) {
-	if _, err := emptyTreeObjectID("sha512"); err == nil {
-		t.Fatalf("expected unsupported git object format error")
-	}
 }
 
 func TestDetectLockfileDriftNoHeadDoesNotReturnGitError(t *testing.T) {
