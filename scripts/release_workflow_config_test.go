@@ -2099,43 +2099,21 @@ func TestHomebrewTapWorkflowsSkipAllTapJobsWithoutToken(t *testing.T) {
 	}
 }
 
-func TestRollingWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
+func TestHomebrewTapWorkflowsUseFreshPrivilegedTapUpdateJobs(t *testing.T) {
 	t.Parallel()
-	assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, homebrewTapWorkflowCase{
-		name:               "rolling",
-		workflowPath:       ".github/workflows/rolling.yml",
-		gateJobName:        "homebrew-tap-token-gate",
-		validationJobName:  "validate-homebrew-tap-rolling",
-		updateJobName:      "update-homebrew-tap-rolling",
-		regenerateStepName: "Regenerate lopper-rolling formula",
-		pushStepName:       "Regenerate and push rolling formula changes",
-		formulaPath:        "Formula/lopper-rolling.rb",
-		sourceURLLine:      `source_url="https://codeload.github.com/${SOURCE_REPO}/tar.gz/${SOURCE_SHA}"`,
-		formulaVersionExpr: "${{ needs.prepare-rolling.outputs.tag }}",
-		commitMessageLine:  `git_safe -C "${tap_repo}" commit --no-verify -m "lopper-rolling ${ROLLING_TAG}"`,
-		updateNeedsLine:    "  update-homebrew-tap-rolling:\n    needs:\n      - prepare-rolling\n      - publish-rolling\n      - validate-homebrew-tap-rolling",
-		sourceSHAExpr:      "${{ needs.prepare-rolling.outputs.source_sha }}",
-	})
+
+	for _, tc := range homebrewTapWorkflowCases() {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, tc)
+		})
+	}
 }
 
-func TestReleaseWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
+func TestReleaseWorkflowOmitsDeadTapTokenConfiguredEnv(t *testing.T) {
 	t.Parallel()
-	assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, homebrewTapWorkflowCase{
-		name:               "release",
-		workflowPath:       ".github/workflows/release.yml",
-		gateJobName:        "homebrew-tap-token-gate",
-		validationJobName:  "validate-homebrew-tap",
-		updateJobName:      "update-homebrew-tap",
-		regenerateStepName: "Regenerate lopper formula",
-		pushStepName:       "Regenerate and push formula changes",
-		formulaPath:        "Formula/lopper.rb",
-		sourceURLLine:      `source_url="https://codeload.github.com/${SOURCE_REPO}/tar.gz/${SOURCE_SHA}"`,
-		formulaVersionExpr: "${{ needs.prepare-release.outputs.version }}",
-		commitMessageLine:  `git_safe -C "${tap_repo}" commit --no-verify -m "lopper ${RELEASE_TAG}"`,
-		updateNeedsLine:    "  update-homebrew-tap:\n    needs:\n      - prepare-release\n      - publish\n      - validate-homebrew-tap",
-		requiredIfFragment: "needs.prepare-release.outputs.release_created == 'true'",
-		sourceSHAExpr:      "${{ needs.prepare-release.outputs.sha }}",
-	})
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if strings.Contains(workflowText, "HOMEBREW_TAP_TOKEN_CONFIGURED") {
