@@ -180,7 +180,7 @@ func TestCountUsageUsesUnicodeScannerForNonASCIIContent(t *testing.T) {
 		DeclarationTokenHits: 1,
 	}}
 	tests := map[string]int{
-		"use serde::deø as de;\n":                     0,
+		"use serde::deø as de;\n":                      0,
 		"use serde::deø as de;\nfn decode(_: de) {}\n": 1,
 	}
 	for content, want := range tests {
