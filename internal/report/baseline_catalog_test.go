@@ -99,12 +99,13 @@ func TestListAndInspectBaselineSnapshotsHandlesEmptyReportSummary(t *testing.T) 
 
 	dir := t.TempDir()
 	now := time.Date(2026, time.July, 10, 1, 0, 0, 0, time.UTC)
-	if _, err := SaveSnapshot(dir, "label:empty", Report{
+	report := Report{
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   now,
 		RepoPath:      "/repo/empty",
 		Dependencies:  []DependencyReport{},
-	}, now); err != nil {
+	}
+	if _, err := SaveSnapshot(dir, "label:empty", report, now); err != nil {
 		t.Fatalf("save empty snapshot: %v", err)
 	}
 
