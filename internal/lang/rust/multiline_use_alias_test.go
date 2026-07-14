@@ -387,14 +387,19 @@ func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
 		{name: "wildcard advance without wildcard", got: advancePastRustUseWildcard("serde::de", 0), want: 0},
 		{name: "wildcard advance with negative start", got: advancePastRustUseWildcard("serde::*", -1), want: -1},
 		{name: "alias second match offset", got: findRustAliasToken("Deserialize as other as føø", "føø", 0), want: len("Deserialize as other as ")},
+		{name: "alias skips non-identifier candidate", got: findRustAliasToken("Deserialize as = as føø", "føø", 0), want: len("Deserialize as = as ")},
 		{name: "unicode identifier count", got: countRustIdentifierTokens("føø bar føø", "føø"), want: 2},
 		{name: "missing unicode identifier count", got: countRustIdentifierTokens("bar baz", "føø"), want: 0},
 		{name: "unicode identifier offset after search start", got: findRustIdentifierToken("xx føø", "føø", 1), want: len("xx ")},
 		{name: "missing unicode identifier offset", got: findRustIdentifierToken("xx", "føø", 0), want: -1},
+		{name: "identifier skips embedded match before full token", got: findRustIdentifierToken("détail dé", "dé", 0), want: len("détail ")},
 	} {
 		if tc.got != tc.want {
 			t.Fatalf("%s = %d, want %d", tc.name, tc.got, tc.want)
 		}
+	}
+	if got := countRustDeclarationTokens("Ⅰvalue as Ⅰvalue, e\u0301 as e\u0301", map[string]struct{}{"Ⅰvalue": {}, "e\u0301": {}}); len(got) != 2 || got["Ⅰvalue"] != 2 || got["e\u0301"] != 2 {
+		t.Fatalf("unexpected unicode declaration token counts: %#v", got)
 	}
 	invalidClause := string([]byte{0xff, ' ', 'f', 'o', 'o', ' ', '1', '2', '3'})
 	if got := countRustDeclarationTokens(invalidClause, map[string]struct{}{"foo": {}})["foo"]; got != 1 {

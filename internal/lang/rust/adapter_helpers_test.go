@@ -114,14 +114,27 @@ func TestParseInlineFields(t *testing.T) {
 	if fields["package"] != "serde_json" || fields["path"] != "./x" {
 		t.Fatalf("unexpected single-quoted inline fields: %#v", fields)
 	}
+	fields = parseInlineFields(`{ package = "serde_json", broken }`)
+	if fields["package"] != "serde_json" || len(fields) != 1 {
+		t.Fatalf("expected invalid inline field to be skipped, got %#v", fields)
+	}
 }
 
 func TestTomlCommentAndStringHelpers(t *testing.T) {
 	if got := stripTomlComment(`name = "x#y" # comment`); strings.TrimSpace(got) != `name = "x#y"` {
 		t.Fatalf("unexpected toml comment stripping: %q", got)
 	}
+	if got := stripTomlComment(`name = "xy"`); got != `name = "xy"` {
+		t.Fatalf("unexpected comment-free toml line change: %q", got)
+	}
 	if got := extractQuotedStrings(`["a", 'b', "a"]`); len(got) != 2 {
 		t.Fatalf("expected quoted string extraction dedupe, got %#v", got)
+	}
+	if _, ok := parseTomlStringLiteral(""); ok {
+		t.Fatalf("expected empty string literal parse to fail")
+	}
+	if got := relativeManifestPath("/tmp/repo", "Cargo.toml"); got != "Cargo.toml" {
+		t.Fatalf("expected fallback relative manifest path, got %q", got)
 	}
 }
 
@@ -548,6 +561,8 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 		want     string
 		wantNext int
 	}{
+		{raw: []byte("_hidden"), want: "_hidden", wantNext: len("_hidden")},
+		{raw: []byte("Ⅰvalue tail"), want: "Ⅰvalue", wantNext: len("Ⅰvalue")},
 		{raw: []byte("føø extra"), want: "føø", wantNext: len("føø")},
 		{raw: []byte("e\u0301 extra"), want: "e\u0301", wantNext: len("e\u0301")},
 		{raw: []byte("føø-bar"), want: "føø", wantNext: len("føø")},
@@ -747,6 +762,15 @@ func TestRefactorHelperBranches(t *testing.T) {
 	}
 	if got, ok := workspaceMembersAssignmentValue(`members = ["a"]`); !ok || got != `["a"]` {
 		t.Fatalf("unexpected workspace members assignment parse: %q %v", got, ok)
+	}
+	if !parseWorkspaceMembersLine(`members = [`, "workspace", false, &meta) {
+		t.Fatalf("expected open workspace members assignment to continue")
+	}
+	if matched, err := workspaceMemberPatternMatches("", "crates/demo"); err != nil || matched {
+		t.Fatalf("expected empty workspace pattern to miss, got matched=%v err=%v", matched, err)
+	}
+	if matched, err := workspaceMemberPatternMatches("crates/*", ""); err != nil || matched {
+		t.Fatalf("expected empty workspace candidate to miss, got matched=%v err=%v", matched, err)
 	}
 
 	deps := map[string]dependencyInfo{}
