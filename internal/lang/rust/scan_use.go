@@ -79,33 +79,44 @@ func countRustDeclarationTokens(clause string, wanted map[string]struct{}) map[s
 		return hits
 	}
 	for index := 0; index < len(clause); {
-		r, width := utf8.DecodeRuneInString(clause[index:])
-		if r == utf8.RuneError && width == 0 {
+		token, next, ok := nextRustIdentifierToken(clause, index)
+		if !ok {
 			break
 		}
+		if _, ok := wanted[token]; ok {
+			hits[token]++
+		}
+		index = next
+	}
+	return hits
+}
+
+func nextRustIdentifierToken(content string, searchStart int) (string, int, bool) {
+	for searchStart < len(content) {
+		r, width := utf8.DecodeRuneInString(content[searchStart:])
+		if r == utf8.RuneError && width == 0 {
+			return "", searchStart, false
+		}
 		if !isRustIdentifierStartRune(r) {
-			index += width
+			searchStart += width
 			continue
 		}
 
-		start := index
-		index += width
-		for index < len(clause) {
-			next, nextWidth := utf8.DecodeRuneInString(clause[index:])
+		start := searchStart
+		searchStart += width
+		for searchStart < len(content) {
+			next, nextWidth := utf8.DecodeRuneInString(content[searchStart:])
 			if next == utf8.RuneError && nextWidth == 0 {
 				break
 			}
 			if !isRustIdentifierContinueRune(next) {
 				break
 			}
-			index += nextWidth
+			searchStart += nextWidth
 		}
-		token := clause[start:index]
-		if _, ok := wanted[token]; ok {
-			hits[token]++
-		}
+		return content[start:searchStart], searchStart, true
 	}
-	return hits
+	return "", searchStart, false
 }
 
 func advancePastRustUseWildcard(clause string, searchStart int) int {

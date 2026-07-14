@@ -378,6 +378,90 @@ func TestMultilineUseAliasSupportsUnicodeCombiningMarks(t *testing.T) {
 	}
 }
 
+func TestMultilineUseAliasSupportsOtherIDLocals(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		alias string
+	}{
+		{name: "continue rune", alias: "x·y"},
+		{name: "start rune", alias: "ᢅx"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "use serde::{" + tc.alias + "::Thing as " + tc.alias + "};\n"
+			imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
+			if len(imports) != 1 {
+				t.Fatalf("expected one import, got %#v", imports)
+			}
+			imported := imports[0]
+			if imported.Local != tc.alias {
+				t.Fatalf("local alias = %q, want %q", imported.Local, tc.alias)
+			}
+			if imported.DeclarationTokenHits != 2 {
+				t.Fatalf("declaration token hits = %d, want 2", imported.DeclarationTokenHits)
+			}
+			if got := shared.CountUsage([]byte(content), imports)[tc.alias]; got != 0 {
+				t.Fatalf("usage[%s] = %d, want 0", tc.alias, got)
+			}
+		})
+	}
+}
+
+func TestRustIdentifierHelpersSupportOtherIDRunes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		raw         []byte
+		content     string
+		token       string
+		wantNext    int
+		wantOffset  int
+		wantCount   int
+		wantHits    int
+		wantNoMatch string
+	}{
+		{
+			name:        "continue rune",
+			raw:         []byte("x·y tail"),
+			content:     "x·y x·yz",
+			token:       "x·y",
+			wantNext:    len("x·y"),
+			wantOffset:  0,
+			wantCount:   1,
+			wantHits:    2,
+			wantNoMatch: "x·yz",
+		},
+		{
+			name:        "start rune",
+			raw:         []byte("ᢅx tail"),
+			content:     "ᢅx ᢅxy",
+			token:       "ᢅx",
+			wantNext:    len("ᢅx"),
+			wantOffset:  0,
+			wantCount:   1,
+			wantHits:    2,
+			wantNoMatch: "ᢅxy",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ident, next, ok := consumeRustIdentifier(tc.raw)
+			if !ok || ident != tc.token || next != tc.wantNext {
+				t.Fatalf("consumeRustIdentifier(%q) = ident=%q next=%d ok=%v", tc.raw, ident, next, ok)
+			}
+			if got := findRustIdentifierToken(tc.content, tc.token, 0); got != tc.wantOffset {
+				t.Fatalf("findRustIdentifierToken(%q) = %d, want %d", tc.token, got, tc.wantOffset)
+			}
+			if got := findRustIdentifierToken(tc.wantNoMatch, tc.token, 0); got != -1 {
+				t.Fatalf("embedded match offset = %d, want -1", got)
+			}
+			if got := countRustIdentifierTokens(tc.content, tc.token); got != tc.wantCount {
+				t.Fatalf("countRustIdentifierTokens(%q) = %d, want %d", tc.token, got, tc.wantCount)
+			}
+			if got := countRustDeclarationTokens(tc.token+"::Thing as "+tc.token, map[string]struct{}{tc.token: {}})[tc.token]; got != tc.wantHits {
+				t.Fatalf("countRustDeclarationTokens(%q) = %d, want %d", tc.token, got, tc.wantHits)
+			}
+		})
+	}
+}
+
 func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
 	for _, tc := range []struct {
 		name string
