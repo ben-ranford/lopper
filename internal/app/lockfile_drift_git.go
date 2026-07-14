@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -13,6 +15,13 @@ import (
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 var collectLockfileGitContextFn = collectLockfileGitContext
 var execGitCommandContextFn = gitexec.CommandContext
+
+const (
+	gitObjectFormatSHA1   = "sha1"
+	gitObjectFormatSHA256 = "sha256"
+	emptyGitTreeSHA1      = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	emptyGitTreePayload   = "tree 0\x00"
+)
 
 type lockfileGitContext struct {
 	changedFiles  map[string]struct{}
@@ -103,7 +112,11 @@ func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 }
 
 func gitDiffNameOnly(ctx context.Context, repoPath string, diffArgs ...string) ([]string, error) {
-	args := []string{"-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv"}
+	attrSourceArg, err := gitEmptyTreeAttrSourceArg(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{attrSourceArg, "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv"}
 	args = append(args, diffArgs...)
 	args = append(args, "--name-only", "--")
 	command, err := gitCommandContext(ctx, repoPath, args...)
@@ -171,6 +184,52 @@ func parseGitOutputLines(output []byte) []string {
 		return nil
 	}
 	return lines
+}
+
+func gitEmptyTreeAttrSourceArg(ctx context.Context, repoPath string) (string, error) {
+	objectFormat, err := gitObjectFormat(ctx, repoPath)
+	if err != nil {
+		return "", err
+	}
+	objectID, err := emptyTreeObjectID(objectFormat)
+	if err != nil {
+		return "", err
+	}
+	return "--attr-source=" + objectID, nil
+}
+
+func gitObjectFormat(ctx context.Context, repoPath string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gitPath, err := resolveGitBinaryPathFn()
+	if err != nil {
+		return "", err
+	}
+	commandArgs := append(gitexec.SafeConfigArgs(), "-C", repoPath, "rev-parse", "--show-object-format")
+	command, err := execGitCommandContextFn(ctx, gitPath, commandArgs...)
+	if err != nil {
+		return "", err
+	}
+	command.Env = sanitizedGitEnv()
+	output, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("run git rev-parse --show-object-format: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func emptyTreeObjectID(objectFormat string) (string, error) {
+	payload := []byte(emptyGitTreePayload)
+	switch strings.ToLower(strings.TrimSpace(objectFormat)) {
+	case gitObjectFormatSHA1:
+		return emptyGitTreeSHA1, nil
+	case gitObjectFormatSHA256:
+		sum := sha256.Sum256(payload)
+		return hex.EncodeToString(sum[:]), nil
+	default:
+		return "", fmt.Errorf("unsupported git object format: %q", objectFormat)
+	}
 }
 
 func sanitizedGitEnv() []string {

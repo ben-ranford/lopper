@@ -98,6 +98,69 @@ func TestGitCommandContextConstructorError(t *testing.T) {
 	}
 }
 
+func TestGitDiffNameOnlyRejectsUnsupportedObjectFormat(t *testing.T) {
+	repo := configureFakeGitObjectFormatRepo(t, "objectformat-bad")
+
+	if _, err := gitDiffNameOnly(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "unsupported git object format") {
+		t.Fatalf("expected unsupported git object format error, got %v", err)
+	}
+}
+
+func TestGitObjectFormatErrorBranches(t *testing.T) {
+	t.Run("resolver error", func(t *testing.T) {
+		originalResolve := resolveGitBinaryPathFn
+		originalExec := execGitCommandContextFn
+		resolveGitBinaryPathFn = func() (string, error) { return "", errors.New("missing git") }
+		t.Cleanup(func() {
+			resolveGitBinaryPathFn = originalResolve
+			execGitCommandContextFn = originalExec
+		})
+
+		var nilCtx context.Context
+		if _, err := gitObjectFormat(nilCtx, t.TempDir()); err == nil || !strings.Contains(err.Error(), "missing git") {
+			t.Fatalf("expected resolver error, got %v", err)
+		}
+	})
+
+	t.Run("constructor error", func(t *testing.T) {
+		originalResolve := resolveGitBinaryPathFn
+		originalExec := execGitCommandContextFn
+		resolveGitBinaryPathFn = func() (string, error) { return writeFakeGitBinary(t), nil }
+		execGitCommandContextFn = func(context.Context, string, ...string) (*exec.Cmd, error) {
+			return nil, errors.New("construct git")
+		}
+		t.Cleanup(func() {
+			resolveGitBinaryPathFn = originalResolve
+			execGitCommandContextFn = originalExec
+		})
+
+		if _, err := gitObjectFormat(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "construct git") {
+			t.Fatalf("expected constructor error, got %v", err)
+		}
+	})
+
+	t.Run("command output error", func(t *testing.T) {
+		repo := configureFakeGitObjectFormatRepo(t, "objectformatfail")
+
+		if _, err := gitObjectFormat(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "run git rev-parse --show-object-format") {
+			t.Fatalf("expected git object format command failure, got %v", err)
+		}
+	})
+}
+
+func configureFakeGitObjectFormatRepo(t *testing.T, mode string) string {
+	t.Helper()
+
+	original := resolveGitBinaryPathFn
+	repo := t.TempDir()
+	fakeGit := writeFakeGitBinary(t)
+	resolveGitBinaryPathFn = func() (string, error) { return fakeGit, nil }
+	t.Cleanup(func() { resolveGitBinaryPathFn = original })
+	useFakeGitCommandContext(t)
+	writeFakeGitMode(t, repo, mode)
+	return repo
+}
+
 func writeFakeGitBinary(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "git")
@@ -119,6 +182,18 @@ if printf '%s' "$args" | grep -q 'rev-parse --verify --quiet HEAD'; then
   if [ "$mode" = "difffail-cached" ] || [ "$mode" = "difffail-unstaged" ]; then
     exit 1
   fi
+  exit 0
+fi
+if printf '%s' "$args" | grep -q 'rev-parse --show-object-format'; then
+  if [ "$mode" = "objectformatfail" ]; then
+    echo "show-object-format failed" >&2
+    exit 1
+  fi
+  if [ "$mode" = "objectformat-bad" ]; then
+    echo sha512
+    exit 0
+  fi
+  echo sha1
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
