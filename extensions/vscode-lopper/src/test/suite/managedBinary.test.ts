@@ -593,6 +593,75 @@ suite("managed binary installer", () => {
     }
   });
 
+  test("rejects configured symlinks located under the workspace in untrusted workspaces", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-workspace-link-"));
+    const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-outside-target-"));
+    const outsideBinary = path.join(outsideRoot, platformBinaryName());
+    const workspaceLink = path.join(workspaceRoot, platformBinaryName());
+
+    try {
+      await writeExecutable(outsideBinary);
+      await symlink(outsideBinary, workspaceLink);
+      const lifecycle = createPathFallbackLifecycle();
+
+      await assert.rejects(
+        lifecycle.resolveBinaryPath({
+          workspaceRoot,
+          workspaceTrusted: false,
+          autoDownloadBinary: false,
+          configuredBinaryPath: workspaceLink,
+        }),
+        (error: unknown) =>
+          error instanceof BinaryResolutionError
+          && error.message.includes("workspace-local binary in an untrusted workspace"),
+      );
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("skips PATH symlinks located under the workspace in untrusted workspaces", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-path-link-workspace-"));
+    const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-path-link-target-"));
+    const fallbackRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-path-link-fallback-"));
+    const workspacePathRoot = path.join(workspaceRoot, "path-bin");
+    const workspaceLink = path.join(workspacePathRoot, platformBinaryName());
+    const outsideBinary = path.join(outsideRoot, platformBinaryName());
+    const fallbackBinary = path.join(fallbackRoot, platformBinaryName());
+    const previousPath = process.env.PATH;
+
+    try {
+      await mkdir(workspacePathRoot, { recursive: true });
+      await writeExecutable(outsideBinary);
+      await writeExecutable(fallbackBinary);
+      await symlink(outsideBinary, workspaceLink);
+      process.env.PATH = joinPathEntries([workspacePathRoot, fallbackRoot, previousPath]);
+      const lifecycle = createPathFallbackLifecycle();
+
+      const resolvedPath = await lifecycle.resolveBinaryPath({
+        workspaceRoot,
+        workspaceTrusted: false,
+        autoDownloadBinary: false,
+      });
+
+      assert.equal(resolvedPath, fallbackBinary);
+    } finally {
+      restoreEnv("PATH", previousPath);
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
+      await rm(fallbackRoot, { recursive: true, force: true });
+    }
+  });
+
   test("skips PATH candidates when canonicalization fails in untrusted workspaces", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-workspace-"));
     const blockedRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-path-blocked-"));
