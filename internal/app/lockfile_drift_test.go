@@ -34,6 +34,12 @@ const (
 	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
 	nestedManifestPath       = "nested/package.json"
+	literalDir               = ":(glob)pkg"
+	ordinaryDir              = "pkg"
+	literalManifest          = literalDir + "/package.json"
+	literalLockfile          = literalDir + "/package-lock.json"
+	ordinaryManifest         = ordinaryDir + "/package.json"
+	ordinaryLockfile         = ordinaryDir + "/package-lock.json"
 	gitBinaryPath            = "/usr/bin/git"
 	gitExecutableNotFoundErr = "git executable not found"
 )
@@ -574,82 +580,75 @@ func TestDetectLockfileDriftIgnoresUnrelatedFilteredFilesOutsideCandidatePaths(t
 	}
 }
 
-func TestScopedGitPathHelpersTreatColonMagicCandidatePathsLiterally(t *testing.T) {
+func TestScopedGitPathHelpersTreatColonMagicTrackedDiffPathsLiterally(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
 	}
 
-	const (
-		literalDir       = ":(glob)pkg"
-		ordinaryDir      = "pkg"
-		literalManifest  = literalDir + "/package.json"
-		literalLockfile  = literalDir + "/package-lock.json"
-		ordinaryManifest = ordinaryDir + "/package.json"
-		ordinaryLockfile = ordinaryDir + "/package-lock.json"
-	)
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, literalLockfile), "{}\n")
+	writeFile(t, filepath.Join(repo, ordinaryManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, ordinaryLockfile), "{}\n")
+	initGitRepo(t, repo)
 
-	t.Run("tracked diff stays exact", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, literalLockfile), "{}\n")
-		writeFile(t, filepath.Join(repo, ordinaryManifest), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, ordinaryLockfile), "{}\n")
-		initGitRepo(t, repo)
+	writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSONUpdated)
 
-		writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSONUpdated)
+	changed, err := gitChangedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
+	if err != nil {
+		t.Fatalf("gitChangedFilesForPaths: %v", err)
+	}
+	if len(changed) != 1 {
+		t.Fatalf("expected only the literal manifest change, got %#v", changed)
+	}
+	assertChangedPathsPresent(t, changed, literalManifest)
+	if _, ok := changed[ordinaryManifest]; ok {
+		t.Fatalf("expected sibling non-literal manifest to remain out of scope, got %#v", changed)
+	}
 
-		changed, err := gitChangedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
-		if err != nil {
-			t.Fatalf("gitChangedFilesForPaths: %v", err)
-		}
-		if len(changed) != 1 {
-			t.Fatalf("expected only the literal manifest change, got %#v", changed)
-		}
-		assertChangedPathsPresent(t, changed, literalManifest)
-		if _, ok := changed[ordinaryManifest]; ok {
-			t.Fatalf("expected sibling non-literal manifest to remain out of scope, got %#v", changed)
-		}
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in :(glob)pkg: package.json changed while no matching lockfile changed", "npm install")
+}
 
-		warnings, err := detectLockfileDrift(context.Background(), repo, false)
-		assertSingleLockfileDriftWarning(t, warnings, err, "npm in :(glob)pkg: package.json changed while no matching lockfile changed", "npm install")
-	})
+func TestScopedGitPathHelpersTreatColonMagicUntrackedPathsLiterally(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
 
-	t.Run("untracked listing stays exact", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, "README.md"), "tracked\n")
-		initGitRepo(t, repo)
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "README.md"), "tracked\n")
+	initGitRepo(t, repo)
 
-		writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, literalLockfile), "{}\n")
-		writeFile(t, filepath.Join(repo, ordinaryManifest), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, ordinaryLockfile), "{}\n")
+	writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, literalLockfile), "{}\n")
+	writeFile(t, filepath.Join(repo, ordinaryManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, ordinaryLockfile), "{}\n")
 
-		untracked, err := gitUntrackedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
-		if err != nil {
-			t.Fatalf("gitUntrackedFilesForPaths: %v", err)
-		}
-		if len(untracked) != 2 {
-			t.Fatalf("expected exact literal untracked candidates, got %#v", untracked)
-		}
-		if untracked[0] != literalLockfile || untracked[1] != literalManifest {
-			t.Fatalf("expected literal untracked candidates, got %#v", untracked)
-		}
+	untracked, err := gitUntrackedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
+	if err != nil {
+		t.Fatalf("gitUntrackedFilesForPaths: %v", err)
+	}
+	if len(untracked) != 2 {
+		t.Fatalf("expected exact literal untracked candidates, got %#v", untracked)
+	}
+	if untracked[0] != literalLockfile || untracked[1] != literalManifest {
+		t.Fatalf("expected literal untracked candidates, got %#v", untracked)
+	}
 
-		changed, err := gitChangedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
-		if err != nil {
-			t.Fatalf("gitChangedFilesForPaths: %v", err)
-		}
-		if len(changed) != 2 {
-			t.Fatalf("expected only literal untracked candidates, got %#v", changed)
-		}
-		assertChangedPathsPresent(t, changed, literalLockfile, literalManifest)
-		if _, ok := changed[ordinaryLockfile]; ok {
-			t.Fatalf("expected sibling non-literal lockfile to remain out of scope, got %#v", changed)
-		}
-		if _, ok := changed[ordinaryManifest]; ok {
-			t.Fatalf("expected sibling non-literal manifest to remain out of scope, got %#v", changed)
-		}
-	})
+	changed, err := gitChangedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
+	if err != nil {
+		t.Fatalf("gitChangedFilesForPaths: %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("expected only literal untracked candidates, got %#v", changed)
+	}
+	assertChangedPathsPresent(t, changed, literalLockfile, literalManifest)
+	if _, ok := changed[ordinaryLockfile]; ok {
+		t.Fatalf("expected sibling non-literal lockfile to remain out of scope, got %#v", changed)
+	}
+	if _, ok := changed[ordinaryManifest]; ok {
+		t.Fatalf("expected sibling non-literal manifest to remain out of scope, got %#v", changed)
+	}
 }
 
 func TestDetectLockfileDriftPreservesTrackedCRLFNormalization(t *testing.T) {
