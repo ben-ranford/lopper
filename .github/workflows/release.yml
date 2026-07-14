@@ -567,13 +567,18 @@ jobs:
 
           git_safe commit --no-verify -m "lopper ${{ needs.prepare-release.outputs.tag }}"
           echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git_safe rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          patch_path="${RUNNER_TEMP}/homebrew-tap-formula.patch"
+          git_safe format-patch --stdout -1 HEAD > "${patch_path}"
+          echo "patch_path=${patch_path}" >> "$GITHUB_OUTPUT"
 
       - name: Push formula changes
         if: ${{ steps.tap_token.outputs.available == 'true' && steps.commit_formula.outputs.committed == 'true' }}
         working-directory: homebrew-tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND /usr/bin/bash --noprofile --norc -euo pipefail {0}
+          FORMULA_PATCH_PATH: ${{ steps.commit_formula.outputs.patch_path }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
           base64_bin=/usr/bin/base64
@@ -588,7 +593,21 @@ jobs:
           auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
           unset HOMEBREW_TAP_TOKEN
           git_home="$("${mktemp_bin}" -d)"
-          trap 'rm -rf "${git_home}"' EXIT
+          push_repo="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}" "${push_repo}"' EXIT
+
+          git_safe() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
 
           git_network() {
             env -i \
@@ -609,33 +628,26 @@ jobs:
               "${git_bin}" \
               "$@"
           }
-          git_local() {
-            env -i \
-              HOME="${git_home}" \
-              PATH="${PATH}" \
-              GIT_TERMINAL_PROMPT=0 \
-              "${git_bin}" \
-              -c core.hooksPath=/dev/null \
-              -c credential.helper= \
-              -c protocol.file.allow=never \
-              -c protocol.ext.allow=never \
-              "$@"
-          }
+
+          git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${push_repo}"
+          git_safe -C "${push_repo}" config user.name "github-actions[bot]"
+          git_safe -C "${push_repo}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_safe -C "${push_repo}" am --no-verify "${FORMULA_PATCH_PATH}"
 
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
-            if ! git_network fetch origin main:refs/remotes/origin/main; then
+            if ! git_network -C "${push_repo}" fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
               /bin/sleep 2
               continue
             fi
-            if ! git_local rebase origin/main; then
+            if ! git_safe -C "${push_repo}" rebase origin/main; then
               echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              git_local rebase --abort || true
+              git_safe -C "${push_repo}" rebase --abort || true
               /bin/sleep 2
               continue
             fi
-            if git_network push origin HEAD:main; then
+            if git_network -C "${push_repo}" push origin HEAD:main; then
               exit 0
             fi
             /bin/sleep 2
