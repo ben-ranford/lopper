@@ -1350,6 +1350,9 @@ func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing
 	if strings.Contains(step.Run, `target_commitish`) {
 		t.Fatal("manual release existing-tag verification must fail closed instead of trusting release target_commitish metadata")
 	}
+	if strings.Contains(step.Run, `release_json`) {
+		t.Fatal("manual release existing-release probe must not persist an unused response body")
+	}
 }
 
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {

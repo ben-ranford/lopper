@@ -92,10 +92,9 @@ jobs:
 
           resolved_sha="$(git rev-parse HEAD)"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
-          release_json="$(mktemp)"
           release_lookup_error="$(mktemp)"
-          trap 'rm -f "${release_json}" "${release_lookup_error}"' EXIT
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>"${release_lookup_error}"; then
+          trap 'rm -f "${release_lookup_error}"' EXIT
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"; then
             echo "Reusing existing GitHub release ${tag}."
             release_ref_json="$(mktemp)"
             if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then
