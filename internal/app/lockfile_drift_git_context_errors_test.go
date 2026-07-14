@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,8 @@ func TestDetectLockfileDriftPropagatesGitContextErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
 			writeFakeGitMode(t, repo, tc.mode)
 			err := tc.run(context.Background(), repo)
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {

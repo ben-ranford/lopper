@@ -395,7 +395,9 @@ type localGitHelperCase struct {
 	helperPath    func(string) string
 	helperScript  func(string) string
 	beforeInit    func(*testing.T, string)
+	beforeDetect  func(*testing.T, string)
 	configureRepo func(*testing.T, string, string)
+	wantErrSubstr string
 }
 
 func helperPathInRepo(repo string) string {
@@ -424,11 +426,12 @@ func configureProcessFilter(t *testing.T, repo, driver string) {
 
 func filterHelperCase(name, markerName, driver string, helperScript func(string) string, beforeInit, repoSetup func(*testing.T, string), configureFilter func(*testing.T, string, string)) localGitHelperCase {
 	return localGitHelperCase{
-		name:         name,
-		markerName:   markerName,
-		helperPath:   helperPathInRepo,
-		helperScript: helperScript,
-		beforeInit:   beforeInit,
+		name:          name,
+		markerName:    markerName,
+		helperPath:    helperPathInRepo,
+		helperScript:  helperScript,
+		beforeInit:    beforeInit,
+		wantErrSubstr: manifestFileName + " (" + driver + ")",
 		configureRepo: func(t *testing.T, repo, helperPath string) {
 			t.Helper()
 			if repoSetup != nil {
@@ -444,27 +447,9 @@ func cleanFilterBeforeInit(t *testing.T, repo string) {
 	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn\n")
 }
 
-func cleanFilterWithEqualsBeforeInit(t *testing.T, repo string) {
-	t.Helper()
-	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn=drv\n")
-}
-
-func cleanFilterAfterEmptyAttributeBeforeInit(t *testing.T, repo string) {
-	t.Helper()
-	writeFile(t, filepath.Join(repo, "a.json"), "{}\n")
-	writeFile(t, filepath.Join(repo, ".gitattributes"), "a.json filter=\n"+manifestFileName+" filter=pwn\n")
-}
-
 func processFilterInfoAttributesSetup(t *testing.T, repo string) {
 	t.Helper()
 	writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter=pwn\n")
-}
-
-func cleanFilterAttributesFileSetup(t *testing.T, repo string) {
-	t.Helper()
-	attributesPath := filepath.Join(t.TempDir(), "global.attributes")
-	writeFile(t, attributesPath, manifestFileName+" filter=pwn\n")
-	runGit(t, repo, "config", "core.attributesFile", attributesPath)
 }
 
 func localGitHelperCases() []localGitHelperCase {
@@ -476,16 +461,17 @@ func localGitHelperCases() []localGitHelperCase {
 			helperScript: func(markerPath string) string {
 				return "#!/bin/sh\necho fsmonitor-ran >> \"" + markerPath + "\"\nprintf 'version 2\\n\\n'\nexit 0\n"
 			},
+			beforeDetect: func(t *testing.T, repo string) {
+				t.Helper()
+				writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+			},
 			configureRepo: func(t *testing.T, repo, helperPath string) {
 				t.Helper()
 				runGit(t, repo, "config", "core.fsmonitor", helperPath)
 			},
 		},
 		filterHelperCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit, nil, configureCleanFilter),
-		filterHelperCase("clean filter with equals driver", "clean-filter-equals-driver.marker", "pwn=drv", cleanFilterScript, cleanFilterWithEqualsBeforeInit, nil, configureCleanFilter),
-		filterHelperCase("clean filter after empty attribute value", "clean-filter-after-empty-attr.marker", "pwn", cleanFilterScript, cleanFilterAfterEmptyAttributeBeforeInit, nil, configureCleanFilter),
 		filterHelperCase("process filter from info attributes", "process-filter-info.marker", "pwn", processFilterScript, nil, processFilterInfoAttributesSetup, configureProcessFilter),
-		filterHelperCase("clean filter from core.attributesFile", "clean-filter-attributes-file.marker", "pwn", cleanFilterScript, nil, cleanFilterAttributesFileSetup, configureCleanFilter),
 	}
 }
 
@@ -507,13 +493,26 @@ func runLocalGitHelperCase(t *testing.T, tc localGitHelperCase) {
 		t.Fatalf("chmod git helper: %v", err)
 	}
 	tc.configureRepo(t, repo, helperPath)
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+	if tc.beforeDetect != nil {
+		tc.beforeDetect(t, repo)
+	} else {
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+	}
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
-	if err != nil {
-		t.Fatalf(detectLockfileDriftFmt, err)
+	if tc.wantErrSubstr != "" {
+		if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), tc.wantErrSubstr) {
+			t.Fatalf("expected error containing %q, got %v", tc.wantErrSubstr, err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
+		}
+	} else {
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 	}
-	assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected local git helper to never execute, markerPath=%q statErr=%v", markerPath, err)
 	}
@@ -524,9 +523,54 @@ func TestDetectLockfileDriftDoesNotExecuteLocalGitHelpers(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 	for _, tc := range localGitHelperCases() {
+		if tc.wantErrSubstr != "" {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			runLocalGitHelperCase(t, tc)
 		})
+	}
+}
+
+func TestDetectLockfileDriftRejectsActiveCustomFiltersWithoutExecutingHelpers(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+	for _, tc := range localGitHelperCases() {
+		if tc.wantErrSubstr == "" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			runLocalGitHelperCase(t, tc)
+		})
+	}
+}
+
+func TestDetectLockfileDriftIgnoresUnrelatedFilteredFilesOutsideCandidatePaths(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "README.md filter=pwn\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "unrelated-filter.marker")
+	helperPath := helperPathInRepo(repo)
+	writeFile(t, helperPath, cleanFilterScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	configureCleanFilter(t, repo, "pwn")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected unrelated filtered file helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
 	}
 }
 

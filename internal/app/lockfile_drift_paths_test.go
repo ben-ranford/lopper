@@ -215,6 +215,20 @@ func TestCollectLockfileGitContextSkipsIrrelevantPathsAndFailsClosed(t *testing.
 			t.Fatalf("expected relevant filter ambiguity error, got %v", err)
 		}
 	})
+
+	t.Run("malformed check-attr output stays fail closed", func(t *testing.T) {
+		repo := configureFakeGitRepo(t, "checkattrwrongfieldcount")
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+
+		_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
+		if err == nil || !strings.Contains(err.Error(), "parse git check-attr --stdin -z filter output") {
+			t.Fatalf("expected malformed check-attr failure, got %v", err)
+		}
+		if strings.Contains(err.Error(), "run git diff") {
+			t.Fatalf("expected malformed check-attr output to abort before git diff, got %v", err)
+		}
+	})
 }
 
 func TestCollectLockfileGitContextScopesTrackedAndUntrackedCommandsToCandidatePaths(t *testing.T) {
@@ -572,6 +586,11 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
   if [ "$mode" = "pathscope-filterdriver" ]; then
     cat >/dev/null
     printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000pwn\000'
+    exit 0
+  fi
+  if [ "$mode" = "lsfail" ]; then
+    cat >/dev/null
+    printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000unspecified\000'
     exit 0
   fi
   if [ "$mode" = "checkattrfail" ]; then
