@@ -109,9 +109,45 @@ func trustedCommandOutputRoot(outputAbs string) (string, error) {
 		return "", err
 	}
 	if !withinWorkspace {
-		return "", nil
+		resolvedWorkspaceRoot, err := filepath.EvalSymlinks(workspaceRoot)
+		if err != nil {
+			return "", fmt.Errorf("resolve output workspace symlinks: %w", err)
+		}
+		aliasedWorkspaceRoot, err := resolveAliasedWorkspaceRoot(outputAbs, resolvedWorkspaceRoot)
+		if err != nil {
+			return "", err
+		}
+		if aliasedWorkspaceRoot == "" {
+			return "", nil
+		}
+		return aliasedWorkspaceRoot, nil
 	}
 	return workspaceRoot, nil
+}
+
+func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error) {
+	current := filepath.Dir(filepath.Clean(outputAbs))
+	for {
+		_, err := os.Lstat(current)
+		switch {
+		case err == nil:
+			resolvedCurrent, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			if resolvedCurrent == workspaceRoot {
+				return current, nil
+			}
+		case !os.IsNotExist(err):
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", nil
+		}
+		current = parent
+	}
 }
 
 func pathWithinRoot(rootAbs, targetAbs string) (bool, error) {

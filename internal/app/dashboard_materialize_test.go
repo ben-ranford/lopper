@@ -83,6 +83,83 @@ func TestAbsoluteCommandOutputRootUsesWorkspaceBoundary(t *testing.T) {
 	}
 }
 
+func TestTrustedCommandOutputRootUsesWorkspaceAlias(t *testing.T) {
+	workspace := t.TempDir()
+	workspaceAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	chdirCanonicalWorkspace(t, workspace)
+
+	root, err := trustedCommandOutputRoot(filepath.Join(workspaceAlias, "reports", "output.json"))
+	if err != nil {
+		t.Fatalf("trusted command output root: %v", err)
+	}
+	if root != workspaceAlias {
+		t.Fatalf("expected workspace alias root %q, got %q", workspaceAlias, root)
+	}
+}
+
+func TestTrustedCommandOutputRootUsesResolvedWorkspaceForRealPathWhenCwdIsAlias(t *testing.T) {
+	workspace := t.TempDir()
+	workspaceAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(workspaceAlias); err != nil {
+		t.Fatalf("chdir workspace alias: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+	t.Setenv("PWD", workspaceAlias)
+
+	root, err := trustedCommandOutputRoot(filepath.Join(workspace, "reports", "output.json"))
+	if err != nil {
+		t.Fatalf("trusted command output root: %v", err)
+	}
+	if root != workspace {
+		t.Fatalf("expected resolved workspace root %q, got %q", workspace, root)
+	}
+}
+
+func TestTrustedCommandOutputRootPropagatesBrokenWorkspaceAliasError(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+
+	brokenAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), brokenAlias); err != nil {
+		t.Fatalf("create broken alias: %v", err)
+	}
+
+	_, err := trustedCommandOutputRoot(filepath.Join(brokenAlias, "reports", "output.json"))
+	if err == nil {
+		t.Fatal("expected broken workspace alias lookup to fail")
+	}
+}
+
+func TestTrustedCommandOutputRootReturnsEmptyOutsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+
+	root, err := trustedCommandOutputRoot(filepath.Join(t.TempDir(), "reports", "output.json"))
+	if err != nil {
+		t.Fatalf("trusted command output root: %v", err)
+	}
+	if root != "" {
+		t.Fatalf("expected no trusted workspace root, got %q", root)
+	}
+}
+
 func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	blocker := filepath.Join(workspace, "reports")
@@ -200,6 +277,19 @@ func TestPathWithinRoot(t *testing.T) {
 	}
 	if within {
 		t.Fatal("expected sibling path to escape root")
+	}
+}
+
+func TestResolveAliasedWorkspaceRootPropagatesBrokenAliasError(t *testing.T) {
+	workspace := t.TempDir()
+	brokenAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), brokenAlias); err != nil {
+		t.Fatalf("create broken alias: %v", err)
+	}
+
+	_, err := resolveAliasedWorkspaceRoot(filepath.Join(brokenAlias, "reports", "output.json"), workspace)
+	if err == nil {
+		t.Fatal("expected broken alias resolution to fail")
 	}
 }
 

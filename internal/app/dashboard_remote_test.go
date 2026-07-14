@@ -509,6 +509,23 @@ func TestDashboardRepoMaterializerRefreshesUsableCheckout(t *testing.T) {
 	assertCommandContains(t, commands, "clean -fdx")
 }
 
+func TestDashboardRepoMaterializerRefreshCheckoutUsesPinnedRevision(t *testing.T) {
+	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
+
+	var commands []string
+	withDashboardGitRemoteOriginAndCommit(t, testHTTPSRepoURL, testResolvedCommit, &commands)
+
+	materializer := &dashboardRepoMaterializer{cacheRoot: t.TempDir(), gitPath: "/usr/bin/git"}
+	got, err := materializer.refreshCheckout(context.Background(), t.TempDir(), spec, dashboard.RepoRevision{Branch: "release/main"})
+	if err != nil {
+		t.Fatalf("refresh checkout with pinned revision: %v", err)
+	}
+	if got != testResolvedCommit {
+		t.Fatalf("expected resolved commit %s, got %s", testResolvedCommit, got)
+	}
+	assertCommandContains(t, commands, "fetch --prune --no-tags --depth=1 origin refs/heads/release/main")
+}
+
 func TestDashboardRepoMaterializerRefreshFailure(t *testing.T) {
 	cacheRoot := t.TempDir()
 	spec := mustParseDashboardRepoURL(t, testHTTPSRepoURL)
