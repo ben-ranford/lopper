@@ -309,6 +309,63 @@ func TestCollectUseEntryLocalTokens(t *testing.T) {
 	}
 }
 
+func TestMultilineUseAliasSupportsUnicodeLocalNames(t *testing.T) {
+	const content = "use serde::de::Deserialize as føø;\nfn decode(_: føø) {}\n"
+	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
+	if len(imports) != 1 {
+		t.Fatalf("expected one import, got %#v", imports)
+	}
+	imported := imports[0]
+	if imported.Local != "føø" {
+		t.Fatalf("local alias = %q, want %q", imported.Local, "føø")
+	}
+	if imported.DeclarationTokenHits != 1 {
+		t.Fatalf("declaration token hits = %d, want 1", imported.DeclarationTokenHits)
+	}
+	if got := shared.CountUsage([]byte(content), imports)["føø"]; got != 1 {
+		t.Fatalf("usage[føø] = %d, want 1", got)
+	}
+	if got := findRustAliasToken("Deserialize as føø", "føø", 0); got != len("Deserialize as ") {
+		t.Fatalf("unicode alias token offset = %d, want %d", got, len("Deserialize as "))
+	}
+	if got := findRustIdentifierToken("føø bar", "føø", 0); got != 0 {
+		t.Fatalf("unicode identifier offset = %d, want 0", got)
+	}
+	if got := findRustIdentifierToken("føøbar", "føø", 0); got != -1 {
+		t.Fatalf("unicode substring offset = %d, want -1", got)
+	}
+	if rustIdentifierTokenAt("xføø", "føø", 1) {
+		t.Fatalf("did not expect unicode token with identifier prefix to match")
+	}
+	if rustIdentifierTokenAt("føøx", "føø", 0) {
+		t.Fatalf("did not expect unicode token with identifier suffix to match")
+	}
+}
+
+func TestUnicodeTokenHelpersSkipMismatches(t *testing.T) {
+	if got := advancePastRustUseWildcard("serde::de", 0); got != 0 {
+		t.Fatalf("wildcard advance without wildcard = %d, want 0", got)
+	}
+	if got := advancePastRustUseWildcard("serde::*", -1); got != -1 {
+		t.Fatalf("wildcard advance with negative start = %d, want -1", got)
+	}
+	if got := findRustAliasToken("Deserialize as other as føø", "føø", 0); got != len("Deserialize as other as ") {
+		t.Fatalf("unicode alias second match offset = %d, want %d", got, len("Deserialize as other as "))
+	}
+	if got := countRustIdentifierTokens("føø bar føø", "føø"); got != 2 {
+		t.Fatalf("unicode identifier count = %d, want 2", got)
+	}
+	if got := countRustIdentifierTokens("bar baz", "føø"); got != 0 {
+		t.Fatalf("missing unicode identifier count = %d, want 0", got)
+	}
+	if got := findRustIdentifierToken("xx føø", "føø", 1); got != len("xx ") {
+		t.Fatalf("unicode identifier offset after search start = %d, want %d", got, len("xx "))
+	}
+	if got := findRustIdentifierToken("xx", "føø", 0); got != -1 {
+		t.Fatalf("missing unicode identifier offset = %d, want -1", got)
+	}
+}
+
 func multilineAliasDependencyLookup() map[string]dependencyInfo {
 	return map[string]dependencyInfo{"serde": {Canonical: "serde"}}
 }

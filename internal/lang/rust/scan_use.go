@@ -187,8 +187,16 @@ func rustIdentifierTokenAt(content, token string, offset int) bool {
 	if token == "" || offset < 0 || end > len(content) || content[offset:end] != token {
 		return false
 	}
-	leftBoundary := offset == 0 || !isRustIdentifierContinue(content[offset-1])
-	rightBoundary := end == len(content) || !isRustIdentifierContinue(content[end])
+	leftBoundary := offset == 0
+	if !leftBoundary {
+		left, _ := utf8.DecodeLastRuneInString(content[:offset])
+		leftBoundary = !isRustIdentifierContinueRune(left)
+	}
+	rightBoundary := end == len(content)
+	if !rightBoundary {
+		right, _ := utf8.DecodeRuneInString(content[end:])
+		rightBoundary = !isRustIdentifierContinueRune(right)
+	}
 	return leftBoundary && rightBoundary
 }
 

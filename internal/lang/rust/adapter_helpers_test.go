@@ -541,6 +541,21 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	if _, _, ok := consumeRustIdentifier([]byte("9serde")); ok {
 		t.Fatalf("did not expect identifier starting with a digit to parse")
 	}
+	if _, _, ok := consumeRustIdentifier(nil); ok {
+		t.Fatalf("did not expect empty identifier to parse")
+	}
+	if _, _, ok := consumeRustIdentifier([]byte(" \t ")); ok {
+		t.Fatalf("did not expect whitespace-only identifier to parse")
+	}
+	if ident, next, ok := consumeRustIdentifier([]byte("føø extra")); !ok || ident != "føø" || next != len("føø") {
+		t.Fatalf("unexpected unicode identifier parse: ident=%q next=%d ok=%v", ident, next, ok)
+	}
+	if ident, next, ok := consumeRustIdentifier([]byte("føø-bar")); !ok || ident != "føø" || next != len("føø") {
+		t.Fatalf("unexpected unicode identifier delimiter parse: ident=%q next=%d ok=%v", ident, next, ok)
+	}
+	if ident, next, ok := consumeRustIdentifier([]byte("føø123")); !ok || ident != "føø123" || next != len("føø123") {
+		t.Fatalf("unexpected unicode identifier digit parse: ident=%q next=%d ok=%v", ident, next, ok)
+	}
 
 	content := pubCrateSerdeStmt
 	clauseStart := strings.Index(content, "serde")
