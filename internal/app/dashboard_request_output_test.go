@@ -98,3 +98,75 @@ func TestExecuteDashboardOutputPathErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestPersistDashboardOutputDoesNotFollowSymlinkTarget(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("seed outside file: %v", err)
+	}
+	outputPath := filepath.Join(workspace, "org-report.html")
+	if err := os.Symlink(outside, outputPath); err != nil {
+		t.Fatalf("create output symlink: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err != nil {
+		t.Fatalf("persist dashboard output: %v", err)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside file: %v", err)
+	}
+	if string(data) != "secret" {
+		t.Fatalf("expected symlink target to remain unchanged, got %q", string(data))
+	}
+	written, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read dashboard output: %v", err)
+	}
+	if string(written) != "<html>report</html>" {
+		t.Fatalf("expected report at output path, got %q", string(written))
+	}
+}
+
+func TestPersistDashboardOutputRejectsSymlinkedParent(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create parent symlink: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	_, err = persistDashboardOutput(`{"report":true}`, filepath.Join("reports", "org-report.json"))
+	if err == nil {
+		t.Fatal("expected symlinked parent to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "org-report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside report to remain absent, got err=%v", statErr)
+	}
+}
