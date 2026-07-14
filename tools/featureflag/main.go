@@ -231,15 +231,28 @@ func runReport(args []string) error {
 }
 
 func readCatalog(root string) ([]featureflags.Flag, error) {
-	data, err := readCatalogData(root)
+	return readCatalogFromPath(catalogSource{root: root, path: catalogPath})
+}
+
+func readCatalogData(root string) ([]byte, error) {
+	return readCatalogDataFromPath(catalogSource{root: root, path: catalogPath})
+}
+
+type catalogSource struct {
+	root string
+	path string
+}
+
+func readCatalogFromPath(source catalogSource) ([]featureflags.Flag, error) {
+	data, err := readCatalogDataFromPath(source)
 	if err != nil {
 		return nil, err
 	}
 	return featureflags.ParseCatalog(data)
 }
 
-func readCatalogData(root string) ([]byte, error) {
-	data, err := safeio.ReadFileUnder(root, filepath.Join(root, catalogPath))
+func readCatalogDataFromPath(source catalogSource) ([]byte, error) {
+	data, err := safeio.ReadFileUnder(source.root, filepath.Join(source.root, source.path))
 	if err != nil {
 		return nil, fmt.Errorf("read feature catalog: %w", err)
 	}

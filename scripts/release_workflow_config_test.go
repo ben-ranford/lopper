@@ -280,35 +280,39 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	if _, ok := workflow.Jobs["stamp-feature-release-history"]; ok {
-		t.Fatal("feature release history stamping must run from trusted main without an artifact handoff job")
+		t.Fatal("feature release history stamping must run from trusted main without release-SHA tool execution")
 	}
 
-	deltaCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-delta", "Checkout release source for feature history delta")
-	assertWorkflowStepValue(t, deltaCheckout, "ref", "${{ needs.prepare-release.outputs.sha }}", "release-derived delta checkout ref")
-	assertWorkflowStepValue(t, deltaCheckout, "token", "${{ secrets.GITHUB_TOKEN }}", "release-derived delta checkout token")
-	assertWorkflowStepValue(t, deltaCheckout, "persist-credentials", "false", "release-derived delta checkout persist-credentials")
+	catalogCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-catalog", "Checkout trusted main branch for feature history data")
+	assertWorkflowStepValue(t, catalogCheckout, "ref", "main", "trusted feature history data checkout ref")
+	assertWorkflowStepValue(t, catalogCheckout, "token", "${{ secrets.GITHUB_TOKEN }}", "trusted feature history data checkout token")
+	assertWorkflowStepValue(t, catalogCheckout, "persist-credentials", "false", "trusted feature history data checkout persist-credentials")
 
-	prepareDeltaJob := workflow.Jobs["prepare-feature-release-history-delta"]
-	assertJobDoesNotReceiveEnvVar(t, prepareDeltaJob, "PUSH_TOKEN")
+	prepareCatalogJob := workflow.Jobs["prepare-feature-release-history-catalog"]
+	assertJobDoesNotReceiveEnvVar(t, prepareCatalogJob, "PUSH_TOKEN")
 
-	exportDelta := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-delta", "Export release-derived feature history delta")
-	assertStepRunContainsAll(t, exportDelta, "release-derived feature history delta step", []string{
-		`go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --output .artifacts/feature-release-history-delta.json`,
-		`echo "delta_created=false" >> "$GITHUB_OUTPUT"`,
+	extractCatalog := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-catalog", "Extract release feature catalog as data")
+	assertStepRunContainsAll(t, extractCatalog, "release feature catalog extraction step", []string{
+		`release_catalog=".artifacts/release-features.json"`,
+		`git show "${RELEASE_SHA}:internal/featureflags/features.json" > "${release_catalog}"`,
+		`printf '[]\n' > "${release_catalog}"`,
 	})
+	if strings.Contains(extractCatalog.Run, `go run ./tools/featureflag export-release-delta`) {
+		t.Fatal("release feature catalog extraction must not execute release-SHA tooling")
+	}
 
-	uploadDelta := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-delta", "Upload release-derived feature history delta")
-	assertWorkflowStepValue(t, uploadDelta, "name", "feature-release-history-delta", "release-derived feature history delta artifact name")
-	assertWorkflowStepValue(t, uploadDelta, "path", ".artifacts/feature-release-history-delta.json", "release-derived feature history delta artifact path")
+	uploadCatalog := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-catalog", "Upload release feature catalog")
+	assertWorkflowStepValue(t, uploadCatalog, "name", "feature-release-history-catalog", "release feature catalog artifact name")
+	assertWorkflowStepValue(t, uploadCatalog, "path", ".artifacts/release-features.json", "release feature catalog artifact path")
 
 	commitCheckout := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Checkout trusted main branch")
 	assertWorkflowStepValue(t, commitCheckout, "ref", "main", "trusted main checkout ref")
 	assertWorkflowStepValue(t, commitCheckout, "token", "${{ secrets.GITHUB_TOKEN }}", "trusted main checkout token")
 	assertWorkflowStepValue(t, commitCheckout, "persist-credentials", "false", "trusted main checkout persist-credentials")
 
-	downloadDelta := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Download release-derived feature history delta")
-	assertWorkflowStepValue(t, downloadDelta, "name", "feature-release-history-delta", "release-derived feature history download name")
-	assertWorkflowStepValue(t, downloadDelta, "path", ".artifacts", "release-derived feature history download path")
+	downloadCatalog := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Download release feature catalog")
+	assertWorkflowStepValue(t, downloadCatalog, "name", "feature-release-history-catalog", "release feature catalog download name")
+	assertWorkflowStepValue(t, downloadCatalog, "path", ".artifacts", "release feature catalog download path")
 
 	commitJob := workflow.Jobs["commit-feature-release-history"]
 	assertJobDoesNotReceiveEnvVar(t, commitJob, "PUSH_TOKEN")
@@ -316,7 +320,8 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	validate := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Validate and commit trusted feature release history")
 	assertStepRunContainsAll(t, validate, "trusted feature history validation step", []string{
 		`git checkout -B trusted-feature-release-history`,
-		`go run ./tools/featureflag apply-release-delta --delta .artifacts/feature-release-history-delta.json`,
+		`go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --catalog .artifacts/release-features.json --output .artifacts/feature-release-history-delta.json`,
+		`go run ./tools/featureflag apply-release-delta --release "${RELEASE_TAG}" --delta .artifacts/feature-release-history-delta.json`,
 		`go run ./tools/featureflag validate`,
 		`echo "commit_created=false" >> "$GITHUB_OUTPUT"`,
 		`git -c core.hooksPath=/dev/null commit --no-verify -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`,
@@ -324,6 +329,9 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	})
 	if strings.Contains(validate.Run, `go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`) {
 		t.Fatal("trusted feature history validation step must not stamp current main directly")
+	}
+	if strings.Contains(validate.Run, `go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --output .artifacts/feature-release-history-delta.json`) {
+		t.Fatal("trusted feature history validation step must derive the delta from the extracted release catalog data")
 	}
 	if strings.Contains(validate.Run, "git fetch origin main:refs/remotes/origin/main") {
 		t.Fatal("trusted feature history validation step must not rely on an unauthenticated git fetch after persist-credentials=false")

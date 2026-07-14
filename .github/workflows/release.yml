@@ -578,7 +578,7 @@ jobs:
         if: ${{ steps.tap_token.outputs.available != 'true' }}
         run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
 
-  prepare-feature-release-history-delta:
+  prepare-feature-release-history-catalog:
     needs:
       - prepare-release
       - publish
@@ -586,60 +586,41 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      delta_created: ${{ steps.export_delta.outputs.delta_created }}
     steps:
-      - name: Checkout release source for feature history delta
+      - name: Checkout trusted main branch for feature history data
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
-          ref: ${{ needs.prepare-release.outputs.sha }}
+          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: false
 
-      - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
-        with:
-          go-version-file: go.mod
-
-      - name: Export release-derived feature history delta
-        id: export_delta
+      - name: Extract release feature catalog as data
         env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts
+          release_catalog=".artifacts/release-features.json"
 
-          go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --output .artifacts/feature-release-history-delta.json
-
-          delta_updates=$(python3 - <<'PY'
-          import json
-
-          with open(".artifacts/feature-release-history-delta.json", "r", encoding="utf-8") as handle:
-              print(len(json.load(handle)["updates"]))
-          PY
-          )
-          if [ "${delta_updates}" = "0" ]; then
-            echo "Release-derived feature history delta is empty"
-            echo "delta_created=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if git cat-file -e "${RELEASE_SHA}:internal/featureflags/features.json" 2>/dev/null; then
+            git show "${RELEASE_SHA}:internal/featureflags/features.json" > "${release_catalog}"
+          else
+            printf '[]\n' > "${release_catalog}"
           fi
 
-          echo "delta_created=true" >> "$GITHUB_OUTPUT"
-
-      - name: Upload release-derived feature history delta
-        if: ${{ steps.export_delta.outputs.delta_created == 'true' }}
+      - name: Upload release feature catalog
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: feature-release-history-delta
-          path: .artifacts/feature-release-history-delta.json
+          name: feature-release-history-catalog
+          path: .artifacts/release-features.json
 
   commit-feature-release-history:
     needs:
       - prepare-release
       - publish
-      - prepare-feature-release-history-delta
-    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history-delta.outputs.delta_created == 'true' }}
+      - prepare-feature-release-history-catalog
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -654,10 +635,10 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: false
 
-      - name: Download release-derived feature history delta
+      - name: Download release feature catalog
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: feature-release-history-delta
+          name: feature-release-history-catalog
           path: .artifacts
 
       - name: Setup Go
@@ -675,7 +656,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B trusted-feature-release-history
 
-          go run ./tools/featureflag apply-release-delta --delta .artifacts/feature-release-history-delta.json
+          go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --catalog .artifacts/release-features.json --output .artifacts/feature-release-history-delta.json
+          go run ./tools/featureflag apply-release-delta --release "${RELEASE_TAG}" --delta .artifacts/feature-release-history-delta.json
           go run ./tools/featureflag validate
 
           git add internal/featureflags/features.json
