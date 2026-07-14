@@ -324,39 +324,87 @@ jobs:
           brew install --build-from-source ben-ranford/tap/lopper-rolling
           brew test ben-ranford/tap/lopper-rolling
 
-      - name: Commit and push rolling formula changes
+      - name: Commit rolling formula changes
         if: ${{ steps.tap_token.outputs.available == 'true' }}
+        id: commit_rolling_formula
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          git_bin=/usr/bin/git
+          if [ ! -x "${git_bin}" ]; then
+            echo "::error::Trusted git binary not found at ${git_bin}" >&2
+            exit 1
+          fi
+          git_safe() {
+            "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_safe config user.name "github-actions[bot]"
+          git_safe config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git_safe add Formula/lopper-rolling.rb
+          if git_safe diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No rolling formula changes to commit"
+            exit 0
+          fi
+
+          git_safe commit --no-verify -m "lopper-rolling ${{ needs.prepare-rolling.outputs.tag }}"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push rolling formula changes
+        if: ${{ steps.tap_token.outputs.available == 'true' && steps.commit_rolling_formula.outputs.committed == 'true' }}
         working-directory: homebrew-tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"
-          trap 'git remote set-url origin https://github.com/ben-ranford/homebrew-tap.git' EXIT
-
-          git add Formula/lopper-rolling.rb
-          if git diff --cached --quiet; then
-            echo "No rolling formula changes to commit"
-            exit 0
+          git_bin=/usr/bin/git
+          if [ ! -x "${git_bin}" ]; then
+            echo "::error::Trusted git binary not found at ${git_bin}" >&2
+            exit 1
           fi
 
-          git commit -m "lopper-rolling ${{ needs.prepare-rolling.outputs.tag }}"
+          auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | base64 | tr -d '\n')"
+          unset HOMEBREW_TAP_TOKEN
+
+          git_network() {
+            "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+              "$@"
+          }
+          git_local() {
+            env -u HOMEBREW_TAP_TOKEN \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for rolling Homebrew formula"
-            if ! git fetch origin main:refs/remotes/origin/main; then
+            if ! git_network fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
               sleep 2
               continue
             fi
-            if ! git rebase origin/main; then
+            if ! git_local rebase origin/main; then
               echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              git rebase --abort || true
+              git_local rebase --abort || true
               sleep 2
               continue
             fi
-            if git push origin HEAD:main; then
+            if git_network push origin HEAD:main; then
               exit 0
             fi
             sleep 2
