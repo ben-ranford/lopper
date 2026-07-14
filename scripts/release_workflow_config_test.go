@@ -293,7 +293,8 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 
 	extractCatalog := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-catalog", "Extract release feature catalog as data")
 	assertStepRunContainsAll(t, extractCatalog, "release feature catalog extraction step", []string{
-		`release_catalog=".artifacts/release-features.json"`,
+		`mkdir -p artifacts/feature-release-history`,
+		`release_catalog="artifacts/feature-release-history/release-features.json"`,
 		`git show "${RELEASE_SHA}:internal/featureflags/features.json" > "${release_catalog}"`,
 		`printf '[]\n' > "${release_catalog}"`,
 	})
@@ -303,7 +304,8 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 
 	uploadCatalog := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-catalog", "Upload release feature catalog")
 	assertWorkflowStepValue(t, uploadCatalog, "name", "feature-release-history-catalog", "release feature catalog artifact name")
-	assertWorkflowStepValue(t, uploadCatalog, "path", ".artifacts/release-features.json", "release feature catalog artifact path")
+	assertWorkflowStepValue(t, uploadCatalog, "path", "artifacts/feature-release-history/release-features.json", "release feature catalog artifact path")
+	assertWorkflowStepOmitsValue(t, uploadCatalog, "include-hidden-files", "release feature catalog artifact hidden-file opt-in")
 
 	commitCheckout := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Checkout trusted main branch")
 	assertWorkflowStepValue(t, commitCheckout, "ref", "main", "trusted main checkout ref")
@@ -312,7 +314,7 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 
 	downloadCatalog := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Download release feature catalog")
 	assertWorkflowStepValue(t, downloadCatalog, "name", "feature-release-history-catalog", "release feature catalog download name")
-	assertWorkflowStepValue(t, downloadCatalog, "path", ".artifacts", "release feature catalog download path")
+	assertWorkflowStepValue(t, downloadCatalog, "path", "artifacts/feature-release-history", "release feature catalog download path")
 
 	commitJob := workflow.Jobs["commit-feature-release-history"]
 	assertJobDoesNotReceiveEnvVar(t, commitJob, "PUSH_TOKEN")
@@ -320,12 +322,13 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	validate := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Validate and commit trusted feature release history")
 	assertStepRunContainsAll(t, validate, "trusted feature history validation step", []string{
 		`git checkout -B trusted-feature-release-history`,
-		`go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --catalog .artifacts/release-features.json --output .artifacts/feature-release-history-delta.json`,
+		`mkdir -p artifacts/feature-release-history`,
+		`go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --catalog artifacts/feature-release-history/release-features.json --output .artifacts/feature-release-history-delta.json`,
 		`go run ./tools/featureflag apply-release-delta --release "${RELEASE_TAG}" --delta .artifacts/feature-release-history-delta.json`,
 		`go run ./tools/featureflag validate`,
 		`echo "commit_created=false" >> "$GITHUB_OUTPUT"`,
 		`git -c core.hooksPath=/dev/null commit --no-verify -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`,
-		`git format-patch --stdout --binary --full-index HEAD^! > .artifacts/feature-release-history.patch`,
+		`git format-patch --stdout --binary --full-index HEAD^! > artifacts/feature-release-history/feature-release-history.patch`,
 	})
 	if strings.Contains(validate.Run, `go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`) {
 		t.Fatal("trusted feature history validation step must not stamp current main directly")
@@ -339,7 +342,8 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 
 	uploadPatch := workflowStepByName(t, workflow.Jobs, "commit-feature-release-history", "Upload trusted feature release history patch")
 	assertWorkflowStepValue(t, uploadPatch, "name", "feature-release-history-patch", "trusted feature release history patch artifact name")
-	assertWorkflowStepValue(t, uploadPatch, "path", ".artifacts/feature-release-history.patch", "trusted feature release history patch artifact path")
+	assertWorkflowStepValue(t, uploadPatch, "path", "artifacts/feature-release-history/feature-release-history.patch", "trusted feature release history patch artifact path")
+	assertWorkflowStepOmitsValue(t, uploadPatch, "include-hidden-files", "trusted feature release history patch hidden-file opt-in")
 
 	pushFeatureHistoryJob := workflow.Jobs["push-feature-release-history"]
 	checkout := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Checkout trusted main branch")
@@ -349,7 +353,7 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 
 	downloadPatch := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download trusted feature release history patch")
 	assertWorkflowStepValue(t, downloadPatch, "name", "feature-release-history-patch", "trusted feature release history patch download name")
-	assertWorkflowStepValue(t, downloadPatch, "path", ".artifacts", "trusted feature release history patch download path")
+	assertWorkflowStepValue(t, downloadPatch, "path", "artifacts/feature-release-history", "trusted feature release history patch download path")
 
 	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push trusted feature release history")
 	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
@@ -374,7 +378,7 @@ func TestReleaseWorkflowFeatureHistoryPushUsesTrustedBoundary(t *testing.T) {
 	assertStepRunContainsAll(t, push, "trusted feature history push step", []string{
 		`GIT_BIN="/usr/bin/git"`,
 		`BASE64_BIN="/usr/bin/base64"`,
-		`PATCH_FILE="${GITHUB_WORKSPACE}/.artifacts/feature-release-history.patch"`,
+		`PATCH_FILE="${GITHUB_WORKSPACE}/artifacts/feature-release-history/feature-release-history.patch"`,
 		`export GIT_CONFIG_COUNT=4`,
 		`export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"`,
 		`export GIT_CONFIG_KEY_1="core.hooksPath"`,
@@ -396,6 +400,14 @@ func assertWorkflowStepValue(t *testing.T, step workflowStepConfig, key string, 
 
 	if got := workflowStepWithString(t, step, key); got != want {
 		t.Fatalf("%s = %q, want %s", label, got, want)
+	}
+}
+
+func assertWorkflowStepOmitsValue(t *testing.T, step workflowStepConfig, key string, label string) {
+	t.Helper()
+
+	if _, ok := step.With[key]; ok {
+		t.Fatalf("%s must not define with.%s", label, key)
 	}
 }
 

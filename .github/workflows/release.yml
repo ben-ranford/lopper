@@ -600,8 +600,8 @@ jobs:
           RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
         run: |
           set -euo pipefail
-          mkdir -p .artifacts
-          release_catalog=".artifacts/release-features.json"
+          mkdir -p artifacts/feature-release-history
+          release_catalog="artifacts/feature-release-history/release-features.json"
 
           if git cat-file -e "${RELEASE_SHA}:internal/featureflags/features.json" 2>/dev/null; then
             git show "${RELEASE_SHA}:internal/featureflags/features.json" > "${release_catalog}"
@@ -613,7 +613,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: feature-release-history-catalog
-          path: .artifacts/release-features.json
+          path: artifacts/feature-release-history/release-features.json
 
   commit-feature-release-history:
     needs:
@@ -639,7 +639,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: feature-release-history-catalog
-          path: .artifacts
+          path: artifacts/feature-release-history
 
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -655,8 +655,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B trusted-feature-release-history
+          mkdir -p artifacts/feature-release-history
 
-          go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --catalog .artifacts/release-features.json --output .artifacts/feature-release-history-delta.json
+          go run ./tools/featureflag export-release-delta --release "${RELEASE_TAG}" --catalog artifacts/feature-release-history/release-features.json --output .artifacts/feature-release-history-delta.json
           go run ./tools/featureflag apply-release-delta --release "${RELEASE_TAG}" --delta .artifacts/feature-release-history-delta.json
           go run ./tools/featureflag validate
 
@@ -668,7 +669,7 @@ jobs:
           fi
 
           git -c core.hooksPath=/dev/null commit --no-verify -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
-          git format-patch --stdout --binary --full-index HEAD^! > .artifacts/feature-release-history.patch
+          git format-patch --stdout --binary --full-index HEAD^! > artifacts/feature-release-history/feature-release-history.patch
           echo "commit_created=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload trusted feature release history patch
@@ -676,7 +677,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: feature-release-history-patch
-          path: .artifacts/feature-release-history.patch
+          path: artifacts/feature-release-history/feature-release-history.patch
 
   push-feature-release-history:
     needs:
@@ -703,7 +704,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: feature-release-history-patch
-          path: .artifacts
+          path: artifacts/feature-release-history
 
       - name: Push trusted feature release history
         shell: bash --noprofile --norc {0}
@@ -736,7 +737,7 @@ jobs:
           GIT_BIN="/usr/bin/git"
           BASE64_BIN="/usr/bin/base64"
           MKDIR_BIN="/bin/mkdir"
-          PATCH_FILE="${GITHUB_WORKSPACE}/.artifacts/feature-release-history.patch"
+          PATCH_FILE="${GITHUB_WORKSPACE}/artifacts/feature-release-history/feature-release-history.patch"
           if [ ! -x "${GIT_BIN}" ] || [ ! -x "${BASE64_BIN}" ] || [ ! -x "${MKDIR_BIN}" ]; then
             echo "::error::Trusted git/base64/mkdir binaries are unavailable." >&2
             exit 1
