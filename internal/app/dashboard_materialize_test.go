@@ -344,6 +344,33 @@ func TestTrustedCommandOutputRootForRootsReturnsEmptyWhenRootsDoNotMatch(t *test
 	}
 }
 
+func TestTrustedCommandOutputRootForRootsSkipsInvalidNonMatchingRoot(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	writeBlockedFile(t, blocker)
+	validRoot := t.TempDir()
+	outputPath := filepath.Join(validRoot, "reports", "output.json")
+
+	root, err := trustedCommandOutputRootForRoots(outputPath, filepath.Join(blocker, "repo"), validRoot)
+	if err != nil {
+		t.Fatalf("trusted command output root for roots: %v", err)
+	}
+	if root != validRoot {
+		t.Fatalf("expected later valid trusted root %q, got %q", validRoot, root)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootsFailsClosedForInvalidMatchingRoot(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	writeBlockedFile(t, blocker)
+	invalidRoot := filepath.Join(blocker, "repo")
+	outputPath := filepath.Join(invalidRoot, "reports", "output.json")
+
+	_, err := trustedCommandOutputRootForRoots(outputPath, invalidRoot, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace") {
+		t.Fatalf("expected invalid matching trusted root to fail closed, got %v", err)
+	}
+}
+
 func TestTrustedCommandOutputRootForRootIgnoresMissingRootOutsideOutputPath(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "reports", "output.json")
 	root, err := trustedCommandOutputRootForRoot(outputPath, filepath.Join(t.TempDir(), "missing", "repo"))
@@ -892,9 +919,10 @@ func assertTrustedRootLookupError(t *testing.T, label string, lookup func(output
 	root := t.TempDir()
 	blocker := filepath.Join(root, "blocked")
 	writeBlockedFile(t, blocker)
+	trustedRoot := filepath.Join(blocker, "repo")
 
-	err := lookup(filepath.Join(t.TempDir(), "reports", "output.json"), filepath.Join(blocker, "repo"))
-	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace symlinks") {
+	err := lookup(filepath.Join(trustedRoot, "reports", "output.json"), trustedRoot)
+	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace") {
 		t.Fatalf("expected %s, got %v", label, err)
 	}
 }
