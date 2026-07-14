@@ -19,6 +19,7 @@ var execGitCommandContextFn = gitexec.CommandContext
 const (
 	gitObjectFormatSHA1   = "sha1"
 	gitObjectFormatSHA256 = "sha256"
+	gitRevParseSubcommand = "rev-parse"
 	emptyGitTreeSHA1      = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	emptyGitTreePayload   = "tree 0\x00"
 )
@@ -65,7 +66,7 @@ func gitChangedFiles(ctx context.Context, repoPath string) (map[string]struct{},
 }
 
 func isGitWorktree(ctx context.Context, repoPath string) bool {
-	command, err := gitCommandContext(ctx, repoPath, "rev-parse", "--is-inside-work-tree")
+	command, err := gitCommandContext(ctx, repoPath, gitRevParseSubcommand, "--is-inside-work-tree")
 	if err != nil {
 		return false
 	}
@@ -97,7 +98,7 @@ func gitTrackedChanges(ctx context.Context, repoPath string) ([]string, error) {
 }
 
 func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
-	command, err := gitCommandContext(ctx, repoPath, "rev-parse", "--verify", "--quiet", "HEAD")
+	command, err := gitCommandContext(ctx, repoPath, gitRevParseSubcommand, "--verify", "--quiet", "HEAD")
 	if err != nil {
 		return false, err
 	}
@@ -206,7 +207,7 @@ func gitObjectFormat(ctx context.Context, repoPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	commandArgs := append(gitexec.SafeConfigArgs(), "-C", repoPath, "rev-parse", "--show-object-format")
+	commandArgs := append(gitexec.SafeConfigArgs(), "-C", repoPath, gitRevParseSubcommand, "--show-object-format")
 	command, err := execGitCommandContextFn(ctx, gitPath, commandArgs...)
 	if err != nil {
 		return "", err
