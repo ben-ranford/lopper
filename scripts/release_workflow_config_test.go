@@ -196,6 +196,27 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowManualDispatchValidatesTagBeforeFetch(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	validation := `git check-ref-format --normalize "refs/tags/${tag}" >/dev/null 2>&1`
+	fetch := `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`
+
+	validationIndex := strings.Index(workflowText, validation)
+	if validationIndex == -1 {
+		t.Fatal("manual release flow must validate the user-supplied tag before using it as a ref")
+	}
+
+	fetchIndex := strings.Index(workflowText, fetch)
+	if fetchIndex == -1 {
+		t.Fatal("manual release flow must fetch the resolved release tag")
+	}
+	if validationIndex > fetchIndex {
+		t.Fatal("manual release flow must validate the user-supplied tag before fetching it")
+	}
+}
+
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 

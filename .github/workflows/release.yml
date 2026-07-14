@@ -63,6 +63,10 @@ jobs:
           if [[ "${tag}" != v* ]]; then
             tag="v${tag}"
           fi
+          if ! git check-ref-format --normalize "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::tag input must be a valid Git tag name." >&2
+            exit 1
+          fi
 
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           release_json="$(mktemp)"
