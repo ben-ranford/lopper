@@ -28,6 +28,8 @@ const graduateFeatureCatalog = `[
   }
 ]`
 
+const releaseDeltaPath = ".artifacts/feature-release-history-delta.json"
+
 func TestRunAddFeatureFlag(t *testing.T) {
 	root := t.TempDir()
 	catalogDir := filepath.Join(root, "internal", "featureflags")
@@ -188,7 +190,7 @@ func TestRunExportReleaseDelta(t *testing.T) {
 	t.Chdir(root)
 
 	output, err := captureStdout(t, func() error {
-		return run([]string{"export-release-delta", "--release", "v1.5.0", "--output", ".artifacts/feature-release-history-delta.json"})
+		return run([]string{"export-release-delta", "--release", "v1.5.0", "--output", releaseDeltaPath})
 	})
 	if err != nil {
 		t.Fatalf("run export-release-delta: %v", err)
@@ -197,7 +199,7 @@ func TestRunExportReleaseDelta(t *testing.T) {
 		t.Fatalf("expected export delta output, got %q", output)
 	}
 
-	data, err := os.ReadFile(filepath.Join(root, ".artifacts", "feature-release-history-delta.json"))
+	data, err := os.ReadFile(filepath.Join(root, releaseDeltaPath))
 	if err != nil {
 		t.Fatalf("read release delta: %v", err)
 	}
@@ -239,20 +241,11 @@ func TestRunApplyReleaseDeltaStampsOnlyReleaseDerivedFlags(t *testing.T) {
     "firstStableRelease": "v1.4.0"
   }
 ]`)
-	testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), `{
-  "release": "v1.5.0",
-  "updates": [
-    {
-      "code": "LOP-FEAT-0001",
-      "firstStableRelease": "v1.5.0"
-    }
-  ]
-}
-`)
+	writeReleaseDeltaFile(t, root, "v1.5.0", releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: "v1.5.0"})
 	t.Chdir(root)
 
 	output, err := captureStdout(t, func() error {
-		return run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"})
+		return run([]string{"apply-release-delta", "--delta", releaseDeltaPath})
 	})
 	if err != nil {
 		t.Fatalf("run apply-release-delta: %v", err)
@@ -284,19 +277,10 @@ func TestRunApplyReleaseDeltaRejectsConflictingStamp(t *testing.T) {
     "firstStableRelease": "v1.6.0"
   }
 ]`)
-	testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), `{
-  "release": "v1.5.0",
-  "updates": [
-    {
-      "code": "LOP-FEAT-0001",
-      "firstStableRelease": "v1.5.0"
-    }
-  ]
-}
-`)
+	writeReleaseDeltaFile(t, root, "v1.5.0", releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: "v1.5.0"})
 	t.Chdir(root)
 
-	if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "already records first stable release v1.6.0") {
+	if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "already records first stable release v1.6.0") {
 		t.Fatalf("expected conflicting release delta error, got %v", err)
 	}
 }
@@ -304,7 +288,7 @@ func TestRunApplyReleaseDeltaRejectsConflictingStamp(t *testing.T) {
 func TestRunExportReleaseDeltaGetwdAndWriteErrors(t *testing.T) {
 	oldGetwd := getwdFn
 	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }
-	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
+	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
 		t.Fatalf("expected getwd error, got %v", err)
 	}
 	getwdFn = oldGetwd
@@ -321,14 +305,14 @@ func TestRunExportReleaseDeltaGetwdAndWriteErrors(t *testing.T) {
 		getwdFn = oldGetwd
 		writeFileUnderFn = oldWrite
 	})
-	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "write release delta") {
+	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "write release delta") {
 		t.Fatalf("expected write error, got %v", err)
 	}
 }
 
 func TestRunExportReleaseDeltaRejectsMissingCatalogAndBadOutputDirectory(t *testing.T) {
 	t.Chdir(t.TempDir())
-	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "read feature catalog") {
+	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "read feature catalog") {
 		t.Fatalf("expected missing catalog error, got %v", err)
 	}
 
@@ -336,7 +320,7 @@ func TestRunExportReleaseDeltaRejectsMissingCatalogAndBadOutputDirectory(t *test
 	writeFeatureCatalog(t, root, graduateFeatureCatalog)
 	testutil.MustWriteFile(t, filepath.Join(root, ".artifacts"), "occupied")
 	t.Chdir(root)
-	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "create release delta output directory") {
+	if err := run([]string{"export-release-delta", "--release", "v1.5.0", "--output", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "create release delta output directory") {
 		t.Fatalf("expected output directory error, got %v", err)
 	}
 }
@@ -353,25 +337,16 @@ func TestRunApplyReleaseDeltaNoopAndErrors(t *testing.T) {
     "firstStableRelease": "v1.5.0"
   }
 ]`)
-		testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), `{
-  "release": "v1.5.0",
-  "updates": [
-    {
-      "code": "LOP-FEAT-0001",
-      "firstStableRelease": "v1.5.0"
-    }
-  ]
-}
-`)
+		writeReleaseDeltaFile(t, root, "v1.5.0", releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: "v1.5.0"})
 		t.Chdir(root)
 
 		output, err := captureStdout(t, func() error {
-			return run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"})
+			return run([]string{"apply-release-delta", "--delta", releaseDeltaPath})
 		})
 		if err != nil {
 			t.Fatalf("run apply-release-delta noop: %v", err)
 		}
-		if !strings.Contains(output, "no feature release delta updates to apply from .artifacts/feature-release-history-delta.json") {
+		if !strings.Contains(output, "no feature release delta updates to apply from "+releaseDeltaPath) {
 			t.Fatalf("expected noop output, got %q", output)
 		}
 	})
@@ -379,23 +354,10 @@ func TestRunApplyReleaseDeltaNoopAndErrors(t *testing.T) {
 	t.Run("duplicate updates rejected", func(t *testing.T) {
 		root := t.TempDir()
 		writeFeatureCatalog(t, root, graduateFeatureCatalog)
-		testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), `{
-  "release": "v1.5.0",
-  "updates": [
-    {
-      "code": "LOP-FEAT-0001",
-      "firstStableRelease": "v1.5.0"
-    },
-    {
-      "code": "LOP-FEAT-0001",
-      "firstStableRelease": "v1.5.0"
-    }
-  ]
-}
-`)
+		writeReleaseDeltaFile(t, root, "v1.5.0", releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: "v1.5.0"}, releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: "v1.5.0"})
 		t.Chdir(root)
 
-		if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "duplicate release delta update for feature LOP-FEAT-0001") {
+		if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "duplicate release delta update for feature LOP-FEAT-0001") {
 			t.Fatalf("expected duplicate delta error, got %v", err)
 		}
 	})
@@ -403,19 +365,10 @@ func TestRunApplyReleaseDeltaNoopAndErrors(t *testing.T) {
 	t.Run("missing feature rejected", func(t *testing.T) {
 		root := t.TempDir()
 		writeFeatureCatalog(t, root, graduateFeatureCatalog)
-		testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), `{
-  "release": "v1.5.0",
-  "updates": [
-    {
-      "code": "LOP-FEAT-9999",
-      "firstStableRelease": "v1.5.0"
-    }
-  ]
-}
-`)
+		writeReleaseDeltaFile(t, root, "v1.5.0", releaseDeltaUpdate{Code: "LOP-FEAT-9999", FirstStableRelease: "v1.5.0"})
 		t.Chdir(root)
 
-		if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "release delta references missing features: LOP-FEAT-9999") {
+		if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "release delta references missing features: LOP-FEAT-9999") {
 			t.Fatalf("expected missing feature error, got %v", err)
 		}
 	})
@@ -424,23 +377,14 @@ func TestRunApplyReleaseDeltaNoopAndErrors(t *testing.T) {
 func TestRunApplyReleaseDeltaGetwdAndWriteErrors(t *testing.T) {
 	oldGetwd := getwdFn
 	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }
-	if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
+	if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "resolve working directory") {
 		t.Fatalf("expected getwd error, got %v", err)
 	}
 	getwdFn = oldGetwd
 
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, graduateFeatureCatalog)
-	testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), `{
-  "release": "v1.5.0",
-  "updates": [
-    {
-      "code": "LOP-FEAT-0001",
-      "firstStableRelease": "v1.5.0"
-    }
-  ]
-}
-`)
+	writeReleaseDeltaFile(t, root, "v1.5.0", releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: "v1.5.0"})
 	t.Chdir(root)
 
 	oldWrite := writeFileUnderFn
@@ -451,21 +395,21 @@ func TestRunApplyReleaseDeltaGetwdAndWriteErrors(t *testing.T) {
 		getwdFn = oldGetwd
 		writeFileUnderFn = oldWrite
 	})
-	if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "write feature catalog") {
+	if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "write feature catalog") {
 		t.Fatalf("expected write error, got %v", err)
 	}
 }
 
 func TestRunApplyReleaseDeltaRejectsMissingCatalogAndMissingDelta(t *testing.T) {
 	t.Chdir(t.TempDir())
-	if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "read feature catalog") {
+	if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "read feature catalog") {
 		t.Fatalf("expected missing catalog error, got %v", err)
 	}
 
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, graduateFeatureCatalog)
 	t.Chdir(root)
-	if err := run([]string{"apply-release-delta", "--delta", ".artifacts/feature-release-history-delta.json"}); err == nil || !strings.Contains(err.Error(), "read release delta") {
+	if err := run([]string{"apply-release-delta", "--delta", releaseDeltaPath}); err == nil || !strings.Contains(err.Error(), "read release delta") {
 		t.Fatalf("expected missing delta error, got %v", err)
 	}
 }
@@ -531,9 +475,9 @@ func TestReadReleaseDeltaErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			testutil.MustWriteFile(t, filepath.Join(root, ".artifacts", "feature-release-history-delta.json"), tc.content)
+			testutil.MustWriteFile(t, filepath.Join(root, releaseDeltaPath), tc.content)
 
-			if _, err := readReleaseDelta(root, ".artifacts/feature-release-history-delta.json"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := readReleaseDelta(root, releaseDeltaPath); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("expected %q, got %v", tc.want, err)
 			}
 		})
@@ -1706,6 +1650,16 @@ func readFeatureCatalog(t *testing.T, catalogDir string) []featureflags.Flag {
 		t.Fatalf("parse catalog: %v", err)
 	}
 	return flags
+}
+
+func writeReleaseDeltaFile(t *testing.T, root string, release string, updates ...releaseDeltaUpdate) {
+	t.Helper()
+
+	data, err := formatReleaseDelta(releaseDelta{Release: release, Updates: updates})
+	if err != nil {
+		t.Fatalf("format release delta: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(root, releaseDeltaPath), string(data))
 }
 
 func assertManifestEntryDefault(t *testing.T, manifest []featureflags.ManifestEntry, name string, enabled bool) {
