@@ -41,6 +41,7 @@ type workflowStepConfig struct {
 	Run   string            `yaml:"run"`
 	Shell string            `yaml:"shell"`
 	Env   map[string]string `yaml:"env"`
+	With  map[string]any    `yaml:"with"`
 }
 
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
@@ -249,6 +250,23 @@ func TestReleaseWorkflowFeatureHistoryStepLabelsAndAuthHeader(t *testing.T) {
 	}
 	if strings.Contains(workflowText, "AUTHORIZATION: basic") {
 		t.Fatal("feature history push must not use a lowercase basic auth scheme")
+	}
+}
+
+func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout manual release source")
+	if got := workflowStepWithString(t, step, "token"); got != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("manual release checkout token = %q, want GITHUB_TOKEN-only checkout", got)
+	}
+	if got := workflowStepWithString(t, step, "persist-credentials"); got != "false" {
+		t.Fatalf("manual release checkout persist-credentials = %q, want false", got)
 	}
 }
 
@@ -629,6 +647,27 @@ func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName
 	}
 	t.Fatalf("%s must define step %q", jobName, stepName)
 	return workflowStepConfig{}
+}
+
+func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) string {
+	t.Helper()
+
+	value, ok := step.With[key]
+	if !ok {
+		t.Fatalf("workflow step %q must define with.%s", step.Name, key)
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	default:
+		t.Fatalf("workflow step %q with.%s has unsupported type %T", step.Name, key, value)
+	}
+	return ""
 }
 
 func readJSONConfig(t *testing.T, path string, target any) {
