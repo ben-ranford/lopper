@@ -369,6 +369,11 @@ func TestRunApplyReleaseDeltaRejectsMismatchedReleaseTag(t *testing.T) {
 	assertApplyReleaseDeltaError(t, graduateFeatureCatalog, testReleaseVersion, mismatchedReleaseTag, "release delta targets v1.6.0; expected v1.5.0", update)
 }
 
+func TestRunApplyReleaseDeltaRejectsPerUpdateMismatchedReleaseTag(t *testing.T) {
+	update := releaseDeltaUpdate{Code: "LOP-FEAT-0001", FirstStableRelease: mismatchedReleaseTag}
+	assertApplyReleaseDeltaError(t, graduateFeatureCatalog, testReleaseVersion, testReleaseVersion, "release delta update for feature LOP-FEAT-0001 targets v1.6.0; expected v1.5.0", update)
+}
+
 func TestRunExportReleaseDeltaGetwdAndWriteErrors(t *testing.T) {
 	oldGetwd := getwdFn
 	getwdFn = func() (string, error) { return "", errors.New("cwd failed") }

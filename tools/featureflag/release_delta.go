@@ -198,6 +198,11 @@ func validateReleaseDeltaRelease(delta releaseDelta, expectedRelease string) err
 	if delta.Release != expectedRelease {
 		return fmt.Errorf("release delta targets %s; expected %s", delta.Release, expectedRelease)
 	}
+	for _, update := range delta.Updates {
+		if update.FirstStableRelease != expectedRelease {
+			return fmt.Errorf("release delta update for feature %s targets %s; expected %s", update.Code, update.FirstStableRelease, expectedRelease)
+		}
+	}
 	return nil
 }
 
