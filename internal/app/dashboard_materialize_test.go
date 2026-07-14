@@ -9,28 +9,12 @@ import (
 )
 
 func TestCommandOutputRootRelativePathUsesWorkspace(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-
 	workspace := t.TempDir()
-	if err := os.Chdir(workspace); err != nil {
-		t.Fatalf("chdir workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	})
+	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
 
 	root, err := commandOutputRoot("reports/output.json")
 	if err != nil {
 		t.Fatalf("command output root: %v", err)
-	}
-	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		t.Fatalf("canonicalize workspace: %v", err)
 	}
 	if root != canonicalWorkspace {
 		t.Fatalf("expected workspace root %q, got %q", canonicalWorkspace, root)
@@ -74,24 +58,9 @@ func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryWhenTargetNestedExists(t
 	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
 		t.Fatalf("create reports symlink: %v", err)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-	if err := os.Chdir(workspace); err != nil {
-		t.Fatalf("chdir workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	})
-	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		t.Fatalf("canonicalize workspace: %v", err)
-	}
+	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
 
-	_, err = absoluteCommandOutputRoot(filepath.Join(canonicalWorkspace, "reports", "nested", "output.json"))
+	_, err := absoluteCommandOutputRoot(filepath.Join(canonicalWorkspace, "reports", "nested", "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
 		t.Fatalf("expected nested symlink boundary rejection, got %v", err)
 	}
@@ -99,22 +68,7 @@ func TestAbsoluteCommandOutputRootRejectsSymlinkBoundaryWhenTargetNestedExists(t
 
 func TestAbsoluteCommandOutputRootUsesWorkspaceBoundary(t *testing.T) {
 	workspace := t.TempDir()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-	if err := os.Chdir(workspace); err != nil {
-		t.Fatalf("chdir workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	})
-	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		t.Fatalf("canonicalize workspace: %v", err)
-	}
+	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
 	outputPath := filepath.Join(canonicalWorkspace, "reports", "existing", "output.json")
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		t.Fatalf("mkdir output parent: %v", err)
@@ -132,9 +86,7 @@ func TestAbsoluteCommandOutputRootUsesWorkspaceBoundary(t *testing.T) {
 func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	blocker := filepath.Join(workspace, "reports")
-	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
+	writeBlockedFile(t, blocker)
 
 	_, err := absoluteCommandOutputRoot(filepath.Join(blocker, "output.json"))
 	if err == nil || !strings.Contains(err.Error(), "output root is not a directory") {
@@ -145,9 +97,7 @@ func TestAbsoluteCommandOutputRootRejectsFileBoundary(t *testing.T) {
 func TestAbsoluteCommandOutputRootPropagatesLookupError(t *testing.T) {
 	workspace := t.TempDir()
 	locked := filepath.Join(workspace, "locked")
-	if err := os.WriteFile(locked, []byte("blocked"), 0o600); err != nil {
-		t.Fatalf("write locked: %v", err)
-	}
+	writeBlockedFile(t, locked)
 
 	_, err := absoluteCommandOutputRoot(filepath.Join(locked, "missing", "output.json"))
 	if err == nil {
@@ -258,8 +208,6 @@ func blockedPathFixture(t *testing.T) (string, string) {
 
 	root := t.TempDir()
 	blocker := filepath.Join(root, "blocked")
-	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
+	writeBlockedFile(t, blocker)
 	return root, blocker
 }

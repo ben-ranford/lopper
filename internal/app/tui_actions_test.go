@@ -39,14 +39,7 @@ func TestTUIActionRunnerNilAppReturnsNil(t *testing.T) {
 }
 
 func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
-	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			SchemaVersion: report.SchemaVersion,
-			Dependencies:  []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}},
-		},
-	}
-	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
-	runner := application.tuiActionRunner()
+	analyzer, runner := baselineTUIActionRunner()
 
 	store := t.TempDir()
 	_, savedPath, err := runner.SaveBaseline(context.Background(), ui.BaselineSaveRequest{
@@ -71,15 +64,7 @@ func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 }
 
 func TestTUIActionRunnerSavesBaselineWithKey(t *testing.T) {
-	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			SchemaVersion: report.SchemaVersion,
-			Dependencies:  []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}},
-		},
-	}
-	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
-	runner := application.tuiActionRunner()
-
+	analyzer, runner := baselineTUIActionRunner()
 	store := t.TempDir()
 	_, savedPath, err := runner.SaveBaseline(context.Background(), ui.BaselineSaveRequest{
 		RepoPath:          ".",
@@ -98,4 +83,15 @@ func TestTUIActionRunnerSavesBaselineWithKey(t *testing.T) {
 	if analyzer.lastReq.TopN != 3 || analyzer.lastReq.Language != "go" {
 		t.Fatalf("expected TUI baseline save with key to forward summary options, got %#v", analyzer.lastReq)
 	}
+}
+
+func baselineTUIActionRunner() (*fakeAnalyzer, ui.ActionRunner) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			SchemaVersion: report.SchemaVersion,
+			Dependencies:  []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}},
+		},
+	}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+	return analyzer, application.tuiActionRunner()
 }

@@ -66,9 +66,7 @@ func TestExecuteDashboardOutputPathErrors(t *testing.T) {
 	t.Run("mkdir output directory failure", func(t *testing.T) {
 		root := t.TempDir()
 		blocker := filepath.Join(root, "blocked")
-		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-			t.Fatalf("write blocker: %v", err)
-		}
+		writeBlockedFile(t, blocker)
 
 		req := DefaultRequest()
 		req.Mode = ModeDashboard
@@ -110,18 +108,7 @@ func TestPersistDashboardOutputDoesNotFollowSymlinkTarget(t *testing.T) {
 		t.Fatalf("create output symlink: %v", err)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-	if err := os.Chdir(workspace); err != nil {
-		t.Fatalf("chdir workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	})
+	chdirCanonicalWorkspace(t, workspace)
 
 	if _, err := persistDashboardOutput("<html>report</html>", "org-report.html"); err != nil {
 		t.Fatalf("persist dashboard output: %v", err)
@@ -149,20 +136,9 @@ func TestPersistDashboardOutputRejectsSymlinkedParent(t *testing.T) {
 		t.Fatalf("create parent symlink: %v", err)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-	if err := os.Chdir(workspace); err != nil {
-		t.Fatalf("chdir workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	})
+	chdirCanonicalWorkspace(t, workspace)
 
-	_, err = persistDashboardOutput(`{"report":true}`, filepath.Join("reports", "org-report.json"))
+	_, err := persistDashboardOutput(`{"report":true}`, filepath.Join("reports", "org-report.json"))
 	if err == nil {
 		t.Fatal("expected symlinked parent to be rejected")
 	}
@@ -219,25 +195,10 @@ func TestPersistDashboardOutputRejectsAbsoluteSymlinkedNestedParent(t *testing.T
 	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
 		t.Fatalf("create parent symlink: %v", err)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-	if err := os.Chdir(workspace); err != nil {
-		t.Fatalf("chdir workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	})
-	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		t.Fatalf("canonicalize workspace: %v", err)
-	}
+	canonicalWorkspace := chdirCanonicalWorkspace(t, workspace)
 	outputPath := filepath.Join(canonicalWorkspace, "reports", "nested", "org-report.json")
 
-	_, err = persistDashboardOutput(`{"report":true}`, outputPath)
+	_, err := persistDashboardOutput(`{"report":true}`, outputPath)
 	if err == nil {
 		t.Fatal("expected absolute nested symlinked parent to be rejected")
 	}
