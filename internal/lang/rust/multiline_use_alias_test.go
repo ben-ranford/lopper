@@ -12,6 +12,11 @@ type multilineAliasUsageCase struct {
 	wantUse map[string]int
 }
 
+type rustImportUsageExpectation struct {
+	declarationTokenHits int
+	usage                int
+}
+
 func TestMultilineUseAliasDeclarationHits(t *testing.T) {
 	const declaration = `use serde::{
     Deserialize as De,
@@ -458,31 +463,32 @@ func TestRustDeclarationCountsASCIIAliasAgainstUnicodePathSegment(t *testing.T) 
 
 func TestRustUnicodeUsageScanKeepsASCIIAliasReference(t *testing.T) {
 	const content = "use serde::{deø as de, foo as føø};\nfn f(_: de) {}\n"
+	want := map[string]rustImportUsageExpectation{
+		"de":  {declarationTokenHits: 1, usage: 1},
+		"føø": {declarationTokenHits: 1, usage: 0},
+	}
 	imports := parseRustImports(content, "src/lib.rs", "", multilineAliasDependencyLookup(), nil)
-	if len(imports) != 2 {
-		t.Fatalf("expected two imports, got %#v", imports)
+	if len(imports) != len(want) {
+		t.Fatalf("expected %d imports, got %#v", len(want), imports)
 	}
 
 	usage := shared.CountUsage([]byte(content), imports)
 	for _, imported := range imports {
-		switch imported.Local {
-		case "de":
-			if imported.DeclarationTokenHits != 1 {
-				t.Fatalf("de declaration token hits = %d, want 1", imported.DeclarationTokenHits)
-			}
-			if usage["de"] != 1 {
-				t.Fatalf("usage[de] = %d, want 1", usage["de"])
-			}
-		case "føø":
-			if imported.DeclarationTokenHits != 1 {
-				t.Fatalf("føø declaration token hits = %d, want 1", imported.DeclarationTokenHits)
-			}
-			if usage["føø"] != 0 {
-				t.Fatalf("usage[føø] = %d, want 0", usage["føø"])
-			}
-		default:
-			t.Fatalf("unexpected import local %q", imported.Local)
-		}
+		assertRustImportUsage(t, imported, usage, want)
+	}
+}
+
+func assertRustImportUsage(t *testing.T, imported importBinding, usage map[string]int, want map[string]rustImportUsageExpectation) {
+	t.Helper()
+	expected, ok := want[imported.Local]
+	if !ok {
+		t.Fatalf("unexpected import local %q", imported.Local)
+	}
+	if imported.DeclarationTokenHits != expected.declarationTokenHits {
+		t.Fatalf("%s declaration token hits = %d, want %d", imported.Local, imported.DeclarationTokenHits, expected.declarationTokenHits)
+	}
+	if usage[imported.Local] != expected.usage {
+		t.Fatalf("usage[%s] = %d, want %d", imported.Local, usage[imported.Local], expected.usage)
 	}
 }
 
