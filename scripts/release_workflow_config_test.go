@@ -2066,6 +2066,78 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 	}
 }
 
+func TestHomebrewTapWorkflowsSkipAllTapJobsWithoutToken(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name               string
+		workflowPath       string
+		gateJobName        string
+		validationJobName  string
+		requiredIfFragment string
+	}{
+		{
+			name:               "release",
+			workflowPath:       ".github/workflows/release.yml",
+			gateJobName:        "homebrew-tap-token-gate",
+			validationJobName:  "validate-homebrew-tap",
+			requiredIfFragment: "needs.prepare-release.outputs.release_created == 'true'",
+		},
+		{
+			name:              "rolling",
+			workflowPath:      ".github/workflows/rolling.yml",
+			gateJobName:       "homebrew-tap-token-gate",
+			validationJobName: "validate-homebrew-tap-rolling",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow workflowConfig
+			readYAMLConfig(t, tc.workflowPath, &workflow)
+			workflowText := readConfig(t, tc.workflowPath)
+
+			gateJob, ok := workflow.Jobs[tc.gateJobName]
+			if !ok {
+				t.Fatalf("%s must define job %s", tc.workflowPath, tc.gateJobName)
+			}
+			if !strings.Contains(workflowText, "configured: ${{ steps.gate.outputs.configured }}") {
+				t.Fatalf("%s must expose the tap-token gate output for downstream job gating", tc.workflowPath)
+			}
+			gateStep := workflowStepByName(t, workflow.Jobs, tc.gateJobName, "Detect tap token")
+			if gateStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
+				t.Fatalf("%s gate step must read HOMEBREW_TAP_TOKEN only inside the gate job", tc.workflowPath)
+			}
+			for _, want := range []string{
+				`if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
+				`echo "configured=true" >> "$GITHUB_OUTPUT"`,
+				`echo "configured=false" >> "$GITHUB_OUTPUT"`,
+			} {
+				if !strings.Contains(gateStep.Run, want) {
+					t.Fatalf("%s gate step must contain %q", tc.workflowPath, want)
+				}
+			}
+			if tc.requiredIfFragment != "" && !strings.Contains(gateJob.If, tc.requiredIfFragment) {
+				t.Fatalf("%s gate job must preserve %q", tc.workflowPath, tc.requiredIfFragment)
+			}
+
+			validationJob, ok := workflow.Jobs[tc.validationJobName]
+			if !ok {
+				t.Fatalf("%s must define job %s", tc.workflowPath, tc.validationJobName)
+			}
+			if !strings.Contains(validationJob.If, "needs.homebrew-tap-token-gate.outputs.configured == 'true'") {
+				t.Fatalf("%s job %s must skip entirely when HOMEBREW_TAP_TOKEN is absent", tc.workflowPath, tc.validationJobName)
+			}
+			if tc.requiredIfFragment != "" && !strings.Contains(validationJob.If, tc.requiredIfFragment) {
+				t.Fatalf("%s job %s must preserve %q", tc.workflowPath, tc.validationJobName, tc.requiredIfFragment)
+			}
+		})
+	}
+}
+
 func TestRollingWorkflowUsesFreshPrivilegedTapUpdateJob(t *testing.T) {
 	t.Parallel()
 	assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, homebrewTapWorkflowCase{

@@ -229,10 +229,31 @@ jobs:
             dist/*.zip
             dist/*.sha256
 
+  homebrew-tap-token-gate:
+    needs:
+      - prepare-rolling
+      - publish-rolling
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
+    steps:
+      - name: Detect tap token
+        id: gate
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
   validate-homebrew-tap-rolling:
     needs:
       - prepare-rolling
       - publish-rolling
+      - homebrew-tap-token-gate
+    if: ${{ needs.homebrew-tap-token-gate.outputs.configured == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

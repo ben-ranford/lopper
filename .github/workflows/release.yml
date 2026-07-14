@@ -20,6 +20,9 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  HOMEBREW_TAP_TOKEN_CONFIGURED: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
@@ -991,6 +994,27 @@ jobs:
       - prepare-release
       - publish
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
+    steps:
+      - name: Detect tap token
+        id: gate
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate-homebrew-tap:
+    needs:
+      - prepare-release
+      - publish
+      - homebrew-tap-token-gate
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.homebrew-tap-token-gate.outputs.configured == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
