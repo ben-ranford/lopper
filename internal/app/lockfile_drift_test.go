@@ -909,6 +909,31 @@ func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierBatchFindingOverLaterFi
 	assertSingleLockfileDriftWarning(t, warnings, err, "npm in b-missing: package.json exists but no matching lockfile", "npm install")
 }
 
+func TestDetectLockfileDriftStopOnFirstPrioritizesBufferedGitFindingOverLaterImmediateFinding(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-missing", manifestFileName), demoPackageJSON)
+	initGitRepo(t, repo)
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Errorf("expected ErrLockfileDrift, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 {
+		t.Errorf("expected exactly one fail-fast warning, got %#v", warnings)
+	}
+	warningText := strings.Join(warnings, "\n")
+	if !strings.Contains(warningText, "npm in a-drift: package.json changed while no matching lockfile changed") {
+		t.Errorf("expected earlier buffered manifest-change warning, got %#v", warnings)
+	}
+	if strings.Contains(warningText, "b-missing") {
+		t.Errorf("expected no later missing-lockfile warning, got %#v", warnings)
+	}
+}
+
 func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *testing.T) {
 	repo := t.TempDir()
 	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
