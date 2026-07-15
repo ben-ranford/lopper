@@ -429,19 +429,18 @@ func gitActiveFilterPathDrivers(ctx context.Context, repoPath string, paths []st
 }
 
 func filterConfiguredGitAttributeDrivers(ctx context.Context, repoPath string, assignments []gitFilterPathDriver) ([]gitFilterPathDriver, error) {
+	if len(assignments) == 0 {
+		return nil, nil
+	}
+
+	configured, err := gitExecutableFilterDrivers(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+
 	active := make([]gitFilterPathDriver, 0, len(assignments))
-	configured := make(map[string]bool)
 	for _, assignment := range assignments {
-		isConfigured, checked := configured[assignment.driver]
-		if !checked {
-			var err error
-			isConfigured, err = gitFilterDriverHasExecutableConfig(ctx, repoPath, assignment.driver)
-			if err != nil {
-				return nil, err
-			}
-			configured[assignment.driver] = isConfigured
-		}
-		if isConfigured {
+		if _, ok := configured[gitConfigCaseFold(assignment.driver)]; ok {
 			active = append(active, assignment)
 		}
 	}
@@ -451,27 +450,71 @@ func filterConfiguredGitAttributeDrivers(ctx context.Context, repoPath string, a
 // Git renders explicit drivers named set, unset, or unspecified exactly like
 // attribute-state values. Requiring executable config for every returned name
 // disambiguates those states while allowing inert ordinary declarations.
-func gitFilterDriverHasExecutableConfig(ctx context.Context, repoPath, driver string) (bool, error) {
-	for _, commandName := range []string{"clean", "process"} {
-		key := fmt.Sprintf("filter.%s.%s", driver, commandName)
-		args := []string{"config", "--includes", "--get", key}
-		command, err := gitCommandContext(ctx, repoPath, args...)
-		if err != nil {
-			return false, err
+func gitExecutableFilterDrivers(ctx context.Context, repoPath string) (map[string]struct{}, error) {
+	args := []string{"config", "--null", "--includes", "--get-regexp", `^filter\..*\.(clean|process)$`}
+	command, err := gitCommandContext(ctx, repoPath, args...)
+	if err != nil {
+		return nil, err
+	}
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return map[string]struct{}{}, nil
 		}
-		output, err := command.Output()
-		if err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-				continue
-			}
-			return false, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
+		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
+	}
+	configured, err := parseGitExecutableFilterConfig(output)
+	if err != nil {
+		return nil, fmt.Errorf("parse git config --null --includes --get-regexp output: %w", err)
+	}
+	return configured, nil
+}
+
+func parseGitExecutableFilterConfig(output []byte) (map[string]struct{}, error) {
+	if len(output) == 0 || output[len(output)-1] != 0 {
+		return nil, errors.New("truncated output: missing trailing NUL terminator")
+	}
+
+	configured := make(map[string]struct{})
+	for index, record := range parseNULTerminatedGitFields(output) {
+		key, value, ok := strings.Cut(record, "\n")
+		if !ok {
+			return nil, fmt.Errorf("record %d missing key/value separator", index)
 		}
-		if len(strings.TrimSpace(string(output))) > 0 {
-			return true, nil
+		driver, ok := gitFilterDriverFromExecutableConfigKey(key)
+		if !ok {
+			return nil, fmt.Errorf("record %d has unexpected filter command key %q", index, key)
+		}
+		if strings.TrimSpace(value) != "" {
+			configured[gitConfigCaseFold(driver)] = struct{}{}
 		}
 	}
-	return false, nil
+	return configured, nil
+}
+
+func gitFilterDriverFromExecutableConfigKey(key string) (string, bool) {
+	const prefix = "filter."
+	if len(key) <= len(prefix) || !strings.EqualFold(key[:len(prefix)], prefix) {
+		return "", false
+	}
+	for _, suffix := range []string{".clean", ".process"} {
+		if len(key) <= len(prefix)+len(suffix) || !strings.EqualFold(key[len(key)-len(suffix):], suffix) {
+			continue
+		}
+		return key[len(prefix) : len(key)-len(suffix)], true
+	}
+	return "", false
+}
+
+func gitConfigCaseFold(value string) string {
+	folded := []byte(value)
+	for index, char := range folded {
+		if char >= 'A' && char <= 'Z' {
+			folded[index] = char + ('a' - 'A')
+		}
+	}
+	return string(folded)
 }
 
 func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) error {

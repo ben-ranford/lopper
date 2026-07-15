@@ -559,6 +559,25 @@ func TestParseNULTerminatedGitFields(t *testing.T) {
 	}
 }
 
+func TestParseGitExecutableFilterConfigRecords(t *testing.T) {
+	configured, err := parseGitExecutableFilterConfig([]byte("filter.PWN.clean\n./helper.sh\x00filter.Pwn.Drv+V1.process\nprocess --flag\x00filter.empty.clean\n\x00"))
+	if err != nil {
+		t.Fatalf("parse executable filter config: %v", err)
+	}
+
+	for _, driver := range []string{"pwn", "PWN.DRV+v1"} {
+		if _, ok := configured[gitConfigCaseFold(driver)]; !ok {
+			t.Errorf("expected case-folded driver %q in %#v", driver, configured)
+		}
+	}
+	if _, ok := configured["empty"]; ok {
+		t.Errorf("expected empty filter command to remain inert, got %#v", configured)
+	}
+	if len(configured) != 2 {
+		t.Errorf("expected only executable filter drivers, got %#v", configured)
+	}
+}
+
 func TestParseGitCheckAttrFilterPathDrivers(t *testing.T) {
 	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
 	assignments, err := parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
@@ -783,9 +802,9 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
   fi
   exit 0
 fi
-if printf '%s' "$args" | grep -q 'config --includes --get'; then
-  if [ "$mode" = "pathscope-filterdriver" ] && printf '%s' "$args" | grep -q 'filter.pwn.clean'; then
-    printf './helper.sh\n'
+if printf '%s' "$args" | grep -q 'config --null --includes --get-regexp'; then
+  if [ "$mode" = "pathscope-filterdriver" ]; then
+    printf 'filter.PWN.clean\n./helper.sh\000'
     exit 0
   fi
   exit 1

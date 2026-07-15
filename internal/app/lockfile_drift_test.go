@@ -582,45 +582,50 @@ func TestDetectLockfileDriftRejectsCaseFoldedCustomFiltersBeforeDiff(t *testing.
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
-			writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+tc.attributeDriver+"\n")
-			initGitRepo(t, repo)
-
-			markerPath := filepath.Join(t.TempDir(), "case-folded-filter.marker")
-			helperPath := helperPathInRepo(repo)
-			writeFile(t, helperPath, cleanFilterScript(markerPath))
-			if err := os.Chmod(helperPath, 0o700); err != nil {
-				t.Fatalf("chmod git helper: %v", err)
-			}
-			runGit(t, repo, "config", "filter."+tc.configuredDriver+".clean", "./helper.sh")
-			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
-
-			originalExec := execGitCommandContextFn
-			diffCommands := 0
-			execGitCommandContextFn = func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
-				if lockfileGitCommandGroup(args) == "diff" {
-					diffCommands++
-				}
-				return originalExec(ctx, gitPath, args...)
-			}
-			t.Cleanup(func() { execGitCommandContextFn = originalExec })
-
-			warnings, err := detectLockfileDrift(context.Background(), repo, false)
-			if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" ("+tc.attributeDriver+")") {
-				t.Errorf("expected case-folded filter ambiguity error, got warnings=%#v err=%v", warnings, err)
-			}
-			if len(warnings) != 0 {
-				t.Errorf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
-			}
-			if diffCommands != 0 {
-				t.Errorf("expected filter preflight to stop before git diff, got %d diff commands", diffCommands)
-			}
-			if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("expected case-folded filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
-			}
+			runCaseFoldedCustomFilterCase(t, tc.attributeDriver, tc.configuredDriver)
 		})
+	}
+}
+
+func runCaseFoldedCustomFilterCase(t *testing.T, attributeDriver, configuredDriver string) {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+attributeDriver+"\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "case-folded-filter.marker")
+	helperPath := helperPathInRepo(repo)
+	writeFile(t, helperPath, cleanFilterScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	runGit(t, repo, "config", "filter."+configuredDriver+".clean", "./helper.sh")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	originalExec := execGitCommandContextFn
+	diffCommands := 0
+	execGitCommandContextFn = func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		if lockfileGitCommandGroup(args) == "diff" {
+			diffCommands++
+		}
+		return originalExec(ctx, gitPath, args...)
+	}
+	t.Cleanup(func() { execGitCommandContextFn = originalExec })
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" ("+attributeDriver+")") {
+		t.Errorf("expected case-folded filter ambiguity error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
+	}
+	if diffCommands != 0 {
+		t.Errorf("expected filter preflight to stop before git diff, got %d diff commands", diffCommands)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected case-folded filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
 	}
 }
 
