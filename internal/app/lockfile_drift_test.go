@@ -799,6 +799,21 @@ func TestDetectLockfileDriftStopOnFirstDoesNotPrewalkPastFinding(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierBatchFindingOverLaterFilterAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "a-clean", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-clean", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-missing", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "c-filtered", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "c-filtered", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "c-filtered/package.json filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in b-missing: package.json exists but no matching lockfile", "npm install")
+}
+
 func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *testing.T) {
 	repo := t.TempDir()
 	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
