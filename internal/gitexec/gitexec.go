@@ -69,18 +69,11 @@ func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd
 }
 
 func SanitizedEnv() []string {
-	return sanitizedEnvEntries(os.Environ(), nil)
+	return sanitizedEnvEntries(os.Environ())
 }
 
-func SanitizedEnvWithFilterDrivers(drivers []string) []string {
-	return sanitizedEnvEntries(os.Environ(), filterDriverConfigOverrides(drivers))
-}
-
-func sanitizedEnvEntries(env []string, extraOverrides []gitConfigOverride) []string {
-	configOverrides := make([]gitConfigOverride, 0, len(forcedGitConfigOverrides)+len(extraOverrides))
-	configOverrides = append(configOverrides, forcedGitConfigOverrides...)
-	configOverrides = append(configOverrides, extraOverrides...)
-	filtered := make([]string, 0, len(env)+3+1+len(configOverrides)*2)
+func sanitizedEnvEntries(env []string) []string {
+	filtered := make([]string, 0, len(env)+3+1+len(forcedGitConfigOverrides)*2)
 	for _, entry := range env {
 		key, _, hasKey := strings.Cut(entry, "=")
 		if !hasKey {
@@ -93,7 +86,7 @@ func sanitizedEnvEntries(env []string, extraOverrides []gitConfigOverride) []str
 		filtered = append(filtered, entry)
 	}
 	filtered = append(filtered, SafeSystemPath, safeGitNoSystemConfig, safeGitGlobalConfig)
-	filtered = append(filtered, gitConfigEnvEntries(configOverrides)...)
+	filtered = append(filtered, safeGitConfigEnvEntries()...)
 	return filtered
 }
 
@@ -131,29 +124,6 @@ func gitConfigEnvEntries(overrides []gitConfigOverride) []string {
 		entries = append(entries, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", index, override.key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, override.value))
 	}
 	return entries
-}
-
-func filterDriverConfigOverrides(drivers []string) []gitConfigOverride {
-	if len(drivers) == 0 {
-		return nil
-	}
-
-	overrides := make([]gitConfigOverride, 0, len(drivers)*3)
-	seen := make(map[string]struct{}, len(drivers))
-	for _, driver := range drivers {
-		driver = strings.TrimSpace(driver)
-		if driver == "" {
-			continue
-		}
-		if _, ok := seen[driver]; ok {
-			continue
-		}
-		seen[driver] = struct{}{}
-		overrides = append(overrides, gitConfigOverride{key: fmt.Sprintf("filter.%s.clean", driver), value: ""})
-		overrides = append(overrides, gitConfigOverride{key: fmt.Sprintf("filter.%s.process", driver), value: ""})
-		overrides = append(overrides, gitConfigOverride{key: fmt.Sprintf("filter.%s.required", driver), value: "false"})
-	}
-	return overrides
 }
 
 func ExecutableAvailable(path string) bool {

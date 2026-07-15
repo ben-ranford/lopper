@@ -22,57 +22,6 @@ func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
 	}
 }
 
-func TestSanitizedEnvWithFilterDriversNeutralizesUniqueDrivers(t *testing.T) {
-	t.Setenv("KEEP_ME", "1")
-
-	env := SanitizedEnvWithFilterDrivers([]string{"foo.bar", "foo/bar", "foo=bar", "", "foo:bar"})
-	for _, expected := range []string{
-		"GIT_CONFIG_COUNT=17",
-		"GIT_CONFIG_KEY_5=filter.foo.bar.clean",
-		"GIT_CONFIG_VALUE_5=",
-		"GIT_CONFIG_KEY_6=filter.foo.bar.process",
-		"GIT_CONFIG_KEY_7=filter.foo.bar.required",
-		"GIT_CONFIG_VALUE_7=false",
-		"GIT_CONFIG_KEY_8=filter.foo/bar.clean",
-		"GIT_CONFIG_KEY_11=filter.foo=bar.clean",
-		"GIT_CONFIG_KEY_12=filter.foo=bar.process",
-		"GIT_CONFIG_KEY_13=filter.foo=bar.required",
-		"GIT_CONFIG_KEY_14=filter.foo:bar.clean",
-		"GIT_CONFIG_KEY_16=filter.foo:bar.required",
-	} {
-		if !containsEnv(env, expected) {
-			t.Fatalf("expected filter driver env override %q in %#v", expected, env)
-		}
-	}
-	if !containsEnv(env, keepMeEnvEntry) {
-		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)
-	}
-}
-
-func TestFilterDriverConfigOverridesSkipEmptyAndDuplicateDrivers(t *testing.T) {
-	if got := filterDriverConfigOverrides(nil); len(got) != 0 {
-		t.Fatalf("expected nil driver set to produce nil overrides, got %#v", got)
-	}
-
-	overrides := filterDriverConfigOverrides([]string{" pwn ", "", "pwn", "other"})
-	if got, want := len(overrides), 6; got != want {
-		t.Fatalf("expected %d filter overrides, got %#v", want, overrides)
-	}
-	wantKeys := []string{
-		"filter.pwn.clean",
-		"filter.pwn.process",
-		"filter.pwn.required",
-		"filter.other.clean",
-		"filter.other.process",
-		"filter.other.required",
-	}
-	for index, want := range wantKeys {
-		if overrides[index].key != want {
-			t.Fatalf("expected override key %q at index %d, got %#v", want, index, overrides)
-		}
-	}
-}
-
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
 	if err != nil {
@@ -84,29 +33,25 @@ func TestResolveBinaryPath(t *testing.T) {
 }
 
 func TestResolveBinaryPathBranches(t *testing.T) {
-	t.Run("prefers primary", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "primary"
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "prefers primary", want: "primary"},
+		{name: "falls back", want: "fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
+				return path == tc.want
+			})
+			if err != nil {
+				t.Fatalf("resolve %s: %v", tc.want, err)
+			}
+			if path != tc.want {
+				t.Fatalf("expected %s path, got %q", tc.want, path)
+			}
 		})
-		if err != nil {
-			t.Fatalf("resolve primary: %v", err)
-		}
-		if path != "primary" {
-			t.Fatalf("expected primary path, got %q", path)
-		}
-	})
-
-	t.Run("falls back", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "fallback"
-		})
-		if err != nil {
-			t.Fatalf("resolve fallback: %v", err)
-		}
-		if path != "fallback" {
-			t.Fatalf("expected fallback path, got %q", path)
-		}
-	})
+	}
 
 	t.Run("returns error when unavailable", func(t *testing.T) {
 		if _, err := resolveBinaryPath("primary", "fallback", func(string) bool { return false }); err == nil {
@@ -170,7 +115,7 @@ func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
 		"PATH=/tmp/custom-bin",
 		attackerGlobalConfigEnvEntry,
 	}
-	env := sanitizedEnvEntries(input, nil)
+	env := sanitizedEnvEntries(input)
 
 	if !containsEnv(env, "BROKEN") {
 		t.Fatalf("expected malformed env entry to be preserved, got %#v", env)
