@@ -1552,6 +1552,68 @@ func TestReleaseOrchestrationRequiresDigestPinnedGHCRManifests(t *testing.T) {
 	})
 }
 
+func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
+	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
+	if validation.Env["EXPECTED_IMAGE_TAGS"] != "${{ inputs.image_tags }}" {
+		t.Fatalf("architecture tag validation EXPECTED_IMAGE_TAGS = %q, want immutable workflow input", validation.Env["EXPECTED_IMAGE_TAGS"])
+	}
+	if strings.Contains(validation.Run, "scripts/") {
+		t.Fatal("trusted architecture tag validation must not execute repository scripts")
+	}
+	validationIndex := workflowStepIndexByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
+	loginIndex := workflowStepIndexByName(t, workflow.Jobs, "publish-ghcr-images", "Log in to GHCR")
+	if validationIndex >= loginIndex {
+		t.Fatal("architecture publication tags must be validated before GHCR login")
+	}
+	assertWorkflowStepRunContainsAll(t, validation, "exact trusted architecture tag validation", []string{
+		`expected_image_tags="${EXPECTED_IMAGE_TAGS}"`,
+		`local expected_tags_file="${RUNNER_TEMP}/ghcr-${architecture}-expected-image-tags.txt"`,
+		`: > "${expected_tags_file}"`,
+		`local expected_tag_count=0`,
+		`local -A expected_seen_tags=()`,
+		`while IFS= read -r raw_tag || [[ -n "${raw_tag}" ]]; do`,
+		`tag="${tag%$'\r'}"`,
+		`tag="${tag#"${tag%%[![:space:]]*}"}"`,
+		`tag="${tag%"${tag##*[![:space:]]}"}"`,
+		`[[ "${tag}" == *-amd64 ]]`,
+		`[[ "${tag}" == *-arm64 ]]`,
+		`expected_image_ref="${expected_image_name}:${tag}-${architecture}"`,
+		`expected_seen_tags["${expected_image_ref}"]=1`,
+		`printf '%s\n' "${expected_image_ref}" >> "${expected_tags_file}"`,
+		`done <<< "${expected_image_tags}"`,
+		`[ "${expected_tag_count}" -lt 1 ]`,
+		`[ "${expected_tag_count}" -gt 16 ]`,
+		`cmp -s "${tags_file}" "${expected_tags_file}"`,
+		`rm -f "${expected_tags_file}"`,
+	})
+
+	shapeValidation := strings.Index(validation.Run, `if [ "${tag_count}" -lt 1 ] || [ "${tag_count}" -gt 16 ]; then`)
+	expectedDerivation := strings.Index(validation.Run, `local expected_tags_file="${RUNNER_TEMP}/ghcr-${architecture}-expected-image-tags.txt"`)
+	exactComparison := strings.Index(validation.Run, `cmp -s "${tags_file}" "${expected_tags_file}"`)
+	outputPublication := strings.Index(validation.Run, `cat "${tags_file}"`)
+	if shapeValidation < 0 || expectedDerivation < shapeValidation || exactComparison < expectedDerivation || outputPublication < exactComparison {
+		t.Fatal("architecture tags must pass existing shape checks, exact immutable-input comparison, then publication")
+	}
+	for _, insufficientValidation := range []string{
+		`sort -u "${tags_file}"`,
+		`comm -3`,
+		`diff -q`,
+	} {
+		if strings.Contains(validation.Run, insufficientValidation) {
+			t.Fatalf("trusted architecture tags must use deterministic byte equality, not %q", insufficientValidation)
+		}
+	}
+	if len(publishImages.Permissions) != 1 || publishImages.Permissions["packages"] != "write" {
+		t.Fatalf("publish-ghcr-images permissions = %#v, want packages: write", publishImages.Permissions)
+	}
+}
+
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
 	t.Helper()
 
