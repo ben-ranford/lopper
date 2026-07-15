@@ -766,6 +766,39 @@ func TestDetectLockfileDriftStopOnFirst(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftStopOnFirstDoesNotPrewalkPastFinding(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "a-drift", manifestFileName), demoPackageJSON)
+	triggerManifest := filepath.Join(repo, "m-trigger", pyprojectManifestName)
+	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\n")
+	writeFile(t, filepath.Join(repo, "m-trigger", poetryLockName), "# lock\n")
+	laterDir := filepath.Join(repo, "z-later")
+	writeFile(t, filepath.Join(laterDir, "README.md"), "removed during candidate discovery\n")
+	initGitRepo(t, repo)
+
+	originalReadFileUnder := readFileUnderFn
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if targetPath == triggerManifest {
+			if err := os.RemoveAll(laterDir); err != nil {
+				return nil, err
+			}
+		}
+		return originalReadFileUnder(rootDir, targetPath)
+	}
+	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+
+	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Fatalf("expected early lockfile drift error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "npm in a-drift") {
+		t.Fatalf("expected only the early npm finding, got %#v", warnings)
+	}
+	if _, err := os.Stat(laterDir); err != nil {
+		t.Fatalf("expected fail mode to stop before later candidate discovery: %v", err)
+	}
+}
+
 func TestDetectLockfileDriftContextCancelled(t *testing.T) {
 	repo := t.TempDir()
 	cancelledCtx, cancel := context.WithCancel(context.Background())
