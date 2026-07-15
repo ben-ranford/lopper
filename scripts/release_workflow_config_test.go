@@ -351,7 +351,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	if !ok {
 		t.Fatal("release workflow must define the fresh publication job")
 	}
-	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "prepare-release-publication"}) {
+	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "prepare-release-publication", "publish-marketplace"}) {
 		t.Fatalf("fresh release publication needs = %v", publication.Needs)
 	}
 	if len(publication.Permissions) != 1 || publication.Permissions["contents"] != "write" {
@@ -392,76 +392,181 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowPreparesMarketplaceToolingBeforeCredentialedPublish(t *testing.T) {
+func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
+	t.Parallel()
+
+	var lockfile struct {
+		Packages map[string]struct {
+			Version   string `json:"version"`
+			Integrity string `json:"integrity"`
+		} `json:"packages"`
+	}
+	readJSONConfig(t, "extensions/vscode-lopper/package-lock.json", &lockfile)
+	vsce, ok := lockfile.Packages["node_modules/@vscode/vsce"]
+	if !ok {
+		t.Fatal("VS Code extension lockfile must contain node_modules/@vscode/vsce")
+	}
+	if vsce.Version != "3.9.2" || !strings.HasPrefix(vsce.Integrity, "sha512-") {
+		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
+	}
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	preparation, ok := workflow.Jobs["prepare-marketplace-toolchain"]
+	if !ok {
+		t.Fatal("release workflow must prepare Marketplace tooling in a separate trusted-main job")
+	}
+	if !slices.Equal(preparation.Needs, workflowJobNeeds{"prepare-release"}) {
+		t.Fatalf("Marketplace tooling preparation needs = %v", preparation.Needs)
+	}
+	if preparation.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
+		t.Fatalf("Marketplace tooling preparation if = %q", preparation.If)
+	}
+	if len(preparation.Permissions) != 1 || preparation.Permissions["contents"] != "read" {
+		t.Fatalf("Marketplace tooling preparation permissions = %#v", preparation.Permissions)
+	}
+	if len(preparation.Env) != 0 {
+		t.Fatalf("Marketplace tooling preparation env = %#v, want no job-scoped credentials", preparation.Env)
+	}
+	assertWorkflowJobOmitsText(t, preparation, "VSCE_PAT", "Marketplace tooling preparation must not receive VSCE_PAT")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.", "Marketplace tooling preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-marketplace-toolchain")
+
+	checkoutStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
+	if checkoutStep.With["ref"] != "main" || checkoutStep.With["path"] != "" {
+		t.Fatalf("trusted Marketplace checkout config = %#v", checkoutStep.With)
+	}
+	setupStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Setup Node for Marketplace tooling")
+	if setupStep.With["node-version"] != "24" {
+		t.Fatalf("Marketplace tooling Node version = %q", setupStep.With["node-version"])
+	}
+
+	lockStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Validate Marketplace tooling lockfile")
+	assertWorkflowStepRunContainsAll(t, lockStep, "Marketplace lockfile validation step", []string{
+		`lockfile="extensions/vscode-lopper/package-lock.json"`,
+		`vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"`,
+		`vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"`,
+		`if [ "${vsce_version}" != "3.9.2" ]; then`,
+		`case "${vsce_integrity}" in`,
+		`sha512-?*)`,
+	})
+
+	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
+	assertWorkflowStepRunContainsAll(t, prepareStep, "Marketplace tooling preparation step", []string{
+		`source_dir="extensions/vscode-lopper"`,
+		`scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"`,
+		`cp -- "${source_dir}/package.json" "${source_dir}/package-lock.json" "${scratch_dir}/"`,
+		`if [ "$(find "${scratch_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
+		`npm ci --ignore-scripts --include=dev --audit=false --fund=false`,
+		`test -x "${scratch_dir}/node_modules/.bin/vsce"`,
+	})
+	for _, forbidden := range []string{"npm install", "npm exec", "npx "} {
+		if strings.Contains(prepareStep.Run, forbidden) {
+			t.Fatalf("Marketplace tooling preparation must not contain %q", forbidden)
+		}
+	}
+
+	archiveStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Archive Marketplace toolchain")
+	assertWorkflowStepRunContainsAll(t, archiveStep, "Marketplace toolchain archive step", []string{
+		`archive_dir="${GITHUB_WORKSPACE}/.artifacts/marketplace-toolchain"`,
+		`archive_file="${archive_dir}/vsce-toolchain.tar.gz"`,
+		`tar --create --gzip --file "${archive_file}" --directory "${scratch_dir}" package.json package-lock.json node_modules`,
+		`sha256sum vsce-toolchain.tar.gz > SHA256SUMS`,
+	})
+
+	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Upload Marketplace toolchain")
+	if uploadStep.With["name"] != "marketplace-toolchain" ||
+		!strings.Contains(uploadStep.With["path"], ".artifacts/marketplace-toolchain/vsce-toolchain.tar.gz") ||
+		!strings.Contains(uploadStep.With["path"], ".artifacts/marketplace-toolchain/SHA256SUMS") {
+		t.Fatalf("Marketplace toolchain artifact config = %#v", uploadStep.With)
+	}
+	if uploadStep.With["if-no-files-found"] != "error" {
+		t.Fatalf("Marketplace toolchain artifact missing-file behavior = %q", uploadStep.With["if-no-files-found"])
+	}
+}
+
+func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	publication, ok := workflow.Jobs["publish"]
+	marketplace, ok := workflow.Jobs["publish-marketplace"]
 	if !ok {
-		t.Fatal("release workflow must define the fresh publication job")
+		t.Fatal("release workflow must publish Marketplace inputs from a fresh job")
+	}
+	if !slices.Equal(marketplace.Needs, workflowJobNeeds{"prepare-release", "prepare-release-publication", "prepare-marketplace-toolchain"}) {
+		t.Fatalf("Marketplace publication needs = %v", marketplace.Needs)
+	}
+	if marketplace.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
+		t.Fatalf("Marketplace publication if = %q", marketplace.If)
+	}
+	if len(marketplace.Permissions) != 0 {
+		t.Fatalf("Marketplace publication permissions = %#v, want none", marketplace.Permissions)
+	}
+	if len(marketplace.Env) != 0 {
+		t.Fatalf("Marketplace publication job env = %#v, want no job-scoped credentials", marketplace.Env)
+	}
+	assertWorkflowEnvKeyOnlyOnStep(t, workflow.Jobs, "VSCE_PAT", "publish-marketplace", "Publish VS Code extension to Marketplace")
+
+	for _, step := range marketplace.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("Marketplace publication must not checkout repository code: %q", step.Name)
+		}
+		for _, forbidden := range []string{"npm ", "npx ", "git ", "go run ./", "make ", "scripts/", "./extensions/"} {
+			if strings.Contains(strings.ToLower(step.Run), forbidden) {
+				t.Fatalf("Marketplace publication step %q must not execute %q", step.Name, forbidden)
+			}
+		}
 	}
 
-	downloadStep := workflowStepByName(t, workflow.Jobs, "publish", "Download release publication inputs")
+	downloadStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Download release publication inputs")
 	if downloadStep.With["name"] != "release-publication-inputs" || downloadStep.With["path"] != "publication-inputs" {
-		t.Fatalf("fresh release publication download config = %#v", downloadStep.With)
+		t.Fatalf("Marketplace release input download config = %#v", downloadStep.With)
 	}
-	validateStep := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
-	assertWorkflowStepRunContainsAll(t, validateStep, "release publication input validation step", []string{
-		`sha256sum --check --strict SHA256SUMS`,
-		`find dist -maxdepth 1 -type f`,
-		`lopper-vscode-${version}.vsix`,
-		`Expected darwin/amd64 artifact is missing`,
-		`Expected darwin/arm64 artifact is missing`,
-	})
-	assertWorkflowStepEnvMissing(t, validateStep, "GH_TOKEN", "release publication validation must be tokenless")
-
-	prepareIndex := -1
-	publishIndex := -1
-	credentialedSteps := 0
-	for jobName, job := range workflow.Jobs {
-		if _, present := job.Env["VSCE_PAT"]; present {
-			t.Fatalf("Marketplace token must not be scoped to job %q", jobName)
-		}
-		for stepIndex, step := range job.Steps {
-			if jobName == "publish" && step.Name == "Prepare VS Code Marketplace tooling" {
-				prepareIndex = stepIndex
-			}
-			if _, present := step.Env["VSCE_PAT"]; !present {
-				continue
-			}
-			credentialedSteps++
-			if jobName != "publish" || step.Name != "Publish VS Code extension to Marketplace" {
-				t.Fatalf("Marketplace token is exposed to unexpected step %q in job %q", step.Name, jobName)
-			}
-			publishIndex = stepIndex
-		}
-	}
-	if credentialedSteps != 1 {
-		t.Fatalf("Marketplace token-bearing steps = %d, want exactly one", credentialedSteps)
-	}
-	if prepareIndex < 0 {
-		t.Fatal("release workflow must prepare pinned Marketplace tooling without a token")
-	}
-	if publishIndex != prepareIndex+1 {
-		t.Fatalf("Marketplace preparation index = %d, publish index = %d; preparation must be immediately before credentialed publication", prepareIndex, publishIndex)
+	toolchainDownload := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Download Marketplace toolchain")
+	if toolchainDownload.With["name"] != "marketplace-toolchain" || toolchainDownload.With["path"] != "marketplace-toolchain-input" {
+		t.Fatalf("Marketplace toolchain download config = %#v", toolchainDownload.With)
 	}
 
-	prepareStep := publication.Steps[prepareIndex]
-	if len(prepareStep.Env) != 0 {
-		t.Fatalf("Marketplace tooling preparation env = %#v, want no step-scoped credentials", prepareStep.Env)
+	validateStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	if validateStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("Marketplace input validation shell = %q", validateStep.Shell)
 	}
-	assertWorkflowStepRunContainsAll(t, prepareStep, "Marketplace tooling preparation step", []string{
-		`toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"`,
-		`npm install --prefix "${toolchain_dir}" --no-audit --no-fund @vscode/vsce@3.9.2`,
+	if len(validateStep.Env) != 1 || validateStep.Env["RELEASE_VERSION"] != "${{ needs.prepare-release.outputs.version }}" {
+		t.Fatalf("Marketplace input validation env = %#v", validateStep.Env)
+	}
+	assertWorkflowStepRunContainsAll(t, validateStep, "Marketplace input validation step", []string{
+		`publication_dir="${GITHUB_WORKSPACE}/publication-inputs"`,
+		`artifact_dir="${GITHUB_WORKSPACE}/marketplace-toolchain-input"`,
+		`archive_file="${artifact_dir}/vsce-toolchain.tar.gz"`,
+		`if find "${publication_dir}" -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then`,
+		`if find "${artifact_dir}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then`,
+		`if [ "$(find "${artifact_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
+		`if [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then`,
+		`expected_vsix="lopper-vscode-${RELEASE_VERSION}.vsix"`,
+		`if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then`,
+		`if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then`,
+		`allowed_roots = {"package.json", "package-lock.json", "node_modules"}`,
+		`if member.issym():`,
+		`if member.islnk() or not (member.isfile() or member.isdir()):`,
+		`if member_count < 3 or member_count > 65536:`,
+		`if total_size > 1073741824:`,
+		`tar --extract --gzip --file "${archive_file}" --directory "${toolchain_dir}"`,
 		`test -x "${toolchain_dir}/node_modules/.bin/vsce"`,
+		`node_bin="$(command -v node)"`,
 	})
-	if strings.Count(prepareStep.Run, "@vscode/vsce@") != 1 || !strings.Contains(prepareStep.Run, "@vscode/vsce@3.9.2") {
-		t.Fatal("Marketplace tooling preparation must install exactly VSCE 3.9.2")
+	if count := strings.Count(validateStep.Run, "sha256sum --check --strict SHA256SUMS"); count != 2 {
+		t.Fatalf("Marketplace input checksum validations = %d, want publication and toolchain artifacts", count)
 	}
+	assertWorkflowStepEnvMissing(t, validateStep, "VSCE_PAT", "Marketplace validation must be tokenless")
 
-	marketplaceStep := publication.Steps[publishIndex]
+	publishIndex := workflowStepIndexByName(t, workflow.Jobs, "publish-marketplace", "Publish VS Code extension to Marketplace")
+	if publishIndex != len(marketplace.Steps)-1 {
+		t.Fatalf("Marketplace credentialed step index = %d, want final step", publishIndex)
+	}
+	marketplaceStep := marketplace.Steps[publishIndex]
 	if len(marketplaceStep.Env) != 1 || marketplaceStep.Env["VSCE_PAT"] != "${{ secrets.VSCE_PUBLISH }}" {
 		t.Fatalf("Marketplace publication env = %#v", marketplaceStep.Env)
 	}
@@ -471,15 +576,12 @@ func TestReleaseWorkflowPreparesMarketplaceToolingBeforeCredentialedPublish(t *t
 	assertWorkflowStepRunContainsAll(t, marketplaceStep, "Marketplace publication step", []string{
 		`if [ -z "${VSCE_PAT:-}" ]; then`,
 		`vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"`,
-		`test -x "$vsce_bin"`,
-		`vsix_path="$(find publication-inputs/dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"`,
-		`test -n "$vsix_path"`,
-		`"$vsce_bin" publish --packagePath "$vsix_path"`,
+		`vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"`,
+		`"${vsce_bin}" publish --packagePath "${vsix_path}"`,
 	})
 	for _, forbidden := range []string{
-		"npx ", "npm install", "npm exec", "pnpm ", "yarn ", "corepack ", "bunx ",
-		"curl ", "wget ", "go install ", "pip install ", "pipx install ", "cargo install ",
-		"actions/checkout", "git clone", "git checkout", "go run ./", "make ", "scripts/", "./",
+		"npx ", "npm ", "find ", "test -x", "sha256sum ", "tar ", "python", "node ",
+		"curl ", "wget ", "git ", "go ", "make ", "scripts/", "./extensions/",
 	} {
 		if strings.Contains(strings.ToLower(marketplaceStep.Run), forbidden) {
 			t.Fatalf("Marketplace publication must not execute %q while VSCE_PAT is in scope", forbidden)
@@ -1400,17 +1502,46 @@ func releaseImageTagScriptCommand(t *testing.T, imageTags string, suffix string)
 func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) workflowStepConfig {
 	t.Helper()
 
+	return jobs[jobName].Steps[workflowStepIndexByName(t, jobs, jobName, stepName)]
+}
+
+func workflowStepIndexByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) int {
+	t.Helper()
+
 	job, ok := jobs[jobName]
 	if !ok {
 		t.Fatalf("workflow must define job %s", jobName)
 	}
-	for _, step := range job.Steps {
+	for index, step := range job.Steps {
 		if step.Name == stepName {
-			return step
+			return index
 		}
 	}
 	t.Fatalf("%s must define step %q", jobName, stepName)
-	return workflowStepConfig{}
+	return -1
+}
+
+func assertWorkflowEnvKeyOnlyOnStep(t *testing.T, jobs map[string]workflowJobConfig, key string, wantJob string, wantStep string) {
+	t.Helper()
+
+	credentialedSteps := 0
+	for jobName, job := range jobs {
+		if _, present := job.Env[key]; present {
+			t.Fatalf("%s must not be scoped to job %q", key, jobName)
+		}
+		for _, step := range job.Steps {
+			if _, present := step.Env[key]; !present {
+				continue
+			}
+			credentialedSteps++
+			if jobName != wantJob || step.Name != wantStep {
+				t.Fatalf("%s is exposed to unexpected step %q in job %q", key, step.Name, jobName)
+			}
+		}
+	}
+	if credentialedSteps != 1 {
+		t.Fatalf("%s-bearing steps = %d, want exactly one", key, credentialedSteps)
+	}
 }
 
 func assertWorkflowStepRunContainsAll(t *testing.T, step workflowStepConfig, stepLabel string, wants []string) {
