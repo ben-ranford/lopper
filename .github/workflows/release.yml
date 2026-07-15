@@ -596,14 +596,77 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout release source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-          ref: ${{ needs.prepare-release.outputs.sha }}
+      - name: Prepare GitHub Action floating tags
+        id: prepare_tags
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+        run: |
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          mktemp_bin=/usr/bin/mktemp
+          rm_bin=/bin/rm
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${mktemp_bin}" ] || [ ! -x "${rm_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for floating tag preparation." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+          repo_dir="${RUNNER_TEMP}/floating-tags"
 
-      - name: Update GitHub Action floating tags
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
+            echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          major_tag="v${BASH_REMATCH[1]}"
+          minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          "${rm_bin}" -rf "${repo_dir}"
+          git_safe init "${repo_dir}"
+          git_safe -C "${repo_dir}" remote add origin "${expected_origin}"
+          origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"
+          origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to prepare floating tags through an unexpected origin." >&2
+            exit 1
+          fi
+
+          git_safe -C "${repo_dir}" fetch --no-tags --depth=1 origin "${RELEASE_SHA}"
+          git_safe -C "${repo_dir}" checkout --detach FETCH_HEAD
+          resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"
+          if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Floating tag worktree resolved ${resolved_sha}, expected ${RELEASE_SHA}." >&2
+            exit 1
+          fi
+          git_safe -C "${repo_dir}" tag --force "${major_tag}" "${RELEASE_SHA}"
+          git_safe -C "${repo_dir}" tag --force "${minor_tag}" "${RELEASE_SHA}"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push GitHub Action floating tags
+        if: ${{ steps.prepare_tags.outputs.push == 'true' }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
@@ -616,17 +679,12 @@ jobs:
           tr_bin=/usr/bin/tr
           mktemp_bin=/usr/bin/mktemp
           if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
-            echo "::error::Trusted binaries are unavailable for the floating tag update step." >&2
-            exit 1
-          fi
-          push_token="${PUSH_TOKEN}"
-          unset PUSH_TOKEN
-          if [ -z "${push_token}" ]; then
-            echo "::error::No token is available to update floating tags." >&2
+            echo "::error::Trusted binaries are unavailable for the floating tag push step." >&2
             exit 1
           fi
           git_home="$("${mktemp_bin}" -d)"
           trap '/bin/rm -rf "${git_home}"' EXIT
+          repo_dir="${RUNNER_TEMP}/floating-tags"
 
           git_safe() {
             "${env_bin}" -i \
@@ -666,33 +724,47 @@ jobs:
           }
 
           if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
-            echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
-            exit 0
+            echo "::error::Floating tag push received an invalid stable semver tag ${RELEASE_TAG}." >&2
+            exit 1
           fi
-
           major_tag="v${BASH_REMATCH[1]}"
           minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+
           expected_origin="https://github.com/${GITHUB_REPOSITORY}"
-          origin_fetch_urls="$(git_safe remote get-url --all origin)"
-          origin_push_urls="$(git_safe remote get-url --push --all origin)"
+          origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"
+          origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"
           if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
             echo "::error::Refusing to update floating tags through an unexpected origin." >&2
             exit 1
           fi
 
-          git_safe config user.name "github-actions[bot]"
-          git_safe config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git_safe tag --force "${major_tag}" "${RELEASE_SHA}"
-          git_safe tag --force "${minor_tag}" "${RELEASE_SHA}"
+          resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"
+          major_target="$(git_safe -C "${repo_dir}" rev-parse "refs/tags/${major_tag}^{commit}")"
+          minor_target="$(git_safe -C "${repo_dir}" rev-parse "refs/tags/${minor_tag}^{commit}")"
+          if [ "${resolved_sha}" != "${RELEASE_SHA}" ] || [ "${major_target}" != "${RELEASE_SHA}" ] || [ "${minor_target}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Floating tag worktree or tag targets do not match ${RELEASE_SHA}." >&2
+            exit 1
+          fi
 
+          push_token="${PUSH_TOKEN}"
+          unset PUSH_TOKEN
+          if [ -z "${push_token}" ]; then
+            echo "::error::No token is available to update floating tags." >&2
+            exit 1
+          fi
           auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
           unset push_token
-          git_network push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
+          git_network -C "${repo_dir}" push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
 
   homebrew-tap-token-gate:
     needs:
       - prepare-release
       - publish
+      - update-floating-tags
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions: {}
@@ -963,6 +1035,7 @@ jobs:
     needs:
       - prepare-release
       - publish
+      - update-floating-tags
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
