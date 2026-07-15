@@ -206,6 +206,36 @@ func TestLockfileGitSnapshotBatchHonorsLimitsAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestLockfileFailFastBatchScannerPropagatesSnapshotEvaluationErrors(t *testing.T) {
+	repo, snapshot := newPoetrySnapshot(t, true)
+	forcedErr := errors.New("forced snapshot evaluation failure")
+
+	t.Run("record first", func(t *testing.T) {
+		rule := newPoetryLockfileRule(func(string, string) (bool, error) {
+			return false, forcedErr
+		})
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
+		if err := scanner.recordFirst(snapshot, lockfileGitContext{}); !errors.Is(err, forcedErr) {
+			t.Fatalf("expected record-first evaluation error, got %v", err)
+		}
+	})
+
+	t.Run("candidate paths", func(t *testing.T) {
+		matcherCalls := 0
+		rule := newPoetryLockfileRule(func(string, string) (bool, error) {
+			matcherCalls++
+			if matcherCalls == 2 {
+				return false, forcedErr
+			}
+			return true, nil
+		})
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
+		if err := scanner.visit(context.Background(), snapshot); !errors.Is(err, forcedErr) {
+			t.Fatalf("expected candidate-path evaluation error, got %v", err)
+		}
+	})
+}
+
 func captureLockfileGitCommandGroups(t *testing.T) map[string]int {
 	t.Helper()
 

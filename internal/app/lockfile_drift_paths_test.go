@@ -195,6 +195,11 @@ func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
 }
 
 func TestConfiguredGitAttributeDriverErrors(t *testing.T) {
+	active, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), nil)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("expected empty assignments to skip config enumeration, got active=%#v err=%v", active, err)
+	}
+
 	t.Run("command construction", func(t *testing.T) {
 		original := resolveGitBinaryPathFn
 		resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
@@ -270,6 +275,7 @@ func TestConfiguredGitAttributeDriversRejectMalformedNullConfigRecords(t *testin
 		{name: "truncated record", output: `filter.PWN.clean\n./helper.sh`, errContain: "truncated"},
 		{name: "missing key value separator", output: `filter.PWN.clean\000`, errContain: "key/value separator"},
 		{name: "unexpected key", output: `diff.external\n./helper.sh\000`, errContain: "filter command key"},
+		{name: "unexpected filter command key", output: `filter.pwn.smudge\n./helper.sh\000`, errContain: "filter command key"},
 	}
 
 	for _, tc := range cases {
