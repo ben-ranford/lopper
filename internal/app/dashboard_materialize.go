@@ -83,7 +83,7 @@ func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string)
 	if err := rejectAmbiguousParentTraversal(outputPath); err != nil {
 		return commandOutputRootBoundary{}, "", err
 	}
-	outputAbs, err := filepath.Abs(outputPath)
+	outputAbs, err := absoluteCommandOutputPath(outputPath)
 	if err != nil {
 		return commandOutputRootBoundary{}, "", fmt.Errorf("resolve output path: %w", err)
 	}
@@ -104,6 +104,21 @@ func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string)
 
 	fallbackRoot, err := fallbackCommandOutputRootBoundary(outputAbs, outputPath, workspaceErr)
 	return fallbackRoot, outputAbs, err
+}
+
+func absoluteCommandOutputPath(outputPath string) (string, error) {
+	if filepath.IsAbs(outputPath) {
+		return filepath.Clean(outputPath), nil
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	physicalWorkingDirectory, err := filepath.EvalSymlinks(workingDirectory)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(physicalWorkingDirectory, outputPath), nil
 }
 
 func resolvedCommandOutputRoot(outputAbs string, resolve func() (commandOutputRootBoundary, error)) (commandOutputRootBoundary, error) {
@@ -287,13 +302,35 @@ func trustedCommandOutputRootBoundaryForRoot(outputAbs, root string) (commandOut
 		return commandOutputRootBoundary{}, nil
 	}
 	if withinWorkspace {
-		if err := validateTrustedCommandOutputRoot(resolvedRoot); err != nil {
+		if err := validateTrustedCommandOutputRootBoundary(rootAbs, resolvedRoot); err != nil {
 			return commandOutputRootBoundary{}, err
 		}
 		return commandOutputRootBoundary{path: rootAbs, resolved: resolvedRoot}, nil
 	}
 
-	return resolveAliasedWorkspaceRootBoundary(outputAbs, resolvedRoot)
+	aliasedRoot, err := resolveAliasedWorkspaceRootBoundary(outputAbs, resolvedRoot)
+	if err != nil || aliasedRoot.path == "" {
+		return aliasedRoot, err
+	}
+	if err := validateTrustedCommandOutputRootBoundary(rootAbs, resolvedRoot); err != nil {
+		return commandOutputRootBoundary{}, err
+	}
+	return aliasedRoot, nil
+}
+
+func validateTrustedCommandOutputRootBoundary(rootAbs, resolvedRoot string) error {
+	if err := validateTrustedCommandOutputRoot(resolvedRoot); err != nil {
+		return err
+	}
+	info, err := os.Lstat(rootAbs)
+	if err != nil {
+		return fmt.Errorf("resolve trusted output workspace: %w", err)
+	}
+	lexicalRoot := rootAbs
+	if info.Mode()&os.ModeSymlink != 0 {
+		lexicalRoot = filepath.Dir(rootAbs)
+	}
+	return validateTrustedCommandOutputRoot(lexicalRoot)
 }
 
 func validateTrustedCommandOutputRoot(rootAbs string) error {

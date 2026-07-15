@@ -566,13 +566,21 @@ func TestPersistCommandOutputRejectsTrustedRootWithSymlinkAncestor(t *testing.T)
 		t.Fatalf("create trusted root ancestor symlink: %v", err)
 	}
 
-	outputPath := filepath.Join(trustedRoot, "report.json")
-	_, err := persistCommandOutput("after", outputPath, "dashboard report", trustedRoot)
-	if err == nil || !strings.Contains(err.Error(), "trusted output workspace") {
-		t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
+	for name, outputPath := range map[string]string{
+		"lexical output":   filepath.Join(trustedRoot, "report-lexical.json"),
+		"canonical output": filepath.Join(outsideRoot, "report-canonical.json"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := persistCommandOutput("after", outputPath, "dashboard report", trustedRoot)
+			if err == nil || !strings.Contains(err.Error(), "trusted output workspace") {
+				t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
+			}
+		})
 	}
-	if _, statErr := os.Stat(filepath.Join(outsideRoot, "report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	for _, name := range []string{"report-lexical.json", "report-canonical.json"} {
+		if _, statErr := os.Stat(filepath.Join(outsideRoot, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("expected outside output %q to remain absent, got err=%v", name, statErr)
+		}
 	}
 }
 
@@ -1043,6 +1051,16 @@ func TestValidateTrustedCommandOutputRootRejectsSymlinkAncestor(t *testing.T) {
 	err := validateTrustedCommandOutputRoot(filepath.Join(parentAlias, "repo"))
 	if err == nil || !strings.Contains(err.Error(), "validate trusted output workspace") {
 		t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
+	}
+}
+
+func TestValidateTrustedCommandOutputRootBoundaryPropagatesLexicalLookupError(t *testing.T) {
+	resolvedRoot := t.TempDir()
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+
+	err := validateTrustedCommandOutputRootBoundary(missingRoot, resolvedRoot)
+	if err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace") {
+		t.Fatalf("expected lexical trusted root lookup error, got %v", err)
 	}
 }
 
