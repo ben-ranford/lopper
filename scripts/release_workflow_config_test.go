@@ -418,57 +418,109 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 
-	var workflow struct {
-		Jobs map[string]workflowJobConfig `yaml:"jobs"`
-	}
+	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	job := workflow.Jobs["update-floating-tags"]
 	if !slices.Equal(job.Needs, workflowJobNeeds{"prepare-release", "publish"}) {
 		t.Fatalf("action floating tag job needs = %v", job.Needs)
 	}
-	step := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Update GitHub Action floating tags")
-	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
-		t.Fatalf("action floating tag step shell = %q", step.Shell)
+	if len(job.Permissions) != 1 || job.Permissions["contents"] != "write" {
+		t.Fatalf("action floating tag job permissions = %#v", job.Permissions)
 	}
-	if step.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
-		t.Fatalf("action floating tag step RELEASE_TAG env = %q", step.Env["RELEASE_TAG"])
+	if len(job.Env) != 0 {
+		t.Fatalf("action floating tag job env = %#v, want no job-scoped credentials", job.Env)
 	}
-	if step.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
-		t.Fatalf("action floating tag step RELEASE_SHA env = %q", step.Env["RELEASE_SHA"])
-	}
-	if step.Env["PUSH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("action floating tag step PUSH_TOKEN env = %q", step.Env["PUSH_TOKEN"])
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("action floating tag job must use a fresh host-Git worktree, found checkout step %q", step.Name)
+		}
 	}
 
-	assertWorkflowStepRunContainsAll(t, step, "action floating tag step", []string{
+	prepareStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
+	if prepareStep.ID != "prepare_tags" {
+		t.Fatalf("action floating tag preparation id = %q", prepareStep.ID)
+	}
+	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("action floating tag preparation shell = %q", prepareStep.Shell)
+	}
+	if len(prepareStep.Env) != 2 || prepareStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || prepareStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
+		t.Fatalf("action floating tag preparation env = %#v", prepareStep.Env)
+	}
+	assertWorkflowStepEnvMissing(t, prepareStep, "PUSH_TOKEN", "action floating tag preparation must be tokenless")
+	assertWorkflowStepRunContainsAll(t, prepareStep, "action floating tag preparation", []string{
 		"git_bin=/usr/bin/git",
 		"env_bin=/usr/bin/env",
 		`git_home="$("${mktemp_bin}" -d)"`,
+		`repo_dir="${RUNNER_TEMP}/floating-tags"`,
 		`"${env_bin}" -i`,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
+		`^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$`,
+		`echo "push=false" >> "$GITHUB_OUTPUT"`,
+		`if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then`,
+		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
+		`git_safe init "${repo_dir}"`,
+		`git_safe -C "${repo_dir}" remote add origin "${expected_origin}"`,
+		`origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"`,
+		`origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"`,
+		`if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then`,
+		`git_safe -C "${repo_dir}" fetch --no-tags --depth=1 origin "${RELEASE_SHA}"`,
+		`git_safe -C "${repo_dir}" checkout --detach FETCH_HEAD`,
+		`resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"`,
+		`if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then`,
+		`major_tag="v${BASH_REMATCH[1]}"`,
+		`minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"`,
+		`git_safe -C "${repo_dir}" tag --force "${major_tag}" "${RELEASE_SHA}"`,
+		`git_safe -C "${repo_dir}" tag --force "${minor_tag}" "${RELEASE_SHA}"`,
+		`echo "push=true" >> "$GITHUB_OUTPUT"`,
+	})
+	for _, forbidden := range []string{"PUSH_TOKEN", "secrets.", "AUTHORIZATION: basic", "extraheader"} {
+		if strings.Contains(prepareStep.Run, forbidden) {
+			t.Fatalf("action floating tag preparation must not contain %q", forbidden)
+		}
+	}
+
+	pushStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Push GitHub Action floating tags")
+	if pushStep.If != "${{ steps.prepare_tags.outputs.push == 'true' }}" {
+		t.Fatalf("action floating tag push if = %q", pushStep.If)
+	}
+	if pushStep.Shell != prepareStep.Shell {
+		t.Fatalf("action floating tag push shell = %q", pushStep.Shell)
+	}
+	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("action floating tag push env = %#v", pushStep.Env)
+	}
+	assertWorkflowStepRunContainsAll(t, pushStep, "action floating tag push", []string{
+		"git_bin=/usr/bin/git",
+		"env_bin=/usr/bin/env",
+		`repo_dir="${RUNNER_TEMP}/floating-tags"`,
+		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
+		`origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"`,
+		`origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"`,
+		`resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"`,
+		`major_target="$(git_safe -C "${repo_dir}" rev-parse "refs/tags/${major_tag}^{commit}")"`,
+		`minor_target="$(git_safe -C "${repo_dir}" rev-parse "refs/tags/${minor_tag}^{commit}")"`,
+		`if [ "${resolved_sha}" != "${RELEASE_SHA}" ] || [ "${major_target}" != "${RELEASE_SHA}" ] || [ "${minor_target}" != "${RELEASE_SHA}" ]; then`,
 		`push_token="${PUSH_TOKEN}"`,
 		"unset PUSH_TOKEN",
 		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
 		"unset push_token",
-		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
-		`origin_fetch_urls="$(git_safe remote get-url --all origin)"`,
-		`origin_push_urls="$(git_safe remote get-url --push --all origin)"`,
-		`if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then`,
 		"GIT_CONFIG_KEY_1=credential.helper",
 		"GIT_CONFIG_VALUE_1=",
 		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
-		`^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$`,
-		`major_tag="v${BASH_REMATCH[1]}"`,
-		`minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"`,
-		`git_safe tag --force "${major_tag}" "${RELEASE_SHA}"`,
-		`git_safe tag --force "${minor_tag}" "${RELEASE_SHA}"`,
-		`git_network push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
+		`git_network -C "${repo_dir}" push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
 	})
-	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, step, "action floating tag step")
-	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, job, "update-floating-tags")
+	validationIndex := strings.Index(pushStep.Run, `if [ "${resolved_sha}" != "${RELEASE_SHA}" ]`)
+	tokenIndex := strings.Index(pushStep.Run, `push_token="${PUSH_TOKEN}"`)
+	if validationIndex < 0 || tokenIndex < 0 || validationIndex >= tokenIndex {
+		t.Fatal("action floating tag push must validate origin, SHA, and tag targets before reading the push token")
+	}
+	if strings.Count(pushStep.Run, "git_network ") != 1 {
+		t.Fatal("action floating tag authentication must be exposed only to the single network push command")
+	}
+	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "action floating tag push")
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
@@ -484,7 +536,7 @@ func TestReleaseWorkflowHomebrewUsesGatedThreeJobGraph(t *testing.T) {
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 
 	gate := workflow.Jobs["homebrew-tap-token-gate"]
-	if !slices.Equal(gate.Needs, workflowJobNeeds{"prepare-release", "publish"}) {
+	if !slices.Equal(gate.Needs, workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"}) {
 		t.Fatalf("tap token gate needs = %v", gate.Needs)
 	}
 	if gate.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
