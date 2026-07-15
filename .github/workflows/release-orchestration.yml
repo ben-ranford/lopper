@@ -401,9 +401,11 @@ jobs:
           EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           EXPECTED_TAG: ${{ inputs.tag }}
           EXPECTED_BUILD_CHANNEL: ${{ inputs.build_channel }}
+          EXPECTED_IMAGE_TAGS: ${{ inputs.image_tags }}
         run: |
           set -euo pipefail
           expected_source_sha="${EXPECTED_SOURCE_SHA}"
+          expected_image_tags="${EXPECTED_IMAGE_TAGS}"
           owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           expected_image_name="ghcr.io/${owner}/lopper"
 
@@ -541,6 +543,45 @@ jobs:
               echo "::error::${architecture} publication tag count is outside bounds."
               exit 1
             fi
+
+            local expected_tags_file="${RUNNER_TEMP}/ghcr-${architecture}-expected-image-tags.txt"
+            : > "${expected_tags_file}"
+            local expected_tag_count=0
+            local -A expected_seen_tags=()
+            local raw_tag
+            local tag
+            local expected_image_ref
+            while IFS= read -r raw_tag || [[ -n "${raw_tag}" ]]; do
+              tag="${raw_tag}"
+              tag="${tag%$'\r'}"
+              tag="${tag#"${tag%%[![:space:]]*}"}"
+              tag="${tag%"${tag##*[![:space:]]}"}"
+              if [[ -z "${tag}" ]]; then
+                continue
+              fi
+              if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+                || [[ "${tag}" == *-amd64 ]] || [[ "${tag}" == *-arm64 ]]; then
+                echo "::error::unexpected image reference in immutable architecture inputs."
+                exit 1
+              fi
+              expected_image_ref="${expected_image_name}:${tag}-${architecture}"
+              if [[ -n "${expected_seen_tags[${expected_image_ref}]:-}" ]]; then
+                echo "::error::Duplicate immutable architecture image reference."
+                exit 1
+              fi
+              expected_seen_tags["${expected_image_ref}"]=1
+              printf '%s\n' "${expected_image_ref}" >> "${expected_tags_file}"
+              expected_tag_count=$((expected_tag_count + 1))
+            done <<< "${expected_image_tags}"
+            if [ "${expected_tag_count}" -lt 1 ] || [ "${expected_tag_count}" -gt 16 ]; then
+              echo "::error::Immutable architecture input tag count is outside bounds."
+              exit 1
+            fi
+            if ! cmp -s "${tags_file}" "${expected_tags_file}"; then
+              echo "::error::${architecture} publication image references do not match immutable release inputs."
+              exit 1
+            fi
+            rm -f "${expected_tags_file}"
 
             if ! jq -e '.imageLayoutVersion == "1.0.0"' "${layout_root}/oci-layout" >/dev/null \
               || ! jq -e '.schemaVersion == 2 and (.manifests | type == "array")' "${layout_root}/index.json" >/dev/null; then
