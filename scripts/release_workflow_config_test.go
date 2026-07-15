@@ -2245,33 +2245,7 @@ func assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t *testing.T, tc homebrew
 	readYAMLConfig(t, tc.workflowPath, &workflow)
 	workflowText := readConfig(t, tc.workflowPath)
 
-	gateJob, ok := workflow.Jobs[tc.gateJobName]
-	if !ok {
-		t.Fatalf("%s must define job %s", tc.workflowPath, tc.gateJobName)
-	}
-	if !strings.Contains(workflowText, "configured: ${{ steps.gate.outputs.configured }}") {
-		t.Fatalf("%s must expose the tap-token gate output for downstream job gating", tc.workflowPath)
-	}
-	if gateJob.Permissions == nil || len(gateJob.Permissions) != 0 {
-		t.Fatalf("%s gate job permissions = %#v, want an explicit empty permission set", tc.workflowPath, gateJob.Permissions)
-	}
-
-	gateStep := workflowStepByName(t, workflow.Jobs, tc.gateJobName, "Detect tap token")
-	if gateStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
-		t.Fatalf("%s gate step must read HOMEBREW_TAP_TOKEN only inside the gate job", tc.workflowPath)
-	}
-	for _, want := range []string{
-		`if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
-		`echo "configured=true" >> "$GITHUB_OUTPUT"`,
-		`echo "configured=false" >> "$GITHUB_OUTPUT"`,
-	} {
-		if !strings.Contains(gateStep.Run, want) {
-			t.Fatalf("%s gate step must contain %q", tc.workflowPath, want)
-		}
-	}
-	if tc.requiredIfFragment != "" && !strings.Contains(gateJob.If, tc.requiredIfFragment) {
-		t.Fatalf("%s gate job must preserve %q", tc.workflowPath, tc.requiredIfFragment)
-	}
+	assertTapTokenGateJob(t, workflow.Jobs, workflowText, tc)
 
 	validationJob, ok := workflow.Jobs[tc.validationJobName]
 	if !ok {
@@ -2293,6 +2267,38 @@ func assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t *testing.T, tc homebrew
 	}
 	if strings.Contains(updateJob.If, "always()") {
 		t.Fatalf("%s job %s must not bypass a skipped token-gated dependency", tc.workflowPath, tc.updateJobName)
+	}
+}
+
+func assertTapTokenGateJob(t *testing.T, jobs map[string]workflowJobConfig, workflowText string, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	gateJob, ok := jobs[tc.gateJobName]
+	if !ok {
+		t.Fatalf("%s must define job %s", tc.workflowPath, tc.gateJobName)
+	}
+	if !strings.Contains(workflowText, "configured: ${{ steps.gate.outputs.configured }}") {
+		t.Fatalf("%s must expose the tap-token gate output for downstream job gating", tc.workflowPath)
+	}
+	if gateJob.Permissions == nil || len(gateJob.Permissions) != 0 {
+		t.Fatalf("%s gate job permissions = %#v, want an explicit empty permission set", tc.workflowPath, gateJob.Permissions)
+	}
+
+	gateStep := workflowStepByName(t, jobs, tc.gateJobName, "Detect tap token")
+	if gateStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
+		t.Fatalf("%s gate step must read HOMEBREW_TAP_TOKEN only inside the gate job", tc.workflowPath)
+	}
+	for _, want := range []string{
+		`if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
+		`echo "configured=true" >> "$GITHUB_OUTPUT"`,
+		`echo "configured=false" >> "$GITHUB_OUTPUT"`,
+	} {
+		if !strings.Contains(gateStep.Run, want) {
+			t.Fatalf("%s gate step must contain %q", tc.workflowPath, want)
+		}
+	}
+	if tc.requiredIfFragment != "" && !strings.Contains(gateJob.If, tc.requiredIfFragment) {
+		t.Fatalf("%s gate job must preserve %q", tc.workflowPath, tc.requiredIfFragment)
 	}
 }
 
