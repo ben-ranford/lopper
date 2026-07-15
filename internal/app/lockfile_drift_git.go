@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
@@ -22,6 +23,10 @@ const (
 	gitExcludeStandardArg = "--exclude-standard"
 	gitCachedFlag         = "--cached"
 	gitLiteralPathPrefix  = ":(literal)"
+	// Keep aggregate argv comfortably bounded. A single path cannot be split,
+	// but real candidates come from WalkDir and remain filesystem/Git bounded.
+	gitPathspecBatchPaths = 128
+	gitPathspecBatchBytes = 16 * 1024
 )
 
 type lockfileGitContext struct {
@@ -140,7 +145,15 @@ func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 }
 
 func gitDiffNameOnlyForPaths(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
-	return gitDiffNameOnly(ctx, repoPath, paths, diffArgs...)
+	groups := make([][]string, 0)
+	for _, batch := range gitPathspecBatches(paths) {
+		changed, err := gitDiffNameOnly(ctx, repoPath, batch, diffArgs...)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, changed)
+	}
+	return mergeSortedGitPaths(groups...), nil
 }
 
 func gitDiffNameOnly(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
@@ -178,6 +191,31 @@ func mergeGitPaths(groups ...[]string) []string {
 	return merged
 }
 
+func mergeSortedGitPaths(groups ...[]string) []string {
+	merged := mergeGitPaths(groups...)
+	sort.Strings(merged)
+	return merged
+}
+
+func gitPathspecBatches(paths []string) [][]string {
+	if len(paths) == 0 {
+		return nil
+	}
+	batches := make([][]string, 0, (len(paths)+gitPathspecBatchPaths-1)/gitPathspecBatchPaths)
+	start := 0
+	batchBytes := 0
+	for index, path := range paths {
+		pathBytes := len(gitLiteralPathPrefix) + len(path) + 1
+		if index > start && (index-start >= gitPathspecBatchPaths || batchBytes+pathBytes > gitPathspecBatchBytes) {
+			batches = append(batches, paths[start:index])
+			start = index
+			batchBytes = 0
+		}
+		batchBytes += pathBytes
+	}
+	return append(batches, paths[start:])
+}
+
 func gitLiteralPathspecs(paths []string) []string {
 	if len(paths) == 0 {
 		return nil
@@ -205,18 +243,21 @@ func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []str
 	if len(paths) == 0 {
 		return nil, nil
 	}
-	args := []string{gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, "-z"}
-	args = append(args, "--")
-	args = append(args, gitLiteralPathspecs(paths)...)
-	command, err := gitCommandContext(ctx, repoPath, args...)
-	if err != nil {
-		return nil, err
+	groups := make([][]string, 0)
+	for _, batch := range gitPathspecBatches(paths) {
+		args := []string{gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, "-z", "--"}
+		args = append(args, gitLiteralPathspecs(batch)...)
+		command, err := gitCommandContext(ctx, repoPath, args...)
+		if err != nil {
+			return nil, err
+		}
+		output, err := command.Output()
+		if err != nil {
+			return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
+		}
+		groups = append(groups, parseNULTerminatedGitOutput(output))
 	}
-	output, err := command.Output()
-	if err != nil {
-		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
-	}
-	return parseNULTerminatedGitOutput(output), nil
+	return mergeSortedGitPaths(groups...), nil
 }
 
 func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {

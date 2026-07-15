@@ -432,7 +432,7 @@ func gitPathOutputCommand(ctx context.Context, paths []string, nulOutput bool) *
 	if nulOutput {
 		format = `%s\000`
 	}
-	args := []string{"-c", `for path do printf "$1" "$path"; done`, "git-output", format}
+	args := []string{"-c", `format="$1"; shift; for path do printf "$format" "$path"; done`, "git-output", format}
 	args = append(args, paths...)
 	return exec.CommandContext(ctx, "/bin/sh", args...)
 }
