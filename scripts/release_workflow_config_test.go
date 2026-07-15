@@ -766,6 +766,38 @@ func TestReleaseWorkflowPublishesMarketplaceAfterGitHubReleaseBoundary(t *testin
 	}
 }
 
+func TestReleaseWorkflowFinalizesStableReleaseAfterMarketplace(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	publish := workflowJobByName(t, workflow.Jobs, "publish")
+	workflowJobByName(t, workflow.Jobs, "publish-marketplace")
+	finalizer := workflowJobByName(t, workflow.Jobs, "finalize-release")
+	assertWorkflowJobNeeds(t, finalizer, "release finalizer", workflowJobNeeds{"prepare-release", "publish", "publish-marketplace"})
+	assertWorkflowJobPermissions(t, finalizer, "release finalizer", map[string]string{"contents": "write"})
+
+	for _, step := range publish.Steps {
+		if step.Name == "Publish GitHub Release" {
+			t.Fatal("publish job must not make the GitHub release public before Marketplace publication")
+		}
+		if strings.Contains(step.Run, "draft=false") || strings.Contains(step.Run, "make_latest=true") {
+			t.Fatalf("publish job must not finalize the GitHub release in step %q", step.Name)
+		}
+	}
+
+	for _, step := range finalizer.Steps {
+		if step.Name == "Update GitHub Action floating tags" {
+			if step.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
+				t.Fatalf("finalize floating tag RELEASE_TAG env = %q", step.Env["RELEASE_TAG"])
+			}
+			return
+		}
+	}
+	t.Fatal("finalize-release must own stable floating tag mutation after Marketplace publication")
+}
+
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 
