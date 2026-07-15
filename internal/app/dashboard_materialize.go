@@ -9,6 +9,16 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+var (
+	mkdirAllCommandOutputParentFn = os.MkdirAll
+	writeCommandOutputFileFn      = func(rootDir, outputPath string, data []byte, perm, _ os.FileMode) error {
+		if err := ensureCommandOutputParent(rootDir, outputPath); err != nil {
+			return err
+		}
+		return safeio.WriteFileUnder(rootDir, outputPath, data, perm)
+	}
+)
+
 func persistDashboardOutput(formatted, outputPath string, trustedRoots ...string) (string, error) {
 	return persistCommandOutput(formatted, outputPath, "dashboard report", trustedRoots...)
 }
@@ -26,10 +36,7 @@ func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...s
 	if err != nil {
 		return "", err
 	}
-	if err := ensureCommandOutputParent(outputRoot, trimmedOutputPath); err != nil {
-		return "", err
-	}
-	if err := safeio.WriteFileUnder(outputRoot, trimmedOutputPath, []byte(formatted), 0o600); err != nil {
+	if err := writeCommandOutputFileFn(outputRoot, trimmedOutputPath, []byte(formatted), 0o600, 0o750); err != nil {
 		return "", err
 	}
 	return label + " written to " + trimmedOutputPath, nil
@@ -388,7 +395,7 @@ func ensureCommandOutputParent(rootDir, outputPath string) error {
 	if err := rejectSymlinkedOutputParent(rootAbs, parent); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(parent, 0o750); err != nil {
+	if err := mkdirAllCommandOutputParentFn(parent, 0o750); err != nil {
 		return err
 	}
 	return rejectSymlinkedOutputParent(rootAbs, parent)

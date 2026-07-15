@@ -530,6 +530,76 @@ func TestPersistCommandOutputAllowsTrustedRootAlias(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputPinsTrustedRootAliasBeforeWrite(t *testing.T) {
+	workspace, trustedRootAlias := createWorkspaceAlias(t)
+	outside := t.TempDir()
+	outsideTarget := filepath.Join(outside, "reports", "report.json")
+	if err := os.MkdirAll(filepath.Dir(outsideTarget), 0o755); err != nil {
+		t.Fatalf("mkdir outside reports: %v", err)
+	}
+	if err := os.WriteFile(outsideTarget, []byte("outside-before"), 0o600); err != nil {
+		t.Fatalf("seed outside target: %v", err)
+	}
+
+	originalWrite := writeCommandOutputFileFn
+	writeCommandOutputFileFn = func(rootDir, outputPath string, data []byte, perm, parentPerm os.FileMode) error {
+		if err := os.Remove(trustedRootAlias); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, trustedRootAlias); err != nil {
+			return err
+		}
+		return originalWrite(rootDir, outputPath, data, perm, parentPerm)
+	}
+	t.Cleanup(func() {
+		writeCommandOutputFileFn = originalWrite
+	})
+
+	outputPath := filepath.Join(trustedRootAlias, "reports", "report.json")
+	status, err := persistCommandOutput("workspace-after", outputPath, "dashboard report", trustedRootAlias)
+	if err != nil {
+		t.Fatalf("persist command output through retargeted alias: %v", err)
+	}
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if got := readTextFile(t, filepath.Join(workspace, "reports", "report.json")); got != "workspace-after" {
+		t.Fatalf("unexpected workspace output: %q", got)
+	}
+	if got := readTextFile(t, outsideTarget); got != "outside-before" {
+		t.Fatalf("unexpected outside output: %q", got)
+	}
+}
+
+func TestPersistCommandOutputAllowsRelativeOutputFromSymlinkedWorkspace(t *testing.T) {
+	workspace, workspaceAlias := createWorkspaceAlias(t)
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	t.Setenv("PWD", workspaceAlias)
+	if err := os.Chdir(workspaceAlias); err != nil {
+		t.Fatalf("chdir workspace alias: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	outputPath := filepath.Join("reports", "report.json")
+	status, err := persistCommandOutput("{}", outputPath, "dashboard report", ".")
+	if err != nil {
+		t.Fatalf("persist relative command output from workspace alias: %v", err)
+	}
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if got := readTextFile(t, filepath.Join(workspace, outputPath)); got != "{}" {
+		t.Fatalf("unexpected aliased output: %q", got)
+	}
+}
+
 func TestPersistCommandOutputRejectsSymlinkEscapeUnderTrustedRootAlias(t *testing.T) {
 	workspace, trustedRootAlias := createWorkspaceAlias(t)
 	outside := t.TempDir()
@@ -832,6 +902,38 @@ func TestEnsureCommandOutputParentRejectsSymlinkedParent(t *testing.T) {
 	err := ensureCommandOutputParent(root, filepath.Join(root, "reports", "report.json"))
 	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
 		t.Fatalf("expected symlinked parent rejection, got %v", err)
+	}
+}
+
+func TestEnsureCommandOutputParentDoesNotCreateOutsideAfterMissingParentSwap(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outsideSentinel := filepath.Join(outside, "sentinel.txt")
+	if err := os.WriteFile(outsideSentinel, []byte("outside-before"), 0o600); err != nil {
+		t.Fatalf("seed outside sentinel: %v", err)
+	}
+
+	originalMkdirAll := mkdirAllCommandOutputParentFn
+	mkdirAllCommandOutputParentFn = func(path string, perm os.FileMode) error {
+		if err := os.Symlink(outside, filepath.Join(root, "reports")); err != nil {
+			return err
+		}
+		return originalMkdirAll(path, perm)
+	}
+	t.Cleanup(func() {
+		mkdirAllCommandOutputParentFn = originalMkdirAll
+	})
+
+	outputPath := filepath.Join(root, "reports", "nested", "report.json")
+	err := ensureCommandOutputParent(root, outputPath)
+	if err == nil {
+		t.Fatal("expected swapped parent symlink to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "nested")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside nested directory to remain absent, got err=%v", statErr)
+	}
+	if got := readTextFile(t, outsideSentinel); got != "outside-before" {
+		t.Fatalf("unexpected outside sentinel: %q", got)
 	}
 }
 
