@@ -41,6 +41,13 @@ type workflowStepConfig struct {
 	Run   string            `yaml:"run"`
 	Shell string            `yaml:"shell"`
 	Env   map[string]string `yaml:"env"`
+	Uses  string            `yaml:"uses"`
+	With  workflowStepWith  `yaml:"with"`
+}
+
+type workflowStepWith struct {
+	PersistCredentials *bool  `yaml:"persist-credentials"`
+	Token              string `yaml:"token"`
 }
 
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
@@ -241,6 +248,26 @@ func TestReleaseWorkflowManualDispatchFallsBackToDraftReleaseLookup(t *testing.T
 	}
 	if strings.Contains(workflowText, `head -n1 >"${release_json}" || true`) {
 		t.Fatal("manual release draft lookup must not mask API or JSON failures as a missing release")
+	}
+}
+
+func TestReleaseWorkflowMetadataCheckoutDoesNotPersistWriteToken(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release metadata")
+	if !strings.HasPrefix(step.Uses, "actions/checkout@") {
+		t.Fatalf("release metadata checkout uses %q, want actions/checkout", step.Uses)
+	}
+	if step.With.Token == "" {
+		t.Fatal("release metadata checkout must explicitly receive its token")
+	}
+	if step.With.PersistCredentials == nil || *step.With.PersistCredentials {
+		t.Fatal("release metadata checkout must set persist-credentials: false so its write token is not stored in local git config")
 	}
 }
 
