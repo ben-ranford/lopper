@@ -32,22 +32,38 @@ type workflowConfig struct {
 }
 
 type workflowJobConfig struct {
-	Steps []workflowStepConfig `yaml:"steps"`
+	If          string               `yaml:"if"`
+	Env         map[string]string    `yaml:"env"`
+	Needs       workflowNeeds        `yaml:"needs"`
+	Outputs     map[string]string    `yaml:"outputs"`
+	Permissions map[string]string    `yaml:"permissions"`
+	Steps       []workflowStepConfig `yaml:"steps"`
+}
+
+type workflowNeeds []string
+
+func (n *workflowNeeds) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var need string
+		if err := node.Decode(&need); err != nil {
+			return err
+		}
+		*n = workflowNeeds{need}
+		return nil
+	}
+	return node.Decode((*[]string)(n))
 }
 
 type workflowStepConfig struct {
-	Name  string            `yaml:"name"`
-	ID    string            `yaml:"id"`
-	Run   string            `yaml:"run"`
-	Shell string            `yaml:"shell"`
-	Env   map[string]string `yaml:"env"`
-	Uses  string            `yaml:"uses"`
-	With  workflowStepWith  `yaml:"with"`
-}
-
-type workflowStepWith struct {
-	PersistCredentials *bool  `yaml:"persist-credentials"`
-	Token              string `yaml:"token"`
+	Name             string            `yaml:"name"`
+	ID               string            `yaml:"id"`
+	If               string            `yaml:"if"`
+	Run              string            `yaml:"run"`
+	Shell            string            `yaml:"shell"`
+	WorkingDirectory string            `yaml:"working-directory"`
+	Env              map[string]string `yaml:"env"`
+	Uses             string            `yaml:"uses"`
+	With             map[string]string `yaml:"with"`
 }
 
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
@@ -263,10 +279,10 @@ func TestReleaseWorkflowMetadataCheckoutDoesNotPersistWriteToken(t *testing.T) {
 	if !strings.HasPrefix(step.Uses, "actions/checkout@") {
 		t.Fatalf("release metadata checkout uses %q, want actions/checkout", step.Uses)
 	}
-	if step.With.Token == "" {
+	if step.With["token"] == "" {
 		t.Fatal("release metadata checkout must explicitly receive its token")
 	}
-	if step.With.PersistCredentials == nil || *step.With.PersistCredentials {
+	if step.With["persist-credentials"] != "false" {
 		t.Fatal("release metadata checkout must set persist-credentials: false so its write token is not stored in local git config")
 	}
 }
@@ -306,6 +322,100 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
 		t.Fatal("release notes must include the concrete GitHub Action ref")
+	}
+}
+
+func TestReleaseWorkflowPublishesMarketplaceFromTrustedIsolatedToolchain(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if !strings.Contains(workflowText, "trusted_main_sha") {
+		t.Fatal("release workflow must resolve and expose a trusted main revision for Marketplace manifests")
+	}
+
+	prepareJob := workflowJobRequired(t, workflow.Jobs, "prepare-marketplace-toolchain")
+	if !slices.Equal(prepareJob.Needs, workflowNeeds{"prepare-release"}) {
+		t.Fatalf("prepare-marketplace-toolchain needs = %#v, want only prepare-release", prepareJob.Needs)
+	}
+	if len(prepareJob.Env) != 0 {
+		t.Fatalf("prepare-marketplace-toolchain env = %#v, want no job-scoped credentials", prepareJob.Env)
+	}
+	checkout := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
+	if checkout.With["ref"] != "${{ needs.prepare-release.outputs.trusted_main_sha }}" {
+		t.Fatalf("trusted Marketplace manifest checkout ref = %q", checkout.With["ref"])
+	}
+	if checkout.With["persist-credentials"] != "false" {
+		t.Fatalf("trusted Marketplace manifest checkout persist-credentials = %q, want false", checkout.With["persist-credentials"])
+	}
+	lockfileValidation := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Validate Marketplace tooling lockfile")
+	if !strings.Contains(lockfileValidation.Run, `jq -er '.packages["node_modules/@vscode/vsce"].version'`) {
+		t.Fatal("trusted Marketplace toolchain prep must validate the pinned @vscode/vsce lockfile version")
+	}
+	prepareToolchain := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
+	if !strings.Contains(prepareToolchain.Run, "npm ci --ignore-scripts --include=dev --audit=false --fund=false") {
+		t.Fatal("trusted Marketplace toolchain prep must install from the pinned lockfile without running package scripts")
+	}
+	uploadToolchain := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Upload Marketplace toolchain")
+	if uploadToolchain.With["name"] != "marketplace-toolchain" {
+		t.Fatalf("Marketplace toolchain artifact name = %q, want marketplace-toolchain", uploadToolchain.With["name"])
+	}
+
+	if strings.Contains(workflowText, "make vscode-extension-install") && workflowStepByName(t, workflow.Jobs, "publish", "Upload GitHub Release assets").Name != "" {
+		if marketplaceStep, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish VS Code extension to Marketplace"); ok {
+			if strings.Contains(marketplaceStep.Run, "make vscode-extension-install") {
+				t.Fatal("publish job must not run repo-controlled Marketplace install steps")
+			}
+		}
+	}
+	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish VS Code extension to Marketplace"); ok {
+		t.Fatal("publish job must not publish to the VS Code Marketplace directly")
+	}
+
+	marketplaceJob := workflowJobRequired(t, workflow.Jobs, "publish-vscode-marketplace")
+	if !slices.Equal(marketplaceJob.Needs, workflowNeeds{"prepare-release", "publish", "build-vscode-extension", "prepare-marketplace-toolchain"}) {
+		t.Fatalf("publish-vscode-marketplace needs = %#v", marketplaceJob.Needs)
+	}
+	if len(marketplaceJob.Permissions) != 0 {
+		t.Fatalf("publish-vscode-marketplace permissions = %#v, want permissions-empty job", marketplaceJob.Permissions)
+	}
+	for _, step := range marketplaceJob.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("publish-vscode-marketplace must not checkout repository content in step %q", step.Name)
+		}
+	}
+	validateInputs := workflowStepByName(t, workflow.Jobs, "publish-vscode-marketplace", "Validate Marketplace publication inputs")
+	if validateInputs.Env["VSIX_DIR"] != "${{ runner.temp }}/vscode-marketplace" {
+		t.Fatalf("marketplace validation VSIX_DIR = %q", validateInputs.Env["VSIX_DIR"])
+	}
+	if validateInputs.Env["TOOLCHAIN_ARTIFACT_DIR"] != "${{ runner.temp }}/marketplace-toolchain-artifact" {
+		t.Fatalf("marketplace validation TOOLCHAIN_ARTIFACT_DIR = %q", validateInputs.Env["TOOLCHAIN_ARTIFACT_DIR"])
+	}
+	for _, want := range []string{
+		`sha256sum --check --strict SHA256SUMS`,
+		`expected_vsix="${VSIX_DIR}/lopper-vscode-${RELEASE_VERSION}.vsix"`,
+		`vsce-toolchain.tar.gz`,
+	} {
+		if !strings.Contains(validateInputs.Run, want) {
+			t.Fatalf("marketplace validation must contain %q", want)
+		}
+	}
+	publishMarketplace := workflowStepByName(t, workflow.Jobs, "publish-vscode-marketplace", "Publish VS Code extension to Marketplace")
+	if publishMarketplace.Env["VSCE_PAT"] != "${{ secrets.VSCE_PUBLISH }}" {
+		t.Fatalf("marketplace publish VSCE_PAT env = %q", publishMarketplace.Env["VSCE_PAT"])
+	}
+	if !strings.Contains(publishMarketplace.Run, `"${VSCE_BIN}" publish --packagePath "${VSIX_PATH}"`) {
+		t.Fatal("marketplace publish step must publish only the validated VSIX with the trusted VSCE binary")
+	}
+	if workflowStepIndexByName(t, marketplaceJob, "Validate Marketplace publication inputs") > workflowStepIndexByName(t, marketplaceJob, "Publish VS Code extension to Marketplace") {
+		t.Fatal("marketplace publication inputs must be validated before VSCE_PAT is exposed")
+	}
+	if workflowStepIndexByName(t, marketplaceJob, "Publish VS Code extension to Marketplace") != len(marketplaceJob.Steps)-1 {
+		t.Fatal("marketplace publish step must be the terminal step in the isolated Marketplace job")
 	}
 }
 
@@ -686,6 +796,41 @@ func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName
 	}
 	t.Fatalf("%s must define step %q", jobName, stepName)
 	return workflowStepConfig{}
+}
+
+func workflowJobRequired(t *testing.T, jobs map[string]workflowJobConfig, jobName string) workflowJobConfig {
+	t.Helper()
+
+	job, ok := jobs[jobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", jobName)
+	}
+	return job
+}
+
+func workflowStepByNameIfPresent(jobs map[string]workflowJobConfig, jobName string, stepName string) (workflowStepConfig, bool) {
+	job, ok := jobs[jobName]
+	if !ok {
+		return workflowStepConfig{}, false
+	}
+	for _, step := range job.Steps {
+		if step.Name == stepName {
+			return step, true
+		}
+	}
+	return workflowStepConfig{}, false
+}
+
+func workflowStepIndexByName(t *testing.T, job workflowJobConfig, stepName string) int {
+	t.Helper()
+
+	for index, step := range job.Steps {
+		if step.Name == stepName {
+			return index
+		}
+	}
+	t.Fatalf("workflow job must define step %q", stepName)
+	return -1
 }
 
 func readJSONConfig(t *testing.T, path string, target any) {
