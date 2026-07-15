@@ -521,7 +521,7 @@ func TestReleaseWorkflowHomebrewPublicationUsesFreshCredentialScopedClone(t *tes
 	commitIndex := strings.Index(step.Run, `git_safe -C "${tap_repo}" commit`)
 	authIndex := strings.Index(step.Run, `auth_header="$(printf`)
 	fetchIndex := strings.Index(step.Run, `git_network -C "${tap_repo}" fetch`)
-	if commitIndex < 0 || authIndex < 0 || fetchIndex < 0 || !(commitIndex < authIndex && authIndex < fetchIndex) {
+	if commitIndex < 0 || authIndex < 0 || fetchIndex < 0 || commitIndex >= authIndex || authIndex >= fetchIndex {
 		t.Fatal("tap publication must finish regeneration and commit before constructing command-scoped GitHub authentication")
 	}
 	for _, forbidden := range []string{

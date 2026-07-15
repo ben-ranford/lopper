@@ -478,58 +478,81 @@ jobs:
           git tag --force "${minor_tag}" "${RELEASE_SHA}"
           git push --force "${push_url}" "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
 
-  update-homebrew-tap:
+  homebrew-tap-token-gate:
     needs:
       - prepare-release
       - publish
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
-    concurrency:
-      group: homebrew-tap-main
-      cancel-in-progress: false
-    permissions:
-      contents: read
+    permissions: {}
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
     steps:
       - name: Detect tap token
-        id: tap_token
+        id: gate
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [ -n "${HOMEBREW_TAP_TOKEN}" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           else
-            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
+  validate-homebrew-tap:
+    needs:
+      - prepare-release
+      - publish
+      - homebrew-tap-token-gate
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.homebrew-tap-token-gate.outputs.configured == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORMULA_VERSION: ${{ needs.prepare-release.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
       - name: Set up Homebrew
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
         uses: Homebrew/actions/setup-homebrew@fc695c54c2032716dd4cedd007489c8e32fc8a5d
 
-      - name: Checkout tap repository
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-          repository: ben-ranford/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-tap
-          fetch-depth: 0
+      - name: Clone tap repository anonymously
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for anonymous Homebrew tap validation" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
 
-      - name: Update lopper formula
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
+
+          env -i \
+            HOME="${git_home}" \
+            PATH="${PATH}" \
+            GIT_TERMINAL_PROMPT=0 \
+            GIT_CONFIG_NOSYSTEM=1 \
+            "${git_bin}" \
+            -c core.hooksPath=/dev/null \
+            -c protocol.file.allow=never \
+            -c protocol.ext.allow=never \
+            clone --origin origin --branch main --single-branch \
+            https://github.com/ben-ranford/homebrew-tap.git homebrew-tap
+
+      - name: Regenerate lopper formula
         working-directory: homebrew-tap
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           curl --fail --show-error --silent --location \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "$source_url" -o /tmp/lopper-source.tar.gz
-          source_sha="$(sha256sum /tmp/lopper-source.tar.gz | awk '{print $1}')"
+          read -r source_sha _ < <(sha256sum /tmp/lopper-source.tar.gz)
 
           mkdir -p Formula
           cat > Formula/lopper.rb <<RUBY
@@ -537,6 +560,7 @@ jobs:
             desc "Local-first CLI/TUI for measuring dependency surface area"
             homepage "https://github.com/ben-ranford/lopper"
             url "${source_url}"
+            version "${FORMULA_VERSION}"
             sha256 "${source_sha}"
             license "MIT"
 
@@ -562,7 +586,6 @@ jobs:
           RUBY
 
       - name: Validate formula
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         run: |
           set -euo pipefail
@@ -574,49 +597,156 @@ jobs:
           brew install --build-from-source ben-ranford/tap/lopper
           brew test ben-ranford/tap/lopper
 
-      - name: Commit and push formula changes
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
-        working-directory: homebrew-tap
+  update-homebrew-tap:
+    needs:
+      - prepare-release
+      - publish
+      - validate-homebrew-tap
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      FORMULA_VERSION: ${{ needs.prepare-release.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
+      - name: Regenerate and push formula changes
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          set -euo pipefail
-          push_url="https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_bin=/usr/bin/git
+          curl_bin=/usr/bin/curl
+          sha256sum_bin=/usr/bin/sha256sum
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for the isolated Homebrew tap update step" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
 
-          git add Formula/lopper.rb
-          if git diff --cached --quiet; then
+          git_home="$("${mktemp_bin}" -d)"
+          work_root="$("${mktemp_bin}" -d)"
+          tap_repo="${work_root}/homebrew-tap"
+          source_archive="${work_root}/lopper-source.tar.gz"
+          trap 'rm -rf "${git_home}" "${work_root}"' EXIT
+
+          git_safe() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
+
+          git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"
+
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
+          "${curl_bin}" --fail --show-error --silent --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "${source_url}" -o "${source_archive}"
+          read -r source_sha _ < <("${sha256sum_bin}" "${source_archive}")
+
+          mkdir -p "${tap_repo}/Formula"
+          cat > "${tap_repo}/Formula/lopper.rb" <<RUBY
+          class Lopper < Formula
+            desc "Local-first CLI/TUI for measuring dependency surface area"
+            homepage "https://github.com/ben-ranford/lopper"
+            url "${source_url}"
+            version "${FORMULA_VERSION}"
+            sha256 "${source_sha}"
+            license "MIT"
+
+            depends_on "go" => :build
+            conflicts_with "ben-ranford/tap/lopper-rolling", because: "both install the lopper executable"
+
+            def install
+              ldflags = %W[
+                -s
+                -w
+                -X github.com/ben-ranford/lopper/internal/version.version=#{version}
+                -X github.com/ben-ranford/lopper/internal/version.buildChannel=release
+              ]
+              system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
+              system "bash", "scripts/generate-manpage.sh", "docs/man/lopper.1"
+              man1.install "docs/man/lopper.1"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/lopper --version")
+            end
+          end
+          RUBY
+
+          git_safe -C "${tap_repo}" config user.name "github-actions[bot]"
+          git_safe -C "${tap_repo}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_safe -C "${tap_repo}" add Formula/lopper.rb
+          if git_safe -C "${tap_repo}" diff --cached --quiet; then
             echo "No formula changes to commit"
             exit 0
           fi
 
-          git commit -m "lopper ${{ needs.prepare-release.outputs.tag }}"
+          git_safe -C "${tap_repo}" commit --no-verify -m "lopper ${RELEASE_TAG}"
+
+          auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset HOMEBREW_TAP_TOKEN
+
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
-            if ! git fetch origin main:refs/remotes/origin/main; then
+            if ! git_network -C "${tap_repo}" fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
-              sleep 2
+              /bin/sleep 2
               continue
             fi
-            if ! git rebase origin/main; then
+            if ! git_safe -C "${tap_repo}" rebase origin/main; then
               echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              git rebase --abort || true
-              sleep 2
+              git_safe -C "${tap_repo}" rebase --abort || true
+              /bin/sleep 2
               continue
             fi
-            if git push "${push_url}" HEAD:main; then
+            if git_network -C "${tap_repo}" push origin HEAD:main; then
               exit 0
             fi
-            sleep 2
+            /bin/sleep 2
           done
 
           echo "Failed to push Homebrew formula after retries" >&2
           exit 1
-
-      - name: Skip tap update when token is missing
-        if: ${{ steps.tap_token.outputs.available != 'true' }}
-        run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
 
   stamp-feature-release-history:
     needs:
