@@ -1814,6 +1814,19 @@ func TestReleaseOrchestrationRequiresDigestPinnedGHCRManifests(t *testing.T) {
 	})
 }
 
+func TestReleaseOrchestrationDedupesPlatformOCIManifestDescriptorsByDigest(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
+	assertWorkflowStepRunContainsAll(t, validation, "unique OCI image digest validation", []string{
+		`| .digest' "${layout_root}/index.json" | sort -u)`,
+		`OCI layout must contain exactly one unique ${platform} image digest.`,
+	})
+}
+
 func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) {
 	t.Parallel()
 
