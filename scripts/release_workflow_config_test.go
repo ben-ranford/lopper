@@ -192,7 +192,6 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 		`echo "Remote tag ${tag} does not exist; validating the release target instead."`,
 		`echo "::error::Failed to fetch existing release tag ${tag}." >&2
       printf '%s\n' "${fetch_error}" >&2
-      rm -f "${release_json}"
       exit 1`,
 	})
 	if strings.Contains(manualStep.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true`) {
@@ -209,6 +208,32 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 	if strings.Contains(workflowText, "Release Please did not create a release; the release PR was created or updated instead.") {
 		t.Fatal("skip-release log must not use the stale message that also appears during manual tag dispatches")
+	}
+}
+
+func TestReleaseWorkflowManualDispatchStrictlyResolvesExistingReleaseCommit(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
+		`release_lookup_error="$(mktemp)"`,
+		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`tag_fetched="false"`,
+		`encoded_target="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$existing_target")"`,
+		`existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_target}" --jq '.sha')"`,
+		`if [[ ! "${existing_commit}" =~ ^[0-9a-f]{40}$ ]]; then`,
+		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
+	})
+	if strings.Contains(manualStep.Run, `git rev-parse -q --verify "${existing_target}^{commit}"`) {
+		t.Fatal("manual release flow must resolve a release target that is absent from the local checkout")
+	}
+	if strings.Contains(manualStep.Run, `[ -n "${existing_commit}" ] &&`) {
+		t.Fatal("manual release flow must never skip existing release mismatch validation")
 	}
 }
 
