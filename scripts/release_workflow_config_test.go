@@ -175,6 +175,73 @@ func TestGraduateFeatureWorkflowCreatesTemplateCompatiblePRBody(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release")
+	if preparation.Outputs["trusted_main_sha"] != "${{ steps.trusted_main.outputs.trusted_main_sha }}" {
+		t.Fatalf("prepare-release trusted_main_sha output = %q", preparation.Outputs["trusted_main_sha"])
+	}
+	if len(preparation.Steps) == 0 || preparation.Steps[0].Name != "Resolve trusted main workflow revision" {
+		t.Fatal("trusted main workflow revision must be resolved before release side effects")
+	}
+	resolver := preparation.Steps[0]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "trusted main resolver id", got: resolver.ID, want: "trusted_main"},
+		{label: "trusted main resolver shell", got: resolver.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
+		{label: "trusted main resolver action", got: resolver.Uses, want: ""},
+		{label: "trusted main resolver condition", got: resolver.If, want: ""},
+		{label: "trusted main resolver working directory", got: resolver.WorkingDirectory, want: ""},
+	})
+	assertWorkflowStepEnv(t, resolver, "trusted main workflow resolver", map[string]string{
+		"PATH":         "/usr/bin:/bin",
+		"WORKFLOW_REF": "${{ github.workflow_ref }}",
+		"WORKFLOW_SHA": "${{ github.workflow_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, resolver, "trusted main workflow resolver", []string{
+		`expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"`,
+		`if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then`,
+		`echo "::error::Release workflow must come from ${expected_workflow_ref}; got ${WORKFLOW_REF}." >&2`,
+		`if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then`,
+		`echo "::error::Release workflow SHA must be a lowercase full 40-character commit SHA; got ${WORKFLOW_SHA}." >&2`,
+		`/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`,
+	})
+	if strings.Count(resolver.Run, "exit 1") != 2 {
+		t.Fatal("trusted main workflow resolver must fail closed on ref or SHA mismatch")
+	}
+	if strings.Count(resolver.Run, `>> "$GITHUB_OUTPUT"`) != 1 {
+		t.Fatal("trusted main workflow resolver must output only the validated workflow SHA")
+	}
+	assertTextAppearsBefore(t, resolver.Run,
+		`if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then`,
+		`/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`,
+		"trusted main workflow ref must be validated before output",
+	)
+	assertTextAppearsBefore(t, resolver.Run,
+		`if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then`,
+		`/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`,
+		"trusted main workflow SHA must be validated before output",
+	)
+	assertWorkflowStepRunOmitsAll(t, resolver, "trusted main workflow resolver", []string{"git ", "gh ", "curl ", "wget ", "secrets.", "token"})
+	assertWorkflowStepOrder(t, preparation,
+		"Resolve trusted main workflow revision",
+		"Run release-please",
+		"Checkout manual release source",
+		"Prepare manual release",
+	)
+
+	wantTrustedMain := "${{ needs.prepare-release.outputs.trusted_main_sha }}"
+	marketplaceCheckout := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
+	featureHistoryCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout trusted main tooling")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "trusted Marketplace checkout ref", got: marketplaceCheckout.With["ref"], want: wantTrustedMain},
+		{label: "trusted feature history checkout ref", got: featureHistoryCheckout.With["ref"], want: wantTrustedMain},
+	})
+}
+
 func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	t.Parallel()
 
@@ -386,7 +453,7 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	checkoutStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
 	setupStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Setup Node for Marketplace tooling")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "trusted Marketplace checkout ref", got: checkoutStep.With["ref"], want: "main"},
+		{label: "trusted Marketplace checkout ref", got: checkoutStep.With["ref"], want: "${{ needs.prepare-release.outputs.trusted_main_sha }}"},
 		{label: "trusted Marketplace checkout path", got: checkoutStep.With["path"], want: ""},
 		{label: "Marketplace tooling Node version", got: setupStep.With["node-version"], want: "24"},
 	})
@@ -985,7 +1052,7 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	trustedCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout trusted main tooling")
 	releaseCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout validated release data")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "trusted tooling checkout ref", got: trustedCheckout.With["ref"], want: "main"},
+		{label: "trusted tooling checkout ref", got: trustedCheckout.With["ref"], want: "${{ needs.prepare-release.outputs.trusted_main_sha }}"},
 		{label: "trusted tooling checkout path", got: trustedCheckout.With["path"], want: ""},
 		{label: "validated release data checkout ref", got: releaseCheckout.With["ref"], want: "${{ needs.prepare-release.outputs.sha }}"},
 		{label: "validated release data checkout path", got: releaseCheckout.With["path"], want: "release-source"},
