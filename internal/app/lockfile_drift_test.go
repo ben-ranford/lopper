@@ -448,14 +448,18 @@ func filterHelperCase(name, markerName, driver string, helperScript func(string)
 	}
 }
 
-func cleanFilterBeforeInit(t *testing.T, repo string) {
-	t.Helper()
-	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn\n")
+func cleanFilterBeforeInit(driver string) func(*testing.T, string) {
+	return func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+driver+"\n")
+	}
 }
 
-func processFilterInfoAttributesSetup(t *testing.T, repo string) {
-	t.Helper()
-	writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter=pwn\n")
+func processFilterInfoAttributesSetup(driver string) func(*testing.T, string) {
+	return func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter="+driver+"\n")
+	}
 }
 
 func localGitHelperCases() []localGitHelperCase {
@@ -476,8 +480,12 @@ func localGitHelperCases() []localGitHelperCase {
 				runGit(t, repo, "config", "core.fsmonitor", helperPath)
 			},
 		},
-		filterHelperCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit, nil, configureCleanFilter),
-		filterHelperCase("process filter from info attributes", "process-filter-info.marker", "pwn", processFilterScript, nil, processFilterInfoAttributesSetup, configureProcessFilter),
+		filterHelperCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit("pwn"), nil, configureCleanFilter),
+		filterHelperCase("set-named clean filter", "set-named-clean-filter.marker", "set", cleanFilterScript, cleanFilterBeforeInit("set"), nil, configureCleanFilter),
+		filterHelperCase("unset-named clean filter", "unset-named-clean-filter.marker", "unset", cleanFilterScript, cleanFilterBeforeInit("unset"), nil, configureCleanFilter),
+		filterHelperCase("unspecified-named clean filter", "unspecified-named-clean-filter.marker", "unspecified", cleanFilterScript, cleanFilterBeforeInit("unspecified"), nil, configureCleanFilter),
+		filterHelperCase("process filter from info attributes", "process-filter-info.marker", "pwn", processFilterScript, nil, processFilterInfoAttributesSetup("pwn"), configureProcessFilter),
+		filterHelperCase("state-named process filter from info attributes", "state-named-process-filter-info.marker", "set", processFilterScript, nil, processFilterInfoAttributesSetup("set"), configureProcessFilter),
 	}
 }
 
@@ -548,6 +556,29 @@ func TestDetectLockfileDriftRejectsActiveCustomFiltersWithoutExecutingHelpers(t 
 		}
 		t.Run(tc.name, func(t *testing.T) {
 			runLocalGitHelperCase(t, tc)
+		})
+	}
+}
+
+func TestDetectLockfileDriftAllowsUnconfiguredStateNamedFilters(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	for _, driver := range []string{"set", "unset", "unspecified"} {
+		t.Run(driver, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+driver+"\n")
+			initGitRepo(t, repo)
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			if err != nil {
+				t.Fatalf(detectLockfileDriftFmt, err)
+			}
+			assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 		})
 	}
 }

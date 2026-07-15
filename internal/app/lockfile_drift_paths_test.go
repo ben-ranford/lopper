@@ -192,6 +192,37 @@ func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
 	}
 }
 
+func TestConfiguredGitAttributeStateDriverErrors(t *testing.T) {
+	t.Run("command construction", func(t *testing.T) {
+		original := resolveGitBinaryPathFn
+		resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
+		t.Cleanup(func() { resolveGitBinaryPathFn = original })
+
+		_, err := filterConfiguredGitAttributeStateDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{{path: "package.json", driver: "set"}})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected config command construction error, got %v", err)
+		}
+	})
+
+	t.Run("config execution", func(t *testing.T) {
+		originalResolve := resolveGitBinaryPathFn
+		originalExec := execGitCommandContextFn
+		resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+		execGitCommandContextFn = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 2"), nil
+		}
+		t.Cleanup(func() {
+			resolveGitBinaryPathFn = originalResolve
+			execGitCommandContextFn = originalExec
+		})
+
+		_, err := gitFilterDriverHasExecutableConfig(context.Background(), t.TempDir(), "set")
+		if err == nil || !strings.Contains(err.Error(), "run git config --includes --get-regexp") {
+			t.Fatalf("expected config execution error, got %v", err)
+		}
+	})
+}
+
 func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 	changed, err := gitChangedFilesForPaths(context.Background(), t.TempDir(), nil)
 	if err != nil || len(changed) != 0 {
@@ -300,6 +331,7 @@ func TestParseGitCheckAttrFilterPathDrivers(t *testing.T) {
 	}
 	want := []gitFilterPathDriver{
 		{path: "package.json", driver: "foo.bar"},
+		{path: "package-lock.json", driver: "unspecified"},
 		{path: "nested/package.json", driver: "foo/bar"},
 		{path: "package.json", driver: "foo.bar"},
 	}
@@ -314,10 +346,19 @@ func TestParseGitCheckAttrFilterPathDrivers(t *testing.T) {
 
 	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json"}, []byte("package.json\x00filter\x00set\x00package-lock.json\x00filter\x00unset\x00nested/package.json\x00filter\x00 \x00"))
 	if err != nil {
-		t.Fatalf("expected ignorable filter values to parse, got %v", err)
+		t.Fatalf("expected attribute-state filter values to parse, got %v", err)
 	}
-	if len(assignments) != 0 {
-		t.Fatalf("expected set/unset/blank filter entries to be ignored, got %#v", assignments)
+	want = []gitFilterPathDriver{
+		{path: "package.json", driver: "set"},
+		{path: "package-lock.json", driver: "unset"},
+	}
+	if len(assignments) != len(want) {
+		t.Fatalf("expected set/unset entries to remain available for config disambiguation, got %#v", assignments)
+	}
+	for index := range want {
+		if assignments[index] != want[index] {
+			t.Fatalf("expected assignment %#v at index %d, got %#v", want[index], index, assignments)
+		}
 	}
 
 	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"a.json", "package.json"}, []byte("a.json\x00filter\x00\x00package.json\x00filter\x00pwn=drv\x00"))
