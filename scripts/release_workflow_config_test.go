@@ -386,7 +386,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "release publication input artifact name", got: uploadStep.With["name"], want: "release-publication-inputs"},
+		{label: "release publication input artifact name", got: uploadStep.With["name"], want: "publication-inputs"},
 		{label: "release publication input artifact path", got: uploadStep.With["path"], want: "publication-inputs"},
 		{label: "release publication input artifact missing-file behavior", got: uploadStep.With["if-no-files-found"], want: "error"},
 	})
@@ -582,7 +582,7 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	downloadStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Download release publication inputs")
 	toolchainDownload := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Download Marketplace toolchain")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "Marketplace release input artifact name", got: downloadStep.With["name"], want: "release-publication-inputs"},
+		{label: "Marketplace release input artifact name", got: downloadStep.With["name"], want: "publication-inputs"},
 		{label: "Marketplace release input artifact path", got: downloadStep.With["path"], want: "publication-inputs"},
 		{label: "Marketplace toolchain artifact name", got: toolchainDownload.With["name"], want: "marketplace-toolchain"},
 		{label: "Marketplace toolchain artifact path", got: toolchainDownload.With["path"], want: "marketplace-toolchain-input"},
