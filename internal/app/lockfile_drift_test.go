@@ -664,6 +664,39 @@ func TestDetectLockfileDriftAllowsFilteredUntrackedCandidates(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftIgnoresFilteredIgnoredCandidates(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".gitignore"), "package*.json\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "package*.json filter=pwn\n")
+	writeFile(t, filepath.Join(repo, "README.md"), "tracked\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "ignored-filter.marker")
+	helperPath := helperPathInRepo(repo)
+	writeFile(t, helperPath, cleanFilterScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	configureCleanFilter(t, repo, "pwn")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected ignored manifest and lockfile to produce no drift warning, got %#v", warnings)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected ignored candidate filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
 func TestDetectLockfileDriftAllowsUnconfiguredStateNamedFilters(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
