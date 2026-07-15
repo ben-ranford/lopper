@@ -393,8 +393,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -454,6 +452,8 @@ jobs:
           go run ./tools/featureflag "${args[@]}" > feature-flags.md
 
       - name: Update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.tag }}"
@@ -494,6 +494,8 @@ jobs:
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "Release $tag" --notes-file release-body.md
 
       - name: Upload GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.tag }}"
@@ -503,65 +505,6 @@ jobs:
             exit 1
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-
-      - name: Publish GitHub Release
-        run: |
-          set -euo pipefail
-          tag="${{ needs.prepare-release.outputs.tag }}"
-          encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
-          gh_err_file="$(mktemp)"
-          set +e
-          release_id="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" --jq '.id' 2>"$gh_err_file"
-          )"
-          gh_status=$?
-          set -e
-          if [ "$gh_status" -ne 0 ]; then
-            if grep -q "HTTP 404" "$gh_err_file"; then
-              release_id=""
-            else
-              cat "$gh_err_file" >&2
-              rm -f "$gh_err_file"
-              exit "$gh_status"
-            fi
-          fi
-          rm -f "$gh_err_file"
-          if [ -z "$release_id" ]; then
-            release_id="$(
-              gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
-                | jq -r --arg tag "$tag" '.[][] | select(.tag_name == $tag) | .id' \
-                | head -n1
-            )"
-          fi
-          if [ -z "$release_id" ]; then
-            echo "Release ${tag} was not found" >&2
-            exit 1
-          fi
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F draft=false \
-            -f make_latest=true >/dev/null
-
-      - name: Update GitHub Action floating tags
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
-        run: |
-          set -euo pipefail
-
-          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
-            echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
-            exit 0
-          fi
-
-          major_tag="v${BASH_REMATCH[1]}"
-          minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force "${major_tag}" "${RELEASE_SHA}"
-          git tag --force "${minor_tag}" "${RELEASE_SHA}"
-          git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
 
   publish-vscode-marketplace:
     needs:
@@ -676,10 +619,95 @@ jobs:
           set -euo pipefail
           "${VSCE_BIN}" publish --packagePath "${VSIX_PATH}"
 
-  update-homebrew-tap:
+  finalize-release:
     needs:
       - prepare-release
       - publish
+      - publish-vscode-marketplace
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare-release.outputs.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
+          gh_err_file="$(mktemp)"
+          set +e
+          release_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" --jq '.id' 2>"$gh_err_file"
+          )"
+          gh_status=$?
+          set -e
+          if [ "$gh_status" -ne 0 ]; then
+            if grep -q "HTTP 404" "$gh_err_file"; then
+              release_id=""
+            else
+              cat "$gh_err_file" >&2
+              rm -f "$gh_err_file"
+              exit "$gh_status"
+            fi
+          fi
+          rm -f "$gh_err_file"
+          if [ -z "$release_id" ]; then
+            release_id="$(
+              gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
+                | jq -r --arg tag "$tag" '.[][] | select(.tag_name == $tag) | .id' \
+                | head -n1
+            )"
+          fi
+          if [ -z "$release_id" ]; then
+            echo "Release ${tag} was not found" >&2
+            exit 1
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -f make_latest=true >/dev/null
+
+      - name: Update GitHub Action floating tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
+            echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
+            exit 0
+          fi
+
+          major_tag="v${BASH_REMATCH[1]}"
+          minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --force "${major_tag}" "${RELEASE_SHA}"
+          git tag --force "${minor_tag}" "${RELEASE_SHA}"
+          GIT_CONFIG_COUNT=2 \
+          GIT_CONFIG_KEY_0=credential.helper \
+          GIT_CONFIG_VALUE_0='' \
+          GIT_CONFIG_KEY_1=credential.https://github.com.helper \
+          GIT_CONFIG_VALUE_1="!f() { printf '%s\n' 'username=x-access-token' \"password=\${GH_TOKEN}\"; }; f" \
+            git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
+
+  update-homebrew-tap:
+    needs:
+      - prepare-release
+      - finalize-release
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
@@ -815,7 +843,7 @@ jobs:
   stamp-feature-release-history:
     needs:
       - prepare-release
-      - publish
+      - finalize-release
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     concurrency:

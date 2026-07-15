@@ -295,7 +295,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	}
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	step := workflowStepByName(t, workflow.Jobs, "publish", "Update GitHub Action floating tags")
+	step := workflowStepByName(t, workflow.Jobs, "finalize-release", "Update GitHub Action floating tags")
 	if step.Shell != "bash" {
 		t.Fatalf("action floating tag step shell = %q, want bash", step.Shell)
 	}
