@@ -400,10 +400,373 @@ jobs:
           path: publication-inputs
           if-no-files-found: error
 
+  prepare-marketplace-toolchain:
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted main Marketplace manifests
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          ref: main
+
+      - name: Setup Node for Marketplace tooling
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+
+      - name: Validate Marketplace tooling lockfile
+        run: |
+          set -euo pipefail
+          lockfile="extensions/vscode-lopper/package-lock.json"
+          if [ ! -f "${lockfile}" ] || [ -L "${lockfile}" ]; then
+            echo "Marketplace tooling lockfile is missing or invalid" >&2
+            exit 1
+          fi
+
+          vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"
+          vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"
+          if [ "${vsce_version}" != "3.9.2" ]; then
+            echo "Marketplace tooling lockfile must pin @vscode/vsce 3.9.2" >&2
+            exit 1
+          fi
+          case "${vsce_integrity}" in
+            sha512-?*) ;;
+            *)
+              echo "Marketplace tooling lockfile must pin @vscode/vsce integrity" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Prepare integrity-bound Marketplace toolchain
+        run: |
+          set -euo pipefail
+          source_dir="extensions/vscode-lopper"
+          scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
+          rm -rf "${scratch_dir}"
+          mkdir -p "${scratch_dir}"
+          chmod 0700 "${scratch_dir}"
+          cp -- "${source_dir}/package.json" "${source_dir}/package-lock.json" "${scratch_dir}/"
+
+          if [ "$(find "${scratch_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 2 ]; then
+            echo "Marketplace scratch directory must contain exactly two package manifests" >&2
+            exit 1
+          fi
+          if find "${scratch_dir}" -mindepth 1 -maxdepth 1 \( ! -type f -o \( ! -name package.json ! -name package-lock.json \) \) -print -quit | grep -q .; then
+            echo "Marketplace scratch directory contains an unexpected path" >&2
+            exit 1
+          fi
+
+          (
+            cd "${scratch_dir}"
+            npm ci --ignore-scripts --include=dev --audit=false --fund=false
+          )
+          if ! cmp --silent "${source_dir}/package.json" "${scratch_dir}/package.json" ||
+            ! cmp --silent "${source_dir}/package-lock.json" "${scratch_dir}/package-lock.json"; then
+            echo "Marketplace package manifests changed during preparation" >&2
+            exit 1
+          fi
+          test -x "${scratch_dir}/node_modules/.bin/vsce"
+          if [ "$(realpath -e "${scratch_dir}/node_modules/.bin/vsce")" != "$(realpath -e "${scratch_dir}/node_modules/@vscode/vsce/vsce")" ]; then
+            echo "Marketplace VSCE launcher resolves outside the locked package" >&2
+            exit 1
+          fi
+
+      - name: Archive Marketplace toolchain
+        run: |
+          set -euo pipefail
+          scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
+          archive_dir="${GITHUB_WORKSPACE}/.artifacts/marketplace-toolchain"
+          archive_file="${archive_dir}/vsce-toolchain.tar.gz"
+          rm -rf "${archive_dir}"
+          mkdir -p "${archive_dir}"
+          chmod 0700 "${archive_dir}"
+          tar --create --gzip --file "${archive_file}" --directory "${scratch_dir}" package.json package-lock.json node_modules
+          if [ ! -s "${archive_file}" ] || [ -L "${archive_file}" ] || [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "Marketplace toolchain archive is missing, invalid, or larger than 256 MiB" >&2
+            exit 1
+          fi
+          (
+            cd "${archive_dir}"
+            sha256sum vsce-toolchain.tar.gz > SHA256SUMS
+          )
+
+      - name: Upload Marketplace toolchain
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: marketplace-toolchain
+          path: |
+            .artifacts/marketplace-toolchain/vsce-toolchain.tar.gz
+            .artifacts/marketplace-toolchain/SHA256SUMS
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+
+  publish-marketplace:
+    needs:
+      - prepare-release
+      - prepare-release-publication
+      - prepare-marketplace-toolchain
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Setup Node for Marketplace tooling
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+
+      - name: Download release publication inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-publication-inputs
+          path: publication-inputs
+
+      - name: Download Marketplace toolchain
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: marketplace-toolchain
+          path: marketplace-toolchain-input
+
+      - name: Validate Marketplace publication inputs
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          publication_dir="${GITHUB_WORKSPACE}/publication-inputs"
+          artifact_dir="${GITHUB_WORKSPACE}/marketplace-toolchain-input"
+          archive_file="${artifact_dir}/vsce-toolchain.tar.gz"
+          toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"
+          expected_vsix="lopper-vscode-${RELEASE_VERSION}.vsix"
+
+          if find "${publication_dir}" -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Marketplace publication inputs contain a symlink or special file" >&2
+            exit 1
+          fi
+          if [ "$(find "${publication_dir}" -mindepth 1 -maxdepth 1 | wc -l)" -ne 3 ] ||
+            [ ! -d "${publication_dir}/dist" ] || [ -L "${publication_dir}/dist" ] ||
+            [ ! -f "${publication_dir}/feature-flags.md" ] || [ -L "${publication_dir}/feature-flags.md" ] ||
+            [ ! -f "${publication_dir}/SHA256SUMS" ] || [ -L "${publication_dir}/SHA256SUMS" ]; then
+            echo "Marketplace publication inputs have an unexpected top-level layout" >&2
+            exit 1
+          fi
+          if find "${publication_dir}" -mindepth 1 -maxdepth 1 ! -name dist ! -name feature-flags.md ! -name SHA256SUMS -print -quit | grep -q .; then
+            echo "Marketplace publication inputs contain an unexpected path" >&2
+            exit 1
+          fi
+          if find "${publication_dir}/dist" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Marketplace publication asset directory contains an unexpected path" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${publication_dir}/feature-flags.md")" -gt 1048576 ] ||
+            [ "$(stat --format=%s "${publication_dir}/SHA256SUMS")" -gt 65536 ]; then
+            echo "Marketplace publication metadata exceeds its size limit" >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(find "${publication_dir}/dist" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -print | sort)
+          if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then
+            echo "Expected between 1 and 32 Marketplace publication assets, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          if [ "$(find "${publication_dir}/dist" -maxdepth 1 -type f | wc -l)" -ne "${#assets[@]}" ] ||
+            [ "$(find "${publication_dir}" -type f | wc -l)" -ne "$(( ${#assets[@]} + 2 ))" ]; then
+            echo "Marketplace publication inputs contain an unexpected file" >&2
+            exit 1
+          fi
+          if find "${publication_dir}/dist" -maxdepth 1 -type f -printf '%f\n' | grep -q '[[:space:]]'; then
+            echo "Marketplace publication asset names must not contain whitespace" >&2
+            exit 1
+          fi
+          if [ "$(find "${publication_dir}/dist" -maxdepth 1 -type f -name 'lopper-vscode-*.vsix' | wc -l)" -ne 1 ] ||
+            [ ! -f "${publication_dir}/dist/${expected_vsix}" ]; then
+            echo "Expected exactly one VSIX asset named ${expected_vsix}" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            if [ ! -s "${asset}" ]; then
+              echo "Marketplace publication asset ${asset} is empty" >&2
+              exit 1
+            fi
+            if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
+              echo "Marketplace publication asset ${asset} exceeds the 1 GiB limit" >&2
+              exit 1
+            fi
+          done
+
+          expected_paths="$(mktemp)"
+          manifest_paths="$(mktemp)"
+          trap 'rm -f "${expected_paths}" "${manifest_paths}"' EXIT
+          (
+            cd "${publication_dir}"
+            {
+              printf '%s\n' ./feature-flags.md
+              find ./dist -maxdepth 1 -type f -print
+            } | sort > "${expected_paths}"
+            if grep -Ev '^[0-9a-f]{64}  [.]\/(feature-flags[.]md|dist\/[A-Za-z0-9._+-]+([.]tar[.]gz|[.]zip|[.]vsix))$' SHA256SUMS | grep -q .; then
+              echo "Marketplace publication checksum manifest contains an unexpected path" >&2
+              exit 1
+            fi
+            awk '{print $2}' SHA256SUMS | sort > "${manifest_paths}"
+            if ! cmp --silent "${expected_paths}" "${manifest_paths}"; then
+              echo "Marketplace publication checksum manifest does not cover the exact file set" >&2
+              exit 1
+            fi
+            sha256sum --check --strict SHA256SUMS
+          )
+
+          if find "${artifact_dir}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Marketplace toolchain artifact contains a symlink or unexpected path" >&2
+            exit 1
+          fi
+          if [ "$(find "${artifact_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then
+            echo "Marketplace toolchain artifact must contain exactly an archive and checksum manifest" >&2
+            exit 1
+          fi
+          if [ ! -s "${archive_file}" ] || [ ! -f "${artifact_dir}/SHA256SUMS" ]; then
+            echo "Marketplace toolchain artifact is missing or empty" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "Marketplace toolchain archive exceeds the 256 MiB limit" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${artifact_dir}/SHA256SUMS")" -gt 1024 ]; then
+            echo "Marketplace toolchain checksum manifest exceeds its size limit" >&2
+            exit 1
+          fi
+          if [ "$(wc -l < "${artifact_dir}/SHA256SUMS")" -ne 1 ] ||
+            ! grep -Eq '^[0-9a-f]{64}  vsce-toolchain[.]tar[.]gz$' "${artifact_dir}/SHA256SUMS"; then
+            echo "Marketplace toolchain checksum manifest is invalid" >&2
+            exit 1
+          fi
+          (
+            cd "${artifact_dir}"
+            sha256sum --check --strict SHA256SUMS
+          )
+
+          python3 - "${archive_file}" <<'PY'
+          from pathlib import PurePosixPath
+          import sys
+          import tarfile
+
+          archive_path = sys.argv[1]
+          allowed_roots = {"package.json", "package-lock.json", "node_modules"}
+          required_regular = {
+              "package.json",
+              "package-lock.json",
+              "node_modules/@vscode/vsce/vsce",
+          }
+
+          def normalize(parts):
+              resolved = []
+              for part in parts:
+                  if part in ("", "."):
+                      continue
+                  if part == "..":
+                      if not resolved:
+                          return None
+                      resolved.pop()
+                      continue
+                  resolved.append(part)
+              return tuple(resolved)
+
+          with tarfile.open(archive_path, "r:gz") as archive:
+              members = archive.getmembers()
+
+          member_count = len(members)
+          total_size = 0
+          names = set()
+          regular_files = set()
+          symlinks = {}
+          for member in members:
+              if "\\" in member.name:
+                  raise SystemExit("Marketplace toolchain archive contains a backslash path")
+              path = PurePosixPath(member.name)
+              if path.is_absolute() or not path.parts or ".." in path.parts:
+                  raise SystemExit("Marketplace toolchain archive contains an unsafe path")
+              name = str(path)
+              if name in names or path.parts[0] not in allowed_roots:
+                  raise SystemExit("Marketplace toolchain archive contains a duplicate or unexpected path")
+              names.add(name)
+
+              if member.isfile():
+                  total_size += member.size
+                  regular_files.add(name)
+                  continue
+              if member.isdir():
+                  continue
+              if member.issym():
+                  if ".bin" not in path.parts or "\\" in member.linkname:
+                      raise SystemExit("Marketplace toolchain archive contains an unexpected symlink")
+                  link = PurePosixPath(member.linkname)
+                  if link.is_absolute():
+                      raise SystemExit("Marketplace toolchain archive contains an absolute symlink")
+                  resolved = normalize(path.parent.parts + link.parts)
+                  if not resolved or resolved[0] != "node_modules":
+                      raise SystemExit("Marketplace toolchain symlink escapes node_modules")
+                  symlinks[name] = "/".join(resolved)
+                  continue
+              if member.islnk() or not (member.isfile() or member.isdir()):
+                  raise SystemExit("Marketplace toolchain archive contains an unsupported file type")
+
+          if member_count < 3 or member_count > 65536:
+              raise SystemExit("Marketplace toolchain archive has an invalid entry count")
+          if total_size > 1073741824:
+              raise SystemExit("Marketplace toolchain archive exceeds the 1 GiB expanded size limit")
+          if not required_regular.issubset(regular_files):
+              raise SystemExit("Marketplace toolchain archive is missing a required regular file")
+          if symlinks.get("node_modules/.bin/vsce") != "node_modules/@vscode/vsce/vsce":
+              raise SystemExit("Marketplace VSCE launcher does not target the locked package")
+          PY
+
+          rm -rf "${toolchain_dir}"
+          mkdir -p "${toolchain_dir}"
+          chmod 0700 "${toolchain_dir}"
+          tar --extract --gzip --file "${archive_file}" --directory "${toolchain_dir}" --no-same-owner
+          while IFS= read -r -d '' link; do
+            resolved="$(realpath -e "${link}")"
+            case "${resolved}" in
+              "${toolchain_dir}"/node_modules/*) ;;
+              *)
+                echo "Marketplace toolchain symlink resolves outside node_modules" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find "${toolchain_dir}" -type l -print0)
+
+          test -x "${toolchain_dir}/node_modules/.bin/vsce"
+          if [ "$(realpath -e "${toolchain_dir}/node_modules/.bin/vsce")" != "$(realpath -e "${toolchain_dir}/node_modules/@vscode/vsce/vsce")" ]; then
+            echo "Extracted Marketplace VSCE launcher resolves outside the locked package" >&2
+            exit 1
+          fi
+          jq -e '.packages["node_modules/@vscode/vsce"] | .version == "3.9.2" and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json" >/dev/null
+          jq -e '.version == "3.9.2"' "${toolchain_dir}/node_modules/@vscode/vsce/package.json" >/dev/null
+          node_bin="$(command -v node)"
+          test -x "${node_bin}"
+
+      - name: Publish VS Code extension to Marketplace
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
+        run: |
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "VSCE publish token not configured; skipping marketplace publish."
+            exit 0
+          fi
+
+          vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"
+          vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"
+          "${vsce_bin}" publish --packagePath "${vsix_path}"
+
   publish:
     needs:
       - prepare-release
       - prepare-release-publication
+      - publish-marketplace
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -528,34 +891,6 @@ jobs:
             exit 1
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-
-      - name: Setup Node for VSIX publish
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24
-
-      - name: Prepare VS Code Marketplace tooling
-        run: |
-          set -euo pipefail
-          toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"
-          npm install --prefix "${toolchain_dir}" --no-audit --no-fund @vscode/vsce@3.9.2
-          test -x "${toolchain_dir}/node_modules/.bin/vsce"
-
-      - name: Publish VS Code extension to Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
-        run: |
-          set -euo pipefail
-          if [ -z "${VSCE_PAT:-}" ]; then
-            echo "VSCE publish token not configured; skipping marketplace publish."
-            exit 0
-          fi
-
-          vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"
-          test -x "$vsce_bin"
-          vsix_path="$(find publication-inputs/dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
-          test -n "$vsix_path"
-          "$vsce_bin" publish --packagePath "$vsix_path"
 
       - name: Publish GitHub Release
         env:
