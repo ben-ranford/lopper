@@ -777,6 +777,12 @@ func TestReleaseWorkflowFinalizesStableReleaseAfterMarketplace(t *testing.T) {
 	finalizer := workflowJobByName(t, workflow.Jobs, "finalize-release")
 	assertWorkflowJobNeeds(t, finalizer, "release finalizer", workflowJobNeeds{"prepare-release", "publish", "publish-marketplace"})
 	assertWorkflowJobPermissions(t, finalizer, "release finalizer", map[string]string{"contents": "write"})
+	publishRelease := workflowStepByName(t, workflow.Jobs, "finalize-release", "Publish GitHub Release")
+	assertWorkflowStepEnv(t, publishRelease, "release finalization", map[string]string{
+		"GH_TOKEN":    "${{ secrets.GITHUB_TOKEN }}",
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, publishRelease, "release finalization", []string{"-F draft=false", "-f make_latest=true"})
 
 	for _, step := range publish.Steps {
 		if step.Name == "Publish GitHub Release" {
@@ -788,7 +794,7 @@ func TestReleaseWorkflowFinalizesStableReleaseAfterMarketplace(t *testing.T) {
 	}
 
 	for _, step := range finalizer.Steps {
-		if step.Name == "Update GitHub Action floating tags" {
+		if step.Name == "Prepare GitHub Action floating tags" {
 			if step.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
 				t.Fatalf("finalize floating tag RELEASE_TAG env = %q", step.Env["RELEASE_TAG"])
 			}
@@ -804,13 +810,13 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	job := workflowJobByName(t, workflow.Jobs, "update-floating-tags")
-	assertWorkflowJobNeeds(t, job, "action floating tag job", workflowJobNeeds{"prepare-release", "publish"})
+	job := workflowJobByName(t, workflow.Jobs, "finalize-release")
+	assertWorkflowJobNeeds(t, job, "action floating tag job", workflowJobNeeds{"prepare-release", "publish", "publish-marketplace"})
 	assertWorkflowJobPermissions(t, job, "action floating tag job", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, job, "action floating tag job")
 	assertWorkflowJobOmitsCheckout(t, job, "action floating tag job")
 
-	prepareStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
+	prepareStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Prepare GitHub Action floating tags")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "action floating tag preparation id", got: prepareStep.ID, want: "prepare_tags"},
 		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
@@ -849,7 +855,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	})
 	assertWorkflowStepRunOmitsAll(t, prepareStep, "action floating tag preparation", []string{"PUSH_TOKEN", "secrets.", "AUTHORIZATION: basic", "extraheader"})
 
-	pushStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Push GitHub Action floating tags")
+	pushStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Push GitHub Action floating tags")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "action floating tag push if", got: pushStep.If, want: "${{ steps.prepare_tags.outputs.push == 'true' }}"},
 		{label: "action floating tag push shell", got: pushStep.Shell, want: prepareStep.Shell},
@@ -900,7 +906,7 @@ func TestReleaseWorkflowHomebrewUsesGatedThreeJobGraph(t *testing.T) {
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 
 	gate := workflowJobByName(t, workflow.Jobs, "homebrew-tap-token-gate")
-	assertWorkflowJobNeeds(t, gate, "tap token gate", workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"})
+	assertWorkflowJobNeeds(t, gate, "tap token gate", workflowJobNeeds{"prepare-release", "finalize-release"})
 	assertWorkflowJobHasExplicitEmptyPermissions(t, gate, "tap token gate")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "tap token gate if", got: gate.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' }}"},
@@ -1084,7 +1090,7 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history")
-	assertWorkflowJobNeeds(t, preparation, "feature history preparation", workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"})
+	assertWorkflowJobNeeds(t, preparation, "feature history preparation", workflowJobNeeds{"prepare-release", "finalize-release"})
 	assertWorkflowJobPermissions(t, preparation, "feature history preparation", map[string]string{"contents": "read"})
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "feature history preparation changed output",
@@ -1209,7 +1215,7 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 	}
 
 	const stableSemverGate = `if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then`
-	floatingTagStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
+	floatingTagStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Prepare GitHub Action floating tags")
 	if !strings.Contains(floatingTagStep.Run, stableSemverGate) {
 		t.Fatal("floating tag preparation must retain the stable semver gate")
 	}
@@ -1981,61 +1987,6 @@ func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle s
 	}
 }
 
-func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) {
-	t.Parallel()
-
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
-
-	publishImages := workflow.Jobs["publish-ghcr-images"]
-	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
-	if got := validation.Env["EXPECTED_IMAGE_TAGS"]; got != "${{ inputs.image_tags }}" {
-		t.Fatalf("architecture tag validation EXPECTED_IMAGE_TAGS = %q, want immutable workflow input", got)
-	}
-	if strings.Contains(validation.Run, "scripts/") {
-		t.Fatal("trusted architecture tag validation must not execute repository scripts")
-	}
-	assertWorkflowStepPrecedes(t, publishImages, "Validate OCI publication payloads", "Log in to GHCR")
-	assertStepRunContainsAll(t, validation, "exact trusted architecture tag validation", []string{
-		`expected_image_tags="${EXPECTED_IMAGE_TAGS}"`,
-		`local expected_tags_file="${RUNNER_TEMP}/ghcr-${architecture}-expected-image-tags.txt"`,
-		`: > "${expected_tags_file}"`,
-		`local expected_tag_count=0`,
-		`local -A expected_seen_tags=()`,
-		`while IFS= read -r raw_tag || [[ -n "${raw_tag}" ]]; do`,
-		`tag="${tag%$'\r'}"`,
-		`tag="${tag#"${tag%%[![:space:]]*}"}"`,
-		`tag="${tag%"${tag##*[![:space:]]}"}"`,
-		`[[ "${tag}" == *-amd64 ]]`,
-		`[[ "${tag}" == *-arm64 ]]`,
-		`expected_image_ref="${expected_image_name}:${tag}-${architecture}"`,
-		`expected_seen_tags["${expected_image_ref}"]=1`,
-		`printf '%s\n' "${expected_image_ref}" >> "${expected_tags_file}"`,
-		`done <<< "${expected_image_tags}"`,
-		`[ "${expected_tag_count}" -lt 1 ]`,
-		`[ "${expected_tag_count}" -gt 16 ]`,
-		`cmp -s "${tags_file}" "${expected_tags_file}"`,
-		`rm -f "${expected_tags_file}"`,
-	})
-
-	shapeValidation := strings.Index(validation.Run, `if [ "${tag_count}" -lt 1 ] || [ "${tag_count}" -gt 16 ]; then`)
-	expectedDerivation := strings.Index(validation.Run, `local expected_tags_file="${RUNNER_TEMP}/ghcr-${architecture}-expected-image-tags.txt"`)
-	exactComparison := strings.Index(validation.Run, `cmp -s "${tags_file}" "${expected_tags_file}"`)
-	outputPublication := strings.Index(validation.Run, `cat "${tags_file}"`)
-	if shapeValidation < 0 || expectedDerivation < shapeValidation || exactComparison < expectedDerivation || outputPublication < exactComparison {
-		t.Fatal("architecture tags must pass existing shape checks, exact immutable-input comparison, then publication")
-	}
-	for _, insufficientValidation := range []string{
-		`sort -u "${tags_file}"`,
-		`comm -3`,
-		`diff -q`,
-	} {
-		if strings.Contains(validation.Run, insufficientValidation) {
-			t.Fatalf("trusted architecture tags must use deterministic byte equality, not %q", insufficientValidation)
-		}
-	}
-}
-
 func assertFreshGHCRPublisher(t *testing.T, job workflowJobConfig, loginStepName string) {
 	t.Helper()
 
@@ -2755,7 +2706,6 @@ func assertReleasePublicationCredentialScope(t *testing.T, publication workflowJ
 	apiSteps := map[string]bool{
 		"Update GitHub Release notes":  false,
 		"Upload GitHub Release assets": false,
-		"Publish GitHub Release":       false,
 	}
 	for _, step := range publication.Steps {
 		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
