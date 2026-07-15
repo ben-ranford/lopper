@@ -332,6 +332,26 @@ func TestReleaseWorkflowManualDispatchFallsBackToDraftReleaseLookup(t *testing.T
 	}
 }
 
+func TestReleaseWorkflowMetadataCheckoutDoesNotPersistWriteToken(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release metadata")
+	if !strings.HasPrefix(step.Uses, "actions/checkout@") {
+		t.Fatalf("release metadata checkout uses %q, want actions/checkout", step.Uses)
+	}
+	if step.With["token"] != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("release metadata checkout token = %q, want GITHUB_TOKEN only", step.With["token"])
+	}
+	if step.With["persist-credentials"] != "false" {
+		t.Fatal("release metadata checkout must set persist-credentials: false so its write token is not stored in local git config")
+	}
+}
+
 func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *testing.T) {
 	t.Parallel()
 
