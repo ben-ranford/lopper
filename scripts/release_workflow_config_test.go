@@ -317,8 +317,8 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	step := workflowStepByName(t, workflow.Jobs, "publish", "Update GitHub Action floating tags")
-	if step.Shell != "bash" {
-		t.Fatalf("action floating tag step shell = %q, want bash", step.Shell)
+	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("action floating tag step shell = %q", step.Shell)
 	}
 	if step.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
 		t.Fatalf("action floating tag step RELEASE_TAG env = %q", step.Env["RELEASE_TAG"])
@@ -326,23 +326,32 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	if step.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
 		t.Fatalf("action floating tag step RELEASE_SHA env = %q", step.Env["RELEASE_SHA"])
 	}
+	if step.Env["PUSH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("action floating tag step PUSH_TOKEN env = %q", step.Env["PUSH_TOKEN"])
+	}
 
-	for _, want := range []string{
+	assertWorkflowStepRunContainsAll(t, step, "action floating tag step", []string{
+		"git_bin=/usr/bin/git",
+		`push_token="${PUSH_TOKEN}"`,
+		"unset PUSH_TOKEN",
+		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
+		"unset push_token",
+		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
+		`origin_fetch_urls="$(git_safe remote get-url --all origin)"`,
+		`origin_push_urls="$(git_safe remote get-url --push --all origin)"`,
+		"GIT_CONFIG_KEY_1=credential.helper",
+		"GIT_CONFIG_VALUE_1=",
+		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
+		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
 		`^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$`,
 		`major_tag="v${BASH_REMATCH[1]}"`,
 		`minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"`,
-		`push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"`,
-		`git tag --force "${major_tag}" "${RELEASE_SHA}"`,
-		`git tag --force "${minor_tag}" "${RELEASE_SHA}"`,
-		`git push --force "${push_url}" "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
-	} {
-		if !strings.Contains(step.Run, want) {
-			t.Fatalf("action floating tag step must contain %q", want)
-		}
-	}
-	if strings.Contains(step.Run, "git remote set-url origin") {
-		t.Fatal("action floating tag step must not persist push credentials in .git/config")
-	}
+		`git_safe tag --force "${major_tag}" "${RELEASE_SHA}"`,
+		`git_safe tag --force "${minor_tag}" "${RELEASE_SHA}"`,
+		`git_network push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
+	})
+	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, step, "action floating tag step")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, workflow.Jobs["publish"], "publish")
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
@@ -592,18 +601,31 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	if pushStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
 		t.Fatalf("push stamped history step if = %q", pushStep.If)
 	}
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("push stamped history step shell = %q", pushStep.Shell)
+	}
 	if pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("push stamped history step PUSH_TOKEN env = %q", pushStep.Env["PUSH_TOKEN"])
 	}
 	assertWorkflowStepRunContainsAll(t, pushStep, "push stamped history step", []string{
-		`push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"`,
-		`git fetch origin main:refs/remotes/origin/main`,
-		`git rebase origin/main`,
-		`git push "${push_url}" HEAD:main`,
+		"git_bin=/usr/bin/git",
+		`push_token="${PUSH_TOKEN}"`,
+		"unset PUSH_TOKEN",
+		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
+		"unset push_token",
+		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
+		`origin_fetch_urls="$(git_safe remote get-url --all origin)"`,
+		`origin_push_urls="$(git_safe remote get-url --push --all origin)"`,
+		"GIT_CONFIG_KEY_1=credential.helper",
+		"GIT_CONFIG_VALUE_1=",
+		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
+		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
+		`git_network fetch origin main:refs/remotes/origin/main`,
+		`git_safe rebase origin/main`,
+		`git_network push origin HEAD:main`,
 	})
-	if strings.Contains(pushStep.Run, "git remote set-url origin") {
-		t.Fatal("push stamped history step must not persist push credentials in .git/config")
-	}
+	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "push stamped history step")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, workflow.Jobs["stamp-feature-release-history"], "stamp-feature-release-history")
 }
 
 func TestReleaseWorkflowBuildsFeatureHistoryPatchWithTrustedMainTooling(t *testing.T) {
@@ -1062,6 +1084,52 @@ func assertWorkflowStepEnvMissing(t *testing.T, step workflowStepConfig, key str
 
 	if _, ok := step.Env[key]; ok {
 		t.Fatal(message)
+	}
+}
+
+func assertWorkflowStepKeepsGitCredentialsCommandScoped(t *testing.T, step workflowStepConfig, stepLabel string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"push_url=",
+		"https://x-access-token:",
+		"@github.com",
+		"git remote set-url",
+		"credential.helper store",
+		"persist-credentials: true",
+	} {
+		if strings.Contains(step.Run, forbidden) {
+			t.Fatalf("%s must not contain %q", stepLabel, forbidden)
+		}
+	}
+
+	for _, line := range strings.Split(step.Run, "\n") {
+		isGitCommand := strings.Contains(line, `"${git_bin}"`) ||
+			strings.Contains(line, "git_safe ") ||
+			strings.Contains(line, "git_network ")
+		if isGitCommand && (strings.Contains(line, "PUSH_TOKEN") ||
+			strings.Contains(line, "push_token") ||
+			strings.Contains(line, "auth_header")) {
+			t.Fatalf("%s must not place secret text in git argv: %q", stepLabel, strings.TrimSpace(line))
+		}
+	}
+}
+
+func assertWorkflowJobCheckoutsDisablePersistedCredentials(t *testing.T, job workflowJobConfig, jobLabel string) {
+	t.Helper()
+
+	checkoutCount := 0
+	for _, step := range job.Steps {
+		if !strings.HasPrefix(step.Uses, "actions/checkout@") {
+			continue
+		}
+		checkoutCount++
+		if step.With["persist-credentials"] != "false" {
+			t.Fatalf("%s checkout %q must set persist-credentials: false", jobLabel, step.Name)
+		}
+	}
+	if checkoutCount == 0 {
+		t.Fatalf("%s must contain a checkout step", jobLabel)
 	}
 }
 
