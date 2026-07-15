@@ -626,53 +626,34 @@ func TestReleaseWorkflowHomebrewUsesGatedThreeJobGraph(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 
-	gate := workflow.Jobs["homebrew-tap-token-gate"]
-	if !slices.Equal(gate.Needs, workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"}) {
-		t.Fatalf("tap token gate needs = %v", gate.Needs)
-	}
-	if gate.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
-		t.Fatalf("tap token gate if = %q", gate.If)
-	}
-	if gate.Permissions == nil || len(gate.Permissions) != 0 {
-		t.Fatalf("tap token gate permissions = %#v, want explicit empty permissions", gate.Permissions)
-	}
-	if gate.Outputs["configured"] != "${{ steps.gate.outputs.configured }}" {
-		t.Fatalf("tap token gate configured output = %q", gate.Outputs["configured"])
-	}
+	gate := workflowJobByName(t, workflow.Jobs, "homebrew-tap-token-gate")
+	assertWorkflowJobNeeds(t, gate, "tap token gate", workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"})
+	assertWorkflowJobHasExplicitEmptyPermissions(t, gate, "tap token gate")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "tap token gate if", got: gate.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' }}"},
+		{label: "tap token gate configured output", got: gate.Outputs["configured"], want: "${{ steps.gate.outputs.configured }}"},
+	})
 	gateStep := workflowStepByName(t, workflow.Jobs, "homebrew-tap-token-gate", "Detect tap token")
-	if gateStep.ID != "gate" {
-		t.Fatalf("tap token gate step id = %q", gateStep.ID)
-	}
-	if gateStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
-		t.Fatalf("tap token gate secret = %q", gateStep.Env["HOMEBREW_TAP_TOKEN"])
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "tap token gate step id", got: gateStep.ID, want: "gate"},
+		{label: "tap token gate secret", got: gateStep.Env["HOMEBREW_TAP_TOKEN"], want: "${{ secrets.HOMEBREW_TAP_TOKEN }}"},
+	})
 	assertWorkflowStepRunContainsAll(t, gateStep, "tap token gate step", []string{
 		`if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
 		`echo "configured=true" >> "$GITHUB_OUTPUT"`,
 		`echo "configured=false" >> "$GITHUB_OUTPUT"`,
 	})
 
-	validation := workflow.Jobs["validate-homebrew-tap"]
-	if !slices.Equal(validation.Needs, workflowJobNeeds{"prepare-release", "publish", "homebrew-tap-token-gate"}) {
-		t.Fatalf("tap validation needs = %v", validation.Needs)
-	}
-	if validation.If != "${{ needs.prepare-release.outputs.release_created == 'true' && needs.homebrew-tap-token-gate.outputs.configured == 'true' }}" {
-		t.Fatalf("tap validation if = %q", validation.If)
-	}
-	if len(validation.Permissions) != 1 || validation.Permissions["contents"] != "read" {
-		t.Fatalf("tap validation permissions = %#v", validation.Permissions)
-	}
-
-	publication := workflow.Jobs["update-homebrew-tap"]
-	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "publish", "validate-homebrew-tap"}) {
-		t.Fatalf("tap publication needs = %v", publication.Needs)
-	}
-	if publication.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
-		t.Fatalf("tap publication if = %q", publication.If)
-	}
-	if len(publication.Permissions) != 1 || publication.Permissions["contents"] != "read" {
-		t.Fatalf("tap publication permissions = %#v", publication.Permissions)
-	}
+	validation := workflowJobByName(t, workflow.Jobs, "validate-homebrew-tap")
+	assertWorkflowJobNeeds(t, validation, "tap validation", workflowJobNeeds{"prepare-release", "publish", "homebrew-tap-token-gate"})
+	assertWorkflowJobPermissions(t, validation, "tap validation", map[string]string{"contents": "read"})
+	publication := workflowJobByName(t, workflow.Jobs, "update-homebrew-tap")
+	assertWorkflowJobNeeds(t, publication, "tap publication", workflowJobNeeds{"prepare-release", "publish", "validate-homebrew-tap"})
+	assertWorkflowJobPermissions(t, publication, "tap publication", map[string]string{"contents": "read"})
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "tap validation if", got: validation.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' && needs.homebrew-tap-token-gate.outputs.configured == 'true' }}"},
+		{label: "tap publication if", got: publication.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' }}"},
+	})
 	if count := strings.Count(workflowText, "${{ secrets.HOMEBREW_TAP_TOKEN }}"); count != 2 {
 		t.Fatalf("release workflow tap secret references = %d, want gate and publication only", count)
 	}
@@ -829,31 +810,26 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	preparation, ok := workflow.Jobs["prepare-feature-release-history"]
-	if !ok {
-		t.Fatal("release workflow must prepare feature history changes in a separate job")
-	}
-	if !slices.Equal(preparation.Needs, workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"}) {
-		t.Fatalf("feature history preparation needs = %v", preparation.Needs)
-	}
-	if len(preparation.Permissions) != 1 || preparation.Permissions["contents"] != "read" {
-		t.Fatalf("feature history preparation permissions = %#v", preparation.Permissions)
-	}
-	if preparation.Outputs["changed"] != "${{ steps.stamp_history.outputs.changed }}" {
-		t.Fatalf("feature history preparation changed output = %q", preparation.Outputs["changed"])
-	}
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history")
+	assertWorkflowJobNeeds(t, preparation, "feature history preparation", workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"})
+	assertWorkflowJobPermissions(t, preparation, "feature history preparation", map[string]string{"contents": "read"})
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "feature history preparation changed output",
+		got:   preparation.Outputs["changed"],
+		want:  "${{ steps.stamp_history.outputs.changed }}",
+	}})
 	assertWorkflowJobOmitsText(t, preparation, "PUSH_TOKEN", "feature history preparation must not receive a push token")
 	assertWorkflowJobOmitsText(t, preparation, "secrets.", "feature history preparation must not receive secrets")
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-feature-release-history")
 
 	trustedCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout trusted main tooling")
-	if trustedCheckout.With["ref"] != "main" || trustedCheckout.With["path"] != "" {
-		t.Fatalf("trusted tooling checkout config = %#v", trustedCheckout.With)
-	}
 	releaseCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout validated release data")
-	if releaseCheckout.With["ref"] != "${{ needs.prepare-release.outputs.sha }}" || releaseCheckout.With["path"] != "release-source" {
-		t.Fatalf("validated release data checkout config = %#v", releaseCheckout.With)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "trusted tooling checkout ref", got: trustedCheckout.With["ref"], want: "main"},
+		{label: "trusted tooling checkout path", got: trustedCheckout.With["path"], want: ""},
+		{label: "validated release data checkout ref", got: releaseCheckout.With["ref"], want: "${{ needs.prepare-release.outputs.sha }}"},
+		{label: "validated release data checkout path", got: releaseCheckout.With["path"], want: "release-source"},
+	})
 
 	validateStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate release data against trusted main")
 	assertWorkflowStepRunContainsAll(t, validateStep, "release data validation step", []string{
@@ -862,17 +838,14 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 		`if ! git merge-base --is-ancestor "${release_commit}" HEAD; then`,
 	})
 	buildStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Build trusted feature flag tool")
-	if buildStep.WorkingDirectory != "" || !strings.Contains(buildStep.Run, `go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag`) {
-		t.Fatalf("trusted feature flag build config = %#v", buildStep)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{{label: "trusted feature flag build working directory", got: buildStep.WorkingDirectory, want: ""}})
+	assertTextContainsAll(t, buildStep.Run, "trusted feature flag build step", []string{`go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag`})
 
 	stampStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Stamp first stable release history")
-	if stampStep.ID != "stamp_history" {
-		t.Fatalf("stamp history step id = %q, want stamp_history", stampStep.ID)
-	}
-	if stampStep.WorkingDirectory != "release-source" {
-		t.Fatalf("stamp history working directory = %q, want release-source", stampStep.WorkingDirectory)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "stamp history step id", got: stampStep.ID, want: "stamp_history"},
+		{label: "stamp history working directory", got: stampStep.WorkingDirectory, want: "release-source"},
+	})
 	assertWorkflowStepEnvMissing(t, stampStep, "PUSH_TOKEN", "stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
 	assertWorkflowStepRunContainsAll(t, stampStep, "stamp history step", []string{
 		`"${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"`,
@@ -880,19 +853,13 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 		`echo "changed=false" >> "$GITHUB_OUTPUT"`,
 		`echo "changed=true" >> "$GITHUB_OUTPUT"`,
 	})
-	for _, forbidden := range []string{"git commit", "git push", "PUSH_TOKEN"} {
-		if strings.Contains(stampStep.Run, forbidden) {
-			t.Fatalf("stamp history step must not contain %q", forbidden)
-		}
-	}
+	assertWorkflowStepRunOmitsAll(t, stampStep, "stamp history step", []string{"git commit", "git push", "PUSH_TOKEN"})
 
 	patchStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate and stage feature history patch")
-	if patchStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
-		t.Fatalf("feature history patch step if = %q", patchStep.If)
-	}
-	if patchStep.WorkingDirectory != "release-source" {
-		t.Fatalf("feature history patch working directory = %q, want release-source", patchStep.WorkingDirectory)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature history patch step if", got: patchStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
+		{label: "feature history patch working directory", got: patchStep.WorkingDirectory, want: "release-source"},
+	})
 	assertWorkflowStepRunContainsAll(t, patchStep, "feature history patch step", []string{
 		`mapfile -t changed_files < <(git diff --name-only)`,
 		`if [ "${#changed_files[@]}" -ne 1 ] || [ "${changed_files[0]}" != "internal/featureflags/features.json" ]; then`,
@@ -903,51 +870,30 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	assertWorkflowStepEnvMissing(t, patchStep, "PUSH_TOKEN", "feature history patch staging must be tokenless")
 
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Upload feature history patch")
-	if uploadStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
-		t.Fatalf("feature history patch upload if = %q", uploadStep.If)
-	}
-	if uploadStep.With["name"] != "feature-history-patch" || !strings.Contains(uploadStep.With["path"], ".artifacts/feature-history.patch") || !strings.Contains(uploadStep.With["path"], ".artifacts/SHA256SUMS") {
-		t.Fatalf("feature history patch artifact config = %#v", uploadStep.With)
-	}
-	if uploadStep.With["if-no-files-found"] != "error" {
-		t.Fatalf("feature history patch artifact missing-file behavior = %q", uploadStep.With["if-no-files-found"])
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature history patch upload if", got: uploadStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
+		{label: "feature history patch artifact name", got: uploadStep.With["name"], want: "feature-history-patch"},
+		{label: "feature history patch artifact missing-file behavior", got: uploadStep.With["if-no-files-found"], want: "error"},
+	})
+	assertTextContainsAll(t, uploadStep.With["path"], "feature history patch artifact path", []string{".artifacts/feature-history.patch", ".artifacts/SHA256SUMS"})
+	assertFeatureHistoryPreparationDoesNotPush(t, preparation)
 
-	for _, step := range preparation.Steps {
-		if strings.Contains(step.Name, "Push") || strings.Contains(step.Run, "git push") {
-			t.Fatalf("feature history preparation must not push from release-source: %q", step.Name)
-		}
-	}
-
-	publication, ok := workflow.Jobs["push-feature-release-history"]
-	if !ok {
-		t.Fatal("release workflow must push feature history from a separate fresh job")
-	}
-	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "prepare-feature-release-history"}) {
-		t.Fatalf("feature history publication needs = %v", publication.Needs)
-	}
-	if publication.If != "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}" {
-		t.Fatalf("feature history publication if = %q", publication.If)
-	}
-	if len(publication.Permissions) != 1 || publication.Permissions["contents"] != "write" {
-		t.Fatalf("feature history publication permissions = %#v", publication.Permissions)
-	}
-	if len(publication.Env) != 0 {
-		t.Fatalf("feature history publication job env = %#v, want no job-scoped credentials", publication.Env)
-	}
-	for _, step := range publication.Steps {
-		if strings.HasPrefix(step.Uses, "actions/checkout@") {
-			t.Fatalf("feature history publication must use a fresh host-Git clone, found checkout step %q", step.Name)
-		}
-		if step.WorkingDirectory == "release-source" || strings.Contains(step.Run, "release-source") {
-			t.Fatalf("feature history publication must not reuse release-source: %q", step.Name)
-		}
-	}
+	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
+	assertWorkflowJobNeeds(t, publication, "feature history publication", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobPermissions(t, publication, "feature history publication", map[string]string{"contents": "write"})
+	assertWorkflowJobEnvEmpty(t, publication, "feature history publication")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "feature history publication if",
+		got:   publication.If,
+		want:  "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}",
+	}})
+	assertFeatureHistoryPublicationUsesFreshInputs(t, publication)
 
 	downloadStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download feature history patch")
-	if downloadStep.With["name"] != "feature-history-patch" || downloadStep.With["path"] != "feature-history-input" {
-		t.Fatalf("feature history patch download config = %#v", downloadStep.With)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature history patch download artifact name", got: downloadStep.With["name"], want: "feature-history-patch"},
+		{label: "feature history patch download artifact path", got: downloadStep.With["path"], want: "feature-history-input"},
+	})
 }
 
 func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.T) {
@@ -1498,6 +1444,14 @@ func assertWorkflowJobPermissions(t *testing.T, job workflowJobConfig, jobLabel 
 	}
 }
 
+func assertWorkflowJobHasExplicitEmptyPermissions(t *testing.T, job workflowJobConfig, jobLabel string) {
+	t.Helper()
+
+	if job.Permissions == nil || len(job.Permissions) != 0 {
+		t.Fatalf("%s permissions = %#v, want explicit empty permissions", jobLabel, job.Permissions)
+	}
+}
+
 func assertWorkflowJobEnvEmpty(t *testing.T, job workflowJobConfig, jobLabel string) {
 	t.Helper()
 
@@ -1540,6 +1494,29 @@ func assertReleasePublicationOmitsCheckoutAndCommands(t *testing.T, publication 
 			if strings.Contains(step.Run, repositoryCommand) {
 				t.Fatalf("fresh release publication step %q must not execute repository-controlled command %q", step.Name, repositoryCommand)
 			}
+		}
+	}
+}
+
+func assertFeatureHistoryPreparationDoesNotPush(t *testing.T, preparation workflowJobConfig) {
+	t.Helper()
+
+	for _, step := range preparation.Steps {
+		if strings.Contains(step.Name, "Push") || strings.Contains(step.Run, "git push") {
+			t.Fatalf("feature history preparation must not push from release-source: %q", step.Name)
+		}
+	}
+}
+
+func assertFeatureHistoryPublicationUsesFreshInputs(t *testing.T, publication workflowJobConfig) {
+	t.Helper()
+
+	for _, step := range publication.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("feature history publication must use a fresh host-Git clone, found checkout step %q", step.Name)
+		}
+		if step.WorkingDirectory == "release-source" || strings.Contains(step.Run, "release-source") {
+			t.Fatalf("feature history publication must not reuse release-source: %q", step.Name)
 		}
 	}
 }
