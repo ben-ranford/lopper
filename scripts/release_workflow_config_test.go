@@ -332,6 +332,11 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 
 	assertWorkflowStepRunContainsAll(t, step, "action floating tag step", []string{
 		"git_bin=/usr/bin/git",
+		"env_bin=/usr/bin/env",
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`"${env_bin}" -i`,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
 		`push_token="${PUSH_TOKEN}"`,
 		"unset PUSH_TOKEN",
 		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
@@ -339,6 +344,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
 		`origin_fetch_urls="$(git_safe remote get-url --all origin)"`,
 		`origin_push_urls="$(git_safe remote get-url --push --all origin)"`,
+		`if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then`,
 		"GIT_CONFIG_KEY_1=credential.helper",
 		"GIT_CONFIG_VALUE_1=",
 		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
@@ -609,6 +615,11 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	}
 	assertWorkflowStepRunContainsAll(t, pushStep, "push stamped history step", []string{
 		"git_bin=/usr/bin/git",
+		"env_bin=/usr/bin/env",
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`"${env_bin}" -i`,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
 		`push_token="${PUSH_TOKEN}"`,
 		"unset PUSH_TOKEN",
 		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
@@ -616,6 +627,7 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
 		`origin_fetch_urls="$(git_safe remote get-url --all origin)"`,
 		`origin_push_urls="$(git_safe remote get-url --push --all origin)"`,
+		`if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then`,
 		"GIT_CONFIG_KEY_1=credential.helper",
 		"GIT_CONFIG_VALUE_1=",
 		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
@@ -1104,13 +1116,16 @@ func assertWorkflowStepKeepsGitCredentialsCommandScoped(t *testing.T, step workf
 	}
 
 	for _, line := range strings.Split(step.Run, "\n") {
-		isGitCommand := strings.Contains(line, `"${git_bin}"`) ||
+		trimmed := strings.TrimSpace(line)
+		isGitCommand := strings.HasPrefix(trimmed, "git ") ||
+			strings.Contains(trimmed, " git ") ||
+			strings.Contains(line, `"${git_bin}"`) ||
 			strings.Contains(line, "git_safe ") ||
 			strings.Contains(line, "git_network ")
 		if isGitCommand && (strings.Contains(line, "PUSH_TOKEN") ||
 			strings.Contains(line, "push_token") ||
 			strings.Contains(line, "auth_header")) {
-			t.Fatalf("%s must not place secret text in git argv: %q", stepLabel, strings.TrimSpace(line))
+			t.Fatalf("%s must not place secret text in git argv: %q", stepLabel, trimmed)
 		}
 	}
 }

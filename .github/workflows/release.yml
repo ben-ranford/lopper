@@ -455,13 +455,66 @@ jobs:
             -f make_latest=true >/dev/null
 
       - name: Update GitHub Action floating tags
-        shell: bash
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
           PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for the floating tag update step." >&2
+            exit 1
+          fi
+          push_token="${PUSH_TOKEN}"
+          unset PUSH_TOKEN
+          if [ -z "${push_token}" ]; then
+            echo "::error::No token is available to update floating tags." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
 
           if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
             echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
@@ -470,13 +523,22 @@ jobs:
 
           major_tag="v${BASH_REMATCH[1]}"
           minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-          push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          origin_fetch_urls="$(git_safe remote get-url --all origin)"
+          origin_push_urls="$(git_safe remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to update floating tags through an unexpected origin." >&2
+            exit 1
+          fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force "${major_tag}" "${RELEASE_SHA}"
-          git tag --force "${minor_tag}" "${RELEASE_SHA}"
-          git push --force "${push_url}" "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
+          git_safe config user.name "github-actions[bot]"
+          git_safe config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_safe tag --force "${major_tag}" "${RELEASE_SHA}"
+          git_safe tag --force "${minor_tag}" "${RELEASE_SHA}"
+
+          auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset push_token
+          git_network push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
 
   homebrew-tap-token-gate:
     needs:
@@ -842,29 +904,93 @@ jobs:
       - name: Push stamped feature release history
         if: ${{ steps.stamp_history.outputs.changed == 'true' }}
         working-directory: release-source
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
           PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          push_url="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for the feature history push step." >&2
+            exit 1
+          fi
+          push_token="${PUSH_TOKEN}"
+          unset PUSH_TOKEN
+          if [ -z "${push_token}" ]; then
+            echo "::error::No token is available to push feature release history." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
+
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          origin_fetch_urls="$(git_safe remote get-url --all origin)"
+          origin_push_urls="$(git_safe remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to push feature release history through an unexpected origin." >&2
+            exit 1
+          fi
+
+          auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset push_token
 
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for feature release history"
-            if ! git fetch origin main:refs/remotes/origin/main; then
+            if ! git_network fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
-              sleep 2
+              /bin/sleep 2
               continue
             fi
-            if ! git rebase origin/main; then
+            if ! git_safe rebase origin/main; then
               echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              git rebase --abort || true
-              sleep 2
+              git_safe rebase --abort || true
+              /bin/sleep 2
               continue
             fi
-            if git push "${push_url}" HEAD:main; then
+            if git_network push origin HEAD:main; then
               exit 0
             fi
-            sleep 2
+            /bin/sleep 2
           done
 
           echo "Failed to push feature release history after retries" >&2
