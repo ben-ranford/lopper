@@ -214,6 +214,15 @@ func TestRejectLexicalOutputRootSymlinksAllowsRegularExistingPath(t *testing.T) 
 	}
 }
 
+func TestRejectLexicalOutputRootPathRejectsDisappearedPath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "disappeared")
+
+	err := rejectLexicalOutputRootPath(missing)
+	if !os.IsNotExist(err) {
+		t.Fatalf("expected missing output root error, got %v", err)
+	}
+}
+
 func TestRejectLexicalOutputRootSymlinksAllowsKnownDarwinAliasRoot(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("known system alias roots only apply on darwin")
@@ -685,6 +694,16 @@ func TestEnsureCommandOutputParentPropagatesRootResolutionError(t *testing.T) {
 		err := ensureCommandOutputParent("reports", "report.json")
 		if err == nil || !strings.Contains(err.Error(), "resolve output root") {
 			t.Fatalf("expected output root resolution failure, got %v", err)
+		}
+	})
+}
+
+func TestEnsureCommandOutputParentPropagatesOutputResolutionError(t *testing.T) {
+	root := t.TempDir()
+	withUnreadableWorkingDirectory(t, func() {
+		err := ensureCommandOutputParent(root, "report.json")
+		if err == nil || !strings.Contains(err.Error(), "resolve output path") {
+			t.Fatalf("expected output path resolution failure, got %v", err)
 		}
 	})
 }
