@@ -217,17 +217,20 @@ func trustedCommandOutputRootForRoot(outputAbs, root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		if withinWorkspace {
+			return "", fmt.Errorf("resolve trusted output workspace: %w", err)
+		}
+		return "", nil
+	}
 	if withinWorkspace {
-		if err := validateTrustedCommandOutputRoot(rootAbs); err != nil {
+		if err := validateTrustedCommandOutputRoot(resolvedRoot); err != nil {
 			return "", err
 		}
 		return rootAbs, nil
 	}
 
-	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return "", nil
-	}
 	return resolveAliasedWorkspaceRoot(outputAbs, resolvedRoot)
 }
 
