@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -99,7 +101,18 @@ func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []strin
 }
 
 func isGitWorktree(ctx context.Context, repoPath string) (bool, error) {
-	command, err := gitCommandContext(ctx, repoPath, gitRevParseSubcommand, "--is-inside-work-tree")
+	gitPath, err := resolveGitBinaryPathFn()
+	if err != nil {
+		hasGitMetadata, inspectErr := hasGitMetadataInAncestry(repoPath)
+		if inspectErr != nil {
+			return false, errors.Join(fmt.Errorf("resolve git binary: %w", err), fmt.Errorf("inspect git metadata: %w", inspectErr))
+		}
+		if !hasGitMetadata {
+			return false, nil
+		}
+		return false, err
+	}
+	command, err := gitCommandContextWithBinary(ctx, gitPath, repoPath, gitRevParseSubcommand, "--is-inside-work-tree")
 	if err != nil {
 		return false, err
 	}
@@ -119,6 +132,30 @@ func isGitWorktree(ctx context.Context, repoPath string) (bool, error) {
 		return false, nil
 	default:
 		return false, fmt.Errorf("run git rev-parse --is-inside-work-tree: unexpected output %q", strings.TrimSpace(string(output)))
+	}
+}
+
+func hasGitMetadataInAncestry(path string) (bool, error) {
+	searchDir, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	searchDir, err = filepath.EvalSymlinks(searchDir)
+	if err != nil {
+		return false, err
+	}
+
+	for {
+		if _, err := os.Lstat(filepath.Join(searchDir, ".git")); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		parent := filepath.Dir(searchDir)
+		if parent == searchDir {
+			return false, nil
+		}
+		searchDir = parent
 	}
 }
 
@@ -281,12 +318,16 @@ func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []str
 }
 
 func gitCommandContext(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	gitPath, err := resolveGitBinaryPathFn()
 	if err != nil {
 		return nil, err
+	}
+	return gitCommandContextWithBinary(ctx, gitPath, repoPath, args...)
+}
+
+func gitCommandContextWithBinary(ctx context.Context, gitPath, repoPath string, args ...string) (*exec.Cmd, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	commandArgs := append(gitexec.SafeConfigArgs(), "-C", repoPath)
 	commandArgs = append(commandArgs, args...)

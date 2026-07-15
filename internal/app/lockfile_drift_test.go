@@ -991,6 +991,7 @@ func TestGitHelpersWhenGitUnavailable(t *testing.T) {
 	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
 	if _, err := isGitWorktree(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected worktree detection error for missing git executable, got %v", err)
 	}

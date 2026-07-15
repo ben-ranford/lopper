@@ -300,7 +300,10 @@ func TestGitChangedFilesForCodemodPropagatesWorktreeDetectionError(t *testing.T)
 	resolveGitBinaryPathFn = func() (string, error) { return "", forcedErr }
 	t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
 
-	_, _, err := gitChangedFilesForCodemod(context.Background(), t.TempDir())
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	writeTextFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o600)
+	_, _, err := gitChangedFilesForCodemod(context.Background(), repo)
 	if !errors.Is(err, forcedErr) {
 		t.Fatalf("expected codemod worktree detection error, got %v", err)
 	}

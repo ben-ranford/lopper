@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,18 @@ func TestDetectLockfileDriftPlainDirectoryWithoutGitBinary(t *testing.T) {
 	}
 }
 
+func TestGitWorktreeDetectionMissingBinaryFailsClosedWhenMetadataCannotBeInspected(t *testing.T) {
+	original := resolveGitBinaryPathFn
+	forcedErr := errors.New(gitExecutableNotFoundErr)
+	resolveGitBinaryPathFn = func() (string, error) { return "", forcedErr }
+	t.Cleanup(func() { resolveGitBinaryPathFn = original })
+
+	_, err := isGitWorktree(context.Background(), filepath.Join(t.TempDir(), "missing"))
+	if !errors.Is(err, forcedErr) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected binary resolution and metadata inspection errors, got %v", err)
+	}
+}
+
 func TestDetectLockfileDriftStopOnFirstBatchesGitContextAcrossDirectories(t *testing.T) {
 	repo := t.TempDir()
 	const candidateDirs = gitPathspecBatchPaths/2 + 1
@@ -80,9 +93,32 @@ func TestDetectLockfileDriftStopOnFirstPropagatesGitDetectionErrors(t *testing.T
 		resolveGitBinaryPathFn = func() (string, error) { return "", forcedErr }
 		t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
 
-		_, err := detectLockfileDrift(context.Background(), t.TempDir(), true)
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+		_, err := detectLockfileDrift(context.Background(), repo, true)
 		if !errors.Is(err, forcedErr) {
 			t.Fatalf("expected git detection construction error, got %v", err)
+		}
+	})
+
+	t.Run("command factory", func(t *testing.T) {
+		originalResolve := resolveGitBinaryPathFn
+		originalExec := execGitCommandContextFn
+		forcedErr := errors.New("forced git command factory failure")
+		resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+		execGitCommandContextFn = func(context.Context, string, ...string) (*exec.Cmd, error) {
+			return nil, forcedErr
+		}
+		t.Cleanup(func() {
+			resolveGitBinaryPathFn = originalResolve
+			execGitCommandContextFn = originalExec
+		})
+
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+		_, err := detectLockfileDrift(context.Background(), repo, true)
+		if !errors.Is(err, forcedErr) {
+			t.Fatalf("expected git command factory error, got %v", err)
 		}
 	})
 
