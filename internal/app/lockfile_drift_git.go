@@ -41,6 +41,18 @@ type gitFilterPathDriver struct {
 	driver string
 }
 
+type lockfileDriftFilterAmbiguityError struct {
+	assignments []gitFilterPathDriver
+}
+
+func (e *lockfileDriftFilterAmbiguityError) Error() string {
+	parts := make([]string, 0, len(e.assignments))
+	for _, assignment := range e.assignments {
+		parts = append(parts, fmt.Sprintf("%s (%s)", assignment.path, assignment.driver))
+	}
+	return fmt.Sprintf("cannot safely evaluate lockfile drift: active custom git filter drivers on %s", strings.Join(parts, ", "))
+}
+
 func collectLockfileGitContext(ctx context.Context, repoPath string, rules []lockfileRule) (lockfileGitContext, error) {
 	isWorktree, err := isGitWorktree(ctx, repoPath)
 	if err != nil {
@@ -531,11 +543,7 @@ func gitFilterDriverFromExecutableConfigKey(key string) (string, bool) {
 }
 
 func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) error {
-	parts := make([]string, 0, len(assignments))
-	for _, assignment := range assignments {
-		parts = append(parts, fmt.Sprintf("%s (%s)", assignment.path, assignment.driver))
-	}
-	return fmt.Errorf("cannot safely evaluate lockfile drift: active custom git filter drivers on %s", strings.Join(parts, ", "))
+	return &lockfileDriftFilterAmbiguityError{assignments: assignments}
 }
 
 func parseGitCheckAttrFilterPathDrivers(paths []string, output []byte) ([]gitFilterPathDriver, error) {

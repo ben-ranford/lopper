@@ -222,9 +222,30 @@ func (s *lockfileFailFastBatchScanner) flush(ctx context.Context) error {
 	}
 	gitContext, err := collectLockfileGitContextForPaths(ctx, s.repoPath, candidatePaths)
 	if err != nil {
-		return err
+		var filterErr *lockfileDriftFilterAmbiguityError
+		if !errors.As(err, &filterErr) {
+			return err
+		}
+		return s.flushSnapshotsInOrder(ctx, snapshots)
 	}
 	for _, snapshot := range snapshots {
+		if err := s.recordFirst(snapshot, gitContext); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *lockfileFailFastBatchScanner) flushSnapshotsInOrder(ctx context.Context, snapshots []lockfileDirSnapshot) error {
+	for _, snapshot := range snapshots {
+		candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, s.rules)
+		if err != nil {
+			return err
+		}
+		gitContext, err := collectLockfileGitContextForPaths(ctx, s.repoPath, candidatePaths)
+		if err != nil {
+			return err
+		}
 		if err := s.recordFirst(snapshot, gitContext); err != nil {
 			return err
 		}
