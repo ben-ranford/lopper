@@ -18,6 +18,47 @@ const (
 	closeTempFileErrFmt = "close temp file: %v"
 )
 
+func openTestWriteRoot(t *testing.T, rootDir string, open func(string) (*WriteRoot, error)) *WriteRoot {
+	t.Helper()
+	root, err := open(rootDir)
+	if err != nil {
+		t.Fatalf("open test write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close test write root: %v", closeErr)
+		}
+	})
+	return root
+}
+
+func changedDirectoryTestRoot(t *testing.T) (*fakeRoot, *bool) {
+	t.Helper()
+	expectedInfo := statTestPath(t, t.TempDir())
+	changedInfo := statTestPath(t, t.TempDir())
+	childClosed := false
+	child := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil },
+		close: func() error {
+			childClosed = true
+			return nil
+		},
+	}
+	root := &fakeRoot{
+		lstat:    func(string) (fs.FileInfo, error) { return expectedInfo, nil },
+		openRoot: func(string) (Root, error) { return child, nil },
+	}
+	return root, &childClosed
+}
+
+func assertWriteRootRejectsParent(t *testing.T, root *WriteRoot, wantError, failureMessage string) {
+	t.Helper()
+	err := root.WriteFileCreatingParents(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750)
+	if err == nil || !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("%s, got %v", failureMessage, err)
+	}
+}
+
 func TestWriteFileUnderWritesFileInsideRoot(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, "nested", writeTestFileName)
@@ -211,15 +252,7 @@ func TestWriteFileUnderReturnsErrorForMissingParentDir(t *testing.T) {
 
 func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
 	rootDir := t.TempDir()
-	root, err := OpenWriteRoot(rootDir)
-	if err != nil {
-		t.Fatalf("OpenWriteRoot returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close write root: %v", closeErr)
-		}
-	})
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
 
 	targetPath := filepath.Join("reports", "nested", writeTestFileName)
 	if err := root.WriteFileCreatingParents(targetPath, []byte("hello"), 0o640, 0o750); err != nil {
@@ -278,15 +311,7 @@ func TestOpenCanonicalWriteRootWritesInsideCanonicalRoot(t *testing.T) {
 		t.Fatalf("resolve canonical root: %v", err)
 	}
 
-	root, err := OpenCanonicalWriteRoot(canonicalRoot)
-	if err != nil {
-		t.Fatalf("OpenCanonicalWriteRoot returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close canonical write root: %v", closeErr)
-		}
-	})
+	root := openTestWriteRoot(t, canonicalRoot, OpenCanonicalWriteRoot)
 
 	targetPath := filepath.Join("reports", "nested", writeTestFileName)
 	if err := root.WriteFileCreatingParents(targetPath, []byte("canonical"), 0o640, 0o750); err != nil {
@@ -438,20 +463,7 @@ func TestOpenRootChildNoFollowJoinsChildLookupAndCloseErrors(t *testing.T) {
 }
 
 func TestOpenRootChildNoFollowRejectsChangedDirectory(t *testing.T) {
-	expectedInfo := statTestPath(t, t.TempDir())
-	changedInfo := statTestPath(t, t.TempDir())
-	childClosed := false
-	child := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil },
-		close: func() error {
-			childClosed = true
-			return nil
-		},
-	}
-	root := &fakeRoot{
-		lstat:    func(string) (fs.FileInfo, error) { return expectedInfo, nil },
-		openRoot: func(string) (Root, error) { return child, nil },
-	}
+	root, childClosed := changedDirectoryTestRoot(t)
 
 	opened, err := openRootChildNoFollow(root, "child", "/root/child")
 	if opened != nil {
@@ -460,7 +472,7 @@ func TestOpenRootChildNoFollowRejectsChangedDirectory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "root changed while opening") {
 		t.Fatalf("expected changed-directory error, got %v", err)
 	}
-	if !childClosed {
+	if !*childClosed {
 		t.Fatal("expected changed child root to be closed")
 	}
 }
@@ -538,20 +550,8 @@ func TestWriteRootRejectsSymlinkedParent(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(rootDir, "reports")); err != nil {
 		t.Fatalf("create reports symlink: %v", err)
 	}
-	root, err := OpenWriteRoot(rootDir)
-	if err != nil {
-		t.Fatalf("OpenWriteRoot returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close write root: %v", closeErr)
-		}
-	})
-
-	err = root.WriteFileCreatingParents(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750)
-	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
-		t.Fatalf("expected symlinked parent rejection, got %v", err)
-	}
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	assertWriteRootRejectsParent(t, root, "output parent contains symlink", "expected symlinked parent rejection")
 	data, readErr := os.ReadFile(outsideTarget)
 	if readErr != nil {
 		t.Fatalf("read outside target: %v", readErr)
@@ -566,20 +566,8 @@ func TestWriteRootRejectsNonDirectoryParent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootDir, "reports"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("write non-directory parent: %v", err)
 	}
-	root, err := OpenWriteRoot(rootDir)
-	if err != nil {
-		t.Fatalf("OpenWriteRoot returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close write root: %v", closeErr)
-		}
-	})
-
-	err = root.WriteFileCreatingParents(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750)
-	if err == nil || !strings.Contains(err.Error(), "output parent is not a directory") {
-		t.Fatalf("expected non-directory parent rejection, got %v", err)
-	}
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	assertWriteRootRejectsParent(t, root, "output parent is not a directory", "expected non-directory parent rejection")
 }
 
 func TestOpenTargetParentChildPropagatesOpenError(t *testing.T) {
@@ -630,20 +618,7 @@ func TestOpenTargetParentChildClosesChildOnLookupError(t *testing.T) {
 }
 
 func TestOpenTargetParentChildRejectsChangedDirectory(t *testing.T) {
-	expectedInfo := statTestPath(t, t.TempDir())
-	changedInfo := statTestPath(t, t.TempDir())
-	childClosed := false
-	child := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil },
-		close: func() error {
-			childClosed = true
-			return nil
-		},
-	}
-	root := &fakeRoot{
-		lstat:    func(string) (fs.FileInfo, error) { return expectedInfo, nil },
-		openRoot: func(string) (Root, error) { return child, nil },
-	}
+	root, childClosed := changedDirectoryTestRoot(t)
 
 	opened, err := openTargetParentChild(root, "parent", "/root/parent", false, 0)
 	if opened != nil {
@@ -652,7 +627,7 @@ func TestOpenTargetParentChildRejectsChangedDirectory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "output parent changed while opening") {
 		t.Fatalf("expected changed parent error, got %v", err)
 	}
-	if !childClosed {
+	if !*childClosed {
 		t.Fatal("expected changed parent root to be closed")
 	}
 }
