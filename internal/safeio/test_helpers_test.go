@@ -80,11 +80,23 @@ func openTestRoot(t *testing.T, rootDir string) Root {
 	return root
 }
 
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(data) != want {
+		t.Fatalf("unexpected content for %s: %q", path, string(data))
+	}
+}
+
 type fakeFileSystem struct {
-	base     FileSystem
-	abs      func(path string) (string, error)
-	rel      func(basepath, targpath string) (string, error)
-	openRoot func(name string) (Root, error)
+	base             FileSystem
+	abs              func(path string) (string, error)
+	rel              func(basepath, targpath string) (string, error)
+	openRoot         func(name string) (Root, error)
+	openRootNoFollow func(name string) (Root, error)
 }
 
 func (f *fakeFileSystem) fallback() FileSystem {
@@ -115,12 +127,23 @@ func (f *fakeFileSystem) OpenRoot(name string) (Root, error) {
 	return f.fallback().OpenRoot(name)
 }
 
+func (f *fakeFileSystem) OpenRootNoFollow(name string) (Root, error) {
+	if f.openRootNoFollow != nil {
+		return f.openRootNoFollow(name)
+	}
+	if f.openRoot != nil {
+		return f.openRoot(name)
+	}
+	return f.fallback().OpenRootNoFollow(name)
+}
+
 type fakeRoot struct {
 	Root
 	open     func(name string) (File, error)
 	openFile func(name string, flag int, perm os.FileMode) (File, error)
+	openRoot func(name string) (Root, error)
 	lstat    func(name string) (fs.FileInfo, error)
-	mkdirAll func(name string, perm os.FileMode) error
+	mkdir    func(name string, perm os.FileMode) error
 	rename   func(oldName, newName string) error
 	remove   func(name string) error
 	close    func() error
@@ -140,6 +163,13 @@ func (r *fakeRoot) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 	return r.Root.OpenFile(name, flag, perm)
 }
 
+func (r *fakeRoot) OpenRoot(name string) (Root, error) {
+	if r.openRoot != nil {
+		return r.openRoot(name)
+	}
+	return r.Root.OpenRoot(name)
+}
+
 func (r *fakeRoot) Lstat(name string) (fs.FileInfo, error) {
 	if r.lstat != nil {
 		return r.lstat(name)
@@ -147,11 +177,11 @@ func (r *fakeRoot) Lstat(name string) (fs.FileInfo, error) {
 	return r.Root.Lstat(name)
 }
 
-func (r *fakeRoot) MkdirAll(name string, perm os.FileMode) error {
-	if r.mkdirAll != nil {
-		return r.mkdirAll(name, perm)
+func (r *fakeRoot) Mkdir(name string, perm os.FileMode) error {
+	if r.mkdir != nil {
+		return r.mkdir(name, perm)
 	}
-	return r.Root.MkdirAll(name, perm)
+	return r.Root.Mkdir(name, perm)
 }
 
 func (r *fakeRoot) Rename(oldName, newName string) error {

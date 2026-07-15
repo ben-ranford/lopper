@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,20 @@ func OpenWriteRoot(rootDir string) (*WriteRoot, error) {
 		return nil, err
 	}
 	return openWriteRoot(rootAbs)
+}
+
+// OpenCanonicalWriteRoot pins a canonical root without following symlinks in
+// any component of rootDir.
+func OpenCanonicalWriteRoot(rootDir string) (*WriteRoot, error) {
+	rootAbs, err := resolveAbsolutePath("root", rootDir)
+	if err != nil {
+		return nil, err
+	}
+	root, err := fileSystem.OpenRootNoFollow(rootAbs)
+	if err != nil {
+		return nil, fmt.Errorf("open canonical root: %w", err)
+	}
+	return &WriteRoot{root: root, rootAbs: rootAbs}, nil
 }
 
 func openWriteRoot(rootAbs string) (*WriteRoot, error) {
@@ -44,13 +59,7 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	if err := r.ensureParentDirectories(target, parentPerm); err != nil {
-		return err
-	}
-	if err := writeFileParentReadyFn(); err != nil {
-		return err
-	}
-	return r.writeFile(target, data, perm)
+	return r.writeFileAtTarget(target, data, perm, true, parentPerm)
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
@@ -64,36 +73,98 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	return rootedTarget{rootAbs: r.rootAbs, rel: rel, abs: filepath.Join(r.rootAbs, rel)}, nil
 }
 
-func (r *WriteRoot) ensureParentDirectories(target rootedTarget, perm os.FileMode) error {
-	parentRel := filepath.Dir(target.rel)
-	if parentRel == "." {
-		return nil
-	}
-	if err := rejectRootedParentSymlinks(r.root, r.rootAbs, parentRel); err != nil {
+func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
+	parent, closeParent, err := r.openTargetParent(target, createParents, parentPerm)
+	if err != nil {
 		return err
 	}
-	if err := r.root.MkdirAll(parentRel, perm); err != nil {
+	if closeParent {
+		defer func() {
+			if closeErr := parent.Close(); closeErr != nil {
+				returnErr = errors.Join(returnErr, closeErr)
+			}
+		}()
+	}
+	if err := writeFileParentReadyFn(); err != nil {
 		return err
 	}
-	return rejectRootedParentSymlinks(r.root, r.rootAbs, parentRel)
+	parentTarget := target
+	parentTarget.rel = filepath.Base(target.rel)
+	return writeFileAtRoot(parent, parentTarget, data, perm)
 }
 
-func rejectRootedParentSymlinks(root Root, rootAbs, parentRel string) error {
-	current := ""
-	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
-		current = filepath.Join(current, part)
-		info, err := root.Lstat(current)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("output parent contains symlink: %s", filepath.Join(rootAbs, current))
-		}
+func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.FileMode) (Root, bool, error) {
+	parentRel := filepath.Dir(target.rel)
+	if parentRel == "." {
+		return r.root, false, nil
 	}
-	return nil
+
+	current := r.root
+	currentOwned := false
+	currentAbs := r.rootAbs
+	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		partAbs := filepath.Join(currentAbs, part)
+		next, err := openTargetParentChild(current, part, partAbs, create, perm)
+		if err != nil {
+			return nil, false, closeOwnedRootWithError(current, currentOwned, err)
+		}
+		if currentOwned {
+			if err := current.Close(); err != nil {
+				return nil, false, closeRootWithError(next, err)
+			}
+		}
+		current = next
+		currentOwned = true
+		currentAbs = partAbs
+	}
+	return current, currentOwned, nil
+}
+
+func openTargetParentChild(root Root, name, path string, create bool, perm os.FileMode) (Root, error) {
+	info, err := lstatOrCreateDirectory(root, name, create, perm)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("output parent contains symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("output parent is not a directory: %s", path)
+	}
+
+	next, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := next.Lstat(".")
+	if err != nil {
+		return nil, closeRootWithError(next, err)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, closeRootWithError(next, fmt.Errorf("output parent changed while opening: %s", path))
+	}
+	return next, nil
+}
+
+func lstatOrCreateDirectory(root Root, name string, create bool, perm os.FileMode) (fs.FileInfo, error) {
+	info, err := root.Lstat(name)
+	if !os.IsNotExist(err) || !create {
+		return info, err
+	}
+	if mkdirErr := root.Mkdir(name, perm); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
+		return nil, mkdirErr
+	}
+	return root.Lstat(name)
+}
+
+func closeOwnedRootWithError(root Root, owned bool, err error) error {
+	if !owned {
+		return err
+	}
+	return closeRootWithError(root, err)
 }
 
 const atomicTempPrefix = ".safeio-atomic-"
@@ -121,16 +192,16 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
-	return root.writeFile(target, data, perm)
+	return root.writeFileAtTarget(target, data, perm, false, 0)
 }
 
-func (r *WriteRoot) writeFile(target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
-	writePerm, existingRegular, err := resolvedWriteFilePerm(r.root, target, perm)
+func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+	writePerm, existingRegular, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
 	if existingRegular {
-		file, err := r.root.OpenFile(target.rel, os.O_WRONLY, 0)
+		file, err := root.OpenFile(target.rel, os.O_WRONLY, 0)
 		if err != nil {
 			return err
 		}
@@ -139,7 +210,7 @@ func (r *WriteRoot) writeFile(target rootedTarget, data []byte, perm os.FileMode
 		}
 	}
 
-	session, err := newAtomicWriteSession(r.root, target.rel, writePerm)
+	session, err := newAtomicWriteSession(root, target.rel, writePerm)
 	if err != nil {
 		return err
 	}

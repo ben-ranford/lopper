@@ -365,11 +365,11 @@ func TestWriteRootDoesNotCreateOutsideAfterMissingParentSwap(t *testing.T) {
 		}
 		return &fakeRoot{
 			Root: root,
-			mkdirAll: func(path string, perm os.FileMode) error {
+			mkdir: func(path string, perm os.FileMode) error {
 				if err := os.Symlink(outside, filepath.Join(rootDir, "reports")); err != nil {
 					return err
 				}
-				return root.MkdirAll(path, perm)
+				return root.Mkdir(path, perm)
 			},
 		}, nil
 	}})
@@ -449,20 +449,8 @@ func TestWriteRootPinsParentBeforeInRootSymlinkRetarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteFileCreatingParents returned error: %v", err)
 	}
-	originalData, err := os.ReadFile(filepath.Join(relocatedParent, writeTestFileName))
-	if err != nil {
-		t.Fatalf("read pinned parent target: %v", err)
-	}
-	if string(originalData) != "after" {
-		t.Fatalf("unexpected pinned parent content: %q", string(originalData))
-	}
-	redirectedData, err := os.ReadFile(redirectedTarget)
-	if err != nil {
-		t.Fatalf("read redirected target: %v", err)
-	}
-	if string(redirectedData) != "redirected-before" {
-		t.Fatalf("unexpected redirected content: %q", string(redirectedData))
-	}
+	assertFileContent(t, filepath.Join(relocatedParent, writeTestFileName), "after")
+	assertFileContent(t, redirectedTarget, "redirected-before")
 }
 
 func TestWriteFileUnderRejectsRootPathTarget(t *testing.T) {
