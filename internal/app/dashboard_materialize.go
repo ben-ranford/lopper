@@ -15,6 +15,7 @@ var (
 	writeCommandOutputFileFn     = func(root *safeio.WriteRoot, targetPath string, data []byte, perm, parentPerm os.FileMode) error {
 		return root.WriteFileCreatingParents(targetPath, data, perm, parentPerm)
 	}
+	commandOutputBoundaryAcceptedFn = func() error { return nil }
 )
 
 type commandOutputRootBoundary struct {
@@ -71,6 +72,9 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 	}
 	if targetPath == ".." || strings.HasPrefix(targetPath, ".."+string(os.PathSeparator)) {
 		return commandOutputDestination{}, fmt.Errorf("output path escapes workspace: %s", outputPath)
+	}
+	if err := commandOutputBoundaryAcceptedFn(); err != nil {
+		return commandOutputDestination{}, err
 	}
 	writeRoot, err := openCommandOutputWriteRootFn(root.resolved)
 	if err != nil {

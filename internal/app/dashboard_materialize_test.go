@@ -625,6 +625,57 @@ func TestPersistCommandOutputPinsTrustedRootAliasBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputPinsCanonicalRootBeforeAcceptedBoundaryRetarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootParent := t.TempDir()
+	workspace := filepath.Join(rootParent, "workspace")
+	relocatedWorkspace := filepath.Join(rootParent, "workspace-relocated")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	workspaceAlias := filepath.Join(t.TempDir(), "workspace-alias")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+	outside := t.TempDir()
+	outsideTarget := filepath.Join(outside, "reports", "report.json")
+	if err := os.MkdirAll(filepath.Dir(outsideTarget), 0o755); err != nil {
+		t.Fatalf("mkdir outside reports: %v", err)
+	}
+	if err := os.WriteFile(outsideTarget, []byte("outside-before"), 0o600); err != nil {
+		t.Fatalf("seed outside target: %v", err)
+	}
+
+	originalAccepted := commandOutputBoundaryAcceptedFn
+	commandOutputBoundaryAcceptedFn = func() error {
+		if err := os.Rename(workspace, relocatedWorkspace); err != nil {
+			return err
+		}
+		return os.Symlink(outside, workspace)
+	}
+	t.Cleanup(func() {
+		commandOutputBoundaryAcceptedFn = originalAccepted
+	})
+
+	outputPath := filepath.Join(workspaceAlias, "reports", "report.json")
+	status, err := persistCommandOutput("workspace-after", outputPath, "dashboard report", workspaceAlias)
+	if err != nil {
+		t.Fatalf("persist through retargeted canonical root: %v", err)
+	}
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if got := readTextFile(t, filepath.Join(relocatedWorkspace, "reports", "report.json")); got != "workspace-after" {
+		t.Fatalf("unexpected pinned workspace output: %q", got)
+	}
+	if got := readTextFile(t, outsideTarget); got != "outside-before" {
+		t.Fatalf("unexpected outside output: %q", got)
+	}
+}
+
 func TestPersistCommandOutputAllowsRelativeOutputFromSymlinkedWorkspace(t *testing.T) {
 	workspace, workspaceAlias := createWorkspaceAlias(t)
 	originalWD, err := os.Getwd()

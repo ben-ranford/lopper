@@ -47,6 +47,9 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err := r.ensureParentDirectories(target, parentPerm); err != nil {
 		return err
 	}
+	if err := writeFileParentReadyFn(); err != nil {
+		return err
+	}
 	return r.writeFile(target, data, perm)
 }
 
@@ -96,8 +99,9 @@ func rejectRootedParentSymlinks(root Root, rootAbs, parentRel string) error {
 const atomicTempPrefix = ".safeio-atomic-"
 
 var (
-	randomTempNameFn = randomTempName
-	randReadFn       = rand.Read
+	randomTempNameFn       = randomTempName
+	randReadFn             = rand.Read
+	writeFileParentReadyFn = func() error { return nil }
 )
 
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -396,6 +397,71 @@ func TestWriteRootDoesNotCreateOutsideAfterMissingParentSwap(t *testing.T) {
 	}
 	if string(data) != "outside-before" {
 		t.Fatalf("unexpected outside sentinel: %q", string(data))
+	}
+}
+
+func TestWriteRootPinsParentBeforeInRootSymlinkRetarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	redirectedParent := filepath.Join(rootDir, "redirected")
+	if err := os.MkdirAll(originalParent, 0o755); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+	if err := os.MkdirAll(redirectedParent, 0o755); err != nil {
+		t.Fatalf("mkdir redirected parent: %v", err)
+	}
+	originalTarget := filepath.Join(originalParent, writeTestFileName)
+	redirectedTarget := filepath.Join(redirectedParent, writeTestFileName)
+	if err := os.WriteFile(originalTarget, []byte("original-before"), 0o600); err != nil {
+		t.Fatalf("seed original target: %v", err)
+	}
+	if err := os.WriteFile(redirectedTarget, []byte("redirected-before"), 0o600); err != nil {
+		t.Fatalf("seed redirected target: %v", err)
+	}
+
+	originalReady := writeFileParentReadyFn
+	writeFileParentReadyFn = func() error {
+		if err := os.Rename(originalParent, relocatedParent); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Base(redirectedParent), originalParent)
+	}
+	t.Cleanup(func() {
+		writeFileParentReadyFn = originalReady
+	})
+
+	root, err := OpenWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenWriteRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close write root: %v", closeErr)
+		}
+	})
+
+	err = root.WriteFileCreatingParents(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750)
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParents returned error: %v", err)
+	}
+	originalData, err := os.ReadFile(filepath.Join(relocatedParent, writeTestFileName))
+	if err != nil {
+		t.Fatalf("read pinned parent target: %v", err)
+	}
+	if string(originalData) != "after" {
+		t.Fatalf("unexpected pinned parent content: %q", string(originalData))
+	}
+	redirectedData, err := os.ReadFile(redirectedTarget)
+	if err != nil {
+		t.Fatalf("read redirected target: %v", err)
+	}
+	if string(redirectedData) != "redirected-before" {
+		t.Fatalf("unexpected redirected content: %q", string(redirectedData))
 	}
 }
 
