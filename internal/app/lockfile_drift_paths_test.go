@@ -218,25 +218,24 @@ func TestConfiguredGitAttributeDriverErrors(t *testing.T) {
 			execGitCommandContextFn = originalExec
 		})
 
-		_, err := gitFilterDriverHasExecutableConfig(context.Background(), t.TempDir(), "set")
-		if err == nil || !strings.Contains(err.Error(), "run git config --includes --get") {
+		_, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{{path: "package.json", driver: "set"}})
+		if err == nil || !strings.Contains(err.Error(), "run git config --null --includes --get-regexp") {
 			t.Fatalf("expected config execution error, got %v", err)
 		}
 	})
 }
 
-func TestConfiguredGitAttributeDriversCacheExactLookups(t *testing.T) {
+func TestConfiguredGitAttributeDriversEnumerateCaseFoldedNullConfigRecords(t *testing.T) {
 	originalResolve := resolveGitBinaryPathFn
 	originalExec := execGitCommandContextFn
 	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
-	lookups := make(map[string]int)
+	configCalls := 0
 	execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
-		key := args[len(args)-1]
-		lookups[key]++
-		if key == "filter.configured.clean" {
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'cat\\n'"), nil
+		configCalls++
+		if !isExecutableFilterConfigEnumeration(gitSubcommandArgs(args)) {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
 		}
-		return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
+		return shellEscapedOutputCommand(ctx, `filter.PWN.clean\n./helper.sh\000filter.Foo/Bar.process\n./process-helper\000filter.empty.clean\n\000filter.pwned.clean\n./other-helper\000`), nil
 	}
 	t.Cleanup(func() {
 		resolveGitBinaryPathFn = originalResolve
@@ -244,30 +243,73 @@ func TestConfiguredGitAttributeDriversCacheExactLookups(t *testing.T) {
 	})
 
 	active, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{
-		{path: "a.json", driver: "configured"},
-		{path: "b.json", driver: "configured"},
-		{path: "c.json", driver: "inert"},
-		{path: "d.json", driver: "inert"},
+		{path: "a.json", driver: "pwn"},
+		{path: "b.json", driver: "Pwn"},
+		{path: "c.json", driver: "foo/bar"},
+		{path: "d.json", driver: "empty"},
+		{path: "e.json", driver: "pwn.*"},
 	})
 	if err != nil {
 		t.Fatalf("filter configured git attribute drivers: %v", err)
 	}
-	if len(active) != 2 || active[0].path != "a.json" || active[1].path != "b.json" {
-		t.Fatalf("expected configured assignments in input order, got %#v", active)
+	if len(active) != 3 || active[0].path != "a.json" || active[1].path != "b.json" || active[2].path != "c.json" {
+		t.Errorf("expected case-folded configured assignments with punctuation in input order, got %#v", active)
 	}
-	wantLookups := map[string]int{
-		"filter.configured.clean": 1,
-		"filter.inert.clean":      1,
-		"filter.inert.process":    1,
+	if configCalls != 1 {
+		t.Errorf("expected one config-only filter command enumeration, got %d config calls", configCalls)
 	}
-	if len(lookups) != len(wantLookups) {
-		t.Fatalf("expected exact cached config lookups %#v, got %#v", wantLookups, lookups)
+}
+
+func TestConfiguredGitAttributeDriversRejectMalformedNullConfigRecords(t *testing.T) {
+	cases := []struct {
+		name       string
+		output     string
+		errContain string
+	}{
+		{name: "truncated record", output: `filter.PWN.clean\n./helper.sh`, errContain: "truncated"},
+		{name: "missing key value separator", output: `filter.PWN.clean\000`, errContain: "key/value separator"},
+		{name: "unexpected key", output: `diff.external\n./helper.sh\000`, errContain: "filter command key"},
 	}
-	for key, want := range wantLookups {
-		if lookups[key] != want {
-			t.Fatalf("expected %q to be queried %d time, got %#v", key, want, lookups)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			originalResolve := resolveGitBinaryPathFn
+			originalExec := execGitCommandContextFn
+			resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+			execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
+				if !isExecutableFilterConfigEnumeration(gitSubcommandArgs(args)) {
+					return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
+				}
+				return shellEscapedOutputCommand(ctx, tc.output), nil
+			}
+			t.Cleanup(func() {
+				resolveGitBinaryPathFn = originalResolve
+				execGitCommandContextFn = originalExec
+			})
+
+			_, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{{path: "package.json", driver: "pwn"}})
+			if err == nil || !strings.Contains(err.Error(), tc.errContain) {
+				t.Fatalf("expected malformed config output error containing %q, got %v", tc.errContain, err)
+			}
+		})
+	}
+}
+
+func gitSubcommandArgs(args []string) []string {
+	for index, arg := range args {
+		if arg == "-C" && index+2 < len(args) {
+			return args[index+2:]
 		}
 	}
+	return nil
+}
+
+func isExecutableFilterConfigEnumeration(args []string) bool {
+	return len(args) == 5 && args[0] == "config" && args[1] == "--null" && args[2] == "--includes" && args[3] == "--get-regexp"
+}
+
+func shellEscapedOutputCommand(ctx context.Context, output string) *exec.Cmd {
+	return exec.CommandContext(ctx, "/bin/sh", "-c", `printf '%b' "$1"`, "git-config-output", output)
 }
 
 func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
