@@ -369,6 +369,9 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	assertWorkflowJobNeeds(t, preparation, "Marketplace tooling preparation", workflowJobNeeds{"prepare-release"})
 	assertWorkflowJobPermissions(t, preparation, "Marketplace tooling preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, preparation, "Marketplace tooling preparation")
+	if len(preparation.Outputs) != 1 || preparation.Outputs["configured"] != "${{ steps.gate.outputs.configured }}" {
+		t.Fatalf("Marketplace tooling preparation outputs = %#v, want only the token configuration boolean", preparation.Outputs)
+	}
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{
 			label: "Marketplace tooling preparation if",
@@ -377,7 +380,7 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		},
 	})
 	assertWorkflowJobOmitsText(t, preparation, "VSCE_PAT", "Marketplace tooling preparation must not receive VSCE_PAT")
-	assertWorkflowJobOmitsText(t, preparation, "secrets.", "Marketplace tooling preparation must not receive secrets")
+	assertMarketplacePreparationGate(t, preparation)
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-marketplace-toolchain")
 
 	checkoutStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
@@ -432,6 +435,54 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	})
 }
 
+func assertMarketplacePreparationGate(t *testing.T, preparation workflowJobConfig) {
+	t.Helper()
+
+	if len(preparation.Steps) == 0 || preparation.Steps[0].Name != "Detect Marketplace token" {
+		t.Fatal("Marketplace token detection must be the first fresh-runner step")
+	}
+	gate := preparation.Steps[0]
+	if gate.ID != "gate" {
+		t.Fatalf("Marketplace token detector id = %q, want gate", gate.ID)
+	}
+	if len(gate.Env) != 2 || gate.Env["VSCE_PUBLISH"] != "${{ secrets.VSCE_PUBLISH }}" || gate.Env["PATH"] != "/usr/bin:/bin" {
+		t.Fatalf("Marketplace token detector env = %#v, want only the scoped token and trusted PATH", gate.Env)
+	}
+	wantShell := "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	if gate.Shell != wantShell {
+		t.Fatalf("Marketplace token detector shell = %q, want sanitized shell", gate.Shell)
+	}
+	assertWorkflowStepRunContainsAll(t, gate, "Marketplace token detector", []string{
+		`if [ -n "${VSCE_PUBLISH:-}" ]; then`,
+		`/usr/bin/printf '%s\n' 'configured=true' >> "$GITHUB_OUTPUT"`,
+		`/usr/bin/printf '%s\n' 'configured=false' >> "$GITHUB_OUTPUT"`,
+	})
+	if strings.Count(gate.Run, `>> "$GITHUB_OUTPUT"`) != 2 {
+		t.Fatal("Marketplace token detector must write only configured=true|false to GITHUB_OUTPUT")
+	}
+
+	skip := workflowStepByName(t, map[string]workflowJobConfig{"prepare-marketplace-toolchain": preparation}, "prepare-marketplace-toolchain", "Skip Marketplace toolchain prep when token is missing")
+	if skip.If != "${{ steps.gate.outputs.configured != 'true' }}" || !strings.Contains(skip.Run, "VSCE publish token not configured; skipping Marketplace toolchain preparation.") {
+		t.Fatal("Marketplace tooling preparation must preserve an explicit no-token skip message")
+	}
+	assertWorkflowStepOrder(t, preparation, "Detect Marketplace token", "Skip Marketplace toolchain prep when token is missing", "Checkout trusted main Marketplace manifests")
+
+	configuredCondition := "${{ steps.gate.outputs.configured == 'true' }}"
+	for _, stepName := range []string{
+		"Checkout trusted main Marketplace manifests",
+		"Setup Node for Marketplace tooling",
+		"Validate Marketplace tooling lockfile",
+		"Prepare integrity-bound Marketplace toolchain",
+		"Archive Marketplace toolchain",
+		"Upload Marketplace toolchain",
+	} {
+		step := workflowStepByName(t, map[string]workflowJobConfig{"prepare-marketplace-toolchain": preparation}, "prepare-marketplace-toolchain", stepName)
+		if step.If != configuredCondition {
+			t.Fatalf("Marketplace preparation step %q condition = %q, want %q", stepName, step.If, configuredCondition)
+		}
+	}
+}
+
 func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T) {
 	t.Parallel()
 
@@ -449,6 +500,8 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 		},
 	})
 	assertWorkflowEnvKeyOnlyOnStep(t, workflow.Jobs, "VSCE_PAT", "publish-marketplace", "Publish VS Code extension to Marketplace")
+	assertMarketplacePublicationGate(t, workflow.Jobs)
+	assertMarketplaceSecretBoundary(t, workflow.Jobs)
 	assertWorkflowJobOmitsCheckout(t, marketplace, "Marketplace publication")
 	assertWorkflowJobStepRunsOmitAllFold(t, marketplace, "Marketplace publication", []string{"npm ", "npx ", "git ", "go run ./", "make ", "scripts/", "./extensions/"})
 
@@ -518,9 +571,102 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	})
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
-	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 1 {
-		t.Fatalf("Marketplace secret references = %d, want final publish step only", count)
+	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 2 {
+		t.Fatalf("Marketplace secret references = %d, want isolated detection and final publication only", count)
 	}
+}
+
+func assertMarketplacePublicationGate(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+
+	marketplace := workflowJobByName(t, jobs, "publish-marketplace")
+	assertWorkflowJobEnvEmpty(t, marketplace, "Marketplace publication")
+	skip := workflowStepByName(t, jobs, "publish-marketplace", "Skip Marketplace publish when token is missing")
+	if skip.If != "${{ needs.prepare-marketplace-toolchain.outputs.configured != 'true' }}" || !strings.Contains(skip.Run, "VSCE publish token not configured; skipping Marketplace publish.") {
+		t.Fatal("Marketplace publication must preserve an explicit no-token skip message")
+	}
+	assertWorkflowStepOrder(t, marketplace, "Skip Marketplace publish when token is missing", "Setup Node for Marketplace tooling")
+
+	configuredCondition := "${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}"
+	for _, stepName := range []string{
+		"Setup Node for Marketplace tooling",
+		"Download release publication inputs",
+		"Download Marketplace toolchain",
+		"Validate Marketplace publication inputs",
+		"Publish VS Code extension to Marketplace",
+	} {
+		step := workflowStepByName(t, jobs, "publish-marketplace", stepName)
+		if step.If != configuredCondition {
+			t.Fatalf("Marketplace publication step %q condition = %q, want %q", stepName, step.If, configuredCondition)
+		}
+	}
+}
+
+func assertMarketplaceSecretBoundary(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+
+	credentialedSteps := 0
+	for jobName, job := range jobs {
+		credentialedSteps += marketplaceTokenBindingsInJob(t, jobName, job)
+	}
+	if credentialedSteps != 2 {
+		t.Fatalf("Marketplace token-bearing steps = %d, want isolated detection and final publication only", credentialedSteps)
+	}
+}
+
+func marketplaceTokenBindingsInJob(t *testing.T, jobName string, job workflowJobConfig) int {
+	t.Helper()
+
+	const secretReference = "secrets.VSCE_PUBLISH"
+	if strings.Contains(job.If, secretReference) {
+		t.Fatalf("Marketplace token must not reach job %q through its condition", jobName)
+	}
+	for key, value := range job.Env {
+		if strings.Contains(value, secretReference) {
+			t.Fatalf("Marketplace token must not reach job %q through env.%s", jobName, key)
+		}
+	}
+	for key, value := range job.Outputs {
+		if strings.Contains(value, secretReference) {
+			t.Fatalf("Marketplace token must not reach job %q through outputs.%s", jobName, key)
+		}
+	}
+
+	credentialedSteps := 0
+	for _, step := range job.Steps {
+		credentialedSteps += marketplaceTokenBindingsInStep(t, jobName, step)
+	}
+	return credentialedSteps
+}
+
+func marketplaceTokenBindingsInStep(t *testing.T, jobName string, step workflowStepConfig) int {
+	t.Helper()
+
+	const secretReference = "secrets.VSCE_PUBLISH"
+	for _, value := range []string{step.If, step.Run, step.Shell, step.Uses, step.WorkingDirectory} {
+		if strings.Contains(value, secretReference) {
+			t.Fatalf("Marketplace token reaches unexpected %s step %q", jobName, step.Name)
+		}
+	}
+	for key, value := range step.With {
+		if strings.Contains(value, secretReference) {
+			t.Fatalf("Marketplace token reaches unexpected %s step %q with.%s", jobName, step.Name, key)
+		}
+	}
+
+	credentialedSteps := 0
+	for key, value := range step.Env {
+		if !strings.Contains(value, secretReference) {
+			continue
+		}
+		credentialedSteps++
+		detectorBinding := jobName == "prepare-marketplace-toolchain" && step.Name == "Detect Marketplace token" && key == "VSCE_PUBLISH" && value == "${{ secrets.VSCE_PUBLISH }}"
+		publishBinding := jobName == "publish-marketplace" && step.Name == "Publish VS Code extension to Marketplace" && key == "VSCE_PAT" && value == "${{ secrets.VSCE_PUBLISH }}"
+		if !detectorBinding && !publishBinding {
+			t.Fatalf("Marketplace token reaches unexpected %s step %q env.%s", jobName, step.Name, key)
+		}
+	}
+	return credentialedSteps
 }
 
 func TestReleaseWorkflowPublishesMarketplaceAfterGitHubReleaseBoundary(t *testing.T) {
@@ -2060,6 +2206,28 @@ func assertTextAppearsBefore(t *testing.T, text string, earlier string, later st
 	laterIndex := strings.Index(text, later)
 	if earlierIndex < 0 || laterIndex < 0 || earlierIndex >= laterIndex {
 		t.Fatal(message)
+	}
+}
+
+func assertWorkflowStepOrder(t *testing.T, job workflowJobConfig, stepNames ...string) {
+	t.Helper()
+
+	previousIndex := -1
+	for _, stepName := range stepNames {
+		stepIndex := -1
+		for index, step := range job.Steps {
+			if step.Name == stepName {
+				stepIndex = index
+				break
+			}
+		}
+		if stepIndex < 0 {
+			t.Fatalf("workflow job must define step %q", stepName)
+		}
+		if stepIndex <= previousIndex {
+			t.Fatalf("workflow step %q is out of order", stepName)
+		}
+		previousIndex = stepIndex
 	}
 }
 
