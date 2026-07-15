@@ -1436,6 +1436,52 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 	})
 }
 
+func TestReleaseOrchestrationRequiresIntegrityBoundManifestPayload(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	manifestPayload := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Prepare manifest publication payload")
+	assertWorkflowStepRunContainsAll(t, manifestPayload, "manifest payload preparation", []string{
+		`find -P . -type f ! -path './SHA256SUMS'`,
+		`> "${payload_root}/SHA256SUMS"`,
+	})
+
+	publishManifest := workflowJobByName(t, workflow.Jobs, "publish-ghcr-manifest")
+	manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
+	if manifestValidation.Env["EXPECTED_IMAGE_TAGS"] != "${{ inputs.image_tags }}" {
+		t.Fatalf("manifest validation EXPECTED_IMAGE_TAGS = %q, want immutable workflow input", manifestValidation.Env["EXPECTED_IMAGE_TAGS"])
+	}
+	validationIndex := workflowStepIndexByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
+	loginIndex := workflowStepIndexByName(t, workflow.Jobs, "publish-ghcr-manifest", "Log in to GHCR")
+	if validationIndex >= loginIndex {
+		t.Fatal("manifest publication inputs must be validated before GHCR login")
+	}
+	assertWorkflowStepRunContainsAll(t, manifestValidation, "integrity-bound manifest validation", []string{
+		`expected_source_sha="${EXPECTED_SOURCE_SHA}"`,
+		`expected_image_tags="${EXPECTED_IMAGE_TAGS}"`,
+		`expected_image_name="ghcr.io/${owner}/lopper"`,
+		`checksums_file="${payload_root}/SHA256SUMS"`,
+		`find -P "${payload_root}" ! -type d ! -type f`,
+		`directory_count`,
+		`[ "${file_count}" -ne 3 ]`,
+		`SHA256SUMS|publication.json|image-tags.txt`,
+		`computed_checksums=`,
+		`cmp -s "${checksums_file}" "${computed_checksums}"`,
+		`sha256sum --check --strict SHA256SUMS`,
+		`while IFS= read -r raw_tag || [[ -n "${raw_tag}" ]]; do`,
+		`tag="${tag%$'\r'}"`,
+		`printf '%s:%s\n' "${expected_image_name}" "${tag}" >> "${expected_tags_file}"`,
+		`cmp -s "${tags_file}" "${expected_tags_file}"`,
+		`unexpected image reference`,
+	})
+
+	if len(publishManifest.Permissions) != 1 || publishManifest.Permissions["packages"] != "write" {
+		t.Fatalf("publish-ghcr-manifest permissions = %#v, want packages: write", publishManifest.Permissions)
+	}
+}
+
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
 	t.Helper()
 
