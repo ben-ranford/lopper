@@ -58,7 +58,11 @@ func collectLockfileGitContext(ctx context.Context, repoPath string, rules []loc
 }
 
 func collectLockfileGitContextForPaths(ctx context.Context, repoPath string, candidatePaths []string) (lockfileGitContext, error) {
-	filteredPaths, err := gitActiveFilterPathDrivers(ctx, repoPath, candidatePaths)
+	trackedPaths, untrackedPaths, err := classifyGitCandidatePaths(ctx, repoPath, candidatePaths)
+	if err != nil {
+		return lockfileGitContext{}, err
+	}
+	filteredPaths, err := gitActiveFilterPathDrivers(ctx, repoPath, trackedPaths)
 	if err != nil {
 		return lockfileGitContext{}, err
 	}
@@ -66,7 +70,7 @@ func collectLockfileGitContextForPaths(ctx context.Context, repoPath string, can
 		return lockfileGitContext{}, newLockfileDriftFilterAmbiguityError(filteredPaths)
 	}
 
-	changedFiles, err := gitChangedFilesForPaths(ctx, repoPath, candidatePaths)
+	changedFiles, err := gitChangedFilesForClassifiedPaths(ctx, repoPath, trackedPaths, untrackedPaths)
 	if err != nil {
 		return lockfileGitContext{}, err
 	}
@@ -77,11 +81,38 @@ func collectLockfileGitContextForPaths(ctx context.Context, repoPath string, can
 }
 
 func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []string) (map[string]struct{}, error) {
-	if len(paths) == 0 {
-		return map[string]struct{}{}, nil
+	trackedPaths, untrackedPaths, err := classifyGitCandidatePaths(ctx, repoPath, paths)
+	if err != nil {
+		return nil, err
 	}
+	return gitChangedFilesForClassifiedPaths(ctx, repoPath, trackedPaths, untrackedPaths)
+}
+
+func classifyGitCandidatePaths(ctx context.Context, repoPath string, paths []string) ([]string, []string, error) {
+	untrackedPaths, err := gitUntrackedFilesForPaths(ctx, repoPath, paths)
+	if err != nil {
+		return nil, nil, err
+	}
+	return excludeGitPaths(paths, untrackedPaths), untrackedPaths, nil
+}
+
+func excludeGitPaths(paths, excludedPaths []string) []string {
+	excluded := make(map[string]struct{}, len(excludedPaths))
+	for _, path := range excludedPaths {
+		excluded[path] = struct{}{}
+	}
+	remaining := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := excluded[path]; !ok {
+			remaining = append(remaining, path)
+		}
+	}
+	return remaining
+}
+
+func gitChangedFilesForClassifiedPaths(ctx context.Context, repoPath string, trackedPaths, untrackedPaths []string) (map[string]struct{}, error) {
 	changed := map[string]struct{}{}
-	tracked, err := gitTrackedChangesForPaths(ctx, repoPath, paths)
+	tracked, err := gitTrackedChangesForPaths(ctx, repoPath, trackedPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -89,11 +120,7 @@ func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []strin
 		changed[path] = struct{}{}
 	}
 
-	untracked, err := gitUntrackedFilesForPaths(ctx, repoPath, paths)
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range untracked {
+	for _, path := range untrackedPaths {
 		changed[path] = struct{}{}
 	}
 

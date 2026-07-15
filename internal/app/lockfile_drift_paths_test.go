@@ -300,6 +300,15 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 			wantSub: lockfileRunGitErr,
 		},
 		{
+			name: "changed files untracked classification failure",
+			mode: "lsfail",
+			run: func(repo string) error {
+				_, err := gitChangedFilesForPaths(context.Background(), repo, []string{"package.json"})
+				return err
+			},
+			wantSub: "ls-files",
+		},
+		{
 			name: "tracked cached diff failure",
 			mode: "difffail-cached",
 			run: func(repo string) error {
@@ -641,7 +650,7 @@ if printf '%s' "$args" | grep -q 'rev-parse --verify --quiet HEAD'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
-  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ]; then
+  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ] || [ "$mode" = "pathscope-filterdriver" ] || [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ] || [ "$mode" = "checkattrwrongorder" ]; then
     if ! printf '%s' "$args" | grep -q -- 'ls-files --others --exclude-standard -z -- :(literal)package-lock.json :(literal)package.json'; then
       echo "missing pathspec-scoped untracked args: $args" >&2
       exit 1
@@ -650,10 +659,6 @@ if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
       printf 'package-lock.json\000'
     fi
     exit 0
-  fi
-  if [ "$mode" = "pathscope-filterdriver" ] || [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ] || [ "$mode" = "checkattrwrongorder" ]; then
-    echo "scoped untracked listing should not run before filter validation" >&2
-    exit 1
   fi
   if [ "$mode" = "lsfail" ]; then
     echo "ls-files failed" >&2
@@ -685,9 +690,14 @@ if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard 
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
-  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ]; then
+  if [ "$mode" = "pathscope-head" ]; then
     cat >/dev/null
     printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000unspecified\000'
+    exit 0
+  fi
+  if [ "$mode" = "pathscope-unborn" ]; then
+    cat >/dev/null
+    printf 'package.json\000filter\000unspecified\000'
     exit 0
   fi
   if [ "$mode" = "pathscope-filterdriver" ]; then
@@ -749,18 +759,17 @@ if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
   fi
   if [ "$mode" = "pathscope-unborn" ]; then
     if printf '%s' "$args" | grep -q -- '--cached'; then
-      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -- :(literal)package-lock.json :(literal)package.json'; then
+      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -- :(literal)package.json'; then
         echo "missing pathspec-scoped cached diff args: $args" >&2
         exit 1
       fi
       printf 'package.json\n'
       exit 0
     fi
-    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -- :(literal)package-lock.json :(literal)package.json'; then
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -- :(literal)package.json'; then
       echo "missing pathspec-scoped unstaged diff args: $args" >&2
       exit 1
     fi
-    printf 'package-lock.json\n'
     exit 0
   fi
   if [ "$mode" = "pathscope-filterdriver" ]; then
