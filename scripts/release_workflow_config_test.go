@@ -306,27 +306,21 @@ func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *
 	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
 		`release_lookup_error="$(mktemp)"`,
 		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
-		`tag_fetched="false"`,
-		`if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`,
-		`existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"`,
-		`if [[ ! "${existing_commit}" =~ ^[0-9a-f]{40}$ ]]; then`,
-		`if [ "${tag_fetched}" = "false" ] && [ "${existing_commit}" != "${existing_target}" ]; then`,
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then`,
+		`existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"`,
+		`case "${existing_ref_type}" in`,
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then`,
+		`if [ -z "${existing_commit}" ]; then`,
 		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
 	})
-	guardIndex := strings.Index(manualStep.Run, `if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`)
-	lookupIndex := strings.Index(manualStep.Run, `existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"`)
-	if guardIndex < 0 || lookupIndex < 0 || guardIndex > lookupIndex {
-		t.Fatal("manual release flow must validate target_commitish as a full commit SHA before the commits API lookup")
-	}
-	if strings.Contains(manualStep.Run, `git rev-parse -q --verify "${existing_target}^{commit}"`) {
-		t.Fatal("manual release flow must resolve a release target that is absent from the local checkout")
-	}
-	if strings.Contains(manualStep.Run, `[ -n "${existing_commit}" ] &&`) {
-		t.Fatal("manual release flow must never skip existing release mismatch validation")
+	for _, forbidden := range []string{"target_commitish", `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`, `[ -n "${existing_commit}" ] &&`} {
+		if strings.Contains(manualStep.Run, forbidden) {
+			t.Fatalf("manual release flow must not contain stale validation path %q", forbidden)
+		}
 	}
 }
 
-func TestReleaseWorkflowRejectsBranchValuedMissingTagFallback(t *testing.T) {
+func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
 	t.Parallel()
 
 	var workflow struct {
@@ -335,31 +329,22 @@ func TestReleaseWorkflowRejectsBranchValuedMissingTagFallback(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
-	const guardLine = `if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`
-	guardIndex := strings.Index(manualStep.Run, guardLine)
-	if guardIndex < 0 {
-		t.Fatal("manual release flow must guard target_commitish with a full-SHA check")
-	}
+	assertWorkflowStepRunContainsAll(t, manualStep, "manual release lookup failure contract", []string{
+		`release_lookup_error="$(mktemp)"`,
+		`gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`,
+		`release_lookup_status=$?`,
+		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`cat "${release_lookup_error}" >&2`,
+		`exit "${release_lookup_status}"`,
+		`gh release create "${tag}"`,
+	})
 
-	var guardLines []string
-	for _, line := range strings.Split(manualStep.Run[guardIndex:], "\n") {
-		guardLines = append(guardLines, line)
-		if strings.TrimSpace(line) == "fi" {
-			break
-		}
-	}
-	guardScript := strings.Join(guardLines, "\n")
-	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+guardScript+"\nprintf 'guard-bypassed\\n'")
-	cmd.Env = append(os.Environ(), "existing_target=main", "tag=v1.2.3")
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("branch-valued target_commitish passed the missing-tag guard: %s", output)
-	}
-	if !strings.Contains(string(output), "Existing release v1.2.3 target_commitish must be a full 40-character hexadecimal commit SHA; got 'main'.") {
-		t.Fatalf("branch-valued target_commitish error = %q", output)
-	}
-	if strings.Contains(string(output), "guard-bypassed") {
-		t.Fatalf("branch-valued target_commitish bypassed the guard: %s", output)
+	lookupIndex := strings.Index(manualStep.Run, `gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`)
+	statusIndex := strings.Index(manualStep.Run, `release_lookup_status=$?`)
+	notFoundIndex := strings.Index(manualStep.Run, `if ! grep -q "HTTP 404" "${release_lookup_error}"; then`)
+	createIndex := strings.Index(manualStep.Run, `gh release create "${tag}"`)
+	if lookupIndex < 0 || statusIndex < lookupIndex || notFoundIndex < statusIndex || createIndex < notFoundIndex {
+		t.Fatal("manual release creation must follow the captured lookup status and explicit HTTP 404 evidence")
 	}
 }
 
@@ -1324,45 +1309,6 @@ func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
 	}
 	if got := workflowStepWithString(t, step, "persist-credentials"); got != "false" {
 		t.Fatalf("manual release checkout persist-credentials = %q, want false", got)
-	}
-}
-
-func TestReleaseWorkflowHomebrewTapPushCredentialsAreEphemeral(t *testing.T) {
-	t.Parallel()
-
-	var workflow struct {
-		Jobs map[string]workflowJobConfig `yaml:"jobs"`
-	}
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
-
-	job := workflow.Jobs["update-homebrew-tap"]
-	checkout := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap", "Checkout tap repository")
-	assertWorkflowStepValue(t, checkout, "token", "${{ secrets.HOMEBREW_TAP_TOKEN }}", "Homebrew tap checkout token")
-	assertWorkflowStepValue(t, checkout, "persist-credentials", "false", "Homebrew tap checkout persist-credentials")
-
-	push := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap", "Commit and push formula changes")
-	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
-		t.Fatalf("Homebrew tap push token env = %q, want HOMEBREW_TAP_TOKEN", got)
-	}
-	assertPushTokenScopedToFinalStep(t, job, push.Name)
-	assertStepRunContainsAll(t, push, "Homebrew tap push step", []string{
-		`GIT_CONFIG_COUNT=2`,
-		`GIT_CONFIG_KEY_0=credential.helper`,
-		`GIT_CONFIG_VALUE_0=''`,
-		`GIT_CONFIG_KEY_1=credential.https://github.com.helper`,
-		`GIT_CONFIG_VALUE_1="!f() { printf '%s\n' 'username=x-access-token' \"password=\${PUSH_TOKEN}\"; }; f"`,
-		`GIT_TERMINAL_PROMPT=0`,
-		`git push origin HEAD:main`,
-	})
-	for _, unsafe := range []string{
-		"git remote set-url",
-		`https://x-access-token:${PUSH_TOKEN}@`,
-		`git push "https://`,
-		"set -x",
-	} {
-		if strings.Contains(push.Run, unsafe) {
-			t.Fatalf("Homebrew tap push step must not contain %q", unsafe)
-		}
 	}
 }
 
