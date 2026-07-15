@@ -534,6 +534,13 @@ jobs:
         with:
           node-version: 24
 
+      - name: Prepare VS Code Marketplace tooling
+        run: |
+          set -euo pipefail
+          toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"
+          npm install --prefix "${toolchain_dir}" --no-audit --no-fund @vscode/vsce@3.9.2
+          test -x "${toolchain_dir}/node_modules/.bin/vsce"
+
       - name: Publish VS Code extension to Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
@@ -544,9 +551,11 @@ jobs:
             exit 0
           fi
 
+          vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"
+          test -x "$vsce_bin"
           vsix_path="$(find publication-inputs/dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
           test -n "$vsix_path"
-          npx --yes @vscode/vsce@3.9.2 publish --packagePath "$vsix_path"
+          "$vsce_bin" publish --packagePath "$vsix_path"
 
       - name: Publish GitHub Release
         env:
