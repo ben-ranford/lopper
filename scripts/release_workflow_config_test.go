@@ -398,6 +398,26 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
 }
 
+func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	downloadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Download release artifacts")
+	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
+
+	pattern := downloadStep.With["pattern"]
+	artifactName := uploadStep.With["name"]
+	matched, err := filepath.Match(pattern, artifactName)
+	if err != nil {
+		t.Fatalf("release artifact download pattern %q is invalid: %v", pattern, err)
+	}
+	if matched {
+		t.Fatalf("release publication input artifact %q must not match release artifact download pattern %q", artifactName, pattern)
+	}
+}
+
 func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	t.Parallel()
 
