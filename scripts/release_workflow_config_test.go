@@ -1327,6 +1327,45 @@ func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowHomebrewTapPushCredentialsAreEphemeral(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	job := workflow.Jobs["update-homebrew-tap"]
+	checkout := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap", "Checkout tap repository")
+	assertWorkflowStepValue(t, checkout, "token", "${{ secrets.HOMEBREW_TAP_TOKEN }}", "Homebrew tap checkout token")
+	assertWorkflowStepValue(t, checkout, "persist-credentials", "false", "Homebrew tap checkout persist-credentials")
+
+	push := workflowStepByName(t, workflow.Jobs, "update-homebrew-tap", "Commit and push formula changes")
+	if got := push.Env["PUSH_TOKEN"]; got != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
+		t.Fatalf("Homebrew tap push token env = %q, want HOMEBREW_TAP_TOKEN", got)
+	}
+	assertPushTokenScopedToFinalStep(t, job, push.Name)
+	assertStepRunContainsAll(t, push, "Homebrew tap push step", []string{
+		`GIT_CONFIG_COUNT=2`,
+		`GIT_CONFIG_KEY_0=credential.helper`,
+		`GIT_CONFIG_VALUE_0=''`,
+		`GIT_CONFIG_KEY_1=credential.https://github.com.helper`,
+		`GIT_CONFIG_VALUE_1="!f() { printf '%s\n' 'username=x-access-token' \"password=\${PUSH_TOKEN}\"; }; f"`,
+		`GIT_TERMINAL_PROMPT=0`,
+		`git push origin HEAD:main`,
+	})
+	for _, unsafe := range []string{
+		"git remote set-url",
+		`https://x-access-token:${PUSH_TOKEN}@`,
+		`git push "https://`,
+		"set -x",
+	} {
+		if strings.Contains(push.Run, unsafe) {
+			t.Fatalf("Homebrew tap push step must not contain %q", unsafe)
+		}
+	}
+}
+
 func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing.T) {
 	t.Parallel()
 
