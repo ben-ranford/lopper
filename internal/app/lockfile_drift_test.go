@@ -566,28 +566,44 @@ func TestDetectLockfileDriftRejectsActiveCustomFiltersWithoutExecutingHelpers(t 
 	}
 }
 
-func TestDetectLockfileDriftRejectsCaseFoldedCustomFiltersBeforeDiff(t *testing.T) {
+func TestDetectLockfileDriftAllowsMismatchedCaseFilterConfig(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
 	}
 
-	cases := []struct {
-		name             string
-		attributeDriver  string
-		configuredDriver string
-	}{
-		{name: "lowercase attribute", attributeDriver: "pwn", configuredDriver: "PWN"},
-		{name: "mixed-case attribute", attributeDriver: "Pwn", configuredDriver: "pwn"},
+	repo, markerPath, diffCommands := newCaseSensitiveFilterRepo(t, "pwn", "PWN")
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+	if *diffCommands == 0 {
+		t.Error("expected mismatched filter config to remain inert and allow git diff")
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCaseFoldedCustomFilterCase(t, tc.attributeDriver, tc.configuredDriver)
-		})
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected mismatched filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
 	}
 }
 
-func runCaseFoldedCustomFilterCase(t *testing.T, attributeDriver, configuredDriver string) {
+func TestDetectLockfileDriftRejectsExactCaseFilterConfigBeforeDiff(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo, markerPath, diffCommands := newCaseSensitiveFilterRepo(t, "pwn", "pwn")
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" (pwn)") {
+		t.Errorf("expected exact-case filter ambiguity error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
+	}
+	if *diffCommands != 0 {
+		t.Errorf("expected exact-case filter preflight to stop before git diff, got %d diff commands", *diffCommands)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected exact-case filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
+func newCaseSensitiveFilterRepo(t *testing.T, attributeDriver, configuredDriver string) (string, string, *int) {
 	t.Helper()
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
@@ -595,13 +611,13 @@ func runCaseFoldedCustomFilterCase(t *testing.T, attributeDriver, configuredDriv
 	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+attributeDriver+"\n")
 	initGitRepo(t, repo)
 
-	markerPath := filepath.Join(t.TempDir(), "case-folded-filter.marker")
+	markerPath := filepath.Join(t.TempDir(), "case-sensitive-filter.marker")
 	helperPath := helperPathInRepo(repo)
 	writeFile(t, helperPath, cleanFilterScript(markerPath))
 	if err := os.Chmod(helperPath, 0o700); err != nil {
 		t.Fatalf("chmod git helper: %v", err)
 	}
-	runGit(t, repo, "config", "filter."+configuredDriver+".clean", "./helper.sh")
+	configureCleanFilter(t, repo, configuredDriver)
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
 
 	originalExec := execGitCommandContextFn
@@ -613,20 +629,7 @@ func runCaseFoldedCustomFilterCase(t *testing.T, attributeDriver, configuredDriv
 		return originalExec(ctx, gitPath, args...)
 	}
 	t.Cleanup(func() { execGitCommandContextFn = originalExec })
-
-	warnings, err := detectLockfileDrift(context.Background(), repo, false)
-	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" ("+attributeDriver+")") {
-		t.Errorf("expected case-folded filter ambiguity error, got warnings=%#v err=%v", warnings, err)
-	}
-	if len(warnings) != 0 {
-		t.Errorf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
-	}
-	if diffCommands != 0 {
-		t.Errorf("expected filter preflight to stop before git diff, got %d diff commands", diffCommands)
-	}
-	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("expected case-folded filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
-	}
+	return repo, markerPath, &diffCommands
 }
 
 func TestDetectLockfileDriftAllowsFilteredUntrackedCandidates(t *testing.T) {

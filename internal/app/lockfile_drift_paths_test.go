@@ -225,7 +225,7 @@ func TestConfiguredGitAttributeDriverErrors(t *testing.T) {
 	})
 }
 
-func TestConfiguredGitAttributeDriversEnumerateCaseFoldedNullConfigRecords(t *testing.T) {
+func TestConfiguredGitAttributeDriversMatchExactNullConfigRecords(t *testing.T) {
 	originalResolve := resolveGitBinaryPathFn
 	originalExec := execGitCommandContextFn
 	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
@@ -244,16 +244,17 @@ func TestConfiguredGitAttributeDriversEnumerateCaseFoldedNullConfigRecords(t *te
 
 	active, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{
 		{path: "a.json", driver: "pwn"},
-		{path: "b.json", driver: "Pwn"},
-		{path: "c.json", driver: "foo/bar"},
-		{path: "d.json", driver: "empty"},
-		{path: "e.json", driver: "pwn.*"},
+		{path: "b.json", driver: "PWN"},
+		{path: "c.json", driver: "Foo/Bar"},
+		{path: "d.json", driver: "foo/bar"},
+		{path: "e.json", driver: "empty"},
+		{path: "f.json", driver: "pwn.*"},
 	})
 	if err != nil {
 		t.Fatalf("filter configured git attribute drivers: %v", err)
 	}
-	if len(active) != 3 || active[0].path != "a.json" || active[1].path != "b.json" || active[2].path != "c.json" {
-		t.Errorf("expected case-folded configured assignments with punctuation in input order, got %#v", active)
+	if len(active) != 2 || active[0].path != "b.json" || active[1].path != "c.json" {
+		t.Errorf("expected exact configured assignments with punctuation in input order, got %#v", active)
 	}
 	if configCalls != 1 {
 		t.Errorf("expected one config-only filter command enumeration, got %d config calls", configCalls)
@@ -565,13 +566,15 @@ func TestParseGitExecutableFilterConfigRecords(t *testing.T) {
 		t.Fatalf("parse executable filter config: %v", err)
 	}
 
-	for _, driver := range []string{"pwn", "PWN.DRV+v1"} {
-		if _, ok := configured[gitConfigCaseFold(driver)]; !ok {
-			t.Errorf("expected case-folded driver %q in %#v", driver, configured)
+	for _, driver := range []string{"PWN", "Pwn.Drv+V1"} {
+		if _, ok := configured[driver]; !ok {
+			t.Errorf("expected exact driver %q in %#v", driver, configured)
 		}
 	}
-	if _, ok := configured["empty"]; ok {
-		t.Errorf("expected empty filter command to remain inert, got %#v", configured)
+	for _, driver := range []string{"pwn", "PWN.DRV+v1", "empty"} {
+		if _, ok := configured[driver]; ok {
+			t.Errorf("expected mismatched or empty driver %q to remain absent from %#v", driver, configured)
+		}
 	}
 	if len(configured) != 2 {
 		t.Errorf("expected only executable filter drivers, got %#v", configured)
