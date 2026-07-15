@@ -57,6 +57,58 @@ func TestGitWorktreeDetectionMissingBinaryFailsClosedWhenMetadataCannotBeInspect
 	}
 }
 
+func TestGitWorktreeDetectionDubiousOwnershipFailsClosed(t *testing.T) {
+	originalResolve := resolveGitBinaryPathFn
+	originalExec := execGitCommandContextFn
+	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+	execGitCommandContextFn = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s\\n' \"$1\" >&2; exit 128", "git", "fatal: detected dubious ownership in repository at '/repo'"), nil
+	}
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = originalResolve
+		execGitCommandContextFn = originalExec
+	})
+
+	repo := t.TempDir()
+	assertRevParseError := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "run git rev-parse --is-inside-work-tree") {
+			t.Fatalf("expected hard rev-parse error, got %v", err)
+		}
+	}
+	t.Run("worktree detection", func(t *testing.T) {
+		inside, err := isGitWorktree(context.Background(), repo)
+		if inside {
+			t.Fatal("expected dubious ownership refusal not to report a Git worktree")
+		}
+		assertRevParseError(t, err)
+	})
+
+	consumers := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "lockfile drift",
+			run: func() error {
+				_, err := detectLockfileDrift(context.Background(), repo, false)
+				return err
+			},
+		},
+		{
+			name: "codemod apply",
+			run: func() error {
+				return validateCodemodApplyPreconditions(context.Background(), repo, AnalyseRequest{ApplyCodemod: true})
+			},
+		},
+	}
+	for _, consumer := range consumers {
+		t.Run(consumer.name, func(t *testing.T) {
+			assertRevParseError(t, consumer.run())
+		})
+	}
+}
+
 func TestDetectLockfileDriftStopOnFirstBatchesGitContextAcrossDirectories(t *testing.T) {
 	repo := t.TempDir()
 	const candidateDirs = gitPathspecBatchPaths/2 + 1
