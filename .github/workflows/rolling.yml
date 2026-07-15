@@ -297,7 +297,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          source_url="https://codeload.github.com/${SOURCE_REPO}/tar.gz/${SOURCE_SHA}"
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           curl --fail --show-error --silent --location \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
@@ -425,7 +425,7 @@ jobs:
 
           git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"
 
-          source_url="https://codeload.github.com/${SOURCE_REPO}/tar.gz/${SOURCE_SHA}"
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           "${curl_bin}" --fail --show-error --silent --location \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
