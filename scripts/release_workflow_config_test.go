@@ -1662,6 +1662,28 @@ func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing
 	if strings.Contains(step.Run, `release_json`) {
 		t.Fatal("manual release existing-release probe must not persist an unused response body")
 	}
+
+	finalizeJob := workflowJobRequired(t, workflow.Jobs, "finalize-release")
+	if !slices.Equal(finalizeJob.Needs, workflowNeeds{"prepare-release", "publish", "publish-vscode-marketplace"}) {
+		t.Fatalf("finalize-release needs = %#v, want prepare-release + publish + publish-vscode-marketplace", finalizeJob.Needs)
+	}
+	if len(finalizeJob.Permissions) != 1 || finalizeJob.Permissions["contents"] != "write" {
+		t.Fatalf("finalize-release permissions = %#v, want only contents: write", finalizeJob.Permissions)
+	}
+	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish GitHub Release"); ok {
+		t.Fatal("publish job must not make the GitHub Release public directly")
+	}
+	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Update GitHub Action floating tags"); ok {
+		t.Fatal("publish job must not move floating action tags directly")
+	}
+	finalizeRelease := workflowStepByName(t, workflow.Jobs, "finalize-release", "Publish GitHub Release")
+	if finalizeRelease.Env["GH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("finalize release GH_TOKEN env = %q", finalizeRelease.Env["GH_TOKEN"])
+	}
+	floatingTags := workflowStepByName(t, workflow.Jobs, "finalize-release", "Update GitHub Action floating tags")
+	if floatingTags.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
+		t.Fatalf("finalize floating tag RELEASE_TAG env = %q", floatingTags.Env["RELEASE_TAG"])
+	}
 }
 
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
