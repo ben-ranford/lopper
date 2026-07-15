@@ -320,6 +320,14 @@ func shellEscapedOutputCommand(ctx context.Context, output string) *exec.Cmd {
 }
 
 func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
+	assertScopedGitPathHelpersReturnEmpty(t)
+	assertScopedGitPathHelperExecutionFailures(t)
+	assertScopedGitPathHelperConstructionFailures(t)
+}
+
+func assertScopedGitPathHelpersReturnEmpty(t *testing.T) {
+	t.Helper()
+
 	changed, err := gitChangedFilesForPaths(context.Background(), t.TempDir(), nil)
 	if err != nil || len(changed) != 0 {
 		t.Fatalf("expected empty scoped changed set, got %#v err=%v", changed, err)
@@ -336,6 +344,10 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 	if err != nil || len(visible) != 0 {
 		t.Fatalf("expected empty scoped visible set, got %#v err=%v", visible, err)
 	}
+}
+
+func assertScopedGitPathHelperExecutionFailures(t *testing.T) {
+	t.Helper()
 
 	cases := []struct {
 		name    string
@@ -406,6 +418,10 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertScopedGitPathHelperConstructionFailures(t *testing.T) {
+	t.Helper()
 
 	original := resolveGitBinaryPathFn
 	resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
