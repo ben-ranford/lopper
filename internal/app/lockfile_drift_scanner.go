@@ -175,9 +175,18 @@ func (s *lockfileFailFastBatchScanner) scan(ctx context.Context) ([]string, erro
 }
 
 func (s *lockfileFailFastBatchScanner) visit(ctx context.Context, snapshot lockfileDirSnapshot) error {
-	if err := s.recordFirst(snapshot, lockfileGitContext{}); err != nil {
+	warning, found, err := firstLockfileDriftWarning(snapshot, lockfileGitContext{}, s.rules)
+	if err != nil {
 		return err
 	}
+	if found {
+		if err := s.flush(ctx); err != nil {
+			return err
+		}
+		s.warnings = append(s.warnings, warning)
+		return fs.SkipAll
+	}
+
 	candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, s.rules)
 	if err != nil {
 		return err
