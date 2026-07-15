@@ -215,23 +215,10 @@ func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
 	if strings.Count(resolver.Run, `>> "$GITHUB_OUTPUT"`) != 1 {
 		t.Fatal("trusted main workflow resolver must output only the validated workflow SHA")
 	}
-	assertTextAppearsBefore(t, resolver.Run,
-		`if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then`,
-		`/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`,
-		"trusted main workflow ref must be validated before output",
-	)
-	assertTextAppearsBefore(t, resolver.Run,
-		`if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then`,
-		`/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`,
-		"trusted main workflow SHA must be validated before output",
-	)
+	assertTextAppearsBefore(t, resolver.Run, `if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then`, `/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`, "trusted main workflow ref must be validated before output")
+	assertTextAppearsBefore(t, resolver.Run, `if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then`, `/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`, "trusted main workflow SHA must be validated before output")
 	assertWorkflowStepRunOmitsAll(t, resolver, "trusted main workflow resolver", []string{"git ", "gh ", "curl ", "wget ", "secrets.", "token"})
-	assertWorkflowStepOrder(t, preparation,
-		"Resolve trusted main workflow revision",
-		"Run release-please",
-		"Checkout manual release source",
-		"Prepare manual release",
-	)
+	assertWorkflowStepOrder(t, preparation, "Resolve trusted main workflow revision", "Run release-please", "Checkout manual release source", "Prepare manual release")
 
 	wantTrustedMain := "${{ needs.prepare-release.outputs.trusted_main_sha }}"
 	marketplaceCheckout := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")

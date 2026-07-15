@@ -32,7 +32,27 @@ jobs:
       tag: ${{ steps.release.outputs.tag_name || steps.manual.outputs.tag }}
       version: ${{ steps.release.outputs.version || steps.manual.outputs.version }}
       sha: ${{ steps.release.outputs.sha || steps.manual.outputs.sha }}
+      trusted_main_sha: ${{ steps.trusted_main.outputs.trusted_main_sha }}
     steps:
+      - name: Resolve trusted main workflow revision
+        id: trusted_main
+        env:
+          PATH: /usr/bin:/bin
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
+          if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then
+            echo "::error::Release workflow must come from ${expected_workflow_ref}; got ${WORKFLOW_REF}." >&2
+            exit 1
+          fi
+          if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release workflow SHA must be a lowercase full 40-character commit SHA; got ${WORKFLOW_SHA}." >&2
+            exit 1
+          fi
+          /usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Run release-please
         if: ${{ github.event_name != 'workflow_dispatch' }}
         id: release
@@ -431,7 +451,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-          ref: main
+          ref: ${{ needs.prepare-release.outputs.trusted_main_sha }}
 
       - name: Setup Node for Marketplace tooling
         if: ${{ steps.gate.outputs.configured == 'true' }}
@@ -1426,7 +1446,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.prepare-release.outputs.trusted_main_sha }}
 
       - name: Checkout validated release data
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
