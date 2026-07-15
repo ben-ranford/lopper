@@ -690,6 +690,12 @@ jobs:
             --arg tag "${RELEASE_TAG}" \
             '{source_sha: $source_sha, image_name: $image_name, tag: $tag}' \
             > "${payload_root}/publication.json"
+          (
+            cd "${payload_root}"
+            find -P . -type f ! -path './SHA256SUMS' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 -r sha256sum
+          ) > "${payload_root}/SHA256SUMS"
 
       - name: Upload manifest publication payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -716,12 +722,15 @@ jobs:
         env:
           EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           EXPECTED_TAG: ${{ inputs.tag }}
+          EXPECTED_IMAGE_TAGS: ${{ inputs.image_tags }}
         run: |
           set -euo pipefail
           payload_root="${RUNNER_TEMP}/ghcr-manifest-publication"
           metadata_file="${payload_root}/publication.json"
           tags_file="${payload_root}/image-tags.txt"
+          checksums_file="${payload_root}/SHA256SUMS"
           expected_source_sha="${EXPECTED_SOURCE_SHA}"
+          expected_image_tags="${EXPECTED_IMAGE_TAGS}"
           owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           expected_image_name="ghcr.io/${owner}/lopper"
 
@@ -729,7 +738,7 @@ jobs:
             echo "::error::Invalid immutable source SHA in manifest publication payload."
             exit 1
           fi
-          if [ ! -f "${metadata_file}" ] || [ ! -f "${tags_file}" ] \
+          if [ ! -f "${metadata_file}" ] || [ ! -f "${tags_file}" ] || [ ! -f "${checksums_file}" ] \
             || find -P "${payload_root}" ! -type d ! -type f -print -quit | grep -q .; then
             echo "::error::Manifest publication payload is missing files or contains unsupported paths."
             exit 1
@@ -741,20 +750,58 @@ jobs:
           fi
           file_count="$(find -P "${payload_root}" -type f | wc -l | tr -d '[:space:]')"
           total_bytes="$(find -P "${payload_root}" -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
-          if [ "${file_count}" -ne 2 ] || [ "${total_bytes}" -gt 32768 ]; then
+          if [ "${file_count}" -ne 3 ] || [ "${total_bytes}" -gt 33280 ] \
+            || [ "$(stat -c '%s' "${metadata_file}")" -gt 16384 ] \
+            || [ "$(stat -c '%s' "${tags_file}")" -gt 16384 ] \
+            || [ "$(stat -c '%s' "${checksums_file}")" -gt 512 ]; then
             echo "::error::Manifest artifact payload exceeds file-count or size bounds."
             exit 1
           fi
           while IFS= read -r payload_file; do
             relative_path="${payload_file#"${payload_root}/"}"
             case "${relative_path}" in
-              publication.json|image-tags.txt) ;;
+              SHA256SUMS|publication.json|image-tags.txt) ;;
               *)
                 echo "::error::Unexpected manifest publication payload path."
                 exit 1
                 ;;
-            esac
+              esac
           done < <(find -P "${payload_root}" -type f -print)
+
+          checksum_pattern='^[0-9a-f]{64}  (\./(image-tags\.txt|publication\.json))$'
+          checksum_count=0
+          declare -A seen_checksum_paths=()
+          while IFS= read -r checksum_line || [[ -n "${checksum_line}" ]]; do
+            if [[ ! "${checksum_line}" =~ ${checksum_pattern} ]]; then
+              echo "::error::Manifest publication checksum syntax is invalid."
+              exit 1
+            fi
+            checksum_path="${BASH_REMATCH[1]}"
+            if [[ -n "${seen_checksum_paths[${checksum_path}]:-}" ]]; then
+              echo "::error::Manifest publication checksum paths must be unique."
+              exit 1
+            fi
+            seen_checksum_paths["${checksum_path}"]=1
+            checksum_count=$((checksum_count + 1))
+          done < "${checksums_file}"
+          if [ "${checksum_count}" -ne 2 ]; then
+            echo "::error::Manifest publication checksum count is invalid."
+            exit 1
+          fi
+          computed_checksums="${RUNNER_TEMP}/ghcr-manifest-computed-SHA256SUMS"
+          (
+            cd "${payload_root}"
+            find -P . -type f ! -path './SHA256SUMS' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 -r sha256sum
+          ) > "${computed_checksums}"
+          if ! cmp -s "${checksums_file}" "${computed_checksums}" \
+            || ! (cd "${payload_root}" && sha256sum --check --strict SHA256SUMS >/dev/null); then
+            echo "::error::Manifest publication payload checksum validation failed."
+            exit 1
+          fi
+          rm -f "${computed_checksums}"
+
           if ! jq -e \
             --arg source_sha "${expected_source_sha}" \
             --arg image_name "${expected_image_name}" \
@@ -767,6 +814,42 @@ jobs:
             echo "::error::Manifest publication metadata does not match immutable release inputs."
             exit 1
           fi
+
+          expected_tags_file="${RUNNER_TEMP}/ghcr-manifest-expected-image-tags.txt"
+          : > "${expected_tags_file}"
+          expected_tag_count=0
+          declare -A expected_seen_tags=()
+          while IFS= read -r raw_tag || [[ -n "${raw_tag}" ]]; do
+            tag="${raw_tag}"
+            tag="${tag%$'\r'}"
+            tag="${tag#"${tag%%[![:space:]]*}"}"
+            tag="${tag%"${tag##*[![:space:]]}"}"
+            if [[ -z "${tag}" ]]; then
+              continue
+            fi
+            if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+              || [[ "${tag}" == *-amd64 ]] || [[ "${tag}" == *-arm64 ]]; then
+              echo "::error::unexpected image reference in immutable manifest inputs."
+              exit 1
+            fi
+            expected_image_ref="${expected_image_name}:${tag}"
+            if [[ -n "${expected_seen_tags[${expected_image_ref}]:-}" ]]; then
+              echo "::error::Duplicate manifest publication image reference."
+              exit 1
+            fi
+            expected_seen_tags["${expected_image_ref}"]=1
+            printf '%s:%s\n' "${expected_image_name}" "${tag}" >> "${expected_tags_file}"
+            expected_tag_count=$((expected_tag_count + 1))
+          done <<< "${expected_image_tags}"
+          if [ "${expected_tag_count}" -lt 1 ] || [ "${expected_tag_count}" -gt 16 ]; then
+            echo "::error::Immutable manifest input tag count is outside bounds."
+            exit 1
+          fi
+          if ! cmp -s "${tags_file}" "${expected_tags_file}"; then
+            echo "::error::Manifest publication image references do not match immutable release inputs."
+            exit 1
+          fi
+          rm -f "${expected_tags_file}"
 
           tag_count=0
           declare -A seen_tags=()
