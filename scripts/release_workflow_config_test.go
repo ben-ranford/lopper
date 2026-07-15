@@ -305,7 +305,7 @@ func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *
 	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
 	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
 		`release_lookup_error="$(mktemp)"`,
-		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`elif grep -q "HTTP 404" "${release_lookup_error}"; then`,
 		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then`,
 		`existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"`,
 		`case "${existing_ref_type}" in`,
@@ -333,7 +333,7 @@ func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
 		`release_lookup_error="$(mktemp)"`,
 		`gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`,
 		`release_lookup_status=$?`,
-		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`elif grep -q "HTTP 404" "${release_lookup_error}"; then`,
 		`cat "${release_lookup_error}" >&2`,
 		`exit "${release_lookup_status}"`,
 		`gh release create "${tag}"`,
@@ -341,7 +341,7 @@ func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
 
 	lookupIndex := strings.Index(manualStep.Run, `gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`)
 	statusIndex := strings.Index(manualStep.Run, `release_lookup_status=$?`)
-	notFoundIndex := strings.Index(manualStep.Run, `if ! grep -q "HTTP 404" "${release_lookup_error}"; then`)
+	notFoundIndex := strings.Index(manualStep.Run, `elif grep -q "HTTP 404" "${release_lookup_error}"; then`)
 	createIndex := strings.Index(manualStep.Run, `gh release create "${tag}"`)
 	if lookupIndex < 0 || statusIndex < lookupIndex || notFoundIndex < statusIndex || createIndex < notFoundIndex {
 		t.Fatal("manual release creation must follow the captured lookup status and explicit HTTP 404 evidence")

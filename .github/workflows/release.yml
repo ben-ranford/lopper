@@ -93,8 +93,12 @@ jobs:
           resolved_sha="$(git rev-parse HEAD)"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           release_lookup_error="$(mktemp)"
-          trap 'rm -f "${release_lookup_error}"' EXIT
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"; then
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"
+          release_lookup_status=$?
+          set -e
+          if [ "${release_lookup_status}" -eq 0 ]; then
+            rm -f "${release_lookup_error}"
             echo "Reusing existing GitHub release ${tag}."
             release_ref_json="$(mktemp)"
             if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then
@@ -145,19 +149,18 @@ jobs:
               echo "::error::Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}." >&2
               exit 1
             fi
-          else
-            release_lookup_status=$?
-            if ! grep -q "HTTP 404" "${release_lookup_error}"; then
-              cat "${release_lookup_error}" >&2
-              echo "::error::Failed to look up GitHub release ${tag}." >&2
-              exit "${release_lookup_status}"
-            fi
+          elif grep -q "HTTP 404" "${release_lookup_error}"; then
+            rm -f "${release_lookup_error}"
             gh release create "${tag}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${resolved_sha}" \
               --draft \
               --title "Release ${tag}" \
               --notes ""
+          else
+            cat "${release_lookup_error}" >&2
+            rm -f "${release_lookup_error}"
+            exit "${release_lookup_status}"
           fi
 
           {
