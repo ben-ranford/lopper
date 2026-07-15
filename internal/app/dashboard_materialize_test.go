@@ -676,6 +676,82 @@ func TestPersistCommandOutputPinsCanonicalRootBeforeAcceptedBoundaryRetarget(t *
 	}
 }
 
+func TestOpenCommandOutputDestinationClosesRootOnBoundaryError(t *testing.T) {
+	workspace := t.TempDir()
+	outputPath := filepath.Join(workspace, "report.json")
+	boundaryErr := errors.New("boundary failure")
+	originalOpen := openCommandOutputWriteRootFn
+	originalAccepted := commandOutputBoundaryAcceptedFn
+	openCommandOutputWriteRootFn = func(rootPath string) (*safeio.WriteRoot, error) {
+		root, err := safeio.OpenWriteRoot(rootPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := root.Close(); err != nil {
+			return nil, err
+		}
+		return root, nil
+	}
+	commandOutputBoundaryAcceptedFn = func() error { return boundaryErr }
+	t.Cleanup(func() {
+		openCommandOutputWriteRootFn = originalOpen
+		commandOutputBoundaryAcceptedFn = originalAccepted
+	})
+
+	destination, err := openCommandOutputDestination(outputPath, workspace)
+	if destination.root != nil {
+		if closeErr := destination.root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected destination root: %v", closeErr)
+		}
+		t.Fatal("expected destination root to remain nil")
+	}
+	if !errors.Is(err, boundaryErr) {
+		t.Fatalf("expected boundary error, got %v", err)
+	}
+}
+
+func TestTrustedCommandOutputRootIgnoresRelativeRootWhenCWDUnavailable(t *testing.T) {
+	withRemovedWorkingDirectory(t, func() {
+		root, err := trustedCommandOutputRootBoundaryForRoot(filepath.Join(string(os.PathSeparator), "output.json"), "relative-root")
+		if err != nil {
+			t.Fatalf("expected unavailable relative root to be ignored, got %v", err)
+		}
+		if root.path != "" || root.resolved != "" {
+			t.Fatalf("expected empty trusted root, got %+v", root)
+		}
+	})
+}
+
+func TestTrustedCommandOutputRootReturnsErrorForRelativePathsWhenCWDUnavailable(t *testing.T) {
+	withRemovedWorkingDirectory(t, func() {
+		root, err := trustedCommandOutputRootBoundaryForRoot("relative-output.json", "relative-root")
+		if root.path != "" || root.resolved != "" {
+			t.Fatalf("expected empty trusted root, got %+v", root)
+		}
+		if err == nil {
+			t.Fatal("expected trusted root resolution error")
+		}
+	})
+}
+
+func TestRejectSymlinkedPathPropagatesLookupError(t *testing.T) {
+	root := t.TempDir()
+	nonDirectory := filepath.Join(root, "file")
+	if err := os.WriteFile(nonDirectory, []byte("file"), 0o600); err != nil {
+		t.Fatalf("write non-directory path: %v", err)
+	}
+	target := filepath.Join(nonDirectory, "child", "output.json")
+
+	err := rejectSymlinkedPath(root, target, "escape: %s", "symlink: %s")
+	if err == nil {
+		t.Fatal("expected lookup error below non-directory path")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("expected path lookup error, got %v", err)
+	}
+}
+
 func TestPersistCommandOutputAllowsRelativeOutputFromSymlinkedWorkspace(t *testing.T) {
 	workspace, workspaceAlias := createWorkspaceAlias(t)
 	originalWD, err := os.Getwd()

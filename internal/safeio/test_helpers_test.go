@@ -91,6 +91,15 @@ func assertFileContent(t *testing.T, path, want string) {
 	}
 }
 
+func statTestPath(t *testing.T, path string) fs.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info
+}
+
 type fakeFileSystem struct {
 	base             FileSystem
 	abs              func(path string) (string, error)
