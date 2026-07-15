@@ -338,7 +338,6 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 
 	publication := workflowJobByName(t, workflow.Jobs, "publish")
-	assertWorkflowJobNeeds(t, publication, "fresh release publication", workflowJobNeeds{"prepare-release", "prepare-release-publication", "publish-marketplace"})
 	assertWorkflowJobPermissions(t, publication, "fresh release publication", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, publication, "fresh release publication")
 	assertReleasePublicationCredentialScope(t, publication)
@@ -440,7 +439,6 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	marketplace := workflowJobByName(t, workflow.Jobs, "publish-marketplace")
-	assertWorkflowJobNeeds(t, marketplace, "Marketplace publication", workflowJobNeeds{"prepare-release", "prepare-release-publication", "prepare-marketplace-toolchain"})
 	assertWorkflowJobPermissions(t, marketplace, "Marketplace publication", nil)
 	assertWorkflowJobEnvEmpty(t, marketplace, "Marketplace publication")
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -522,6 +520,22 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 1 {
 		t.Fatalf("Marketplace secret references = %d, want final publish step only", count)
+	}
+}
+
+func TestReleaseWorkflowPublishesMarketplaceAfterGitHubReleaseBoundary(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	marketplace := workflowJobByName(t, workflow.Jobs, "publish-marketplace")
+	assertWorkflowJobNeeds(t, marketplace, "Marketplace publication", workflowJobNeeds{"prepare-release", "publish", "prepare-release-publication", "prepare-marketplace-toolchain"})
+
+	publication := workflowJobByName(t, workflow.Jobs, "publish")
+	assertWorkflowJobNeeds(t, publication, "fresh release publication", workflowJobNeeds{"prepare-release", "prepare-release-publication"})
+	if slices.Contains(publication.Needs, "publish-marketplace") {
+		t.Fatalf("GitHub release publication must not wait for Marketplace publication: %v", publication.Needs)
 	}
 }
 
