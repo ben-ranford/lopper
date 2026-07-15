@@ -406,19 +406,41 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
     steps:
+      - name: Detect Marketplace token
+        id: gate
+        env:
+          VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          if [ -n "${VSCE_PUBLISH:-}" ]; then
+            /usr/bin/printf '%s\n' 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            /usr/bin/printf '%s\n' 'configured=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip Marketplace toolchain prep when token is missing
+        if: ${{ steps.gate.outputs.configured != 'true' }}
+        run: echo "VSCE publish token not configured; skipping Marketplace toolchain preparation."
+
       - name: Checkout trusted main Marketplace manifests
+        if: ${{ steps.gate.outputs.configured == 'true' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
           ref: main
 
       - name: Setup Node for Marketplace tooling
+        if: ${{ steps.gate.outputs.configured == 'true' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
 
       - name: Validate Marketplace tooling lockfile
+        if: ${{ steps.gate.outputs.configured == 'true' }}
         run: |
           set -euo pipefail
           lockfile="extensions/vscode-lopper/package-lock.json"
@@ -442,6 +464,7 @@ jobs:
           esac
 
       - name: Prepare integrity-bound Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
         run: |
           set -euo pipefail
           source_dir="extensions/vscode-lopper"
@@ -476,6 +499,7 @@ jobs:
           fi
 
       - name: Archive Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
         run: |
           set -euo pipefail
           scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
@@ -495,6 +519,7 @@ jobs:
           )
 
       - name: Upload Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: marketplace-toolchain
@@ -515,24 +540,32 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     steps:
+      - name: Skip Marketplace publish when token is missing
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured != 'true' }}
+        run: echo "VSCE publish token not configured; skipping Marketplace publish."
+
       - name: Setup Node for Marketplace tooling
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
 
       - name: Download release publication inputs
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: release-publication-inputs
           path: publication-inputs
 
       - name: Download Marketplace toolchain
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: marketplace-toolchain
           path: marketplace-toolchain-input
 
       - name: Validate Marketplace publication inputs
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -750,6 +783,7 @@ jobs:
           test -x "${node_bin}"
 
       - name: Publish VS Code extension to Marketplace
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
