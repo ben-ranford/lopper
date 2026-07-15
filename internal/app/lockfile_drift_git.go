@@ -435,18 +435,18 @@ func gitActiveFilterPathDrivers(ctx context.Context, repoPath string, paths []st
 		return nil, nil
 	}
 
-	command, err := gitCommandContext(ctx, repoPath, "check-attr", "--stdin", "-z", "filter")
+	command, err := gitCommandContext(ctx, repoPath, "check-attr", "--stdin", "-z", "--all")
 	if err != nil {
 		return nil, err
 	}
 	command.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
 	output, err := command.Output()
 	if err != nil {
-		return nil, fmt.Errorf("run git check-attr --stdin -z filter: %w", err)
+		return nil, fmt.Errorf("run git check-attr --stdin -z --all: %w", err)
 	}
 	assignments, err := parseGitCheckAttrFilterPathDrivers(paths, output)
 	if err != nil {
-		return nil, fmt.Errorf("parse git check-attr --stdin -z filter output: %w", err)
+		return nil, fmt.Errorf("parse git check-attr --stdin -z --all output: %w", err)
 	}
 	return filterConfiguredGitAttributeDrivers(ctx, repoPath, assignments)
 }
@@ -539,26 +539,36 @@ func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) err
 }
 
 func parseGitCheckAttrFilterPathDrivers(paths []string, output []byte) ([]gitFilterPathDriver, error) {
-	if len(output) == 0 || output[len(output)-1] != 0 {
+	if len(output) == 0 {
+		return nil, nil
+	}
+	if output[len(output)-1] != 0 {
 		return nil, errors.New("truncated output: missing trailing NUL terminator")
 	}
 
 	fields := parseNULTerminatedGitFields(output)
-	expectedFields := len(paths) * 3
-	if len(fields) != expectedFields {
-		return nil, fmt.Errorf("expected %d NUL-delimited fields for %d paths, got %d", expectedFields, len(paths), len(fields))
+	if len(fields)%3 != 0 {
+		return nil, fmt.Errorf("expected complete NUL-delimited attribute triplets, got %d fields", len(fields))
 	}
 
+	expectedPaths := make(map[string]int, len(paths))
+	for _, path := range paths {
+		expectedPaths[path]++
+	}
+	filterRecords := make(map[string]int, len(paths))
 	assignments := make([]gitFilterPathDriver, 0, len(fields)/3)
-	for index, expectedPath := range paths {
-		fieldIndex := index * 3
+	for fieldIndex := 0; fieldIndex < len(fields); fieldIndex += 3 {
 		path := fields[fieldIndex]
-		if path != expectedPath {
-			return nil, fmt.Errorf("path %d mismatch: expected %q, got %q", index, expectedPath, path)
+		if expectedPaths[path] == 0 {
+			return nil, fmt.Errorf("unexpected attribute path %q", path)
 		}
 		attribute := fields[fieldIndex+1]
 		if attribute != "filter" {
-			return nil, fmt.Errorf("attribute %d mismatch for %q: expected %q, got %q", index, expectedPath, "filter", attribute)
+			continue
+		}
+		filterRecords[path]++
+		if filterRecords[path] > expectedPaths[path] {
+			return nil, fmt.Errorf("too many filter records for %q", path)
 		}
 
 		value := strings.TrimSpace(fields[fieldIndex+2])

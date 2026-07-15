@@ -124,7 +124,7 @@ func TestCollectLockfileGitContextFailsClosedForMalformedCheckAttr(t *testing.T)
 	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
 
 	_, err := collectLockfileGitContext(context.Background(), repo, []lockfileRule{lockfileRules[0]})
-	if err == nil || !strings.Contains(err.Error(), "parse git check-attr --stdin -z filter output") {
+	if err == nil || !strings.Contains(err.Error(), "parse git check-attr --stdin -z --all output") {
 		t.Fatalf("expected malformed check-attr failure, got %v", err)
 	}
 	if strings.Contains(err.Error(), "run git diff") {
@@ -178,7 +178,7 @@ func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
 		t.Fatalf("expected check-attr failure for non-empty path set, got %v", err)
 	}
 
-	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json"}, []byte("package.json\x00filter\x00pwn=drv\x00package-lock.json\x00filter\x00 \x00"))
+	assignments, err = parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json"}, []byte("package.json\x00eol\x00lf\x00package.json\x00filter\x00pwn=drv\x00"))
 	if err != nil {
 		t.Fatalf("expected valid path-driver output to parse, got %v", err)
 	}
@@ -620,14 +620,13 @@ func TestParseGitExecutableFilterConfigRecords(t *testing.T) {
 }
 
 func TestParseGitCheckAttrFilterPathDrivers(t *testing.T) {
-	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00filter\x00unspecified\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
+	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00eol\x00lf\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
 	assignments, err := parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
 	if err != nil {
 		t.Fatalf("expected valid check-attr output to parse, got %v", err)
 	}
 	want := []gitFilterPathDriver{
 		{path: "package.json", driver: "foo.bar"},
-		{path: "package-lock.json", driver: "unspecified"},
 		{path: "nested/package.json", driver: "foo/bar"},
 		{path: "package.json", driver: "foo.bar"},
 	}
@@ -683,25 +682,19 @@ func TestParseGitCheckAttrFilterPathDriversRejectsMalformedOutput(t *testing.T) 
 			name:       "wrong field count",
 			paths:      []string{"package.json"},
 			output:     []byte("package.json\x00filter\x00foo.bar\x00extra\x00"),
-			errContain: "expected 3 NUL-delimited fields",
-		},
-		{
-			name:       "wrong attribute name",
-			paths:      []string{"package.json"},
-			output:     []byte("package.json\x00eol\x00lf\x00"),
-			errContain: "attribute 0 mismatch",
+			errContain: "complete NUL-delimited attribute triplets",
 		},
 		{
 			name:       "wrong path",
 			paths:      []string{"package.json"},
 			output:     []byte("package-lock.json\x00filter\x00foo.bar\x00"),
-			errContain: "path 0 mismatch",
+			errContain: "unexpected attribute path",
 		},
 		{
-			name:       "wrong path order",
-			paths:      []string{"package.json", "package-lock.json"},
-			output:     []byte("package-lock.json\x00filter\x00foo.bar\x00package.json\x00filter\x00foo.baz\x00"),
-			errContain: "path 0 mismatch",
+			name:       "duplicate filter record",
+			paths:      []string{"package.json"},
+			output:     []byte("package.json\x00filter\x00foo.bar\x00package.json\x00filter\x00foo.baz\x00"),
+			errContain: "too many filter records",
 		},
 	}
 
@@ -783,25 +776,22 @@ if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard 
   fi
   exit 0
 fi
-if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
+if printf '%s' "$args" | grep -q 'check-attr --stdin -z --all'; then
   if [ "$mode" = "pathscope-head" ]; then
     cat >/dev/null
-    printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000unspecified\000'
     exit 0
   fi
   if [ "$mode" = "pathscope-unborn" ]; then
     cat >/dev/null
-    printf 'package.json\000filter\000unspecified\000'
     exit 0
   fi
   if [ "$mode" = "pathscope-filterdriver" ]; then
     cat >/dev/null
-    printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000pwn\000'
+    printf 'package.json\000filter\000pwn\000'
     exit 0
   fi
   if [ "$mode" = "lsfail" ]; then
     cat >/dev/null
-    printf 'package-lock.json\000filter\000unspecified\000package.json\000filter\000unspecified\000'
     exit 0
   fi
   if [ "$mode" = "checkattrfail" ]; then
