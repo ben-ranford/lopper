@@ -916,12 +916,7 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 	githubOutput := filepath.Join(runnerTemp, "github-output")
 	cmd := exec.Command("bash", "-c", stampStep.Run)
 	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(),
-		"FEATUREFLAG_INVOCATION="+invocationPath,
-		"GITHUB_OUTPUT="+githubOutput,
-		"RELEASE_TAG=v1.8.2-rc.1",
-		"RUNNER_TEMP="+runnerTemp,
-	)
+	cmd.Env = append(os.Environ(), "FEATUREFLAG_INVOCATION="+invocationPath, "GITHUB_OUTPUT="+githubOutput, "RELEASE_TAG=v1.8.2-rc.1", "RUNNER_TEMP="+runnerTemp)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run prerelease feature history step: %v\n%s", err, output)
