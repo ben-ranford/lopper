@@ -732,137 +732,229 @@ func assertWorkflowJobOmitsText(t *testing.T, job workflowJobConfig, forbidden s
 	}
 }
 
-func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.T) {
+func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	t.Parallel()
 
-	var workflow struct {
-		Jobs map[string]workflowJobConfig `yaml:"jobs"`
-	}
+	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	stampStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Stamp first stable release history")
-	if stampStep.ID != "stamp_history" {
-		t.Fatalf("stamp history step id = %q, want stamp_history", stampStep.ID)
+	preparation, ok := workflow.Jobs["prepare-feature-release-history"]
+	if !ok {
+		t.Fatal("release workflow must prepare feature history changes in a separate job")
 	}
-	assertWorkflowStepEnvMissing(t, stampStep, "PUSH_TOKEN", "stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
-	assertWorkflowStepRunContainsAll(t, stampStep, "stamp history step", []string{
-		`"${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"`,
-		`"${RUNNER_TEMP}/featureflag" validate`,
-		`echo "changed=true" >> "$GITHUB_OUTPUT"`,
-	})
-	if strings.Contains(stampStep.Run, "git push") {
-		t.Fatal("stamp history step must not push while running repository-controlled tools")
+	if !slices.Equal(preparation.Needs, workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"}) {
+		t.Fatalf("feature history preparation needs = %v", preparation.Needs)
+	}
+	if len(preparation.Permissions) != 1 || preparation.Permissions["contents"] != "read" {
+		t.Fatalf("feature history preparation permissions = %#v", preparation.Permissions)
+	}
+	if preparation.Outputs["changed"] != "${{ steps.stamp_history.outputs.changed }}" {
+		t.Fatalf("feature history preparation changed output = %q", preparation.Outputs["changed"])
+	}
+	assertWorkflowJobOmitsText(t, preparation, "PUSH_TOKEN", "feature history preparation must not receive a push token")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.", "feature history preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-feature-release-history")
+
+	trustedCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout trusted main tooling")
+	if trustedCheckout.With["ref"] != "main" || trustedCheckout.With["path"] != "" {
+		t.Fatalf("trusted tooling checkout config = %#v", trustedCheckout.With)
+	}
+	releaseCheckout := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Checkout validated release data")
+	if releaseCheckout.With["ref"] != "${{ needs.prepare-release.outputs.sha }}" || releaseCheckout.With["path"] != "release-source" {
+		t.Fatalf("validated release data checkout config = %#v", releaseCheckout.With)
 	}
 
-	commitStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Commit stamped feature release history")
-	if commitStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
-		t.Fatalf("commit stamped history step if = %q", commitStep.If)
-	}
-	if commitStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
-		t.Fatalf("commit stamped history step RELEASE_TAG env = %q", commitStep.Env["RELEASE_TAG"])
-	}
-	if !strings.Contains(commitStep.Run, `git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"`) {
-		t.Fatal("commit stamped history step must create the release history commit without a push token")
-	}
-	assertWorkflowStepEnvMissing(t, commitStep, "PUSH_TOKEN", "commit stamped history step must not expose PUSH_TOKEN")
-
-	pushStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Push stamped feature release history")
-	if pushStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
-		t.Fatalf("push stamped history step if = %q", pushStep.If)
-	}
-	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
-		t.Fatalf("push stamped history step shell = %q", pushStep.Shell)
-	}
-	if pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("push stamped history step PUSH_TOKEN env = %q", pushStep.Env["PUSH_TOKEN"])
-	}
-	assertWorkflowStepRunContainsAll(t, pushStep, "push stamped history step", []string{
-		"git_bin=/usr/bin/git",
-		"env_bin=/usr/bin/env",
-		`git_home="$("${mktemp_bin}" -d)"`,
-		`"${env_bin}" -i`,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		`push_token="${PUSH_TOKEN}"`,
-		"unset PUSH_TOKEN",
-		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
-		"unset push_token",
-		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
-		`origin_fetch_urls="$(git_safe remote get-url --all origin)"`,
-		`origin_push_urls="$(git_safe remote get-url --push --all origin)"`,
-		`if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then`,
-		"GIT_CONFIG_KEY_1=credential.helper",
-		"GIT_CONFIG_VALUE_1=",
-		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
-		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
-		`git_network fetch origin main:refs/remotes/origin/main`,
-		`git_safe rebase origin/main`,
-		`git_network push origin HEAD:main`,
-	})
-	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "push stamped history step")
-	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, workflow.Jobs["stamp-feature-release-history"], "stamp-feature-release-history")
-}
-
-func TestReleaseWorkflowBuildsFeatureHistoryPatchWithTrustedMainTooling(t *testing.T) {
-	t.Parallel()
-
-	var workflow struct {
-		Jobs map[string]workflowJobConfig `yaml:"jobs"`
-	}
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
-
-	trustedCheckout := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Checkout trusted main tooling")
-	if trustedCheckout.With["ref"] != "main" {
-		t.Fatalf("trusted tooling checkout ref = %q, want main", trustedCheckout.With["ref"])
-	}
-	if trustedCheckout.With["path"] != "" {
-		t.Fatalf("trusted tooling checkout path = %q, want repository root", trustedCheckout.With["path"])
-	}
-
-	releaseCheckout := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Checkout validated release data")
-	if releaseCheckout.With["ref"] != "${{ needs.prepare-release.outputs.sha }}" {
-		t.Fatalf("release data checkout ref = %q", releaseCheckout.With["ref"])
-	}
-	if releaseCheckout.With["path"] != "release-source" {
-		t.Fatalf("release data checkout path = %q, want release-source", releaseCheckout.With["path"])
-	}
-
-	validateStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Validate release data against trusted main")
-	if validateStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
-		t.Fatalf("release data validation RELEASE_SHA env = %q", validateStep.Env["RELEASE_SHA"])
-	}
+	validateStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate release data against trusted main")
 	assertWorkflowStepRunContainsAll(t, validateStep, "release data validation step", []string{
 		`release_commit="$(git -C release-source rev-parse HEAD)"`,
 		`if [ "${release_commit}" != "${RELEASE_SHA}" ]; then`,
 		`if ! git merge-base --is-ancestor "${release_commit}" HEAD; then`,
 	})
-
-	buildStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Build trusted feature flag tool")
-	if buildStep.WorkingDirectory != "" {
-		t.Fatalf("trusted feature flag build working directory = %q, want trusted repository root", buildStep.WorkingDirectory)
-	}
-	if !strings.Contains(buildStep.Run, `go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag`) {
-		t.Fatal("feature history job must build featureflag from trusted main")
+	buildStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Build trusted feature flag tool")
+	if buildStep.WorkingDirectory != "" || !strings.Contains(buildStep.Run, `go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag`) {
+		t.Fatalf("trusted feature flag build config = %#v", buildStep)
 	}
 
-	stampStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Stamp first stable release history")
+	stampStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Stamp first stable release history")
+	if stampStep.ID != "stamp_history" {
+		t.Fatalf("stamp history step id = %q, want stamp_history", stampStep.ID)
+	}
 	if stampStep.WorkingDirectory != "release-source" {
 		t.Fatalf("stamp history working directory = %q, want release-source", stampStep.WorkingDirectory)
 	}
+	assertWorkflowStepEnvMissing(t, stampStep, "PUSH_TOKEN", "stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
 	assertWorkflowStepRunContainsAll(t, stampStep, "stamp history step", []string{
 		`"${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"`,
 		`"${RUNNER_TEMP}/featureflag" validate`,
+		`echo "changed=false" >> "$GITHUB_OUTPUT"`,
+		`echo "changed=true" >> "$GITHUB_OUTPUT"`,
 	})
-	if strings.Contains(stampStep.Run, "go run ./tools/featureflag") {
-		t.Fatal("release-source changes must not control the feature history executable")
-	}
-
-	for _, stepName := range []string{"Commit stamped feature release history", "Push stamped feature release history"} {
-		step := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", stepName)
-		if step.WorkingDirectory != "release-source" {
-			t.Fatalf("%s working directory = %q, want release-source", stepName, step.WorkingDirectory)
+	for _, forbidden := range []string{"git commit", "git push", "PUSH_TOKEN"} {
+		if strings.Contains(stampStep.Run, forbidden) {
+			t.Fatalf("stamp history step must not contain %q", forbidden)
 		}
 	}
+
+	patchStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate and stage feature history patch")
+	if patchStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
+		t.Fatalf("feature history patch step if = %q", patchStep.If)
+	}
+	if patchStep.WorkingDirectory != "release-source" {
+		t.Fatalf("feature history patch working directory = %q, want release-source", patchStep.WorkingDirectory)
+	}
+	assertWorkflowStepRunContainsAll(t, patchStep, "feature history patch step", []string{
+		`mapfile -t changed_files < <(git diff --name-only)`,
+		`if [ "${#changed_files[@]}" -ne 1 ] || [ "${changed_files[0]}" != "internal/featureflags/features.json" ]; then`,
+		`git diff --binary --full-index -- internal/featureflags/features.json > "${patch_file}"`,
+		`git apply --check "${patch_file}"`,
+		`sha256sum feature-history.patch > SHA256SUMS`,
+	})
+	assertWorkflowStepEnvMissing(t, patchStep, "PUSH_TOKEN", "feature history patch staging must be tokenless")
+
+	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Upload feature history patch")
+	if uploadStep.If != "${{ steps.stamp_history.outputs.changed == 'true' }}" {
+		t.Fatalf("feature history patch upload if = %q", uploadStep.If)
+	}
+	if uploadStep.With["name"] != "feature-history-patch" || !strings.Contains(uploadStep.With["path"], ".artifacts/feature-history.patch") || !strings.Contains(uploadStep.With["path"], ".artifacts/SHA256SUMS") {
+		t.Fatalf("feature history patch artifact config = %#v", uploadStep.With)
+	}
+	if uploadStep.With["if-no-files-found"] != "error" {
+		t.Fatalf("feature history patch artifact missing-file behavior = %q", uploadStep.With["if-no-files-found"])
+	}
+
+	for _, step := range preparation.Steps {
+		if strings.Contains(step.Name, "Push") || strings.Contains(step.Run, "git push") {
+			t.Fatalf("feature history preparation must not push from release-source: %q", step.Name)
+		}
+	}
+
+	publication, ok := workflow.Jobs["push-feature-release-history"]
+	if !ok {
+		t.Fatal("release workflow must push feature history from a separate fresh job")
+	}
+	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "prepare-feature-release-history"}) {
+		t.Fatalf("feature history publication needs = %v", publication.Needs)
+	}
+	if publication.If != "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}" {
+		t.Fatalf("feature history publication if = %q", publication.If)
+	}
+	if len(publication.Permissions) != 1 || publication.Permissions["contents"] != "write" {
+		t.Fatalf("feature history publication permissions = %#v", publication.Permissions)
+	}
+	if len(publication.Env) != 0 {
+		t.Fatalf("feature history publication job env = %#v, want no job-scoped credentials", publication.Env)
+	}
+	for _, step := range publication.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("feature history publication must use a fresh host-Git clone, found checkout step %q", step.Name)
+		}
+		if step.WorkingDirectory == "release-source" || strings.Contains(step.Run, "release-source") {
+			t.Fatalf("feature history publication must not reuse release-source: %q", step.Name)
+		}
+	}
+
+	downloadStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download feature history patch")
+	if downloadStep.With["name"] != "feature-history-patch" || downloadStep.With["path"] != "feature-history-input" {
+		t.Fatalf("feature history patch download config = %#v", downloadStep.With)
+	}
+}
+
+func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	prepareStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Prepare trusted feature history commit")
+	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("feature history commit preparation shell = %q", prepareStep.Shell)
+	}
+	if len(prepareStep.Env) != 2 || prepareStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || prepareStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
+		t.Fatalf("feature history commit preparation env = %#v", prepareStep.Env)
+	}
+	assertWorkflowStepEnvMissing(t, prepareStep, "PUSH_TOKEN", "feature history commit preparation must be tokenless")
+	assertWorkflowStepRunContainsAll(t, prepareStep, "feature history commit preparation", []string{
+		"git_bin=/usr/bin/git",
+		"env_bin=/usr/bin/env",
+		`repo_dir="${RUNNER_TEMP}/feature-history-push"`,
+		`input_dir="${GITHUB_WORKSPACE}/feature-history-input"`,
+		`sha256sum --check --strict SHA256SUMS`,
+		`if [ "$(find "${input_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
+		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
+		`git_safe init "${repo_dir}"`,
+		`git_safe -C "${repo_dir}" remote add origin "${expected_origin}"`,
+		`git_safe -C "${repo_dir}" fetch --no-tags --depth=1 origin "${RELEASE_SHA}"`,
+		`git_safe -C "${repo_dir}" checkout -b feature-history FETCH_HEAD`,
+		`git_safe -C "${repo_dir}" apply --index --whitespace=error-all "${patch_file}"`,
+		`mapfile -t staged_files < <(git_safe -C "${repo_dir}" diff --cached --name-only)`,
+		`if [ "${#staged_files[@]}" -ne 1 ] || [ "${staged_files[0]}" != "internal/featureflags/features.json" ]; then`,
+		`expected_subject="chore(flags): stamp ${RELEASE_TAG} feature release history"`,
+		`git_safe -C "${repo_dir}" commit -m "${expected_subject}"`,
+		`commit_count="$(git_safe -C "${repo_dir}" rev-list --count "${RELEASE_SHA}..HEAD")"`,
+		`parent_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD^)"`,
+		`commit_subject="$(git_safe -C "${repo_dir}" log -1 --format=%s)"`,
+		`mapfile -t committed_files < <(git_safe -C "${repo_dir}" diff-tree --no-commit-id --name-only -r HEAD)`,
+		`if [ "${commit_count}" -ne 1 ] || [ "${parent_sha}" != "${RELEASE_SHA}" ] || [ "${commit_subject}" != "${expected_subject}" ]; then`,
+		`if [ "${#committed_files[@]}" -ne 1 ] || [ "${committed_files[0]}" != "internal/featureflags/features.json" ]; then`,
+	})
+	for _, forbidden := range []string{"PUSH_TOKEN", "secrets.", "AUTHORIZATION: basic", "extraheader"} {
+		if strings.Contains(prepareStep.Run, forbidden) {
+			t.Fatalf("feature history commit preparation must not contain %q", forbidden)
+		}
+	}
+
+	pushStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push feature history commit")
+	if pushStep.Shell != prepareStep.Shell {
+		t.Fatalf("feature history push shell = %q", pushStep.Shell)
+	}
+	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("feature history push env = %#v", pushStep.Env)
+	}
+	assertWorkflowStepRunContainsAll(t, pushStep, "feature history push", []string{
+		"git_bin=/usr/bin/git",
+		"env_bin=/usr/bin/env",
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`repo_dir="${RUNNER_TEMP}/feature-history-push"`,
+		`"${env_bin}" -i`,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
+		`origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"`,
+		`origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"`,
+		`prepared_commit_count="$(git_safe -C "${repo_dir}" rev-list --count "${RELEASE_SHA}..HEAD")"`,
+		`prepared_parent="$(git_safe -C "${repo_dir}" rev-parse HEAD^)"`,
+		`mapfile -t prepared_files < <(git_safe -C "${repo_dir}" diff-tree --no-commit-id --name-only -r HEAD)`,
+		`if [ "${prepared_commit_count}" -ne 1 ] || [ "${prepared_parent}" != "${RELEASE_SHA}" ] || [ "${prepared_subject}" != "${expected_subject}" ]; then`,
+		`if [ "${#prepared_files[@]}" -ne 1 ] || [ "${prepared_files[0]}" != "internal/featureflags/features.json" ]; then`,
+		`push_token="${PUSH_TOKEN}"`,
+		"unset PUSH_TOKEN",
+		`auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"`,
+		"unset push_token",
+		"GIT_CONFIG_KEY_1=credential.helper",
+		"GIT_CONFIG_VALUE_1=",
+		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
+		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
+		`for attempt in 1 2 3; do`,
+		`git_network -C "${repo_dir}" fetch origin main:refs/remotes/origin/main`,
+		`git_safe -C "${repo_dir}" diff --quiet origin/main HEAD -- internal/featureflags/features.json`,
+		`echo "No feature release history changes to push"`,
+		`git_safe -C "${repo_dir}" rebase origin/main`,
+		`ahead_count="$(git_safe -C "${repo_dir}" rev-list --count origin/main..HEAD)"`,
+		`mapfile -t pushed_files < <(git_safe -C "${repo_dir}" diff-tree --no-commit-id --name-only -r HEAD)`,
+		`if [ "${ahead_count}" -ne 1 ] || [ "${push_parent}" != "${main_sha}" ] || [ "${push_subject}" != "${expected_subject}" ]; then`,
+		`if [ "${#pushed_files[@]}" -ne 1 ] || [ "${pushed_files[0]}" != "internal/featureflags/features.json" ]; then`,
+		`git_network -C "${repo_dir}" push origin HEAD:main`,
+		"Failed to push feature release history after retries",
+	})
+	validationIndex := strings.Index(pushStep.Run, `if [ "${prepared_commit_count}" -ne 1 ]`)
+	tokenIndex := strings.Index(pushStep.Run, `push_token="${PUSH_TOKEN}"`)
+	if validationIndex < 0 || tokenIndex < 0 || validationIndex >= tokenIndex {
+		t.Fatal("feature history publication must validate the exact commit and file set before reading the push token")
+	}
+	if strings.Count(pushStep.Run, "git_network ") != 2 {
+		t.Fatal("feature history authentication must be exposed only to fetch and push network commands")
+	}
+	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "feature history push")
 }
 
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
