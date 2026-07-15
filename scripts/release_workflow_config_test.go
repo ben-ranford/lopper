@@ -348,6 +348,31 @@ func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowConfinesMainSyncPATToTrustedFeatureHistoryPush(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	releasePlease := workflowStepByName(t, workflow.Jobs, "prepare-release", "Run release-please")
+	if got := releasePlease.With["token"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("release-please token = %q, want RELEASE_PLEASE_TOKEN fallback to GITHUB_TOKEN", got)
+	}
+
+	manual := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	if got := manual.Env["GH_TOKEN"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("manual release GH_TOKEN = %q, want RELEASE_PLEASE_TOKEN fallback to GITHUB_TOKEN", got)
+	}
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if got := strings.Count(workflowText, "secrets.MAIN_SYNC_PAT"); got != 1 {
+		t.Fatalf("release workflow MAIN_SYNC_PAT references = %d, want only trusted feature history push fallback", got)
+	}
+	if !strings.Contains(workflowText, "PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}") {
+		t.Fatal("trusted feature history push must retain MAIN_SYNC_PAT fallback to GITHUB_TOKEN")
+	}
+}
+
 func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
 
