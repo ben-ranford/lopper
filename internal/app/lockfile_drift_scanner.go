@@ -175,19 +175,19 @@ func (s *lockfileFailFastBatchScanner) scan(ctx context.Context) ([]string, erro
 }
 
 func (s *lockfileFailFastBatchScanner) visit(ctx context.Context, snapshot lockfileDirSnapshot) error {
+	if err := s.recordFirst(snapshot, lockfileGitContext{}); err != nil {
+		return err
+	}
 	candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, s.rules)
 	if err != nil {
 		return err
 	}
-	if len(s.batch.snapshots) == 0 && len(candidatePaths) == 0 {
-		return s.recordFirst(snapshot, lockfileGitContext{hasGitContext: true})
+	if len(candidatePaths) == 0 {
+		return nil
 	}
 	if s.batch.wouldOverflow(candidatePaths) {
 		if err := s.flush(ctx); err != nil {
 			return err
-		}
-		if len(candidatePaths) == 0 {
-			return s.recordFirst(snapshot, lockfileGitContext{hasGitContext: true})
 		}
 	}
 	s.batch.add(snapshot, candidatePaths)
