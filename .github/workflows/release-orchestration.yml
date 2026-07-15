@@ -647,13 +647,10 @@ jobs:
           provenance: false
           sbom: true
 
-  publish-ghcr-manifest:
-    needs:
-      - publish-ghcr-images
+  prepare-ghcr-manifest:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -666,6 +663,136 @@ jobs:
         run: |
           owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
+
+      - name: Compute manifest image tags
+        shell: bash
+        env:
+          IMAGE_TAGS: ${{ inputs.image_tags }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-image-tags.sh > image-tags.txt
+
+      - name: Prepare manifest publication payload
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          payload_root="${RUNNER_TEMP}/ghcr-manifest-publication"
+          mkdir -p "${payload_root}"
+          install -m 0600 image-tags.txt "${payload_root}/image-tags.txt"
+          jq -n \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg image_name "${IMAGE_NAME}" \
+            --arg tag "${RELEASE_TAG}" \
+            '{source_sha: $source_sha, image_name: $image_name, tag: $tag}' \
+            > "${payload_root}/publication.json"
+
+      - name: Upload manifest publication payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ghcr-manifest-publication-payload
+          path: ${{ runner.temp }}/ghcr-manifest-publication
+
+  publish-ghcr-manifest:
+    needs:
+      - publish-ghcr-images
+      - prepare-ghcr-manifest
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Download manifest publication payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ghcr-manifest-publication-payload
+          path: ${{ runner.temp }}/ghcr-manifest-publication
+
+      - name: Validate manifest publication payload
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          payload_root="${RUNNER_TEMP}/ghcr-manifest-publication"
+          metadata_file="${payload_root}/publication.json"
+          tags_file="${payload_root}/image-tags.txt"
+          expected_source_sha="${EXPECTED_SOURCE_SHA}"
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          expected_image_name="ghcr.io/${owner}/lopper"
+
+          if [[ ! "${expected_source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid immutable source SHA in manifest publication payload."
+            exit 1
+          fi
+          if [ ! -f "${metadata_file}" ] || [ ! -f "${tags_file}" ] \
+            || find -P "${payload_root}" ! -type d ! -type f -print -quit | grep -q .; then
+            echo "::error::Manifest publication payload is missing files or contains unsupported paths."
+            exit 1
+          fi
+          directory_count="$(find -P "${payload_root}" -type d | wc -l | tr -d '[:space:]')"
+          if [ "${directory_count}" -ne 1 ]; then
+            echo "::error::Manifest publication payload contains unexpected directories."
+            exit 1
+          fi
+          file_count="$(find -P "${payload_root}" -type f | wc -l | tr -d '[:space:]')"
+          total_bytes="$(find -P "${payload_root}" -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
+          if [ "${file_count}" -ne 2 ] || [ "${total_bytes}" -gt 32768 ]; then
+            echo "::error::Manifest artifact payload exceeds file-count or size bounds."
+            exit 1
+          fi
+          while IFS= read -r payload_file; do
+            relative_path="${payload_file#"${payload_root}/"}"
+            case "${relative_path}" in
+              publication.json|image-tags.txt) ;;
+              *)
+                echo "::error::Unexpected manifest publication payload path."
+                exit 1
+                ;;
+            esac
+          done < <(find -P "${payload_root}" -type f -print)
+          if ! jq -e \
+            --arg source_sha "${expected_source_sha}" \
+            --arg image_name "${expected_image_name}" \
+            --arg tag "${EXPECTED_TAG}" \
+            'type == "object"
+              and length == 3
+              and .source_sha == $source_sha
+              and .image_name == $image_name
+              and .tag == $tag' "${metadata_file}" >/dev/null; then
+            echo "::error::Manifest publication metadata does not match immutable release inputs."
+            exit 1
+          fi
+
+          tag_count=0
+          declare -A seen_tags=()
+          while IFS= read -r image_ref; do
+            if [[ "${image_ref}" != "${expected_image_name}:"* ]]; then
+              echo "::error::unexpected image reference in manifest publication payload."
+              exit 1
+            fi
+            image_tag="${image_ref#"${expected_image_name}:"}"
+            if [[ ! "${image_tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+              || [[ "${image_tag}" == *-amd64 ]] || [[ "${image_tag}" == *-arm64 ]]; then
+              echo "::error::unexpected image reference in manifest publication payload."
+              exit 1
+            fi
+            if [[ -n "${seen_tags[${image_ref}]:-}" ]]; then
+              echo "::error::Duplicate manifest publication image reference."
+              exit 1
+            fi
+            seen_tags["${image_ref}"]=1
+            tag_count=$((tag_count + 1))
+          done < "${tags_file}"
+          if [ "${tag_count}" -lt 1 ] || [ "${tag_count}" -gt 16 ]; then
+            echo "::error::Manifest publication tag count is outside bounds."
+            exit 1
+          fi
+          chmod -R a-w "${payload_root}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -680,15 +807,13 @@ jobs:
       - name: Publish multi-arch manifests
         shell: bash
         env:
-          IMAGE_TAGS: ${{ inputs.image_tags }}
-          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAGS_FILE: ${{ runner.temp }}/ghcr-manifest-publication/image-tags.txt
         run: |
           set -euo pipefail
-          bash scripts/release-image-tags.sh > image-tags.txt
           while IFS= read -r image_ref; do
             docker buildx imagetools create \
               -t "${image_ref}" \
               "${image_ref}-amd64" \
               "${image_ref}-arm64"
             docker buildx imagetools inspect "${image_ref}"
-          done < image-tags.txt
+          done < "${IMAGE_TAGS_FILE}"

@@ -1412,13 +1412,15 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 		}
 
 		publishManifest := workflowJobByName(t, workflow.Jobs, "publish-ghcr-manifest")
-		assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"publish-ghcr-images"})
+		assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"publish-ghcr-images", "prepare-ghcr-manifest"})
 		assertWorkflowJobPermissions(t, publishManifest, "publish-ghcr-manifest", map[string]string{"packages": "write"})
 		assertFreshGHCRPublisher(t, publishManifest, "Log in to GHCR")
 		manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
 		assertWorkflowStepRunContainsAll(t, manifestValidation, "manifest validation", []string{
 			`expected_source_sha="${EXPECTED_SOURCE_SHA}"`,
 			`expected_image_name="ghcr.io/${owner}/lopper"`,
+			`find -P "${payload_root}" ! -type d ! -type f`,
+			`directory_count`,
 			`artifact payload exceeds`,
 			`unexpected image reference`,
 		})
