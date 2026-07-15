@@ -664,6 +664,8 @@ jobs:
           vsix_path="${publication_dir}/dist/${expected_vsix}"
           python3 - "${vsix_path}" "${RELEASE_VERSION}" <<'PY'
           import json
+          import posixpath
+          import stat
           import sys
           import zipfile
 
@@ -672,7 +674,36 @@ jobs:
           manifest_path = "extension/package.json"
 
           with zipfile.ZipFile(vsix_path) as archive:
-              manifest_entries = [info for info in archive.infolist() if info.filename == manifest_path]
+              infos = archive.infolist()
+              if len(infos) == 0 or len(infos) > 65536:
+                  raise SystemExit("Marketplace VSIX contains an unexpected number of entries")
+
+              total_size = 0
+              seen_names = set()
+              manifest_entries = []
+              for info in infos:
+                  raw_name = info.filename
+                  normalized_name = posixpath.normpath(raw_name)
+                  if raw_name.startswith("/") or not normalized_name or normalized_name == "." or ".." in normalized_name.split("/"):
+                      raise SystemExit(f"Marketplace VSIX contains an unsafe path: {raw_name}")
+
+                  mode = (info.external_attr >> 16) & 0o170000
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f"Marketplace VSIX contains a symbolic link entry: {raw_name}")
+                  if mode and not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                      raise SystemExit(f"Marketplace VSIX contains an unexpected entry type: {raw_name}")
+
+                  if normalized_name in seen_names:
+                      raise SystemExit(f"Marketplace VSIX contains a duplicate path: {raw_name}")
+                  seen_names.add(normalized_name)
+
+                  total_size += info.file_size
+                  if total_size > 1073741824:
+                      raise SystemExit("Marketplace VSIX exceeds the 1 GiB expanded size limit")
+
+                  if normalized_name == manifest_path:
+                      manifest_entries.append(info)
+
               if len(manifest_entries) != 1:
                   raise SystemExit("Marketplace VSIX must contain exactly one extension/package.json manifest")
 
