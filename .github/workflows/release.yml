@@ -24,11 +24,31 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
+      trusted_main_sha: ${{ steps.trusted_main.outputs.trusted_main_sha }}
       release_created: ${{ steps.release.outputs.release_created || steps.manual.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name || steps.manual.outputs.tag }}
       version: ${{ steps.release.outputs.version || steps.manual.outputs.version }}
       sha: ${{ steps.release.outputs.sha || steps.manual.outputs.sha }}
     steps:
+      - name: Resolve trusted main workflow revision
+        id: trusted_main
+        env:
+          PATH: /usr/bin:/bin
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
+          if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then
+            echo "::error::Release workflow must run from ${expected_workflow_ref}." >&2
+            exit 1
+          fi
+          if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release workflow revision must be a lowercase full commit SHA." >&2
+            exit 1
+          fi
+          printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Run release-please
         if: ${{ github.event_name != 'workflow_dispatch' }}
         id: release
@@ -199,6 +219,107 @@ jobs:
         with:
           name: release-vscode-extension
           path: dist/*.vsix
+
+  prepare-marketplace-toolchain:
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
+    steps:
+      - name: Detect Marketplace token
+        id: gate
+        env:
+          VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          if [ -n "${VSCE_PUBLISH:-}" ]; then
+            printf '%s\n' 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' 'configured=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip Marketplace toolchain prep when token is missing
+        if: ${{ steps.gate.outputs.configured != 'true' }}
+        run: echo "VSCE publish token not configured; skipping Marketplace toolchain preparation."
+
+      - name: Checkout trusted main Marketplace manifests
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.prepare-release.outputs.trusted_main_sha }}
+          persist-credentials: false
+
+      - name: Setup Node for Marketplace tooling
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+
+      - name: Validate Marketplace tooling lockfile
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          lockfile="extensions/vscode-lopper/package-lock.json"
+          vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"
+          vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"
+          if [ "${vsce_version}" != "3.9.2" ]; then
+            echo "::error::Trusted Marketplace lockfile resolves @vscode/vsce ${vsce_version}, expected 3.9.2." >&2
+            exit 1
+          fi
+          case "${vsce_integrity}" in
+            sha512-?*) ;;
+            *)
+              echo "::error::Trusted Marketplace lockfile lacks SHA-512 integrity for @vscode/vsce." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Prepare integrity-bound Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="extensions/vscode-lopper"
+          scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
+          rm -rf -- "${scratch_dir}"
+          mkdir -p -- "${scratch_dir}"
+          cp -- "${source_dir}/package.json" "${source_dir}/package-lock.json" "${scratch_dir}/"
+          cd "${scratch_dir}"
+          npm ci --ignore-scripts --include=dev --audit=false --fund=false
+          vsce_package_dir="${scratch_dir}/node_modules/@vscode/vsce"
+          test -f "${vsce_package_dir}/vsce"
+          test -x "${vsce_package_dir}/vsce"
+          test -f "${vsce_package_dir}/out/main.js"
+
+      - name: Archive Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
+          archive_dir="${RUNNER_TEMP}/marketplace-toolchain-artifact"
+          archive_file="${archive_dir}/vsce-toolchain.tar.gz"
+          rm -rf -- "${archive_dir}"
+          mkdir -p -- "${archive_dir}"
+          tar --create --gzip --dereference --file "${archive_file}" --directory "${scratch_dir}" package.json package-lock.json node_modules
+          cd "${archive_dir}"
+          sha256sum vsce-toolchain.tar.gz > SHA256SUMS
+
+      - name: Upload Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: marketplace-toolchain
+          path: |
+            ${{ runner.temp }}/marketplace-toolchain-artifact/vsce-toolchain.tar.gz
+            ${{ runner.temp }}/marketplace-toolchain-artifact/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
 
   build-darwin-amd64:
     needs: prepare-release
@@ -383,27 +504,6 @@ jobs:
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
-      - name: Setup Node for VSIX publish
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24
-
-      - name: Publish VS Code extension to Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
-        run: |
-          set -euo pipefail
-          if [ -z "${VSCE_PAT:-}" ]; then
-            echo "VSCE publish token not configured; skipping marketplace publish."
-            exit 0
-          fi
-
-          make vscode-extension-install
-
-          vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
-          test -n "$vsix_path"
-          ./extensions/vscode-lopper/node_modules/.bin/vsce publish --packagePath "$vsix_path"
-
       - name: Publish GitHub Release
         run: |
           set -euo pipefail
@@ -462,6 +562,119 @@ jobs:
           git tag --force "${major_tag}" "${RELEASE_SHA}"
           git tag --force "${minor_tag}" "${RELEASE_SHA}"
           git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
+
+  publish-vscode-marketplace:
+    needs:
+      - prepare-release
+      - publish
+      - build-vscode-extension
+      - prepare-marketplace-toolchain
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Skip Marketplace publish when token is missing
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured != 'true' }}
+        run: echo "VSCE publish token not configured; skipping marketplace publish."
+
+      - name: Download VS Code extension artifact
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-vscode-extension
+          path: ${{ runner.temp }}/vscode-marketplace
+
+      - name: Download Marketplace toolchain
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: marketplace-toolchain
+          path: ${{ runner.temp }}/marketplace-toolchain-artifact
+
+      - name: Setup Node for Marketplace publication
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+
+      - name: Validate Marketplace publication inputs
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          VSIX_DIR: ${{ runner.temp }}/vscode-marketplace
+          TOOLCHAIN_ARTIFACT_DIR: ${{ runner.temp }}/marketplace-toolchain-artifact
+          TOOLCHAIN_DIR: ${{ runner.temp }}/trusted-vsce
+        run: |
+          set -euo pipefail
+          archive_file="${TOOLCHAIN_ARTIFACT_DIR}/vsce-toolchain.tar.gz"
+          checksum_file="${TOOLCHAIN_ARTIFACT_DIR}/SHA256SUMS"
+          test -f "${archive_file}"
+          test -f "${checksum_file}"
+          cd "${TOOLCHAIN_ARTIFACT_DIR}"
+          sha256sum --check --strict SHA256SUMS
+
+          python3 - "${archive_file}" <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+
+          archive = pathlib.Path(sys.argv[1])
+          allowed_roots = {"package.json", "package-lock.json", "node_modules"}
+          with tarfile.open(archive, mode="r:gz") as bundle:
+              for member in bundle:
+                  path = pathlib.PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"unsafe Marketplace toolchain path: {member.name}")
+                  if not path.parts or path.parts[0] not in allowed_roots:
+                      raise SystemExit(f"unexpected Marketplace toolchain root: {member.name}")
+                  if member.issym() or member.islnk():
+                      raise SystemExit(f"Marketplace toolchain links are forbidden: {member.name}")
+          PY
+
+          rm -rf -- "${TOOLCHAIN_DIR}"
+          mkdir -p -- "${TOOLCHAIN_DIR}"
+          tar --extract --gzip --no-same-owner --file "${archive_file}" --directory "${TOOLCHAIN_DIR}"
+          lockfile="${TOOLCHAIN_DIR}/package-lock.json"
+          vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"
+          vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"
+          if [ "${vsce_version}" != "3.9.2" ]; then
+            echo "::error::Prepared Marketplace toolchain resolves @vscode/vsce ${vsce_version}, expected 3.9.2." >&2
+            exit 1
+          fi
+          case "${vsce_integrity}" in
+            sha512-?*) ;;
+            *)
+              echo "::error::Prepared Marketplace toolchain lacks SHA-512 integrity for @vscode/vsce." >&2
+              exit 1
+              ;;
+          esac
+          vsce_package_dir="${TOOLCHAIN_DIR}/node_modules/@vscode/vsce"
+          test -f "${vsce_package_dir}/vsce"
+          test -x "${vsce_package_dir}/vsce"
+          test -f "${vsce_package_dir}/out/main.js"
+
+          expected_vsix="${VSIX_DIR}/lopper-vscode-${RELEASE_VERSION}.vsix"
+          test -f "${expected_vsix}"
+          if [ "$(find "${VSIX_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 1 ]; then
+            echo "::error::Expected exactly one VS Code extension artifact." >&2
+            exit 1
+          fi
+
+      - name: Publish VS Code extension to Marketplace
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        shell: bash --noprofile --norc {0}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
+          VSCE_BIN: ${{ runner.temp }}/trusted-vsce/node_modules/@vscode/vsce/vsce
+          VSIX_PATH: ${{ runner.temp }}/vscode-marketplace/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix
+          BASH_ENV: ""
+          ENV: ""
+          CDPATH: ""
+          NODE_OPTIONS: ""
+          NODE_PATH: ""
+        run: |
+          set -euo pipefail
+          "${VSCE_BIN}" publish --packagePath "${VSIX_PATH}"
 
   update-homebrew-tap:
     needs:
