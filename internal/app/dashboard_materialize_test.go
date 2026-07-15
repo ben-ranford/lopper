@@ -285,6 +285,30 @@ func TestPersistCommandOutputRejectsRelativeParentSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputRejectsParentTraversalAfterSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	externalRoot := t.TempDir()
+	outside := filepath.Join(externalRoot, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create reports symlink: %v", err)
+	}
+	chdirCanonicalWorkspace(t, workspace)
+
+	outputPath := strings.Join([]string{"reports", "..", "report.json"}, string(os.PathSeparator))
+	_, err := persistCommandOutput("after", outputPath, "dashboard report")
+	if err == nil || !strings.Contains(err.Error(), "parent traversal after path component") {
+		t.Fatalf("expected ambiguous parent traversal rejection, got %v", err)
+	}
+	for _, path := range []string{filepath.Join(workspace, "report.json"), filepath.Join(externalRoot, "report.json")} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("expected %q to remain absent, got err=%v", path, statErr)
+		}
+	}
+}
+
 func TestCommandOutputRootAllowsKnownDarwinSystemAliasRoots(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("known system alias roots only apply on darwin")
@@ -300,6 +324,37 @@ func TestCommandOutputRootAllowsKnownDarwinSystemAliasRoots(t *testing.T) {
 	}
 	if root != "/tmp" {
 		t.Fatalf("expected /tmp root, got %q", root)
+	}
+}
+
+func TestCommandOutputRootAllowsRootLevelSystemAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("root-level directory symlink discovery is not stable on windows")
+	}
+
+	var aliasRoot string
+	for _, candidate := range []string{"/etc", "/home", "/bin", "/sbin", "/lib", "/lib64"} {
+		linkInfo, err := os.Lstat(candidate)
+		if err != nil || linkInfo.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		targetInfo, err := os.Stat(candidate)
+		if err == nil && targetInfo.IsDir() {
+			aliasRoot = candidate
+			break
+		}
+	}
+	if aliasRoot == "" {
+		t.Skip("no root-level system directory alias is available")
+	}
+
+	outputPath := filepath.Join(aliasRoot, "lopper-system-alias-test-missing", "report.json")
+	root, err := commandOutputRoot(outputPath)
+	if err != nil {
+		t.Fatalf("command output root: %v", err)
+	}
+	if root != aliasRoot {
+		t.Fatalf("expected system alias root %q, got %q", aliasRoot, root)
 	}
 }
 
@@ -455,15 +510,50 @@ func TestTrustedCommandOutputRootForRootRejectsFileRoot(t *testing.T) {
 	}
 }
 
-func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
+func TestPersistCommandOutputRejectsSymlinkedTrustedRoot(t *testing.T) {
+	outside := t.TempDir()
+	trustedRoot := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(outside, trustedRoot); err != nil {
+		t.Fatalf("create trusted root symlink: %v", err)
+	}
+
+	outputPath := filepath.Join(trustedRoot, "report.json")
+	_, err := persistCommandOutput("{}", outputPath, "dashboard report", trustedRoot)
+	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is a symlink") {
+		t.Fatalf("expected symlinked trusted root rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestPersistCommandOutputRejectsTrustedRootWithSymlinkedAncestor(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "repo"), 0o755); err != nil {
+		t.Fatalf("mkdir outside repo: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(outside, alias); err != nil {
+		t.Fatalf("create trusted root ancestor symlink: %v", err)
+	}
+	trustedRoot := filepath.Join(alias, "repo")
+
+	outputPath := filepath.Join(trustedRoot, "report.json")
+	_, err := persistCommandOutput("{}", outputPath, "dashboard report", trustedRoot)
+	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
+		t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "repo", "report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestTrustedCommandOutputRootForRootRejectsAliasPath(t *testing.T) {
 	_, workspaceAlias := createWorkspaceAlias(t)
 
-	root, err := trustedCommandOutputRootForRoot(filepath.Join(workspaceAlias, "reports", "output.json"), workspaceAlias)
-	if err != nil {
-		t.Fatalf("trusted command output root for alias: %v", err)
-	}
-	if root != workspaceAlias {
-		t.Fatalf("expected alias trusted root %q, got %q", workspaceAlias, root)
+	_, err := trustedCommandOutputRootForRoot(filepath.Join(workspaceAlias, "reports", "output.json"), workspaceAlias)
+	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is a symlink") {
+		t.Fatalf("expected alias trusted root rejection, got %v", err)
 	}
 }
 
@@ -873,16 +963,18 @@ func TestHasDirectoryStyleOutputPath(t *testing.T) {
 	}
 }
 
-func TestIsKnownSystemAliasRoot(t *testing.T) {
+func TestIsRootLevelSystemAlias(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		for _, path := range []string{"/tmp", "/var"} {
-			if !isKnownSystemAliasRoot(path) {
-				t.Fatalf("expected %q to be treated as a known system alias root", path)
+			if !isRootLevelSystemAlias(path) {
+				t.Fatalf("expected %q to be treated as a root-level system alias", path)
 			}
 		}
 	}
-	if isKnownSystemAliasRoot("reports") {
-		t.Fatal("expected relative path to be rejected as a known system alias root")
+	for _, path := range []string{"reports", filepath.Join(t.TempDir(), "reports")} {
+		if isRootLevelSystemAlias(path) {
+			t.Fatalf("expected %q not to be treated as a root-level system alias", path)
+		}
 	}
 }
 

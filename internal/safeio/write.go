@@ -16,6 +16,8 @@ var (
 )
 
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.
+// Existing regular targets must be writable and retain their permission bits.
+// Ownership follows atomic replacement semantics; writes never fall back to in-place mutation.
 func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
 	target, err := resolveRootedTarget(rootDir, targetPath, rejectRootTarget)
 	if err != nil {

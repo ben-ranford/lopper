@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -37,6 +36,9 @@ func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...s
 }
 
 func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
+	if err := rejectAmbiguousParentTraversal(outputPath); err != nil {
+		return "", err
+	}
 	outputAbs, err := filepath.Abs(outputPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve output path: %w", err)
@@ -102,10 +104,8 @@ func resolveExistingOutputRoot(outputAbs, outputPath string) (string, error) {
 }
 
 func inspectOutputRootPath(current, outputPath string) (string, bool, error) {
-	if isKnownSystemAliasRoot(current) {
-		if _, err := os.Stat(current); err == nil {
-			return current, true, nil
-		}
+	if isRootLevelSystemAlias(current) {
+		return current, true, nil
 	}
 
 	info, err := os.Lstat(current)
@@ -148,10 +148,8 @@ func rejectLexicalOutputRootSymlinks(existingRoot string) error {
 }
 
 func rejectLexicalOutputRootPath(path string) error {
-	if isKnownSystemAliasRoot(path) {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		}
+	if isRootLevelSystemAlias(path) {
+		return nil
 	}
 
 	info, err := os.Lstat(path)
@@ -234,12 +232,18 @@ func trustedCommandOutputRootForRoot(outputAbs, root string) (string, error) {
 }
 
 func validateTrustedCommandOutputRoot(rootAbs string) error {
-	info, err := os.Stat(rootAbs)
+	info, err := os.Lstat(rootAbs)
 	if err != nil {
 		return fmt.Errorf("resolve trusted output workspace: %w", err)
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("trusted output workspace is a symlink: %s", rootAbs)
+	}
 	if !info.IsDir() {
 		return fmt.Errorf("trusted output workspace is not a directory: %s", rootAbs)
+	}
+	if err := rejectLexicalOutputRootSymlinks(rootAbs); err != nil {
+		return fmt.Errorf("validate trusted output workspace: %w", err)
 	}
 	return nil
 }
@@ -285,8 +289,21 @@ func pathWithinRoot(rootAbs, targetAbs string) (bool, error) {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))), nil
 }
 
-func isKnownSystemAliasRoot(path string) bool {
-	return runtime.GOOS == "darwin" && (path == "/tmp" || path == "/var")
+func isRootLevelSystemAlias(path string) bool {
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return false
+	}
+	parent := filepath.Dir(cleanPath)
+	if parent == cleanPath || filepath.Dir(parent) != parent {
+		return false
+	}
+	linkInfo, err := os.Lstat(cleanPath)
+	if err != nil || linkInfo.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	targetInfo, err := os.Stat(cleanPath)
+	return err == nil && targetInfo.IsDir()
 }
 
 func pathsUseDifferentWindowsVolumes(rootAbs, targetAbs string) bool {
@@ -323,6 +340,28 @@ func hasDirectoryStyleOutputPath(path string) bool {
 	}
 	base := path[last:]
 	return base == "." || base == ".."
+}
+
+func rejectAmbiguousParentTraversal(path string) error {
+	seenPathComponent := false
+	componentStart := 0
+	for i := 0; i <= len(path); i++ {
+		if i < len(path) && !os.IsPathSeparator(path[i]) {
+			continue
+		}
+		component := path[componentStart:i]
+		componentStart = i + 1
+		switch component {
+		case "", ".":
+		case "..":
+			if seenPathComponent {
+				return fmt.Errorf("output path contains parent traversal after path component: %s", path)
+			}
+		default:
+			seenPathComponent = true
+		}
+	}
+	return nil
 }
 
 func ensureCommandOutputParent(rootDir, outputPath string) error {
