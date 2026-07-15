@@ -213,7 +213,7 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowManualDispatchStrictlyResolvesExistingReleaseCommit(t *testing.T) {
+func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *testing.T) {
 	t.Parallel()
 
 	var workflow struct {
@@ -226,16 +226,59 @@ func TestReleaseWorkflowManualDispatchStrictlyResolvesExistingReleaseCommit(t *t
 		`release_lookup_error="$(mktemp)"`,
 		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
 		`tag_fetched="false"`,
-		`encoded_target="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$existing_target")"`,
-		`existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_target}" --jq '.sha')"`,
+		`if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`,
+		`existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"`,
 		`if [[ ! "${existing_commit}" =~ ^[0-9a-f]{40}$ ]]; then`,
+		`if [ "${tag_fetched}" = "false" ] && [ "${existing_commit}" != "${existing_target}" ]; then`,
 		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
 	})
+	guardIndex := strings.Index(manualStep.Run, `if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`)
+	lookupIndex := strings.Index(manualStep.Run, `existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"`)
+	if guardIndex < 0 || lookupIndex < 0 || guardIndex > lookupIndex {
+		t.Fatal("manual release flow must validate target_commitish as a full commit SHA before the commits API lookup")
+	}
 	if strings.Contains(manualStep.Run, `git rev-parse -q --verify "${existing_target}^{commit}"`) {
 		t.Fatal("manual release flow must resolve a release target that is absent from the local checkout")
 	}
 	if strings.Contains(manualStep.Run, `[ -n "${existing_commit}" ] &&`) {
 		t.Fatal("manual release flow must never skip existing release mismatch validation")
+	}
+}
+
+func TestReleaseWorkflowRejectsBranchValuedMissingTagFallback(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	const guardLine = `if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`
+	guardIndex := strings.Index(manualStep.Run, guardLine)
+	if guardIndex < 0 {
+		t.Fatal("manual release flow must guard target_commitish with a full-SHA check")
+	}
+
+	var guardLines []string
+	for _, line := range strings.Split(manualStep.Run[guardIndex:], "\n") {
+		guardLines = append(guardLines, line)
+		if strings.TrimSpace(line) == "fi" {
+			break
+		}
+	}
+	guardScript := strings.Join(guardLines, "\n")
+	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+guardScript+"\nprintf 'guard-bypassed\\n'")
+	cmd.Env = append(os.Environ(), "existing_target=main", "tag=v1.2.3")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("branch-valued target_commitish passed the missing-tag guard: %s", output)
+	}
+	if !strings.Contains(string(output), "Existing release v1.2.3 target_commitish must be a full 40-character hexadecimal commit SHA; got 'main'.") {
+		t.Fatalf("branch-valued target_commitish error = %q", output)
+	}
+	if strings.Contains(string(output), "guard-bypassed") {
+		t.Fatalf("branch-valued target_commitish bypassed the guard: %s", output)
 	}
 }
 
