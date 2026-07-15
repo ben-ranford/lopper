@@ -375,6 +375,9 @@ jobs:
     needs:
       - prepare-ghcr-amd64
       - prepare-ghcr-arm64
+    outputs:
+      amd64_digest: ${{ steps.publish_amd64.outputs.digest }}
+      arm64_digest: ${{ steps.publish_arm64.outputs.digest }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -624,6 +627,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish amd64 release image
+        id: publish_amd64
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ runner.temp }}/ghcr-amd64-promotion
@@ -636,6 +640,7 @@ jobs:
           sbom: true
 
       - name: Publish arm64 release image
+        id: publish_arm64
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ runner.temp }}/ghcr-arm64-promotion
@@ -723,6 +728,8 @@ jobs:
           EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           EXPECTED_TAG: ${{ inputs.tag }}
           EXPECTED_IMAGE_TAGS: ${{ inputs.image_tags }}
+          EXPECTED_AMD64_DIGEST: ${{ needs.publish-ghcr-images.outputs.amd64_digest }}
+          EXPECTED_ARM64_DIGEST: ${{ needs.publish-ghcr-images.outputs.arm64_digest }}
         run: |
           set -euo pipefail
           payload_root="${RUNNER_TEMP}/ghcr-manifest-publication"
@@ -731,11 +738,18 @@ jobs:
           checksums_file="${payload_root}/SHA256SUMS"
           expected_source_sha="${EXPECTED_SOURCE_SHA}"
           expected_image_tags="${EXPECTED_IMAGE_TAGS}"
+          amd64_digest="${EXPECTED_AMD64_DIGEST}"
+          arm64_digest="${EXPECTED_ARM64_DIGEST}"
           owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           expected_image_name="ghcr.io/${owner}/lopper"
 
           if [[ ! "${expected_source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Invalid immutable source SHA in manifest publication payload."
+            exit 1
+          fi
+          if [[ ! "${amd64_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || [[ ! "${arm64_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Published architecture image digests are invalid."
             exit 1
           fi
           if [ ! -f "${metadata_file}" ] || [ ! -f "${tags_file}" ] || [ ! -f "${checksums_file}" ] \
@@ -765,7 +779,7 @@ jobs:
                 echo "::error::Unexpected manifest publication payload path."
                 exit 1
                 ;;
-              esac
+            esac
           done < <(find -P "${payload_root}" -type f -print)
 
           checksum_pattern='^[0-9a-f]{64}  (\./(image-tags\.txt|publication\.json))$'
@@ -891,12 +905,18 @@ jobs:
         shell: bash
         env:
           IMAGE_TAGS_FILE: ${{ runner.temp }}/ghcr-manifest-publication/image-tags.txt
+          AMD64_DIGEST: ${{ needs.publish-ghcr-images.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.publish-ghcr-images.outputs.arm64_digest }}
         run: |
           set -euo pipefail
+          amd64_digest="${AMD64_DIGEST}"
+          arm64_digest="${ARM64_DIGEST}"
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          expected_image_name="ghcr.io/${owner}/lopper"
           while IFS= read -r image_ref; do
             docker buildx imagetools create \
               -t "${image_ref}" \
-              "${image_ref}-amd64" \
-              "${image_ref}-arm64"
+              "${expected_image_name}@${amd64_digest}" \
+              "${expected_image_name}@${arm64_digest}"
             docker buildx imagetools inspect "${image_ref}"
           done < "${IMAGE_TAGS_FILE}"
