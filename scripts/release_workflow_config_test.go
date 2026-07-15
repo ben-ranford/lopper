@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -413,34 +414,28 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	preparation, ok := workflow.Jobs["prepare-marketplace-toolchain"]
-	if !ok {
-		t.Fatal("release workflow must prepare Marketplace tooling in a separate trusted-main job")
-	}
-	if !slices.Equal(preparation.Needs, workflowJobNeeds{"prepare-release"}) {
-		t.Fatalf("Marketplace tooling preparation needs = %v", preparation.Needs)
-	}
-	if preparation.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
-		t.Fatalf("Marketplace tooling preparation if = %q", preparation.If)
-	}
-	if len(preparation.Permissions) != 1 || preparation.Permissions["contents"] != "read" {
-		t.Fatalf("Marketplace tooling preparation permissions = %#v", preparation.Permissions)
-	}
-	if len(preparation.Env) != 0 {
-		t.Fatalf("Marketplace tooling preparation env = %#v, want no job-scoped credentials", preparation.Env)
-	}
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-marketplace-toolchain")
+	assertWorkflowJobNeeds(t, preparation, "Marketplace tooling preparation", workflowJobNeeds{"prepare-release"})
+	assertWorkflowJobPermissions(t, preparation, "Marketplace tooling preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, preparation, "Marketplace tooling preparation")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{
+			label: "Marketplace tooling preparation if",
+			got:   preparation.If,
+			want:  "${{ needs.prepare-release.outputs.release_created == 'true' }}",
+		},
+	})
 	assertWorkflowJobOmitsText(t, preparation, "VSCE_PAT", "Marketplace tooling preparation must not receive VSCE_PAT")
 	assertWorkflowJobOmitsText(t, preparation, "secrets.", "Marketplace tooling preparation must not receive secrets")
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-marketplace-toolchain")
 
 	checkoutStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
-	if checkoutStep.With["ref"] != "main" || checkoutStep.With["path"] != "" {
-		t.Fatalf("trusted Marketplace checkout config = %#v", checkoutStep.With)
-	}
 	setupStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Setup Node for Marketplace tooling")
-	if setupStep.With["node-version"] != "24" {
-		t.Fatalf("Marketplace tooling Node version = %q", setupStep.With["node-version"])
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "trusted Marketplace checkout ref", got: checkoutStep.With["ref"], want: "main"},
+		{label: "trusted Marketplace checkout path", got: checkoutStep.With["path"], want: ""},
+		{label: "Marketplace tooling Node version", got: setupStep.With["node-version"], want: "24"},
+	})
 
 	lockStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Validate Marketplace tooling lockfile")
 	assertWorkflowStepRunContainsAll(t, lockStep, "Marketplace lockfile validation step", []string{
@@ -476,14 +471,14 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	})
 
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Upload Marketplace toolchain")
-	if uploadStep.With["name"] != "marketplace-toolchain" ||
-		!strings.Contains(uploadStep.With["path"], ".artifacts/marketplace-toolchain/vsce-toolchain.tar.gz") ||
-		!strings.Contains(uploadStep.With["path"], ".artifacts/marketplace-toolchain/SHA256SUMS") {
-		t.Fatalf("Marketplace toolchain artifact config = %#v", uploadStep.With)
-	}
-	if uploadStep.With["if-no-files-found"] != "error" {
-		t.Fatalf("Marketplace toolchain artifact missing-file behavior = %q", uploadStep.With["if-no-files-found"])
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "Marketplace toolchain artifact name", got: uploadStep.With["name"], want: "marketplace-toolchain"},
+		{label: "Marketplace toolchain artifact missing-file behavior", got: uploadStep.With["if-no-files-found"], want: "error"},
+	})
+	assertTextContainsAll(t, uploadStep.With["path"], "Marketplace toolchain artifact path", []string{
+		".artifacts/marketplace-toolchain/vsce-toolchain.tar.gz",
+		".artifacts/marketplace-toolchain/SHA256SUMS",
+	})
 }
 
 func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T) {
@@ -492,51 +487,39 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	marketplace, ok := workflow.Jobs["publish-marketplace"]
-	if !ok {
-		t.Fatal("release workflow must publish Marketplace inputs from a fresh job")
-	}
-	if !slices.Equal(marketplace.Needs, workflowJobNeeds{"prepare-release", "prepare-release-publication", "prepare-marketplace-toolchain"}) {
-		t.Fatalf("Marketplace publication needs = %v", marketplace.Needs)
-	}
-	if marketplace.If != "${{ needs.prepare-release.outputs.release_created == 'true' }}" {
-		t.Fatalf("Marketplace publication if = %q", marketplace.If)
-	}
-	if len(marketplace.Permissions) != 0 {
-		t.Fatalf("Marketplace publication permissions = %#v, want none", marketplace.Permissions)
-	}
-	if len(marketplace.Env) != 0 {
-		t.Fatalf("Marketplace publication job env = %#v, want no job-scoped credentials", marketplace.Env)
-	}
+	marketplace := workflowJobByName(t, workflow.Jobs, "publish-marketplace")
+	assertWorkflowJobNeeds(t, marketplace, "Marketplace publication", workflowJobNeeds{"prepare-release", "prepare-release-publication", "prepare-marketplace-toolchain"})
+	assertWorkflowJobPermissions(t, marketplace, "Marketplace publication", nil)
+	assertWorkflowJobEnvEmpty(t, marketplace, "Marketplace publication")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{
+			label: "Marketplace publication if",
+			got:   marketplace.If,
+			want:  "${{ needs.prepare-release.outputs.release_created == 'true' }}",
+		},
+	})
 	assertWorkflowEnvKeyOnlyOnStep(t, workflow.Jobs, "VSCE_PAT", "publish-marketplace", "Publish VS Code extension to Marketplace")
-
-	for _, step := range marketplace.Steps {
-		if strings.HasPrefix(step.Uses, "actions/checkout@") {
-			t.Fatalf("Marketplace publication must not checkout repository code: %q", step.Name)
-		}
-		for _, forbidden := range []string{"npm ", "npx ", "git ", "go run ./", "make ", "scripts/", "./extensions/"} {
-			if strings.Contains(strings.ToLower(step.Run), forbidden) {
-				t.Fatalf("Marketplace publication step %q must not execute %q", step.Name, forbidden)
-			}
-		}
-	}
+	assertWorkflowJobOmitsCheckout(t, marketplace, "Marketplace publication")
+	assertWorkflowJobStepRunsOmitAllFold(t, marketplace, "Marketplace publication", []string{"npm ", "npx ", "git ", "go run ./", "make ", "scripts/", "./extensions/"})
 
 	downloadStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Download release publication inputs")
-	if downloadStep.With["name"] != "release-publication-inputs" || downloadStep.With["path"] != "publication-inputs" {
-		t.Fatalf("Marketplace release input download config = %#v", downloadStep.With)
-	}
 	toolchainDownload := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Download Marketplace toolchain")
-	if toolchainDownload.With["name"] != "marketplace-toolchain" || toolchainDownload.With["path"] != "marketplace-toolchain-input" {
-		t.Fatalf("Marketplace toolchain download config = %#v", toolchainDownload.With)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "Marketplace release input artifact name", got: downloadStep.With["name"], want: "release-publication-inputs"},
+		{label: "Marketplace release input artifact path", got: downloadStep.With["path"], want: "publication-inputs"},
+		{label: "Marketplace toolchain artifact name", got: toolchainDownload.With["name"], want: "marketplace-toolchain"},
+		{label: "Marketplace toolchain artifact path", got: toolchainDownload.With["path"], want: "marketplace-toolchain-input"},
+	})
 
 	validateStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
-	if validateStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
-		t.Fatalf("Marketplace input validation shell = %q", validateStep.Shell)
-	}
-	if len(validateStep.Env) != 1 || validateStep.Env["RELEASE_VERSION"] != "${{ needs.prepare-release.outputs.version }}" {
-		t.Fatalf("Marketplace input validation env = %#v", validateStep.Env)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "Marketplace input validation shell",
+		got:   validateStep.Shell,
+		want:  "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}",
+	}})
+	assertWorkflowStepEnv(t, validateStep, "Marketplace input validation", map[string]string{
+		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
+	})
 	assertWorkflowStepRunContainsAll(t, validateStep, "Marketplace input validation step", []string{
 		`publication_dir="${GITHUB_WORKSPACE}/publication-inputs"`,
 		`artifact_dir="${GITHUB_WORKSPACE}/marketplace-toolchain-input"`,
@@ -579,14 +562,10 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 		`vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"`,
 		`"${vsce_bin}" publish --packagePath "${vsix_path}"`,
 	})
-	for _, forbidden := range []string{
+	assertWorkflowStepRunOmitsAllFold(t, marketplaceStep, "Marketplace publication", []string{
 		"npx ", "npm ", "find ", "test -x", "sha256sum ", "tar ", "python", "node ",
 		"curl ", "wget ", "git ", "go ", "make ", "scripts/", "./extensions/",
-	} {
-		if strings.Contains(strings.ToLower(marketplaceStep.Run), forbidden) {
-			t.Fatalf("Marketplace publication must not execute %q while VSCE_PAT is in scope", forbidden)
-		}
-	}
+	})
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 1 {
@@ -1505,6 +1484,16 @@ func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName
 	return jobs[jobName].Steps[workflowStepIndexByName(t, jobs, jobName, stepName)]
 }
 
+func workflowJobByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string) workflowJobConfig {
+	t.Helper()
+
+	job, ok := jobs[jobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", jobName)
+	}
+	return job
+}
+
 func workflowStepIndexByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) int {
 	t.Helper()
 
@@ -1544,12 +1533,102 @@ func assertWorkflowEnvKeyOnlyOnStep(t *testing.T, jobs map[string]workflowJobCon
 	}
 }
 
+type workflowStringValue struct {
+	label string
+	got   string
+	want  string
+}
+
+func assertWorkflowStringValues(t *testing.T, values []workflowStringValue) {
+	t.Helper()
+
+	for _, value := range values {
+		if value.got != value.want {
+			t.Fatalf("%s = %q", value.label, value.got)
+		}
+	}
+}
+
+func assertWorkflowJobNeeds(t *testing.T, job workflowJobConfig, jobLabel string, want workflowJobNeeds) {
+	t.Helper()
+
+	if !slices.Equal(job.Needs, want) {
+		t.Fatalf("%s needs = %v", jobLabel, job.Needs)
+	}
+}
+
+func assertWorkflowJobPermissions(t *testing.T, job workflowJobConfig, jobLabel string, want map[string]string) {
+	t.Helper()
+
+	if !maps.Equal(job.Permissions, want) {
+		t.Fatalf("%s permissions = %#v", jobLabel, job.Permissions)
+	}
+}
+
+func assertWorkflowJobEnvEmpty(t *testing.T, job workflowJobConfig, jobLabel string) {
+	t.Helper()
+
+	if len(job.Env) != 0 {
+		t.Fatalf("%s env = %#v, want no job-scoped credentials", jobLabel, job.Env)
+	}
+}
+
+func assertWorkflowStepEnv(t *testing.T, step workflowStepConfig, stepLabel string, want map[string]string) {
+	t.Helper()
+
+	if !maps.Equal(step.Env, want) {
+		t.Fatalf("%s env = %#v", stepLabel, step.Env)
+	}
+}
+
+func assertWorkflowJobOmitsCheckout(t *testing.T, job workflowJobConfig, jobLabel string) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("%s must not checkout repository code: %q", jobLabel, step.Name)
+		}
+	}
+}
+
+func assertWorkflowJobStepRunsOmitAllFold(t *testing.T, job workflowJobConfig, jobLabel string, forbiddenValues []string) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		for _, forbidden := range forbiddenValues {
+			if strings.Contains(strings.ToLower(step.Run), forbidden) {
+				t.Fatalf("%s step %q must not execute %q", jobLabel, step.Name, forbidden)
+			}
+		}
+	}
+}
+
+func assertWorkflowStepRunOmitsAllFold(t *testing.T, step workflowStepConfig, stepLabel string, forbiddenValues []string) {
+	t.Helper()
+
+	for _, forbidden := range forbiddenValues {
+		if strings.Contains(strings.ToLower(step.Run), forbidden) {
+			t.Fatalf("%s must not execute %q while credential is in scope", stepLabel, forbidden)
+		}
+	}
+}
+
 func assertWorkflowStepRunContainsAll(t *testing.T, step workflowStepConfig, stepLabel string, wants []string) {
 	t.Helper()
 
 	for _, want := range wants {
 		if !strings.Contains(step.Run, want) {
 			t.Fatalf("%s must contain %q", stepLabel, want)
+		}
+	}
+}
+
+func assertTextContainsAll(t *testing.T, text string, textLabel string, wants []string) {
+	t.Helper()
+
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			t.Fatalf("%s must contain %q", textLabel, want)
 		}
 	}
 }
