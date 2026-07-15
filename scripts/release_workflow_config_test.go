@@ -806,7 +806,7 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 		`mapfile -t changed_files < <(git diff --name-only)`,
 		`if [ "${#changed_files[@]}" -ne 1 ] || [ "${changed_files[0]}" != "internal/featureflags/features.json" ]; then`,
 		`git diff --binary --full-index -- internal/featureflags/features.json > "${patch_file}"`,
-		`git apply --check "${patch_file}"`,
+		`git apply --check --reverse "${patch_file}"`,
 		`sha256sum feature-history.patch > SHA256SUMS`,
 	})
 	assertWorkflowStepEnvMissing(t, patchStep, "PUSH_TOKEN", "feature history patch staging must be tokenless")
