@@ -291,6 +291,44 @@ func TestLockfileFailFastBatchScannerPropagatesSnapshotEvaluationErrors(t *testi
 	})
 }
 
+func TestLockfileFailFastBatchScannerReplaysAmbiguousSnapshots(t *testing.T) {
+	t.Run("candidate path error", func(t *testing.T) {
+		repo, snapshot := newPoetrySnapshot(t, true)
+		forcedErr := errors.New("forced candidate path failure")
+		rule := newPoetryLockfileRule(func(string, string) (bool, error) {
+			return false, forcedErr
+		})
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
+		if err := scanner.flushSnapshotsInOrder(context.Background(), []lockfileDirSnapshot{snapshot}); !errors.Is(err, forcedErr) {
+			t.Fatalf("expected candidate-path error, got %v", err)
+		}
+	})
+
+	t.Run("git context error", func(t *testing.T) {
+		repo, snapshot := newPoetrySnapshot(t, true)
+		forcedErr := errors.New("forced git context failure")
+		originalResolve := resolveGitBinaryPathFn
+		resolveGitBinaryPathFn = func() (string, error) { return "", forcedErr }
+		t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
+
+		rule := newPoetryLockfileRule(func(string, string) (bool, error) { return true, nil })
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
+		if err := scanner.flushSnapshotsInOrder(context.Background(), []lockfileDirSnapshot{snapshot}); !errors.Is(err, forcedErr) {
+			t.Fatalf("expected git-context error, got %v", err)
+		}
+	})
+
+	t.Run("clean snapshot", func(t *testing.T) {
+		repo, snapshot := newPoetrySnapshot(t, true)
+		initGitRepo(t, repo)
+		rule := newPoetryLockfileRule(func(string, string) (bool, error) { return true, nil })
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
+		if err := scanner.flushSnapshotsInOrder(context.Background(), []lockfileDirSnapshot{snapshot}); err != nil {
+			t.Fatalf("expected clean replay, got %v", err)
+		}
+	})
+}
+
 func captureLockfileGitCommandGroups(t *testing.T) map[string]int {
 	t.Helper()
 
