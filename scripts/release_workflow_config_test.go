@@ -333,7 +333,8 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`find dist -maxdepth 1 -type f`,
 		`lopper-vscode-${version}.vsix`,
 		`publication-inputs/feature-flags.md`,
-		`sha256sum > SHA256SUMS`,
+		`mapfile -d '' checksum_files`,
+		`sha256sum "${checksum_files[@]}" > SHA256SUMS`,
 	})
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
 	if uploadStep.With["name"] != "release-publication-inputs" {
