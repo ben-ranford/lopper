@@ -896,6 +896,71 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	})
 }
 
+func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	stampStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Stamp first stable release history")
+	runnerTemp := t.TempDir()
+	invocationPath := filepath.Join(runnerTemp, "featureflag-invoked")
+	featureFlagStub := "#!/bin/sh\n" +
+		"printf 'featureflag invoked for %s\\n' \"$*\" >&2\n" +
+		"printf '%s\\n' \"$*\" > \"$FEATUREFLAG_INVOCATION\"\n" +
+		"exit 99\n"
+	if err := os.WriteFile(filepath.Join(runnerTemp, "featureflag"), []byte(featureFlagStub), 0o755); err != nil {
+		t.Fatalf("write featureflag stub: %v", err)
+	}
+
+	githubOutput := filepath.Join(runnerTemp, "github-output")
+	cmd := exec.Command("bash", "-c", stampStep.Run)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(),
+		"FEATUREFLAG_INVOCATION="+invocationPath,
+		"GITHUB_OUTPUT="+githubOutput,
+		"RELEASE_TAG=v1.8.2-rc.1",
+		"RUNNER_TEMP="+runnerTemp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run prerelease feature history step: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(invocationPath); !os.IsNotExist(err) {
+		t.Fatalf("prerelease feature history invoked featureflag: %v", err)
+	}
+	if !strings.Contains(string(output), "::notice::Skipping feature release history for non-stable semver release v1.8.2-rc.1.") {
+		t.Fatalf("prerelease feature history notice = %q", output)
+	}
+	changedOutput, err := os.ReadFile(githubOutput)
+	if err != nil {
+		t.Fatalf("read prerelease feature history output: %v", err)
+	}
+	if string(changedOutput) != "changed=false\n" {
+		t.Fatalf("prerelease feature history output = %q, want changed=false", changedOutput)
+	}
+
+	const stableSemverGate = `if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then`
+	floatingTagStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
+	if !strings.Contains(floatingTagStep.Run, stableSemverGate) {
+		t.Fatal("floating tag preparation must retain the stable semver gate")
+	}
+	gateIndex := strings.Index(stampStep.Run, stableSemverGate)
+	stampIndex := strings.Index(stampStep.Run, `"${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"`)
+	if gateIndex < 0 || stampIndex < 0 || gateIndex >= stampIndex {
+		t.Fatal("feature history preparation must apply the floating-tag stable semver gate before stamp-release")
+	}
+
+	patchStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate and stage feature history patch")
+	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Upload feature history patch")
+	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature history patch step prerelease guard", got: patchStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
+		{label: "feature history patch upload prerelease guard", got: uploadStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
+		{label: "feature history push prerelease guard", got: publication.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}"},
+	})
+}
+
 func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.T) {
 	t.Parallel()
 
