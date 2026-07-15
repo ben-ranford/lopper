@@ -417,6 +417,28 @@ func TestReleaseWorkflowPublishesMarketplaceFromTrustedIsolatedToolchain(t *test
 	if workflowStepIndexByName(t, marketplaceJob, "Publish VS Code extension to Marketplace") != len(marketplaceJob.Steps)-1 {
 		t.Fatal("marketplace publish step must be the terminal step in the isolated Marketplace job")
 	}
+
+	finalizeJob := workflowJobRequired(t, workflow.Jobs, "finalize-release")
+	if !slices.Equal(finalizeJob.Needs, workflowNeeds{"prepare-release", "publish", "publish-vscode-marketplace"}) {
+		t.Fatalf("finalize-release needs = %#v, want prepare-release + publish + publish-vscode-marketplace", finalizeJob.Needs)
+	}
+	if len(finalizeJob.Permissions) != 1 || finalizeJob.Permissions["contents"] != "write" {
+		t.Fatalf("finalize-release permissions = %#v, want only contents: write", finalizeJob.Permissions)
+	}
+	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish GitHub Release"); ok {
+		t.Fatal("publish job must not make the GitHub Release public directly")
+	}
+	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Update GitHub Action floating tags"); ok {
+		t.Fatal("publish job must not move floating action tags directly")
+	}
+	finalizeRelease := workflowStepByName(t, workflow.Jobs, "finalize-release", "Publish GitHub Release")
+	if finalizeRelease.Env["GH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("finalize release GH_TOKEN env = %q", finalizeRelease.Env["GH_TOKEN"])
+	}
+	floatingTags := workflowStepByName(t, workflow.Jobs, "finalize-release", "Update GitHub Action floating tags")
+	if floatingTags.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
+		t.Fatalf("finalize floating tag RELEASE_TAG env = %q", floatingTags.Env["RELEASE_TAG"])
+	}
 }
 
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
