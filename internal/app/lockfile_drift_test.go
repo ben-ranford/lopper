@@ -799,6 +799,44 @@ func TestDetectLockfileDriftStopOnFirstDoesNotPrewalkPastFinding(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	triggerManifest := filepath.Join(repo, "m-trigger", pyprojectManifestName)
+	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\n")
+	writeFile(t, filepath.Join(repo, "m-trigger", poetryLockName), "# lock\n")
+	laterDir := filepath.Join(repo, "z-later")
+	writeFile(t, filepath.Join(laterDir, "README.md"), "removed after the earlier candidate is buffered\n")
+	initGitRepo(t, repo)
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	originalReadFileUnder := readFileUnderFn
+	triggeredLaterWalkError := false
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if targetPath == triggerManifest {
+			triggeredLaterWalkError = true
+			if err := os.RemoveAll(laterDir); err != nil {
+				return nil, err
+			}
+		}
+		return originalReadFileUnder(rootDir, targetPath)
+	}
+	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+
+	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Fatalf("expected earlier lockfile drift to win over the later walk error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "npm in a-drift") {
+		t.Fatalf("expected only the earlier npm finding, got %#v", warnings)
+	}
+	if !triggeredLaterWalkError {
+		t.Fatal("expected the bounded candidate batch to encounter the later walk error before flushing")
+	}
+}
+
 func TestDetectLockfileDriftContextCancelled(t *testing.T) {
 	repo := t.TempDir()
 	cancelledCtx, cancel := context.WithCancel(context.Background())
