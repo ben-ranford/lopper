@@ -510,50 +510,60 @@ func TestTrustedCommandOutputRootForRootRejectsFileRoot(t *testing.T) {
 	}
 }
 
-func TestPersistCommandOutputRejectsSymlinkedTrustedRoot(t *testing.T) {
-	outside := t.TempDir()
-	trustedRoot := filepath.Join(t.TempDir(), "repo")
-	if err := os.Symlink(outside, trustedRoot); err != nil {
-		t.Fatalf("create trusted root symlink: %v", err)
-	}
+func TestPersistCommandOutputAllowsTrustedRootAlias(t *testing.T) {
+	workspace, trustedRootAlias := createWorkspaceAlias(t)
+	outputPath := filepath.Join(trustedRootAlias, "reports", "report.json")
 
-	outputPath := filepath.Join(trustedRoot, "report.json")
-	_, err := persistCommandOutput("{}", outputPath, "dashboard report", trustedRoot)
-	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is a symlink") {
-		t.Fatalf("expected symlinked trusted root rejection, got %v", err)
+	status, err := persistCommandOutput("{}", outputPath, "dashboard report", trustedRootAlias)
+	if err != nil {
+		t.Fatalf("persist command output through trusted root alias: %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(outside, "report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "reports", "report.json"))
+	if err != nil {
+		t.Fatalf("read output through trusted root alias: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Fatalf("unexpected output content: %q", string(data))
 	}
 }
 
-func TestPersistCommandOutputRejectsTrustedRootWithSymlinkedAncestor(t *testing.T) {
+func TestPersistCommandOutputRejectsSymlinkEscapeUnderTrustedRootAlias(t *testing.T) {
+	workspace, trustedRootAlias := createWorkspaceAlias(t)
 	outside := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(outside, "repo"), 0o755); err != nil {
-		t.Fatalf("mkdir outside repo: %v", err)
+	outsideTarget := filepath.Join(outside, "report.json")
+	if err := os.WriteFile(outsideTarget, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed outside target: %v", err)
 	}
-	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(outside, alias); err != nil {
-		t.Fatalf("create trusted root ancestor symlink: %v", err)
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create escaping output symlink: %v", err)
 	}
-	trustedRoot := filepath.Join(alias, "repo")
 
-	outputPath := filepath.Join(trustedRoot, "report.json")
-	_, err := persistCommandOutput("{}", outputPath, "dashboard report", trustedRoot)
+	outputPath := filepath.Join(trustedRootAlias, "reports", "report.json")
+	_, err := persistCommandOutput("after", outputPath, "dashboard report", trustedRootAlias)
 	if err == nil || !strings.Contains(err.Error(), "output root contains symlink") {
-		t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
+		t.Fatalf("expected symlink escape rejection under trusted root alias, got %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(outside, "repo", "report.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	data, readErr := os.ReadFile(outsideTarget)
+	if readErr != nil {
+		t.Fatalf("read outside target: %v", readErr)
+	}
+	if string(data) != "before" {
+		t.Fatalf("expected outside target to remain unchanged, got %q", string(data))
 	}
 }
 
-func TestTrustedCommandOutputRootForRootRejectsAliasPath(t *testing.T) {
+func TestTrustedCommandOutputRootForRootUsesAliasPath(t *testing.T) {
 	_, workspaceAlias := createWorkspaceAlias(t)
 
-	_, err := trustedCommandOutputRootForRoot(filepath.Join(workspaceAlias, "reports", "output.json"), workspaceAlias)
-	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is a symlink") {
-		t.Fatalf("expected alias trusted root rejection, got %v", err)
+	root, err := trustedCommandOutputRootForRoot(filepath.Join(workspaceAlias, "reports", "output.json"), workspaceAlias)
+	if err != nil {
+		t.Fatalf("trusted command output root for alias: %v", err)
+	}
+	if root != workspaceAlias {
+		t.Fatalf("expected alias trusted root %q, got %q", workspaceAlias, root)
 	}
 }
 
