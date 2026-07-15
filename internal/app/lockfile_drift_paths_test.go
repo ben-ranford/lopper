@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -346,6 +348,144 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 	if _, err := gitUntrackedFilesForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected scoped untracked command construction failure, got %v", err)
 	}
+}
+
+func TestGitDiffNameOnlyForPathsUsesBoundedLiteralBatches(t *testing.T) {
+	paths := scopedGitBatchRegressionPaths()
+	commands := captureScopedGitPathspecCommands(t, false)
+
+	got, err := gitDiffNameOnlyForPaths(context.Background(), t.TempDir(), paths, "HEAD")
+	if err != nil {
+		t.Fatalf("gitDiffNameOnlyForPaths: %v", err)
+	}
+	assertBoundedScopedGitPathspecCommands(t, *commands)
+	assertOrderedUniqueGitPaths(t, got, paths)
+}
+
+func TestGitUntrackedFilesForPathsUsesBoundedLiteralBatches(t *testing.T) {
+	paths := scopedGitBatchRegressionPaths()
+	commands := captureScopedGitPathspecCommands(t, true)
+
+	got, err := gitUntrackedFilesForPaths(context.Background(), t.TempDir(), paths)
+	if err != nil {
+		t.Fatalf("gitUntrackedFilesForPaths: %v", err)
+	}
+	assertBoundedScopedGitPathspecCommands(t, *commands)
+	assertOrderedUniqueGitPaths(t, got, paths)
+}
+
+func scopedGitBatchRegressionPaths() []string {
+	paths := make([]string, 0, 262)
+	longDir := strings.Repeat("segment/", 32)
+	for index := 259; index >= 0; index-- {
+		paths = append(paths, fmt.Sprintf("pkg-%03d/%spackage.json", index, longDir))
+	}
+	paths = append(paths, paths[50], ":(glob)pkg/[literal] package.json")
+	return paths
+}
+
+func captureScopedGitPathspecCommands(t *testing.T, nulOutput bool) *[][]string {
+	t.Helper()
+
+	originalResolve := resolveGitBinaryPathFn
+	originalExec := execGitCommandContextFn
+	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+	commands := make([][]string, 0)
+	execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
+		paths := literalPathsFromGitCommand(t, args)
+		commands = append(commands, paths)
+		return gitPathOutputCommand(ctx, orderedUniqueGitPaths(paths), nulOutput), nil
+	}
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = originalResolve
+		execGitCommandContextFn = originalExec
+	})
+	return &commands
+}
+
+func literalPathsFromGitCommand(t *testing.T, args []string) []string {
+	t.Helper()
+
+	separator := -1
+	for index, arg := range args {
+		if arg == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 0 {
+		t.Fatalf("expected pathspec separator in git args %#v", args)
+	}
+	paths := make([]string, 0, len(args)-separator-1)
+	for _, pathspec := range args[separator+1:] {
+		path, ok := strings.CutPrefix(pathspec, gitLiteralPathPrefix)
+		if !ok {
+			t.Fatalf("expected literal pathspec, got %q in %#v", pathspec, args)
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func gitPathOutputCommand(ctx context.Context, paths []string, nulOutput bool) *exec.Cmd {
+	format := `%s\n`
+	if nulOutput {
+		format = `%s\000`
+	}
+	args := []string{"-c", `for path do printf "$1" "$path"; done`, "git-output", format}
+	args = append(args, paths...)
+	return exec.CommandContext(ctx, "/bin/sh", args...)
+}
+
+func assertBoundedScopedGitPathspecCommands(t *testing.T, commands [][]string) {
+	t.Helper()
+
+	const (
+		maxPaths = 128
+		maxBytes = 16 * 1024
+	)
+	if len(commands) < 2 {
+		t.Fatalf("expected multiple bounded git commands, got %d", len(commands))
+	}
+	for index, paths := range commands {
+		if len(paths) > maxPaths {
+			t.Errorf("git command %d carried %d pathspecs; max %d", index, len(paths), maxPaths)
+		}
+		bytes := 0
+		for _, path := range paths {
+			bytes += len(gitLiteralPathPrefix) + len(path) + 1
+		}
+		if bytes > maxBytes && len(paths) > 1 {
+			t.Errorf("git command %d carried %d pathspec bytes; max %d", index, bytes, maxBytes)
+		}
+	}
+}
+
+func assertOrderedUniqueGitPaths(t *testing.T, got, input []string) {
+	t.Helper()
+
+	want := orderedUniqueGitPaths(input)
+	if len(got) != len(want) {
+		t.Fatalf("expected %d ordered unique paths, got %d", len(want), len(got))
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("path %d = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
+func orderedUniqueGitPaths(paths []string) []string {
+	unique := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		unique[path] = struct{}{}
+	}
+	ordered := make([]string, 0, len(unique))
+	for path := range unique {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+	return ordered
 }
 
 func TestParseNULTerminatedGitOutput(t *testing.T) {
