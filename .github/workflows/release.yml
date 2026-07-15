@@ -806,6 +806,7 @@ jobs:
         if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
         run: |
           if [ -z "${VSCE_PAT:-}" ]; then
@@ -814,7 +815,7 @@ jobs:
           fi
 
           vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"
-          vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"
+          vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${RELEASE_VERSION}.vsix"
           "${vsce_bin}" publish --packagePath "${vsix_path}"
 
   publish:
