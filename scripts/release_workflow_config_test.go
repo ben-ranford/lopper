@@ -607,17 +607,21 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 		t.Fatalf("Marketplace credentialed step index = %d, want final step", publishIndex)
 	}
 	marketplaceStep := marketplace.Steps[publishIndex]
-	if len(marketplaceStep.Env) != 1 || marketplaceStep.Env["VSCE_PAT"] != "${{ secrets.VSCE_PUBLISH }}" {
-		t.Fatalf("Marketplace publication env = %#v", marketplaceStep.Env)
-	}
+	assertWorkflowStepEnv(t, marketplaceStep, "Marketplace publication", map[string]string{
+		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
+		"VSCE_PAT":        "${{ secrets.VSCE_PUBLISH }}",
+	})
 	if marketplaceStep.Uses != "" {
 		t.Fatalf("Marketplace publication must invoke the prepared toolchain directly, found action %q", marketplaceStep.Uses)
 	}
 	assertWorkflowStepRunContainsAll(t, marketplaceStep, "Marketplace publication step", []string{
 		`if [ -z "${VSCE_PAT:-}" ]; then`,
 		`vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"`,
-		`vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"`,
+		`vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${RELEASE_VERSION}.vsix"`,
 		`"${vsce_bin}" publish --packagePath "${vsix_path}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, marketplaceStep, "Marketplace publication", []string{
+		"${{ needs.prepare-release.outputs.version }}",
 	})
 	assertWorkflowStepRunOmitsAllFold(t, marketplaceStep, "Marketplace publication", []string{
 		"npx ", "npm ", "find ", "test -x", "sha256sum ", "tar ", "python", "node ",
