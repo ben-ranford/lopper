@@ -390,6 +390,18 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 			t.Fatalf("fresh release publication must define GitHub API step %q", stepName)
 		}
 	}
+}
+
+func TestReleaseWorkflowPreparesMarketplaceToolingBeforeCredentialedPublish(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	publication, ok := workflow.Jobs["publish"]
+	if !ok {
+		t.Fatal("release workflow must define the fresh publication job")
+	}
 
 	downloadStep := workflowStepByName(t, workflow.Jobs, "publish", "Download release publication inputs")
 	if downloadStep.With["name"] != "release-publication-inputs" || downloadStep.With["path"] != "publication-inputs" {
@@ -405,14 +417,79 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 	assertWorkflowStepEnvMissing(t, validateStep, "GH_TOKEN", "release publication validation must be tokenless")
 
-	marketplaceStep := workflowStepByName(t, workflow.Jobs, "publish", "Publish VS Code extension to Marketplace")
+	prepareIndex := -1
+	publishIndex := -1
+	credentialedSteps := 0
+	for jobName, job := range workflow.Jobs {
+		if _, present := job.Env["VSCE_PAT"]; present {
+			t.Fatalf("Marketplace token must not be scoped to job %q", jobName)
+		}
+		for stepIndex, step := range job.Steps {
+			if jobName == "publish" && step.Name == "Prepare VS Code Marketplace tooling" {
+				prepareIndex = stepIndex
+			}
+			if _, present := step.Env["VSCE_PAT"]; !present {
+				continue
+			}
+			credentialedSteps++
+			if jobName != "publish" || step.Name != "Publish VS Code extension to Marketplace" {
+				t.Fatalf("Marketplace token is exposed to unexpected step %q in job %q", step.Name, jobName)
+			}
+			publishIndex = stepIndex
+		}
+	}
+	if credentialedSteps != 1 {
+		t.Fatalf("Marketplace token-bearing steps = %d, want exactly one", credentialedSteps)
+	}
+	if prepareIndex < 0 {
+		t.Fatal("release workflow must prepare pinned Marketplace tooling without a token")
+	}
+	if publishIndex != prepareIndex+1 {
+		t.Fatalf("Marketplace preparation index = %d, publish index = %d; preparation must be immediately before credentialed publication", prepareIndex, publishIndex)
+	}
+
+	prepareStep := publication.Steps[prepareIndex]
+	if len(prepareStep.Env) != 0 {
+		t.Fatalf("Marketplace tooling preparation env = %#v, want no step-scoped credentials", prepareStep.Env)
+	}
+	assertWorkflowStepRunContainsAll(t, prepareStep, "Marketplace tooling preparation step", []string{
+		`toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"`,
+		`npm install --prefix "${toolchain_dir}" --no-audit --no-fund @vscode/vsce@3.9.2`,
+		`test -x "${toolchain_dir}/node_modules/.bin/vsce"`,
+	})
+	if strings.Count(prepareStep.Run, "@vscode/vsce@") != 1 || !strings.Contains(prepareStep.Run, "@vscode/vsce@3.9.2") {
+		t.Fatal("Marketplace tooling preparation must install exactly VSCE 3.9.2")
+	}
+
+	marketplaceStep := publication.Steps[publishIndex]
 	if len(marketplaceStep.Env) != 1 || marketplaceStep.Env["VSCE_PAT"] != "${{ secrets.VSCE_PUBLISH }}" {
 		t.Fatalf("Marketplace publication env = %#v", marketplaceStep.Env)
 	}
+	if marketplaceStep.Uses != "" {
+		t.Fatalf("Marketplace publication must invoke the prepared toolchain directly, found action %q", marketplaceStep.Uses)
+	}
 	assertWorkflowStepRunContainsAll(t, marketplaceStep, "Marketplace publication step", []string{
 		`if [ -z "${VSCE_PAT:-}" ]; then`,
-		`npx --yes @vscode/vsce@3.9.2 publish --packagePath "$vsix_path"`,
+		`vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"`,
+		`test -x "$vsce_bin"`,
+		`vsix_path="$(find publication-inputs/dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"`,
+		`test -n "$vsix_path"`,
+		`"$vsce_bin" publish --packagePath "$vsix_path"`,
 	})
+	for _, forbidden := range []string{
+		"npx ", "npm install", "npm exec", "pnpm ", "yarn ", "corepack ", "bunx ",
+		"curl ", "wget ", "go install ", "pip install ", "pipx install ", "cargo install ",
+		"actions/checkout", "git clone", "git checkout", "go run ./", "make ", "scripts/", "./",
+	} {
+		if strings.Contains(strings.ToLower(marketplaceStep.Run), forbidden) {
+			t.Fatalf("Marketplace publication must not execute %q while VSCE_PAT is in scope", forbidden)
+		}
+	}
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 1 {
+		t.Fatalf("Marketplace secret references = %d, want final publish step only", count)
+	}
 }
 
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
