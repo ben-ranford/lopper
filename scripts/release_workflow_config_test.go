@@ -1482,6 +1482,76 @@ func TestReleaseOrchestrationRequiresIntegrityBoundManifestPayload(t *testing.T)
 	}
 }
 
+func TestReleaseOrchestrationRequiresDigestPinnedGHCRManifests(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
+	architectures := []struct {
+		name     string
+		platform string
+	}{
+		{name: "amd64", platform: "linux/amd64"},
+		{name: "arm64", platform: "linux/arm64"},
+	}
+	for _, architecture := range architectures {
+		publishImage := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Publish "+architecture.name+" release image")
+		if publishImage.ID != "publish_"+architecture.name {
+			t.Fatalf("publish-ghcr-images %s step ID = %q, want stable digest source", architecture.name, publishImage.ID)
+		}
+		if publishImage.With["platforms"] != architecture.platform {
+			t.Fatalf("publish-ghcr-images %s platform = %q, want %q", architecture.name, publishImage.With["platforms"], architecture.platform)
+		}
+	}
+	for _, output := range []struct {
+		name string
+		want string
+	}{
+		{name: "amd64_digest", want: "${{ steps.publish_amd64.outputs.digest }}"},
+		{name: "arm64_digest", want: "${{ steps.publish_arm64.outputs.digest }}"},
+	} {
+		if publishImages.Outputs[output.name] != output.want {
+			t.Fatalf("publish-ghcr-images output %s = %q, want %q", output.name, publishImages.Outputs[output.name], output.want)
+		}
+	}
+
+	manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
+	for _, digest := range []struct {
+		name string
+		want string
+	}{
+		{name: "EXPECTED_AMD64_DIGEST", want: "${{ needs.publish-ghcr-images.outputs.amd64_digest }}"},
+		{name: "EXPECTED_ARM64_DIGEST", want: "${{ needs.publish-ghcr-images.outputs.arm64_digest }}"},
+	} {
+		if manifestValidation.Env[digest.name] != digest.want {
+			t.Fatalf("manifest validation %s = %q, want %q", digest.name, manifestValidation.Env[digest.name], digest.want)
+		}
+	}
+	assertWorkflowStepRunContainsAll(t, manifestValidation, "manifest digest validation", []string{
+		`amd64_digest="${EXPECTED_AMD64_DIGEST}"`,
+		`arm64_digest="${EXPECTED_ARM64_DIGEST}"`,
+		`[[ ! "${amd64_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]`,
+		`[[ ! "${arm64_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]`,
+	})
+
+	manifestPublish := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Publish multi-arch manifests")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "manifest publication AMD64_DIGEST", got: manifestPublish.Env["AMD64_DIGEST"], want: "${{ needs.publish-ghcr-images.outputs.amd64_digest }}"},
+		{label: "manifest publication ARM64_DIGEST", got: manifestPublish.Env["ARM64_DIGEST"], want: "${{ needs.publish-ghcr-images.outputs.arm64_digest }}"},
+	})
+	for _, mutableSource := range []string{`"${image_ref}-amd64"`, `"${image_ref}-arm64"`} {
+		if strings.Contains(manifestPublish.Run, mutableSource) {
+			t.Fatalf("trusted manifest publication must not use mutable source %s", mutableSource)
+		}
+	}
+	assertWorkflowStepRunContainsAll(t, manifestPublish, "digest-pinned manifest publication", []string{
+		`"${expected_image_name}@${amd64_digest}"`,
+		`"${expected_image_name}@${arm64_digest}"`,
+	})
+}
+
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
 	t.Helper()
 
