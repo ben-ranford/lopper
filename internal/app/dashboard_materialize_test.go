@@ -550,6 +550,32 @@ func TestPersistCommandOutputAllowsTrustedRootAlias(t *testing.T) {
 	}
 }
 
+func TestPersistCommandOutputRejectsTrustedRootWithSymlinkAncestor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink ancestor semantics are covered on Unix")
+	}
+
+	rootParent := t.TempDir()
+	outside := t.TempDir()
+	trustedRoot := filepath.Join(rootParent, "reports", "nested")
+	outsideRoot := filepath.Join(outside, "nested")
+	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(rootParent, "reports")); err != nil {
+		t.Fatalf("create trusted root ancestor symlink: %v", err)
+	}
+
+	outputPath := filepath.Join(trustedRoot, "report.json")
+	_, err := persistCommandOutput("after", outputPath, "dashboard report", trustedRoot)
+	if err == nil || !strings.Contains(err.Error(), "trusted output workspace") {
+		t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outsideRoot, "report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside output to remain absent, got err=%v", statErr)
+	}
+}
+
 func TestPersistCommandOutputPinsTrustedRootAliasBeforeWrite(t *testing.T) {
 	workspace, trustedRootAlias := createWorkspaceAlias(t)
 	outside := t.TempDir()
@@ -617,6 +643,50 @@ func TestPersistCommandOutputAllowsRelativeOutputFromSymlinkedWorkspace(t *testi
 	}
 	if got := readTextFile(t, filepath.Join(workspace, outputPath)); got != "{}" {
 		t.Fatalf("unexpected aliased output: %q", got)
+	}
+}
+
+func TestPersistCommandOutputResolvesParentRelativeOutputFromPhysicalWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("logical PWD symlink semantics are covered on Unix")
+	}
+
+	physicalParent := t.TempDir()
+	workspace := filepath.Join(physicalParent, "app")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir physical workspace: %v", err)
+	}
+	workspaceAlias := filepath.Join(t.TempDir(), "workspace-alias")
+	if err := os.Symlink(workspace, workspaceAlias); err != nil {
+		t.Fatalf("create workspace alias: %v", err)
+	}
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(workspaceAlias); err != nil {
+		t.Fatalf("chdir workspace alias: %v", err)
+	}
+	t.Setenv("PWD", workspaceAlias)
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	outputPath := filepath.Join("..", "report.json")
+	status, err := persistCommandOutput("{}", outputPath, "dashboard report", ".")
+	if err != nil {
+		t.Fatalf("persist parent-relative output from workspace alias: %v", err)
+	}
+	if status != "dashboard report written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if got := readTextFile(t, filepath.Join(physicalParent, "report.json")); got != "{}" {
+		t.Fatalf("unexpected physical parent output: %q", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(workspaceAlias), "report.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected logical alias parent output to remain absent, got err=%v", statErr)
 	}
 }
 
