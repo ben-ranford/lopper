@@ -508,6 +508,7 @@ jobs:
   publish-marketplace:
     needs:
       - prepare-release
+      - publish
       - prepare-release-publication
       - prepare-marketplace-toolchain
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
@@ -766,7 +767,6 @@ jobs:
     needs:
       - prepare-release
       - prepare-release-publication
-      - publish-marketplace
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
