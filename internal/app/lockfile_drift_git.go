@@ -89,25 +89,37 @@ func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []strin
 }
 
 func classifyGitCandidatePaths(ctx context.Context, repoPath string, paths []string) ([]string, []string, error) {
+	visiblePaths, err := gitVisibleFilesForPaths(ctx, repoPath, paths)
+	if err != nil {
+		return nil, nil, err
+	}
 	untrackedPaths, err := gitUntrackedFilesForPaths(ctx, repoPath, paths)
 	if err != nil {
 		return nil, nil, err
 	}
-	return excludeGitPaths(paths, untrackedPaths), untrackedPaths, nil
-}
 
-func excludeGitPaths(paths, excludedPaths []string) []string {
-	excluded := make(map[string]struct{}, len(excludedPaths))
-	for _, path := range excludedPaths {
-		excluded[path] = struct{}{}
+	visible := make(map[string]struct{}, len(visiblePaths))
+	for _, path := range visiblePaths {
+		visible[path] = struct{}{}
 	}
-	remaining := make([]string, 0, len(paths))
+	untracked := make(map[string]struct{}, len(untrackedPaths))
+	for _, path := range untrackedPaths {
+		untracked[path] = struct{}{}
+	}
+
+	trackedPaths := make([]string, 0, len(paths))
+	classifiedUntrackedPaths := make([]string, 0, len(untrackedPaths))
 	for _, path := range paths {
-		if _, ok := excluded[path]; !ok {
-			remaining = append(remaining, path)
+		if _, ok := visible[path]; !ok {
+			continue
+		}
+		if _, ok := untracked[path]; ok {
+			classifiedUntrackedPaths = append(classifiedUntrackedPaths, path)
+		} else {
+			trackedPaths = append(trackedPaths, path)
 		}
 	}
-	return remaining
+	return trackedPaths, classifiedUntrackedPaths, nil
 }
 
 func gitChangedFilesForClassifiedPaths(ctx context.Context, repoPath string, trackedPaths, untrackedPaths []string) (map[string]struct{}, error) {
@@ -324,12 +336,23 @@ func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
 }
 
 func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
+	return gitFilesForPaths(ctx, repoPath, paths, gitOthersFlag, gitExcludeStandardArg)
+}
+
+func gitVisibleFilesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
+	return gitFilesForPaths(ctx, repoPath, paths, gitCachedFlag, gitOthersFlag, gitExcludeStandardArg)
+}
+
+func gitFilesForPaths(ctx context.Context, repoPath string, paths []string, flags ...string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
 	groups := make([][]string, 0)
 	for _, batch := range gitPathspecBatches(paths) {
-		args := []string{gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, "-z", "--"}
+		args := make([]string, 0, 3+len(flags)+len(batch))
+		args = append(args, gitLsFilesSubcommand)
+		args = append(args, flags...)
+		args = append(args, "-z", "--")
 		args = append(args, gitLiteralPathspecs(batch)...)
 		command, err := gitCommandContext(ctx, repoPath, args...)
 		if err != nil {

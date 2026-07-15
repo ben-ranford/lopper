@@ -332,6 +332,10 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 	if err != nil || len(untracked) != 0 {
 		t.Fatalf("expected empty scoped untracked set, got %#v err=%v", untracked, err)
 	}
+	visible, err := gitVisibleFilesForPaths(context.Background(), t.TempDir(), nil)
+	if err != nil || len(visible) != 0 {
+		t.Fatalf("expected empty scoped visible set, got %#v err=%v", visible, err)
+	}
 
 	cases := []struct {
 		name    string
@@ -349,8 +353,17 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 			wantSub: lockfileRunGitErr,
 		},
 		{
-			name: "changed files untracked classification failure",
+			name: "changed files visible classification failure",
 			mode: "lsfail",
+			run: func(repo string) error {
+				_, err := gitChangedFilesForPaths(context.Background(), repo, []string{"package.json"})
+				return err
+			},
+			wantSub: "ls-files",
+		},
+		{
+			name: "changed files untracked classification failure",
+			mode: "untrackedlsfail",
 			run: func(repo string) error {
 				_, err := gitChangedFilesForPaths(context.Background(), repo, []string{"package.json"})
 				return err
@@ -405,6 +418,9 @@ func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
 	}
 	if _, err := gitUntrackedFilesForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected scoped untracked command construction failure, got %v", err)
+	}
+	if _, err := gitVisibleFilesForPaths(context.Background(), t.TempDir(), []string{"package.json"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected scoped visible command construction failure, got %v", err)
 	}
 }
 
@@ -730,30 +746,22 @@ if printf '%s' "$args" | grep -q 'ls-files --others --exclude-standard'; then
     fi
     exit 0
   fi
-  if [ "$mode" = "lsfail" ]; then
+  if [ "$mode" = "lsfail" ] || [ "$mode" = "untrackedlsfail" ]; then
     echo "ls-files failed" >&2
     exit 1
   fi
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'ls-files --cached --others --exclude-standard -z'; then
-  if [ "$mode" = "pathscope-head" ] || [ "$mode" = "pathscope-unborn" ] || [ "$mode" = "pathscope-filterdriver" ]; then
-    echo "repo-wide attribute candidate listing should not run" >&2
+  if [ "$mode" = "lsfail" ]; then
+    echo "ls-files failed" >&2
     exit 1
   fi
-  if [ "$mode" = "checkattrfail" ]; then
-    printf 'package.json\000'
+  if printf '%s' "$args" | grep -q -- ':(literal)package-lock.json' && printf '%s' "$args" | grep -q -- ':(literal)package.json'; then
+    printf 'package-lock.json\000package.json\000'
     exit 0
   fi
-  if [ "$mode" = "checkattrwrongorder" ]; then
-    printf 'package.json\000package-lock.json\000'
-    exit 0
-  fi
-  if [ "$mode" = "checkattrtruncated" ] || [ "$mode" = "checkattrwrongfieldcount" ] || [ "$mode" = "checkattrwrongattr" ]; then
-    printf 'package.json\000'
-    exit 0
-  fi
-  if [ "$mode" = "filterdriver" ]; then
+  if printf '%s' "$args" | grep -q -- ':(literal)package.json'; then
     printf 'package.json\000'
     exit 0
   fi

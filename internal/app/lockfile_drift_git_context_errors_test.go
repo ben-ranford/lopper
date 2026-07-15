@@ -131,10 +131,13 @@ func TestDetectLockfileDriftStopOnFirstBatchesGitContextAcrossDirectories(t *tes
 	if got := commandGroups["worktree"]; got != 1 {
 		t.Errorf("expected one worktree detection command, got %d", got)
 	}
-	for _, group := range []string{"check-attr", "head", "diff", "ls-files"} {
+	for _, group := range []string{"check-attr", "head", "diff"} {
 		if got := commandGroups[group]; got != 2 {
 			t.Errorf("expected two bounded %s command groups for %d candidate directories, got %d", group, candidateDirs, got)
 		}
+	}
+	if got := commandGroups["ls-files"]; got != 4 {
+		t.Errorf("expected four bounded ls-files command groups for visible and untracked classification across %d candidate directories, got %d", candidateDirs, got)
 	}
 }
 
