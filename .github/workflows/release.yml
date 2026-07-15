@@ -627,11 +627,20 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout release source
+      - name: Checkout trusted main tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: main
+          token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Checkout validated release data
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: release-source
           ref: ${{ needs.prepare-release.outputs.sha }}
           token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
 
@@ -640,15 +649,41 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Validate release data against trusted main
+        env:
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+          release_commit="$(git -C release-source rev-parse HEAD)"
+          if [ "${release_commit}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Release data checkout resolved ${release_commit}, expected ${RELEASE_SHA}." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${release_commit}" HEAD; then
+            echo "::error::Release source ${release_commit} is not in trusted main history." >&2
+            exit 1
+          fi
+
+      - name: Build trusted feature flag tool
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag
+
       - name: Stamp first stable release history
         id: stamp_history
+        working-directory: release-source
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
 
-          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
-          go run ./tools/featureflag validate
+          "${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"
+          "${RUNNER_TEMP}/featureflag" validate
 
           if git diff --quiet -- internal/featureflags/features.json; then
             echo "No feature release history changes to commit"
@@ -660,6 +695,7 @@ jobs:
 
       - name: Commit stamped feature release history
         if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        working-directory: release-source
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
@@ -672,6 +708,7 @@ jobs:
 
       - name: Push stamped feature release history
         if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        working-directory: release-source
         env:
           PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |

@@ -37,12 +37,14 @@ type workflowJobConfig struct {
 }
 
 type workflowStepConfig struct {
-	Name  string            `yaml:"name"`
-	ID    string            `yaml:"id"`
-	If    string            `yaml:"if"`
-	Run   string            `yaml:"run"`
-	Shell string            `yaml:"shell"`
-	Env   map[string]string `yaml:"env"`
+	Name             string            `yaml:"name"`
+	ID               string            `yaml:"id"`
+	If               string            `yaml:"if"`
+	Run              string            `yaml:"run"`
+	Shell            string            `yaml:"shell"`
+	WorkingDirectory string            `yaml:"working-directory"`
+	Env              map[string]string `yaml:"env"`
+	With             map[string]string `yaml:"with"`
 }
 
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
@@ -317,8 +319,8 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	}
 	assertWorkflowStepEnvMissing(t, stampStep, "PUSH_TOKEN", "stamp history step must not expose PUSH_TOKEN to repository-controlled featureflag tooling")
 	assertWorkflowStepRunContainsAll(t, stampStep, "stamp history step", []string{
-		`go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"`,
-		`go run ./tools/featureflag validate`,
+		`"${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"`,
+		`"${RUNNER_TEMP}/featureflag" validate`,
 		`echo "changed=true" >> "$GITHUB_OUTPUT"`,
 	})
 	if strings.Contains(stampStep.Run, "git push") {
@@ -352,6 +354,68 @@ func TestReleaseWorkflowStampsFeatureHistoryBeforeInjectingPushToken(t *testing.
 	})
 	if strings.Contains(pushStep.Run, "git remote set-url origin") {
 		t.Fatal("push stamped history step must not persist push credentials in .git/config")
+	}
+}
+
+func TestReleaseWorkflowBuildsFeatureHistoryPatchWithTrustedMainTooling(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	trustedCheckout := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Checkout trusted main tooling")
+	if trustedCheckout.With["ref"] != "main" {
+		t.Fatalf("trusted tooling checkout ref = %q, want main", trustedCheckout.With["ref"])
+	}
+	if trustedCheckout.With["path"] != "" {
+		t.Fatalf("trusted tooling checkout path = %q, want repository root", trustedCheckout.With["path"])
+	}
+
+	releaseCheckout := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Checkout validated release data")
+	if releaseCheckout.With["ref"] != "${{ needs.prepare-release.outputs.sha }}" {
+		t.Fatalf("release data checkout ref = %q", releaseCheckout.With["ref"])
+	}
+	if releaseCheckout.With["path"] != "release-source" {
+		t.Fatalf("release data checkout path = %q, want release-source", releaseCheckout.With["path"])
+	}
+
+	validateStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Validate release data against trusted main")
+	if validateStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
+		t.Fatalf("release data validation RELEASE_SHA env = %q", validateStep.Env["RELEASE_SHA"])
+	}
+	assertWorkflowStepRunContainsAll(t, validateStep, "release data validation step", []string{
+		`release_commit="$(git -C release-source rev-parse HEAD)"`,
+		`if [ "${release_commit}" != "${RELEASE_SHA}" ]; then`,
+		`if ! git merge-base --is-ancestor "${release_commit}" HEAD; then`,
+	})
+
+	buildStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Build trusted feature flag tool")
+	if buildStep.WorkingDirectory != "" {
+		t.Fatalf("trusted feature flag build working directory = %q, want trusted repository root", buildStep.WorkingDirectory)
+	}
+	if !strings.Contains(buildStep.Run, `go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag`) {
+		t.Fatal("feature history job must build featureflag from trusted main")
+	}
+
+	stampStep := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", "Stamp first stable release history")
+	if stampStep.WorkingDirectory != "release-source" {
+		t.Fatalf("stamp history working directory = %q, want release-source", stampStep.WorkingDirectory)
+	}
+	assertWorkflowStepRunContainsAll(t, stampStep, "stamp history step", []string{
+		`"${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"`,
+		`"${RUNNER_TEMP}/featureflag" validate`,
+	})
+	if strings.Contains(stampStep.Run, "go run ./tools/featureflag") {
+		t.Fatal("release-source changes must not control the feature history executable")
+	}
+
+	for _, stepName := range []string{"Commit stamped feature release history", "Push stamped feature release history"} {
+		step := workflowStepByName(t, workflow.Jobs, "stamp-feature-release-history", stepName)
+		if step.WorkingDirectory != "release-source" {
+			t.Fatalf("%s working directory = %q, want release-source", stepName, step.WorkingDirectory)
+		}
 	}
 }
 
