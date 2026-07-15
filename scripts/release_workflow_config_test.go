@@ -315,16 +315,9 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	preparation, ok := workflow.Jobs["prepare-release-publication"]
-	if !ok {
-		t.Fatal("release workflow must prepare bounded publication inputs in a separate job")
-	}
-	if !slices.Equal(preparation.Needs, workflowJobNeeds{"prepare-release", "orchestrate-release", "build-vscode-extension", "build-darwin-amd64"}) {
-		t.Fatalf("release publication preparation needs = %v", preparation.Needs)
-	}
-	if len(preparation.Permissions) != 1 || preparation.Permissions["contents"] != "read" {
-		t.Fatalf("release publication preparation permissions = %#v", preparation.Permissions)
-	}
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release-publication")
+	assertWorkflowJobNeeds(t, preparation, "release publication preparation", workflowJobNeeds{"prepare-release", "orchestrate-release", "build-vscode-extension", "build-darwin-amd64"})
+	assertWorkflowJobPermissions(t, preparation, "release publication preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobOmitsText(t, preparation, "GH_TOKEN", "release publication preparation must not receive GH_TOKEN")
 	assertWorkflowJobOmitsText(t, preparation, "secrets.", "release publication preparation must not receive secrets")
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-release-publication")
@@ -338,59 +331,18 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`sha256sum "${checksum_files[@]}" > SHA256SUMS`,
 	})
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
-	if uploadStep.With["name"] != "release-publication-inputs" {
-		t.Fatalf("release publication input artifact name = %q", uploadStep.With["name"])
-	}
-	if uploadStep.With["path"] != "publication-inputs" {
-		t.Fatalf("release publication input artifact path = %q", uploadStep.With["path"])
-	}
-	if uploadStep.With["if-no-files-found"] != "error" {
-		t.Fatalf("release publication input artifact missing-file behavior = %q", uploadStep.With["if-no-files-found"])
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release publication input artifact name", got: uploadStep.With["name"], want: "release-publication-inputs"},
+		{label: "release publication input artifact path", got: uploadStep.With["path"], want: "publication-inputs"},
+		{label: "release publication input artifact missing-file behavior", got: uploadStep.With["if-no-files-found"], want: "error"},
+	})
 
-	publication, ok := workflow.Jobs["publish"]
-	if !ok {
-		t.Fatal("release workflow must define the fresh publication job")
-	}
-	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "prepare-release-publication", "publish-marketplace"}) {
-		t.Fatalf("fresh release publication needs = %v", publication.Needs)
-	}
-	if len(publication.Permissions) != 1 || publication.Permissions["contents"] != "write" {
-		t.Fatalf("fresh release publication permissions = %#v", publication.Permissions)
-	}
-	if len(publication.Env) != 0 {
-		t.Fatalf("fresh release publication job env = %#v, want no job-scoped credentials", publication.Env)
-	}
-
-	apiSteps := map[string]bool{
-		"Update GitHub Release notes":  false,
-		"Upload GitHub Release assets": false,
-		"Publish GitHub Release":       false,
-	}
-	for _, step := range publication.Steps {
-		if strings.HasPrefix(step.Uses, "actions/checkout@") {
-			t.Fatalf("fresh release publication must not checkout repository code: %q", step.Name)
-		}
-		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
-			apiSteps[step.Name] = true
-			if len(step.Env) != 1 || step.Env["GH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
-				t.Fatalf("GitHub API step %q env = %#v", step.Name, step.Env)
-			}
-		} else if _, ok := step.Env["GH_TOKEN"]; ok {
-			t.Fatalf("non-API publication step %q must not receive GH_TOKEN", step.Name)
-		}
-
-		for _, repositoryCommand := range []string{"go run ./", "make ", "./extensions/", "scripts/"} {
-			if strings.Contains(step.Run, repositoryCommand) {
-				t.Fatalf("fresh release publication step %q must not execute repository-controlled command %q", step.Name, repositoryCommand)
-			}
-		}
-	}
-	for stepName, found := range apiSteps {
-		if !found {
-			t.Fatalf("fresh release publication must define GitHub API step %q", stepName)
-		}
-	}
+	publication := workflowJobByName(t, workflow.Jobs, "publish")
+	assertWorkflowJobNeeds(t, publication, "fresh release publication", workflowJobNeeds{"prepare-release", "prepare-release-publication", "publish-marketplace"})
+	assertWorkflowJobPermissions(t, publication, "fresh release publication", map[string]string{"contents": "write"})
+	assertWorkflowJobEnvEmpty(t, publication, "fresh release publication")
+	assertReleasePublicationCredentialScope(t, publication)
+	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
 }
 
 func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
@@ -579,32 +531,21 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	job := workflow.Jobs["update-floating-tags"]
-	if !slices.Equal(job.Needs, workflowJobNeeds{"prepare-release", "publish"}) {
-		t.Fatalf("action floating tag job needs = %v", job.Needs)
-	}
-	if len(job.Permissions) != 1 || job.Permissions["contents"] != "write" {
-		t.Fatalf("action floating tag job permissions = %#v", job.Permissions)
-	}
-	if len(job.Env) != 0 {
-		t.Fatalf("action floating tag job env = %#v, want no job-scoped credentials", job.Env)
-	}
-	for _, step := range job.Steps {
-		if strings.HasPrefix(step.Uses, "actions/checkout@") {
-			t.Fatalf("action floating tag job must use a fresh host-Git worktree, found checkout step %q", step.Name)
-		}
-	}
+	job := workflowJobByName(t, workflow.Jobs, "update-floating-tags")
+	assertWorkflowJobNeeds(t, job, "action floating tag job", workflowJobNeeds{"prepare-release", "publish"})
+	assertWorkflowJobPermissions(t, job, "action floating tag job", map[string]string{"contents": "write"})
+	assertWorkflowJobEnvEmpty(t, job, "action floating tag job")
+	assertWorkflowJobOmitsCheckout(t, job, "action floating tag job")
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
-	if prepareStep.ID != "prepare_tags" {
-		t.Fatalf("action floating tag preparation id = %q", prepareStep.ID)
-	}
-	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
-		t.Fatalf("action floating tag preparation shell = %q", prepareStep.Shell)
-	}
-	if len(prepareStep.Env) != 2 || prepareStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || prepareStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
-		t.Fatalf("action floating tag preparation env = %#v", prepareStep.Env)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "action floating tag preparation id", got: prepareStep.ID, want: "prepare_tags"},
+		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
+	})
+	assertWorkflowStepEnv(t, prepareStep, "action floating tag preparation", map[string]string{
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+		"RELEASE_SHA": "${{ needs.prepare-release.outputs.sha }}",
+	})
 	assertWorkflowStepEnvMissing(t, prepareStep, "PUSH_TOKEN", "action floating tag preparation must be tokenless")
 	assertWorkflowStepRunContainsAll(t, prepareStep, "action floating tag preparation", []string{
 		"git_bin=/usr/bin/git",
@@ -633,22 +574,18 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 		`git_safe -C "${repo_dir}" tag --force "${minor_tag}" "${RELEASE_SHA}"`,
 		`echo "push=true" >> "$GITHUB_OUTPUT"`,
 	})
-	for _, forbidden := range []string{"PUSH_TOKEN", "secrets.", "AUTHORIZATION: basic", "extraheader"} {
-		if strings.Contains(prepareStep.Run, forbidden) {
-			t.Fatalf("action floating tag preparation must not contain %q", forbidden)
-		}
-	}
+	assertWorkflowStepRunOmitsAll(t, prepareStep, "action floating tag preparation", []string{"PUSH_TOKEN", "secrets.", "AUTHORIZATION: basic", "extraheader"})
 
 	pushStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Push GitHub Action floating tags")
-	if pushStep.If != "${{ steps.prepare_tags.outputs.push == 'true' }}" {
-		t.Fatalf("action floating tag push if = %q", pushStep.If)
-	}
-	if pushStep.Shell != prepareStep.Shell {
-		t.Fatalf("action floating tag push shell = %q", pushStep.Shell)
-	}
-	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("action floating tag push env = %#v", pushStep.Env)
-	}
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "action floating tag push if", got: pushStep.If, want: "${{ steps.prepare_tags.outputs.push == 'true' }}"},
+		{label: "action floating tag push shell", got: pushStep.Shell, want: prepareStep.Shell},
+	})
+	assertWorkflowStepEnv(t, pushStep, "action floating tag push", map[string]string{
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+		"RELEASE_SHA": "${{ needs.prepare-release.outputs.sha }}",
+		"PUSH_TOKEN":  "${{ secrets.GITHUB_TOKEN }}",
+	})
 	assertWorkflowStepRunContainsAll(t, pushStep, "action floating tag push", []string{
 		"git_bin=/usr/bin/git",
 		"env_bin=/usr/bin/env",
@@ -670,11 +607,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
 		`git_network -C "${repo_dir}" push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
 	})
-	validationIndex := strings.Index(pushStep.Run, `if [ "${resolved_sha}" != "${RELEASE_SHA}" ]`)
-	tokenIndex := strings.Index(pushStep.Run, `push_token="${PUSH_TOKEN}"`)
-	if validationIndex < 0 || tokenIndex < 0 || validationIndex >= tokenIndex {
-		t.Fatal("action floating tag push must validate origin, SHA, and tag targets before reading the push token")
-	}
+	assertTextAppearsBefore(t, pushStep.Run, `if [ "${resolved_sha}" != "${RELEASE_SHA}" ]`, `push_token="${PUSH_TOKEN}"`, "action floating tag push must validate origin, SHA, and tag targets before reading the push token")
 	if strings.Count(pushStep.Run, "git_network ") != 1 {
 		t.Fatal("action floating tag authentication must be exposed only to the single network push command")
 	}
@@ -1573,6 +1506,44 @@ func assertWorkflowJobEnvEmpty(t *testing.T, job workflowJobConfig, jobLabel str
 	}
 }
 
+func assertReleasePublicationCredentialScope(t *testing.T, publication workflowJobConfig) {
+	t.Helper()
+
+	apiSteps := map[string]bool{
+		"Update GitHub Release notes":  false,
+		"Upload GitHub Release assets": false,
+		"Publish GitHub Release":       false,
+	}
+	for _, step := range publication.Steps {
+		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
+			apiSteps[step.Name] = true
+			assertWorkflowStepEnv(t, step, "GitHub API step "+step.Name, map[string]string{"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"})
+		} else if _, ok := step.Env["GH_TOKEN"]; ok {
+			t.Fatalf("non-API publication step %q must not receive GH_TOKEN", step.Name)
+		}
+	}
+	for stepName, found := range apiSteps {
+		if !found {
+			t.Fatalf("fresh release publication must define GitHub API step %q", stepName)
+		}
+	}
+}
+
+func assertReleasePublicationOmitsCheckoutAndCommands(t *testing.T, publication workflowJobConfig) {
+	t.Helper()
+
+	for _, step := range publication.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("fresh release publication must not checkout repository code: %q", step.Name)
+		}
+		for _, repositoryCommand := range []string{"go run ./", "make ", "./extensions/", "scripts/"} {
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("fresh release publication step %q must not execute repository-controlled command %q", step.Name, repositoryCommand)
+			}
+		}
+	}
+}
+
 func assertWorkflowStepEnv(t *testing.T, step workflowStepConfig, stepLabel string, want map[string]string) {
 	t.Helper()
 
@@ -1610,6 +1581,26 @@ func assertWorkflowStepRunOmitsAllFold(t *testing.T, step workflowStepConfig, st
 		if strings.Contains(strings.ToLower(step.Run), forbidden) {
 			t.Fatalf("%s must not execute %q while credential is in scope", stepLabel, forbidden)
 		}
+	}
+}
+
+func assertWorkflowStepRunOmitsAll(t *testing.T, step workflowStepConfig, stepLabel string, forbiddenValues []string) {
+	t.Helper()
+
+	for _, forbidden := range forbiddenValues {
+		if strings.Contains(step.Run, forbidden) {
+			t.Fatalf("%s must not contain %q", stepLabel, forbidden)
+		}
+	}
+}
+
+func assertTextAppearsBefore(t *testing.T, text string, earlier string, later string, message string) {
+	t.Helper()
+
+	earlierIndex := strings.Index(text, earlier)
+	laterIndex := strings.Index(text, later)
+	if earlierIndex < 0 || laterIndex < 0 || earlierIndex >= laterIndex {
+		t.Fatal(message)
 	}
 }
 
