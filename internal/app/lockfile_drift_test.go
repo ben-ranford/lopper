@@ -699,6 +699,22 @@ func TestDetectLockfileDriftAllowsUnconfiguredStateNamedFilters(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftIgnoresUnassignedFilterStateWithMatchingConfig(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.unspecified.clean", "./unrelated-helper.sh")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+}
+
 func TestDetectLockfileDriftAllowsFiltersWithoutExecutableCommands(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
