@@ -606,9 +606,9 @@ jobs:
               '.manifests[]
                 | select(.platform.os == "linux" and .platform.architecture == $architecture)
                 | select((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest")
-                | .digest' "${layout_root}/index.json")
+                | .digest' "${layout_root}/index.json" | sort -u)
             if [ "${#image_digests[@]}" -ne 1 ] || [[ ! "${image_digests[0]}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::${architecture} OCI layout must contain exactly one ${platform} image."
+              echo "::error::${architecture} OCI layout must contain exactly one unique ${platform} image digest."
               exit 1
             fi
 
