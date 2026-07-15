@@ -64,6 +64,13 @@ type lockfileGitSnapshotBatch struct {
 	seenCandidates     map[string]struct{}
 }
 
+type lockfileFailFastBatchScanner struct {
+	repoPath string
+	rules    []lockfileRule
+	warnings []string
+	batch    lockfileGitSnapshotBatch
+}
+
 func (b *lockfileGitSnapshotBatch) wouldOverflow(candidatePaths []string) bool {
 	if len(b.snapshots) == 0 {
 		return false
@@ -146,83 +153,104 @@ func scanLockfileDriftStopOnFirst(ctx context.Context, repoPath string, rules []
 		return scanLockfileDrift(ctx, repoPath, lockfileGitContext{}, true, rules)
 	}
 
-	batch := lockfileGitSnapshotBatch{}
-	recordFirst := func(snapshot lockfileDirSnapshot, gitContext lockfileGitContext) error {
-		warning, found, err := firstLockfileDriftWarning(snapshot, gitContext, rules)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return nil
-		}
-		warnings = append(warnings, warning)
-		return fs.SkipAll
-	}
-	flush := func() error {
-		snapshots, candidatePaths := batch.take()
-		if len(snapshots) == 0 {
-			return nil
-		}
-		gitContext, err := collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
-		if err != nil {
-			return err
-		}
-		for _, snapshot := range snapshots {
-			if err := recordFirst(snapshot, gitContext); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	state := lockfileWalkState{
+	scanner := lockfileFailFastBatchScanner{
 		repoPath: repoPath,
+		rules:    rules,
+		warnings: warnings,
+	}
+	return scanner.scan(ctx)
+}
+
+func (s *lockfileFailFastBatchScanner) scan(ctx context.Context) ([]string, error) {
+	state := lockfileWalkState{
+		repoPath: s.repoPath,
 		visit: func(snapshot lockfileDirSnapshot) error {
-			candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, rules)
-			if err != nil {
-				return err
-			}
-			if len(batch.snapshots) == 0 && len(candidatePaths) == 0 {
-				return recordFirst(snapshot, lockfileGitContext{hasGitContext: true})
-			}
-			if batch.wouldOverflow(candidatePaths) {
-				if err := flush(); err != nil {
-					return err
-				}
-				if len(candidatePaths) == 0 {
-					return recordFirst(snapshot, lockfileGitContext{hasGitContext: true})
-				}
-			}
-			batch.add(snapshot, candidatePaths)
-			return nil
+			return s.visit(ctx, snapshot)
 		},
 	}
-	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if flushErr := flush(); flushErr != nil {
-				return flushErr
-			}
-			return walkErr
+	walkErr := filepath.WalkDir(s.repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		return s.handleWalkEntry(ctx, path, entry, walkErr, state)
+	})
+	return s.result(ctx, walkErr)
+}
+
+func (s *lockfileFailFastBatchScanner) visit(ctx context.Context, snapshot lockfileDirSnapshot) error {
+	candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, s.rules)
+	if err != nil {
+		return err
+	}
+	if len(s.batch.snapshots) == 0 && len(candidatePaths) == 0 {
+		return s.recordFirst(snapshot, lockfileGitContext{hasGitContext: true})
+	}
+	if s.batch.wouldOverflow(candidatePaths) {
+		if err := s.flush(ctx); err != nil {
+			return err
 		}
-		processErr := processLockfileDir(ctx, path, entry, nil, state)
-		if processErr == nil || errors.Is(processErr, fs.SkipDir) || errors.Is(processErr, fs.SkipAll) {
-			return processErr
+		if len(candidatePaths) == 0 {
+			return s.recordFirst(snapshot, lockfileGitContext{hasGitContext: true})
 		}
-		if flushErr := flush(); flushErr != nil {
+	}
+	s.batch.add(snapshot, candidatePaths)
+	return nil
+}
+
+func (s *lockfileFailFastBatchScanner) recordFirst(snapshot lockfileDirSnapshot, gitContext lockfileGitContext) error {
+	warning, found, err := firstLockfileDriftWarning(snapshot, gitContext, s.rules)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	s.warnings = append(s.warnings, warning)
+	return fs.SkipAll
+}
+
+func (s *lockfileFailFastBatchScanner) flush(ctx context.Context) error {
+	snapshots, candidatePaths := s.batch.take()
+	if len(snapshots) == 0 {
+		return nil
+	}
+	gitContext, err := collectLockfileGitContextForPaths(ctx, s.repoPath, candidatePaths)
+	if err != nil {
+		return err
+	}
+	for _, snapshot := range snapshots {
+		if err := s.recordFirst(snapshot, gitContext); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *lockfileFailFastBatchScanner) handleWalkEntry(ctx context.Context, path string, entry fs.DirEntry, walkErr error, state lockfileWalkState) error {
+	if walkErr != nil {
+		if flushErr := s.flush(ctx); flushErr != nil {
 			return flushErr
 		}
-		return processErr
-	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return nil, err
+		return walkErr
 	}
-	if flushErr := flush(); flushErr != nil {
+	processErr := processLockfileDir(ctx, path, entry, nil, state)
+	if processErr == nil || errors.Is(processErr, fs.SkipDir) || errors.Is(processErr, fs.SkipAll) {
+		return processErr
+	}
+	if flushErr := s.flush(ctx); flushErr != nil {
+		return flushErr
+	}
+	return processErr
+}
+
+func (s *lockfileFailFastBatchScanner) result(ctx context.Context, walkErr error) ([]string, error) {
+	if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+		return nil, walkErr
+	}
+	if flushErr := s.flush(ctx); flushErr != nil {
 		if errors.Is(flushErr, fs.SkipAll) {
-			return warnings, nil
+			return s.warnings, nil
 		}
 		return nil, flushErr
 	}
-	return warnings, nil
+	return s.warnings, nil
 }
 
 func firstLockfileDriftWarning(snapshot lockfileDirSnapshot, gitContext lockfileGitContext, rules []lockfileRule) (string, bool, error) {
