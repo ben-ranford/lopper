@@ -308,6 +308,112 @@ func TestReleaseWorkflowRejectsBranchValuedMissingTagFallback(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	preparation, ok := workflow.Jobs["prepare-release-publication"]
+	if !ok {
+		t.Fatal("release workflow must prepare bounded publication inputs in a separate job")
+	}
+	if !slices.Equal(preparation.Needs, workflowJobNeeds{"prepare-release", "orchestrate-release", "build-vscode-extension", "build-darwin-amd64"}) {
+		t.Fatalf("release publication preparation needs = %v", preparation.Needs)
+	}
+	if len(preparation.Permissions) != 1 || preparation.Permissions["contents"] != "read" {
+		t.Fatalf("release publication preparation permissions = %#v", preparation.Permissions)
+	}
+	assertWorkflowJobOmitsText(t, preparation, "GH_TOKEN", "release publication preparation must not receive GH_TOKEN")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.", "release publication preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-release-publication")
+
+	stageStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	assertWorkflowStepRunContainsAll(t, stageStep, "release publication staging step", []string{
+		`find dist -maxdepth 1 -type f`,
+		`lopper-vscode-${version}.vsix`,
+		`publication-inputs/feature-flags.md`,
+		`sha256sum > SHA256SUMS`,
+	})
+	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
+	if uploadStep.With["name"] != "release-publication-inputs" {
+		t.Fatalf("release publication input artifact name = %q", uploadStep.With["name"])
+	}
+	if uploadStep.With["path"] != "publication-inputs" {
+		t.Fatalf("release publication input artifact path = %q", uploadStep.With["path"])
+	}
+	if uploadStep.With["if-no-files-found"] != "error" {
+		t.Fatalf("release publication input artifact missing-file behavior = %q", uploadStep.With["if-no-files-found"])
+	}
+
+	publication, ok := workflow.Jobs["publish"]
+	if !ok {
+		t.Fatal("release workflow must define the fresh publication job")
+	}
+	if !slices.Equal(publication.Needs, workflowJobNeeds{"prepare-release", "prepare-release-publication"}) {
+		t.Fatalf("fresh release publication needs = %v", publication.Needs)
+	}
+	if len(publication.Permissions) != 1 || publication.Permissions["contents"] != "write" {
+		t.Fatalf("fresh release publication permissions = %#v", publication.Permissions)
+	}
+	if len(publication.Env) != 0 {
+		t.Fatalf("fresh release publication job env = %#v, want no job-scoped credentials", publication.Env)
+	}
+
+	apiSteps := map[string]bool{
+		"Update GitHub Release notes":  false,
+		"Upload GitHub Release assets": false,
+		"Publish GitHub Release":       false,
+	}
+	for _, step := range publication.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			t.Fatalf("fresh release publication must not checkout repository code: %q", step.Name)
+		}
+		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
+			apiSteps[step.Name] = true
+			if len(step.Env) != 1 || step.Env["GH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
+				t.Fatalf("GitHub API step %q env = %#v", step.Name, step.Env)
+			}
+		} else if _, ok := step.Env["GH_TOKEN"]; ok {
+			t.Fatalf("non-API publication step %q must not receive GH_TOKEN", step.Name)
+		}
+
+		for _, repositoryCommand := range []string{"go run ./", "make ", "./extensions/", "scripts/"} {
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("fresh release publication step %q must not execute repository-controlled command %q", step.Name, repositoryCommand)
+			}
+		}
+	}
+	for stepName, found := range apiSteps {
+		if !found {
+			t.Fatalf("fresh release publication must define GitHub API step %q", stepName)
+		}
+	}
+
+	downloadStep := workflowStepByName(t, workflow.Jobs, "publish", "Download release publication inputs")
+	if downloadStep.With["name"] != "release-publication-inputs" || downloadStep.With["path"] != "publication-inputs" {
+		t.Fatalf("fresh release publication download config = %#v", downloadStep.With)
+	}
+	validateStep := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
+	assertWorkflowStepRunContainsAll(t, validateStep, "release publication input validation step", []string{
+		`sha256sum --check --strict SHA256SUMS`,
+		`find dist -maxdepth 1 -type f`,
+		`lopper-vscode-${version}.vsix`,
+		`Expected darwin/amd64 artifact is missing`,
+		`Expected darwin/arm64 artifact is missing`,
+	})
+	assertWorkflowStepEnvMissing(t, validateStep, "GH_TOKEN", "release publication validation must be tokenless")
+
+	marketplaceStep := workflowStepByName(t, workflow.Jobs, "publish", "Publish VS Code extension to Marketplace")
+	if len(marketplaceStep.Env) != 1 || marketplaceStep.Env["VSCE_PAT"] != "${{ secrets.VSCE_PUBLISH }}" {
+		t.Fatalf("Marketplace publication env = %#v", marketplaceStep.Env)
+	}
+	assertWorkflowStepRunContainsAll(t, marketplaceStep, "Marketplace publication step", []string{
+		`if [ -z "${VSCE_PAT:-}" ]; then`,
+		`npx --yes @vscode/vsce@3.9.2 publish --packagePath "$vsix_path"`,
+	})
+}
+
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 
@@ -316,7 +422,11 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	}
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	step := workflowStepByName(t, workflow.Jobs, "publish", "Update GitHub Action floating tags")
+	job := workflow.Jobs["update-floating-tags"]
+	if !slices.Equal(job.Needs, workflowJobNeeds{"prepare-release", "publish"}) {
+		t.Fatalf("action floating tag job needs = %v", job.Needs)
+	}
+	step := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Update GitHub Action floating tags")
 	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("action floating tag step shell = %q", step.Shell)
 	}
@@ -357,7 +467,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 		`git_network push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"`,
 	})
 	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, step, "action floating tag step")
-	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, workflow.Jobs["publish"], "publish")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, job, "update-floating-tags")
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 	if !strings.Contains(workflowText, "- GitHub Action: \\`${GITHUB_REPOSITORY}@${tag}\\`") {
