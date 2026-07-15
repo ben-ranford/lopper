@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestCommandOutputRootRelativePathUsesWorkspace(t *testing.T) {
@@ -159,6 +161,24 @@ func TestPersistCommandOutputPropagatesParentCreationError(t *testing.T) {
 	_, err := persistCommandOutput("{}", filepath.Join("reports", "output.json"), "dashboard report")
 	if err == nil {
 		t.Fatal("expected parent creation error")
+	}
+}
+
+func TestOpenCommandOutputDestinationPropagatesOpenRootError(t *testing.T) {
+	workspace := t.TempDir()
+	chdirCanonicalWorkspace(t, workspace)
+	expectedErr := errors.New("open pinned root failure")
+	originalOpen := openCommandOutputWriteRootFn
+	openCommandOutputWriteRootFn = func(string) (*safeio.WriteRoot, error) {
+		return nil, expectedErr
+	}
+	t.Cleanup(func() {
+		openCommandOutputWriteRootFn = originalOpen
+	})
+
+	_, err := openCommandOutputDestination("report.json")
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected pinned root open error, got %v", err)
 	}
 }
 
@@ -542,14 +562,14 @@ func TestPersistCommandOutputPinsTrustedRootAliasBeforeWrite(t *testing.T) {
 	}
 
 	originalWrite := writeCommandOutputFileFn
-	writeCommandOutputFileFn = func(rootDir, outputPath string, data []byte, perm, parentPerm os.FileMode) error {
+	writeCommandOutputFileFn = func(root *safeio.WriteRoot, outputPath string, data []byte, perm, parentPerm os.FileMode) error {
 		if err := os.Remove(trustedRootAlias); err != nil {
 			return err
 		}
 		if err := os.Symlink(outside, trustedRootAlias); err != nil {
 			return err
 		}
-		return originalWrite(rootDir, outputPath, data, perm, parentPerm)
+		return originalWrite(root, outputPath, data, perm, parentPerm)
 	}
 	t.Cleanup(func() {
 		writeCommandOutputFileFn = originalWrite
@@ -846,141 +866,6 @@ func TestInspectOutputRootPathPropagatesLookupError(t *testing.T) {
 	}
 }
 
-func TestEnsureCommandOutputParentRejectsEscapingPath(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "root")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir root: %v", err)
-	}
-
-	outputPath := filepath.Join(root, "..", "outside", "report.json")
-	err := ensureCommandOutputParent(root, outputPath)
-	if err == nil || !strings.Contains(err.Error(), "output path escapes workspace") {
-		t.Fatalf("expected escaping output path rejection, got %v", err)
-	}
-}
-
-func TestEnsureCommandOutputParentPropagatesRootResolutionError(t *testing.T) {
-	withUnreadableWorkingDirectory(t, func() {
-		err := ensureCommandOutputParent("reports", "report.json")
-		if err == nil || !strings.Contains(err.Error(), "resolve output root") {
-			t.Fatalf("expected output root resolution failure, got %v", err)
-		}
-	})
-}
-
-func TestEnsureCommandOutputParentPropagatesOutputResolutionError(t *testing.T) {
-	root := t.TempDir()
-	withUnreadableWorkingDirectory(t, func() {
-		err := ensureCommandOutputParent(root, "report.json")
-		if err == nil || !strings.Contains(err.Error(), "resolve output path") {
-			t.Fatalf("expected output path resolution failure, got %v", err)
-		}
-	})
-}
-
-func TestEnsureCommandOutputParentCreatesNestedDirectories(t *testing.T) {
-	root := t.TempDir()
-	outputPath := filepath.Join(root, "reports", "nested", "report.json")
-
-	if err := ensureCommandOutputParent(root, outputPath); err != nil {
-		t.Fatalf("ensure command output parent: %v", err)
-	}
-	if info, err := os.Stat(filepath.Dir(outputPath)); err != nil {
-		t.Fatalf("stat output parent: %v", err)
-	} else if !info.IsDir() {
-		t.Fatalf("expected output parent directory, got mode %v", info.Mode())
-	}
-}
-
-func TestEnsureCommandOutputParentRejectsSymlinkedParent(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, "reports")); err != nil {
-		t.Fatalf("create reports symlink: %v", err)
-	}
-
-	err := ensureCommandOutputParent(root, filepath.Join(root, "reports", "report.json"))
-	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
-		t.Fatalf("expected symlinked parent rejection, got %v", err)
-	}
-}
-
-func TestEnsureCommandOutputParentDoesNotCreateOutsideAfterMissingParentSwap(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	outsideSentinel := filepath.Join(outside, "sentinel.txt")
-	if err := os.WriteFile(outsideSentinel, []byte("outside-before"), 0o600); err != nil {
-		t.Fatalf("seed outside sentinel: %v", err)
-	}
-
-	originalMkdirAll := mkdirAllCommandOutputParentFn
-	mkdirAllCommandOutputParentFn = func(path string, perm os.FileMode) error {
-		if err := os.Symlink(outside, filepath.Join(root, "reports")); err != nil {
-			return err
-		}
-		return originalMkdirAll(path, perm)
-	}
-	t.Cleanup(func() {
-		mkdirAllCommandOutputParentFn = originalMkdirAll
-	})
-
-	outputPath := filepath.Join(root, "reports", "nested", "report.json")
-	err := ensureCommandOutputParent(root, outputPath)
-	if err == nil {
-		t.Fatal("expected swapped parent symlink to be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(outside, "nested")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected outside nested directory to remain absent, got err=%v", statErr)
-	}
-	if got := readTextFile(t, outsideSentinel); got != "outside-before" {
-		t.Fatalf("unexpected outside sentinel: %q", got)
-	}
-}
-
-func TestEnsureCommandOutputParentPropagatesMkdirAllError(t *testing.T) {
-	root, blocker := blockedPathFixture(t)
-
-	err := ensureCommandOutputParent(root, filepath.Join(blocker, "report.json"))
-	if err == nil {
-		t.Fatal("expected mkdir failure under regular file")
-	}
-}
-
-func TestRejectSymlinkedOutputParentAllowsRootParent(t *testing.T) {
-	root := t.TempDir()
-	if err := rejectSymlinkedOutputParent(root, root); err != nil {
-		t.Fatalf("expected root parent to be allowed, got %v", err)
-	}
-}
-
-func TestRejectSymlinkedOutputParentRejectsEscapingParent(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "root")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir root: %v", err)
-	}
-
-	err := rejectSymlinkedOutputParent(root, filepath.Dir(root))
-	if err == nil || !strings.Contains(err.Error(), "output parent escapes workspace") {
-		t.Fatalf("expected escaping parent rejection, got %v", err)
-	}
-}
-
-func TestRejectSymlinkedOutputParentAllowsMissingTail(t *testing.T) {
-	root := t.TempDir()
-	if err := rejectSymlinkedOutputParent(root, filepath.Join(root, "missing", "nested")); err != nil {
-		t.Fatalf("expected missing tail to be allowed, got %v", err)
-	}
-}
-
-func TestRejectSymlinkedOutputParentPropagatesLookupError(t *testing.T) {
-	root, blocker := blockedPathFixture(t)
-
-	err := rejectSymlinkedOutputParent(root, filepath.Join(blocker, "nested"))
-	if err == nil {
-		t.Fatal("expected lookup error under regular file")
-	}
-}
-
 func TestPathWithinRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -1057,6 +942,37 @@ func TestValidateTrustedCommandOutputRootRejectsFile(t *testing.T) {
 	err := validateTrustedCommandOutputRoot(rootFile)
 	if err == nil || !strings.Contains(err.Error(), "trusted output workspace is not a directory") {
 		t.Fatalf("expected trusted root file rejection, got %v", err)
+	}
+}
+
+func TestValidateTrustedCommandOutputRootRejectsMissingAndSymlinkRoots(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	if err := validateTrustedCommandOutputRoot(missingRoot); err == nil || !strings.Contains(err.Error(), "resolve trusted output workspace") {
+		t.Fatalf("expected missing trusted root rejection, got %v", err)
+	}
+
+	rootAlias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(t.TempDir(), rootAlias); err != nil {
+		t.Fatalf("create trusted root alias: %v", err)
+	}
+	if err := validateTrustedCommandOutputRoot(rootAlias); err == nil || !strings.Contains(err.Error(), "trusted output workspace is a symlink") {
+		t.Fatalf("expected symlink trusted root rejection, got %v", err)
+	}
+}
+
+func TestValidateTrustedCommandOutputRootRejectsSymlinkAncestor(t *testing.T) {
+	canonicalParent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(canonicalParent, "repo"), 0o755); err != nil {
+		t.Fatalf("mkdir canonical repo: %v", err)
+	}
+	parentAlias := filepath.Join(t.TempDir(), "parent-alias")
+	if err := os.Symlink(canonicalParent, parentAlias); err != nil {
+		t.Fatalf("create parent alias: %v", err)
+	}
+
+	err := validateTrustedCommandOutputRoot(filepath.Join(parentAlias, "repo"))
+	if err == nil || !strings.Contains(err.Error(), "validate trusted output workspace") {
+		t.Fatalf("expected trusted root ancestor symlink rejection, got %v", err)
 	}
 }
 
@@ -1139,15 +1055,6 @@ func TestResolveAliasedWorkspaceRootReturnsTopmostWorkspaceAlias(t *testing.T) {
 	if root != reportsAlias {
 		t.Fatalf("expected topmost workspace alias %q, got %q", reportsAlias, root)
 	}
-}
-
-func blockedPathFixture(t *testing.T) (string, string) {
-	t.Helper()
-
-	root := t.TempDir()
-	blocker := filepath.Join(root, "blocked")
-	writeBlockedFile(t, blocker)
-	return root, blocker
 }
 
 func withUnreadableWorkingDirectory(t *testing.T, fn func()) {
@@ -1276,19 +1183,5 @@ func TestRestoreWorkingDirectoryPermissionsIgnoresRemovedDirectory(t *testing.T)
 
 	if err := restoreWorkingDirectoryPermissions(workspace); err != nil {
 		t.Fatalf("restore working directory permissions: %v", err)
-	}
-}
-
-func TestRejectSymlinkedOutputParentRejectsSymlink(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	link := filepath.Join(root, "reports")
-	if err := os.Symlink(outside, link); err != nil {
-		t.Fatalf("create reports symlink: %v", err)
-	}
-
-	err := rejectSymlinkedOutputParent(root, filepath.Join(link, "nested"))
-	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
-		t.Fatalf("expected symlink rejection, got %v", err)
 	}
 }

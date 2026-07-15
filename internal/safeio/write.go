@@ -6,7 +6,92 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// WriteRoot pins a filesystem root for path-confined atomic writes.
+type WriteRoot struct {
+	root    Root
+	rootAbs string
+}
+
+// OpenWriteRoot opens rootDir once for subsequent root-relative writes.
+func OpenWriteRoot(rootDir string) (*WriteRoot, error) {
+	rootAbs, err := resolveAbsolutePath("root", rootDir)
+	if err != nil {
+		return nil, err
+	}
+	return openWriteRoot(rootAbs)
+}
+
+func openWriteRoot(rootAbs string) (*WriteRoot, error) {
+	root, err := fileSystem.OpenRoot(rootAbs)
+	if err != nil {
+		return nil, fmt.Errorf("open root: %w", err)
+	}
+	return &WriteRoot{root: root, rootAbs: rootAbs}, nil
+}
+
+// Close releases the pinned filesystem root.
+func (r *WriteRoot) Close() error {
+	return r.root.Close()
+}
+
+// WriteFileCreatingParents atomically writes a root-relative file, creating
+// missing parent directories inside the pinned root.
+func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	if err := r.ensureParentDirectories(target, parentPerm); err != nil {
+		return err
+	}
+	return r.writeFile(target, data, perm)
+}
+
+func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
+	if filepath.IsAbs(targetPath) {
+		return rootedTarget{}, fmt.Errorf("target path must be relative to root: %s", targetPath)
+	}
+	rel, err := normalizeRootedTarget(targetPath, filepath.Clean(targetPath), rejectRootTarget)
+	if err != nil {
+		return rootedTarget{}, err
+	}
+	return rootedTarget{rootAbs: r.rootAbs, rel: rel, abs: filepath.Join(r.rootAbs, rel)}, nil
+}
+
+func (r *WriteRoot) ensureParentDirectories(target rootedTarget, perm os.FileMode) error {
+	parentRel := filepath.Dir(target.rel)
+	if parentRel == "." {
+		return nil
+	}
+	if err := rejectRootedParentSymlinks(r.root, r.rootAbs, parentRel); err != nil {
+		return err
+	}
+	if err := r.root.MkdirAll(parentRel, perm); err != nil {
+		return err
+	}
+	return rejectRootedParentSymlinks(r.root, r.rootAbs, parentRel)
+}
+
+func rejectRootedParentSymlinks(root Root, rootAbs, parentRel string) error {
+	current := ""
+	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
+		current = filepath.Join(current, part)
+		info, err := root.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("output parent contains symlink: %s", filepath.Join(rootAbs, current))
+		}
+	}
+	return nil
+}
 
 const atomicTempPrefix = ".safeio-atomic-"
 
@@ -23,22 +108,25 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	if err != nil {
 		return err
 	}
-	writePerm, existingRegular, err := resolvedWriteFilePerm(target, perm)
+	root, err := openWriteRoot(target.rootAbs)
 	if err != nil {
 		return err
-	}
-
-	root, err := fileSystem.OpenRoot(target.rootAbs)
-	if err != nil {
-		return fmt.Errorf("open root: %w", err)
 	}
 	defer func() {
 		if closeErr := root.Close(); closeErr != nil {
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
+	return root.writeFile(target, data, perm)
+}
+
+func (r *WriteRoot) writeFile(target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+	writePerm, existingRegular, err := resolvedWriteFilePerm(r.root, target, perm)
+	if err != nil {
+		return err
+	}
 	if existingRegular {
-		file, err := root.OpenFile(target.rel, os.O_WRONLY, 0)
+		file, err := r.root.OpenFile(target.rel, os.O_WRONLY, 0)
 		if err != nil {
 			return err
 		}
@@ -47,7 +135,7 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 		}
 	}
 
-	session, err := newAtomicWriteSession(root, target.rel, writePerm)
+	session, err := newAtomicWriteSession(r.root, target.rel, writePerm)
 	if err != nil {
 		return err
 	}
@@ -61,8 +149,8 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	return session.writeAndCommit(data, writePerm)
 }
 
-func resolvedWriteFilePerm(target rootedTarget, requestedPerm os.FileMode) (os.FileMode, bool, error) {
-	info, err := os.Lstat(target.abs)
+func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, bool, error) {
+	info, err := root.Lstat(target.rel)
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {

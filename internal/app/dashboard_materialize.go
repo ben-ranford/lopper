@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,20 +11,27 @@ import (
 )
 
 var (
-	mkdirAllCommandOutputParentFn = os.MkdirAll
-	writeCommandOutputFileFn      = func(rootDir, outputPath string, data []byte, perm, _ os.FileMode) error {
-		if err := ensureCommandOutputParent(rootDir, outputPath); err != nil {
-			return err
-		}
-		return safeio.WriteFileUnder(rootDir, outputPath, data, perm)
+	openCommandOutputWriteRootFn = safeio.OpenWriteRoot
+	writeCommandOutputFileFn     = func(root *safeio.WriteRoot, targetPath string, data []byte, perm, parentPerm os.FileMode) error {
+		return root.WriteFileCreatingParents(targetPath, data, perm, parentPerm)
 	}
 )
+
+type commandOutputRootBoundary struct {
+	path     string
+	resolved string
+}
+
+type commandOutputDestination struct {
+	root       *safeio.WriteRoot
+	targetPath string
+}
 
 func persistDashboardOutput(formatted, outputPath string, trustedRoots ...string) (string, error) {
 	return persistCommandOutput(formatted, outputPath, "dashboard report", trustedRoots...)
 }
 
-func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...string) (string, error) {
+func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...string) (result string, returnErr error) {
 	trimmedOutputPath := strings.TrimSpace(outputPath)
 	if trimmedOutputPath == "" || trimmedOutputPath == "-" {
 		return formatted, nil
@@ -32,79 +40,118 @@ func persistCommandOutput(formatted, outputPath, label string, trustedRoots ...s
 		return "", fmt.Errorf("output path must name a file: %s", trimmedOutputPath)
 	}
 
-	outputRoot, err := commandOutputRoot(trimmedOutputPath, trustedRoots...)
+	destination, err := openCommandOutputDestination(trimmedOutputPath, trustedRoots...)
 	if err != nil {
 		return "", err
 	}
-	if err := writeCommandOutputFileFn(outputRoot, trimmedOutputPath, []byte(formatted), 0o600, 0o750); err != nil {
+	defer func() {
+		if closeErr := destination.root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	if err := writeCommandOutputFileFn(destination.root, destination.targetPath, []byte(formatted), 0o600, 0o750); err != nil {
 		return "", err
 	}
 	return label + " written to " + trimmedOutputPath, nil
 }
 
 func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error) {
+	root, _, err := commandOutputRootBoundaryForPath(outputPath, trustedRoots...)
+	return root.path, err
+}
+
+func openCommandOutputDestination(outputPath string, trustedRoots ...string) (commandOutputDestination, error) {
+	root, outputAbs, err := commandOutputRootBoundaryForPath(outputPath, trustedRoots...)
+	if err != nil {
+		return commandOutputDestination{}, err
+	}
+	targetPath, err := filepath.Rel(root.path, outputAbs)
+	if err != nil {
+		return commandOutputDestination{}, fmt.Errorf("compute output path: %w", err)
+	}
+	if targetPath == ".." || strings.HasPrefix(targetPath, ".."+string(os.PathSeparator)) {
+		return commandOutputDestination{}, fmt.Errorf("output path escapes workspace: %s", outputPath)
+	}
+	writeRoot, err := openCommandOutputWriteRootFn(root.resolved)
+	if err != nil {
+		return commandOutputDestination{}, err
+	}
+	return commandOutputDestination{root: writeRoot, targetPath: targetPath}, nil
+}
+
+func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string) (commandOutputRootBoundary, string, error) {
 	if err := rejectAmbiguousParentTraversal(outputPath); err != nil {
-		return "", err
+		return commandOutputRootBoundary{}, "", err
 	}
 	outputAbs, err := filepath.Abs(outputPath)
 	if err != nil {
-		return "", fmt.Errorf("resolve output path: %w", err)
+		return commandOutputRootBoundary{}, "", fmt.Errorf("resolve output path: %w", err)
 	}
 
-	trustedRoot, err := resolvedCommandOutputRoot(outputAbs, func() (string, error) {
-		return trustedCommandOutputRootForRoots(outputAbs, trustedRoots...)
+	trustedRoot, err := resolvedCommandOutputRoot(outputAbs, func() (commandOutputRootBoundary, error) {
+		return trustedCommandOutputRootBoundaryForRoots(outputAbs, trustedRoots...)
 	})
-	if trustedRoot != "" || err != nil {
-		return trustedRoot, err
+	if trustedRoot.path != "" || err != nil {
+		return trustedRoot, outputAbs, err
 	}
 
-	workspaceRoot, workspaceErr := resolvedCommandOutputRoot(outputAbs, func() (string, error) {
-		return trustedCommandOutputRoot(outputAbs)
+	workspaceRoot, workspaceErr := resolvedCommandOutputRoot(outputAbs, func() (commandOutputRootBoundary, error) {
+		return trustedCommandOutputRootBoundary(outputAbs)
 	})
-	if workspaceRoot != "" {
-		return workspaceRoot, nil
+	if workspaceRoot.path != "" {
+		return workspaceRoot, outputAbs, nil
 	}
 
-	return fallbackCommandOutputRoot(outputAbs, outputPath, workspaceErr)
+	fallbackRoot, err := fallbackCommandOutputRootBoundary(outputAbs, outputPath, workspaceErr)
+	return fallbackRoot, outputAbs, err
 }
 
-func resolvedCommandOutputRoot(outputAbs string, resolve func() (string, error)) (string, error) {
+func resolvedCommandOutputRoot(outputAbs string, resolve func() (commandOutputRootBoundary, error)) (commandOutputRootBoundary, error) {
 	root, err := resolve()
-	if err != nil || root == "" {
+	if err != nil || root.path == "" {
 		return root, err
 	}
-	if err := rejectSymlinkedOutputRoot(root, filepath.Dir(outputAbs)); err != nil {
-		return "", err
+	if err := rejectSymlinkedOutputRoot(root.path, filepath.Dir(outputAbs)); err != nil {
+		return commandOutputRootBoundary{}, err
 	}
 	return root, nil
 }
 
 func fallbackCommandOutputRoot(outputAbs, outputPath string, workspaceErr error) (string, error) {
+	root, err := fallbackCommandOutputRootBoundary(outputAbs, outputPath, workspaceErr)
+	return root.path, err
+}
+
+func fallbackCommandOutputRootBoundary(outputAbs, outputPath string, workspaceErr error) (commandOutputRootBoundary, error) {
 	existingRoot, err := resolveExistingOutputRoot(outputAbs, outputPath)
 	if err != nil {
-		return "", err
+		return commandOutputRootBoundary{}, err
 	}
 	if workspaceErr != nil && filepath.IsAbs(outputPath) {
 		return existingRoot, nil
 	}
 	if workspaceErr != nil {
-		return "", workspaceErr
+		return commandOutputRootBoundary{}, workspaceErr
 	}
 	return existingRoot, nil
 }
 
-func resolveExistingOutputRoot(outputAbs, outputPath string) (string, error) {
+func resolveExistingOutputRoot(outputAbs, outputPath string) (commandOutputRootBoundary, error) {
 	current := filepath.Dir(outputAbs)
 	for {
 		next, done, err := inspectOutputRootPath(current, outputPath)
 		if err != nil {
-			return "", err
+			return commandOutputRootBoundary{}, err
 		}
 		if done {
-			if err := rejectLexicalOutputRootSymlinks(next); err != nil {
-				return "", err
+			resolved, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				return commandOutputRootBoundary{}, err
 			}
-			return next, nil
+			if err := rejectLexicalOutputRootSymlinks(next); err != nil {
+				return commandOutputRootBoundary{}, err
+			}
+			return commandOutputRootBoundary{path: next, resolved: resolved}, nil
 		}
 		current = next
 	}
@@ -170,75 +217,83 @@ func rejectLexicalOutputRootPath(path string) error {
 }
 
 func trustedCommandOutputRoot(outputAbs string) (string, error) {
+	root, err := trustedCommandOutputRootBoundary(outputAbs)
+	return root.path, err
+}
+
+func trustedCommandOutputRootBoundary(outputAbs string) (commandOutputRootBoundary, error) {
 	workspaceRoot, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("resolve output workspace: %w", err)
+		return commandOutputRootBoundary{}, fmt.Errorf("resolve output workspace: %w", err)
 	}
 	withinWorkspace, err := pathWithinRoot(workspaceRoot, outputAbs)
 	if err != nil {
-		return "", err
+		return commandOutputRootBoundary{}, err
 	}
-	if !withinWorkspace {
-		resolvedWorkspaceRoot, err := filepath.EvalSymlinks(workspaceRoot)
-		if err != nil {
-			return "", fmt.Errorf("resolve output workspace symlinks: %w", err)
-		}
-		aliasedWorkspaceRoot, err := resolveAliasedWorkspaceRoot(outputAbs, resolvedWorkspaceRoot)
-		if err != nil {
-			return "", err
-		}
-		if aliasedWorkspaceRoot == "" {
-			return "", nil
-		}
-		return aliasedWorkspaceRoot, nil
+	resolvedWorkspaceRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return commandOutputRootBoundary{}, fmt.Errorf("resolve output workspace symlinks: %w", err)
 	}
-	return workspaceRoot, nil
+	if withinWorkspace {
+		return commandOutputRootBoundary{path: workspaceRoot, resolved: resolvedWorkspaceRoot}, nil
+	}
+	return resolveAliasedWorkspaceRootBoundary(outputAbs, resolvedWorkspaceRoot)
 }
 
 func trustedCommandOutputRootForRoots(outputAbs string, roots ...string) (string, error) {
+	root, err := trustedCommandOutputRootBoundaryForRoots(outputAbs, roots...)
+	return root.path, err
+}
+
+func trustedCommandOutputRootBoundaryForRoots(outputAbs string, roots ...string) (commandOutputRootBoundary, error) {
 	for _, root := range roots {
-		trustedRoot, err := trustedCommandOutputRootForRoot(outputAbs, root)
+		trustedRoot, err := trustedCommandOutputRootBoundaryForRoot(outputAbs, root)
 		if err != nil {
-			return "", err
+			return commandOutputRootBoundary{}, err
 		}
-		if trustedRoot != "" {
+		if trustedRoot.path != "" {
 			return trustedRoot, nil
 		}
 	}
-	return "", nil
+	return commandOutputRootBoundary{}, nil
 }
 
 func trustedCommandOutputRootForRoot(outputAbs, root string) (string, error) {
+	trustedRoot, err := trustedCommandOutputRootBoundaryForRoot(outputAbs, root)
+	return trustedRoot.path, err
+}
+
+func trustedCommandOutputRootBoundaryForRoot(outputAbs, root string) (commandOutputRootBoundary, error) {
 	trimmedRoot := strings.TrimSpace(root)
 	if trimmedRoot == "" {
-		return "", nil
+		return commandOutputRootBoundary{}, nil
 	}
 	rootAbs, err := filepath.Abs(trimmedRoot)
 	if err != nil {
 		if filepath.IsAbs(outputAbs) && !filepath.IsAbs(trimmedRoot) {
-			return "", nil
+			return commandOutputRootBoundary{}, nil
 		}
-		return "", fmt.Errorf("resolve trusted output workspace: %w", err)
+		return commandOutputRootBoundary{}, fmt.Errorf("resolve trusted output workspace: %w", err)
 	}
 	withinWorkspace, err := pathWithinRoot(rootAbs, outputAbs)
 	if err != nil {
-		return "", err
+		return commandOutputRootBoundary{}, err
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
 	if err != nil {
 		if withinWorkspace {
-			return "", fmt.Errorf("resolve trusted output workspace: %w", err)
+			return commandOutputRootBoundary{}, fmt.Errorf("resolve trusted output workspace: %w", err)
 		}
-		return "", nil
+		return commandOutputRootBoundary{}, nil
 	}
 	if withinWorkspace {
 		if err := validateTrustedCommandOutputRoot(resolvedRoot); err != nil {
-			return "", err
+			return commandOutputRootBoundary{}, err
 		}
-		return rootAbs, nil
+		return commandOutputRootBoundary{path: rootAbs, resolved: resolvedRoot}, nil
 	}
 
-	return resolveAliasedWorkspaceRoot(outputAbs, resolvedRoot)
+	return resolveAliasedWorkspaceRootBoundary(outputAbs, resolvedRoot)
 }
 
 func validateTrustedCommandOutputRoot(rootAbs string) error {
@@ -259,25 +314,30 @@ func validateTrustedCommandOutputRoot(rootAbs string) error {
 }
 
 func resolveAliasedWorkspaceRoot(outputAbs, workspaceRoot string) (string, error) {
+	root, err := resolveAliasedWorkspaceRootBoundary(outputAbs, workspaceRoot)
+	return root.path, err
+}
+
+func resolveAliasedWorkspaceRootBoundary(outputAbs, workspaceRoot string) (commandOutputRootBoundary, error) {
 	current := filepath.Dir(filepath.Clean(outputAbs))
-	var aliasRoot string
+	var aliasRoot commandOutputRootBoundary
 	for {
 		_, err := os.Lstat(current)
 		switch {
 		case err == nil:
 			resolvedCurrent, err := filepath.EvalSymlinks(current)
 			if err != nil {
-				return "", err
+				return commandOutputRootBoundary{}, err
 			}
 			withinWorkspace, err := pathWithinRoot(workspaceRoot, resolvedCurrent)
 			if err != nil {
-				return "", err
+				return commandOutputRootBoundary{}, err
 			}
 			if withinWorkspace {
-				aliasRoot = current
+				aliasRoot = commandOutputRootBoundary{path: current, resolved: resolvedCurrent}
 			}
 		case !os.IsNotExist(err):
-			return "", err
+			return commandOutputRootBoundary{}, err
 		}
 
 		parent := filepath.Dir(current)
@@ -372,37 +432,6 @@ func rejectAmbiguousParentTraversal(path string) error {
 		}
 	}
 	return nil
-}
-
-func ensureCommandOutputParent(rootDir, outputPath string) error {
-	rootAbs, err := filepath.Abs(rootDir)
-	if err != nil {
-		return fmt.Errorf("resolve output root: %w", err)
-	}
-	outputAbs, err := filepath.Abs(outputPath)
-	if err != nil {
-		return fmt.Errorf("resolve output path: %w", err)
-	}
-	rel, err := filepath.Rel(rootAbs, outputAbs)
-	if err != nil {
-		return fmt.Errorf("compute output path: %w", err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("output path escapes workspace: %s", outputPath)
-	}
-
-	parent := filepath.Dir(outputAbs)
-	if err := rejectSymlinkedOutputParent(rootAbs, parent); err != nil {
-		return err
-	}
-	if err := mkdirAllCommandOutputParentFn(parent, 0o750); err != nil {
-		return err
-	}
-	return rejectSymlinkedOutputParent(rootAbs, parent)
-}
-
-func rejectSymlinkedOutputParent(rootAbs, parentAbs string) error {
-	return rejectSymlinkedPath(rootAbs, parentAbs, "output parent escapes workspace: %s", "output parent contains symlink: %s")
 }
 
 func rejectSymlinkedOutputRoot(rootAbs, parentAbs string) error {

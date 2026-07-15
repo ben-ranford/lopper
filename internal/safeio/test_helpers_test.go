@@ -119,6 +119,8 @@ type fakeRoot struct {
 	Root
 	open     func(name string) (File, error)
 	openFile func(name string, flag int, perm os.FileMode) (File, error)
+	lstat    func(name string) (fs.FileInfo, error)
+	mkdirAll func(name string, perm os.FileMode) error
 	rename   func(oldName, newName string) error
 	remove   func(name string) error
 	close    func() error
@@ -136,6 +138,20 @@ func (r *fakeRoot) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 		return r.openFile(name, flag, perm)
 	}
 	return r.Root.OpenFile(name, flag, perm)
+}
+
+func (r *fakeRoot) Lstat(name string) (fs.FileInfo, error) {
+	if r.lstat != nil {
+		return r.lstat(name)
+	}
+	return r.Root.Lstat(name)
+}
+
+func (r *fakeRoot) MkdirAll(name string, perm os.FileMode) error {
+	if r.mkdirAll != nil {
+		return r.mkdirAll(name, perm)
+	}
+	return r.Root.MkdirAll(name, perm)
 }
 
 func (r *fakeRoot) Rename(oldName, newName string) error {

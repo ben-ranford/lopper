@@ -18,6 +18,8 @@ type FileSystem interface {
 type Root interface {
 	Open(name string) (File, error)
 	OpenFile(name string, flag int, perm os.FileMode) (File, error)
+	Lstat(name string) (fs.FileInfo, error)
+	MkdirAll(name string, perm os.FileMode) error
 	Rename(oldName, newName string) error
 	Remove(name string) error
 	Close() error
@@ -62,6 +64,14 @@ func (r *osRoot) Open(name string) (File, error) {
 
 func (r *osRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
 	return r.root.OpenFile(name, flag, perm)
+}
+
+func (r *osRoot) Lstat(name string) (fs.FileInfo, error) {
+	return r.root.Lstat(name)
+}
+
+func (r *osRoot) MkdirAll(name string, perm os.FileMode) error {
+	return r.root.MkdirAll(name, perm)
 }
 
 func (r *osRoot) Rename(oldName, newName string) error {
