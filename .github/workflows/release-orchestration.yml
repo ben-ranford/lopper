@@ -157,17 +157,16 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  publish-ghcr-amd64:
+  prepare-ghcr-amd64:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
 
       - name: Compute image metadata
         id: image_meta
@@ -200,14 +199,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Log in to GHCR
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push amd64 release image
+      - name: Build amd64 OCI publication payload
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -221,23 +214,66 @@ jobs:
             org.opencontainers.image.created=${{ steps.image_meta.outputs.build_date }}
             org.opencontainers.image.revision=${{ inputs.source_sha || github.sha }}
             org.opencontainers.image.version=${{ inputs.tag }}
-          push: true
+          push: false
           platforms: linux/amd64
           tags: ${{ steps.image_tags.outputs.tags }}
+          outputs: type=oci,dest=${{ runner.temp }}/ghcr-amd64-publication/layout,tar=false
           provenance: false
-          sbom: true
+          sbom: false
 
-  publish-ghcr-arm64:
+      - name: Prepare amd64 publication metadata
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          BUILD_COMMIT: ${{ steps.image_meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.image_meta.outputs.build_date }}
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
+        run: |
+          set -euo pipefail
+          payload_root="${RUNNER_TEMP}/ghcr-amd64-publication"
+          install -m 0600 image-tags.txt "${payload_root}/image-tags.txt"
+          jq -n \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg image_name "${IMAGE_NAME}" \
+            --arg platform "linux/amd64" \
+            --arg tag "${RELEASE_TAG}" \
+            --arg build_commit "${BUILD_COMMIT}" \
+            --arg build_date "${BUILD_DATE}" \
+            --arg build_channel "${BUILD_CHANNEL}" \
+            '{
+              source_sha: $source_sha,
+              image_name: $image_name,
+              platform: $platform,
+              tag: $tag,
+              build_commit: $build_commit,
+              build_date: $build_date,
+              build_channel: $build_channel
+            }' > "${payload_root}/publication.json"
+          (
+            cd "${payload_root}"
+            find -P . -type f ! -path './SHA256SUMS' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 -r sha256sum
+          ) > "${payload_root}/SHA256SUMS"
+
+      - name: Upload amd64 OCI publication payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ghcr-amd64-publication-payload
+          path: ${{ runner.temp }}/ghcr-amd64-publication
+
+  prepare-ghcr-arm64:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
 
       - name: Compute image metadata
         id: image_meta
@@ -270,14 +306,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Log in to GHCR
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push arm64 release image
+      - name: Build arm64 OCI publication payload
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -291,16 +321,335 @@ jobs:
             org.opencontainers.image.created=${{ steps.image_meta.outputs.build_date }}
             org.opencontainers.image.revision=${{ inputs.source_sha || github.sha }}
             org.opencontainers.image.version=${{ inputs.tag }}
-          push: true
+          push: false
           platforms: linux/arm64
           tags: ${{ steps.image_tags.outputs.tags }}
+          outputs: type=oci,dest=${{ runner.temp }}/ghcr-arm64-publication/layout,tar=false
+          provenance: false
+          sbom: false
+
+      - name: Prepare arm64 publication metadata
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          BUILD_COMMIT: ${{ steps.image_meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.image_meta.outputs.build_date }}
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
+        run: |
+          set -euo pipefail
+          payload_root="${RUNNER_TEMP}/ghcr-arm64-publication"
+          install -m 0600 image-tags.txt "${payload_root}/image-tags.txt"
+          jq -n \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg image_name "${IMAGE_NAME}" \
+            --arg platform "linux/arm64" \
+            --arg tag "${RELEASE_TAG}" \
+            --arg build_commit "${BUILD_COMMIT}" \
+            --arg build_date "${BUILD_DATE}" \
+            --arg build_channel "${BUILD_CHANNEL}" \
+            '{
+              source_sha: $source_sha,
+              image_name: $image_name,
+              platform: $platform,
+              tag: $tag,
+              build_commit: $build_commit,
+              build_date: $build_date,
+              build_channel: $build_channel
+            }' > "${payload_root}/publication.json"
+          (
+            cd "${payload_root}"
+            find -P . -type f ! -path './SHA256SUMS' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 -r sha256sum
+          ) > "${payload_root}/SHA256SUMS"
+
+      - name: Upload arm64 OCI publication payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ghcr-arm64-publication-payload
+          path: ${{ runner.temp }}/ghcr-arm64-publication
+
+  publish-ghcr-images:
+    needs:
+      - prepare-ghcr-amd64
+      - prepare-ghcr-arm64
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Download amd64 OCI publication payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ghcr-amd64-publication-payload
+          path: ${{ runner.temp }}/ghcr-amd64-publication
+
+      - name: Download arm64 OCI publication payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ghcr-arm64-publication-payload
+          path: ${{ runner.temp }}/ghcr-arm64-publication
+
+      - name: Validate OCI publication payloads
+        id: validate
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          EXPECTED_TAG: ${{ inputs.tag }}
+          EXPECTED_BUILD_CHANNEL: ${{ inputs.build_channel }}
+        run: |
+          set -euo pipefail
+          expected_source_sha="${EXPECTED_SOURCE_SHA}"
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          expected_image_name="ghcr.io/${owner}/lopper"
+
+          if [[ ! "${expected_source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid immutable source SHA in OCI publication payloads."
+            exit 1
+          fi
+
+          validate_payload() {
+            local architecture="$1"
+            local platform="$2"
+            local tag_suffix="-$1"
+            local payload_root="${RUNNER_TEMP}/ghcr-${architecture}-publication"
+            local layout_root="${payload_root}/layout"
+            local metadata_file="${payload_root}/publication.json"
+            local tags_file="${payload_root}/image-tags.txt"
+            local checksums_file="${payload_root}/SHA256SUMS"
+            local required
+            for required in \
+              "${layout_root}" \
+              "${layout_root}/blobs/sha256" \
+              "${layout_root}/oci-layout" \
+              "${layout_root}/index.json" \
+              "${metadata_file}" \
+              "${tags_file}" \
+              "${checksums_file}"; do
+              if [ ! -e "${required}" ]; then
+                echo "::error::Missing ${architecture} publication payload path: ${required}."
+                exit 1
+              fi
+            done
+            if find -P "${payload_root}" ! -type d ! -type f -print -quit | grep -q .; then
+              echo "::error::${architecture} publication payload must contain only regular files and directories."
+              exit 1
+            fi
+
+            local file_count
+            local total_bytes
+            file_count="$(find -P "${payload_root}" -type f | wc -l | tr -d '[:space:]')"
+            total_bytes="$(find -P "${payload_root}" -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
+            if [ "${file_count}" -lt 6 ] || [ "${file_count}" -gt 256 ] || [ "${total_bytes}" -gt 536870912 ]; then
+              echo "::error::${architecture} artifact payload exceeds file-count or size bounds."
+              exit 1
+            fi
+
+            local payload_path
+            local relative_path
+            while IFS= read -r payload_path; do
+              relative_path="${payload_path#"${payload_root}/"}"
+              case "${relative_path}" in
+                SHA256SUMS|publication.json|image-tags.txt|layout/oci-layout|layout/index.json|layout/manifest.json) ;;
+                layout/blobs/sha256/*)
+                  if [[ ! "${relative_path##*/}" =~ ^[0-9a-f]{64}$ ]]; then
+                    echo "::error::Unexpected ${architecture} OCI blob path: ${relative_path}."
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "::error::Unexpected ${architecture} publication payload path: ${relative_path}."
+                  exit 1
+                  ;;
+              esac
+            done < <(find -P "${payload_root}" -type f -print)
+            while IFS= read -r payload_path; do
+              relative_path="${payload_path#"${payload_root}/"}"
+              case "${relative_path}" in
+                "${payload_root}"|layout|layout/blobs|layout/blobs/sha256) ;;
+                *)
+                  echo "::error::Unexpected ${architecture} publication payload directory: ${relative_path}."
+                  exit 1
+                  ;;
+              esac
+            done < <(find -P "${payload_root}" -type d -print)
+
+            if [ "$(stat -c '%s' "${metadata_file}")" -gt 16384 ] \
+              || [ "$(stat -c '%s' "${tags_file}")" -gt 16384 ] \
+              || [ "$(stat -c '%s' "${checksums_file}")" -gt 32768 ]; then
+              echo "::error::${architecture} publication metadata exceeds size bounds."
+              exit 1
+            fi
+            local computed_checksums="${RUNNER_TEMP}/ghcr-${architecture}-computed-SHA256SUMS"
+            (
+              cd "${payload_root}"
+              find -P . -type f ! -path './SHA256SUMS' -print0 \
+                | LC_ALL=C sort -z \
+                | xargs -0 -r sha256sum
+            ) > "${computed_checksums}"
+            if ! cmp -s "${checksums_file}" "${computed_checksums}" \
+              || ! (cd "${payload_root}" && sha256sum --check --strict SHA256SUMS >/dev/null); then
+              echo "::error::${architecture} publication payload checksum validation failed."
+              exit 1
+            fi
+            rm -f "${computed_checksums}"
+            if ! jq -e \
+              --arg source_sha "${expected_source_sha}" \
+              --arg image_name "${expected_image_name}" \
+              --arg platform "${platform}" \
+              --arg tag "${EXPECTED_TAG}" \
+              --arg build_channel "${EXPECTED_BUILD_CHANNEL}" \
+              'type == "object"
+                and length == 7
+                and .source_sha == $source_sha
+                and .image_name == $image_name
+                and .platform == $platform
+                and .tag == $tag
+                and .build_commit == ($source_sha[0:12])
+                and (.build_date | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                and .build_channel == $build_channel' "${metadata_file}" >/dev/null; then
+              echo "::error::${architecture} publication metadata does not match immutable release inputs."
+              exit 1
+            fi
+
+            local image_ref
+            local image_tag
+            local tag_count=0
+            local -A seen_tags=()
+            while IFS= read -r image_ref; do
+              if [[ "${image_ref}" != "${expected_image_name}:"* ]]; then
+                echo "::error::unexpected image reference in ${architecture} publication payload."
+                exit 1
+              fi
+              image_tag="${image_ref#"${expected_image_name}:"}"
+              if [[ ! "${image_tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || [[ "${image_tag}" != *"${tag_suffix}" ]]; then
+                echo "::error::unexpected image reference in ${architecture} publication payload."
+                exit 1
+              fi
+              if [[ -n "${seen_tags[${image_ref}]:-}" ]]; then
+                echo "::error::Duplicate ${architecture} publication image reference."
+                exit 1
+              fi
+              seen_tags["${image_ref}"]=1
+              tag_count=$((tag_count + 1))
+            done < "${tags_file}"
+            if [ "${tag_count}" -lt 1 ] || [ "${tag_count}" -gt 16 ]; then
+              echo "::error::${architecture} publication tag count is outside bounds."
+              exit 1
+            fi
+
+            if ! jq -e '.imageLayoutVersion == "1.0.0"' "${layout_root}/oci-layout" >/dev/null \
+              || ! jq -e '.schemaVersion == 2 and (.manifests | type == "array")' "${layout_root}/index.json" >/dev/null; then
+              echo "::error::Invalid ${architecture} OCI image layout."
+              exit 1
+            fi
+            local blob
+            local expected_digest
+            local actual_digest
+            while IFS= read -r blob; do
+              expected_digest="$(basename "${blob}")"
+              actual_digest="$(sha256sum "${blob}" | cut -d ' ' -f 1)"
+              if [ "${actual_digest}" != "${expected_digest}" ]; then
+                echo "::error::${architecture} OCI blob digest mismatch."
+                exit 1
+              fi
+            done < <(find -P "${layout_root}/blobs/sha256" -type f -print)
+
+            local -a image_digests
+            mapfile -t image_digests < <(jq -r \
+              --arg architecture "${architecture}" \
+              '.manifests[]
+                | select(.platform.os == "linux" and .platform.architecture == $architecture)
+                | select((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest")
+                | .digest' "${layout_root}/index.json")
+            if [ "${#image_digests[@]}" -ne 1 ] || [[ ! "${image_digests[0]}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::${architecture} OCI layout must contain exactly one ${platform} image."
+              exit 1
+            fi
+
+            local image_digest="${image_digests[0]}"
+            local manifest_file="${layout_root}/blobs/sha256/${image_digest#sha256:}"
+            local config_digest
+            config_digest="$(jq -r '.config.digest // empty' "${manifest_file}")"
+            if [[ ! "${config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::${architecture} OCI image config digest is invalid."
+              exit 1
+            fi
+            local config_file="${layout_root}/blobs/sha256/${config_digest#sha256:}"
+            if ! jq -e \
+              --arg source_sha "${expected_source_sha}" \
+              --arg release_tag "${EXPECTED_TAG}" \
+              --arg architecture "${architecture}" \
+              '.architecture == $architecture
+                and .os == "linux"
+                and .config.Labels["org.opencontainers.image.revision"] == $source_sha
+                and .config.Labels["org.opencontainers.image.version"] == $release_tag
+                and ((.config.OnBuild // []) | length == 0)' "${config_file}" >/dev/null; then
+              echo "::error::${architecture} OCI image identity or OnBuild policy is invalid."
+              exit 1
+            fi
+
+            chmod -R a-w "${payload_root}"
+            {
+              echo "${architecture}_digest=${image_digest}"
+              echo "${architecture}_tags<<EOF_${architecture}"
+              cat "${tags_file}"
+              echo "EOF_${architecture}"
+            } >> "${GITHUB_OUTPUT}"
+          }
+
+          validate_payload amd64 linux/amd64
+          validate_payload arm64 linux/arm64
+
+      - name: Prepare trusted image promotion Dockerfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          for architecture in amd64 arm64; do
+            promotion_root="${RUNNER_TEMP}/ghcr-${architecture}-promotion"
+            mkdir -p "${promotion_root}"
+            printf '%s\n' 'FROM prepared' > "${promotion_root}/Dockerfile"
+            chmod 0444 "${promotion_root}/Dockerfile"
+          done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish amd64 release image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ runner.temp }}/ghcr-amd64-promotion
+          file: ${{ runner.temp }}/ghcr-amd64-promotion/Dockerfile
+          build-contexts: prepared=oci-layout://${{ runner.temp }}/ghcr-amd64-publication/layout@${{ steps.validate.outputs.amd64_digest }}
+          platforms: linux/amd64
+          tags: ${{ steps.validate.outputs.amd64_tags }}
+          push: true
+          provenance: false
+          sbom: true
+
+      - name: Publish arm64 release image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ runner.temp }}/ghcr-arm64-promotion
+          file: ${{ runner.temp }}/ghcr-arm64-promotion/Dockerfile
+          build-contexts: prepared=oci-layout://${{ runner.temp }}/ghcr-arm64-publication/layout@${{ steps.validate.outputs.arm64_digest }}
+          platforms: linux/arm64
+          tags: ${{ steps.validate.outputs.arm64_tags }}
+          push: true
           provenance: false
           sbom: true
 
   publish-ghcr-manifest:
     needs:
-      - publish-ghcr-amd64
-      - publish-ghcr-arm64
+      - publish-ghcr-images
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -309,8 +658,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
 
       - name: Compute image name
         id: image
