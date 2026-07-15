@@ -30,6 +30,20 @@ func TestDetectLockfileDriftPropagatesGitContextErrors(t *testing.T) {
 	}
 }
 
+func TestDetectLockfileDriftPlainDirectoryWithoutGitBinary(t *testing.T) {
+	original := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) { return "", errors.New(gitExecutableNotFoundErr) }
+	t.Cleanup(func() { resolveGitBinaryPathFn = original })
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+
+	for _, stopOnFirst := range []bool{false, true} {
+		warnings, err := detectLockfileDrift(context.Background(), repo, stopOnFirst)
+		assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json exists but no matching lockfile", "npm install")
+	}
+}
+
 func TestDetectLockfileDriftStopOnFirstBatchesGitContextAcrossDirectories(t *testing.T) {
 	repo := t.TempDir()
 	const candidateDirs = gitPathspecBatchPaths/2 + 1
