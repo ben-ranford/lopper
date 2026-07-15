@@ -19,8 +19,10 @@ func TestDetectLockfileDriftPropagatesGitContextErrors(t *testing.T) {
 	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
 	writeFakeGitMode(t, repo, "lsfail")
 
-	_, err := detectLockfileDrift(context.Background(), repo, false)
-	if err == nil || !strings.Contains(err.Error(), "ls-files") {
-		t.Fatalf("expected ls-files error, got %v", err)
+	for _, stopOnFirst := range []bool{false, true} {
+		_, err := detectLockfileDrift(context.Background(), repo, stopOnFirst)
+		if err == nil || !strings.Contains(err.Error(), "ls-files") {
+			t.Fatalf("expected ls-files error with stopOnFirst=%v, got %v", stopOnFirst, err)
+		}
 	}
 }

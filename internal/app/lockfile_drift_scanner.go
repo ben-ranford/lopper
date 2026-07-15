@@ -84,6 +84,43 @@ func scanLockfileDrift(ctx context.Context, repoPath string, gitContext lockfile
 	return warnings, nil
 }
 
+func scanLockfileDriftStopOnFirst(ctx context.Context, repoPath string, rules []lockfileRule) ([]string, error) {
+	warnings := make([]string, 0, 1)
+	hasGitContext := isGitWorktree(ctx, repoPath)
+	state := lockfileWalkState{
+		repoPath: repoPath,
+		visit: func(snapshot lockfileDirSnapshot) error {
+			gitContext := lockfileGitContext{}
+			if hasGitContext {
+				candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, rules)
+				if err != nil {
+					return err
+				}
+				gitContext, err = collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
+				if err != nil {
+					return err
+				}
+			}
+			findings, err := evaluateLockfileDirWithRules(snapshot, gitContext, rules)
+			if err != nil {
+				return err
+			}
+			if len(findings) == 0 {
+				return nil
+			}
+			warnings = append(warnings, buildLockfileDriftWarning(findings[0]))
+			return fs.SkipAll
+		},
+	}
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		return processLockfileDir(ctx, path, entry, walkErr, state)
+	})
+	if err != nil && !errors.Is(err, fs.SkipAll) {
+		return nil, err
+	}
+	return warnings, nil
+}
+
 func collectLockfileManifestChangeCandidatePaths(ctx context.Context, repoPath string, rules []lockfileRule) ([]string, error) {
 	candidates := make([]string, 0, len(rules))
 	seen := make(map[string]struct{}, len(rules))

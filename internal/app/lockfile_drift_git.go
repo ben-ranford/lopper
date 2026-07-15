@@ -43,6 +43,10 @@ func collectLockfileGitContext(ctx context.Context, repoPath string, rules []loc
 	if err != nil {
 		return lockfileGitContext{}, err
 	}
+	return collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
+}
+
+func collectLockfileGitContextForPaths(ctx context.Context, repoPath string, candidatePaths []string) (lockfileGitContext, error) {
 	filteredPaths, err := gitActiveFilterPathDrivers(ctx, repoPath, candidatePaths)
 	if err != nil {
 		return lockfileGitContext{}, err

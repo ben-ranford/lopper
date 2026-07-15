@@ -40,9 +40,12 @@ func detectLockfileDriftWithFeatures(ctx context.Context, repoPath string, stopO
 		return nil, err
 	}
 	rules := activeLockfileRules(features)
+	if stopOnFirst {
+		return scanLockfileDriftStopOnFirst(ctx, normalizedPath, rules)
+	}
 	gitContext, err := collectLockfileGitContextFn(ctx, normalizedPath, rules)
 	if err != nil {
 		return nil, err
 	}
-	return scanLockfileDrift(ctx, normalizedPath, gitContext, stopOnFirst, rules)
+	return scanLockfileDrift(ctx, normalizedPath, gitContext, false, rules)
 }

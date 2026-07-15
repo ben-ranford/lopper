@@ -1072,6 +1072,7 @@ func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
 	writeFile(t, filepath.Join(repo, poetryLockName), "metadata = {}\n")
+	initGitRepo(t, repo)
 
 	originalReadFileUnder := readFileUnderFn
 	t.Cleanup(func() {
@@ -1085,12 +1086,14 @@ func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
 		return safeio.ReadFileUnder(rootDir, targetPath)
 	}
 
-	_, err := detectLockfileDrift(context.Background(), repo, false)
-	if err == nil {
-		t.Fatalf("expected read error")
-	}
-	if !strings.Contains(err.Error(), "read pyproject.toml for tool.poetry lockfile drift detection") {
-		t.Fatalf("expected matcher read error context, got %v", err)
+	for _, stopOnFirst := range []bool{false, true} {
+		_, err := detectLockfileDrift(context.Background(), repo, stopOnFirst)
+		if err == nil {
+			t.Fatalf("expected read error with stopOnFirst=%v", stopOnFirst)
+		}
+		if !strings.Contains(err.Error(), "read pyproject.toml for tool.poetry lockfile drift detection") {
+			t.Fatalf("expected matcher read error context with stopOnFirst=%v, got %v", stopOnFirst, err)
+		}
 	}
 }
 
