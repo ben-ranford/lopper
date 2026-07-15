@@ -40,7 +40,11 @@ type gitFilterPathDriver struct {
 }
 
 func collectLockfileGitContext(ctx context.Context, repoPath string, rules []lockfileRule) (lockfileGitContext, error) {
-	if !isGitWorktree(ctx, repoPath) {
+	isWorktree, err := isGitWorktree(ctx, repoPath)
+	if err != nil {
+		return lockfileGitContext{}, err
+	}
+	if !isWorktree {
 		return lockfileGitContext{}, nil
 	}
 
@@ -94,16 +98,28 @@ func gitChangedFilesForPaths(ctx context.Context, repoPath string, paths []strin
 	return changed, nil
 }
 
-func isGitWorktree(ctx context.Context, repoPath string) bool {
+func isGitWorktree(ctx context.Context, repoPath string) (bool, error) {
 	command, err := gitCommandContext(ctx, repoPath, gitRevParseSubcommand, "--is-inside-work-tree")
 	if err != nil {
-		return false
+		return false, err
 	}
-	output, err := command.Output()
+	command.Env = append(command.Env, "LC_ALL=C")
+	output, err := command.CombinedOutput()
 	if err != nil {
-		return false
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 && bytes.Contains(output, []byte("not a git repository")) {
+			return false, nil
+		}
+		return false, fmt.Errorf("run git rev-parse --is-inside-work-tree: %w", err)
 	}
-	return strings.TrimSpace(string(output)) == "true"
+	switch strings.TrimSpace(string(output)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("run git rev-parse --is-inside-work-tree: unexpected output %q", strings.TrimSpace(string(output)))
+	}
 }
 
 func gitTrackedChangesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
@@ -205,7 +221,7 @@ func gitPathspecBatches(paths []string) [][]string {
 	start := 0
 	batchBytes := 0
 	for index, path := range paths {
-		pathBytes := len(gitLiteralPathPrefix) + len(path) + 1
+		pathBytes := gitPathspecArgBytes(path)
 		if index > start && (index-start >= gitPathspecBatchPaths || batchBytes+pathBytes > gitPathspecBatchBytes) {
 			batches = append(batches, paths[start:index])
 			start = index
@@ -214,6 +230,10 @@ func gitPathspecBatches(paths []string) [][]string {
 		batchBytes += pathBytes
 	}
 	return append(batches, paths[start:])
+}
+
+func gitPathspecArgBytes(path string) int {
+	return len(gitLiteralPathPrefix) + len(path) + 1
 }
 
 func gitLiteralPathspecs(paths []string) []string {

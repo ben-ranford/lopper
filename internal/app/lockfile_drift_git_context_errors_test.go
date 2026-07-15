@@ -91,6 +91,71 @@ func TestDetectLockfileDriftStopOnFirstPropagatesGitDetectionErrors(t *testing.T
 	})
 }
 
+func TestGitWorktreeDetectionDistinguishesFalseAndMalformedResults(t *testing.T) {
+	cases := []struct {
+		name    string
+		output  string
+		wantErr bool
+	}{
+		{name: "explicit false", output: "false\n"},
+		{name: "malformed", output: "indeterminate\n", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			originalResolve := resolveGitBinaryPathFn
+			originalExec := execGitCommandContextFn
+			resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+			execGitCommandContextFn = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
+				return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' \"$1\"", "git-output", tc.output), nil
+			}
+			t.Cleanup(func() {
+				resolveGitBinaryPathFn = originalResolve
+				execGitCommandContextFn = originalExec
+			})
+
+			inside, err := isGitWorktree(context.Background(), t.TempDir())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("isGitWorktree error = %v, wantErr=%v", err, tc.wantErr)
+			}
+			if inside {
+				t.Fatal("expected false worktree result")
+			}
+		})
+	}
+}
+
+func TestLockfileGitSnapshotBatchHonorsLimitsAndDeduplicates(t *testing.T) {
+	if batches := gitPathspecBatches(nil); len(batches) != 0 {
+		t.Fatalf("expected no pathspec batches for an empty input, got %#v", batches)
+	}
+
+	snapshot := lockfileDirSnapshot{relDir: "pkg"}
+	batch := lockfileGitSnapshotBatch{}
+	batch.add(snapshot, []string{"pkg/package.json", "pkg/package.json"})
+	if len(batch.candidatePaths) != 1 {
+		t.Fatalf("expected duplicate candidate to be stored once, got %#v", batch.candidatePaths)
+	}
+	if batch.wouldOverflow([]string{"pkg/package.json"}) {
+		t.Fatal("expected an already-buffered candidate not to consume another batch slot")
+	}
+
+	batch.snapshots = make([]lockfileDirSnapshot, lockfileGitBatchSnapshots)
+	if !batch.wouldOverflow(nil) {
+		t.Fatal("expected snapshot count cap to flush the batch")
+	}
+	batch.snapshots = []lockfileDirSnapshot{snapshot}
+	batch.candidatePaths = make([]string, gitPathspecBatchPaths)
+	if !batch.wouldOverflow([]string{"pkg/package-lock.json"}) {
+		t.Fatal("expected candidate count cap to flush the batch")
+	}
+	batch.candidatePaths = nil
+	batch.candidatePathBytes = gitPathspecBatchBytes
+	if !batch.wouldOverflow([]string{"pkg/package-lock.json"}) {
+		t.Fatal("expected candidate byte cap to flush the batch")
+	}
+}
+
 func captureLockfileGitCommandGroups(t *testing.T) map[string]int {
 	t.Helper()
 

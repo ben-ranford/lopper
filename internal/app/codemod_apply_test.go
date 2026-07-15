@@ -294,6 +294,18 @@ func TestGitChangedFilesForCodemodPropagatesGitErrors(t *testing.T) {
 	}
 }
 
+func TestGitChangedFilesForCodemodPropagatesWorktreeDetectionError(t *testing.T) {
+	originalResolve := resolveGitBinaryPathFn
+	forcedErr := errors.New("forced codemod worktree detection failure")
+	resolveGitBinaryPathFn = func() (string, error) { return "", forcedErr }
+	t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
+
+	_, _, err := gitChangedFilesForCodemod(context.Background(), t.TempDir())
+	if !errors.Is(err, forcedErr) {
+		t.Fatalf("expected codemod worktree detection error, got %v", err)
+	}
+}
+
 func TestEnsureCleanWorktreeForCodemodPreservesBenignCleanFilterSemantics(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")

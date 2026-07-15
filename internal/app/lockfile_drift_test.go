@@ -807,8 +807,6 @@ func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *te
 	triggerManifest := filepath.Join(repo, "m-trigger", pyprojectManifestName)
 	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\n")
 	writeFile(t, filepath.Join(repo, "m-trigger", poetryLockName), "# lock\n")
-	laterDir := filepath.Join(repo, "z-later")
-	writeFile(t, filepath.Join(laterDir, "README.md"), "removed after the earlier candidate is buffered\n")
 	initGitRepo(t, repo)
 	writeFile(t, earlyManifest, demoPackageJSONUpdated)
 
@@ -817,9 +815,14 @@ func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *te
 	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
 		if targetPath == triggerManifest {
 			triggeredLaterWalkError = true
-			if err := os.RemoveAll(laterDir); err != nil {
+			content, err := originalReadFileUnder(rootDir, targetPath)
+			if err != nil {
 				return nil, err
 			}
+			if err := os.RemoveAll(filepath.Dir(triggerManifest)); err != nil {
+				return nil, err
+			}
+			return content, nil
 		}
 		return originalReadFileUnder(rootDir, targetPath)
 	}
@@ -834,6 +837,49 @@ func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *te
 	}
 	if !triggeredLaterWalkError {
 		t.Fatal("expected the bounded candidate batch to encounter the later walk error before flushing")
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstFlushesFinalGitBatch(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	if err != nil {
+		t.Fatalf("detect lockfile drift: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "package.json changed while no matching lockfile changed") {
+		t.Fatalf("expected final batch manifest drift warning, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstPropagatesFinalBatchEvaluationError(t *testing.T) {
+	repo := t.TempDir()
+	manifest := filepath.Join(repo, pyprojectManifestName)
+	writeFile(t, manifest, "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
+	initGitRepo(t, repo)
+
+	originalReadFileUnder := readFileUnderFn
+	forcedErr := errors.New("forced final batch evaluation failure")
+	manifestReads := 0
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if targetPath == manifest {
+			manifestReads++
+			if manifestReads == 2 {
+				return nil, forcedErr
+			}
+		}
+		return originalReadFileUnder(rootDir, targetPath)
+	}
+	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+
+	_, err := detectLockfileDrift(context.Background(), repo, true)
+	if !errors.Is(err, forcedErr) {
+		t.Fatalf("expected final batch evaluation error, got %v", err)
 	}
 }
 
@@ -899,7 +945,11 @@ func TestGitHelperErrors(t *testing.T) {
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
 		t.Fatalf("expected untracked files command to fail outside git repo")
 	}
-	if isGitWorktree(context.Background(), repo) {
+	isWorktree, err := isGitWorktree(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect non-git worktree: %v", err)
+	}
+	if isWorktree {
 		t.Fatalf("expected non-git temp dir to not be worktree")
 	}
 }
@@ -911,7 +961,11 @@ func TestGitHelperNilContextErrors(t *testing.T) {
 		t.Fatalf("expected untracked files command with nil context to fail outside git repo")
 	}
 	//nolint:staticcheck // Deliberate nil context validation coverage.
-	if isGitWorktree(nil, repo) {
+	isWorktree, err := isGitWorktree(nil, repo)
+	if err != nil {
+		t.Fatalf("detect non-git worktree with nil context: %v", err)
+	}
+	if isWorktree {
 		t.Fatalf("expected non-git temp dir to not be worktree with nil context")
 	}
 }
@@ -922,8 +976,8 @@ func TestGitHelpersWhenGitUnavailable(t *testing.T) {
 	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
-	if isGitWorktree(context.Background(), repo) {
-		t.Fatalf("expected git worktree=false when git is unavailable")
+	if _, err := isGitWorktree(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
+		t.Fatalf("expected worktree detection error for missing git executable, got %v", err)
 	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected untracked files error for missing git executable, got %v", err)
@@ -936,7 +990,11 @@ func TestGitHelpersFallbackExecutableBranch(t *testing.T) {
 	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
-	if isGitWorktree(context.Background(), repo) {
+	isWorktree, err := isGitWorktree(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect non-git worktree with fallback git: %v", err)
+	}
+	if isWorktree {
 		t.Fatalf("expected non-git temp dir to not be worktree when fallback git is used")
 	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {

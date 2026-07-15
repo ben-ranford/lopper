@@ -178,7 +178,11 @@ func ensureCleanWorktreeForCodemod(ctx context.Context, repoPath string, allowDi
 }
 
 func gitChangedFilesForCodemod(ctx context.Context, repoPath string) (map[string]struct{}, bool, error) {
-	if !isGitWorktree(ctx, repoPath) {
+	isWorktree, err := isGitWorktree(ctx, repoPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if !isWorktree {
 		return nil, false, nil
 	}
 
