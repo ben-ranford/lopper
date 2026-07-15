@@ -1311,10 +1311,7 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
 
-	architectures := []struct {
-		name     string
-		platform string
-	}{
+	architectures := []ghcrArchitecture{
 		{name: "amd64", platform: "linux/amd64"},
 		{name: "arm64", platform: "linux/arm64"},
 	}
@@ -1322,40 +1319,59 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 		architecture := architecture
 		t.Run(architecture.name, func(t *testing.T) {
 			t.Parallel()
-
-			prepareJobName := "prepare-ghcr-" + architecture.name
-			prepare := workflowJobByName(t, workflow.Jobs, prepareJobName)
-			assertWorkflowJobPermissions(t, prepare, prepareJobName, map[string]string{"contents": "read"})
-			assertGHCRJobDoesNotReference(t, prepare, "secrets.GITHUB_TOKEN", prepareJobName)
-			checkout := workflowStepByName(t, workflow.Jobs, prepareJobName, "Checkout")
-			if checkout.With["persist-credentials"] != "false" {
-				t.Fatalf("%s checkout persist-credentials = %q, want false", prepareJobName, checkout.With["persist-credentials"])
-			}
-
-			build := workflowStepByName(t, workflow.Jobs, prepareJobName, "Build "+architecture.name+" OCI publication payload")
-			assertWorkflowStringValues(t, []workflowStringValue{
-				{label: prepareJobName + " registry push", got: build.With["push"], want: "false"},
-				{label: prepareJobName + " deferred provenance", got: build.With["provenance"], want: "false"},
-				{label: prepareJobName + " deferred SBOM", got: build.With["sbom"], want: "false"},
-				{label: prepareJobName + " platform", got: build.With["platforms"], want: architecture.platform},
-			})
-			for _, want := range []string{"type=oci", "tar=false", "${{ runner.temp }}/ghcr-" + architecture.name + "-publication/layout"} {
-				if !strings.Contains(build.With["outputs"], want) {
-					t.Fatalf("%s OCI output = %q, want %q", prepareJobName, build.With["outputs"], want)
-				}
-			}
-			metadata := workflowStepByName(t, workflow.Jobs, prepareJobName, "Prepare "+architecture.name+" publication metadata")
-			assertWorkflowStepRunContainsAll(t, metadata, prepareJobName+" metadata", []string{
-				`find -P . -type f ! -path './SHA256SUMS'`,
-				`> "${payload_root}/SHA256SUMS"`,
-			})
-			upload := workflowStepByName(t, workflow.Jobs, prepareJobName, "Upload "+architecture.name+" OCI publication payload")
-			assertWorkflowStringValues(t, []workflowStringValue{
-				{label: prepareJobName + " artifact name", got: upload.With["name"], want: "ghcr-" + architecture.name + "-publication-payload"},
-				{label: prepareJobName + " artifact path", got: upload.With["path"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-publication"},
-			})
+			assertTrustedGHCRPreparation(t, workflow, architecture)
 		})
 	}
+	assertTrustedGHCRImagePublisher(t, workflow, architectures)
+
+	t.Run("manifest", func(t *testing.T) {
+		assertTrustedGHCRManifestPublisher(t, workflow)
+	})
+}
+
+type ghcrArchitecture struct {
+	name     string
+	platform string
+}
+
+func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig, architecture ghcrArchitecture) {
+	t.Helper()
+
+	prepareJobName := "prepare-ghcr-" + architecture.name
+	prepare := workflowJobByName(t, workflow.Jobs, prepareJobName)
+	assertWorkflowJobPermissions(t, prepare, prepareJobName, map[string]string{"contents": "read"})
+	assertGHCRJobDoesNotReference(t, prepare, "secrets.GITHUB_TOKEN", prepareJobName)
+	checkout := workflowStepByName(t, workflow.Jobs, prepareJobName, "Checkout")
+	if checkout.With["persist-credentials"] != "false" {
+		t.Fatalf("%s checkout persist-credentials = %q, want false", prepareJobName, checkout.With["persist-credentials"])
+	}
+
+	build := workflowStepByName(t, workflow.Jobs, prepareJobName, "Build "+architecture.name+" OCI publication payload")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: prepareJobName + " registry push", got: build.With["push"], want: "false"},
+		{label: prepareJobName + " deferred provenance", got: build.With["provenance"], want: "false"},
+		{label: prepareJobName + " deferred SBOM", got: build.With["sbom"], want: "false"},
+		{label: prepareJobName + " platform", got: build.With["platforms"], want: architecture.platform},
+	})
+	assertTextContainsAll(t, build.With["outputs"], prepareJobName+" OCI output", []string{
+		"type=oci",
+		"tar=false",
+		"${{ runner.temp }}/ghcr-" + architecture.name + "-publication/layout",
+	})
+	metadata := workflowStepByName(t, workflow.Jobs, prepareJobName, "Prepare "+architecture.name+" publication metadata")
+	assertWorkflowStepRunContainsAll(t, metadata, prepareJobName+" metadata", []string{
+		`find -P . -type f ! -path './SHA256SUMS'`,
+		`> "${payload_root}/SHA256SUMS"`,
+	})
+	upload := workflowStepByName(t, workflow.Jobs, prepareJobName, "Upload "+architecture.name+" OCI publication payload")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: prepareJobName + " artifact name", got: upload.With["name"], want: "ghcr-" + architecture.name + "-publication-payload"},
+		{label: prepareJobName + " artifact path", got: upload.With["path"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-publication"},
+	})
+}
+
+func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, architectures []ghcrArchitecture) {
+	t.Helper()
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
 	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr-amd64", "prepare-ghcr-arm64"})
@@ -1377,62 +1393,70 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 	})
 	workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Prepare trusted image promotion Dockerfiles")
 	for _, architecture := range architectures {
-		download := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Download "+architecture.name+" OCI publication payload")
-		assertWorkflowStringValues(t, []workflowStringValue{
-			{label: "publish-ghcr-images artifact name", got: download.With["name"], want: "ghcr-" + architecture.name + "-publication-payload"},
-			{label: "publish-ghcr-images artifact path", got: download.With["path"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-publication"},
-		})
+		assertTrustedGHCRArchitecturePublication(t, workflow, architecture)
+	}
+}
 
-		publishImage := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Publish "+architecture.name+" release image")
-		assertWorkflowStringValues(t, []workflowStringValue{
-			{label: "publish-ghcr-images trusted context", got: publishImage.With["context"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-promotion"},
-			{label: "publish-ghcr-images trusted Dockerfile", got: publishImage.With["file"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-promotion/Dockerfile"},
-			{label: "publish-ghcr-images validated tags", got: publishImage.With["tags"], want: "${{ steps.validate.outputs." + architecture.name + "_tags }}"},
-			{label: "publish-ghcr-images push", got: publishImage.With["push"], want: "true"},
-			{label: "publish-ghcr-images provenance", got: publishImage.With["provenance"], want: "false"},
-			{label: "publish-ghcr-images SBOM", got: publishImage.With["sbom"], want: "true"},
-		})
-		wantBuildContext := "prepared=oci-layout://${{ runner.temp }}/ghcr-" + architecture.name + "-publication/layout@${{ steps.validate.outputs." + architecture.name + "_digest }}"
-		if !strings.Contains(publishImage.With["build-contexts"], wantBuildContext) {
-			t.Fatalf("publish-ghcr-images %s build contexts = %q, want validated OCI digest", architecture.name, publishImage.With["build-contexts"])
-		}
+func assertTrustedGHCRArchitecturePublication(t *testing.T, workflow workflowConfig, architecture ghcrArchitecture) {
+	t.Helper()
+
+	download := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Download "+architecture.name+" OCI publication payload")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "publish-ghcr-images artifact name", got: download.With["name"], want: "ghcr-" + architecture.name + "-publication-payload"},
+		{label: "publish-ghcr-images artifact path", got: download.With["path"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-publication"},
+	})
+
+	publishImage := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Publish "+architecture.name+" release image")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "publish-ghcr-images trusted context", got: publishImage.With["context"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-promotion"},
+		{label: "publish-ghcr-images trusted Dockerfile", got: publishImage.With["file"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-promotion/Dockerfile"},
+		{label: "publish-ghcr-images validated tags", got: publishImage.With["tags"], want: "${{ steps.validate.outputs." + architecture.name + "_tags }}"},
+		{label: "publish-ghcr-images push", got: publishImage.With["push"], want: "true"},
+		{label: "publish-ghcr-images provenance", got: publishImage.With["provenance"], want: "false"},
+		{label: "publish-ghcr-images SBOM", got: publishImage.With["sbom"], want: "true"},
+	})
+	wantBuildContext := "prepared=oci-layout://${{ runner.temp }}/ghcr-" + architecture.name + "-publication/layout@${{ steps.validate.outputs." + architecture.name + "_digest }}"
+	if !strings.Contains(publishImage.With["build-contexts"], wantBuildContext) {
+		t.Fatalf("publish-ghcr-images %s build contexts = %q, want validated OCI digest", architecture.name, publishImage.With["build-contexts"])
+	}
+}
+
+func assertTrustedGHCRManifestPublisher(t *testing.T, workflow workflowConfig) {
+	t.Helper()
+
+	prepareManifest := workflowJobByName(t, workflow.Jobs, "prepare-ghcr-manifest")
+	assertWorkflowJobPermissions(t, prepareManifest, "prepare-ghcr-manifest", map[string]string{"contents": "read"})
+	assertGHCRJobDoesNotReference(t, prepareManifest, "secrets.GITHUB_TOKEN", "prepare-ghcr-manifest")
+	manifestCheckout := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Checkout")
+	if manifestCheckout.With["persist-credentials"] != "false" {
+		t.Fatalf("prepare-ghcr-manifest checkout persist-credentials = %q, want false", manifestCheckout.With["persist-credentials"])
+	}
+	manifestUpload := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Upload manifest publication payload")
+	if manifestUpload.With["name"] != "ghcr-manifest-publication-payload" {
+		t.Fatalf("manifest artifact name = %q", manifestUpload.With["name"])
 	}
 
-	t.Run("manifest", func(t *testing.T) {
-		prepareManifest := workflowJobByName(t, workflow.Jobs, "prepare-ghcr-manifest")
-		assertWorkflowJobPermissions(t, prepareManifest, "prepare-ghcr-manifest", map[string]string{"contents": "read"})
-		assertGHCRJobDoesNotReference(t, prepareManifest, "secrets.GITHUB_TOKEN", "prepare-ghcr-manifest")
-		manifestCheckout := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Checkout")
-		if manifestCheckout.With["persist-credentials"] != "false" {
-			t.Fatalf("prepare-ghcr-manifest checkout persist-credentials = %q, want false", manifestCheckout.With["persist-credentials"])
-		}
-		manifestUpload := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Upload manifest publication payload")
-		if manifestUpload.With["name"] != "ghcr-manifest-publication-payload" {
-			t.Fatalf("manifest artifact name = %q", manifestUpload.With["name"])
-		}
-
-		publishManifest := workflowJobByName(t, workflow.Jobs, "publish-ghcr-manifest")
-		assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"publish-ghcr-images", "prepare-ghcr-manifest"})
-		assertWorkflowJobPermissions(t, publishManifest, "publish-ghcr-manifest", map[string]string{"packages": "write"})
-		assertFreshGHCRPublisher(t, publishManifest, "Log in to GHCR")
-		manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
-		assertWorkflowStepRunContainsAll(t, manifestValidation, "manifest validation", []string{
-			`expected_source_sha="${EXPECTED_SOURCE_SHA}"`,
-			`expected_image_name="ghcr.io/${owner}/lopper"`,
-			`find -P "${payload_root}" ! -type d ! -type f`,
-			`directory_count`,
-			`artifact payload exceeds`,
-			`unexpected image reference`,
-		})
-		manifestPublish := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Publish multi-arch manifests")
-		if strings.Contains(manifestPublish.Run, "scripts/") {
-			t.Fatal("trusted manifest publisher must not run repository scripts")
-		}
-		assertWorkflowStepRunContainsAll(t, manifestPublish, "trusted manifest publication", []string{
-			`done < "${IMAGE_TAGS_FILE}"`,
-			`docker buildx imagetools create`,
-			`docker buildx imagetools inspect`,
-		})
+	publishManifest := workflowJobByName(t, workflow.Jobs, "publish-ghcr-manifest")
+	assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"publish-ghcr-images", "prepare-ghcr-manifest"})
+	assertWorkflowJobPermissions(t, publishManifest, "publish-ghcr-manifest", map[string]string{"packages": "write"})
+	assertFreshGHCRPublisher(t, publishManifest, "Log in to GHCR")
+	manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
+	assertWorkflowStepRunContainsAll(t, manifestValidation, "manifest validation", []string{
+		`expected_source_sha="${EXPECTED_SOURCE_SHA}"`,
+		`expected_image_name="ghcr.io/${owner}/lopper"`,
+		`find -P "${payload_root}" ! -type d ! -type f`,
+		`directory_count`,
+		`artifact payload exceeds`,
+		`unexpected image reference`,
+	})
+	manifestPublish := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Publish multi-arch manifests")
+	if strings.Contains(manifestPublish.Run, "scripts/") {
+		t.Fatal("trusted manifest publisher must not run repository scripts")
+	}
+	assertWorkflowStepRunContainsAll(t, manifestPublish, "trusted manifest publication", []string{
+		`done < "${IMAGE_TAGS_FILE}"`,
+		`docker buildx imagetools create`,
+		`docker buildx imagetools inspect`,
 	})
 }
 
@@ -1617,27 +1641,12 @@ func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) 
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
 	t.Helper()
 
-	for key, value := range job.Env {
-		if strings.Contains(key, needle) || strings.Contains(value, needle) {
-			t.Fatalf("%s job env must not reference %q", jobLabel, needle)
-		}
-	}
+	assertStringMapDoesNotContain(t, job.Env, needle, jobLabel+" job env")
 	for _, step := range job.Steps {
-		for _, value := range []string{step.Uses, step.Run, step.Shell, step.WorkingDirectory} {
-			if strings.Contains(value, needle) {
-				t.Fatalf("%s step %q must not reference %q", jobLabel, step.Name, needle)
-			}
-		}
-		for key, value := range step.Env {
-			if strings.Contains(key, needle) || strings.Contains(value, needle) {
-				t.Fatalf("%s step %q env must not reference %q", jobLabel, step.Name, needle)
-			}
-		}
-		for key, value := range step.With {
-			if strings.Contains(key, needle) || strings.Contains(value, needle) {
-				t.Fatalf("%s step %q inputs must not reference %q", jobLabel, step.Name, needle)
-			}
-		}
+		stepLabel := jobLabel + " step " + step.Name
+		assertStringsDoNotContain(t, []string{step.Uses, step.Run, step.Shell, step.WorkingDirectory}, needle, stepLabel)
+		assertStringMapDoesNotContain(t, step.Env, needle, stepLabel+" env")
+		assertStringMapDoesNotContain(t, step.With, needle, stepLabel+" inputs")
 	}
 }
 
@@ -1656,32 +1665,51 @@ func assertFreshGHCRPublisher(t *testing.T, job workflowJobConfig, loginStepName
 			}
 			continue
 		}
-		if strings.Contains(step.Uses, "actions/checkout@") || strings.HasPrefix(step.Uses, "./") {
-			t.Fatalf("fresh GHCR publisher must not execute repository action %q", step.Uses)
-		}
-		if strings.Contains(step.Run, "scripts/") || strings.Contains(step.Run, "make ") || step.WorkingDirectory != "" {
-			t.Fatalf("fresh GHCR publisher step %q must not execute repository code", step.Name)
-		}
-		if step.With["context"] == "." || strings.HasPrefix(step.With["file"], "./") {
-			t.Fatalf("fresh GHCR publisher step %q must not use repository build context", step.Name)
-		}
-		for _, value := range append([]string{step.Run, step.Shell, step.Uses}, mapValues(step.Env)...) {
-			if strings.Contains(value, "secrets.GITHUB_TOKEN") || strings.Contains(value, "github.token") {
-				t.Fatalf("fresh GHCR publisher step %q must not receive GitHub credentials", step.Name)
-			}
-		}
-		for _, value := range step.With {
-			if strings.Contains(value, "secrets.GITHUB_TOKEN") || strings.Contains(value, "github.token") {
-				t.Fatalf("fresh GHCR publisher step %q must not receive GitHub credentials", step.Name)
-			}
-		}
+		assertFreshGHCRPublisherStep(t, step)
 	}
 	if loginIndex < 0 {
 		t.Fatalf("fresh GHCR publisher is missing %q", loginStepName)
 	}
 	for _, step := range job.Steps[loginIndex+1:] {
-		if strings.Contains(step.Run, "scripts/") || strings.Contains(step.Run, "./Dockerfile") || strings.Contains(step.Run, "make ") || step.WorkingDirectory != "" || step.With["context"] == "." || strings.HasPrefix(step.With["file"], "./") {
-			t.Fatalf("fresh GHCR publisher step %q executes repository code after login", step.Name)
+		assertStringsDoNotContain(t, []string{step.Run}, "./Dockerfile", "fresh GHCR publisher step "+step.Name)
+	}
+}
+
+func assertFreshGHCRPublisherStep(t *testing.T, step workflowStepConfig) {
+	t.Helper()
+
+	if strings.Contains(step.Uses, "actions/checkout@") || strings.HasPrefix(step.Uses, "./") {
+		t.Fatalf("fresh GHCR publisher must not execute repository action %q", step.Uses)
+	}
+	assertStringsDoNotContain(t, []string{step.Run}, "scripts/", "fresh GHCR publisher step "+step.Name)
+	assertStringsDoNotContain(t, []string{step.Run}, "make ", "fresh GHCR publisher step "+step.Name)
+	if step.WorkingDirectory != "" {
+		t.Fatalf("fresh GHCR publisher step %q must not set a repository working directory", step.Name)
+	}
+	if step.With["context"] == "." || strings.HasPrefix(step.With["file"], "./") {
+		t.Fatalf("fresh GHCR publisher step %q must not use repository build context", step.Name)
+	}
+	credentialValues := append([]string{step.Run, step.Shell, step.Uses}, mapValues(step.Env)...)
+	credentialValues = append(credentialValues, mapValues(step.With)...)
+	for _, credentialMarker := range []string{"secrets.GITHUB_TOKEN", "github.token"} {
+		assertStringsDoNotContain(t, credentialValues, credentialMarker, "fresh GHCR publisher step "+step.Name)
+	}
+}
+
+func assertStringMapDoesNotContain(t *testing.T, values map[string]string, needle string, label string) {
+	t.Helper()
+
+	for key, value := range values {
+		assertStringsDoNotContain(t, []string{key, value}, needle, label)
+	}
+}
+
+func assertStringsDoNotContain(t *testing.T, values []string, needle string, label string) {
+	t.Helper()
+
+	for _, value := range values {
+		if strings.Contains(value, needle) {
+			t.Fatalf("%s must not reference %q", label, needle)
 		}
 	}
 }
