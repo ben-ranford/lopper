@@ -334,49 +334,66 @@ func TestReleaseWorkflowPublishesMarketplaceFromTrustedIsolatedToolchain(t *test
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
+	assertTrustedMarketplaceWorkflowRevision(t, workflowText)
+	assertMarketplaceToolchainPreparation(t, workflow.Jobs)
+	assertMarketplacePublishIsolation(t, workflow.Jobs)
+	assertMarketplacePublicationInputs(t, workflow.Jobs)
+	assertTrustedReleaseFinalization(t, workflow.Jobs)
+}
+
+func assertTrustedMarketplaceWorkflowRevision(t *testing.T, workflowText string) {
+	t.Helper()
+
 	if !strings.Contains(workflowText, "trusted_main_sha") {
 		t.Fatal("release workflow must resolve and expose a trusted main revision for Marketplace manifests")
 	}
+}
 
-	prepareJob := workflowJobRequired(t, workflow.Jobs, "prepare-marketplace-toolchain")
+func assertMarketplaceToolchainPreparation(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+
+	prepareJob := workflowJobRequired(t, jobs, "prepare-marketplace-toolchain")
 	if !slices.Equal(prepareJob.Needs, workflowNeeds{"prepare-release"}) {
 		t.Fatalf("prepare-marketplace-toolchain needs = %#v, want only prepare-release", prepareJob.Needs)
 	}
 	if len(prepareJob.Env) != 0 {
 		t.Fatalf("prepare-marketplace-toolchain env = %#v, want no job-scoped credentials", prepareJob.Env)
 	}
-	checkout := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
+	checkout := workflowStepByName(t, jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
 	if checkout.With["ref"] != "${{ needs.prepare-release.outputs.trusted_main_sha }}" {
 		t.Fatalf("trusted Marketplace manifest checkout ref = %q", checkout.With["ref"])
 	}
 	if checkout.With["persist-credentials"] != "false" {
 		t.Fatalf("trusted Marketplace manifest checkout persist-credentials = %q, want false", checkout.With["persist-credentials"])
 	}
-	lockfileValidation := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Validate Marketplace tooling lockfile")
+	lockfileValidation := workflowStepByName(t, jobs, "prepare-marketplace-toolchain", "Validate Marketplace tooling lockfile")
 	if !strings.Contains(lockfileValidation.Run, `jq -er '.packages["node_modules/@vscode/vsce"].version'`) {
 		t.Fatal("trusted Marketplace toolchain prep must validate the pinned @vscode/vsce lockfile version")
 	}
-	prepareToolchain := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
+	prepareToolchain := workflowStepByName(t, jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
 	if !strings.Contains(prepareToolchain.Run, "npm ci --ignore-scripts --include=dev --audit=false --fund=false") {
 		t.Fatal("trusted Marketplace toolchain prep must install from the pinned lockfile without running package scripts")
 	}
-	uploadToolchain := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Upload Marketplace toolchain")
+	uploadToolchain := workflowStepByName(t, jobs, "prepare-marketplace-toolchain", "Upload Marketplace toolchain")
 	if uploadToolchain.With["name"] != "marketplace-toolchain" {
 		t.Fatalf("Marketplace toolchain artifact name = %q, want marketplace-toolchain", uploadToolchain.With["name"])
 	}
+}
 
-	if strings.Contains(workflowText, "make vscode-extension-install") && workflowStepByName(t, workflow.Jobs, "publish", "Upload GitHub Release assets").Name != "" {
-		if marketplaceStep, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish VS Code extension to Marketplace"); ok {
-			if strings.Contains(marketplaceStep.Run, "make vscode-extension-install") {
-				t.Fatal("publish job must not run repo-controlled Marketplace install steps")
-			}
+func assertMarketplacePublishIsolation(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+
+	publishJob := workflowJobRequired(t, jobs, "publish")
+	for _, step := range publishJob.Steps {
+		if strings.Contains(step.Run, "make vscode-extension-install") {
+			t.Fatalf("publish job step %q must not run repo-controlled Marketplace install steps", step.Name)
 		}
 	}
-	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish VS Code extension to Marketplace"); ok {
+	if _, ok := workflowStepByNameIfPresent(jobs, "publish", "Publish VS Code extension to Marketplace"); ok {
 		t.Fatal("publish job must not publish to the VS Code Marketplace directly")
 	}
 
-	marketplaceJob := workflowJobRequired(t, workflow.Jobs, "publish-vscode-marketplace")
+	marketplaceJob := workflowJobRequired(t, jobs, "publish-vscode-marketplace")
 	if !slices.Equal(marketplaceJob.Needs, workflowNeeds{"prepare-release", "publish", "build-vscode-extension", "prepare-marketplace-toolchain"}) {
 		t.Fatalf("publish-vscode-marketplace needs = %#v", marketplaceJob.Needs)
 	}
@@ -388,7 +405,13 @@ func TestReleaseWorkflowPublishesMarketplaceFromTrustedIsolatedToolchain(t *test
 			t.Fatalf("publish-vscode-marketplace must not checkout repository content in step %q", step.Name)
 		}
 	}
-	validateInputs := workflowStepByName(t, workflow.Jobs, "publish-vscode-marketplace", "Validate Marketplace publication inputs")
+}
+
+func assertMarketplacePublicationInputs(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+
+	marketplaceJob := workflowJobRequired(t, jobs, "publish-vscode-marketplace")
+	validateInputs := workflowStepByName(t, jobs, "publish-vscode-marketplace", "Validate Marketplace publication inputs")
 	if validateInputs.Env["VSIX_DIR"] != "${{ runner.temp }}/vscode-marketplace" {
 		t.Fatalf("marketplace validation VSIX_DIR = %q", validateInputs.Env["VSIX_DIR"])
 	}
@@ -404,7 +427,7 @@ func TestReleaseWorkflowPublishesMarketplaceFromTrustedIsolatedToolchain(t *test
 			t.Fatalf("marketplace validation must contain %q", want)
 		}
 	}
-	publishMarketplace := workflowStepByName(t, workflow.Jobs, "publish-vscode-marketplace", "Publish VS Code extension to Marketplace")
+	publishMarketplace := workflowStepByName(t, jobs, "publish-vscode-marketplace", "Publish VS Code extension to Marketplace")
 	if publishMarketplace.Env["VSCE_PAT"] != "${{ secrets.VSCE_PUBLISH }}" {
 		t.Fatalf("marketplace publish VSCE_PAT env = %q", publishMarketplace.Env["VSCE_PAT"])
 	}
@@ -417,25 +440,29 @@ func TestReleaseWorkflowPublishesMarketplaceFromTrustedIsolatedToolchain(t *test
 	if workflowStepIndexByName(t, marketplaceJob, "Publish VS Code extension to Marketplace") != len(marketplaceJob.Steps)-1 {
 		t.Fatal("marketplace publish step must be the terminal step in the isolated Marketplace job")
 	}
+}
 
-	finalizeJob := workflowJobRequired(t, workflow.Jobs, "finalize-release")
+func assertTrustedReleaseFinalization(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+
+	finalizeJob := workflowJobRequired(t, jobs, "finalize-release")
 	if !slices.Equal(finalizeJob.Needs, workflowNeeds{"prepare-release", "publish", "publish-vscode-marketplace"}) {
 		t.Fatalf("finalize-release needs = %#v, want prepare-release + publish + publish-vscode-marketplace", finalizeJob.Needs)
 	}
 	if len(finalizeJob.Permissions) != 1 || finalizeJob.Permissions["contents"] != "write" {
 		t.Fatalf("finalize-release permissions = %#v, want only contents: write", finalizeJob.Permissions)
 	}
-	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish GitHub Release"); ok {
+	if _, ok := workflowStepByNameIfPresent(jobs, "publish", "Publish GitHub Release"); ok {
 		t.Fatal("publish job must not make the GitHub Release public directly")
 	}
-	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Update GitHub Action floating tags"); ok {
+	if _, ok := workflowStepByNameIfPresent(jobs, "publish", "Update GitHub Action floating tags"); ok {
 		t.Fatal("publish job must not move floating action tags directly")
 	}
-	finalizeRelease := workflowStepByName(t, workflow.Jobs, "finalize-release", "Publish GitHub Release")
+	finalizeRelease := workflowStepByName(t, jobs, "finalize-release", "Publish GitHub Release")
 	if finalizeRelease.Env["GH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("finalize release GH_TOKEN env = %q", finalizeRelease.Env["GH_TOKEN"])
 	}
-	floatingTags := workflowStepByName(t, workflow.Jobs, "finalize-release", "Update GitHub Action floating tags")
+	floatingTags := workflowStepByName(t, jobs, "finalize-release", "Update GitHub Action floating tags")
 	if floatingTags.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
 		t.Fatalf("finalize floating tag RELEASE_TAG env = %q", floatingTags.Env["RELEASE_TAG"])
 	}
