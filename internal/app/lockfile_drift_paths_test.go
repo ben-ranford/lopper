@@ -192,13 +192,13 @@ func TestGitActiveFilterPathDriversAndParser(t *testing.T) {
 	}
 }
 
-func TestConfiguredGitAttributeStateDriverErrors(t *testing.T) {
+func TestConfiguredGitAttributeDriverErrors(t *testing.T) {
 	t.Run("command construction", func(t *testing.T) {
 		original := resolveGitBinaryPathFn
 		resolveGitBinaryPathFn = func() (string, error) { return "", context.Canceled }
 		t.Cleanup(func() { resolveGitBinaryPathFn = original })
 
-		_, err := filterConfiguredGitAttributeStateDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{{path: "package.json", driver: "set"}})
+		_, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{{path: "package.json", driver: "set"}})
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected config command construction error, got %v", err)
 		}
@@ -217,10 +217,55 @@ func TestConfiguredGitAttributeStateDriverErrors(t *testing.T) {
 		})
 
 		_, err := gitFilterDriverHasExecutableConfig(context.Background(), t.TempDir(), "set")
-		if err == nil || !strings.Contains(err.Error(), "run git config --includes --get-regexp") {
+		if err == nil || !strings.Contains(err.Error(), "run git config --includes --get") {
 			t.Fatalf("expected config execution error, got %v", err)
 		}
 	})
+}
+
+func TestConfiguredGitAttributeDriversCacheExactLookups(t *testing.T) {
+	originalResolve := resolveGitBinaryPathFn
+	originalExec := execGitCommandContextFn
+	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+	lookups := make(map[string]int)
+	execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
+		key := args[len(args)-1]
+		lookups[key]++
+		if key == "filter.configured.clean" {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'cat\\n'"), nil
+		}
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
+	}
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = originalResolve
+		execGitCommandContextFn = originalExec
+	})
+
+	active, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{
+		{path: "a.json", driver: "configured"},
+		{path: "b.json", driver: "configured"},
+		{path: "c.json", driver: "inert"},
+		{path: "d.json", driver: "inert"},
+	})
+	if err != nil {
+		t.Fatalf("filter configured git attribute drivers: %v", err)
+	}
+	if len(active) != 2 || active[0].path != "a.json" || active[1].path != "b.json" {
+		t.Fatalf("expected configured assignments in input order, got %#v", active)
+	}
+	wantLookups := map[string]int{
+		"filter.configured.clean": 1,
+		"filter.inert.clean":      1,
+		"filter.inert.process":    1,
+	}
+	if len(lookups) != len(wantLookups) {
+		t.Fatalf("expected exact cached config lookups %#v, got %#v", wantLookups, lookups)
+	}
+	for key, want := range wantLookups {
+		if lookups[key] != want {
+			t.Fatalf("expected %q to be queried %d time, got %#v", key, want, lookups)
+		}
+	}
 }
 
 func TestScopedGitPathHelpersHandleEmptyPathsAndFailures(t *testing.T) {
@@ -545,6 +590,13 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
     exit 0
   fi
   exit 0
+fi
+if printf '%s' "$args" | grep -q 'config --includes --get'; then
+  if [ "$mode" = "pathscope-filterdriver" ] && printf '%s' "$args" | grep -q 'filter.pwn.clean'; then
+    printf './helper.sh\n'
+    exit 0
+  fi
+  exit 1
 fi
 if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
   if [ "$mode" = "pathscope-head" ]; then

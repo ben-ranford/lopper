@@ -292,18 +292,13 @@ func gitActiveFilterPathDrivers(ctx context.Context, repoPath string, paths []st
 	if err != nil {
 		return nil, fmt.Errorf("parse git check-attr --stdin -z filter output: %w", err)
 	}
-	return filterConfiguredGitAttributeStateDrivers(ctx, repoPath, assignments)
+	return filterConfiguredGitAttributeDrivers(ctx, repoPath, assignments)
 }
 
-func filterConfiguredGitAttributeStateDrivers(ctx context.Context, repoPath string, assignments []gitFilterPathDriver) ([]gitFilterPathDriver, error) {
+func filterConfiguredGitAttributeDrivers(ctx context.Context, repoPath string, assignments []gitFilterPathDriver) ([]gitFilterPathDriver, error) {
 	active := make([]gitFilterPathDriver, 0, len(assignments))
 	configured := make(map[string]bool)
 	for _, assignment := range assignments {
-		if !isGitAttributeStateValue(assignment.driver) {
-			active = append(active, assignment)
-			continue
-		}
-
 		isConfigured, checked := configured[assignment.driver]
 		if !checked {
 			var err error
@@ -321,32 +316,29 @@ func filterConfiguredGitAttributeStateDrivers(ctx context.Context, repoPath stri
 }
 
 // Git renders explicit drivers named set, unset, or unspecified exactly like
-// attribute-state values, so matching executable config must disambiguate them.
+// attribute-state values. Requiring executable config for every returned name
+// disambiguates those states while allowing inert ordinary declarations.
 func gitFilterDriverHasExecutableConfig(ctx context.Context, repoPath, driver string) (bool, error) {
-	keyPattern := fmt.Sprintf(`^filter\.%s\.(clean|process)$`, driver)
-	args := []string{"config", "--includes", "--get-regexp", keyPattern}
-	command, err := gitCommandContext(ctx, repoPath, args...)
-	if err != nil {
-		return false, err
-	}
-	output, err := command.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, nil
+	for _, commandName := range []string{"clean", "process"} {
+		key := fmt.Sprintf("filter.%s.%s", driver, commandName)
+		args := []string{"config", "--includes", "--get", key}
+		command, err := gitCommandContext(ctx, repoPath, args...)
+		if err != nil {
+			return false, err
 		}
-		return false, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
+		output, err := command.Output()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+				continue
+			}
+			return false, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
+		}
+		if len(strings.TrimSpace(string(output))) > 0 {
+			return true, nil
+		}
 	}
-	return len(strings.TrimSpace(string(output))) > 0, nil
-}
-
-func isGitAttributeStateValue(value string) bool {
-	switch value {
-	case "set", "unset", "unspecified":
-		return true
-	default:
-		return false
-	}
+	return false, nil
 }
 
 func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) error {

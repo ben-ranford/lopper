@@ -424,6 +424,12 @@ func configureCleanFilter(t *testing.T, repo, driver string) {
 	runGit(t, repo, "config", "filter."+driver+".required", "true")
 }
 
+func configureIncludedCleanFilter(t *testing.T, repo, driver string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, ".git", "included-filters"), "[filter \""+driver+"\"]\n\tclean = ./helper.sh\n\trequired = true\n")
+	runGit(t, repo, "config", "include.path", "included-filters")
+}
+
 func configureProcessFilter(t *testing.T, repo, driver string) {
 	t.Helper()
 	runGit(t, repo, "config", "filter."+driver+".process", "./helper.sh")
@@ -480,7 +486,7 @@ func localGitHelperCases() []localGitHelperCase {
 				runGit(t, repo, "config", "core.fsmonitor", helperPath)
 			},
 		},
-		filterHelperCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit("pwn"), nil, configureCleanFilter),
+		filterHelperCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit("pwn"), nil, configureIncludedCleanFilter),
 		filterHelperCase("set-named clean filter", "set-named-clean-filter.marker", "set", cleanFilterScript, cleanFilterBeforeInit("set"), nil, configureCleanFilter),
 		filterHelperCase("unset-named clean filter", "unset-named-clean-filter.marker", "unset", cleanFilterScript, cleanFilterBeforeInit("unset"), nil, configureCleanFilter),
 		filterHelperCase("unspecified-named clean filter", "unspecified-named-clean-filter.marker", "unspecified", cleanFilterScript, cleanFilterBeforeInit("unspecified"), nil, configureCleanFilter),
@@ -579,6 +585,54 @@ func TestDetectLockfileDriftAllowsUnconfiguredStateNamedFilters(t *testing.T) {
 				t.Fatalf(detectLockfileDriftFmt, err)
 			}
 			assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+		})
+	}
+}
+
+func TestDetectLockfileDriftAllowsFiltersWithoutExecutableCommands(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	cases := []struct {
+		name      string
+		driver    string
+		configure func(*testing.T, string)
+	}{
+		{name: "no matching config", driver: "inert"},
+		{
+			name:   "regex metacharacters do not match another driver",
+			driver: "pwn.*",
+			configure: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.pwned.clean", "./missing-helper.sh")
+			},
+		},
+		{
+			name:   "empty commands",
+			driver: "empty",
+			configure: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.empty.clean", "")
+				runGit(t, repo, "config", "filter.empty.process", "")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+tc.driver+"\n")
+			initGitRepo(t, repo)
+			if tc.configure != nil {
+				tc.configure(t, repo)
+			}
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 		})
 	}
 }
