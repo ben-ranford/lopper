@@ -661,6 +661,35 @@ jobs:
             fi
           done
 
+          vsix_path="${publication_dir}/dist/${expected_vsix}"
+          python3 - "${vsix_path}" "${RELEASE_VERSION}" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          vsix_path = sys.argv[1]
+          expected_version = sys.argv[2]
+          manifest_path = "extension/package.json"
+
+          with zipfile.ZipFile(vsix_path) as archive:
+              manifest_entries = [info for info in archive.infolist() if info.filename == manifest_path]
+              if len(manifest_entries) != 1:
+                  raise SystemExit("Marketplace VSIX must contain exactly one extension/package.json manifest")
+
+              manifest_info = manifest_entries[0]
+              if manifest_info.is_dir() or manifest_info.file_size > 1048576:
+                  raise SystemExit("Marketplace VSIX manifest is missing or oversized")
+
+              manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
+
+          if manifest.get("publisher") != "BenRanford":
+              raise SystemExit("Marketplace VSIX publisher does not match BenRanford")
+          if manifest.get("name") != "vscode-lopper":
+              raise SystemExit("Marketplace VSIX name does not match vscode-lopper")
+          if manifest.get("version") != expected_version:
+              raise SystemExit(f"Marketplace VSIX version does not match {expected_version}")
+          PY
+
           expected_paths="$(mktemp)"
           manifest_paths="$(mktemp)"
           trap 'rm -f "${expected_paths}" "${manifest_paths}"' EXIT
