@@ -807,7 +807,7 @@ if printf '%s' "$args" | grep -q 'check-attr --stdin -z filter'; then
 fi
 if printf '%s' "$args" | grep -q 'config --null --includes --get-regexp'; then
   if [ "$mode" = "pathscope-filterdriver" ]; then
-    printf 'filter.PWN.clean\n./helper.sh\000'
+    printf 'filter.pwn.clean\n./helper.sh\000'
     exit 0
   fi
   exit 1

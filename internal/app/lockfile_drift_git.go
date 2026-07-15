@@ -440,7 +440,7 @@ func filterConfiguredGitAttributeDrivers(ctx context.Context, repoPath string, a
 
 	active := make([]gitFilterPathDriver, 0, len(assignments))
 	for _, assignment := range assignments {
-		if _, ok := configured[gitConfigCaseFold(assignment.driver)]; ok {
+		if _, ok := configured[assignment.driver]; ok {
 			active = append(active, assignment)
 		}
 	}
@@ -487,7 +487,7 @@ func parseGitExecutableFilterConfig(output []byte) (map[string]struct{}, error) 
 			return nil, fmt.Errorf("record %d has unexpected filter command key %q", index, key)
 		}
 		if strings.TrimSpace(value) != "" {
-			configured[gitConfigCaseFold(driver)] = struct{}{}
+			configured[driver] = struct{}{}
 		}
 	}
 	return configured, nil
@@ -505,16 +505,6 @@ func gitFilterDriverFromExecutableConfigKey(key string) (string, bool) {
 		return key[len(prefix) : len(key)-len(suffix)], true
 	}
 	return "", false
-}
-
-func gitConfigCaseFold(value string) string {
-	folded := []byte(value)
-	for index, char := range folded {
-		if char >= 'A' && char <= 'Z' {
-			folded[index] = char + ('a' - 'A')
-		}
-	}
-	return string(folded)
 }
 
 func newLockfileDriftFilterAmbiguityError(assignments []gitFilterPathDriver) error {
