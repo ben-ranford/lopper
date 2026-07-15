@@ -992,6 +992,7 @@ jobs:
       - publish
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       configured: ${{ steps.gate.outputs.configured }}
     steps:

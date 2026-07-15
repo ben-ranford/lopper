@@ -234,6 +234,7 @@ jobs:
       - prepare-rolling
       - publish-rolling
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       configured: ${{ steps.gate.outputs.configured }}
     steps:

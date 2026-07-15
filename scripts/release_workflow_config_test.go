@@ -2252,6 +2252,9 @@ func assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t *testing.T, tc homebrew
 	if !strings.Contains(workflowText, "configured: ${{ steps.gate.outputs.configured }}") {
 		t.Fatalf("%s must expose the tap-token gate output for downstream job gating", tc.workflowPath)
 	}
+	if gateJob.Permissions == nil || len(gateJob.Permissions) != 0 {
+		t.Fatalf("%s gate job permissions = %#v, want an explicit empty permission set", tc.workflowPath, gateJob.Permissions)
+	}
 
 	gateStep := workflowStepByName(t, workflow.Jobs, tc.gateJobName, "Detect tap token")
 	if gateStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
