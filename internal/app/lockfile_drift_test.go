@@ -940,6 +940,22 @@ func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierBatchFindingOverLaterFi
 	assertSingleLockfileDriftWarning(t, warnings, err, "npm in b-missing: package.json exists but no matching lockfile", "npm install")
 }
 
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierGitFindingOverLaterFilterAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "z-filtered", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "z-filtered", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "z-filtered/package.json filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in a-drift: package.json changed while no matching lockfile changed", "npm install")
+}
+
 func TestDetectLockfileDriftStopOnFirstPrioritizesBufferedGitFindingOverLaterImmediateFinding(t *testing.T) {
 	repo := t.TempDir()
 	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
