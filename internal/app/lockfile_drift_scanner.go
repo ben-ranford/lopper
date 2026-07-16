@@ -238,17 +238,39 @@ func (s *lockfileFailFastBatchScanner) flush(ctx context.Context) error {
 
 func (s *lockfileFailFastBatchScanner) flushSnapshotsInOrder(ctx context.Context, snapshots []lockfileDirSnapshot) error {
 	for _, snapshot := range snapshots {
-		candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, s.rules)
+		if err := s.recordFirstSnapshotRuleByRule(ctx, snapshot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *lockfileFailFastBatchScanner) recordFirstSnapshotRuleByRule(ctx context.Context, snapshot lockfileDirSnapshot) error {
+	manifestCache := newLockfileManifestCache(snapshot)
+	for _, rule := range s.rules {
+		candidatePaths, err := lockfileManifestChangeCandidatePathsForRule(snapshot, rule, manifestCache)
 		if err != nil {
 			return err
 		}
+		if len(candidatePaths) == 0 {
+			continue
+		}
+
 		gitContext, err := collectLockfileGitContextForPaths(ctx, s.repoPath, candidatePaths)
 		if err != nil {
 			return err
 		}
-		if err := s.recordFirst(snapshot, gitContext); err != nil {
+
+		finding, found, err := evaluateLockfileRuleWithCache(snapshot, rule, gitContext, manifestCache)
+		if err != nil {
 			return err
 		}
+		if !found {
+			continue
+		}
+
+		s.warnings = append(s.warnings, buildLockfileDriftWarning(finding))
+		return fs.SkipAll
 	}
 	return nil
 }
