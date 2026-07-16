@@ -715,6 +715,50 @@ func TestDetectLockfileDriftIgnoresUnassignedFilterStateWithMatchingConfig(t *te
 	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 }
 
+func TestDetectLockfileDriftIgnoresBooleanFilterStatesWithMatchingConfig(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	cases := []struct {
+		name          string
+		attributes    string
+		configureRepo func(*testing.T, string)
+	}{
+		{
+			name:       "set state",
+			attributes: manifestFileName + " filter\n",
+			configureRepo: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.set.clean", "./unrelated-helper.sh")
+			},
+		},
+		{
+			name:       "unset state",
+			attributes: manifestFileName + " -filter\n",
+			configureRepo: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.unset.clean", "./unrelated-helper.sh")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, ".gitattributes"), tc.attributes)
+			initGitRepo(t, repo)
+			tc.configureRepo(t, repo)
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+		})
+	}
+}
+
 func TestDetectLockfileDriftAllowsFiltersWithoutExecutableCommands(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
