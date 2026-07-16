@@ -492,6 +492,9 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		`cp -- "${source_dir}/package.json" "${source_dir}/package-lock.json" "${scratch_dir}/"`,
 		`if [ "$(find "${scratch_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
 		`npm ci --ignore-scripts --include=dev --audit=false --fund=false`,
+		`trusted_vsce_link="${scratch_dir}/node_modules/.bin/vsce"`,
+		`find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -delete`,
+		`find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -print -quit | grep -q .`,
 		`test -x "${scratch_dir}/node_modules/.bin/vsce"`,
 	})
 	for _, forbidden := range []string{"npm install", "npm exec", "npx "} {
