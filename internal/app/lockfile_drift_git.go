@@ -25,6 +25,7 @@ const (
 	gitExcludeStandardArg = "--exclude-standard"
 	gitCachedFlag         = "--cached"
 	gitLiteralPathPrefix  = ":(literal)"
+	gitFilterProbeMarker  = "__LOPPER_LOCKFILE_FILTER_PROBE__"
 	// Keep aggregate argv comfortably bounded. A single path cannot be split,
 	// but real candidates come from WalkDir and remain filesystem/Git bounded.
 	gitPathspecBatchPaths = 128
@@ -474,12 +475,77 @@ func filterConfiguredGitAttributeDrivers(ctx context.Context, repoPath string, a
 	}
 
 	active := make([]gitFilterPathDriver, 0, len(assignments))
+	stateProbeCache := make(map[gitFilterPathDriver]bool)
 	for _, assignment := range assignments {
 		if _, ok := configured[assignment.driver]; ok {
+			if isGitAttributeStateDriver(assignment.driver) {
+				activeStateDriver, ok := stateProbeCache[assignment]
+				if !ok {
+					var err error
+					activeStateDriver, err = gitPathUsesNamedFilterDriver(ctx, repoPath, assignment)
+					if err != nil {
+						return nil, err
+					}
+					stateProbeCache[assignment] = activeStateDriver
+				}
+				if !activeStateDriver {
+					continue
+				}
+			}
 			active = append(active, assignment)
 		}
 	}
 	return active, nil
+}
+
+func isGitAttributeStateDriver(driver string) bool {
+	switch driver {
+	case "set", "unset", "unspecified":
+		return true
+	default:
+		return false
+	}
+}
+
+func gitPathUsesNamedFilterDriver(ctx context.Context, repoPath string, assignment gitFilterPathDriver) (active bool, err error) {
+	probeDir, err := os.MkdirTemp("", "lopper-lockfile-filter-probe-")
+	if err != nil {
+		return false, fmt.Errorf("create git filter probe dir: %w", err)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(probeDir); removeErr != nil && err == nil {
+			err = fmt.Errorf("remove git filter probe dir: %w", removeErr)
+		}
+	}()
+
+	probePath := filepath.Join(probeDir, "probe.sh")
+	probeScript := "#!/bin/sh\n" +
+		"echo " + gitFilterProbeMarker + " >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(probePath, []byte(probeScript), 0o600); err != nil {
+		return false, fmt.Errorf("write git filter probe: %w", err)
+	}
+	probeCommand := "/bin/sh " + probePath
+
+	args := []string{
+		"-c", fmt.Sprintf("filter.%s.clean=%s", assignment.driver, probeCommand),
+		"-c", fmt.Sprintf("filter.%s.process=%s", assignment.driver, probeCommand),
+		"-c", fmt.Sprintf("filter.%s.required=true", assignment.driver),
+		"hash-object", "--path=" + assignment.path, "--stdin",
+	}
+	command, err := gitCommandContext(ctx, repoPath, args...)
+	if err != nil {
+		return false, err
+	}
+	command.Stdin = strings.NewReader("")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return false, nil
+	}
+	if bytes.Contains(output, []byte(gitFilterProbeMarker)) {
+		return true, nil
+	}
+	return false, fmt.Errorf("probe git filter driver %q for %q: %w: %s", assignment.driver, assignment.path, err, strings.TrimSpace(string(output)))
 }
 
 // Git renders explicit drivers named set, unset, or unspecified exactly like
