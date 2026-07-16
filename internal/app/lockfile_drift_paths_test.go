@@ -619,6 +619,23 @@ func TestParseGitExecutableFilterConfigRecords(t *testing.T) {
 	}
 }
 
+func TestParseGitExecutableFilterConfigPrefersLastValueForEachCommand(t *testing.T) {
+	configured, err := parseGitExecutableFilterConfig([]byte("filter.pwn.clean\n./helper.sh\x00filter.pwn.clean\n\x00filter.pwn.process\nprocess --flag\x00filter.other.process\nprocess --flag\x00filter.other.process\n\x00"))
+	if err != nil {
+		t.Fatalf("parse executable filter config: %v", err)
+	}
+
+	if _, ok := configured["pwn"]; !ok {
+		t.Fatalf("expected later non-empty process command to keep driver executable, got %#v", configured)
+	}
+	if _, ok := configured["other"]; ok {
+		t.Fatalf("expected later empty process override to clear driver executable, got %#v", configured)
+	}
+	if len(configured) != 1 {
+		t.Fatalf("expected only effective executable drivers, got %#v", configured)
+	}
+}
+
 func TestParseGitCheckAttrFilterPathDrivers(t *testing.T) {
 	output := []byte("package.json\x00filter\x00foo.bar\x00package-lock.json\x00eol\x00lf\x00nested/package.json\x00filter\x00foo/bar\x00package.json\x00filter\x00foo.bar\x00")
 	assignments, err := parseGitCheckAttrFilterPathDrivers([]string{"package.json", "package-lock.json", "nested/package.json", "package.json"}, output)
