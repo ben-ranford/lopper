@@ -522,6 +522,12 @@ jobs:
             echo "Marketplace package manifests changed during preparation" >&2
             exit 1
           fi
+          trusted_vsce_link="${scratch_dir}/node_modules/.bin/vsce"
+          find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -delete
+          if find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -print -quit | grep -q .; then
+            echo "Marketplace toolchain retains unexpected symbolic links" >&2
+            exit 1
+          fi
           test -x "${scratch_dir}/node_modules/.bin/vsce"
           if [ "$(realpath -e "${scratch_dir}/node_modules/.bin/vsce")" != "$(realpath -e "${scratch_dir}/node_modules/@vscode/vsce/vsce")" ]; then
             echo "Marketplace VSCE launcher resolves outside the locked package" >&2
