@@ -511,19 +511,25 @@ func parseGitExecutableFilterConfig(output []byte) (map[string]struct{}, error) 
 		return nil, errors.New("truncated output: missing trailing NUL terminator")
 	}
 
-	configured := make(map[string]struct{})
+	effectiveCommands := make(map[string]string)
 	for index, record := range parseNULTerminatedGitFields(output) {
 		key, value, ok := strings.Cut(record, "\n")
 		if !ok {
 			return nil, fmt.Errorf("record %d missing key/value separator", index)
 		}
-		driver, ok := gitFilterDriverFromExecutableConfigKey(key)
-		if !ok {
+		if _, ok := gitFilterDriverFromExecutableConfigKey(key); !ok {
 			return nil, fmt.Errorf("record %d has unexpected filter command key %q", index, key)
 		}
-		if strings.TrimSpace(value) != "" {
-			configured[driver] = struct{}{}
+		effectiveCommands[key] = strings.TrimSpace(value)
+	}
+
+	configured := make(map[string]struct{})
+	for key, value := range effectiveCommands {
+		if value == "" {
+			continue
 		}
+		driver, _ := gitFilterDriverFromExecutableConfigKey(key)
+		configured[driver] = struct{}{}
 	}
 	return configured, nil
 }
