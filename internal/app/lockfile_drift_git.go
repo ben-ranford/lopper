@@ -25,7 +25,6 @@ const (
 	gitExcludeStandardArg = "--exclude-standard"
 	gitCachedFlag         = "--cached"
 	gitLiteralPathPrefix  = ":(literal)"
-	gitFilterProbeMarker  = "__LOPPER_LOCKFILE_FILTER_PROBE__"
 	// Keep aggregate argv comfortably bounded. A single path cannot be split,
 	// but real candidates come from WalkDir and remain filesystem/Git bounded.
 	gitPathspecBatchPaths = 128
@@ -508,28 +507,22 @@ func isGitAttributeStateDriver(driver string) bool {
 }
 
 func gitPathUsesNamedFilterDriver(ctx context.Context, repoPath string, assignment gitFilterPathDriver) (active bool, err error) {
-	probeDir, err := os.MkdirTemp("", "lopper-lockfile-filter-probe-")
-	if err != nil {
-		return false, fmt.Errorf("create git filter probe dir: %w", err)
-	}
-	defer func() {
-		if removeErr := os.RemoveAll(probeDir); removeErr != nil && err == nil {
-			err = fmt.Errorf("remove git filter probe dir: %w", removeErr)
-		}
-	}()
+	const probeInput = "lopper-lockfile-filter-probe\n"
 
-	probePath := filepath.Join(probeDir, "probe.sh")
-	probeScript := "#!/bin/sh\n" +
-		"echo " + gitFilterProbeMarker + " >&2\n" +
-		"exit 1\n"
-	if err := os.WriteFile(probePath, []byte(probeScript), 0o600); err != nil {
-		return false, fmt.Errorf("write git filter probe: %w", err)
+	rawHashCommand, err := gitCommandContext(ctx, repoPath, "hash-object", "--stdin")
+	if err != nil {
+		return false, err
 	}
-	probeCommand := "/bin/sh " + probePath
+	rawHashCommand.Stdin = strings.NewReader(probeInput)
+	rawHashOutput, err := rawHashCommand.Output()
+	if err != nil {
+		return false, fmt.Errorf("calculate raw git filter probe hash: %w", err)
+	}
+	rawHash := strings.TrimSpace(string(rawHashOutput))
 
 	args := []string{
-		"-c", fmt.Sprintf("filter.%s.clean=%s", assignment.driver, probeCommand),
-		"-c", fmt.Sprintf("filter.%s.process=%s", assignment.driver, probeCommand),
+		"-c", fmt.Sprintf("filter.%s.clean=git hash-object --stdin", assignment.driver),
+		"-c", fmt.Sprintf("filter.%s.process=git version", assignment.driver),
 		"-c", fmt.Sprintf("filter.%s.required=true", assignment.driver),
 		"hash-object", "--path=" + assignment.path, "--stdin",
 	}
@@ -537,15 +530,16 @@ func gitPathUsesNamedFilterDriver(ctx context.Context, repoPath string, assignme
 	if err != nil {
 		return false, err
 	}
-	command.Stdin = strings.NewReader("")
-	output, err := command.CombinedOutput()
+	command.Stdin = strings.NewReader(probeInput)
+	output, err := command.Output()
 	if err == nil {
-		return false, nil
+		return strings.TrimSpace(string(output)) != rawHash, nil
 	}
-	if bytes.Contains(output, []byte(gitFilterProbeMarker)) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		return true, nil
 	}
-	return false, fmt.Errorf("probe git filter driver %q for %q: %w: %s", assignment.driver, assignment.path, err, strings.TrimSpace(string(output)))
+	return false, fmt.Errorf("probe git filter driver %q for %q: %w", assignment.driver, assignment.path, err)
 }
 
 // Git renders explicit drivers named set, unset, or unspecified exactly like
