@@ -39,7 +39,23 @@ type workflowJobConfig struct {
 	Needs       workflowJobNeeds     `yaml:"needs"`
 	Outputs     map[string]string    `yaml:"outputs"`
 	Permissions map[string]string    `yaml:"permissions"`
+	RunsOn      string               `yaml:"runs-on"`
 	Steps       []workflowStepConfig `yaml:"steps"`
+	Strategy    workflowStrategy     `yaml:"strategy"`
+}
+
+type workflowStrategy struct {
+	Matrix workflowMatrix `yaml:"matrix"`
+}
+
+type workflowMatrix struct {
+	Include []workflowMatrixEntry `yaml:"include"`
+}
+
+type workflowMatrixEntry struct {
+	Architecture string `yaml:"architecture"`
+	Platform     string `yaml:"platform"`
+	Runner       string `yaml:"runner"`
 }
 
 type workflowJobNeeds []string
@@ -1726,6 +1742,40 @@ func TestReleaseOrchestrationImageTagStepsUseSanitizer(t *testing.T) {
 		manifestStep := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Compute manifest image tags")
 		assertManifestImageTagStep(t, manifestStep)
 	})
+}
+
+func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	prepare, ok := workflow.Jobs["prepare-ghcr"]
+	if !ok {
+		t.Fatal("release orchestration must consolidate GHCR preparation into prepare-ghcr")
+	}
+	for _, legacyJob := range []string{"prepare-ghcr-amd64", "prepare-ghcr-arm64"} {
+		if _, ok := workflow.Jobs[legacyJob]; ok {
+			t.Fatalf("release orchestration must remove duplicate job %q", legacyJob)
+		}
+	}
+
+	wantMatrix := []workflowMatrixEntry{
+		{Architecture: "amd64", Platform: "linux/amd64", Runner: "ubuntu-latest"},
+		{Architecture: "arm64", Platform: "linux/arm64", Runner: "ubuntu-24.04-arm"},
+	}
+	if !slices.Equal(prepare.Strategy.Matrix.Include, wantMatrix) {
+		t.Fatalf("prepare-ghcr matrix = %#v, want %#v", prepare.Strategy.Matrix.Include, wantMatrix)
+	}
+	if prepare.RunsOn != "${{ matrix.runner }}" {
+		t.Fatalf("prepare-ghcr runs-on = %q, want matrix runner", prepare.RunsOn)
+	}
+
+	build := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Build OCI publication payload")
+	if build.ID != "" {
+		t.Fatalf("prepare-ghcr build step ID = %q, want no unused ID", build.ID)
+	}
+	assertWorkflowJobNeeds(t, workflow.Jobs["publish-ghcr-images"], []string{"prepare-ghcr"}, "publish-ghcr-images")
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
