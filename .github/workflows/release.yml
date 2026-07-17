@@ -785,24 +785,13 @@ jobs:
 
           archive_path = sys.argv[1]
           allowed_roots = {"package.json", "package-lock.json", "node_modules"}
+          manifest_names = {"package.json", "package-lock.json"}
+          trusted_symlink = ("node_modules/.bin/vsce", "../@vscode/vsce/vsce")
           required_regular = {
               "package.json",
               "package-lock.json",
               "node_modules/@vscode/vsce/vsce",
           }
-
-          def normalize(parts):
-              resolved = []
-              for part in parts:
-                  if part in ("", "."):
-                      continue
-                  if part == "..":
-                      if not resolved:
-                          return None
-                      resolved.pop()
-                      continue
-                  resolved.append(part)
-              return tuple(resolved)
 
           with tarfile.open(archive_path, "r:gz") as archive:
               members = archive.getmembers()
@@ -813,20 +802,25 @@ jobs:
           regular_files = set()
           symlinks = {}
           for member in members:
-              if "\\" in member.name:
+              raw_name = member.name
+              if "\\" in raw_name:
                   raise SystemExit("Marketplace toolchain archive contains a backslash path")
-              path = PurePosixPath(member.name)
-              if path.is_absolute() or not path.parts or ".." in path.parts:
+              components = raw_name.split("/")
+              if not raw_name or raw_name.startswith("/") or any(component in ("", ".", "..") for component in components):
                   raise SystemExit("Marketplace toolchain archive contains an unsafe path")
+              path = PurePosixPath(raw_name)
               name = str(path)
+              if raw_name != name:
+                  raise SystemExit("Marketplace toolchain archive contains an unsafe path")
               if name in names:
                   raise SystemExit("Marketplace toolchain archive contains a duplicate path")
-              if member.name != name:
-                  raise SystemExit("Marketplace toolchain archive contains an unsafe path")
-              if path.parts[0] not in allowed_roots:
+              root = name.split("/", 1)[0]
+              if root not in allowed_roots or (root in manifest_names and name != root):
                   raise SystemExit("Marketplace toolchain archive contains an unexpected path")
               names.add(name)
 
+              if root in manifest_names and not member.isfile():
+                  raise SystemExit("Marketplace toolchain archive contains an unexpected entry type")
               if member.isfile():
                   total_size += member.size
                   regular_files.add(name)
@@ -834,15 +828,9 @@ jobs:
               if member.isdir():
                   continue
               if member.issym():
-                  if ".bin" not in path.parts or "\\" in member.linkname:
-                      raise SystemExit("Marketplace toolchain archive contains an unexpected symlink")
-                  link = PurePosixPath(member.linkname)
-                  if link.is_absolute():
-                      raise SystemExit("Marketplace toolchain archive contains an absolute symlink")
-                  resolved = normalize(path.parent.parts + link.parts)
-                  if not resolved or resolved[0] != "node_modules":
-                      raise SystemExit("Marketplace toolchain symlink escapes node_modules")
-                  symlinks[name] = "/".join(resolved)
+                  if (name, member.linkname) != trusted_symlink:
+                      raise SystemExit("Marketplace toolchain archive contains a symbolic link")
+                  symlinks[name] = "node_modules/@vscode/vsce/vsce"
                   continue
               if member.islnk() or not (member.isfile() or member.isdir()):
                   raise SystemExit("Marketplace toolchain archive contains an unsupported file type")
