@@ -865,6 +865,24 @@ func TestScopedGitPathHelpersTreatColonMagicTrackedDiffPathsLiterally(t *testing
 	assertSingleLockfileDriftWarning(t, warnings, err, "npm in :(glob)pkg: package.json changed while no matching lockfile changed", "npm install")
 }
 
+func TestDetectLockfileDriftTracksManifestPathContainingNewline(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	packageDir := "pkg\nname"
+	manifestPath := filepath.Join(packageDir, manifestFileName)
+	writeFile(t, filepath.Join(repo, manifestPath), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, packageDir, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+
+	writeFile(t, filepath.Join(repo, manifestPath), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in pkg\nname: package.json changed while no matching lockfile changed", "npm install")
+}
+
 func TestScopedGitPathHelpersTreatColonMagicUntrackedPathsLiterally(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
