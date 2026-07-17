@@ -331,112 +331,91 @@ func TestGitPathUsesNamedFilterDriver(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	t.Run("git command construction failure", func(t *testing.T) {
-		sentinel := errors.New("resolve probe git")
-		originalResolve := resolveGitBinaryPathFn
-		resolveGitBinaryPathFn = func() (string, error) { return "", sentinel }
-		t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
-
-		active, err := gitPathUsesNamedFilterDriver(context.Background(), t.TempDir(), gitFilterPathDriver{path: manifestFileName, driver: "set"})
-		if !errors.Is(err, sentinel) {
-			t.Fatalf("expected git resolution failure, got %v", err)
-		}
-		if active {
-			t.Fatal("expected failed probe command construction to remain inactive")
-		}
-	})
-
+	t.Run("git command construction failure", testGitPathUsesNamedFilterDriverCommandConstructionFailure)
 	t.Run("inactive boolean state", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter\n")
-		initGitRepo(t, repo)
-
-		active, err := gitPathUsesNamedFilterDriver(context.Background(), repo, gitFilterPathDriver{path: manifestFileName, driver: "set"})
-		if err != nil {
-			t.Fatalf("gitPathUsesNamedFilterDriver: %v", err)
-		}
-		if active {
-			t.Fatal("expected bare boolean filter state to remain inactive")
-		}
+		assertGitPathUsesNamedFilterDriver(t, ".gitattributes", manifestFileName+" filter\n", false, false)
 	})
-
 	t.Run("explicit special-name clean driver", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-		writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=set\n")
-		initGitRepo(t, repo)
-
-		active, err := gitPathUsesNamedFilterDriver(context.Background(), repo, gitFilterPathDriver{path: manifestFileName, driver: "set"})
-		if err != nil {
-			t.Fatalf("gitPathUsesNamedFilterDriver: %v", err)
-		}
-		if !active {
-			t.Fatal("expected explicit state-named clean driver to be classified active")
-		}
+		assertGitPathUsesNamedFilterDriver(t, ".gitattributes", manifestFileName+" filter=set\n", false, true)
 	})
-
 	t.Run("explicit special-name process driver from info attributes", func(t *testing.T) {
-		repo := t.TempDir()
-		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-		initGitRepo(t, repo)
-		writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter=set\n")
+		assertGitPathUsesNamedFilterDriver(t, filepath.Join(".git", "info", "attributes"), manifestFileName+" filter=set\n", true, true)
+	})
+	t.Run("marker probe failure is active but generic probe failure is not", testGitPathUsesNamedFilterDriverProbeFailures)
+}
 
-		active, err := gitPathUsesNamedFilterDriver(context.Background(), repo, gitFilterPathDriver{path: manifestFileName, driver: "set"})
-		if err != nil {
-			t.Fatalf("gitPathUsesNamedFilterDriver: %v", err)
-		}
-		if !active {
-			t.Fatal("expected explicit state-named process driver to be classified active")
-		}
+func testGitPathUsesNamedFilterDriverCommandConstructionFailure(t *testing.T) {
+	sentinel := errors.New("resolve probe git")
+	originalResolve := resolveGitBinaryPathFn
+	resolveGitBinaryPathFn = func() (string, error) { return "", sentinel }
+	t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
+
+	active, err := gitPathUsesNamedFilterDriver(context.Background(), t.TempDir(), gitFilterPathDriver{path: manifestFileName, driver: "set"})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected git resolution failure, got %v", err)
+	}
+	if active {
+		t.Fatal("expected failed probe command construction to remain inactive")
+	}
+}
+
+func assertGitPathUsesNamedFilterDriver(t *testing.T, attributePath, attribute string, writeAttributeAfterInit, wantActive bool) {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	if !writeAttributeAfterInit {
+		writeFile(t, filepath.Join(repo, attributePath), attribute)
+	}
+	initGitRepo(t, repo)
+	if writeAttributeAfterInit {
+		writeFile(t, filepath.Join(repo, attributePath), attribute)
+	}
+
+	active, err := gitPathUsesNamedFilterDriver(context.Background(), repo, gitFilterPathDriver{path: manifestFileName, driver: "set"})
+	if err != nil {
+		t.Fatalf("gitPathUsesNamedFilterDriver: %v", err)
+	}
+	if active != wantActive {
+		t.Fatalf("expected active=%t, got %t", wantActive, active)
+	}
+}
+
+func testGitPathUsesNamedFilterDriverProbeFailures(t *testing.T) {
+	originalResolve := resolveGitBinaryPathFn
+	originalExec := execGitCommandContextFn
+	resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+	t.Cleanup(func() {
+		resolveGitBinaryPathFn = originalResolve
+		execGitCommandContextFn = originalExec
 	})
 
-	t.Run("marker probe failure is active but generic probe failure is not", func(t *testing.T) {
-		originalResolve := resolveGitBinaryPathFn
-		originalExec := execGitCommandContextFn
-		resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
-		execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
-			subcommand := gitSubcommandArgs(args)
-			if len(subcommand) >= 2 && subcommand[0] == "hash-object" && subcommand[1] == "--stdin" {
-				return shellEscapedOutputCommand(ctx, "rawhash\n"), nil
-			}
-			if len(subcommand) >= 1 && subcommand[0] == "hash-object" {
-				return exec.CommandContext(ctx, "/bin/sh", "-c", `printf '%s\n' "$1" >&2; exit 2`, "git-probe", "__LOPPER_LOCKFILE_FILTER_PROBE__"), nil
-			}
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
-		}
-		t.Cleanup(func() {
-			resolveGitBinaryPathFn = originalResolve
-			execGitCommandContextFn = originalExec
-		})
+	assertGitFilterProbeClassification(t, gitFilterProbeMarker, true, false)
+	assertGitFilterProbeClassification(t, "generic-probe-failure", false, true)
+}
 
-		active, err := gitPathUsesNamedFilterDriver(context.Background(), t.TempDir(), gitFilterPathDriver{path: manifestFileName, driver: "set"})
-		if err != nil {
-			t.Fatalf("expected marked probe failure to classify active, got %v", err)
-		}
-		if !active {
-			t.Fatal("expected marked probe failure to classify active")
-		}
+func assertGitFilterProbeClassification(t *testing.T, probeFailure string, wantActive, wantErr bool) {
+	t.Helper()
+	execGitCommandContextFn = gitFilterProbeCommandStub(probeFailure)
+	active, err := gitPathUsesNamedFilterDriver(context.Background(), t.TempDir(), gitFilterPathDriver{path: manifestFileName, driver: "set"})
+	if (err != nil) != wantErr {
+		t.Fatalf("expected error=%t for probe output %q, got %v", wantErr, probeFailure, err)
+	}
+	if active != wantActive {
+		t.Fatalf("expected active=%t for probe output %q, got %t", wantActive, probeFailure, active)
+	}
+}
 
-		execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
-			subcommand := gitSubcommandArgs(args)
-			if len(subcommand) >= 2 && subcommand[0] == "hash-object" && subcommand[1] == "--stdin" {
-				return shellEscapedOutputCommand(ctx, "rawhash\n"), nil
-			}
-			if len(subcommand) >= 1 && subcommand[0] == "hash-object" {
-				return exec.CommandContext(ctx, "/bin/sh", "-c", `printf '%s\n' "$1" >&2; exit 2`, "git-probe", "generic-probe-failure"), nil
-			}
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
+func gitFilterProbeCommandStub(probeFailure string) func(context.Context, string, ...string) (*exec.Cmd, error) {
+	return func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
+		subcommand := gitSubcommandArgs(args)
+		if len(subcommand) >= 2 && subcommand[0] == "hash-object" && subcommand[1] == "--stdin" {
+			return shellEscapedOutputCommand(ctx, "rawhash\n"), nil
 		}
-
-		active, err = gitPathUsesNamedFilterDriver(context.Background(), t.TempDir(), gitFilterPathDriver{path: manifestFileName, driver: "set"})
-		if err == nil {
-			t.Fatal("expected generic probe failure to return an error")
+		if len(subcommand) >= 1 && subcommand[0] == "hash-object" {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", `printf '%s\n' "$1" >&2; exit 2`, "git-probe", probeFailure), nil
 		}
-		if active {
-			t.Fatal("expected generic probe failure to remain inactive")
-		}
-	})
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1"), nil
+	}
 }
 
 func gitSubcommandArgs(args []string) []string {
