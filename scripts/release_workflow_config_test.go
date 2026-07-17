@@ -709,7 +709,7 @@ func TestMarketplaceToolchainValidatorRejectsCanonicalAliases(t *testing.T) {
 		"node_modules/./@vscode/vsce/vsce",
 	})
 
-	assertTarValidatorRejects(t, validator, archivePath, "duplicate path")
+	assertTarValidatorRejects(t, validator, archivePath, "unsafe path")
 }
 
 func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
@@ -769,6 +769,46 @@ func TestFeatureHistoryWorktreeValidatorAcceptsHiddenGitArchiveShape(t *testing.
 	})
 
 	assertTarValidatorAccepts(t, validator, archivePath)
+}
+
+func TestTarValidatorsRejectNoncanonicalMemberForms(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	marketplaceStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	featureHistoryStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+
+	marketplaceBase := []tarFixtureMember{
+		regularTarMember("package.json", 0o644),
+		regularTarMember("package-lock.json", 0o644),
+	}
+	marketplaceCases := []tarValidatorFixture{
+		{name: "absolute", members: []tarFixtureMember{regularTarMember("/node_modules/tool", 0o644)}, want: "unsafe path"},
+		{name: "parent traversal", members: []tarFixtureMember{regularTarMember("../node_modules/tool", 0o644)}, want: "unsafe path"},
+		{name: "unexpected dot root", members: []tarFixtureMember{regularTarMember(".root/tool", 0o644)}, want: "unexpected path"},
+		{name: "leading dot segment", members: []tarFixtureMember{regularTarMember("./node_modules/tool", 0o644)}, want: "unsafe path"},
+		{name: "internal dot segment", members: []tarFixtureMember{regularTarMember("node_modules/./tool", 0o644)}, want: "unsafe path"},
+		{name: "empty segment", members: []tarFixtureMember{regularTarMember("node_modules//tool", 0o644)}, want: "unsafe path"},
+		{name: "internal parent traversal", members: []tarFixtureMember{regularTarMember("node_modules/tool/../other", 0o644)}, want: "unsafe path"},
+		{name: "canonical alias", members: []tarFixtureMember{regularTarMember("node_modules/tool", 0o644), regularTarMember("node_modules/./tool", 0o644)}, want: "unsafe path"},
+		{name: "trusted symlink path alias", members: []tarFixtureMember{{name: "node_modules/./.bin/vsce", mode: 0o777, typeflag: tar.TypeSymlink, linkname: "../@vscode/vsce/vsce"}}, want: "unsafe path"},
+		{name: "trusted symlink target alias", members: []tarFixtureMember{{name: "node_modules/.bin/vsce", mode: 0o777, typeflag: tar.TypeSymlink, linkname: "../@vscode/vsce/./vsce"}}, want: "symbolic link"},
+	}
+	assertTarValidatorFixtures(t, embeddedPythonScript(t, marketplaceStep.Run, `python3 - "${archive_file}" <<'PY'`), marketplaceBase, marketplaceCases)
+
+	featureRoot := "feature-history-push"
+	featureCases := []tarValidatorFixture{
+		{name: "absolute", members: []tarFixtureMember{regularTarMember("/"+featureRoot+"/.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "parent traversal", members: []tarFixtureMember{regularTarMember("../"+featureRoot+"/.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "unexpected dot root", members: []tarFixtureMember{regularTarMember("."+featureRoot+"/.git/HEAD", 0o644)}, want: "unexpected path"},
+		{name: "leading dot segment", members: []tarFixtureMember{regularTarMember("./"+featureRoot+"/.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "internal dot segment", members: []tarFixtureMember{regularTarMember(featureRoot+"/./.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "empty segment", members: []tarFixtureMember{regularTarMember(featureRoot+"//.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "internal parent traversal", members: []tarFixtureMember{regularTarMember(featureRoot+"/work/../.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "canonical alias", members: []tarFixtureMember{regularTarMember(featureRoot+"/.git/HEAD", 0o644), regularTarMember(featureRoot+"/./.git/HEAD", 0o644)}, want: "unsafe path"},
+	}
+	assertTarValidatorFixtures(t, embeddedPythonScript(t, featureHistoryStep.Run, `python3 - "${archive_file}" <<'PY'`), nil, featureCases)
 }
 
 func TestReleaseWorkflowFailsClosedWhenConfiguredMarketplaceTokenDisappears(t *testing.T) {
@@ -3222,6 +3262,12 @@ type tarFixtureMember struct {
 	contents []byte
 }
 
+type tarValidatorFixture struct {
+	name    string
+	members []tarFixtureMember
+	want    string
+}
+
 func regularTarMember(name string, mode int64) tarFixtureMember {
 	return tarFixtureMember{name: name, mode: mode, typeflag: tar.TypeReg, contents: []byte("fixture\n")}
 }
@@ -3289,5 +3335,17 @@ func assertTarValidatorAccepts(t *testing.T, validator string, archivePath strin
 	cmd.Stdin = strings.NewReader(validator)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("tar validator rejected trusted archive %s: %v\n%s", archivePath, err, output)
+	}
+}
+
+func assertTarValidatorFixtures(t *testing.T, validator string, base []tarFixtureMember, fixtures []tarValidatorFixture) {
+	t.Helper()
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			members := append([]tarFixtureMember{}, base...)
+			members = append(members, fixture.members...)
+			assertTarValidatorRejects(t, validator, writeTarFixture(t, members), fixture.want)
+		})
 	}
 }
