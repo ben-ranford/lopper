@@ -1382,6 +1382,56 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "feature history push")
 }
 
+func TestReleaseWorkflowSplitsFeatureHistoryPreparationFromTokenedPush(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
+	assertWorkflowJobNeeds(t, preparation, "feature history push preparation", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobPermissions(t, preparation, "feature history push preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobOmitsText(t, preparation, "PUSH_TOKEN", "feature history push preparation must not receive PUSH_TOKEN")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.MAIN_SYNC_PAT", "feature history push preparation must not receive MAIN_SYNC_PAT")
+	workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
+	archive := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Archive prepared trusted feature history worktree")
+	assertWorkflowStepRunContainsAll(t, archive, "prepared feature history worktree archive", []string{
+		`archive_file="${archive_root}/prepared-feature-release-history-worktree.tar.gz"`,
+		`tar --create --gzip --file "${archive_file}" -C "${RUNNER_TEMP}" "feature-history-push"`,
+		`sha256sum "$(basename "${archive_file}")" > "${checksum_file}"`,
+	})
+	upload := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Upload prepared trusted feature history worktree")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "prepared feature history artifact name", got: upload.With["name"], want: "prepared-feature-release-history-worktree"},
+		{label: "prepared feature history artifact path", got: upload.With["path"], want: "${{ runner.temp }}/prepared-feature-release-history"},
+	})
+
+	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
+	assertWorkflowJobNeeds(t, publication, "feature history push", workflowJobNeeds{"prepare-feature-release-history-push"})
+	assertWorkflowJobPermissions(t, publication, "feature history push", map[string]string{"contents": "write"})
+	download := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download prepared trusted feature history worktree")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "prepared feature history download name", got: download.With["name"], want: "prepared-feature-release-history-worktree"},
+		{label: "prepared feature history download path", got: download.With["path"], want: "${{ runner.temp }}/prepared-feature-release-history-input"},
+	})
+	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+	assertWorkflowStepRunContainsAll(t, validate, "prepared feature history worktree validation", []string{
+		`sha256sum --check --strict "${checksum_file}"`,
+		`python3 - "${archive_file}" <<'PY'`,
+		`if member.issym() or member.islnk():`,
+		`tar --extract --gzip --file "${archive_file}" --directory "${worktree_parent}"`,
+		`if [ ! -d "${worktree_dir}/.git" ]; then`,
+	})
+	assertWorkflowStepEnvMissing(t, validate, "PUSH_TOKEN", "prepared worktree validation must be tokenless")
+	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push feature history commit")
+	if push.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("feature history PUSH_TOKEN = %q", push.Env["PUSH_TOKEN"])
+	}
+	if _, ok := push.Env["READ_TOKEN"]; ok {
+		t.Fatal("feature history push must not receive READ_TOKEN")
+	}
+}
+
 func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
 	t.Parallel()
 
