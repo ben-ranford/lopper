@@ -1632,23 +1632,23 @@ jobs:
           include-hidden-files: true
           overwrite: true
 
-  push-feature-release-history:
+  prepare-feature-release-history-push:
     needs:
       - prepare-release
       - prepare-feature-release-history
     if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
-    concurrency:
-      group: feature-release-history-main
-      cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      release_tag: ${{ needs.prepare-release.outputs.tag }}
+      release_sha: ${{ needs.prepare-release.outputs.sha }}
     steps:
       - name: Download feature history patch
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: feature-history-patch
-          path: feature-history-input
+          path: ${{ runner.temp }}/feature-history-input
 
       - name: Prepare trusted feature history commit
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
@@ -1667,7 +1667,7 @@ jobs:
           git_home="$("${mktemp_bin}" -d)"
           trap '/bin/rm -rf "${git_home}"' EXIT
           repo_dir="${RUNNER_TEMP}/feature-history-push"
-          input_dir="${GITHUB_WORKSPACE}/feature-history-input"
+          input_dir="${RUNNER_TEMP}/feature-history-input"
           patch_file="${input_dir}/feature-history.patch"
 
           if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
@@ -1760,11 +1760,141 @@ jobs:
             exit 1
           fi
 
+      - name: Archive prepared trusted feature history worktree
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          PATH: /usr/bin:/bin
+        run: |
+          archive_root="${RUNNER_TEMP}/prepared-feature-release-history"
+          archive_file="${archive_root}/prepared-feature-release-history-worktree.tar.gz"
+          checksum_file="${archive_root}/SHA256SUMS"
+          repo_dir="${RUNNER_TEMP}/feature-history-push"
+
+          if [ ! -d "${repo_dir}/.git" ] || [ -L "${repo_dir}" ] || [ -L "${repo_dir}/.git" ]; then
+            echo "::error::Prepared feature history worktree is unavailable or unsafe for archival." >&2
+            exit 1
+          fi
+          rm -rf "${archive_root}"
+          mkdir -p "${archive_root}"
+          tar --create --gzip --file "${archive_file}" --directory "${RUNNER_TEMP}" feature-history-push
+          if [ ! -s "${archive_file}" ] || [ -L "${archive_file}" ] || [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "::error::Prepared feature history worktree archive is missing, unsafe, or larger than 256 MiB." >&2
+            exit 1
+          fi
+          (
+            cd "${archive_root}"
+            sha256sum "$(basename "${archive_file}")" > "${checksum_file}"
+          )
+
+      - name: Upload prepared trusted feature history worktree
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: prepared-feature-release-history-worktree
+          path: ${{ runner.temp }}/prepared-feature-release-history
+          if-no-files-found: error
+
+  push-feature-release-history:
+    needs:
+      - prepare-feature-release-history-push
+    if: ${{ needs.prepare-feature-release-history-push.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: feature-release-history-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Download prepared trusted feature history worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: prepared-feature-release-history-worktree
+          path: ${{ runner.temp }}/prepared-feature-release-history-input
+
+      - name: Validate prepared trusted feature history worktree
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          PATH: /usr/bin:/bin
+        run: |
+          artifact_root="${RUNNER_TEMP}/prepared-feature-release-history-input"
+          archive_file="${artifact_root}/prepared-feature-release-history-worktree.tar.gz"
+          checksum_file="${artifact_root}/SHA256SUMS"
+          worktree_parent="${RUNNER_TEMP}/prepared-feature-release-history"
+          worktree_dir="${worktree_parent}/feature-history-push"
+
+          if [ ! -f "${archive_file}" ] || [ -L "${archive_file}" ] || [ ! -f "${checksum_file}" ] || [ -L "${checksum_file}" ]; then
+            echo "::error::Prepared feature history worktree artifact is incomplete or unsafe." >&2
+            exit 1
+          fi
+          if find "${artifact_root}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "::error::Prepared feature history worktree artifact contains an unexpected path." >&2
+            exit 1
+          fi
+          if [ "$(find "${artifact_root}" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -ne 2 ]; then
+            echo "::error::Prepared feature history worktree artifact must contain exactly an archive and checksum manifest." >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "::error::Prepared feature history worktree archive is larger than 256 MiB." >&2
+            exit 1
+          fi
+          if grep -Ev '^[0-9a-f]{64}  prepared-feature-release-history-worktree[.]tar[.]gz$' "${checksum_file}" | grep -q .; then
+            echo "::error::Prepared feature history worktree checksum manifest contains an unexpected path." >&2
+            exit 1
+          fi
+          (
+            cd "${artifact_root}"
+            sha256sum --check --strict "${checksum_file}"
+          )
+
+          rm -rf "${worktree_parent}"
+          mkdir -p "${worktree_parent}"
+          python3 - "${archive_file}" <<'PY'
+          import posixpath
+          import sys
+          import tarfile
+
+          archive_path = sys.argv[1]
+          allowed_root = "feature-history-push"
+
+          with tarfile.open(archive_path, "r:gz") as archive:
+              members = archive.getmembers()
+              if not members or len(members) > 65536:
+                  raise SystemExit("Prepared feature history worktree archive contains an unexpected number of members")
+
+              total_size = 0
+              seen_names = set()
+              for member in members:
+                  raw_name = member.name
+                  components = raw_name.split("/")
+                  if not raw_name or raw_name.startswith("/") or any(component in ("", ".", "..") for component in components):
+                      raise SystemExit(f"Prepared feature history worktree archive contains an unsafe path: {raw_name}")
+                  normalized = posixpath.normpath(raw_name)
+                  if raw_name != normalized:
+                      raise SystemExit(f"Prepared feature history worktree archive contains a non-canonical path: {raw_name}")
+                  if normalized in seen_names:
+                      raise SystemExit(f"Prepared feature history worktree archive contains a duplicate path: {raw_name}")
+                  seen_names.add(normalized)
+                  if normalized.split("/", 1)[0] != allowed_root:
+                      raise SystemExit(f"Prepared feature history worktree archive contains an unexpected path: {raw_name}")
+                  if member.issym() or member.islnk():
+                      raise SystemExit(f"Prepared feature history worktree archive contains a link: {raw_name}")
+                  if not (member.isdir() or member.isfile()):
+                      raise SystemExit(f"Prepared feature history worktree archive contains an unexpected entry type: {raw_name}")
+                  total_size += member.size
+                  if total_size > 1073741824:
+                      raise SystemExit("Prepared feature history worktree archive exceeds the 1 GiB expanded size limit")
+          PY
+          tar --extract --gzip --no-same-owner --no-same-permissions --file "${archive_file}" --directory "${worktree_parent}"
+          if [ ! -d "${worktree_dir}/.git" ] || [ -L "${worktree_dir}" ] || [ -L "${worktree_dir}/.git" ]; then
+            echo "::error::Prepared feature history worktree archive did not restore a safe git worktree." >&2
+            exit 1
+          fi
+
       - name: Push feature history commit
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+          RELEASE_TAG: ${{ needs.prepare-feature-release-history-push.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.prepare-feature-release-history-push.outputs.release_sha }}
           PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |
           git_bin=/usr/bin/git
@@ -1778,7 +1908,7 @@ jobs:
           fi
           git_home="$("${mktemp_bin}" -d)"
           trap '/bin/rm -rf "${git_home}"' EXIT
-          repo_dir="${RUNNER_TEMP}/feature-history-push"
+          repo_dir="${RUNNER_TEMP}/prepared-feature-release-history/feature-history-push"
 
           git_safe() {
             "${env_bin}" -i \

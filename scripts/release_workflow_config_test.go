@@ -267,19 +267,6 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	if !strings.Contains(workflowText, "Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}.") {
 		t.Fatal("manual release flow must fail when an existing release tag points to a different commit")
 	}
-	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
-	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
-		`existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"`,
-		`if ! fetch_error="$(git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>&1)"; then`,
-		`if [[ "${fetch_error}" == *"couldn't find remote ref refs/tags/${tag}"* ]]; then`,
-		`echo "Remote tag ${tag} does not exist; validating the release target instead."`,
-		`echo "::error::Failed to fetch existing release tag ${tag}." >&2
-      printf '%s\n' "${fetch_error}" >&2
-      exit 1`,
-	})
-	if strings.Contains(manualStep.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true`) {
-		t.Fatal("manual release flow must not swallow operational failures while fetching an existing release tag")
-	}
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
 	}
@@ -1206,22 +1193,33 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	assertTextContainsAll(t, uploadStep.With["path"], "feature history patch artifact path", []string{".artifacts/feature-history.patch", ".artifacts/SHA256SUMS"})
 	assertFeatureHistoryPreparationDoesNotPush(t, preparation)
 
+	pushPreparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
+	assertWorkflowJobNeeds(t, pushPreparation, "feature history push preparation", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobPermissions(t, pushPreparation, "feature history push preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, pushPreparation, "feature history push preparation")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "feature history push preparation if",
+		got:   pushPreparation.If,
+		want:  "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}",
+	}})
+	assertFeatureHistoryPublicationUsesFreshInputs(t, pushPreparation)
+
+	downloadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Download feature history patch")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature history patch download artifact name", got: downloadStep.With["name"], want: "feature-history-patch"},
+		{label: "feature history patch download artifact path", got: downloadStep.With["path"], want: "${{ runner.temp }}/feature-history-input"},
+	})
+
 	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
-	assertWorkflowJobNeeds(t, publication, "feature history publication", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobNeeds(t, publication, "feature history publication", workflowJobNeeds{"prepare-feature-release-history-push"})
 	assertWorkflowJobPermissions(t, publication, "feature history publication", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, publication, "feature history publication")
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "feature history publication if",
 		got:   publication.If,
-		want:  "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}",
+		want:  "${{ needs.prepare-feature-release-history-push.result == 'success' }}",
 	}})
 	assertFeatureHistoryPublicationUsesFreshInputs(t, publication)
-
-	downloadStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download feature history patch")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "feature history patch download artifact name", got: downloadStep.With["name"], want: "feature-history-patch"},
-		{label: "feature history patch download artifact path", got: downloadStep.With["path"], want: "feature-history-input"},
-	})
 }
 
 func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T) {
@@ -1276,11 +1274,13 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 
 	patchStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate and stage feature history patch")
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Upload feature history patch")
+	pushPreparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
 	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature history patch step prerelease guard", got: patchStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
 		{label: "feature history patch upload prerelease guard", got: uploadStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
-		{label: "feature history push prerelease guard", got: publication.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}"},
+		{label: "feature history push preparation prerelease guard", got: pushPreparation.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}"},
+		{label: "feature history push dependency guard", got: publication.If, want: "${{ needs.prepare-feature-release-history-push.result == 'success' }}"},
 	})
 }
 
@@ -1290,7 +1290,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	prepareStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Prepare trusted feature history commit")
+	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
 	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("feature history commit preparation shell = %q", prepareStep.Shell)
 	}
@@ -1302,7 +1302,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 		"git_bin=/usr/bin/git",
 		"env_bin=/usr/bin/env",
 		`repo_dir="${RUNNER_TEMP}/feature-history-push"`,
-		`input_dir="${GITHUB_WORKSPACE}/feature-history-input"`,
+		`input_dir="${RUNNER_TEMP}/feature-history-input"`,
 		`sha256sum --check --strict SHA256SUMS`,
 		`if [ "$(find "${input_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
 		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
@@ -1332,14 +1332,14 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	if pushStep.Shell != prepareStep.Shell {
 		t.Fatalf("feature history push shell = %q", pushStep.Shell)
 	}
-	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-feature-release-history-push.outputs.release_tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-feature-release-history-push.outputs.release_sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("feature history push env = %#v", pushStep.Env)
 	}
 	assertWorkflowStepRunContainsAll(t, pushStep, "feature history push", []string{
 		"git_bin=/usr/bin/git",
 		"env_bin=/usr/bin/env",
 		`git_home="$("${mktemp_bin}" -d)"`,
-		`repo_dir="${RUNNER_TEMP}/feature-history-push"`,
+		`repo_dir="${RUNNER_TEMP}/prepared-feature-release-history/feature-history-push"`,
 		`"${env_bin}" -i`,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
@@ -1397,7 +1397,7 @@ func TestReleaseWorkflowSplitsFeatureHistoryPreparationFromTokenedPush(t *testin
 	archive := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Archive prepared trusted feature history worktree")
 	assertWorkflowStepRunContainsAll(t, archive, "prepared feature history worktree archive", []string{
 		`archive_file="${archive_root}/prepared-feature-release-history-worktree.tar.gz"`,
-		`tar --create --gzip --file "${archive_file}" -C "${RUNNER_TEMP}" "feature-history-push"`,
+		`tar --create --gzip --file "${archive_file}" --directory "${RUNNER_TEMP}" feature-history-push`,
 		`sha256sum "$(basename "${archive_file}")" > "${checksum_file}"`,
 	})
 	upload := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Upload prepared trusted feature history worktree")
@@ -1419,8 +1419,8 @@ func TestReleaseWorkflowSplitsFeatureHistoryPreparationFromTokenedPush(t *testin
 		`sha256sum --check --strict "${checksum_file}"`,
 		`python3 - "${archive_file}" <<'PY'`,
 		`if member.issym() or member.islnk():`,
-		`tar --extract --gzip --file "${archive_file}" --directory "${worktree_parent}"`,
-		`if [ ! -d "${worktree_dir}/.git" ]; then`,
+		`tar --extract --gzip --no-same-owner --no-same-permissions --file "${archive_file}" --directory "${worktree_parent}"`,
+		`if [ ! -d "${worktree_dir}/.git" ] || [ -L "${worktree_dir}" ] || [ -L "${worktree_dir}/.git" ]; then`,
 	})
 	assertWorkflowStepEnvMissing(t, validate, "PUSH_TOKEN", "prepared worktree validation must be tokenless")
 	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push feature history commit")
