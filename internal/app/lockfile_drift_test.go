@@ -1015,6 +1015,18 @@ func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierRuleFindingOverLaterSam
 	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 }
 
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierRuleFindingOverLaterSameSnapshotImmediateFinding(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	initGitRepo(t, repo)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+}
+
 func TestDetectLockfileDriftStopOnFirstPrioritizesBufferedGitFindingOverLaterImmediateFinding(t *testing.T) {
 	repo := t.TempDir()
 	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
