@@ -326,13 +326,7 @@ func collectLockfileManifestChangeCandidatePaths(ctx context.Context, repoPath s
 			if err != nil {
 				return err
 			}
-			for _, path := range paths {
-				if _, ok := seen[path]; ok {
-					continue
-				}
-				seen[path] = struct{}{}
-				candidates = append(candidates, path)
-			}
+			candidates = appendUniqueLockfilePaths(candidates, seen, paths)
 			return nil
 		},
 	}
