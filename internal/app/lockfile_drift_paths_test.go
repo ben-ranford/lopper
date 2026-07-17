@@ -564,7 +564,7 @@ func assertScopedGitPathHelperConstructionFailures(t *testing.T) {
 
 func TestGitDiffNameOnlyForPathsUsesBoundedLiteralBatches(t *testing.T) {
 	paths := scopedGitBatchRegressionPaths()
-	commands := captureScopedGitPathspecCommands(t, false)
+	commands := captureScopedGitPathspecCommands(t, true)
 
 	got, err := gitDiffNameOnlyForPaths(context.Background(), t.TempDir(), paths, "HEAD")
 	if err != nil {
@@ -973,23 +973,23 @@ if printf '%s' "$args" | grep -q 'config --null --includes --get-regexp'; then
 fi
 if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
   if [ "$mode" = "pathscope-head" ]; then
-    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv HEAD --name-only -- :(literal)package-lock.json :(literal)package.json'; then
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv HEAD --name-only -z -- :(literal)package-lock.json :(literal)package.json'; then
       echo "missing pathspec-scoped head diff args: $args" >&2
       exit 1
     fi
-    printf 'package.json\n'
+    printf 'package.json\000'
     exit 0
   fi
   if [ "$mode" = "pathscope-unborn" ]; then
     if printf '%s' "$args" | grep -q -- '--cached'; then
-      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -- :(literal)package.json'; then
+      if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --cached --name-only -z -- :(literal)package.json'; then
         echo "missing pathspec-scoped cached diff args: $args" >&2
         exit 1
       fi
-      printf 'package.json\n'
+      printf 'package.json\000'
       exit 0
     fi
-    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -- :(literal)package.json'; then
+    if ! printf '%s' "$args" | grep -q -- 'diff --no-ext-diff --no-textconv --name-only -z -- :(literal)package.json'; then
       echo "missing pathspec-scoped unstaged diff args: $args" >&2
       exit 1
     fi

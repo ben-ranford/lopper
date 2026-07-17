@@ -264,7 +264,7 @@ func gitDiffNameOnlyForPaths(ctx context.Context, repoPath string, paths []strin
 func gitDiffNameOnly(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
 	args := []string{"diff", "--no-ext-diff", "--no-textconv"}
 	args = append(args, diffArgs...)
-	args = append(args, "--name-only", "--")
+	args = append(args, "--name-only", "-z", "--")
 	args = append(args, gitLiteralPathspecs(paths)...)
 	command, err := gitCommandContext(ctx, repoPath, args...)
 	if err != nil {
@@ -275,7 +275,7 @@ func gitDiffNameOnly(ctx context.Context, repoPath string, paths []string, diffA
 	if err != nil {
 		return nil, fmt.Errorf("run git %s: %w", strings.Join(args, " "), err)
 	}
-	return parseGitOutputLines(output), nil
+	return parseNULTerminatedGitOutput(output), nil
 }
 
 func mergeGitPaths(groups ...[]string) []string {
