@@ -45,7 +45,8 @@ type workflowJobConfig struct {
 }
 
 type workflowStrategy struct {
-	Matrix workflowMatrix `yaml:"matrix"`
+	FailFast *bool          `yaml:"fail-fast"`
+	Matrix   workflowMatrix `yaml:"matrix"`
 }
 
 type workflowMatrix struct {
@@ -1711,32 +1712,8 @@ func TestReleaseOrchestrationImageTagStepsUseSanitizer(t *testing.T) {
 	}
 	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
 
-	testCases := []struct {
-		jobName  string
-		stepName string
-		suffix   string
-	}{
-		{
-			jobName:  "prepare-ghcr-amd64",
-			stepName: "Compute amd64 image tags",
-			suffix:   "-amd64",
-		},
-		{
-			jobName:  "prepare-ghcr-arm64",
-			stepName: "Compute arm64 image tags",
-			suffix:   "-arm64",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.jobName, func(t *testing.T) {
-			t.Parallel()
-
-			step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
-			assertArchImageTagStep(t, step, tc.stepName, tc.suffix)
-		})
-	}
+	step := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Compute image tags")
+	assertArchImageTagStep(t, step, step.Name, "-${{ matrix.architecture }}")
 
 	t.Run("manifest", func(t *testing.T) {
 		manifestStep := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Compute manifest image tags")
@@ -1770,12 +1747,15 @@ func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 	if prepare.RunsOn != "${{ matrix.runner }}" {
 		t.Fatalf("prepare-ghcr runs-on = %q, want matrix runner", prepare.RunsOn)
 	}
+	if prepare.Strategy.FailFast == nil || *prepare.Strategy.FailFast {
+		t.Fatal("prepare-ghcr matrix must keep architecture preparation legs independent")
+	}
 
 	build := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Build OCI publication payload")
 	if build.ID != "" {
 		t.Fatalf("prepare-ghcr build step ID = %q, want no unused ID", build.ID)
 	}
-	assertWorkflowJobNeeds(t, workflow.Jobs["publish-ghcr-images"], []string{"prepare-ghcr"}, "publish-ghcr-images")
+	assertWorkflowJobNeeds(t, workflow.Jobs["publish-ghcr-images"], "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
@@ -1788,13 +1768,7 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 		{name: "amd64", platform: "linux/amd64"},
 		{name: "arm64", platform: "linux/arm64"},
 	}
-	for _, architecture := range architectures {
-		architecture := architecture
-		t.Run(architecture.name, func(t *testing.T) {
-			t.Parallel()
-			assertTrustedGHCRPreparation(t, workflow, architecture)
-		})
-	}
+	assertTrustedGHCRPreparation(t, workflow)
 	assertTrustedGHCRImagePublisher(t, workflow, architectures)
 
 	t.Run("manifest", func(t *testing.T) {
@@ -1807,10 +1781,10 @@ type ghcrArchitecture struct {
 	platform string
 }
 
-func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig, architecture ghcrArchitecture) {
+func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig) {
 	t.Helper()
 
-	prepareJobName := "prepare-ghcr-" + architecture.name
+	const prepareJobName = "prepare-ghcr"
 	prepare := workflowJobByName(t, workflow.Jobs, prepareJobName)
 	assertWorkflowJobPermissions(t, prepare, prepareJobName, map[string]string{"contents": "read"})
 	assertGHCRJobDoesNotReference(t, prepare, "secrets.GITHUB_TOKEN", prepareJobName)
@@ -1819,27 +1793,33 @@ func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig, archite
 		t.Fatalf("%s checkout persist-credentials = %q, want false", prepareJobName, checkout.With["persist-credentials"])
 	}
 
-	build := workflowStepByName(t, workflow.Jobs, prepareJobName, "Build "+architecture.name+" OCI publication payload")
+	build := workflowStepByName(t, workflow.Jobs, prepareJobName, "Build OCI publication payload")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: prepareJobName + " registry push", got: build.With["push"], want: "false"},
 		{label: prepareJobName + " deferred provenance", got: build.With["provenance"], want: "false"},
 		{label: prepareJobName + " deferred SBOM", got: build.With["sbom"], want: "false"},
-		{label: prepareJobName + " platform", got: build.With["platforms"], want: architecture.platform},
+		{label: prepareJobName + " platform", got: build.With["platforms"], want: "${{ matrix.platform }}"},
 	})
 	assertTextContainsAll(t, build.With["outputs"], prepareJobName+" OCI output", []string{
 		"type=oci",
 		"tar=false",
-		"${{ runner.temp }}/ghcr-" + architecture.name + "-publication/layout",
+		"${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication/layout",
 	})
-	metadata := workflowStepByName(t, workflow.Jobs, prepareJobName, "Prepare "+architecture.name+" publication metadata")
+	metadata := workflowStepByName(t, workflow.Jobs, prepareJobName, "Prepare publication metadata")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: prepareJobName + " metadata architecture", got: metadata.Env["ARCHITECTURE"], want: "${{ matrix.architecture }}"},
+		{label: prepareJobName + " metadata platform", got: metadata.Env["PLATFORM"], want: "${{ matrix.platform }}"},
+	})
 	assertWorkflowStepRunContainsAll(t, metadata, prepareJobName+" metadata", []string{
+		`payload_root="${RUNNER_TEMP}/ghcr-${ARCHITECTURE}-publication"`,
+		`--arg platform "${PLATFORM}"`,
 		`find -P . -type f ! -path './SHA256SUMS'`,
 		`> "${payload_root}/SHA256SUMS"`,
 	})
-	upload := workflowStepByName(t, workflow.Jobs, prepareJobName, "Upload "+architecture.name+" OCI publication payload")
+	upload := workflowStepByName(t, workflow.Jobs, prepareJobName, "Upload OCI publication payload")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: prepareJobName + " artifact name", got: upload.With["name"], want: "ghcr-" + architecture.name + "-publication-payload"},
-		{label: prepareJobName + " artifact path", got: upload.With["path"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-publication"},
+		{label: prepareJobName + " artifact name", got: upload.With["name"], want: "ghcr-${{ matrix.architecture }}-publication-payload"},
+		{label: prepareJobName + " artifact path", got: upload.With["path"], want: "${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication"},
 	})
 }
 
@@ -1847,7 +1827,7 @@ func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, arch
 	t.Helper()
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr-amd64", "prepare-ghcr-arm64"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
 	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{"packages": "write"})
 	assertFreshGHCRPublisher(t, publishImages, "Log in to GHCR")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
