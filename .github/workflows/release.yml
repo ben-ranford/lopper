@@ -819,8 +819,12 @@ jobs:
               if path.is_absolute() or not path.parts or ".." in path.parts:
                   raise SystemExit("Marketplace toolchain archive contains an unsafe path")
               name = str(path)
-              if name in names or path.parts[0] not in allowed_roots:
-                  raise SystemExit("Marketplace toolchain archive contains a duplicate or unexpected path")
+              if name in names:
+                  raise SystemExit("Marketplace toolchain archive contains a duplicate path")
+              if member.name != name:
+                  raise SystemExit("Marketplace toolchain archive contains an unsafe path")
+              if path.parts[0] not in allowed_roots:
+                  raise SystemExit("Marketplace toolchain archive contains an unexpected path")
               names.add(name)
 
               if member.isfile():
