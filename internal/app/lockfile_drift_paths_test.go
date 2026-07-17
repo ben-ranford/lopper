@@ -230,6 +230,28 @@ func TestConfiguredGitAttributeDriverErrors(t *testing.T) {
 			t.Fatalf("expected config execution error, got %v", err)
 		}
 	})
+
+	t.Run("state probe construction", func(t *testing.T) {
+		forcedErr := errors.New("construct state filter probe")
+		originalResolve := resolveGitBinaryPathFn
+		originalExec := execGitCommandContextFn
+		resolveGitBinaryPathFn = func() (string, error) { return gitBinaryPath, nil }
+		execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
+			if isExecutableFilterConfigEnumeration(gitSubcommandArgs(args)) {
+				return shellEscapedOutputCommand(ctx, `filter.set.clean\n./helper.sh\000`), nil
+			}
+			return nil, forcedErr
+		}
+		t.Cleanup(func() {
+			resolveGitBinaryPathFn = originalResolve
+			execGitCommandContextFn = originalExec
+		})
+
+		_, err := filterConfiguredGitAttributeDrivers(context.Background(), t.TempDir(), []gitFilterPathDriver{{path: manifestFileName, driver: "set"}})
+		if !errors.Is(err, forcedErr) {
+			t.Fatalf("expected state filter probe construction error, got %v", err)
+		}
+	})
 }
 
 func TestConfiguredGitAttributeDriversMatchExactNullConfigRecords(t *testing.T) {
@@ -308,6 +330,21 @@ func TestGitPathUsesNamedFilterDriver(t *testing.T) {
 	if _, err := gitexec.ResolveBinaryPath(); err != nil {
 		t.Skip("git binary not available")
 	}
+
+	t.Run("git command construction failure", func(t *testing.T) {
+		sentinel := errors.New("resolve probe git")
+		originalResolve := resolveGitBinaryPathFn
+		resolveGitBinaryPathFn = func() (string, error) { return "", sentinel }
+		t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
+
+		active, err := gitPathUsesNamedFilterDriver(context.Background(), t.TempDir(), gitFilterPathDriver{path: manifestFileName, driver: "set"})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("expected git resolution failure, got %v", err)
+		}
+		if active {
+			t.Fatal("expected failed probe command construction to remain inactive")
+		}
+	})
 
 	t.Run("inactive boolean state", func(t *testing.T) {
 		repo := t.TempDir()

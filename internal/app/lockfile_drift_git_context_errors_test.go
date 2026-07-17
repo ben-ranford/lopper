@@ -292,6 +292,15 @@ func TestLockfileFailFastBatchScannerPropagatesSnapshotEvaluationErrors(t *testi
 }
 
 func TestLockfileFailFastBatchScannerReplaysAmbiguousSnapshots(t *testing.T) {
+	t.Run("rule without candidates", func(t *testing.T) {
+		repo, snapshot := newPoetrySnapshot(t, true)
+		rule := lockfileRule{manager: "missing", manifest: "missing.json", lockfiles: []string{"missing.lock"}}
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
+		if err := scanner.flushSnapshotsInOrder(context.Background(), []lockfileDirSnapshot{snapshot}); err != nil {
+			t.Fatalf("expected candidate-free replay to continue, got %v", err)
+		}
+	})
+
 	t.Run("candidate path error", func(t *testing.T) {
 		repo, snapshot := newPoetrySnapshot(t, true)
 		forcedErr := errors.New("forced candidate path failure")
