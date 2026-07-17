@@ -34,14 +34,15 @@ type workflowConfig struct {
 }
 
 type workflowJobConfig struct {
-	If          string               `yaml:"if"`
-	Env         map[string]string    `yaml:"env"`
-	Needs       workflowJobNeeds     `yaml:"needs"`
-	Outputs     map[string]string    `yaml:"outputs"`
-	Permissions map[string]string    `yaml:"permissions"`
-	RunsOn      string               `yaml:"runs-on"`
-	Steps       []workflowStepConfig `yaml:"steps"`
-	Strategy    workflowStrategy     `yaml:"strategy"`
+	ContinueOnError bool                 `yaml:"continue-on-error"`
+	If              string               `yaml:"if"`
+	Env             map[string]string    `yaml:"env"`
+	Needs           workflowJobNeeds     `yaml:"needs"`
+	Outputs         map[string]string    `yaml:"outputs"`
+	Permissions     map[string]string    `yaml:"permissions"`
+	RunsOn          string               `yaml:"runs-on"`
+	Steps           []workflowStepConfig `yaml:"steps"`
+	Strategy        workflowStrategy     `yaml:"strategy"`
 }
 
 type workflowStrategy struct {
@@ -1750,12 +1751,26 @@ func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 	if prepare.Strategy.FailFast == nil || *prepare.Strategy.FailFast {
 		t.Fatal("prepare-ghcr matrix must keep architecture preparation legs independent")
 	}
+	if prepare.ContinueOnError {
+		t.Fatal("prepare-ghcr must fail when an architecture preparation leg fails")
+	}
 
+	imageTags := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Compute image tags")
+	if imageTags.ID != "image_tags" {
+		t.Fatalf("prepare-ghcr image tag step ID = %q, want image_tags", imageTags.ID)
+	}
 	build := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Build OCI publication payload")
 	if build.ID != "" {
 		t.Fatalf("prepare-ghcr build step ID = %q, want no unused ID", build.ID)
 	}
-	assertWorkflowJobNeeds(t, workflow.Jobs["publish-ghcr-images"], "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	if build.With["tags"] != "${{ steps.image_tags.outputs.tags }}" {
+		t.Fatalf("prepare-ghcr build tags = %q, want image_tags output", build.With["tags"])
+	}
+	publishImages := workflow.Jobs["publish-ghcr-images"]
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	if publishImages.If != "" {
+		t.Fatalf("publish-ghcr-images if = %q, want no override of failed-needs handling", publishImages.If)
+	}
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
@@ -1787,7 +1802,9 @@ func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig) {
 	const prepareJobName = "prepare-ghcr"
 	prepare := workflowJobByName(t, workflow.Jobs, prepareJobName)
 	assertWorkflowJobPermissions(t, prepare, prepareJobName, map[string]string{"contents": "read"})
-	assertGHCRJobDoesNotReference(t, prepare, "secrets.GITHUB_TOKEN", prepareJobName)
+	for _, credentialReference := range []string{"secrets.", "github.token"} {
+		assertGHCRJobDoesNotReference(t, prepare, credentialReference, prepareJobName)
+	}
 	checkout := workflowStepByName(t, workflow.Jobs, prepareJobName, "Checkout")
 	if checkout.With["persist-credentials"] != "false" {
 		t.Fatalf("%s checkout persist-credentials = %q, want false", prepareJobName, checkout.With["persist-credentials"])
