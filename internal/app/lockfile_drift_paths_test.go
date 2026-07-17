@@ -564,7 +564,7 @@ func assertScopedGitPathHelperConstructionFailures(t *testing.T) {
 
 func TestGitDiffNameOnlyForPathsUsesBoundedLiteralBatches(t *testing.T) {
 	paths := scopedGitBatchRegressionPaths()
-	commands := captureScopedGitPathspecCommands(t, true)
+	commands := captureScopedGitPathspecCommands(t)
 
 	got, err := gitDiffNameOnlyForPaths(context.Background(), t.TempDir(), paths, "HEAD")
 	if err != nil {
@@ -576,7 +576,7 @@ func TestGitDiffNameOnlyForPathsUsesBoundedLiteralBatches(t *testing.T) {
 
 func TestGitUntrackedFilesForPathsUsesBoundedLiteralBatches(t *testing.T) {
 	paths := scopedGitBatchRegressionPaths()
-	commands := captureScopedGitPathspecCommands(t, true)
+	commands := captureScopedGitPathspecCommands(t)
 
 	got, err := gitUntrackedFilesForPaths(context.Background(), t.TempDir(), paths)
 	if err != nil {
@@ -596,7 +596,7 @@ func scopedGitBatchRegressionPaths() []string {
 	return paths
 }
 
-func captureScopedGitPathspecCommands(t *testing.T, nulOutput bool) *[][]string {
+func captureScopedGitPathspecCommands(t *testing.T) *[][]string {
 	t.Helper()
 
 	originalResolve := resolveGitBinaryPathFn
@@ -606,7 +606,7 @@ func captureScopedGitPathspecCommands(t *testing.T, nulOutput bool) *[][]string 
 	execGitCommandContextFn = func(ctx context.Context, _ string, args ...string) (*exec.Cmd, error) {
 		paths := literalPathsFromGitCommand(t, args)
 		commands = append(commands, paths)
-		return gitPathOutputCommand(ctx, orderedUniqueGitPaths(paths), nulOutput), nil
+		return gitPathOutputCommand(ctx, orderedUniqueGitPaths(paths)), nil
 	}
 	t.Cleanup(func() {
 		resolveGitBinaryPathFn = originalResolve
@@ -639,11 +639,8 @@ func literalPathsFromGitCommand(t *testing.T, args []string) []string {
 	return paths
 }
 
-func gitPathOutputCommand(ctx context.Context, paths []string, nulOutput bool) *exec.Cmd {
-	format := `%s\n`
-	if nulOutput {
-		format = `%s\000`
-	}
+func gitPathOutputCommand(ctx context.Context, paths []string) *exec.Cmd {
+	format := `%s\000`
 	args := []string{"-c", `format="$1"; shift; for path do printf "$format" "$path"; done`, "git-output", format}
 	args = append(args, paths...)
 	return exec.CommandContext(ctx, "/bin/sh", args...)
