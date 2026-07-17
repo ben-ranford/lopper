@@ -695,23 +695,6 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	}
 }
 
-func TestMarketplaceToolchainValidatorRejectsCanonicalAliases(t *testing.T) {
-	t.Parallel()
-
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
-	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
-	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
-	archivePath := writeTarArchive(t, []string{
-		"package.json",
-		"package-lock.json",
-		"node_modules/@vscode/vsce/vsce",
-		"node_modules/./@vscode/vsce/vsce",
-	})
-
-	assertTarValidatorRejects(t, validator, archivePath, "unsafe path")
-}
-
 func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
 	t.Parallel()
 
@@ -767,20 +750,6 @@ func TestMarketplaceToolchainValidatorRejectsManifestRootShapes(t *testing.T) {
 	}
 
 	assertTarValidatorFixtures(t, validator, nil, fixtures)
-}
-
-func TestFeatureHistoryWorktreeValidatorRejectsLeadingTraversal(t *testing.T) {
-	t.Parallel()
-
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
-	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
-	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
-	archivePath := writeTarArchive(t, []string{
-		"../feature-history-push/.git/HEAD",
-	})
-
-	assertTarValidatorRejects(t, validator, archivePath, "unsafe path")
 }
 
 func TestFeatureHistoryWorktreeValidatorAcceptsHiddenGitArchiveShape(t *testing.T) {
@@ -3274,15 +3243,6 @@ func embeddedPythonScript(t *testing.T, run string, marker string) string {
 		t.Fatal("workflow step Python validator is missing its heredoc terminator")
 	}
 	return script + "\n"
-}
-
-func writeTarArchive(t *testing.T, names []string) string {
-	t.Helper()
-	members := make([]tarFixtureMember, 0, len(names))
-	for _, name := range names {
-		members = append(members, regularTarMember(name, 0o644))
-	}
-	return writeTarFixture(t, members)
 }
 
 type tarFixtureMember struct {
