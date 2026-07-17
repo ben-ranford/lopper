@@ -1,6 +1,8 @@
 package scripts
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"maps"
 	"os"
@@ -691,6 +693,37 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 2 {
 		t.Fatalf("Marketplace secret references = %d, want isolated detection and final publication only", count)
 	}
+}
+
+func TestMarketplaceToolchainValidatorRejectsCanonicalAliases(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	archivePath := writeTarArchive(t, []string{
+		"package.json",
+		"package-lock.json",
+		"node_modules/@vscode/vsce/vsce",
+		"node_modules/./@vscode/vsce/vsce",
+	})
+
+	assertTarValidatorRejects(t, validator, archivePath, "duplicate path")
+}
+
+func TestFeatureHistoryWorktreeValidatorRejectsLeadingTraversal(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	archivePath := writeTarArchive(t, []string{
+		"../feature-history-push/.git/HEAD",
+	})
+
+	assertTarValidatorRejects(t, validator, archivePath, "unsafe path")
 }
 
 func TestReleaseWorkflowFailsClosedWhenConfiguredMarketplaceTokenDisappears(t *testing.T) {
@@ -3111,4 +3144,67 @@ func repoPath(t *testing.T, path string) string {
 		t.Fatal("resolve test file path")
 	}
 	return filepath.Join(filepath.Dir(filename), "..", path)
+}
+
+func embeddedPythonScript(t *testing.T, run string, marker string) string {
+	t.Helper()
+
+	_, after, ok := strings.Cut(run, marker+"\n")
+	if !ok {
+		t.Fatalf("workflow step does not contain Python validator marker %q", marker)
+	}
+	script, _, ok := strings.Cut(after, "\nPY\n")
+	if !ok {
+		t.Fatal("workflow step Python validator is missing its heredoc terminator")
+	}
+	return script + "\n"
+}
+
+func writeTarArchive(t *testing.T, names []string) string {
+	t.Helper()
+
+	archivePath := filepath.Join(t.TempDir(), "fixture.tar.gz")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("create tar fixture: %v", err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, name := range names {
+		contents := []byte("fixture\n")
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(contents)),
+		}); err != nil {
+			t.Fatalf("write tar header %q: %v", name, err)
+		}
+		if _, err := tarWriter.Write(contents); err != nil {
+			t.Fatalf("write tar contents %q: %v", name, err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar fixture: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip fixture: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close tar fixture file: %v", err)
+	}
+	return archivePath
+}
+
+func assertTarValidatorRejects(t *testing.T, validator string, archivePath string, want string) {
+	t.Helper()
+
+	cmd := exec.Command("python3", "-", archivePath)
+	cmd.Stdin = strings.NewReader(validator)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("tar validator accepted unsafe archive %s", archivePath)
+	}
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("tar validator error = %q, want substring %q", output, want)
+	}
 }
