@@ -810,8 +810,8 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
         run: |
           if [ -z "${VSCE_PAT:-}" ]; then
-            echo "VSCE publish token not configured; skipping marketplace publish."
-            exit 0
+            echo "::error::VSCE publish token became unavailable after Marketplace publication was enabled." >&2
+            exit 1
           fi
 
           vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"
