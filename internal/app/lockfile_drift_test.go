@@ -1027,6 +1027,63 @@ func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierRuleFindingOverLaterSam
 	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
 }
 
+func TestDetectLockfileDriftStopOnFirstSurfacesLaterImmediateFindingAfterEarlierCleanCandidate(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	initGitRepo(t, repo)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "Poetry in .: pyproject.toml exists but no matching lockfile", "poetry lock")
+}
+
+func TestDetectLockfileDriftStopOnFirstKeepsFirstRuleImmediateFindingOnFastPath(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), pyprojectManifestName+" filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json exists but no matching lockfile", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstPropagatesEarlierRuleFilterAmbiguityBeforeLaterImmediateFinding(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" (pwn)") {
+		t.Fatalf("expected earlier npm filter ambiguity, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected ambiguity to suppress the later immediate warning, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesPriorBatchFindingOverMixedSnapshot(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-mixed", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "b-mixed", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-mixed", pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	initGitRepo(t, repo)
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in a-drift: package.json changed while no matching lockfile changed", "npm install")
+}
+
 func TestDetectLockfileDriftStopOnFirstPrioritizesBufferedGitFindingOverLaterImmediateFinding(t *testing.T) {
 	repo := t.TempDir()
 	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)

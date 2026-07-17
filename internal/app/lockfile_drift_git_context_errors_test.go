@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -298,6 +299,29 @@ func TestLockfileFailFastBatchScannerReplaysAmbiguousSnapshots(t *testing.T) {
 		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: []lockfileRule{rule}}
 		if err := scanner.flushSnapshotsInOrder(context.Background(), []lockfileDirSnapshot{snapshot}); err != nil {
 			t.Fatalf("expected candidate-free replay to continue, got %v", err)
+		}
+	})
+
+	t.Run("later immediate finding after clean candidate", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+		initGitRepo(t, repo)
+		snapshot, err := readLockfileDirSnapshot(repo, repo)
+		if err != nil {
+			t.Fatalf("read lockfile snapshot: %v", err)
+		}
+		rules := []lockfileRule{
+			mustLockfileRule(t, "npm", manifestFileName),
+			mustLockfileRule(t, "Poetry", pyprojectManifestName),
+		}
+		scanner := lockfileFailFastBatchScanner{repoPath: repo, rules: rules}
+		if err := scanner.flushSnapshotsInOrder(context.Background(), []lockfileDirSnapshot{snapshot}); !errors.Is(err, fs.SkipAll) {
+			t.Fatalf("expected replay to stop on the later immediate finding, got %v", err)
+		}
+		if len(scanner.warnings) != 1 || !strings.Contains(scanner.warnings[0], "Poetry in .") {
+			t.Fatalf("expected replay to preserve the later Poetry finding, got %#v", scanner.warnings)
 		}
 	})
 
