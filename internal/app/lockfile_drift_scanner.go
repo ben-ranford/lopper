@@ -175,21 +175,24 @@ func (s *lockfileFailFastBatchScanner) scan(ctx context.Context) ([]string, erro
 }
 
 func (s *lockfileFailFastBatchScanner) visit(ctx context.Context, snapshot lockfileDirSnapshot) error {
-	warning, found, err := firstLockfileDriftWarning(snapshot, lockfileGitContext{}, s.rules)
+	warning, findingRuleIndex, found, err := firstLockfileDriftWarningWithRuleIndex(snapshot, lockfileGitContext{}, s.rules)
 	if err != nil {
 		return err
 	}
+	candidateRules := s.rules
 	if found {
+		candidateRules = s.rules[:findingRuleIndex]
+	}
+	candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, candidateRules)
+	if err != nil {
+		return err
+	}
+	if found && len(candidatePaths) == 0 {
 		if err := s.flush(ctx); err != nil {
 			return err
 		}
 		s.warnings = append(s.warnings, warning)
 		return fs.SkipAll
-	}
-
-	candidatePaths, err := lockfileManifestChangeCandidatePaths(snapshot, s.rules)
-	if err != nil {
-		return err
 	}
 	if len(candidatePaths) == 0 {
 		return nil
@@ -200,6 +203,9 @@ func (s *lockfileFailFastBatchScanner) visit(ctx context.Context, snapshot lockf
 		}
 	}
 	s.batch.add(snapshot, candidatePaths)
+	if found {
+		return s.flush(ctx)
+	}
 	return nil
 }
 
@@ -252,13 +258,12 @@ func (s *lockfileFailFastBatchScanner) recordFirstSnapshotRuleByRule(ctx context
 		if err != nil {
 			return err
 		}
-		if len(candidatePaths) == 0 {
-			continue
-		}
-
-		gitContext, err := collectLockfileGitContextForPaths(ctx, s.repoPath, candidatePaths)
-		if err != nil {
-			return err
+		gitContext := lockfileGitContext{}
+		if len(candidatePaths) > 0 {
+			gitContext, err = collectLockfileGitContextForPaths(ctx, s.repoPath, candidatePaths)
+			if err != nil {
+				return err
+			}
 		}
 
 		finding, found, err := evaluateLockfileRuleWithCache(snapshot, rule, gitContext, manifestCache)
@@ -306,14 +311,30 @@ func (s *lockfileFailFastBatchScanner) result(ctx context.Context, walkErr error
 }
 
 func firstLockfileDriftWarning(snapshot lockfileDirSnapshot, gitContext lockfileGitContext, rules []lockfileRule) (string, bool, error) {
-	findings, err := evaluateLockfileDirWithRules(snapshot, gitContext, rules)
-	if err != nil {
-		return "", false, err
+	warning, _, found, err := firstLockfileDriftWarningWithRuleIndex(snapshot, gitContext, rules)
+	return warning, found, err
+}
+
+func firstLockfileDriftWarningWithRuleIndex(snapshot lockfileDirSnapshot, gitContext lockfileGitContext, rules []lockfileRule) (string, int, bool, error) {
+	manifestCache := newLockfileManifestCache(snapshot)
+	var firstFinding lockfileDriftFinding
+	firstRuleIndex := 0
+	found := false
+	for ruleIndex, rule := range rules {
+		finding, ok, err := evaluateLockfileRuleWithCache(snapshot, rule, gitContext, manifestCache)
+		if err != nil {
+			return "", 0, false, err
+		}
+		if ok && !found {
+			firstFinding = finding
+			firstRuleIndex = ruleIndex
+			found = true
+		}
 	}
-	if len(findings) == 0 {
-		return "", false, nil
+	if !found {
+		return "", 0, false, nil
 	}
-	return buildLockfileDriftWarning(findings[0]), true, nil
+	return buildLockfileDriftWarning(firstFinding), firstRuleIndex, true, nil
 }
 
 func collectLockfileManifestChangeCandidatePaths(ctx context.Context, repoPath string, rules []lockfileRule) ([]string, error) {
