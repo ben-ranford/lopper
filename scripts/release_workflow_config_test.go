@@ -738,6 +738,37 @@ func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
 	assertTarValidatorAccepts(t, validator, archivePath)
 }
 
+func TestMarketplaceToolchainValidatorRejectsManifestRootShapes(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	fixtures := []tarValidatorFixture{
+		{
+			name: "manifest descendant",
+			members: []tarFixtureMember{
+				regularTarMember("package.json/child", 0o644),
+				regularTarMember("package-lock.json", 0o644),
+				regularTarMember("node_modules/tool", 0o644),
+			},
+			want: "unexpected path",
+		},
+		{
+			name: "manifest directory",
+			members: []tarFixtureMember{
+				directoryTarMember("package.json/"),
+				regularTarMember("package-lock.json", 0o644),
+				regularTarMember("node_modules/tool", 0o644),
+			},
+			want: "unexpected entry type",
+		},
+	}
+
+	assertTarValidatorFixtures(t, validator, nil, fixtures)
+}
+
 func TestFeatureHistoryWorktreeValidatorRejectsLeadingTraversal(t *testing.T) {
 	t.Parallel()
 
