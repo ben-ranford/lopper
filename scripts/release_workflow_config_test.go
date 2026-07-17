@@ -712,6 +712,32 @@ func TestMarketplaceToolchainValidatorRejectsCanonicalAliases(t *testing.T) {
 	assertTarValidatorRejects(t, validator, archivePath, "duplicate path")
 }
 
+func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	archivePath := writeTarFixture(t, []tarFixtureMember{
+		regularTarMember("package.json", 0o644),
+		regularTarMember("package-lock.json", 0o644),
+		directoryTarMember("node_modules/"),
+		directoryTarMember("node_modules/.bin/"),
+		directoryTarMember("node_modules/@vscode/"),
+		directoryTarMember("node_modules/@vscode/vsce/"),
+		regularTarMember("node_modules/@vscode/vsce/vsce", 0o755),
+		{
+			name:     "node_modules/.bin/vsce",
+			mode:     0o777,
+			typeflag: tar.TypeSymlink,
+			linkname: "../@vscode/vsce/vsce",
+		},
+	})
+
+	assertTarValidatorAccepts(t, validator, archivePath)
+}
+
 func TestFeatureHistoryWorktreeValidatorRejectsLeadingTraversal(t *testing.T) {
 	t.Parallel()
 
@@ -724,6 +750,25 @@ func TestFeatureHistoryWorktreeValidatorRejectsLeadingTraversal(t *testing.T) {
 	})
 
 	assertTarValidatorRejects(t, validator, archivePath, "unsafe path")
+}
+
+func TestFeatureHistoryWorktreeValidatorAcceptsHiddenGitArchiveShape(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	archivePath := writeTarFixture(t, []tarFixtureMember{
+		directoryTarMember("feature-history-push/"),
+		directoryTarMember("feature-history-push/.git/"),
+		regularTarMember("feature-history-push/.git/HEAD", 0o644),
+		directoryTarMember("feature-history-push/internal/"),
+		directoryTarMember("feature-history-push/internal/featureflags/"),
+		regularTarMember("feature-history-push/internal/featureflags/features.json", 0o644),
+	})
+
+	assertTarValidatorAccepts(t, validator, archivePath)
 }
 
 func TestReleaseWorkflowFailsClosedWhenConfiguredMarketplaceTokenDisappears(t *testing.T) {
@@ -3162,6 +3207,31 @@ func embeddedPythonScript(t *testing.T, run string, marker string) string {
 
 func writeTarArchive(t *testing.T, names []string) string {
 	t.Helper()
+	members := make([]tarFixtureMember, 0, len(names))
+	for _, name := range names {
+		members = append(members, regularTarMember(name, 0o644))
+	}
+	return writeTarFixture(t, members)
+}
+
+type tarFixtureMember struct {
+	name     string
+	mode     int64
+	typeflag byte
+	linkname string
+	contents []byte
+}
+
+func regularTarMember(name string, mode int64) tarFixtureMember {
+	return tarFixtureMember{name: name, mode: mode, typeflag: tar.TypeReg, contents: []byte("fixture\n")}
+}
+
+func directoryTarMember(name string) tarFixtureMember {
+	return tarFixtureMember{name: name, mode: 0o755, typeflag: tar.TypeDir}
+}
+
+func writeTarFixture(t *testing.T, members []tarFixtureMember) string {
+	t.Helper()
 
 	archivePath := filepath.Join(t.TempDir(), "fixture.tar.gz")
 	file, err := os.Create(archivePath)
@@ -3170,17 +3240,20 @@ func writeTarArchive(t *testing.T, names []string) string {
 	}
 	gzipWriter := gzip.NewWriter(file)
 	tarWriter := tar.NewWriter(gzipWriter)
-	for _, name := range names {
-		contents := []byte("fixture\n")
+	for _, member := range members {
 		if err := tarWriter.WriteHeader(&tar.Header{
-			Name: name,
-			Mode: 0o644,
-			Size: int64(len(contents)),
+			Name:     member.name,
+			Mode:     member.mode,
+			Size:     int64(len(member.contents)),
+			Typeflag: member.typeflag,
+			Linkname: member.linkname,
 		}); err != nil {
-			t.Fatalf("write tar header %q: %v", name, err)
+			t.Fatalf("write tar header %q: %v", member.name, err)
 		}
-		if _, err := tarWriter.Write(contents); err != nil {
-			t.Fatalf("write tar contents %q: %v", name, err)
+		if len(member.contents) > 0 {
+			if _, err := tarWriter.Write(member.contents); err != nil {
+				t.Fatalf("write tar contents %q: %v", member.name, err)
+			}
 		}
 	}
 	if err := tarWriter.Close(); err != nil {
@@ -3206,5 +3279,15 @@ func assertTarValidatorRejects(t *testing.T, validator string, archivePath strin
 	}
 	if !strings.Contains(string(output), want) {
 		t.Fatalf("tar validator error = %q, want substring %q", output, want)
+	}
+}
+
+func assertTarValidatorAccepts(t *testing.T, validator string, archivePath string) {
+	t.Helper()
+
+	cmd := exec.Command("python3", "-", archivePath)
+	cmd.Stdin = strings.NewReader(validator)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tar validator rejected trusted archive %s: %v\n%s", archivePath, err, output)
 	}
 }
