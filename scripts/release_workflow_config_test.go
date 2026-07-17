@@ -654,6 +654,24 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	}
 }
 
+func TestReleaseWorkflowFailsClosedWhenConfiguredMarketplaceTokenDisappears(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	publishStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Publish VS Code extension to Marketplace")
+	cmd := exec.Command("bash", "-c", publishStep.Run)
+	cmd.Env = append(os.Environ(), "RELEASE_VERSION=1.8.0", "VSCE_PAT=")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("configured Marketplace publication succeeded after its token disappeared: %s", output)
+	}
+	if !strings.Contains(string(output), "::error::VSCE publish token became unavailable after Marketplace publication was enabled.") {
+		t.Fatalf("configured Marketplace missing-token error = %q", output)
+	}
+}
+
 func assertMarketplacePublicationGate(t *testing.T, jobs map[string]workflowJobConfig) {
 	t.Helper()
 
