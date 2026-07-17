@@ -477,24 +477,33 @@ func filterConfiguredGitAttributeDrivers(ctx context.Context, repoPath string, a
 	active := make([]gitFilterPathDriver, 0, len(assignments))
 	stateProbeCache := make(map[gitFilterPathDriver]bool)
 	for _, assignment := range assignments {
-		if _, ok := configured[assignment.driver]; ok {
-			if isGitAttributeStateDriver(assignment.driver) {
-				activeStateDriver, ok := stateProbeCache[assignment]
-				if !ok {
-					var err error
-					activeStateDriver, err = gitPathUsesNamedFilterDriver(ctx, repoPath, assignment)
-					if err != nil {
-						return nil, err
-					}
-					stateProbeCache[assignment] = activeStateDriver
-				}
-				if !activeStateDriver {
-					continue
-				}
-			}
+		assignmentActive, err := gitFilterAssignmentIsActive(ctx, repoPath, assignment, configured, stateProbeCache)
+		if err != nil {
+			return nil, err
+		}
+		if assignmentActive {
 			active = append(active, assignment)
 		}
 	}
+	return active, nil
+}
+
+func gitFilterAssignmentIsActive(ctx context.Context, repoPath string, assignment gitFilterPathDriver, configured map[string]struct{}, stateProbeCache map[gitFilterPathDriver]bool) (bool, error) {
+	if _, ok := configured[assignment.driver]; !ok {
+		return false, nil
+	}
+	if !isGitAttributeStateDriver(assignment.driver) {
+		return true, nil
+	}
+	if active, ok := stateProbeCache[assignment]; ok {
+		return active, nil
+	}
+
+	active, err := gitPathUsesNamedFilterDriver(ctx, repoPath, assignment)
+	if err != nil {
+		return false, err
+	}
+	stateProbeCache[assignment] = active
 	return active, nil
 }
 
