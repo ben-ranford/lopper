@@ -474,6 +474,36 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertWorkflowJobOmitsText(t, preparation, "secrets.", "release publication preparation must not receive secrets")
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-release-publication")
 
+	generateIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Generate feature flag release report")
+	resetIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Reset release artifact staging")
+	downloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download release artifacts")
+	verifyIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Verify Darwin artifacts are present")
+	stageIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
+	if generateIndex >= resetIndex {
+		t.Fatal("release-source-controlled report generation must finish before the artifact staging reset")
+	}
+	if downloadIndex != resetIndex+1 {
+		t.Fatal("release artifacts must be downloaded immediately after resetting the staging directory")
+	}
+	if downloadIndex >= verifyIndex || verifyIndex >= stageIndex || stageIndex >= uploadIndex {
+		t.Fatal("release artifacts must be downloaded, verified, staged, and uploaded in that order")
+	}
+
+	resetStep := preparation.Steps[resetIndex]
+	assertWorkflowStepRunContainsAll(t, resetStep, "release artifact staging reset", []string{
+		`rm -rf -- dist`,
+		`mkdir -- dist`,
+	})
+	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir -- dist`, "release artifact staging must remove checkout-provided assets before recreating dist")
+	for _, step := range preparation.Steps[resetIndex:] {
+		for _, repositoryCommand := range []string{"go run ./", "make ", "./extensions/", "scripts/"} {
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("release publication step %q must not execute repository-controlled command %q after resetting artifact staging", step.Name, repositoryCommand)
+			}
+		}
+	}
+
 	stageStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
 	assertWorkflowStepRunContainsAll(t, stageStep, "release publication staging step", []string{
 		`find dist -maxdepth 1 -type f`,
