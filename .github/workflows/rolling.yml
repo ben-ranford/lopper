@@ -60,7 +60,7 @@ jobs:
       SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
     steps:
       - name: Checkout rolling source
-        uses: actions/checkout@v7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
           ref: ${{ env.SOURCE_SHA }}
@@ -72,7 +72,7 @@ jobs:
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
 

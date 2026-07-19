@@ -2688,6 +2688,34 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	}
 }
 
+func TestRollingDarwinProducerPinsTrustedActions(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
+
+	testCases := []struct {
+		stepName string
+		wantUses string
+	}{
+		{
+			stepName: "Checkout rolling source",
+			wantUses: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+		},
+		{
+			stepName: "Setup Go",
+			wantUses: "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
+		},
+	}
+
+	for _, tc := range testCases {
+		step := workflowStepByName(t, workflow.Jobs, "build-darwin-amd64-rolling", tc.stepName)
+		if step.Uses != tc.wantUses {
+			t.Errorf("rolling Darwin producer step %q uses %q, want %q", tc.stepName, step.Uses, tc.wantUses)
+		}
+	}
+}
+
 func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
 	t.Parallel()
 	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
