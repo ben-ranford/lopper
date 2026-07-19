@@ -415,6 +415,7 @@ jobs:
             fi
           done
 
+          rm -rf -- publication-inputs
           mkdir -p publication-inputs/dist
           cp -- "${assets[@]}" publication-inputs/dist/
           cp -- feature-flags.md publication-inputs/feature-flags.md

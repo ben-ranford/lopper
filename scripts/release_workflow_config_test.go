@@ -478,10 +478,15 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, stageStep, "release publication staging step", []string{
 		`find dist -maxdepth 1 -type f`,
 		`lopper-vscode-${version}.vsix`,
+		`rm -rf -- publication-inputs`,
+		`mkdir -p publication-inputs/dist`,
 		`publication-inputs/feature-flags.md`,
 		`mapfile -d '' checksum_files`,
 		`sha256sum "${checksum_files[@]}" > SHA256SUMS`,
 	})
+	assertTextAppearsBefore(t, stageStep.Run, `rm -rf -- publication-inputs`, `mkdir -p publication-inputs/dist`, "release publication staging must remove prior inputs before recreating the directory")
+	assertTextAppearsBefore(t, stageStep.Run, `mkdir -p publication-inputs/dist`, `cp -- "${assets[@]}" publication-inputs/dist/`, "release publication staging must recreate the directory before copying bounded assets")
+	assertTextAppearsBefore(t, stageStep.Run, `mkdir -p publication-inputs/dist`, `cp -- feature-flags.md publication-inputs/feature-flags.md`, "release publication staging must recreate the directory before copying the feature report")
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "release publication input artifact name", got: uploadStep.With["name"], want: "publication-inputs"},
