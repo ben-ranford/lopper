@@ -473,6 +473,73 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
 }
 
+func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	want := map[string]string{
+		"prepare-marketplace-toolchain/Detect Marketplace token/env.VSCE_PUBLISH":        "${{ secrets.VSCE_PUBLISH }}",
+		"publish-marketplace/Publish VS Code extension to Marketplace/env.VSCE_PAT":      "${{ secrets.VSCE_PUBLISH }}",
+		"publish/Update GitHub Release notes/env.GH_TOKEN":                               "${{ secrets.GITHUB_TOKEN }}",
+		"publish/Upload GitHub Release assets/env.GH_TOKEN":                              "${{ secrets.GITHUB_TOKEN }}",
+		"finalize-release/Publish GitHub Release/env.GH_TOKEN":                           "${{ secrets.GITHUB_TOKEN }}",
+		"finalize-release/Push GitHub Action floating tags/env.PUSH_TOKEN":               "${{ secrets.GITHUB_TOKEN }}",
+		"homebrew-tap-token-gate/Detect tap token/env.HOMEBREW_TAP_TOKEN":                "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+		"update-homebrew-tap/Regenerate and push formula changes/env.HOMEBREW_TAP_TOKEN": "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+		"push-feature-release-history/Push feature history commit/env.PUSH_TOKEN":        "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+	}
+	publicationJobs := []string{
+		"prepare-release-publication",
+		"prepare-marketplace-toolchain",
+		"publish-marketplace",
+		"publish",
+		"finalize-release",
+		"homebrew-tap-token-gate",
+		"validate-homebrew-tap",
+		"update-homebrew-tap",
+		"prepare-feature-release-history",
+		"prepare-feature-release-history-push",
+		"push-feature-release-history",
+	}
+	hasCredentialReference := func(value string) bool {
+		return strings.Contains(value, "secrets.") || strings.Contains(value, "github.token")
+	}
+
+	got := make(map[string]string, len(want))
+	for _, jobName := range publicationJobs {
+		job := workflowJobByName(t, workflow.Jobs, jobName)
+		jobValues := append([]string{job.If, job.RunsOn}, mapValues(job.Env)...)
+		jobValues = append(jobValues, mapValues(job.Outputs)...)
+		for _, value := range jobValues {
+			if hasCredentialReference(value) {
+				t.Fatalf("release publication credential must not be scoped to job %q", jobName)
+			}
+		}
+		for _, step := range job.Steps {
+			unscopedValues := []string{step.If, step.Run, step.Shell, step.Uses, step.WorkingDirectory}
+			unscopedValues = append(unscopedValues, mapValues(step.With)...)
+			for _, value := range unscopedValues {
+				if hasCredentialReference(value) {
+					t.Fatalf("release publication credential must reach %s step %q only through step env", jobName, step.Name)
+				}
+			}
+			for key, value := range step.Env {
+				if !hasCredentialReference(value) {
+					continue
+				}
+				binding := jobName + "/" + step.Name + "/env." + key
+				got[binding] = value
+			}
+		}
+	}
+
+	if !maps.Equal(got, want) {
+		t.Fatalf("release publication secret bindings = %#v, want %#v", got, want)
+	}
+}
+
 func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
 	t.Parallel()
 
