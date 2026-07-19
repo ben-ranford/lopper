@@ -150,7 +150,7 @@ jobs:
           path: dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz
           if-no-files-found: error
 
-  prepare-rolling-source-inputs:
+  prepare-rolling-release-notes:
     needs:
       - prepare-rolling
     runs-on: ubuntu-latest
@@ -180,28 +180,16 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build rolling source bundle
-        env:
-          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-          SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          source_input_root="${RUNNER_TEMP}/rolling-source-inputs"
-          rm -rf -- "${source_input_root}"
-          mkdir -- "${source_input_root}"
-          bundle="lopper_${ROLLING_TAG}_source"
-          archive_path="${source_input_root}/lopper_${ROLLING_TAG}_source.tar.gz"
-
-          git archive --format=tar.gz --prefix="${bundle}/" -o "${archive_path}" "${SOURCE_SHA}"
-
       - name: Generate rolling release notes
         env:
           ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
           SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
         run: |
           set -euo pipefail
-          source_input_root="${RUNNER_TEMP}/rolling-source-inputs"
+          notes_root="${RUNNER_TEMP}/rolling-release-notes"
           feature_report="${RUNNER_TEMP}/rolling-feature-flags.md"
+          rm -rf -- "${notes_root}"
+          mkdir -- "${notes_root}"
           git fetch --tags --force
           previous_tag=""
           while IFS= read -r candidate; do
@@ -244,44 +232,31 @@ jobs:
               echo
               git log --reverse --pretty=format:'- %h %s (%an)' "${SOURCE_SHA}"
             fi
-          } > "${source_input_root}/rolling-changelog.md"
+          } > "${notes_root}/rolling-changelog.md"
 
-      - name: Validate rolling source inputs
+      - name: Validate rolling release notes
         env:
+          NOTES_ROOT: ${{ runner.temp }}/rolling-release-notes
           PATH: /usr/bin:/bin
-          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-          SOURCE_INPUT_ROOT: ${{ runner.temp }}/rolling-source-inputs
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
-          archive="${SOURCE_INPUT_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"
-          changelog="${SOURCE_INPUT_ROOT}/rolling-changelog.md"
-          expected=("${archive}" "${changelog}")
-          if [ ! -d "${SOURCE_INPUT_ROOT}" ] || [ -L "${SOURCE_INPUT_ROOT}" ]; then
-            echo "Rolling source input root is missing or invalid" >&2
+          changelog="${NOTES_ROOT}/rolling-changelog.md"
+          if [ ! -d "${NOTES_ROOT}" ] || [ -L "${NOTES_ROOT}" ]; then
+            echo "Rolling release note root is missing or invalid" >&2
             exit 1
           fi
-          if find -P "${SOURCE_INPUT_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
-            echo "Rolling source input root contains a non-regular entry" >&2
+          if find -P "${NOTES_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Rolling release note root contains a non-regular entry" >&2
             exit 1
           fi
-          file_count="$(find -P "${SOURCE_INPUT_ROOT}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
-          if [ "${file_count}" -ne "${#expected[@]}" ]; then
-            echo "Rolling source input root must contain exactly two files" >&2
+          file_count="$(find -P "${NOTES_ROOT}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne 1 ]; then
+            echo "Rolling release note root must contain exactly one file" >&2
             exit 1
           fi
-          for input in "${expected[@]}"; do
-            if [ ! -f "${input}" ] || [ -L "${input}" ]; then
-              echo "Expected rolling source input ${input} is missing or invalid" >&2
-              exit 1
-            fi
-            if [ ! -s "${input}" ]; then
-              echo "Expected rolling source input ${input} is empty" >&2
-              exit 1
-            fi
-          done
-          if [ "$(stat --format=%s "${archive}")" -gt 1073741824 ]; then
-            echo "Rolling source archive exceeds the 1 GiB limit" >&2
+          if [ ! -f "${changelog}" ] || [ -L "${changelog}" ] || [ ! -s "${changelog}" ]; then
+            echo "Rolling release notes are missing, invalid, or empty" >&2
             exit 1
           fi
           if [ "$(stat --format=%s "${changelog}")" -gt 1048576 ]; then
@@ -289,19 +264,96 @@ jobs:
             exit 1
           fi
 
-      - name: Upload rolling source inputs
+      - name: Upload rolling release notes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: rolling-source-inputs
-          path: |
-            ${{ runner.temp }}/rolling-source-inputs/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz
-            ${{ runner.temp }}/rolling-source-inputs/rolling-changelog.md
+          name: rolling-release-notes
+          path: ${{ runner.temp }}/rolling-release-notes/rolling-changelog.md
+          if-no-files-found: error
+
+  prepare-rolling-source-archive:
+    needs:
+      - prepare-rolling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout rolling source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.prepare-rolling.outputs.source_sha }}
+
+      - name: Verify rolling source checkout
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_source_sha="$(git rev-parse HEAD)"
+          if [ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]; then
+            echo "Checked out rolling source ${actual_source_sha} does not match ${EXPECTED_SOURCE_SHA}" >&2
+            exit 1
+          fi
+
+      - name: Build rolling source archive
+        env:
+          PATH: /usr/bin:/bin
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          archive_root="${RUNNER_TEMP}/rolling-source-archive"
+          rm -rf -- "${archive_root}"
+          mkdir -- "${archive_root}"
+          bundle="lopper_${ROLLING_TAG}_source"
+          archive_path="${archive_root}/lopper_${ROLLING_TAG}_source.tar.gz"
+          git archive --format=tar.gz --prefix="${bundle}/" -o "${archive_path}" "${SOURCE_SHA}"
+
+      - name: Validate rolling source archive
+        env:
+          ARCHIVE_ROOT: ${{ runner.temp }}/rolling-source-archive
+          PATH: /usr/bin:/bin
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          archive="${ARCHIVE_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"
+          if [ ! -d "${ARCHIVE_ROOT}" ] || [ -L "${ARCHIVE_ROOT}" ]; then
+            echo "Rolling source archive root is missing or invalid" >&2
+            exit 1
+          fi
+          if find -P "${ARCHIVE_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Rolling source archive root contains a non-regular entry" >&2
+            exit 1
+          fi
+          file_count="$(find -P "${ARCHIVE_ROOT}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne 1 ]; then
+            echo "Rolling source archive root must contain exactly one file" >&2
+            exit 1
+          fi
+          if [ ! -f "${archive}" ] || [ -L "${archive}" ] || [ ! -s "${archive}" ]; then
+            echo "Rolling source archive is missing, invalid, or empty" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${archive}")" -gt 1073741824 ]; then
+            echo "Rolling source archive exceeds the 1 GiB limit" >&2
+            exit 1
+          fi
+
+      - name: Upload rolling source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rolling-source-archive
+          path: ${{ runner.temp }}/rolling-source-archive/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz
           if-no-files-found: error
 
   prepare-rolling-publication:
     needs:
       - prepare-rolling
-      - prepare-rolling-source-inputs
+      - prepare-rolling-release-notes
+      - prepare-rolling-source-archive
       - orchestrate-rolling
       - build-darwin-amd64-rolling
     runs-on: ubuntu-latest
@@ -318,11 +370,17 @@ jobs:
           rm -rf -- rolling-publication-inputs
           mkdir -- "${assembly_root}"
 
-      - name: Download rolling source inputs
+      - name: Download rolling source archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: rolling-source-inputs
-          path: ${{ runner.temp }}/rolling-publication-assembly/source
+          name: rolling-source-archive
+          path: ${{ runner.temp }}/rolling-publication-assembly/source-archive
+
+      - name: Download rolling release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rolling-release-notes
+          path: ${{ runner.temp }}/rolling-publication-assembly/release-notes
 
       - name: Download rolling Linux and Windows artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -351,8 +409,8 @@ jobs:
         run: |
           set -euo pipefail
           source_basename="lopper_${ROLLING_TAG}_source.tar.gz"
-          source_archive="${ASSEMBLY_ROOT}/source/lopper_${ROLLING_TAG}_source.tar.gz"
-          changelog="${ASSEMBLY_ROOT}/source/rolling-changelog.md"
+          source_archive="${ASSEMBLY_ROOT}/source-archive/lopper_${ROLLING_TAG}_source.tar.gz"
+          changelog="${ASSEMBLY_ROOT}/release-notes/rolling-changelog.md"
           linux_windows_assets=(
             "${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_linux_amd64.tar.gz"
             "${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_linux_arm64.tar.gz"
@@ -409,7 +467,8 @@ jobs:
             done
           }
 
-          validate_input_root "${ASSEMBLY_ROOT}/source" 1073741824 "${source_archive}" "${changelog}"
+          validate_input_root "${ASSEMBLY_ROOT}/source-archive" 1073741824 "${source_archive}"
+          validate_input_root "${ASSEMBLY_ROOT}/release-notes" 1048576 "${changelog}"
           validate_input_root "${ASSEMBLY_ROOT}/linux-windows" 1073741824 "${linux_windows_assets[@]}"
           validate_input_root "${ASSEMBLY_ROOT}/darwin-arm64" 1073741824 "${darwin_arm64_assets[@]}"
           validate_input_root "${ASSEMBLY_ROOT}/darwin-amd64" 1073741824 "${darwin_amd64_assets[@]}"
