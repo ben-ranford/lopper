@@ -8,12 +8,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+)
+
+var (
+	workflowSecretsContextPattern          = regexp.MustCompile(`(?:^|[^a-z0-9_])secrets(?:$|[^a-z0-9_])`)
+	workflowGitHubCredentialContextPattern = regexp.MustCompile(`(?:^|[^a-z0-9_])github(?:\.token|\['token'\]|\.\*|\['\*'\])(?:$|[^a-z0-9_])`)
+	workflowBareGitHubContextPattern       = regexp.MustCompile(`(?:^|[^a-z0-9_])github(?:$|[^a-z0-9_.\[])`)
+)
+
+const workflowImplicitGitHubToken = "<implicit github.token>"
+
+type workflowCredentialRole uint8
+
+const (
+	workflowCredentialGenericRole workflowCredentialRole = iota
+	workflowCredentialRootRole
+	workflowCredentialJobsRole
+	workflowCredentialJobRole
+	workflowCredentialStepsRole
+	workflowCredentialStepRole
+	workflowCredentialExpressionRole
+	workflowCredentialInheritedSecretsRole
 )
 
 type workflowInput struct {
@@ -471,6 +494,301 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertWorkflowJobEnvEmpty(t, publication, "fresh release publication")
 	assertReleasePublicationCredentialScope(t, publication)
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
+}
+
+func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
+	t.Parallel()
+
+	var workflow yaml.Node
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	want := []string{
+		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Checkout release metadata#1.with.token=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Prepare manual release#1.env.GH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-marketplace-toolchain.steps.Detect Marketplace token#1.env.VSCE_PUBLISH=${{ secrets.VSCE_PUBLISH }}",
+		"jobs.publish-marketplace.steps.Publish VS Code extension to Marketplace#1.env.VSCE_PAT=${{ secrets.VSCE_PUBLISH }}",
+		"jobs.publish.steps.Update GitHub Release notes#1.env.GH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.publish.steps.Upload GitHub Release assets#1.env.GH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.finalize-release.steps.Publish GitHub Release#1.env.GH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.finalize-release.steps.Push GitHub Action floating tags#1.env.PUSH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.homebrew-tap-token-gate.steps.Detect tap token#1.env.HOMEBREW_TAP_TOKEN=${{ secrets.HOMEBREW_TAP_TOKEN }}",
+		"jobs.update-homebrew-tap.steps.Regenerate and push formula changes#1.env.HOMEBREW_TAP_TOKEN=${{ secrets.HOMEBREW_TAP_TOKEN }}",
+		"jobs.push-feature-release-history.steps.Push feature history commit#1.env.PUSH_TOKEN=${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+	}
+	wantImplicitGitHubTokenPaths := []string{
+		"jobs.build-darwin-amd64.steps.Checkout release source#1.uses",
+		"jobs.build-darwin-amd64.steps.Setup Go#1.uses",
+		"jobs.build-darwin-amd64.steps.Upload Darwin amd64 artifacts#1.uses",
+		"jobs.build-vscode-extension.steps.Checkout release source#1.uses",
+		"jobs.build-vscode-extension.steps.Setup Go#1.uses",
+		"jobs.build-vscode-extension.steps.Setup Node#1.uses",
+		"jobs.build-vscode-extension.steps.Upload VS Code extension artifact#1.uses",
+		"jobs.orchestrate-release.uses",
+		"jobs.prepare-feature-release-history-push.steps.Download feature history patch#1.uses",
+		"jobs.prepare-feature-release-history-push.steps.Upload prepared trusted feature history worktree#1.uses",
+		"jobs.prepare-feature-release-history.steps.Checkout trusted main tooling#1.uses",
+		"jobs.prepare-feature-release-history.steps.Checkout validated release data#1.uses",
+		"jobs.prepare-feature-release-history.steps.Setup Go#1.uses",
+		"jobs.prepare-feature-release-history.steps.Upload feature history patch#1.uses",
+		"jobs.prepare-marketplace-toolchain.steps.Checkout trusted main Marketplace manifests#1.uses",
+		"jobs.prepare-marketplace-toolchain.steps.Setup Node for Marketplace tooling#1.uses",
+		"jobs.prepare-marketplace-toolchain.steps.Upload Marketplace toolchain#1.uses",
+		"jobs.prepare-release-publication.steps.Checkout release source#1.uses",
+		"jobs.prepare-release-publication.steps.Download release artifacts#1.uses",
+		"jobs.prepare-release-publication.steps.Setup Go#1.uses",
+		"jobs.prepare-release-publication.steps.Upload release publication inputs#1.uses",
+		"jobs.prepare-release.steps.Checkout release metadata#1.uses",
+		"jobs.prepare-release.steps.Run release-please#1.uses",
+		"jobs.publish-marketplace.steps.Download Marketplace toolchain#1.uses",
+		"jobs.publish-marketplace.steps.Download release publication inputs#1.uses",
+		"jobs.publish-marketplace.steps.Setup Node for Marketplace tooling#1.uses",
+		"jobs.publish.steps.Download release publication inputs#1.uses",
+		"jobs.push-feature-release-history.steps.Download prepared trusted feature history worktree#1.uses",
+		"jobs.validate-homebrew-tap.steps.Set up Homebrew#1.uses",
+	}
+	for _, path := range wantImplicitGitHubTokenPaths {
+		want = append(want, path+"="+workflowImplicitGitHubToken)
+	}
+	slices.Sort(want)
+	got := workflowCredentialBindings(t, &workflow)
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("release publication secret bindings = %#v, want %#v", got, want)
+	}
+}
+
+func TestWorkflowCredentialBindingsAuditRawWorkflowFieldsAliasesAndDuplicateSteps(t *testing.T) {
+	t.Parallel()
+
+	const config = `env:
+  GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+jobs:
+  publisher:
+    env:
+      ANCHORED_TOKEN: &anchored-token ${{ secrets.ALIAS_TOKEN }}
+    container:
+      credentials:
+        password: ${{ secrets['CONTAINER_TOKEN'] }}
+    steps:
+      - name: Publish
+        env:
+          TOKEN: ${{ github["token"] }}
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.SECOND_TOKEN }}
+      - name: Publish all
+        env:
+          ALL_SECRETS: ${{ toJson(secrets) }}
+          ANCHORED_TOKEN: *anchored-token
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+          GITHUB_WILDCARD_CONTEXT: ${{ toJson(github.*) }}
+          EVENT_NAME: ${{ github.event_name }}
+      - name: Explain configuration
+        run: echo "no secrets configured"
+      - name: Checkout implicitly
+        uses: actions/checkout@v4
+        with:
+          if: secrets.NOT_AN_EXPRESSION
+          uses: documentation-only-input
+  future-publisher:
+    if: github.token != '' && secrets.IF_TOKEN != ''
+    services:
+      registry:
+        credentials:
+          password: ${{ secrets.SERVICE_TOKEN }}
+  inherited-publisher:
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
+`
+	var workflow yaml.Node
+	if err := yaml.Unmarshal([]byte(config), &workflow); err != nil {
+		t.Fatalf("parse workflow fixture: %v", err)
+	}
+	want := []string{
+		"env.GH_TOKEN=${{ secrets.WORKFLOW_TOKEN }}",
+		"jobs.future-publisher.services.registry.credentials.password=${{ secrets.SERVICE_TOKEN }}",
+		"jobs.future-publisher.if=github.token != '' && secrets.IF_TOKEN != ''",
+		"jobs.inherited-publisher.secrets=inherit",
+		"jobs.inherited-publisher.uses=" + workflowImplicitGitHubToken,
+		"jobs.publisher.container.credentials.password=${{ secrets['CONTAINER_TOKEN'] }}",
+		"jobs.publisher.env.ANCHORED_TOKEN=${{ secrets.ALIAS_TOKEN }}",
+		"jobs.publisher.steps.Publish#1.env.TOKEN=${{ github[\"token\"] }}",
+		"jobs.publisher.steps.Publish#2.env.TOKEN=${{ secrets.SECOND_TOKEN }}",
+		"jobs.publisher.steps.Publish all#1.env.ALL_SECRETS=${{ toJson(secrets) }}",
+		"jobs.publisher.steps.Publish all#1.env.ANCHORED_TOKEN=${{ secrets.ALIAS_TOKEN }}",
+		"jobs.publisher.steps.Publish all#1.env.GITHUB_CONTEXT=${{ toJson(github) }}",
+		"jobs.publisher.steps.Publish all#1.env.GITHUB_WILDCARD_CONTEXT=${{ toJson(github.*) }}",
+		"jobs.publisher.steps.Checkout implicitly#1.uses=" + workflowImplicitGitHubToken,
+	}
+	slices.Sort(want)
+
+	got := workflowCredentialBindings(t, &workflow)
+	if !slices.Equal(got, want) {
+		t.Fatalf("raw workflow credential bindings = %#v, want %#v", got, want)
+	}
+}
+
+func workflowCredentialBindings(t *testing.T, workflow *yaml.Node) []string {
+	t.Helper()
+
+	if workflow == nil || workflow.Kind != yaml.DocumentNode || len(workflow.Content) != 1 {
+		t.Fatal("workflow must define one YAML document")
+	}
+	bindings := make([]string, 0)
+	collectWorkflowCredentialBindings(t, workflow.Content[0], "", &bindings, make(map[*yaml.Node]bool), workflowCredentialRootRole)
+	slices.Sort(bindings)
+	return bindings
+}
+
+func collectWorkflowCredentialBindings(t *testing.T, node *yaml.Node, path string, bindings *[]string, resolvingAliases map[*yaml.Node]bool, role workflowCredentialRole) {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		collectWorkflowCredentialScalarBindings(node, path, bindings, role)
+	case yaml.AliasNode:
+		collectWorkflowCredentialAliasBindings(t, node, path, bindings, resolvingAliases, role)
+	case yaml.MappingNode:
+		for index := 0; index < len(node.Content); index += 2 {
+			key := node.Content[index].Value
+			value := node.Content[index+1]
+			childPath := workflowCredentialChildPath(path, key)
+			if workflowRoleReceivesImplicitGitHubToken(role, key) {
+				*bindings = append(*bindings, childPath+"="+workflowImplicitGitHubToken)
+			}
+			childRole := workflowCredentialChildRole(role, key)
+			collectWorkflowCredentialBindings(t, value, childPath, bindings, resolvingAliases, childRole)
+		}
+	case yaml.SequenceNode:
+		if role == workflowCredentialStepsRole {
+			collectWorkflowCredentialStepBindings(t, node, path, bindings, resolvingAliases)
+			return
+		}
+		for index, child := range node.Content {
+			collectWorkflowCredentialBindings(t, child, path+"["+strconv.Itoa(index)+"]", bindings, resolvingAliases, workflowCredentialGenericRole)
+		}
+	}
+}
+
+func collectWorkflowCredentialScalarBindings(node *yaml.Node, path string, bindings *[]string, role workflowCredentialRole) {
+	if workflowValueReferencesCredential(role, node.Value) {
+		*bindings = append(*bindings, path+"="+node.Value)
+	}
+}
+
+func collectWorkflowCredentialAliasBindings(t *testing.T, alias *yaml.Node, path string, bindings *[]string, resolvingAliases map[*yaml.Node]bool, role workflowCredentialRole) {
+	if alias.Alias == nil {
+		return
+	}
+	if resolvingAliases[alias.Alias] {
+		t.Fatalf("workflow credential alias cycle at %s", path)
+	}
+	resolvingAliases[alias.Alias] = true
+	collectWorkflowCredentialBindings(t, alias.Alias, path, bindings, resolvingAliases, role)
+	delete(resolvingAliases, alias.Alias)
+}
+
+func workflowCredentialChildRole(parent workflowCredentialRole, key string) workflowCredentialRole {
+	switch parent {
+	case workflowCredentialRootRole:
+		if key == "jobs" {
+			return workflowCredentialJobsRole
+		}
+	case workflowCredentialJobsRole:
+		return workflowCredentialJobRole
+	case workflowCredentialJobRole:
+		if key == "steps" {
+			return workflowCredentialStepsRole
+		}
+		if key == "if" {
+			return workflowCredentialExpressionRole
+		}
+		if key == "secrets" {
+			return workflowCredentialInheritedSecretsRole
+		}
+	case workflowCredentialStepRole:
+		if key == "if" {
+			return workflowCredentialExpressionRole
+		}
+	}
+	return workflowCredentialGenericRole
+}
+
+func workflowRoleReceivesImplicitGitHubToken(role workflowCredentialRole, key string) bool {
+	return key == "uses" && (role == workflowCredentialJobRole || role == workflowCredentialStepRole)
+}
+
+func workflowCredentialChildPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
+}
+
+func collectWorkflowCredentialStepBindings(t *testing.T, steps *yaml.Node, path string, bindings *[]string, resolvingAliases map[*yaml.Node]bool) {
+	stepNameOccurrences := make(map[string]int)
+	for _, step := range steps.Content {
+		nameNode := workflowYAMLMappingValue(step, "name")
+		stepName := "<unnamed>"
+		if nameNode != nil && nameNode.Value != "" {
+			stepName = nameNode.Value
+		}
+		stepNameOccurrences[stepName]++
+		stepPath := path + "." + stepName + "#" + strconv.Itoa(stepNameOccurrences[stepName])
+		collectWorkflowCredentialBindings(t, step, stepPath, bindings, resolvingAliases, workflowCredentialStepRole)
+	}
+}
+
+func workflowYAMLMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return nil
+		}
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
+	return nil
+}
+
+func workflowValueReferencesCredential(role workflowCredentialRole, value string) bool {
+	if role == workflowCredentialInheritedSecretsRole && strings.EqualFold(strings.TrimSpace(value), "inherit") {
+		return true
+	}
+	if role == workflowCredentialExpressionRole && workflowExpressionReferencesCredential(value) {
+		return true
+	}
+	for remainder := value; ; {
+		start := strings.Index(remainder, "${{")
+		if start < 0 {
+			return false
+		}
+		remainder = remainder[start+3:]
+		end := strings.Index(remainder, "}}")
+		if end < 0 {
+			return false
+		}
+		if workflowExpressionReferencesCredential(remainder[:end]) {
+			return true
+		}
+		remainder = remainder[end+2:]
+	}
+}
+
+func workflowExpressionReferencesCredential(expression string) bool {
+	normalized := strings.Join(strings.Fields(strings.ToLower(expression)), "")
+	normalized = strings.ReplaceAll(normalized, `"`, `'`)
+	return workflowSecretsContextPattern.MatchString(normalized) ||
+		workflowGitHubCredentialContextPattern.MatchString(normalized) ||
+		workflowBareGitHubContextPattern.MatchString(normalized)
 }
 
 func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
