@@ -234,6 +234,9 @@ jobs:
           make sync-version VERSION="$version"
 
       - name: Reset VS Code extension artifact staging
+        env:
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           rm -rf -- dist
@@ -250,7 +253,9 @@ jobs:
 
       - name: Validate VS Code extension artifact
         env:
+          PATH: /usr/bin:/bin
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           expected="dist/lopper-vscode-${RELEASE_VERSION}.vsix"
@@ -260,6 +265,10 @@ jobs:
           fi
           if [ ! -f "${expected}" ] || [ -L "${expected}" ]; then
             echo "Expected VS Code artifact ${expected} is missing or not a regular file" >&2
+            exit 1
+          fi
+          if [ ! -s "${expected}" ]; then
+            echo "Expected VS Code artifact ${expected} is empty" >&2
             exit 1
           fi
           if [ "$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 1 ]; then
@@ -424,6 +433,9 @@ jobs:
           go run ./tools/featureflag "${args[@]}" > feature-flags.md
 
       - name: Reset release artifact staging
+        env:
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           rm -rf -- dist
@@ -436,25 +448,23 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Verify Darwin artifacts are present
-        run: |
-          set -euo pipefail
-          if ! find dist -maxdepth 1 -type f -name '*_darwin_amd64.tar.gz' | grep -q .; then
-            echo "Expected darwin/amd64 artifact is missing from dist/" >&2
-            exit 1
-          fi
-          if ! find dist -maxdepth 1 -type f -name '*_darwin_arm64.tar.gz' | grep -q .; then
-            echo "Expected darwin/arm64 artifact is missing from dist/" >&2
-            exit 1
-          fi
-
       - name: Stage bounded release publication inputs
         env:
+          PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          expected_vsix="lopper-vscode-${version}.vsix"
+          expected_assets=(
+            "dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "dist/lopper_${RELEASE_TAG}_windows_amd64.zip"
+            "dist/lopper_${RELEASE_TAG}_windows_arm64.zip"
+            "dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz"
+            "dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz"
+            "dist/lopper-vscode-${version}.vsix"
+          )
 
           if [ ! -f feature-flags.md ] || [ -L feature-flags.md ]; then
             echo "Feature flag release report must be a regular file" >&2
@@ -464,30 +474,30 @@ jobs:
             echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
             exit 1
           fi
-          if find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
             echo "Release publication inputs must contain only regular files" >&2
             exit 1
           fi
-
-          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -print | sort)
-          if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then
-            echo "Expected between 1 and 32 release assets, found ${#assets[@]}" >&2
+          file_count="$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne "${#expected_assets[@]}" ]; then
+            echo "Release publication inputs must contain exactly ${#expected_assets[@]} assets" >&2
             exit 1
           fi
-          if [ "$(find dist -maxdepth 1 -type f | wc -l)" -ne "${#assets[@]}" ]; then
-            echo "Release publication inputs contain an unsupported file type" >&2
-            exit 1
-          fi
-          if [ "$(find dist -maxdepth 1 -type f -name 'lopper-vscode-*.vsix' | wc -l)" -ne 1 ] || [ ! -f "dist/${expected_vsix}" ]; then
-            echo "Expected exactly one VSIX asset named ${expected_vsix}" >&2
-            exit 1
-          fi
-          for asset in "${assets[@]}"; do
+          for asset in "${expected_assets[@]}"; do
+            if [ ! -f "${asset}" ] || [ -L "${asset}" ]; then
+              echo "Expected release asset ${asset} is missing or not a regular file" >&2
+              exit 1
+            fi
+            if [ ! -s "${asset}" ]; then
+              echo "Expected release asset ${asset} is empty" >&2
+              exit 1
+            fi
             if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
               echo "Release asset ${asset} exceeds the 1 GiB publication limit" >&2
               exit 1
             fi
           done
+          assets=("${expected_assets[@]}")
 
           rm -rf -- publication-inputs
           mkdir -p publication-inputs/dist
@@ -980,11 +990,21 @@ jobs:
       - name: Validate release publication inputs
         working-directory: publication-inputs
         env:
+          PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          expected_vsix="lopper-vscode-${version}.vsix"
+          expected_assets=(
+            "dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "dist/lopper_${RELEASE_TAG}_windows_amd64.zip"
+            "dist/lopper_${RELEASE_TAG}_windows_arm64.zip"
+            "dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz"
+            "dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz"
+            "dist/lopper-vscode-${version}.vsix"
+          )
 
           if find . -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
             echo "Release publication inputs contain a non-regular entry" >&2
@@ -992,6 +1012,22 @@ jobs:
           fi
           if [ ! -f SHA256SUMS ] || [ -L SHA256SUMS ]; then
             echo "Release publication checksum manifest is missing or invalid" >&2
+            exit 1
+          fi
+          if find . -mindepth 1 -maxdepth 1 ! -name dist ! -name feature-flags.md ! -name SHA256SUMS -print -quit | grep -q .; then
+            echo "Release publication inputs contain an unexpected top-level path" >&2
+            exit 1
+          fi
+          if [ "$(find . -type f | wc -l | tr -d '[:space:]')" -ne 9 ]; then
+            echo "Release publication inputs contain an unexpected file count" >&2
+            exit 1
+          fi
+          computed_checksums="$(mktemp)"
+          trap 'rm -f "${computed_checksums}"' EXIT
+          mapfile -d '' checksum_files < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
+          sha256sum "${checksum_files[@]}" > "${computed_checksums}"
+          if ! cmp -s SHA256SUMS "${computed_checksums}"; then
+            echo "Release publication checksum manifest does not cover the exact input set" >&2
             exit 1
           fi
           sha256sum --check --strict SHA256SUMS
@@ -1003,38 +1039,29 @@ jobs:
             echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
             exit 1
           fi
-          if find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
             echo "Release asset directory must contain only regular files" >&2
             exit 1
           fi
-
-          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -print | sort)
-          if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then
-            echo "Expected between 1 and 32 release assets, found ${#assets[@]}" >&2
+          file_count="$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne "${#expected_assets[@]}" ]; then
+            echo "Release publication inputs must contain exactly ${#expected_assets[@]} assets" >&2
             exit 1
           fi
-          if [ "$(find dist -maxdepth 1 -type f | wc -l)" -ne "${#assets[@]}" ]; then
-            echo "Release publication inputs contain an unsupported file type" >&2
-            exit 1
-          fi
-          if [ "$(find dist -maxdepth 1 -type f -name 'lopper-vscode-*.vsix' | wc -l)" -ne 1 ] || [ ! -f "dist/${expected_vsix}" ]; then
-            echo "Expected exactly one VSIX asset named ${expected_vsix}" >&2
-            exit 1
-          fi
-          for asset in "${assets[@]}"; do
+          for asset in "${expected_assets[@]}"; do
+            if [ ! -f "${asset}" ] || [ -L "${asset}" ]; then
+              echo "Expected release asset ${asset} is missing or not a regular file" >&2
+              exit 1
+            fi
+            if [ ! -s "${asset}" ]; then
+              echo "Expected release asset ${asset} is empty" >&2
+              exit 1
+            fi
             if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
               echo "Release asset ${asset} exceeds the 1 GiB publication limit" >&2
               exit 1
             fi
           done
-          if ! find dist -maxdepth 1 -type f -name '*_darwin_amd64.tar.gz' | grep -q .; then
-            echo "Expected darwin/amd64 artifact is missing from release publication inputs" >&2
-            exit 1
-          fi
-          if ! find dist -maxdepth 1 -type f -name '*_darwin_arm64.tar.gz' | grep -q .; then
-            echo "Expected darwin/arm64 artifact is missing from release publication inputs" >&2
-            exit 1
-          fi
 
       - name: Update GitHub Release notes
         env:
@@ -1084,11 +1111,15 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.tag }}"
-          mapfile -t assets < <(find publication-inputs/dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) | sort)
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "No release assets found in publication inputs" >&2
-            exit 1
-          fi
+          assets=(
+            "publication-inputs/dist/lopper_${tag}_linux_amd64.tar.gz"
+            "publication-inputs/dist/lopper_${tag}_linux_arm64.tar.gz"
+            "publication-inputs/dist/lopper_${tag}_windows_amd64.zip"
+            "publication-inputs/dist/lopper_${tag}_windows_arm64.zip"
+            "publication-inputs/dist/lopper_${tag}_darwin_amd64.tar.gz"
+            "publication-inputs/dist/lopper_${tag}_darwin_arm64.tar.gz"
+            "publication-inputs/dist/lopper-vscode-${tag#v}.vsix"
+          )
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   finalize-release:

@@ -463,6 +463,7 @@ func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHisto
 
 func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
@@ -485,6 +486,10 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	})
 
 	resetStep := build.Steps[resetIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension artifact staging reset shell", got: resetStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, resetStep, "VS Code extension artifact staging reset", map[string]string{"PATH": "/usr/bin:/bin"})
 	assertWorkflowStepRunContainsAll(t, resetStep, "VS Code extension artifact staging reset", []string{
 		`rm -rf -- dist`,
 		`mkdir -- dist`,
@@ -503,13 +508,18 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	}
 
 	validateStep := build.Steps[validateIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension artifact validation shell", got: validateStep.Shell, want: hardenedShell},
+	})
 	assertWorkflowStepEnv(t, validateStep, "VS Code extension artifact validation", map[string]string{
+		"PATH":            "/usr/bin:/bin",
 		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
 	})
 	assertWorkflowStepRunContainsAll(t, validateStep, "VS Code extension artifact validation", []string{
 		`expected="dist/lopper-vscode-${RELEASE_VERSION}.vsix"`,
 		`find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
 		`[ ! -f "${expected}" ] || [ -L "${expected}" ]`,
+		`[ ! -s "${expected}" ]`,
 		`find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l`,
 	})
 
@@ -534,6 +544,7 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 
 func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
@@ -548,7 +559,6 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	generateIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Generate feature flag release report")
 	resetIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Reset release artifact staging")
 	downloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download release artifacts")
-	verifyIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Verify Darwin artifacts are present")
 	stageIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
 	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
 	if generateIndex >= resetIndex {
@@ -557,11 +567,15 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	if downloadIndex != resetIndex+1 {
 		t.Fatal("release artifacts must be downloaded immediately after resetting the staging directory")
 	}
-	if downloadIndex >= verifyIndex || verifyIndex >= stageIndex || stageIndex >= uploadIndex {
-		t.Fatal("release artifacts must be downloaded, verified, staged, and uploaded in that order")
+	if stageIndex != downloadIndex+1 || uploadIndex != stageIndex+1 {
+		t.Fatal("release artifacts must be downloaded, staged, and uploaded in one contiguous sequence")
 	}
 
 	resetStep := preparation.Steps[resetIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release artifact staging reset shell", got: resetStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, resetStep, "release artifact staging reset", map[string]string{"PATH": "/usr/bin:/bin"})
 	assertWorkflowStepRunContainsAll(t, resetStep, "release artifact staging reset", []string{
 		`rm -rf -- dist`,
 		`mkdir -- dist`,
@@ -576,14 +590,35 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	}
 
 	stageStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release publication staging shell", got: stageStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, stageStep, "release publication staging", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+	})
 	assertWorkflowStepRunContainsAll(t, stageStep, "release publication staging step", []string{
-		`find dist -maxdepth 1 -type f`,
-		`lopper-vscode-${version}.vsix`,
+		`expected_assets=(`,
+		`dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+		`dist/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+		`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz`,
+		`dist/lopper-vscode-${version}.vsix`,
+		`find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ ! -f "${asset}" ] || [ -L "${asset}" ]`,
+		`[ ! -s "${asset}" ]`,
 		`rm -rf -- publication-inputs`,
 		`mkdir -p publication-inputs/dist`,
 		`publication-inputs/feature-flags.md`,
 		`mapfile -d '' checksum_files`,
 		`sha256sum "${checksum_files[@]}" > SHA256SUMS`,
+	})
+	assertWorkflowStepRunOmitsAll(t, stageStep, "release publication staging step", []string{
+		"Expected between 1 and 32 release assets",
+		`-name '*.tar.gz'`,
+		`-name 'lopper-vscode-*.vsix'`,
 	})
 	assertTextAppearsBefore(t, stageStep.Run, `rm -rf -- publication-inputs`, `mkdir -p publication-inputs/dist`, "release publication staging must remove prior inputs before recreating the directory")
 	assertTextAppearsBefore(t, stageStep.Run, `mkdir -p publication-inputs/dist`, `cp -- "${assets[@]}" publication-inputs/dist/`, "release publication staging must recreate the directory before copying bounded assets")
@@ -598,6 +633,42 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	publication := workflowJobByName(t, workflow.Jobs, "publish")
 	assertWorkflowJobPermissions(t, publication, "fresh release publication", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, publication, "fresh release publication")
+	validateStep := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "privileged release publication validation shell", got: validateStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateStep, "privileged release publication validation", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateStep, "privileged release publication validation", []string{
+		`expected_assets=(`,
+		`dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+		`dist/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+		`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz`,
+		`dist/lopper-vscode-${version}.vsix`,
+		`[ ! -f "${asset}" ] || [ -L "${asset}" ]`,
+		`[ ! -s "${asset}" ]`,
+	})
+	assertWorkflowStepRunOmitsAll(t, validateStep, "privileged release publication validation", []string{
+		"Expected between 1 and 32 release assets",
+		`-name '*.tar.gz'`,
+		`-name 'lopper-vscode-*.vsix'`,
+	})
+	uploadAssets := workflowStepByName(t, workflow.Jobs, "publish", "Upload GitHub Release assets")
+	assertWorkflowStepRunContainsAll(t, uploadAssets, "explicit GitHub release asset upload", []string{
+		`publication-inputs/dist/lopper_${tag}_linux_amd64.tar.gz`,
+		`publication-inputs/dist/lopper_${tag}_linux_arm64.tar.gz`,
+		`publication-inputs/dist/lopper_${tag}_windows_amd64.zip`,
+		`publication-inputs/dist/lopper_${tag}_windows_arm64.zip`,
+		`publication-inputs/dist/lopper_${tag}_darwin_amd64.tar.gz`,
+		`publication-inputs/dist/lopper_${tag}_darwin_arm64.tar.gz`,
+		`publication-inputs/dist/lopper-vscode-${tag#v}.vsix`,
+	})
+	assertWorkflowStepRunOmitsAll(t, uploadAssets, "explicit GitHub release asset upload", []string{"find publication-inputs/dist", "*.tar.gz", "*.zip", "*.vsix"})
 	assertReleasePublicationCredentialScope(t, publication)
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
 }
