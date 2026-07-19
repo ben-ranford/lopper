@@ -27,6 +27,10 @@ var forcedGitConfigOverrides = []gitConfigOverride{
 	{key: "core.pager", value: "cat"},
 }
 
+func SafeConfigArgs() []string {
+	return configArgs(forcedGitConfigOverrides)
+}
+
 func ResolveBinaryPath() (string, error) {
 	return resolveBinaryPath(ExecutablePrimary, ExecutableFallback, ExecutableAvailable)
 }
@@ -102,9 +106,21 @@ func shouldStripGitEnvKey(key string) bool {
 }
 
 func safeGitConfigEnvEntries() []string {
-	entries := make([]string, 0, 1+len(forcedGitConfigOverrides)*2)
-	entries = append(entries, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(forcedGitConfigOverrides)))
-	for index, override := range forcedGitConfigOverrides {
+	return gitConfigEnvEntries(forcedGitConfigOverrides)
+}
+
+func configArgs(overrides []gitConfigOverride) []string {
+	args := make([]string, 0, len(overrides)*2)
+	for _, override := range overrides {
+		args = append(args, "-c", fmt.Sprintf("%s=%s", override.key, override.value))
+	}
+	return args
+}
+
+func gitConfigEnvEntries(overrides []gitConfigOverride) []string {
+	entries := make([]string, 0, 1+len(overrides)*2)
+	entries = append(entries, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(overrides)))
+	for index, override := range overrides {
 		entries = append(entries, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", index, override.key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, override.value))
 	}
 	return entries

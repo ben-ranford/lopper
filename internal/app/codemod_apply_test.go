@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -266,6 +268,80 @@ func TestEnsureCleanWorktreeForCodemodPropagatesGitErrors(t *testing.T) {
 	err := ensureCleanWorktreeForCodemod(context.Background(), t.TempDir(), false)
 	if err == nil || !strings.Contains(err.Error(), "run git rev-parse --verify --quiet HEAD") {
 		t.Fatalf("expected git helper error to be returned, got %v", err)
+	}
+}
+
+func TestGitChangedFilesForCodemodPropagatesGitErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		mode    string
+		wantSub string
+	}{
+		{name: "untracked files", mode: "lsfail", wantSub: "ls-files"},
+		{name: "unborn HEAD staged changes", mode: "difffail-cached", wantSub: "run git"},
+		{name: "unborn HEAD unstaged changes", mode: "difffail-unstaged", wantSub: "run git"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := configureFakeGitRepo(t, tc.mode)
+
+			_, _, err := gitChangedFilesForCodemod(context.Background(), repo)
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestGitChangedFilesForCodemodPropagatesWorktreeDetectionError(t *testing.T) {
+	originalResolve := resolveGitBinaryPathFn
+	forcedErr := errors.New("forced codemod worktree detection failure")
+	resolveGitBinaryPathFn = func() (string, error) { return "", forcedErr }
+	t.Cleanup(func() { resolveGitBinaryPathFn = originalResolve })
+
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	writeTextFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o600)
+	_, _, err := gitChangedFilesForCodemod(context.Background(), repo)
+	if !errors.Is(err, forcedErr) {
+		t.Fatalf("expected codemod worktree detection error, got %v", err)
+	}
+}
+
+func TestEnsureCleanWorktreeForCodemodPreservesBenignCleanFilterSemantics(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	initCodemodGitRepo(t, repo)
+
+	helperPath := filepath.Join(t.TempDir(), "normalize-clean.sh")
+	writeTextFile(t, helperPath, "#!/bin/sh\ntr -d '\\r'\n", 0o700)
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod clean filter helper: %v", err)
+	}
+
+	writeTextFile(t, filepath.Join(repo, ".gitattributes"), "tracked.txt filter=normalize\n", 0o644)
+	writeTextFile(t, filepath.Join(repo, "tracked.txt"), "line one\r\n", 0o644)
+	testutil.RunGit(t, repo, "config", "filter.normalize.clean", helperPath)
+	testutil.RunGit(t, repo, "config", "filter.normalize.required", "true")
+	testutil.RunGit(t, repo, "add", ".gitattributes", "tracked.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "tracked")
+
+	if err := ensureCleanWorktreeForCodemod(context.Background(), repo, false); err != nil {
+		t.Fatalf("expected benign clean filter to keep worktree clean, got %v", err)
+	}
+
+	writeTextFile(t, filepath.Join(repo, "tracked.txt"), "line two\r\n", 0o644)
+
+	err := ensureCleanWorktreeForCodemod(context.Background(), repo, false)
+	if !errors.Is(err, ErrDirtyWorktree) {
+		t.Fatalf("expected tracked content change to be reported, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tracked.txt") {
+		t.Fatalf("expected tracked dirty path in error, got %v", err)
 	}
 }
 

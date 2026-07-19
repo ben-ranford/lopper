@@ -34,6 +34,12 @@ const (
 	demoPackageJSONUpdated   = "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.1\"\n}\n"
 	demoPackageJSONUpdatedV2 = "{\n  \"name\": \"demo\",\n  \"version\": \"2.0.0\"\n}\n"
 	nestedManifestPath       = "nested/package.json"
+	literalDir               = ":(glob)pkg"
+	ordinaryDir              = "pkg"
+	literalManifest          = literalDir + "/package.json"
+	literalLockfile          = literalDir + "/package-lock.json"
+	ordinaryManifest         = ordinaryDir + "/package.json"
+	ordinaryLockfile         = ordinaryDir + "/package-lock.json"
 	gitBinaryPath            = "/usr/bin/git"
 	gitExecutableNotFoundErr = "git executable not found"
 )
@@ -389,6 +395,551 @@ func TestSanitizedGitEnvPinsSafePath(t *testing.T) {
 	}
 }
 
+type localGitHelperCase struct {
+	name          string
+	markerName    string
+	helperPath    func(string) string
+	helperScript  func(string) string
+	beforeInit    func(*testing.T, string)
+	beforeDetect  func(*testing.T, string)
+	configureRepo func(*testing.T, string, string)
+	wantErrSubstr string
+}
+
+func helperPathInRepo(repo string) string {
+	return filepath.Join(repo, "helper.sh")
+}
+
+func cleanFilterScript(markerPath string) string {
+	return "#!/bin/sh\necho clean-filter-ran >> \"" + markerPath + "\"\ncat\n"
+}
+
+func processFilterScript(markerPath string) string {
+	return "#!/bin/sh\necho process-filter-ran >> \"" + markerPath + "\"\nprintf 'git-filter-client\\n'\n"
+}
+
+func configureCleanFilter(t *testing.T, repo, driver string) {
+	t.Helper()
+	runGit(t, repo, "config", "filter."+driver+".clean", "./helper.sh")
+	runGit(t, repo, "config", "filter."+driver+".required", "true")
+}
+
+func configureIncludedCleanFilter(t *testing.T, repo, driver string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, ".git", "included-filters"), "[filter \""+driver+"\"]\n\tclean = ./helper.sh\n\trequired = true\n")
+	runGit(t, repo, "config", "include.path", "included-filters")
+}
+
+func configureProcessFilter(t *testing.T, repo, driver string) {
+	t.Helper()
+	runGit(t, repo, "config", "filter."+driver+".process", "./helper.sh")
+	runGit(t, repo, "config", "filter."+driver+".required", "true")
+}
+
+func filterHelperCase(name, markerName, driver string, helperScript func(string) string, beforeInit, repoSetup func(*testing.T, string), configureFilter func(*testing.T, string, string)) localGitHelperCase {
+	return localGitHelperCase{
+		name:          name,
+		markerName:    markerName,
+		helperPath:    helperPathInRepo,
+		helperScript:  helperScript,
+		beforeInit:    beforeInit,
+		wantErrSubstr: manifestFileName + " (" + driver + ")",
+		configureRepo: func(t *testing.T, repo, helperPath string) {
+			t.Helper()
+			if repoSetup != nil {
+				repoSetup(t, repo)
+			}
+			configureFilter(t, repo, driver)
+		},
+	}
+}
+
+func cleanFilterBeforeInit(driver string) func(*testing.T, string) {
+	return func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+driver+"\n")
+	}
+}
+
+func processFilterInfoAttributesSetup(driver string) func(*testing.T, string) {
+	return func(t *testing.T, repo string) {
+		t.Helper()
+		writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), manifestFileName+" filter="+driver+"\n")
+	}
+}
+
+func localGitHelperCases() []localGitHelperCase {
+	return []localGitHelperCase{
+		{
+			name:       "fsmonitor",
+			markerName: "fsmonitor.marker",
+			helperPath: func(repo string) string { return filepath.Join(repo, ".git", "hooks", "pwn-fsmonitor") },
+			helperScript: func(markerPath string) string {
+				return "#!/bin/sh\necho fsmonitor-ran >> \"" + markerPath + "\"\nprintf 'version 2\\n\\n'\nexit 0\n"
+			},
+			beforeDetect: func(t *testing.T, repo string) {
+				t.Helper()
+				writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+			},
+			configureRepo: func(t *testing.T, repo, helperPath string) {
+				t.Helper()
+				runGit(t, repo, "config", "core.fsmonitor", helperPath)
+			},
+		},
+		filterHelperCase("clean filter", "clean-filter.marker", "pwn", cleanFilterScript, cleanFilterBeforeInit("pwn"), nil, configureIncludedCleanFilter),
+		filterHelperCase("set-named clean filter", "set-named-clean-filter.marker", "set", cleanFilterScript, cleanFilterBeforeInit("set"), nil, configureCleanFilter),
+		filterHelperCase("unset-named clean filter", "unset-named-clean-filter.marker", "unset", cleanFilterScript, cleanFilterBeforeInit("unset"), nil, configureCleanFilter),
+		filterHelperCase("unspecified-named clean filter", "unspecified-named-clean-filter.marker", "unspecified", cleanFilterScript, cleanFilterBeforeInit("unspecified"), nil, configureCleanFilter),
+		filterHelperCase("process filter from info attributes", "process-filter-info.marker", "pwn", processFilterScript, nil, processFilterInfoAttributesSetup("pwn"), configureProcessFilter),
+		filterHelperCase("state-named process filter from info attributes", "state-named-process-filter-info.marker", "set", processFilterScript, nil, processFilterInfoAttributesSetup("set"), configureProcessFilter),
+	}
+}
+
+func runLocalGitHelperCase(t *testing.T, tc localGitHelperCase) {
+	t.Helper()
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	if tc.beforeInit != nil {
+		tc.beforeInit(t, repo)
+	}
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), tc.markerName)
+	helperPath := tc.helperPath(repo)
+	writeFile(t, helperPath, tc.helperScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	tc.configureRepo(t, repo, helperPath)
+	if tc.beforeDetect != nil {
+		tc.beforeDetect(t, repo)
+	} else {
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+	}
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if tc.wantErrSubstr != "" {
+		if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), tc.wantErrSubstr) {
+			t.Fatalf("expected error containing %q, got %v", tc.wantErrSubstr, err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
+		}
+	} else {
+		if err != nil {
+			t.Fatalf(detectLockfileDriftFmt, err)
+		}
+		assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected local git helper to never execute, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
+func TestDetectLockfileDriftDoesNotExecuteLocalGitHelpers(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+	for _, tc := range localGitHelperCases() {
+		if tc.wantErrSubstr != "" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			runLocalGitHelperCase(t, tc)
+		})
+	}
+}
+
+func TestDetectLockfileDriftRejectsActiveCustomFiltersWithoutExecutingHelpers(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+	for _, tc := range localGitHelperCases() {
+		if tc.wantErrSubstr == "" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			runLocalGitHelperCase(t, tc)
+		})
+	}
+}
+
+func TestDetectLockfileDriftAllowsMismatchedCaseFilterConfig(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo, markerPath, diffCommands := newCaseSensitiveFilterRepo(t, "pwn", "PWN")
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+	if *diffCommands == 0 {
+		t.Error("expected mismatched filter config to remain inert and allow git diff")
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected mismatched filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
+func TestDetectLockfileDriftRejectsExactCaseFilterConfigBeforeDiff(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo, markerPath, diffCommands := newCaseSensitiveFilterRepo(t, "pwn", "pwn")
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" (pwn)") {
+		t.Errorf("expected exact-case filter ambiguity error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected ambiguity error to suppress drift warnings, got %#v", warnings)
+	}
+	if *diffCommands != 0 {
+		t.Errorf("expected exact-case filter preflight to stop before git diff, got %d diff commands", *diffCommands)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected exact-case filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
+func newCaseSensitiveFilterRepo(t *testing.T, attributeDriver, configuredDriver string) (string, string, *int) {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+attributeDriver+"\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "case-sensitive-filter.marker")
+	helperPath := helperPathInRepo(repo)
+	writeFile(t, helperPath, cleanFilterScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	configureCleanFilter(t, repo, configuredDriver)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	originalExec := execGitCommandContextFn
+	diffCommands := 0
+	execGitCommandContextFn = func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		if lockfileGitCommandGroup(args) == "diff" {
+			diffCommands++
+		}
+		return originalExec(ctx, gitPath, args...)
+	}
+	t.Cleanup(func() { execGitCommandContextFn = originalExec })
+	return repo, markerPath, &diffCommands
+}
+
+func TestDetectLockfileDriftAllowsFilteredUntrackedCandidates(t *testing.T) {
+	runFilteredNonTrackedCandidateCase(t, "")
+}
+
+func TestDetectLockfileDriftIgnoresFilteredIgnoredCandidates(t *testing.T) {
+	runFilteredNonTrackedCandidateCase(t, "package*.json\n")
+}
+
+func runFilteredNonTrackedCandidateCase(t *testing.T, gitignore string) {
+	t.Helper()
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	if gitignore != "" {
+		writeFile(t, filepath.Join(repo, ".gitignore"), gitignore)
+	}
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "*.json filter=pwn\n")
+	writeFile(t, filepath.Join(repo, "README.md"), "tracked\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "non-tracked-filter.marker")
+	helperPath := helperPathInRepo(repo)
+	writeFile(t, helperPath, cleanFilterScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	configureCleanFilter(t, repo, "pwn")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected non-tracked manifest and lockfile to produce no drift warning, got %#v", warnings)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected non-tracked candidate filter helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
+func TestDetectLockfileDriftAllowsUnconfiguredStateNamedFilters(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	for _, driver := range []string{"set", "unset", "unspecified"} {
+		t.Run(driver, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+driver+"\n")
+			initGitRepo(t, repo)
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			if err != nil {
+				t.Fatalf(detectLockfileDriftFmt, err)
+			}
+			assertSingleLockfileDriftWarning(t, warnings, nil, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+		})
+	}
+}
+
+func TestDetectLockfileDriftIgnoresUnassignedFilterStateWithMatchingConfig(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.unspecified.clean", "./unrelated-helper.sh")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestDetectLockfileDriftIgnoresBooleanFilterStatesWithMatchingConfig(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	cases := []struct {
+		name          string
+		attributes    string
+		configureRepo func(*testing.T, string)
+	}{
+		{
+			name:       "set state",
+			attributes: manifestFileName + " filter\n",
+			configureRepo: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.set.clean", "./unrelated-helper.sh")
+			},
+		},
+		{
+			name:       "unset state",
+			attributes: manifestFileName + " -filter\n",
+			configureRepo: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.unset.clean", "./unrelated-helper.sh")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, ".gitattributes"), tc.attributes)
+			initGitRepo(t, repo)
+			tc.configureRepo(t, repo)
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+		})
+	}
+}
+
+func TestDetectLockfileDriftAllowsFiltersWithoutExecutableCommands(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	cases := []struct {
+		name      string
+		driver    string
+		configure func(*testing.T, string)
+	}{
+		{name: "no matching config", driver: "inert"},
+		{
+			name:   "regex metacharacters do not match another driver",
+			driver: "pwn.*",
+			configure: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.pwned.clean", "./missing-helper.sh")
+			},
+		},
+		{
+			name:   "empty commands",
+			driver: "empty",
+			configure: func(t *testing.T, repo string) {
+				t.Helper()
+				runGit(t, repo, "config", "filter.empty.clean", "")
+				runGit(t, repo, "config", "filter.empty.process", "")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+			writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+			writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter="+tc.driver+"\n")
+			initGitRepo(t, repo)
+			if tc.configure != nil {
+				tc.configure(t, repo)
+			}
+			writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+			warnings, err := detectLockfileDrift(context.Background(), repo, false)
+			assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+		})
+	}
+}
+
+func TestDetectLockfileDriftIgnoresUnrelatedFilteredFilesOutsideCandidatePaths(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "README.md filter=pwn\n")
+	initGitRepo(t, repo)
+
+	markerPath := filepath.Join(t.TempDir(), "unrelated-filter.marker")
+	helperPath := helperPathInRepo(repo)
+	writeFile(t, helperPath, cleanFilterScript(markerPath))
+	if err := os.Chmod(helperPath, 0o700); err != nil {
+		t.Fatalf("chmod git helper: %v", err)
+	}
+	configureCleanFilter(t, repo, "pwn")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected unrelated filtered file helper to remain unexecuted, markerPath=%q statErr=%v", markerPath, err)
+	}
+}
+
+func TestScopedGitPathHelpersTreatColonMagicTrackedDiffPathsLiterally(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, literalLockfile), "{}\n")
+	writeFile(t, filepath.Join(repo, ordinaryManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, ordinaryLockfile), "{}\n")
+	initGitRepo(t, repo)
+
+	writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSONUpdated)
+
+	changed, err := gitChangedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
+	if err != nil {
+		t.Fatalf("gitChangedFilesForPaths: %v", err)
+	}
+	if len(changed) != 1 {
+		t.Fatalf("expected only the literal manifest change, got %#v", changed)
+	}
+	assertChangedPathsPresent(t, changed, literalManifest)
+	if _, ok := changed[ordinaryManifest]; ok {
+		t.Fatalf("expected sibling non-literal manifest to remain out of scope, got %#v", changed)
+	}
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in :(glob)pkg: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestDetectLockfileDriftTracksManifestPathContainingNewline(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	packageDir := "pkg\nname"
+	manifestPath := filepath.Join(packageDir, manifestFileName)
+	writeFile(t, filepath.Join(repo, manifestPath), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, packageDir, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+
+	writeFile(t, filepath.Join(repo, manifestPath), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in pkg\nname: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestScopedGitPathHelpersTreatColonMagicUntrackedPathsLiterally(t *testing.T) {
+	if _, err := gitexec.ResolveBinaryPath(); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "README.md"), "tracked\n")
+	initGitRepo(t, repo)
+
+	writeFile(t, filepath.Join(repo, literalManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, literalLockfile), "{}\n")
+	writeFile(t, filepath.Join(repo, ordinaryManifest), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, ordinaryLockfile), "{}\n")
+
+	untracked, err := gitUntrackedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
+	if err != nil {
+		t.Fatalf("gitUntrackedFilesForPaths: %v", err)
+	}
+	if len(untracked) != 2 {
+		t.Fatalf("expected exact literal untracked candidates, got %#v", untracked)
+	}
+	if untracked[0] != literalLockfile || untracked[1] != literalManifest {
+		t.Fatalf("expected literal untracked candidates, got %#v", untracked)
+	}
+
+	changed, err := gitChangedFilesForPaths(context.Background(), repo, []string{literalLockfile, literalManifest})
+	if err != nil {
+		t.Fatalf("gitChangedFilesForPaths: %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("expected only literal untracked candidates, got %#v", changed)
+	}
+	assertChangedPathsPresent(t, changed, literalLockfile, literalManifest)
+	if _, ok := changed[ordinaryLockfile]; ok {
+		t.Fatalf("expected sibling non-literal lockfile to remain out of scope, got %#v", changed)
+	}
+	if _, ok := changed[ordinaryManifest]; ok {
+		t.Fatalf("expected sibling non-literal manifest to remain out of scope, got %#v", changed)
+	}
+}
+
+func TestDetectLockfileDriftPreservesTrackedCRLFNormalization(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "*.json text eol=crlf\n")
+	writeFile(t, filepath.Join(repo, manifestFileName), "{\r\n  \"name\": \"demo\"\r\n}\r\n")
+	writeFile(t, filepath.Join(repo, lockfileName), "{\r\n  \"lockfileVersion\": 3\r\n}\r\n")
+	initGitRepo(t, repo)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected clean CRLF-normalized repo to produce no lockfile drift warnings, got %#v", warnings)
+	}
+}
+
 func TestDetectLockfileDriftStopOnFirst(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
@@ -400,6 +951,263 @@ func TestDetectLockfileDriftStopOnFirst(t *testing.T) {
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected one warning in stop-on-first mode, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstDoesNotPrewalkPastFinding(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "a-drift", manifestFileName), demoPackageJSON)
+	triggerManifest := filepath.Join(repo, "m-trigger", pyprojectManifestName)
+	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\n")
+	writeFile(t, filepath.Join(repo, "m-trigger", poetryLockName), "# lock\n")
+	laterDir := filepath.Join(repo, "z-later")
+	writeFile(t, filepath.Join(laterDir, "README.md"), "removed during candidate discovery\n")
+	initGitRepo(t, repo)
+
+	originalReadFileUnder := readFileUnderFn
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if targetPath == triggerManifest {
+			if err := os.RemoveAll(laterDir); err != nil {
+				return nil, err
+			}
+		}
+		return originalReadFileUnder(rootDir, targetPath)
+	}
+	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+
+	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Fatalf("expected early lockfile drift error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "npm in a-drift") {
+		t.Fatalf("expected only the early npm finding, got %#v", warnings)
+	}
+	if _, err := os.Stat(laterDir); err != nil {
+		t.Fatalf("expected fail mode to stop before later candidate discovery: %v", err)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierBatchFindingOverLaterFilterAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "a-clean", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-clean", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-missing", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "c-filtered", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "c-filtered", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "c-filtered/package.json filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in b-missing: package.json exists but no matching lockfile", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierGitFindingOverLaterFilterAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "z-filtered", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "z-filtered", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "z-filtered/package.json filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in a-drift: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierRuleFindingOverLaterSameSnapshotFilterAmbiguity(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, "poetry.lock"), "# lock\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), pyprojectManifestName+" filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesEarlierRuleFindingOverLaterSameSnapshotImmediateFinding(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	initGitRepo(t, repo)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstSurfacesLaterImmediateFindingAfterEarlierCleanCandidate(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	initGitRepo(t, repo)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "Poetry in .: pyproject.toml exists but no matching lockfile", "poetry lock")
+}
+
+func TestDetectLockfileDriftStopOnFirstKeepsFirstRuleImmediateFindingOnFastPath(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), pyprojectManifestName+" filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in .: package.json exists but no matching lockfile", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstPropagatesEarlierRuleFilterAmbiguityBeforeLaterImmediateFinding(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, ".gitattributes"), manifestFileName+" filter=pwn\n")
+	initGitRepo(t, repo)
+	runGit(t, repo, "config", "filter.pwn.clean", "./helper.sh")
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "cannot safely evaluate lockfile drift") || !strings.Contains(err.Error(), manifestFileName+" (pwn)") {
+		t.Fatalf("expected earlier npm filter ambiguity, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected ambiguity to suppress the later immediate warning, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesPriorBatchFindingOverMixedSnapshot(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-mixed", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "b-mixed", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-mixed", pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\n")
+	initGitRepo(t, repo)
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	assertSingleLockfileDriftWarning(t, warnings, err, "npm in a-drift: package.json changed while no matching lockfile changed", "npm install")
+}
+
+func TestDetectLockfileDriftStopOnFirstPrioritizesBufferedGitFindingOverLaterImmediateFinding(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "b-missing", manifestFileName), demoPackageJSON)
+	initGitRepo(t, repo)
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Errorf("expected ErrLockfileDrift, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 {
+		t.Errorf("expected exactly one fail-fast warning, got %#v", warnings)
+	}
+	warningText := strings.Join(warnings, "\n")
+	if !strings.Contains(warningText, "npm in a-drift: package.json changed while no matching lockfile changed") {
+		t.Errorf("expected earlier buffered manifest-change warning, got %#v", warnings)
+	}
+	if strings.Contains(warningText, "b-missing") {
+		t.Errorf("expected no later missing-lockfile warning, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *testing.T) {
+	repo := t.TempDir()
+	earlyManifest := filepath.Join(repo, "a-drift", manifestFileName)
+	writeFile(t, earlyManifest, demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "a-drift", lockfileName), "{}\n")
+	triggerManifest := filepath.Join(repo, "m-trigger", pyprojectManifestName)
+	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\n")
+	writeFile(t, filepath.Join(repo, "m-trigger", poetryLockName), "# lock\n")
+	initGitRepo(t, repo)
+	writeFile(t, earlyManifest, demoPackageJSONUpdated)
+
+	originalReadFileUnder := readFileUnderFn
+	triggeredLaterWalkError := false
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if targetPath == triggerManifest {
+			triggeredLaterWalkError = true
+			content, err := originalReadFileUnder(rootDir, targetPath)
+			if err != nil {
+				return nil, err
+			}
+			if err := os.RemoveAll(filepath.Dir(triggerManifest)); err != nil {
+				return nil, err
+			}
+			return content, nil
+		}
+		return originalReadFileUnder(rootDir, targetPath)
+	}
+	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+
+	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
+	if !errors.Is(err, ErrLockfileDrift) {
+		t.Fatalf("expected earlier lockfile drift to win over the later walk error, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "npm in a-drift") {
+		t.Fatalf("expected only the earlier npm finding, got %#v", warnings)
+	}
+	if !triggeredLaterWalkError {
+		t.Fatal("expected the bounded candidate batch to encounter the later walk error before flushing")
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstFlushesFinalGitBatch(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, lockfileName), "{}\n")
+	initGitRepo(t, repo)
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, true)
+	if err != nil {
+		t.Fatalf("detect lockfile drift: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "package.json changed while no matching lockfile changed") {
+		t.Fatalf("expected final batch manifest drift warning, got %#v", warnings)
+	}
+}
+
+func TestDetectLockfileDriftStopOnFirstPropagatesFinalBatchEvaluationError(t *testing.T) {
+	repo := t.TempDir()
+	manifest := filepath.Join(repo, pyprojectManifestName)
+	writeFile(t, manifest, "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
+	initGitRepo(t, repo)
+
+	originalReadFileUnder := readFileUnderFn
+	forcedErr := errors.New("forced final batch evaluation failure")
+	manifestReads := 0
+	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+		if targetPath == manifest {
+			manifestReads++
+			if manifestReads == 2 {
+				return nil, forcedErr
+			}
+		}
+		return originalReadFileUnder(rootDir, targetPath)
+	}
+	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+
+	_, err := detectLockfileDrift(context.Background(), repo, true)
+	if !errors.Is(err, forcedErr) {
+		t.Fatalf("expected final batch evaluation error, got %v", err)
 	}
 }
 
@@ -424,7 +1232,7 @@ func TestDetectLockfileDriftInvalidRepoPath(t *testing.T) {
 func TestDetectLockfileDriftWithFeaturesPropagatesGitContextError(t *testing.T) {
 	repo := t.TempDir()
 	original := collectLockfileGitContextFn
-	collectLockfileGitContextFn = func(context.Context, string) (lockfileGitContext, error) {
+	collectLockfileGitContextFn = func(context.Context, string, []lockfileRule) (lockfileGitContext, error) {
 		return lockfileGitContext{}, errors.New("forced git context failure")
 	}
 	defer func() { collectLockfileGitContextFn = original }()
@@ -462,13 +1270,14 @@ func TestScanLockfileDriftMissingRepoPath(t *testing.T) {
 
 func TestGitHelperErrors(t *testing.T) {
 	repo := t.TempDir()
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil {
-		t.Fatalf("expected tracked changes command to fail outside git repo")
-	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
 		t.Fatalf("expected untracked files command to fail outside git repo")
 	}
-	if isGitWorktree(context.Background(), repo) {
+	isWorktree, err := isGitWorktree(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect non-git worktree: %v", err)
+	}
+	if isWorktree {
 		t.Fatalf("expected non-git temp dir to not be worktree")
 	}
 }
@@ -476,15 +1285,15 @@ func TestGitHelperErrors(t *testing.T) {
 func TestGitHelperNilContextErrors(t *testing.T) {
 	repo := t.TempDir()
 	//nolint:staticcheck // Deliberate nil context validation coverage.
-	if _, err := gitTrackedChanges(nil, repo); err == nil {
-		t.Fatalf("expected tracked changes command with nil context to fail outside git repo")
-	}
-	//nolint:staticcheck // Deliberate nil context validation coverage.
 	if _, err := gitUntrackedFiles(nil, repo); err == nil {
 		t.Fatalf("expected untracked files command with nil context to fail outside git repo")
 	}
 	//nolint:staticcheck // Deliberate nil context validation coverage.
-	if isGitWorktree(nil, repo) {
+	isWorktree, err := isGitWorktree(nil, repo)
+	if err != nil {
+		t.Fatalf("detect non-git worktree with nil context: %v", err)
+	}
+	if isWorktree {
 		t.Fatalf("expected non-git temp dir to not be worktree with nil context")
 	}
 }
@@ -495,11 +1304,9 @@ func TestGitHelpersWhenGitUnavailable(t *testing.T) {
 	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
-	if isGitWorktree(context.Background(), repo) {
-		t.Fatalf("expected git worktree=false when git is unavailable")
-	}
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
-		t.Fatalf("expected tracked changes error for missing git executable, got %v", err)
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+	if _, err := isGitWorktree(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
+		t.Fatalf("expected worktree detection error for missing git executable, got %v", err)
 	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil || !strings.Contains(err.Error(), gitExecutableNotFoundErr) {
 		t.Fatalf("expected untracked files error for missing git executable, got %v", err)
@@ -512,65 +1319,16 @@ func TestGitHelpersFallbackExecutableBranch(t *testing.T) {
 	defer func() { resolveGitBinaryPathFn = original }()
 
 	repo := t.TempDir()
-	if isGitWorktree(context.Background(), repo) {
-		t.Fatalf("expected non-git temp dir to not be worktree when fallback git is used")
+	isWorktree, err := isGitWorktree(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect non-git worktree with fallback git: %v", err)
 	}
-	if _, err := gitTrackedChanges(context.Background(), repo); err == nil {
-		t.Fatalf("expected tracked changes command to fail outside git repo with fallback git")
+	if isWorktree {
+		t.Fatalf("expected non-git temp dir to not be worktree when fallback git is used")
 	}
 	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
 		t.Fatalf("expected untracked files command to fail outside git repo with fallback git")
 	}
-}
-
-func TestGitChangedFilesOutsideGitRepo(t *testing.T) {
-	repo := t.TempDir()
-	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("gitChangedFiles outside git repo: %v", err)
-	}
-	if hasGit {
-		t.Fatalf("expected hasGit=false for non-git repo")
-	}
-	if len(changed) != 0 {
-		t.Fatalf("expected no changed files for non-git repo, got %#v", changed)
-	}
-}
-
-func TestGitChangedFilesInGitRepo(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-	initGitRepo(t, repo)
-
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdatedV2)
-	writeFile(t, filepath.Join(repo, newUntrackedFileName), "untracked\n")
-
-	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("gitChangedFiles in git repo: %v", err)
-	}
-	if !hasGit {
-		t.Fatalf("expected hasGit=true for git repo")
-	}
-	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
-}
-
-func TestGitChangedFilesHandlesRepoWithNoHEAD(t *testing.T) {
-	repo := t.TempDir()
-	runGit(t, repo, "init")
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
-	runGit(t, repo, "add", manifestFileName)
-	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
-	writeFile(t, filepath.Join(repo, newUntrackedFileName), "untracked\n")
-
-	changed, hasGit, err := gitChangedFiles(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("expected gitChangedFiles to succeed when HEAD is missing, got %v", err)
-	}
-	if !hasGit {
-		t.Fatalf("expected hasGit=true when inside git worktree")
-	}
-	assertChangedPathsPresent(t, changed, manifestFileName, newUntrackedFileName)
 }
 
 func TestDetectLockfileDriftNoHeadDoesNotReturnGitError(t *testing.T) {
@@ -739,6 +1497,7 @@ func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
 	writeFile(t, filepath.Join(repo, poetryLockName), "metadata = {}\n")
+	initGitRepo(t, repo)
 
 	originalReadFileUnder := readFileUnderFn
 	t.Cleanup(func() {
@@ -752,12 +1511,14 @@ func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
 		return safeio.ReadFileUnder(rootDir, targetPath)
 	}
 
-	_, err := detectLockfileDrift(context.Background(), repo, false)
-	if err == nil {
-		t.Fatalf("expected read error")
-	}
-	if !strings.Contains(err.Error(), "read pyproject.toml for tool.poetry lockfile drift detection") {
-		t.Fatalf("expected matcher read error context, got %v", err)
+	for _, stopOnFirst := range []bool{false, true} {
+		_, err := detectLockfileDrift(context.Background(), repo, stopOnFirst)
+		if err == nil {
+			t.Fatalf("expected read error with stopOnFirst=%v", stopOnFirst)
+		}
+		if !strings.Contains(err.Error(), "read pyproject.toml for tool.poetry lockfile drift detection") {
+			t.Fatalf("expected matcher read error context with stopOnFirst=%v, got %v", stopOnFirst, err)
+		}
 	}
 }
 

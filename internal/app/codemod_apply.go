@@ -158,7 +158,7 @@ func ensureCleanWorktreeForCodemod(ctx context.Context, repoPath string, allowDi
 	if allowDirty {
 		return nil
 	}
-	changed, hasGitContext, err := gitChangedFiles(ctx, repoPath)
+	changed, hasGitContext, err := gitChangedFilesForCodemod(ctx, repoPath)
 	if err != nil {
 		return err
 	}
@@ -175,6 +175,55 @@ func ensureCleanWorktreeForCodemod(ctx context.Context, repoPath string, allowDi
 		files = append(files[:5], fmt.Sprintf("+%d more", len(files)-5))
 	}
 	return fmt.Errorf("%w: detected uncommitted changes in %s; commit/stash them first or pass --allow-dirty", ErrDirtyWorktree, strings.Join(files, ", "))
+}
+
+func gitChangedFilesForCodemod(ctx context.Context, repoPath string) (map[string]struct{}, bool, error) {
+	isWorktree, err := isGitWorktree(ctx, repoPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if !isWorktree {
+		return nil, false, nil
+	}
+
+	changed := map[string]struct{}{}
+	tracked, err := gitTrackedChangesForCodemod(ctx, repoPath)
+	if err != nil {
+		return nil, true, err
+	}
+	for _, path := range tracked {
+		changed[path] = struct{}{}
+	}
+
+	untracked, err := gitUntrackedFiles(ctx, repoPath)
+	if err != nil {
+		return nil, true, err
+	}
+	for _, path := range untracked {
+		changed[path] = struct{}{}
+	}
+
+	return changed, true, nil
+}
+
+func gitTrackedChangesForCodemod(ctx context.Context, repoPath string) ([]string, error) {
+	hasHead, err := gitHasVerifiedHead(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if hasHead {
+		return gitDiffNameOnly(ctx, repoPath, nil, "HEAD")
+	}
+
+	staged, err := gitDiffNameOnly(ctx, repoPath, nil, gitCachedFlag)
+	if err != nil {
+		return nil, err
+	}
+	unstaged, err := gitDiffNameOnly(ctx, repoPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	return mergeGitPaths(staged, unstaged), nil
 }
 
 func findCodemodReport(reportData *report.Report, dependency string) *report.CodemodReport {

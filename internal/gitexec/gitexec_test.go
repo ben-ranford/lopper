@@ -13,6 +13,15 @@ const versionArg = "--version"
 const attackerGlobalConfigEnvEntry = "GIT_CONFIG_GLOBAL=/tmp/attacker-global"
 const keepMeEnvEntry = "KEEP_ME=1"
 
+func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
+	args := SafeConfigArgs()
+	for _, expected := range []string{"core.fsmonitor=false", "diff.external="} {
+		if !containsArgPair(args, "-c", expected) {
+			t.Fatalf("expected safe config arg %q in %#v", expected, args)
+		}
+	}
+}
+
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
 	if err != nil {
@@ -24,29 +33,25 @@ func TestResolveBinaryPath(t *testing.T) {
 }
 
 func TestResolveBinaryPathBranches(t *testing.T) {
-	t.Run("prefers primary", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "primary"
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "prefers primary", want: "primary"},
+		{name: "falls back", want: "fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
+				return path == tc.want
+			})
+			if err != nil {
+				t.Fatalf("resolve %s: %v", tc.want, err)
+			}
+			if path != tc.want {
+				t.Fatalf("expected %s path, got %q", tc.want, path)
+			}
 		})
-		if err != nil {
-			t.Fatalf("resolve primary: %v", err)
-		}
-		if path != "primary" {
-			t.Fatalf("expected primary path, got %q", path)
-		}
-	})
-
-	t.Run("falls back", func(t *testing.T) {
-		path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-			return path == "fallback"
-		})
-		if err != nil {
-			t.Fatalf("resolve fallback: %v", err)
-		}
-		if path != "fallback" {
-			t.Fatalf("expected fallback path, got %q", path)
-		}
-	})
+	}
 
 	t.Run("returns error when unavailable", func(t *testing.T) {
 		if _, err := resolveBinaryPath("primary", "fallback", func(string) bool { return false }); err == nil {
@@ -104,12 +109,13 @@ func TestSanitizedEnv(t *testing.T) {
 }
 
 func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
-	env := sanitizedEnvEntries([]string{
+	input := []string{
 		"BROKEN",
 		keepMeEnvEntry,
 		"PATH=/tmp/custom-bin",
 		attackerGlobalConfigEnvEntry,
-	})
+	}
+	env := sanitizedEnvEntries(input)
 
 	if !containsEnv(env, "BROKEN") {
 		t.Fatalf("expected malformed env entry to be preserved, got %#v", env)
@@ -195,4 +201,13 @@ func testKnownGitPaths(t *testing.T, build func(string) (*exec.Cmd, error)) {
 			}
 		})
 	}
+}
+
+func containsArgPair(args []string, key, value string) bool {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == key && args[index+1] == value {
+			return true
+		}
+	}
+	return false
 }
