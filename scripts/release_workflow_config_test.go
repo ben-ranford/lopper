@@ -472,9 +472,10 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	syncIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Sync VS Code extension version")
 	resetIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Reset VS Code extension artifact staging")
 	packageIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Package VS Code extension")
+	validateIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Validate VS Code extension artifact")
 	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Upload VS Code extension artifact")
-	if resetIndex != syncIndex+1 || packageIndex != resetIndex+1 || uploadIndex != packageIndex+1 {
-		t.Fatal("VS Code release packaging must sync, reset, package, and upload in one contiguous sequence")
+	if resetIndex != syncIndex+1 || packageIndex != resetIndex+1 || validateIndex != packageIndex+1 || uploadIndex != validateIndex+1 {
+		t.Fatal("VS Code release packaging must sync, reset, package, validate, and upload in one contiguous sequence")
 	}
 
 	syncStep := build.Steps[syncIndex]
@@ -500,6 +501,17 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	if strings.Count(packageStep.Run, "npx ") != 1 {
 		t.Fatal("VS Code extension packaging must run exactly one npx command after resetting artifact staging")
 	}
+
+	validateStep := build.Steps[validateIndex]
+	assertWorkflowStepEnv(t, validateStep, "VS Code extension artifact validation", map[string]string{
+		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateStep, "VS Code extension artifact validation", []string{
+		`expected="dist/lopper-vscode-${RELEASE_VERSION}.vsix"`,
+		`find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ ! -f "${expected}" ] || [ -L "${expected}" ]`,
+		`find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l`,
+	})
 
 	for _, step := range build.Steps[resetIndex:] {
 		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {

@@ -248,6 +248,25 @@ jobs:
           cd extensions/vscode-lopper
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
+      - name: Validate VS Code extension artifact
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="dist/lopper-vscode-${RELEASE_VERSION}.vsix"
+          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "VS Code artifact staging contains a non-regular entry" >&2
+            exit 1
+          fi
+          if [ ! -f "${expected}" ] || [ -L "${expected}" ]; then
+            echo "Expected VS Code artifact ${expected} is missing or not a regular file" >&2
+            exit 1
+          fi
+          if [ "$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 1 ]; then
+            echo "VS Code artifact staging must contain only ${expected}" >&2
+            exit 1
+          fi
+
       - name: Upload VS Code extension artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
