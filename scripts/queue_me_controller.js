@@ -165,11 +165,12 @@ async function mergeNow(github, pullRequestId, expectedHeadOid) {
   );
 }
 
-async function armAutoMerge(github, pullRequestId) {
+async function armAutoMerge(github, pullRequestId, expectedHeadOid) {
   return github.graphql(
-    `mutation ArmQueueAutoMerge($pullRequestId: ID!) {
+    `mutation ArmQueueAutoMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
       enablePullRequestAutoMerge(input: {
         pullRequestId: $pullRequestId
+        expectedHeadOid: $expectedHeadOid
         mergeMethod: SQUASH
       }) {
         pullRequest {
@@ -178,7 +179,7 @@ async function armAutoMerge(github, pullRequestId) {
         }
       }
     }`,
-    { pullRequestId },
+    { pullRequestId, expectedHeadOid },
   );
 }
 
@@ -191,12 +192,17 @@ async function armOrMerge(github, state) {
     return 'merged';
   }
   try {
-    await armAutoMerge(github, state.id);
+    await armAutoMerge(github, state.id, state.headRefOid);
     return 'armed';
   } catch (error) {
     const refreshed = await pullStateByID(github, state.id);
+    if (refreshed.headRefOid !== state.headRefOid) {
+      throw new Error(
+        `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
+      );
+    }
     if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
-      await mergeNow(github, refreshed.id, refreshed.headRefOid);
+      await mergeNow(github, refreshed.id, state.headRefOid);
       return 'merged';
     }
     throw error;
@@ -320,6 +326,16 @@ async function runController({ github, context, core }) {
     if (state.headRefOid !== update.headSHA) {
       throw new Error(
         `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
+      );
+    }
+    const { data: latestBranch } = await github.rest.repos.getBranch({
+      owner,
+      repo,
+      branch: defaultBranch,
+    });
+    if (latestBranch.commit.sha !== branch.commit.sha) {
+      throw new Error(
+        `Default branch ${defaultBranch} moved from ${shortSHA(branch.commit.sha)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
       );
     }
     const result = await armOrMerge(github, state);

@@ -33,6 +33,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"permission-contents: write",
 		"permission-issues: write",
 		"permission-pull-requests: write",
+		"permission-workflows: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"QUEUE_CONTROLLER_PATH: ${{ runner.temp }}/queue_me_controller.js",
 		"TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}",

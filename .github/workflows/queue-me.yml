@@ -66,6 +66,7 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-workflows: write
 
       - name: Materialize trusted queue controller
         if: steps.queue_config.outputs.configured == 'true'

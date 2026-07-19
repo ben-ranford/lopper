@@ -51,6 +51,8 @@ function makeHarness(options = {}) {
   const comments = new Map();
   const calls = {
     armed: [],
+    armExpectedHeads: [],
+    branchReads: [],
     comments: [],
     createdLabels: [],
     disabled: [],
@@ -88,7 +90,12 @@ function makeHarness(options = {}) {
       },
       repos: {
         get: async () => ({ data: repository }),
-        getBranch: async () => ({ data: { commit: { sha: 'base-sha' } } }),
+        getBranch: async () => {
+          const branchSHAs = options.branchSHAs || ['base-sha'];
+          const sha = branchSHAs[Math.min(calls.branchReads.length, branchSHAs.length - 1)];
+          calls.branchReads.push(sha);
+          return { data: { commit: { sha } } };
+        },
         compareCommitsWithBasehead: async () => ({
           data: { status: options.comparisonStatus || 'ahead' },
         }),
@@ -102,11 +109,12 @@ function makeHarness(options = {}) {
     },
     graphql: async (query, variables) => {
       if (query.includes('QueuePullState($owner')) {
-        return { repository: { pullRequest: states.get(variables.number) } };
+        return { repository: { pullRequest: { ...states.get(variables.number) } } };
       }
       if (query.includes('QueuePullStateByID')) {
+        const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
         return {
-          node: [...states.values()].find((state) => state.id === variables.pullRequestId),
+          node: { ...state },
         };
       }
       if (query.includes('DisableQueueAutoMerge')) {
@@ -126,6 +134,13 @@ function makeHarness(options = {}) {
       }
       if (query.includes('ArmQueueAutoMerge')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
+        calls.armExpectedHeads.push(variables.expectedHeadOid);
+        if (options.armErrorHead) {
+          state.headRefOid = options.armErrorHead;
+        }
+        if (options.armError) {
+          throw options.armError;
+        }
         state.autoMergeRequest = { enabledAt: 'now', mergeMethod: 'SQUASH' };
         calls.armed.push(state.number);
         return { enablePullRequestAutoMerge: { pullRequest: state } };
@@ -214,6 +229,7 @@ test('controller disables followers and arms only the oldest numbered pull reque
 
   assert.deepEqual(harness.calls.disabled, [20]);
   assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
   assert.deepEqual(harness.calls.merged, []);
   assert.match(
     harness.calls.comments.find((comment) => comment.number === 20).body,
@@ -299,4 +315,33 @@ test('a rebase conflict pauses the queue with a bounded status message', async (
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /could not rebase/);
   assert.match(harness.calls.comments[0].body, /conflict in 'workflow'/);
+});
+
+test('controller pauses when the default branch moves before auto-merge is armed', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    branchSHAs: ['base-sha', 'new-base-sha'],
+  });
+
+  await assert.rejects(runController(harness.args), /Default branch main moved/);
+
+  assert.deepEqual(harness.calls.branchReads, ['base-sha', 'new-base-sha']);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /Default branch main moved/);
+});
+
+test('controller never merges an unverified head after auto-merge arming races a push', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    armError: new Error('expected head mismatch'),
+    armErrorHead: 'pushed-head',
+  });
+
+  await assert.rejects(runController(harness.args), /Pull request head moved/);
+
+  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /Pull request head moved/);
 });
