@@ -331,12 +331,17 @@ async function runController({
   for (const follower of queued.slice(1)) {
     await disableAutoMerge(github, owner, repo, follower.number);
   }
-  if (eventPull && eventPull.number !== leader.number && context.payload.action === 'labeled') {
+  const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
+  if (
+    eventQueueEntry &&
+    eventQueueEntry.number !== leader.number &&
+    context.payload.action === 'labeled'
+  ) {
     await syncStatusComment(
       github,
       owner,
       repo,
-      eventPull.number,
+      eventQueueEntry.number,
       `## Queue status\n\nQueued behind #${leader.number}. Pull requests advance in ascending number order.`,
     );
   }

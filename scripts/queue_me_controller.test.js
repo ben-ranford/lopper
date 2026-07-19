@@ -405,6 +405,31 @@ test('non-default-base queue events disable auto-merge', async (t) => {
   }
 });
 
+test('a non-default-base pause comment is not replaced by a queue position', async () => {
+  const leader = makePull(10);
+  const releasePull = makePull(20);
+  releasePull.base.ref = 'release';
+  const harness = makeHarness({
+    pulls: [leader],
+    eventPull: releasePull,
+    action: 'labeled',
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'manual', mergeMethod: 'SQUASH' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  const eventComments = harness.calls.comments.filter(
+    (comment) => comment.number === 20 || comment.number === undefined,
+  );
+  assert.deepEqual(harness.calls.disabled, [20]);
+  assert.equal(eventComments.length, 1);
+  assert.match(eventComments[0].body, /base changed to `release`/);
+  assert.doesNotMatch(eventComments[0].body, /Queued behind/);
+  assert.deepEqual(harness.calls.armed, [10]);
+});
+
 test('manually enabling auto-merge on a follower restores queue ordering', async () => {
   const leader = makePull(10);
   const follower = makePull(20);
