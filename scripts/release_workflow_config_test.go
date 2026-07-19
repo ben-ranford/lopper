@@ -2073,10 +2073,25 @@ func assertTrustedGHCRManifestPublisher(t *testing.T, workflow workflowConfig) {
 	prepareManifest := workflowJobByName(t, workflow.Jobs, "prepare-ghcr-manifest")
 	assertWorkflowJobPermissions(t, prepareManifest, "prepare-ghcr-manifest", map[string]string{"contents": "read"})
 	assertGHCRJobDoesNotReference(t, prepareManifest, "secrets.GITHUB_TOKEN", "prepare-ghcr-manifest")
-	manifestCheckout := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Checkout")
-	if manifestCheckout.With["persist-credentials"] != "false" {
-		t.Fatalf("prepare-ghcr-manifest checkout persist-credentials = %q, want false", manifestCheckout.With["persist-credentials"])
+	for _, step := range prepareManifest.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") || strings.HasPrefix(step.Uses, "./") {
+			t.Fatalf("prepare-ghcr-manifest must not make repository code available; step %q uses %q", step.Name, step.Uses)
+		}
+		if strings.Contains(step.Run, "scripts/") {
+			t.Fatalf("prepare-ghcr-manifest must not execute repository scripts; step %q run = %q", step.Name, step.Run)
+		}
 	}
+	manifestTags := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Compute manifest image tags")
+	if manifestTags.ID != "image_tags" {
+		t.Fatalf("manifest image tag step ID = %q, want stable file output source", manifestTags.ID)
+	}
+	manifestPayload := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Prepare manifest publication payload")
+	if got := manifestPayload.Env["IMAGE_TAGS_FILE"]; got != "${{ steps.image_tags.outputs.file }}" {
+		t.Fatalf("manifest payload IMAGE_TAGS_FILE = %q, want trusted image tag output", got)
+	}
+	assertWorkflowStepRunContainsAll(t, manifestPayload, "manifest payload tag binding", []string{
+		`install -m 0600 "${IMAGE_TAGS_FILE}" "${payload_root}/image-tags.txt"`,
+	})
 	manifestUpload := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Upload manifest publication payload")
 	if manifestUpload.With["name"] != "ghcr-manifest-publication-payload" {
 		t.Fatalf("manifest artifact name = %q", manifestUpload.With["name"])
@@ -2394,7 +2409,7 @@ func assertArchImageTagStep(t *testing.T, step workflowStepConfig, stepName stri
 		t.Fatalf("%s IMAGE_ARCH_SUFFIX env = %q, want %q", stepName, step.Env["IMAGE_ARCH_SUFFIX"], suffix)
 	}
 	if !strings.Contains(step.Run, "bash scripts/release-image-tags.sh > image-tags.txt") {
-		t.Fatalf("%s must generate tags through scripts/release-image-tags.sh", stepName)
+		t.Fatalf("%s must generate tokenless build tags through scripts/release-image-tags.sh", stepName)
 	}
 	if strings.Contains(step.Run, "while IFS= read -r tag") {
 		t.Fatalf("%s must not use the stale unsanitized tag loop", stepName)
@@ -2404,8 +2419,22 @@ func assertArchImageTagStep(t *testing.T, step workflowStepConfig, stepName stri
 func assertManifestImageTagStep(t *testing.T, manifestStep workflowStepConfig) {
 	t.Helper()
 
-	if !strings.Contains(manifestStep.Run, "bash scripts/release-image-tags.sh > image-tags.txt") {
-		t.Fatal("manifest preparation step must sanitize image tags before publication")
+	for _, want := range []string{
+		"valid_image_tag_pattern='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'",
+		"declare -a sanitized_tags=()",
+		`while IFS= read -r raw_tag || [[ -n "$raw_tag" ]]`,
+		`if [[ ! "$tag" =~ $valid_image_tag_pattern ]]`,
+		`sanitized_tags+=("$tag")`,
+		`for tag in "${sanitized_tags[@]}"; do`,
+		`printf '%s:%s\n' "$IMAGE_NAME" "$tag"`,
+		`echo "file=$image_tags_file" >> "$GITHUB_OUTPUT"`,
+	} {
+		if !strings.Contains(manifestStep.Run, want) {
+			t.Fatalf("manifest preparation must contain trusted inline tag sanitizer snippet %q", want)
+		}
+	}
+	if strings.Contains(manifestStep.Run, "scripts/release-image-tags.sh") {
+		t.Fatal("manifest preparation must not execute repository-controlled tag sanitizer scripts")
 	}
 	if strings.Contains(manifestStep.Run, "docker ") {
 		t.Fatal("manifest preparation step must not publish Docker manifests")
