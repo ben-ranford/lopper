@@ -130,6 +130,10 @@ func decodeBaselineSnapshotMetadata(name string, data []byte) (BaselineSnapshotM
 		return BaselineSnapshotMetadata{}, fmt.Errorf("missing baseline repository identity")
 	}
 	reportData := normalizeSnapshotReport(snapshot.Report)
+	summary := reportData.Summary
+	if summary == nil {
+		summary = &Summary{}
+	}
 	keyType, value := baselineKeyType(key)
 	metadata := BaselineSnapshotMetadata{
 		Key:                   key,
@@ -138,7 +142,7 @@ func decodeBaselineSnapshotMetadata(name string, data []byte) (BaselineSnapshotM
 		BaselineSchemaVersion: snapshot.BaselineSchemaVersion,
 		ReportSchemaVersion:   reportData.SchemaVersion,
 		RepoIdentity:          repoIdentity,
-		Summary:               *reportData.Summary,
+		Summary:               *summary,
 		File:                  name,
 	}
 	if keyType == "label" {

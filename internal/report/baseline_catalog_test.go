@@ -94,6 +94,41 @@ func TestListBaselineSnapshotsReturnsSafePerEntryDiagnostics(t *testing.T) {
 	}
 }
 
+func TestListAndInspectBaselineSnapshotsHandlesEmptyReportSummary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	now := time.Date(2026, time.July, 10, 1, 0, 0, 0, time.UTC)
+	report := Report{
+		SchemaVersion: SchemaVersion,
+		GeneratedAt:   now,
+		RepoPath:      "/repo/empty",
+		Dependencies:  []DependencyReport{},
+	}
+	if _, err := SaveSnapshot(dir, "label:empty", report, now); err != nil {
+		t.Fatalf("save empty snapshot: %v", err)
+	}
+
+	catalog, err := ListBaselineSnapshots(dir, 10)
+	if err != nil {
+		t.Fatalf("list empty snapshot: %v", err)
+	}
+	if len(catalog.Snapshots) != 1 || len(catalog.Diagnostics) != 0 {
+		t.Fatalf("unexpected empty catalog: %#v", catalog)
+	}
+	if catalog.Snapshots[0].Summary.DependencyCount != 0 {
+		t.Fatalf("expected zero-value summary for empty snapshot, got %#v", catalog.Snapshots[0].Summary)
+	}
+
+	shown, err := InspectBaselineSnapshot(dir, "label:empty")
+	if err != nil {
+		t.Fatalf("inspect empty snapshot: %v", err)
+	}
+	if shown.Summary.DependencyCount != 0 || shown.RepoIdentity != "/repo/empty" {
+		t.Fatalf("unexpected empty snapshot metadata: %#v", shown)
+	}
+}
+
 func TestBaselineSnapshotLegacyFallbackRejectsCollidingKey(t *testing.T) {
 	t.Parallel()
 
