@@ -39,7 +39,7 @@ jobs:
 
       - name: Setup Go
         if: ${{ !env.ACT }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -535,7 +535,7 @@ jobs:
 
       - name: Setup Go
         if: ${{ !env.ACT }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -608,7 +608,7 @@ jobs:
 
       - &ci_smoke_setup_go
         name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
