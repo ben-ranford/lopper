@@ -32,7 +32,27 @@ jobs:
       tag: ${{ steps.release.outputs.tag_name || steps.manual.outputs.tag }}
       version: ${{ steps.release.outputs.version || steps.manual.outputs.version }}
       sha: ${{ steps.release.outputs.sha || steps.manual.outputs.sha }}
+      trusted_main_sha: ${{ steps.trusted_main.outputs.trusted_main_sha }}
     steps:
+      - name: Resolve trusted main workflow revision
+        id: trusted_main
+        env:
+          PATH: /usr/bin:/bin
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
+          if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then
+            echo "::error::Release workflow must come from ${expected_workflow_ref}; got ${WORKFLOW_REF}." >&2
+            exit 1
+          fi
+          if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release workflow SHA must be a lowercase full 40-character commit SHA; got ${WORKFLOW_SHA}." >&2
+            exit 1
+          fi
+          /usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Run release-please
         if: ${{ github.event_name != 'workflow_dispatch' }}
         id: release
@@ -46,6 +66,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.source_sha || github.sha }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
@@ -72,26 +93,58 @@ jobs:
           resolved_sha="$(git rev-parse HEAD)"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           release_json="$(mktemp)"
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>/dev/null; then
+          release_lookup_error="$(mktemp)"
+          trap 'rm -f "${release_json}" "${release_lookup_error}"' EXIT
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>"${release_lookup_error}"; then
             echo "Reusing existing GitHub release ${tag}."
-            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
-
-            existing_commit=""
-            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
-              existing_commit="$(git rev-list -n 1 "${tag}")"
-            else
-              existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"
-              if [ -n "${existing_target}" ] && git rev-parse -q --verify "${existing_target}^{commit}" >/dev/null 2>&1; then
-                existing_commit="$(git rev-parse "${existing_target}^{commit}")"
+            tag_fetched="true"
+            if ! fetch_error="$(git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>&1)"; then
+              if [[ "${fetch_error}" == *"couldn't find remote ref refs/tags/${tag}"* ]]; then
+                echo "Remote tag ${tag} does not exist; validating the release target instead."
+                tag_fetched="false"
+              else
+                echo "::error::Failed to fetch existing release tag ${tag}." >&2
+                printf '%s\n' "${fetch_error}" >&2
+                exit 1
               fi
             fi
 
-            if [ -n "${existing_commit}" ] && [ "${existing_commit}" != "${resolved_sha}" ]; then
+            if [ "${tag_fetched}" = "true" ]; then
+              if ! existing_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"; then
+                echo "::error::Failed to resolve fetched release tag ${tag} to a commit." >&2
+                exit 1
+              fi
+            else
+              existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"
+              if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::Existing release ${tag} target_commitish must be a full 40-character hexadecimal commit SHA; got '${existing_target}'." >&2
+                exit 1
+              fi
+              if ! existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"; then
+                echo "::error::Failed to resolve existing release ${tag} target ${existing_target}." >&2
+                exit 1
+              fi
+            fi
+
+            if [[ ! "${existing_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Existing release ${tag} resolved to invalid commit SHA ${existing_commit}." >&2
+              exit 1
+            fi
+            if [ "${tag_fetched}" = "false" ] && [ "${existing_commit}" != "${existing_target}" ]; then
+              echo "::error::Existing release ${tag} commit lookup returned ${existing_commit}, expected immutable target ${existing_target}." >&2
+              exit 1
+            fi
+            if [ "${existing_commit}" != "${resolved_sha}" ]; then
               echo "::error::Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}." >&2
-              rm -f "${release_json}"
               exit 1
             fi
           else
+            release_lookup_status=$?
+            if ! grep -q "HTTP 404" "${release_lookup_error}"; then
+              cat "${release_lookup_error}" >&2
+              echo "::error::Failed to look up GitHub release ${tag}." >&2
+              exit "${release_lookup_status}"
+            fi
             gh release create "${tag}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${resolved_sha}" \
@@ -99,7 +152,6 @@ jobs:
               --title "Release ${tag}" \
               --notes ""
           fi
-          rm -f "${release_json}"
 
           {
             echo "release_created=true"
@@ -134,6 +186,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Setup Go
@@ -188,6 +241,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.sha }}
 
       - name: Compute build metadata
@@ -240,7 +294,7 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  publish:
+  prepare-release-publication:
     needs:
       - prepare-release
       - orchestrate-release
@@ -249,13 +303,12 @@ jobs:
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      contents: read
     steps:
       - name: Checkout release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.sha }}
 
@@ -310,7 +363,538 @@ jobs:
           fi
           go run ./tools/featureflag "${args[@]}" > feature-flags.md
 
+      - name: Stage bounded release publication inputs
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          expected_vsix="lopper-vscode-${version}.vsix"
+
+          if [ ! -f feature-flags.md ] || [ -L feature-flags.md ]; then
+            echo "Feature flag release report must be a regular file" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s feature-flags.md)" -gt 1048576 ]; then
+            echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
+            exit 1
+          fi
+          if find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Release publication inputs must contain only regular files" >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -print | sort)
+          if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then
+            echo "Expected between 1 and 32 release assets, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          if [ "$(find dist -maxdepth 1 -type f | wc -l)" -ne "${#assets[@]}" ]; then
+            echo "Release publication inputs contain an unsupported file type" >&2
+            exit 1
+          fi
+          if [ "$(find dist -maxdepth 1 -type f -name 'lopper-vscode-*.vsix' | wc -l)" -ne 1 ] || [ ! -f "dist/${expected_vsix}" ]; then
+            echo "Expected exactly one VSIX asset named ${expected_vsix}" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
+              echo "Release asset ${asset} exceeds the 1 GiB publication limit" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p publication-inputs/dist
+          cp -- "${assets[@]}" publication-inputs/dist/
+          cp -- feature-flags.md publication-inputs/feature-flags.md
+          (
+            cd publication-inputs
+            mapfile -d '' checksum_files < <(find . -type f -print0 | sort -z)
+            sha256sum "${checksum_files[@]}" > SHA256SUMS
+          )
+
+      - name: Upload release publication inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: publication-inputs
+          path: publication-inputs
+          if-no-files-found: error
+
+  prepare-marketplace-toolchain:
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
+    steps:
+      - name: Detect Marketplace token
+        id: gate
+        env:
+          VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          if [ -n "${VSCE_PUBLISH:-}" ]; then
+            /usr/bin/printf '%s\n' 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            /usr/bin/printf '%s\n' 'configured=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip Marketplace toolchain prep when token is missing
+        if: ${{ steps.gate.outputs.configured != 'true' }}
+        run: echo "VSCE publish token not configured; skipping Marketplace toolchain preparation."
+
+      - name: Checkout trusted main Marketplace manifests
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare-release.outputs.trusted_main_sha }}
+
+      - name: Setup Node for Marketplace tooling
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+
+      - name: Validate Marketplace tooling lockfile
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        run: |
+          set -euo pipefail
+          lockfile="extensions/vscode-lopper/package-lock.json"
+          if [ ! -f "${lockfile}" ] || [ -L "${lockfile}" ]; then
+            echo "Marketplace tooling lockfile is missing or invalid" >&2
+            exit 1
+          fi
+
+          vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"
+          vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"
+          if [ "${vsce_version}" != "3.9.2" ]; then
+            echo "Marketplace tooling lockfile must pin @vscode/vsce 3.9.2" >&2
+            exit 1
+          fi
+          case "${vsce_integrity}" in
+            sha512-?*) ;;
+            *)
+              echo "Marketplace tooling lockfile must pin @vscode/vsce integrity" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Prepare integrity-bound Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        run: |
+          set -euo pipefail
+          source_dir="extensions/vscode-lopper"
+          scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
+          rm -rf "${scratch_dir}"
+          mkdir -p "${scratch_dir}"
+          chmod 0700 "${scratch_dir}"
+          cp -- "${source_dir}/package.json" "${source_dir}/package-lock.json" "${scratch_dir}/"
+
+          if [ "$(find "${scratch_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 2 ]; then
+            echo "Marketplace scratch directory must contain exactly two package manifests" >&2
+            exit 1
+          fi
+          if find "${scratch_dir}" -mindepth 1 -maxdepth 1 \( ! -type f -o \( ! -name package.json ! -name package-lock.json \) \) -print -quit | grep -q .; then
+            echo "Marketplace scratch directory contains an unexpected path" >&2
+            exit 1
+          fi
+
+          (
+            cd "${scratch_dir}"
+            npm ci --ignore-scripts --include=dev --audit=false --fund=false
+          )
+          if ! cmp --silent "${source_dir}/package.json" "${scratch_dir}/package.json" ||
+            ! cmp --silent "${source_dir}/package-lock.json" "${scratch_dir}/package-lock.json"; then
+            echo "Marketplace package manifests changed during preparation" >&2
+            exit 1
+          fi
+          test -x "${scratch_dir}/node_modules/.bin/vsce"
+          if [ "$(realpath -e "${scratch_dir}/node_modules/.bin/vsce")" != "$(realpath -e "${scratch_dir}/node_modules/@vscode/vsce/vsce")" ]; then
+            echo "Marketplace VSCE launcher resolves outside the locked package" >&2
+            exit 1
+          fi
+
+      - name: Archive Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        run: |
+          set -euo pipefail
+          scratch_dir="${RUNNER_TEMP}/marketplace-toolchain"
+          archive_dir="${GITHUB_WORKSPACE}/.artifacts/marketplace-toolchain"
+          archive_file="${archive_dir}/vsce-toolchain.tar.gz"
+          rm -rf "${archive_dir}"
+          mkdir -p "${archive_dir}"
+          chmod 0700 "${archive_dir}"
+          tar --create --gzip --file "${archive_file}" --directory "${scratch_dir}" package.json package-lock.json node_modules
+          if [ ! -s "${archive_file}" ] || [ -L "${archive_file}" ] || [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "Marketplace toolchain archive is missing, invalid, or larger than 256 MiB" >&2
+            exit 1
+          fi
+          (
+            cd "${archive_dir}"
+            sha256sum vsce-toolchain.tar.gz > SHA256SUMS
+          )
+
+      - name: Upload Marketplace toolchain
+        if: ${{ steps.gate.outputs.configured == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: marketplace-toolchain
+          path: |
+            .artifacts/marketplace-toolchain/vsce-toolchain.tar.gz
+            .artifacts/marketplace-toolchain/SHA256SUMS
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+
+  publish-marketplace:
+    needs:
+      - prepare-release
+      - publish
+      - prepare-release-publication
+      - prepare-marketplace-toolchain
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Skip Marketplace publish when token is missing
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured != 'true' }}
+        run: echo "VSCE publish token not configured; skipping Marketplace publish."
+
+      - name: Setup Node for Marketplace tooling
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+
+      - name: Download release publication inputs
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: publication-inputs
+          path: publication-inputs
+
+      - name: Download Marketplace toolchain
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: marketplace-toolchain
+          path: marketplace-toolchain-input
+
+      - name: Validate Marketplace publication inputs
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          publication_dir="${GITHUB_WORKSPACE}/publication-inputs"
+          artifact_dir="${GITHUB_WORKSPACE}/marketplace-toolchain-input"
+          archive_file="${artifact_dir}/vsce-toolchain.tar.gz"
+          toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"
+          expected_vsix="lopper-vscode-${RELEASE_VERSION}.vsix"
+
+          if find "${publication_dir}" -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Marketplace publication inputs contain a symlink or special file" >&2
+            exit 1
+          fi
+          if [ "$(find "${publication_dir}" -mindepth 1 -maxdepth 1 | wc -l)" -ne 3 ] ||
+            [ ! -d "${publication_dir}/dist" ] || [ -L "${publication_dir}/dist" ] ||
+            [ ! -f "${publication_dir}/feature-flags.md" ] || [ -L "${publication_dir}/feature-flags.md" ] ||
+            [ ! -f "${publication_dir}/SHA256SUMS" ] || [ -L "${publication_dir}/SHA256SUMS" ]; then
+            echo "Marketplace publication inputs have an unexpected top-level layout" >&2
+            exit 1
+          fi
+          if find "${publication_dir}" -mindepth 1 -maxdepth 1 ! -name dist ! -name feature-flags.md ! -name SHA256SUMS -print -quit | grep -q .; then
+            echo "Marketplace publication inputs contain an unexpected path" >&2
+            exit 1
+          fi
+          if find "${publication_dir}/dist" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Marketplace publication asset directory contains an unexpected path" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${publication_dir}/feature-flags.md")" -gt 1048576 ] ||
+            [ "$(stat --format=%s "${publication_dir}/SHA256SUMS")" -gt 65536 ]; then
+            echo "Marketplace publication metadata exceeds its size limit" >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(find "${publication_dir}/dist" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -print | sort)
+          if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then
+            echo "Expected between 1 and 32 Marketplace publication assets, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          if [ "$(find "${publication_dir}/dist" -maxdepth 1 -type f | wc -l)" -ne "${#assets[@]}" ] ||
+            [ "$(find "${publication_dir}" -type f | wc -l)" -ne "$(( ${#assets[@]} + 2 ))" ]; then
+            echo "Marketplace publication inputs contain an unexpected file" >&2
+            exit 1
+          fi
+          if find "${publication_dir}/dist" -maxdepth 1 -type f -printf '%f\n' | grep -q '[[:space:]]'; then
+            echo "Marketplace publication asset names must not contain whitespace" >&2
+            exit 1
+          fi
+          if [ "$(find "${publication_dir}/dist" -maxdepth 1 -type f -name 'lopper-vscode-*.vsix' | wc -l)" -ne 1 ] ||
+            [ ! -f "${publication_dir}/dist/${expected_vsix}" ]; then
+            echo "Expected exactly one VSIX asset named ${expected_vsix}" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            if [ ! -s "${asset}" ]; then
+              echo "Marketplace publication asset ${asset} is empty" >&2
+              exit 1
+            fi
+            if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
+              echo "Marketplace publication asset ${asset} exceeds the 1 GiB limit" >&2
+              exit 1
+            fi
+          done
+
+          expected_paths="$(mktemp)"
+          manifest_paths="$(mktemp)"
+          trap 'rm -f "${expected_paths}" "${manifest_paths}"' EXIT
+          (
+            cd "${publication_dir}"
+            {
+              printf '%s\n' ./feature-flags.md
+              find ./dist -maxdepth 1 -type f -print
+            } | sort > "${expected_paths}"
+            if grep -Ev '^[0-9a-f]{64}  [.]\/(feature-flags[.]md|dist\/[A-Za-z0-9._+-]+([.]tar[.]gz|[.]zip|[.]vsix))$' SHA256SUMS | grep -q .; then
+              echo "Marketplace publication checksum manifest contains an unexpected path" >&2
+              exit 1
+            fi
+            awk '{print $2}' SHA256SUMS | sort > "${manifest_paths}"
+            if ! cmp --silent "${expected_paths}" "${manifest_paths}"; then
+              echo "Marketplace publication checksum manifest does not cover the exact file set" >&2
+              exit 1
+            fi
+            sha256sum --check --strict SHA256SUMS
+          )
+
+          if find "${artifact_dir}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Marketplace toolchain artifact contains a symlink or unexpected path" >&2
+            exit 1
+          fi
+          if [ "$(find "${artifact_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then
+            echo "Marketplace toolchain artifact must contain exactly an archive and checksum manifest" >&2
+            exit 1
+          fi
+          if [ ! -s "${archive_file}" ] || [ ! -f "${artifact_dir}/SHA256SUMS" ]; then
+            echo "Marketplace toolchain artifact is missing or empty" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "Marketplace toolchain archive exceeds the 256 MiB limit" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${artifact_dir}/SHA256SUMS")" -gt 1024 ]; then
+            echo "Marketplace toolchain checksum manifest exceeds its size limit" >&2
+            exit 1
+          fi
+          if [ "$(wc -l < "${artifact_dir}/SHA256SUMS")" -ne 1 ] ||
+            ! grep -Eq '^[0-9a-f]{64}  vsce-toolchain[.]tar[.]gz$' "${artifact_dir}/SHA256SUMS"; then
+            echo "Marketplace toolchain checksum manifest is invalid" >&2
+            exit 1
+          fi
+          (
+            cd "${artifact_dir}"
+            sha256sum --check --strict SHA256SUMS
+          )
+
+          python3 - "${archive_file}" <<'PY'
+          from pathlib import PurePosixPath
+          import sys
+          import tarfile
+
+          archive_path = sys.argv[1]
+          allowed_roots = {"package.json", "package-lock.json", "node_modules"}
+          required_regular = {
+              "package.json",
+              "package-lock.json",
+              "node_modules/@vscode/vsce/vsce",
+          }
+
+          def normalize(parts):
+              resolved = []
+              for part in parts:
+                  if part in ("", "."):
+                      continue
+                  if part == "..":
+                      if not resolved:
+                          return None
+                      resolved.pop()
+                      continue
+                  resolved.append(part)
+              return tuple(resolved)
+
+          with tarfile.open(archive_path, "r:gz") as archive:
+              members = archive.getmembers()
+
+          member_count = len(members)
+          total_size = 0
+          names = set()
+          regular_files = set()
+          symlinks = {}
+          for member in members:
+              if "\\" in member.name:
+                  raise SystemExit("Marketplace toolchain archive contains a backslash path")
+              path = PurePosixPath(member.name)
+              if path.is_absolute() or not path.parts or ".." in path.parts:
+                  raise SystemExit("Marketplace toolchain archive contains an unsafe path")
+              name = str(path)
+              if name in names or path.parts[0] not in allowed_roots:
+                  raise SystemExit("Marketplace toolchain archive contains a duplicate or unexpected path")
+              names.add(name)
+
+              if member.isfile():
+                  total_size += member.size
+                  regular_files.add(name)
+                  continue
+              if member.isdir():
+                  continue
+              if member.issym():
+                  if ".bin" not in path.parts or "\\" in member.linkname:
+                      raise SystemExit("Marketplace toolchain archive contains an unexpected symlink")
+                  link = PurePosixPath(member.linkname)
+                  if link.is_absolute():
+                      raise SystemExit("Marketplace toolchain archive contains an absolute symlink")
+                  resolved = normalize(path.parent.parts + link.parts)
+                  if not resolved or resolved[0] != "node_modules":
+                      raise SystemExit("Marketplace toolchain symlink escapes node_modules")
+                  symlinks[name] = "/".join(resolved)
+                  continue
+              if member.islnk() or not (member.isfile() or member.isdir()):
+                  raise SystemExit("Marketplace toolchain archive contains an unsupported file type")
+
+          if member_count < 3 or member_count > 65536:
+              raise SystemExit("Marketplace toolchain archive has an invalid entry count")
+          if total_size > 1073741824:
+              raise SystemExit("Marketplace toolchain archive exceeds the 1 GiB expanded size limit")
+          if not required_regular.issubset(regular_files):
+              raise SystemExit("Marketplace toolchain archive is missing a required regular file")
+          if symlinks.get("node_modules/.bin/vsce") != "node_modules/@vscode/vsce/vsce":
+              raise SystemExit("Marketplace VSCE launcher does not target the locked package")
+          PY
+
+          rm -rf "${toolchain_dir}"
+          mkdir -p "${toolchain_dir}"
+          chmod 0700 "${toolchain_dir}"
+          tar --extract --gzip --file "${archive_file}" --directory "${toolchain_dir}" --no-same-owner
+          while IFS= read -r -d '' link; do
+            resolved="$(realpath -e "${link}")"
+            case "${resolved}" in
+              "${toolchain_dir}"/node_modules/*) ;;
+              *)
+                echo "Marketplace toolchain symlink resolves outside node_modules" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find "${toolchain_dir}" -type l -print0)
+
+          test -x "${toolchain_dir}/node_modules/.bin/vsce"
+          if [ "$(realpath -e "${toolchain_dir}/node_modules/.bin/vsce")" != "$(realpath -e "${toolchain_dir}/node_modules/@vscode/vsce/vsce")" ]; then
+            echo "Extracted Marketplace VSCE launcher resolves outside the locked package" >&2
+            exit 1
+          fi
+          jq -e '.packages["node_modules/@vscode/vsce"] | .version == "3.9.2" and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json" >/dev/null
+          jq -e '.version == "3.9.2"' "${toolchain_dir}/node_modules/@vscode/vsce/package.json" >/dev/null
+          node_bin="$(command -v node)"
+          test -x "${node_bin}"
+
+      - name: Publish VS Code extension to Marketplace
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
+        run: |
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "::error::VSCE publish token became unavailable after Marketplace publication was enabled." >&2
+            exit 1
+          fi
+
+          vsce_bin="${RUNNER_TEMP}/vsce-toolchain/node_modules/.bin/vsce"
+          vsix_path="${GITHUB_WORKSPACE}/publication-inputs/dist/lopper-vscode-${RELEASE_VERSION}.vsix"
+          "${vsce_bin}" publish --packagePath "${vsix_path}"
+
+  publish:
+    needs:
+      - prepare-release
+      - prepare-release-publication
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release publication inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: publication-inputs
+          path: publication-inputs
+
+      - name: Validate release publication inputs
+        working-directory: publication-inputs
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          expected_vsix="lopper-vscode-${version}.vsix"
+
+          if find . -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Release publication inputs contain a non-regular entry" >&2
+            exit 1
+          fi
+          if [ ! -f SHA256SUMS ] || [ -L SHA256SUMS ]; then
+            echo "Release publication checksum manifest is missing or invalid" >&2
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
+          if [ ! -f feature-flags.md ] || [ -L feature-flags.md ]; then
+            echo "Feature flag release report must be a regular file" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s feature-flags.md)" -gt 1048576 ]; then
+            echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
+            exit 1
+          fi
+          if find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Release asset directory must contain only regular files" >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -print | sort)
+          if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then
+            echo "Expected between 1 and 32 release assets, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          if [ "$(find dist -maxdepth 1 -type f | wc -l)" -ne "${#assets[@]}" ]; then
+            echo "Release publication inputs contain an unsupported file type" >&2
+            exit 1
+          fi
+          if [ "$(find dist -maxdepth 1 -type f -name 'lopper-vscode-*.vsix' | wc -l)" -ne 1 ] || [ ! -f "dist/${expected_vsix}" ]; then
+            echo "Expected exactly one VSIX asset named ${expected_vsix}" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
+              echo "Release asset ${asset} exceeds the 1 GiB publication limit" >&2
+              exit 1
+            fi
+          done
+          if ! find dist -maxdepth 1 -type f -name '*_darwin_amd64.tar.gz' | grep -q .; then
+            echo "Expected darwin/amd64 artifact is missing from release publication inputs" >&2
+            exit 1
+          fi
+          if ! find dist -maxdepth 1 -type f -name '*_darwin_arm64.tar.gz' | grep -q .; then
+            echo "Expected darwin/arm64 artifact is missing from release publication inputs" >&2
+            exit 1
+          fi
+
       - name: Update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.tag }}"
@@ -331,8 +915,8 @@ jobs:
           ghcr_package_url="https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lopper"
 
           {
-            if [ -s feature-flags.md ]; then
-              cat feature-flags.md
+            if [ -s publication-inputs/feature-flags.md ]; then
+              cat publication-inputs/feature-flags.md
               echo
             fi
             echo "<!-- lopper-release-assets:start -->"
@@ -351,38 +935,21 @@ jobs:
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "Release $tag" --notes-file release-body.md
 
       - name: Upload GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.tag }}"
-          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) | sort)
+          mapfile -t assets < <(find publication-inputs/dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
-            echo "No release assets found in dist" >&2
+            echo "No release assets found in publication inputs" >&2
             exit 1
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
-      - name: Setup Node for VSIX publish
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24
-
-      - name: Publish VS Code extension to Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
-        run: |
-          set -euo pipefail
-          if [ -z "${VSCE_PAT:-}" ]; then
-            echo "VSCE publish token not configured; skipping marketplace publish."
-            exit 0
-          fi
-
-          make vscode-extension-install
-
-          vsix_path="$(find dist -maxdepth 1 -name 'lopper-vscode-*.vsix' | head -n1)"
-          test -n "$vsix_path"
-          ./extensions/vscode-lopper/node_modules/.bin/vsce publish --packagePath "$vsix_path"
-
       - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.tag }}"
@@ -419,79 +986,255 @@ jobs:
             -F draft=false \
             -f make_latest=true >/dev/null
 
-      - name: Update GitHub Action floating tags
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
-        run: |
-          set -euo pipefail
-
-          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
-            echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
-            exit 0
-          fi
-
-          major_tag="v${BASH_REMATCH[1]}"
-          minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force "${major_tag}" "${RELEASE_SHA}"
-          git tag --force "${minor_tag}" "${RELEASE_SHA}"
-          git push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
-
-  update-homebrew-tap:
+  update-floating-tags:
     needs:
       - prepare-release
       - publish
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
-    concurrency:
-      group: homebrew-tap-main
-      cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
+    steps:
+      - name: Prepare GitHub Action floating tags
+        id: prepare_tags
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+        run: |
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          mktemp_bin=/usr/bin/mktemp
+          rm_bin=/bin/rm
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${mktemp_bin}" ] || [ ! -x "${rm_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for floating tag preparation." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+          repo_dir="${RUNNER_TEMP}/floating-tags"
+
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
+            echo "::notice::Skipping GitHub Action floating tags for non-stable semver release ${RELEASE_TAG}."
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          major_tag="v${BASH_REMATCH[1]}"
+          minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          "${rm_bin}" -rf "${repo_dir}"
+          git_safe init "${repo_dir}"
+          git_safe -C "${repo_dir}" remote add origin "${expected_origin}"
+          origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"
+          origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to prepare floating tags through an unexpected origin." >&2
+            exit 1
+          fi
+
+          git_safe -C "${repo_dir}" fetch --no-tags --depth=1 origin "${RELEASE_SHA}"
+          git_safe -C "${repo_dir}" checkout --detach FETCH_HEAD
+          resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"
+          if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Floating tag worktree resolved ${resolved_sha}, expected ${RELEASE_SHA}." >&2
+            exit 1
+          fi
+          git_safe -C "${repo_dir}" tag --force "${major_tag}" "${RELEASE_SHA}"
+          git_safe -C "${repo_dir}" tag --force "${minor_tag}" "${RELEASE_SHA}"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push GitHub Action floating tags
+        if: ${{ steps.prepare_tags.outputs.push == 'true' }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+          PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for the floating tag push step." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+          repo_dir="${RUNNER_TEMP}/floating-tags"
+
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
+            echo "::error::Floating tag push received an invalid stable semver tag ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          major_tag="v${BASH_REMATCH[1]}"
+          minor_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"
+          origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to update floating tags through an unexpected origin." >&2
+            exit 1
+          fi
+
+          resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"
+          major_target="$(git_safe -C "${repo_dir}" rev-parse "refs/tags/${major_tag}^{commit}")"
+          minor_target="$(git_safe -C "${repo_dir}" rev-parse "refs/tags/${minor_tag}^{commit}")"
+          if [ "${resolved_sha}" != "${RELEASE_SHA}" ] || [ "${major_target}" != "${RELEASE_SHA}" ] || [ "${minor_target}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Floating tag worktree or tag targets do not match ${RELEASE_SHA}." >&2
+            exit 1
+          fi
+
+          push_token="${PUSH_TOKEN}"
+          unset PUSH_TOKEN
+          if [ -z "${push_token}" ]; then
+            echo "::error::No token is available to update floating tags." >&2
+            exit 1
+          fi
+          auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset push_token
+          git_network -C "${repo_dir}" push --force origin "refs/tags/${major_tag}" "refs/tags/${minor_tag}"
+
+  homebrew-tap-token-gate:
+    needs:
+      - prepare-release
+      - publish
+      - update-floating-tags
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
     steps:
       - name: Detect tap token
-        id: tap_token
+        id: gate
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [ -n "${HOMEBREW_TAP_TOKEN}" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           else
-            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
+  validate-homebrew-tap:
+    needs:
+      - prepare-release
+      - publish
+      - homebrew-tap-token-gate
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.homebrew-tap-token-gate.outputs.configured == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORMULA_VERSION: ${{ needs.prepare-release.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
       - name: Set up Homebrew
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
         uses: Homebrew/actions/setup-homebrew@fc695c54c2032716dd4cedd007489c8e32fc8a5d
 
-      - name: Checkout tap repository
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          repository: ben-ranford/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-tap
-          fetch-depth: 0
+      - name: Clone tap repository anonymously
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for anonymous Homebrew tap validation" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
 
-      - name: Update lopper formula
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
+
+          env -i \
+            HOME="${git_home}" \
+            PATH="${PATH}" \
+            GIT_TERMINAL_PROMPT=0 \
+            GIT_CONFIG_NOSYSTEM=1 \
+            "${git_bin}" \
+            -c core.hooksPath=/dev/null \
+            -c protocol.file.allow=never \
+            -c protocol.ext.allow=never \
+            clone --origin origin --branch main --single-branch \
+            https://github.com/ben-ranford/homebrew-tap.git homebrew-tap
+
+      - name: Regenerate lopper formula
         working-directory: homebrew-tap
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          source_url="https://github.com/${SOURCE_REPO}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           curl --fail --show-error --silent --location \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "$source_url" -o /tmp/lopper-source.tar.gz
-          source_sha="$(sha256sum /tmp/lopper-source.tar.gz | awk '{print $1}')"
+          read -r source_sha _ < <(sha256sum /tmp/lopper-source.tar.gz)
 
           mkdir -p Formula
           cat > Formula/lopper.rb <<RUBY
@@ -499,6 +1242,7 @@ jobs:
             desc "Local-first CLI/TUI for measuring dependency surface area"
             homepage "https://github.com/ben-ranford/lopper"
             url "${source_url}"
+            version "${FORMULA_VERSION}"
             sha256 "${source_sha}"
             license "MIT"
 
@@ -524,7 +1268,6 @@ jobs:
           RUBY
 
       - name: Validate formula
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
         working-directory: homebrew-tap
         run: |
           set -euo pipefail
@@ -536,52 +1279,288 @@ jobs:
           brew install --build-from-source ben-ranford/tap/lopper
           brew test ben-ranford/tap/lopper
 
-      - name: Commit and push formula changes
-        if: ${{ steps.tap_token.outputs.available == 'true' }}
-        working-directory: homebrew-tap
+  update-homebrew-tap:
+    needs:
+      - prepare-release
+      - publish
+      - validate-homebrew-tap
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      FORMULA_VERSION: ${{ needs.prepare-release.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
+      - name: Regenerate and push formula changes
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_bin=/usr/bin/git
+          curl_bin=/usr/bin/curl
+          sha256sum_bin=/usr/bin/sha256sum
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for the isolated Homebrew tap update step" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
 
-          git add Formula/lopper.rb
-          if git diff --cached --quiet; then
+          git_home="$("${mktemp_bin}" -d)"
+          work_root="$("${mktemp_bin}" -d)"
+          tap_repo="${work_root}/homebrew-tap"
+          source_archive="${work_root}/lopper-source.tar.gz"
+          trap 'rm -rf "${git_home}" "${work_root}"' EXIT
+
+          git_safe() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
+
+          git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"
+
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
+          "${curl_bin}" --fail --show-error --silent --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "${source_url}" -o "${source_archive}"
+          read -r source_sha _ < <("${sha256sum_bin}" "${source_archive}")
+
+          mkdir -p "${tap_repo}/Formula"
+          cat > "${tap_repo}/Formula/lopper.rb" <<RUBY
+          class Lopper < Formula
+            desc "Local-first CLI/TUI for measuring dependency surface area"
+            homepage "https://github.com/ben-ranford/lopper"
+            url "${source_url}"
+            version "${FORMULA_VERSION}"
+            sha256 "${source_sha}"
+            license "MIT"
+
+            depends_on "go" => :build
+            conflicts_with "ben-ranford/tap/lopper-rolling", because: "both install the lopper executable"
+
+            def install
+              ldflags = %W[
+                -s
+                -w
+                -X github.com/ben-ranford/lopper/internal/version.version=#{version}
+                -X github.com/ben-ranford/lopper/internal/version.buildChannel=release
+              ]
+              system "go", "build", *std_go_args(output: bin/"lopper", ldflags: ldflags.join(" ")), "./cmd/lopper"
+              system "bash", "scripts/generate-manpage.sh", "docs/man/lopper.1"
+              man1.install "docs/man/lopper.1"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/lopper --version")
+            end
+          end
+          RUBY
+
+          git_safe -C "${tap_repo}" config user.name "github-actions[bot]"
+          git_safe -C "${tap_repo}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_safe -C "${tap_repo}" add Formula/lopper.rb
+          if git_safe -C "${tap_repo}" diff --cached --quiet; then
             echo "No formula changes to commit"
             exit 0
           fi
 
-          git commit -m "lopper ${{ needs.prepare-release.outputs.tag }}"
+          git_safe -C "${tap_repo}" commit --no-verify -m "lopper ${RELEASE_TAG}"
+
+          auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset HOMEBREW_TAP_TOKEN
+
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for Homebrew formula"
-            if ! git fetch origin main:refs/remotes/origin/main; then
+            if ! git_network -C "${tap_repo}" fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
-              sleep 2
+              /bin/sleep 2
               continue
             fi
-            if ! git rebase origin/main; then
+            if ! git_safe -C "${tap_repo}" rebase origin/main; then
               echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              git rebase --abort || true
-              sleep 2
+              git_safe -C "${tap_repo}" rebase --abort || true
+              /bin/sleep 2
               continue
             fi
-            if git push origin HEAD:main; then
+            if git_network -C "${tap_repo}" push origin HEAD:main; then
               exit 0
             fi
-            sleep 2
+            /bin/sleep 2
           done
 
           echo "Failed to push Homebrew formula after retries" >&2
           exit 1
 
-      - name: Skip tap update when token is missing
-        if: ${{ steps.tap_token.outputs.available != 'true' }}
-        run: echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
-
-  stamp-feature-release-history:
+  prepare-feature-release-history:
     needs:
       - prepare-release
       - publish
+      - update-floating-tags
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.stamp_history.outputs.changed }}
+    steps:
+      - name: Checkout trusted main tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.prepare-release.outputs.trusted_main_sha }}
+
+      - name: Checkout validated release data
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: release-source
+          ref: ${{ needs.prepare-release.outputs.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+
+      - name: Validate release data against trusted main
+        env:
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+          release_commit="$(git -C release-source rev-parse HEAD)"
+          if [ "${release_commit}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Release data checkout resolved ${release_commit}, expected ${RELEASE_SHA}." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${release_commit}" HEAD; then
+            echo "::error::Release source ${release_commit} is not in trusted main history." >&2
+            exit 1
+          fi
+
+      - name: Build trusted feature flag tool
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/featureflag" ./tools/featureflag
+
+      - name: Stamp first stable release history
+        id: stamp_history
+        working-directory: release-source
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then
+            echo "::notice::Skipping feature release history for non-stable semver release ${RELEASE_TAG}."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          "${RUNNER_TEMP}/featureflag" stamp-release --release "${RELEASE_TAG}"
+          "${RUNNER_TEMP}/featureflag" validate
+
+          if git diff --quiet -- internal/featureflags/features.json; then
+            echo "No feature release history changes to commit"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and stage feature history patch
+        if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        working-directory: release-source
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed_files < <(git diff --name-only)
+          if [ "${#changed_files[@]}" -ne 1 ] || [ "${changed_files[0]}" != "internal/featureflags/features.json" ]; then
+            echo "::error::Feature history generation changed an unexpected file set." >&2
+            printf '%s\n' "${changed_files[@]}" >&2
+            exit 1
+          fi
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "::error::Feature history generation created unexpected untracked files." >&2
+            exit 1
+          fi
+          git diff --check -- internal/featureflags/features.json
+
+          artifact_dir="${GITHUB_WORKSPACE}/.artifacts"
+          patch_file="${artifact_dir}/feature-history.patch"
+          mkdir -p "${artifact_dir}"
+          git diff --binary --full-index -- internal/featureflags/features.json > "${patch_file}"
+          if [ ! -s "${patch_file}" ] || [ -L "${patch_file}" ] || [ "$(stat --format=%s "${patch_file}")" -gt 1048576 ]; then
+            echo "::error::Feature history patch is missing, invalid, or larger than 1 MiB." >&2
+            exit 1
+          fi
+          git apply --check --reverse "${patch_file}"
+          (
+            cd "${artifact_dir}"
+            sha256sum feature-history.patch > SHA256SUMS
+          )
+
+      - name: Upload feature history patch
+        if: ${{ steps.stamp_history.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: feature-history-patch
+          path: |
+            .artifacts/feature-history.patch
+            .artifacts/SHA256SUMS
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+
+  push-feature-release-history:
+    needs:
+      - prepare-release
+      - prepare-feature-release-history
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: feature-release-history-main
@@ -589,53 +1568,267 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout release source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Download feature history patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare-release.outputs.sha }}
-          token: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          name: feature-history-patch
+          path: feature-history-input
 
-      - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
-        with:
-          go-version-file: go.mod
-
-      - name: Stamp first stable release history
+      - name: Prepare trusted feature history commit
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
         run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          mktemp_bin=/usr/bin/mktemp
+          rm_bin=/bin/rm
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${mktemp_bin}" ] || [ ! -x "${rm_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for feature history commit preparation." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+          repo_dir="${RUNNER_TEMP}/feature-history-push"
+          input_dir="${GITHUB_WORKSPACE}/feature-history-input"
+          patch_file="${input_dir}/feature-history.patch"
 
-          go run ./tools/featureflag stamp-release --release "${RELEASE_TAG}"
-          go run ./tools/featureflag validate
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::Feature history commit requires a stable semver release tag." >&2
+            exit 1
+          fi
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+          if find "${input_dir}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "::error::Feature history artifact contains a non-regular entry." >&2
+            exit 1
+          fi
+          if [ "$(find "${input_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then
+            echo "::error::Feature history artifact must contain exactly the patch and checksum manifest." >&2
+            exit 1
+          fi
+          if [ ! -s "${patch_file}" ] || [ ! -f "${input_dir}/SHA256SUMS" ] || [ "$(stat --format=%s "${patch_file}")" -gt 1048576 ]; then
+            echo "::error::Feature history patch artifact is missing, empty, or larger than 1 MiB." >&2
+            exit 1
+          fi
+          (
+            cd "${input_dir}"
+            sha256sum --check --strict SHA256SUMS
+          )
 
-          git add internal/featureflags/features.json
-          if git diff --cached --quiet; then
-            echo "No feature release history changes to commit"
-            exit 0
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          "${rm_bin}" -rf "${repo_dir}"
+          git_safe init "${repo_dir}"
+          git_safe -C "${repo_dir}" remote add origin "${expected_origin}"
+          origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"
+          origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to prepare feature history through an unexpected origin." >&2
+            exit 1
           fi
 
-          git commit -m "chore(flags): stamp ${RELEASE_TAG} feature release history"
+          git_safe -C "${repo_dir}" fetch --no-tags --depth=1 origin "${RELEASE_SHA}"
+          git_safe -C "${repo_dir}" checkout -b feature-history FETCH_HEAD
+          resolved_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD)"
+          if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Feature history worktree resolved ${resolved_sha}, expected ${RELEASE_SHA}." >&2
+            exit 1
+          fi
+
+          git_safe -C "${repo_dir}" apply --index --whitespace=error-all "${patch_file}"
+          mapfile -t staged_files < <(git_safe -C "${repo_dir}" diff --cached --name-only)
+          if [ "${#staged_files[@]}" -ne 1 ] || [ "${staged_files[0]}" != "internal/featureflags/features.json" ]; then
+            echo "::error::Feature history patch staged an unexpected file set." >&2
+            printf '%s\n' "${staged_files[@]}" >&2
+            exit 1
+          fi
+          git_safe -C "${repo_dir}" diff --cached --check
+          git_safe -C "${repo_dir}" config user.name "github-actions[bot]"
+          git_safe -C "${repo_dir}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          expected_subject="chore(flags): stamp ${RELEASE_TAG} feature release history"
+          git_safe -C "${repo_dir}" commit -m "${expected_subject}"
+
+          commit_count="$(git_safe -C "${repo_dir}" rev-list --count "${RELEASE_SHA}..HEAD")"
+          parent_sha="$(git_safe -C "${repo_dir}" rev-parse HEAD^)"
+          commit_subject="$(git_safe -C "${repo_dir}" log -1 --format=%s)"
+          mapfile -t committed_files < <(git_safe -C "${repo_dir}" diff-tree --no-commit-id --name-only -r HEAD)
+          if [ "${commit_count}" -ne 1 ] || [ "${parent_sha}" != "${RELEASE_SHA}" ] || [ "${commit_subject}" != "${expected_subject}" ]; then
+            echo "::error::Feature history preparation did not create exactly the expected commit." >&2
+            exit 1
+          fi
+          if [ "${#committed_files[@]}" -ne 1 ] || [ "${committed_files[0]}" != "internal/featureflags/features.json" ]; then
+            echo "::error::Feature history commit changed an unexpected file set." >&2
+            printf '%s\n' "${committed_files[@]}" >&2
+            exit 1
+          fi
+          if [ -n "$(git_safe -C "${repo_dir}" status --porcelain --untracked-files=all)" ]; then
+            echo "::error::Feature history worktree is not clean after commit preparation." >&2
+            exit 1
+          fi
+
+      - name: Push feature history commit
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+          PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          git_bin=/usr/bin/git
+          env_bin=/usr/bin/env
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are unavailable for the feature history push step." >&2
+            exit 1
+          fi
+          git_home="$("${mktemp_bin}" -d)"
+          trap '/bin/rm -rf "${git_home}"' EXIT
+          repo_dir="${RUNNER_TEMP}/feature-history-push"
+
+          git_safe() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::Feature history push requires a stable semver release tag." >&2
+            exit 1
+          fi
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source must be an immutable commit SHA." >&2
+            exit 1
+          fi
+          expected_subject="chore(flags): stamp ${RELEASE_TAG} feature release history"
+          expected_origin="https://github.com/${GITHUB_REPOSITORY}"
+          origin_fetch_urls="$(git_safe -C "${repo_dir}" remote get-url --all origin)"
+          origin_push_urls="$(git_safe -C "${repo_dir}" remote get-url --push --all origin)"
+          if [ "${origin_fetch_urls}" != "${expected_origin}" ] || [ "${origin_push_urls}" != "${expected_origin}" ]; then
+            echo "::error::Refusing to push feature release history through an unexpected origin." >&2
+            exit 1
+          fi
+
+          prepared_commit_count="$(git_safe -C "${repo_dir}" rev-list --count "${RELEASE_SHA}..HEAD")"
+          prepared_parent="$(git_safe -C "${repo_dir}" rev-parse HEAD^)"
+          prepared_subject="$(git_safe -C "${repo_dir}" log -1 --format=%s)"
+          mapfile -t prepared_files < <(git_safe -C "${repo_dir}" diff-tree --no-commit-id --name-only -r HEAD)
+          if [ "${prepared_commit_count}" -ne 1 ] || [ "${prepared_parent}" != "${RELEASE_SHA}" ] || [ "${prepared_subject}" != "${expected_subject}" ]; then
+            echo "::error::Feature history push did not receive exactly the expected commit." >&2
+            exit 1
+          fi
+          if [ "${#prepared_files[@]}" -ne 1 ] || [ "${prepared_files[0]}" != "internal/featureflags/features.json" ]; then
+            echo "::error::Feature history push received an unexpected committed file set." >&2
+            printf '%s\n' "${prepared_files[@]}" >&2
+            exit 1
+          fi
+          if [ -n "$(git_safe -C "${repo_dir}" status --porcelain --untracked-files=all)" ]; then
+            echo "::error::Feature history push worktree is not clean." >&2
+            exit 1
+          fi
+
+          push_token="${PUSH_TOKEN}"
+          unset PUSH_TOKEN
+          if [ -z "${push_token}" ]; then
+            echo "::error::No token is available to push feature release history." >&2
+            exit 1
+          fi
+          auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset push_token
+
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt} for feature release history"
-            if ! git fetch origin main:refs/remotes/origin/main; then
+            if ! git_network -C "${repo_dir}" fetch origin main:refs/remotes/origin/main; then
               echo "git fetch failed on attempt ${attempt}" >&2
-              sleep 2
+              /bin/sleep 2
               continue
             fi
-            if ! git rebase origin/main; then
-              echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
-              git rebase --abort || true
-              sleep 2
-              continue
-            fi
-            if git push origin HEAD:main; then
+            if git_safe -C "${repo_dir}" diff --quiet origin/main HEAD -- internal/featureflags/features.json; then
+              echo "No feature release history changes to push"
               exit 0
             fi
-            sleep 2
+            if ! git_safe -C "${repo_dir}" rebase origin/main; then
+              echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
+              git_safe -C "${repo_dir}" rebase --abort || true
+              /bin/sleep 2
+              continue
+            fi
+
+            main_sha="$(git_safe -C "${repo_dir}" rev-parse origin/main)"
+            ahead_count="$(git_safe -C "${repo_dir}" rev-list --count origin/main..HEAD)"
+            if [ "${ahead_count}" -eq 0 ] && git_safe -C "${repo_dir}" diff --quiet origin/main HEAD; then
+              echo "No feature release history changes to push"
+              exit 0
+            fi
+            push_parent="$(git_safe -C "${repo_dir}" rev-parse HEAD^)"
+            push_subject="$(git_safe -C "${repo_dir}" log -1 --format=%s)"
+            mapfile -t pushed_files < <(git_safe -C "${repo_dir}" diff-tree --no-commit-id --name-only -r HEAD)
+            if [ "${ahead_count}" -ne 1 ] || [ "${push_parent}" != "${main_sha}" ] || [ "${push_subject}" != "${expected_subject}" ]; then
+              echo "::error::Rebased feature history is not exactly one expected commit ahead of main." >&2
+              exit 1
+            fi
+            if [ "${#pushed_files[@]}" -ne 1 ] || [ "${pushed_files[0]}" != "internal/featureflags/features.json" ]; then
+              echo "::error::Rebased feature history changed an unexpected file set." >&2
+              printf '%s\n' "${pushed_files[@]}" >&2
+              exit 1
+            fi
+            if [ -n "$(git_safe -C "${repo_dir}" status --porcelain --untracked-files=all)" ]; then
+              echo "::error::Rebased feature history worktree is not clean." >&2
+              exit 1
+            fi
+            if git_network -C "${repo_dir}" push origin HEAD:main; then
+              exit 0
+            fi
+            /bin/sleep 2
           done
 
           echo "Failed to push feature release history after retries" >&2
