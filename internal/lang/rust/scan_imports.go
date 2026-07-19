@@ -381,18 +381,12 @@ func consumeRustIdentifier(value []byte) (string, int, bool) {
 		return "", 0, false
 	}
 	first, width := utf8.DecodeRune(value)
-	if first == utf8.RuneError && width == 0 {
-		return "", 0, false
-	}
 	if !isRustIdentifierStartRune(first) {
 		return "", 0, false
 	}
 	index := width
 	for index < len(value) {
 		r, w := utf8.DecodeRune(value[index:])
-		if r == utf8.RuneError && w == 0 {
-			break
-		}
 		if !isRustIdentifierContinueRune(r) {
 			break
 		}
