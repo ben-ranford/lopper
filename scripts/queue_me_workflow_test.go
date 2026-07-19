@@ -96,7 +96,7 @@ func TestQueueMeControllerNodeSuite(t *testing.T) {
 		t.Fatal("node is required to test the queue-me controller")
 	}
 	command := exec.Command(node, "--test", "queue_me_controller.test.js")
-	command.Dir = "."
+	command.Dir = repoPath(t, "scripts")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("queue-me node tests failed: %v\n%s", err, output)

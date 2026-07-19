@@ -184,8 +184,8 @@ test('isBranchCurrent accepts only ancestor-preserving compare states', () => {
 test('status helpers bound untrusted API text', () => {
   assert.equal(testables.shortSHA('1234567890abcdef'), '1234567890');
   assert.equal(testables.shortSHA(undefined), 'unknown');
-  const sanitized = testables.safeError(new Error('bad `branch`'));
-  assert.equal(sanitized, "bad 'branch'");
+  const sanitized = testables.safeError(new Error('bad `branch`\r\ntry again'));
+  assert.equal(sanitized, "bad 'branch' try again");
   assert.equal(testables.safeError('x'.repeat(1300)).length, 1200);
 });
 

@@ -25,7 +25,7 @@ function shortSHA(sha) {
 
 function safeError(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return message.replaceAll('`', "'").slice(0, 1200);
+  return message.replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, 1200);
 }
 
 async function ensureQueueLabel(github, owner, repo, queueLabel) {
