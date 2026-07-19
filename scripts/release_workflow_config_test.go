@@ -4057,7 +4057,13 @@ func assertReleasePublicationCredentialScope(t *testing.T, publication workflowJ
 	for _, step := range publication.Steps {
 		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
 			apiSteps[step.Name] = true
-			assertWorkflowStepEnv(t, step, "GitHub API step "+step.Name, map[string]string{"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"})
+			stepLabel := "GitHub API step " + step.Name
+			assertWorkflowStepEnv(t, step, stepLabel, map[string]string{
+				"GH_TOKEN":    "${{ secrets.GITHUB_TOKEN }}",
+				"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+			})
+			assertWorkflowStepRunContainsAll(t, step, stepLabel, []string{`tag="${RELEASE_TAG}"`})
+			assertWorkflowStepRunOmitsAll(t, step, stepLabel, []string{"${{ needs.prepare-release.outputs.tag }}"})
 		} else if _, ok := step.Env["GH_TOKEN"]; ok {
 			t.Fatalf("non-API publication step %q must not receive GH_TOKEN", step.Name)
 		}

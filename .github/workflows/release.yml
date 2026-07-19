@@ -1209,9 +1209,10 @@ jobs:
       - name: Update GitHub Release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ needs.prepare-release.outputs.tag }}"
+          tag="${RELEASE_TAG}"
           existing_body="$(mktemp)"
           release_notes="$(mktemp)"
 
@@ -1251,9 +1252,10 @@ jobs:
       - name: Upload GitHub Release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ needs.prepare-release.outputs.tag }}"
+          tag="${RELEASE_TAG}"
           assets=(
             "publication-inputs/dist/lopper_${tag}_linux_amd64.tar.gz"
             "publication-inputs/dist/lopper_${tag}_linux_arm64.tar.gz"
