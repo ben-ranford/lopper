@@ -58,7 +58,7 @@ jobs:
         id: release
         uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -69,13 +69,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.source_sha || github.sha }}
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare manual release
         if: ${{ github.event_name == 'workflow_dispatch' }}
         id: manual
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           INPUT_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
@@ -92,65 +92,75 @@ jobs:
 
           resolved_sha="$(git rev-parse HEAD)"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
-          release_json="$(mktemp)"
           release_lookup_error="$(mktemp)"
-          trap 'rm -f "${release_json}" "${release_lookup_error}"' EXIT
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_json}" 2>"${release_lookup_error}"; then
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"
+          release_lookup_status=$?
+          set -e
+          if [ "${release_lookup_status}" -eq 0 ]; then
+            rm -f "${release_lookup_error}"
             echo "Reusing existing GitHub release ${tag}."
-            tag_fetched="true"
-            if ! fetch_error="$(git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>&1)"; then
-              if [[ "${fetch_error}" == *"couldn't find remote ref refs/tags/${tag}"* ]]; then
-                echo "Remote tag ${tag} does not exist; validating the release target instead."
-                tag_fetched="false"
-              else
-                echo "::error::Failed to fetch existing release tag ${tag}." >&2
-                printf '%s\n' "${fetch_error}" >&2
-                exit 1
-              fi
-            fi
-
-            if [ "${tag_fetched}" = "true" ]; then
-              if ! existing_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"; then
-                echo "::error::Failed to resolve fetched release tag ${tag} to a commit." >&2
-                exit 1
-              fi
-            else
-              existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"
-              if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then
-                echo "::error::Existing release ${tag} target_commitish must be a full 40-character hexadecimal commit SHA; got '${existing_target}'." >&2
-                exit 1
-              fi
-              if ! existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"; then
-                echo "::error::Failed to resolve existing release ${tag} target ${existing_target}." >&2
-                exit 1
-              fi
-            fi
-
-            if [[ ! "${existing_commit}" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::Existing release ${tag} resolved to invalid commit SHA ${existing_commit}." >&2
+            release_ref_json="$(mktemp)"
+            if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then
+              echo "::error::Existing release ${tag} tag ref could not be verified." >&2
+              rm -f "${release_ref_json}"
               exit 1
             fi
-            if [ "${tag_fetched}" = "false" ] && [ "${existing_commit}" != "${existing_target}" ]; then
-              echo "::error::Existing release ${tag} commit lookup returned ${existing_commit}, expected immutable target ${existing_target}." >&2
+
+            existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"
+            existing_ref_sha="$(jq -r '.object.sha // empty' "${release_ref_json}")"
+            existing_commit=""
+
+            case "${existing_ref_type}" in
+              commit)
+                existing_commit="${existing_ref_sha}"
+                ;;
+              tag)
+                annotated_tag_json="$(mktemp)"
+                if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then
+                  echo "::error::Existing release ${tag} annotated tag target could not be verified." >&2
+                  rm -f "${annotated_tag_json}" "${release_ref_json}"
+                  exit 1
+                fi
+
+                annotated_target_type="$(jq -r '.object.type // empty' "${annotated_tag_json}")"
+                if [ "${annotated_target_type}" != "commit" ]; then
+                  echo "::error::Existing release ${tag} tag target type ${annotated_target_type} is not a commit." >&2
+                  rm -f "${annotated_tag_json}" "${release_ref_json}"
+                  exit 1
+                fi
+
+                existing_commit="$(jq -r '.object.sha // empty' "${annotated_tag_json}")"
+                rm -f "${annotated_tag_json}"
+                ;;
+              *)
+                echo "::error::Existing release ${tag} tag ref type ${existing_ref_type} is not supported." >&2
+                rm -f "${release_ref_json}"
+                exit 1
+                ;;
+            esac
+
+            rm -f "${release_ref_json}"
+            if [ -z "${existing_commit}" ]; then
+              echo "::error::Existing release ${tag} target commit could not be verified." >&2
               exit 1
             fi
             if [ "${existing_commit}" != "${resolved_sha}" ]; then
               echo "::error::Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}." >&2
               exit 1
             fi
-          else
-            release_lookup_status=$?
-            if ! grep -q "HTTP 404" "${release_lookup_error}"; then
-              cat "${release_lookup_error}" >&2
-              echo "::error::Failed to look up GitHub release ${tag}." >&2
-              exit "${release_lookup_status}"
-            fi
+          elif grep -q "HTTP 404" "${release_lookup_error}"; then
+            rm -f "${release_lookup_error}"
             gh release create "${tag}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${resolved_sha}" \
               --draft \
               --title "Release ${tag}" \
               --notes ""
+          else
+            cat "${release_lookup_error}" >&2
+            rm -f "${release_lookup_error}"
+            exit "${release_lookup_status}"
           fi
 
           {
@@ -512,6 +522,12 @@ jobs:
             echo "Marketplace package manifests changed during preparation" >&2
             exit 1
           fi
+          trusted_vsce_link="${scratch_dir}/node_modules/.bin/vsce"
+          find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -delete
+          if find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -print -quit | grep -q .; then
+            echo "Marketplace toolchain retains unexpected symbolic links" >&2
+            exit 1
+          fi
           test -x "${scratch_dir}/node_modules/.bin/vsce"
           if [ "$(realpath -e "${scratch_dir}/node_modules/.bin/vsce")" != "$(realpath -e "${scratch_dir}/node_modules/@vscode/vsce/vsce")" ]; then
             echo "Marketplace VSCE launcher resolves outside the locked package" >&2
@@ -651,6 +667,66 @@ jobs:
             fi
           done
 
+          vsix_path="${publication_dir}/dist/${expected_vsix}"
+          python3 - "${vsix_path}" "${RELEASE_VERSION}" <<'PY'
+          import json
+          import posixpath
+          import stat
+          import sys
+          import zipfile
+
+          vsix_path = sys.argv[1]
+          expected_version = sys.argv[2]
+          manifest_path = "extension/package.json"
+
+          with zipfile.ZipFile(vsix_path) as archive:
+              infos = archive.infolist()
+              if len(infos) == 0 or len(infos) > 65536:
+                  raise SystemExit("Marketplace VSIX contains an unexpected number of entries")
+
+              total_size = 0
+              seen_names = set()
+              manifest_entries = []
+              for info in infos:
+                  raw_name = info.filename
+                  normalized_name = posixpath.normpath(raw_name)
+                  if raw_name.startswith("/") or not normalized_name or normalized_name == "." or ".." in normalized_name.split("/"):
+                      raise SystemExit(f"Marketplace VSIX contains an unsafe path: {raw_name}")
+
+                  mode = (info.external_attr >> 16) & 0o170000
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f"Marketplace VSIX contains a symbolic link entry: {raw_name}")
+                  if mode and not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                      raise SystemExit(f"Marketplace VSIX contains an unexpected entry type: {raw_name}")
+
+                  if normalized_name in seen_names:
+                      raise SystemExit(f"Marketplace VSIX contains a duplicate path: {raw_name}")
+                  seen_names.add(normalized_name)
+
+                  total_size += info.file_size
+                  if total_size > 1073741824:
+                      raise SystemExit("Marketplace VSIX exceeds the 1 GiB expanded size limit")
+
+                  if normalized_name == manifest_path:
+                      manifest_entries.append(info)
+
+              if len(manifest_entries) != 1:
+                  raise SystemExit("Marketplace VSIX must contain exactly one extension/package.json manifest")
+
+              manifest_info = manifest_entries[0]
+              if manifest_info.is_dir() or manifest_info.file_size > 1048576:
+                  raise SystemExit("Marketplace VSIX manifest is missing or oversized")
+
+              manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
+
+          if manifest.get("publisher") != "BenRanford":
+              raise SystemExit("Marketplace VSIX publisher does not match BenRanford")
+          if manifest.get("name") != "vscode-lopper":
+              raise SystemExit("Marketplace VSIX name does not match vscode-lopper")
+          if manifest.get("version") != expected_version:
+              raise SystemExit(f"Marketplace VSIX version does not match {expected_version}")
+          PY
+
           expected_paths="$(mktemp)"
           manifest_paths="$(mktemp)"
           trap 'rm -f "${expected_paths}" "${manifest_paths}"' EXIT
@@ -709,24 +785,13 @@ jobs:
 
           archive_path = sys.argv[1]
           allowed_roots = {"package.json", "package-lock.json", "node_modules"}
+          manifest_names = {"package.json", "package-lock.json"}
+          trusted_symlink = ("node_modules/.bin/vsce", "../@vscode/vsce/vsce")
           required_regular = {
               "package.json",
               "package-lock.json",
               "node_modules/@vscode/vsce/vsce",
           }
-
-          def normalize(parts):
-              resolved = []
-              for part in parts:
-                  if part in ("", "."):
-                      continue
-                  if part == "..":
-                      if not resolved:
-                          return None
-                      resolved.pop()
-                      continue
-                  resolved.append(part)
-              return tuple(resolved)
 
           with tarfile.open(archive_path, "r:gz") as archive:
               members = archive.getmembers()
@@ -737,16 +802,25 @@ jobs:
           regular_files = set()
           symlinks = {}
           for member in members:
-              if "\\" in member.name:
+              raw_name = member.name
+              if "\\" in raw_name:
                   raise SystemExit("Marketplace toolchain archive contains a backslash path")
-              path = PurePosixPath(member.name)
-              if path.is_absolute() or not path.parts or ".." in path.parts:
+              components = raw_name.split("/")
+              if not raw_name or raw_name.startswith("/") or any(component in ("", ".", "..") for component in components):
                   raise SystemExit("Marketplace toolchain archive contains an unsafe path")
+              path = PurePosixPath(raw_name)
               name = str(path)
-              if name in names or path.parts[0] not in allowed_roots:
-                  raise SystemExit("Marketplace toolchain archive contains a duplicate or unexpected path")
+              if raw_name != name:
+                  raise SystemExit("Marketplace toolchain archive contains an unsafe path")
+              if name in names:
+                  raise SystemExit("Marketplace toolchain archive contains a duplicate path")
+              root = name.split("/", 1)[0]
+              if root not in allowed_roots or (root in manifest_names and name != root):
+                  raise SystemExit("Marketplace toolchain archive contains an unexpected path")
               names.add(name)
 
+              if root in manifest_names and not member.isfile():
+                  raise SystemExit("Marketplace toolchain archive contains an unexpected entry type")
               if member.isfile():
                   total_size += member.size
                   regular_files.add(name)
@@ -754,15 +828,9 @@ jobs:
               if member.isdir():
                   continue
               if member.issym():
-                  if ".bin" not in path.parts or "\\" in member.linkname:
-                      raise SystemExit("Marketplace toolchain archive contains an unexpected symlink")
-                  link = PurePosixPath(member.linkname)
-                  if link.is_absolute():
-                      raise SystemExit("Marketplace toolchain archive contains an absolute symlink")
-                  resolved = normalize(path.parent.parts + link.parts)
-                  if not resolved or resolved[0] != "node_modules":
-                      raise SystemExit("Marketplace toolchain symlink escapes node_modules")
-                  symlinks[name] = "/".join(resolved)
+                  if (name, member.linkname) != trusted_symlink:
+                      raise SystemExit("Marketplace toolchain archive contains a symbolic link")
+                  symlinks[name] = "node_modules/@vscode/vsce/vsce"
                   continue
               if member.islnk() or not (member.isfile() or member.isdir()):
                   raise SystemExit("Marketplace toolchain archive contains an unsupported file type")
@@ -947,12 +1015,23 @@ jobs:
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
+  finalize-release:
+    needs:
+      - prepare-release
+      - publish
+      - publish-marketplace
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ needs.prepare-release.outputs.tag }}"
+          tag="${RELEASE_TAG}"
           encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
           gh_err_file="$(mktemp)"
           set +e
@@ -986,15 +1065,6 @@ jobs:
             -F draft=false \
             -f make_latest=true >/dev/null
 
-  update-floating-tags:
-    needs:
-      - prepare-release
-      - publish
-    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
       - name: Prepare GitHub Action floating tags
         id: prepare_tags
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
@@ -1162,8 +1232,7 @@ jobs:
   homebrew-tap-token-gate:
     needs:
       - prepare-release
-      - publish
-      - update-floating-tags
+      - finalize-release
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions: {}
@@ -1433,8 +1502,7 @@ jobs:
   prepare-feature-release-history:
     needs:
       - prepare-release
-      - publish
-      - update-floating-tags
+      - finalize-release
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -1556,23 +1624,23 @@ jobs:
           include-hidden-files: true
           overwrite: true
 
-  push-feature-release-history:
+  prepare-feature-release-history-push:
     needs:
       - prepare-release
       - prepare-feature-release-history
     if: ${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
-    concurrency:
-      group: feature-release-history-main
-      cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      release_tag: ${{ needs.prepare-release.outputs.tag }}
+      release_sha: ${{ needs.prepare-release.outputs.sha }}
     steps:
       - name: Download feature history patch
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: feature-history-patch
-          path: feature-history-input
+          path: ${{ runner.temp }}/feature-history-input
 
       - name: Prepare trusted feature history commit
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
@@ -1591,7 +1659,7 @@ jobs:
           git_home="$("${mktemp_bin}" -d)"
           trap '/bin/rm -rf "${git_home}"' EXIT
           repo_dir="${RUNNER_TEMP}/feature-history-push"
-          input_dir="${GITHUB_WORKSPACE}/feature-history-input"
+          input_dir="${RUNNER_TEMP}/feature-history-input"
           patch_file="${input_dir}/feature-history.patch"
 
           if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
@@ -1684,11 +1752,141 @@ jobs:
             exit 1
           fi
 
+      - name: Archive prepared trusted feature history worktree
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          PATH: /usr/bin:/bin
+        run: |
+          archive_root="${RUNNER_TEMP}/prepared-feature-release-history"
+          archive_file="${archive_root}/prepared-feature-release-history-worktree.tar.gz"
+          checksum_file="${archive_root}/SHA256SUMS"
+          repo_dir="${RUNNER_TEMP}/feature-history-push"
+
+          if [ ! -d "${repo_dir}/.git" ] || [ -L "${repo_dir}" ] || [ -L "${repo_dir}/.git" ]; then
+            echo "::error::Prepared feature history worktree is unavailable or unsafe for archival." >&2
+            exit 1
+          fi
+          rm -rf "${archive_root}"
+          mkdir -p "${archive_root}"
+          tar --create --gzip --file "${archive_file}" --directory "${RUNNER_TEMP}" feature-history-push
+          if [ ! -s "${archive_file}" ] || [ -L "${archive_file}" ] || [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "::error::Prepared feature history worktree archive is missing, unsafe, or larger than 256 MiB." >&2
+            exit 1
+          fi
+          (
+            cd "${archive_root}"
+            sha256sum "$(basename "${archive_file}")" > "${checksum_file}"
+          )
+
+      - name: Upload prepared trusted feature history worktree
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: prepared-feature-release-history-worktree
+          path: ${{ runner.temp }}/prepared-feature-release-history
+          if-no-files-found: error
+
+  push-feature-release-history:
+    needs:
+      - prepare-feature-release-history-push
+    if: ${{ needs.prepare-feature-release-history-push.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: feature-release-history-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Download prepared trusted feature history worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: prepared-feature-release-history-worktree
+          path: ${{ runner.temp }}/prepared-feature-release-history-input
+
+      - name: Validate prepared trusted feature history worktree
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          PATH: /usr/bin:/bin
+        run: |
+          artifact_root="${RUNNER_TEMP}/prepared-feature-release-history-input"
+          archive_file="${artifact_root}/prepared-feature-release-history-worktree.tar.gz"
+          checksum_file="${artifact_root}/SHA256SUMS"
+          worktree_parent="${RUNNER_TEMP}/prepared-feature-release-history"
+          worktree_dir="${worktree_parent}/feature-history-push"
+
+          if [ ! -f "${archive_file}" ] || [ -L "${archive_file}" ] || [ ! -f "${checksum_file}" ] || [ -L "${checksum_file}" ]; then
+            echo "::error::Prepared feature history worktree artifact is incomplete or unsafe." >&2
+            exit 1
+          fi
+          if find "${artifact_root}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "::error::Prepared feature history worktree artifact contains an unexpected path." >&2
+            exit 1
+          fi
+          if [ "$(find "${artifact_root}" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -ne 2 ]; then
+            echo "::error::Prepared feature history worktree artifact must contain exactly an archive and checksum manifest." >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then
+            echo "::error::Prepared feature history worktree archive is larger than 256 MiB." >&2
+            exit 1
+          fi
+          if grep -Ev '^[0-9a-f]{64}  prepared-feature-release-history-worktree[.]tar[.]gz$' "${checksum_file}" | grep -q .; then
+            echo "::error::Prepared feature history worktree checksum manifest contains an unexpected path." >&2
+            exit 1
+          fi
+          (
+            cd "${artifact_root}"
+            sha256sum --check --strict "${checksum_file}"
+          )
+
+          rm -rf "${worktree_parent}"
+          mkdir -p "${worktree_parent}"
+          python3 - "${archive_file}" <<'PY'
+          import posixpath
+          import sys
+          import tarfile
+
+          archive_path = sys.argv[1]
+          allowed_root = "feature-history-push"
+
+          with tarfile.open(archive_path, "r:gz") as archive:
+              members = archive.getmembers()
+              if not members or len(members) > 65536:
+                  raise SystemExit("Prepared feature history worktree archive contains an unexpected number of members")
+
+              total_size = 0
+              seen_names = set()
+              for member in members:
+                  raw_name = member.name
+                  components = raw_name.split("/")
+                  if not raw_name or raw_name.startswith("/") or any(component in ("", ".", "..") for component in components):
+                      raise SystemExit(f"Prepared feature history worktree archive contains an unsafe path: {raw_name}")
+                  normalized = posixpath.normpath(raw_name)
+                  if raw_name != normalized:
+                      raise SystemExit(f"Prepared feature history worktree archive contains a non-canonical path: {raw_name}")
+                  if normalized in seen_names:
+                      raise SystemExit(f"Prepared feature history worktree archive contains a duplicate path: {raw_name}")
+                  seen_names.add(normalized)
+                  if normalized.split("/", 1)[0] != allowed_root:
+                      raise SystemExit(f"Prepared feature history worktree archive contains an unexpected path: {raw_name}")
+                  if member.issym() or member.islnk():
+                      raise SystemExit(f"Prepared feature history worktree archive contains a link: {raw_name}")
+                  if not (member.isdir() or member.isfile()):
+                      raise SystemExit(f"Prepared feature history worktree archive contains an unexpected entry type: {raw_name}")
+                  total_size += member.size
+                  if total_size > 1073741824:
+                      raise SystemExit("Prepared feature history worktree archive exceeds the 1 GiB expanded size limit")
+          PY
+          tar --extract --gzip --no-same-owner --no-same-permissions --file "${archive_file}" --directory "${worktree_parent}"
+          if [ ! -d "${worktree_dir}/.git" ] || [ -L "${worktree_dir}" ] || [ -L "${worktree_dir}/.git" ]; then
+            echo "::error::Prepared feature history worktree archive did not restore a safe git worktree." >&2
+            exit 1
+          fi
+
       - name: Push feature history commit
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
+          RELEASE_TAG: ${{ needs.prepare-feature-release-history-push.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.prepare-feature-release-history-push.outputs.release_sha }}
           PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |
           git_bin=/usr/bin/git
@@ -1702,7 +1900,7 @@ jobs:
           fi
           git_home="$("${mktemp_bin}" -d)"
           trap '/bin/rm -rf "${git_home}"' EXIT
-          repo_dir="${RUNNER_TEMP}/feature-history-push"
+          repo_dir="${RUNNER_TEMP}/prepared-feature-release-history/feature-history-push"
 
           git_safe() {
             "${env_bin}" -i \

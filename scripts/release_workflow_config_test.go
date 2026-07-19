@@ -1,6 +1,8 @@
 package scripts
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"maps"
 	"os"
@@ -34,12 +36,30 @@ type workflowConfig struct {
 }
 
 type workflowJobConfig struct {
-	If          string               `yaml:"if"`
-	Env         map[string]string    `yaml:"env"`
-	Needs       workflowJobNeeds     `yaml:"needs"`
-	Outputs     map[string]string    `yaml:"outputs"`
-	Permissions map[string]string    `yaml:"permissions"`
-	Steps       []workflowStepConfig `yaml:"steps"`
+	ContinueOnError bool                 `yaml:"continue-on-error"`
+	If              string               `yaml:"if"`
+	Env             map[string]string    `yaml:"env"`
+	Needs           workflowJobNeeds     `yaml:"needs"`
+	Outputs         map[string]string    `yaml:"outputs"`
+	Permissions     map[string]string    `yaml:"permissions"`
+	RunsOn          string               `yaml:"runs-on"`
+	Steps           []workflowStepConfig `yaml:"steps"`
+	Strategy        workflowStrategy     `yaml:"strategy"`
+}
+
+type workflowStrategy struct {
+	FailFast *bool          `yaml:"fail-fast"`
+	Matrix   workflowMatrix `yaml:"matrix"`
+}
+
+type workflowMatrix struct {
+	Include []workflowMatrixEntry `yaml:"include"`
+}
+
+type workflowMatrixEntry struct {
+	Architecture string `yaml:"architecture"`
+	Platform     string `yaml:"platform"`
+	Runner       string `yaml:"runner"`
 }
 
 type workflowJobNeeds []string
@@ -267,19 +287,6 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	if !strings.Contains(workflowText, "Existing release ${tag} points to ${existing_commit}, but this run resolved ${resolved_sha}.") {
 		t.Fatal("manual release flow must fail when an existing release tag points to a different commit")
 	}
-	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
-	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
-		`existing_target="$(jq -r '.target_commitish // empty' "${release_json}")"`,
-		`if ! fetch_error="$(git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>&1)"; then`,
-		`if [[ "${fetch_error}" == *"couldn't find remote ref refs/tags/${tag}"* ]]; then`,
-		`echo "Remote tag ${tag} does not exist; validating the release target instead."`,
-		`echo "::error::Failed to fetch existing release tag ${tag}." >&2
-      printf '%s\n' "${fetch_error}" >&2
-      exit 1`,
-	})
-	if strings.Contains(manualStep.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true`) {
-		t.Fatal("manual release flow must not swallow operational failures while fetching an existing release tag")
-	}
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
 	}
@@ -305,28 +312,22 @@ func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *
 	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
 	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
 		`release_lookup_error="$(mktemp)"`,
-		`if ! grep -q "HTTP 404" "${release_lookup_error}"; then`,
-		`tag_fetched="false"`,
-		`if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`,
-		`existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"`,
-		`if [[ ! "${existing_commit}" =~ ^[0-9a-f]{40}$ ]]; then`,
-		`if [ "${tag_fetched}" = "false" ] && [ "${existing_commit}" != "${existing_target}" ]; then`,
+		`elif grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then`,
+		`existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"`,
+		`case "${existing_ref_type}" in`,
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then`,
+		`if [ -z "${existing_commit}" ]; then`,
 		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
 	})
-	guardIndex := strings.Index(manualStep.Run, `if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`)
-	lookupIndex := strings.Index(manualStep.Run, `existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${existing_target}" --jq '.sha')"`)
-	if guardIndex < 0 || lookupIndex < 0 || guardIndex > lookupIndex {
-		t.Fatal("manual release flow must validate target_commitish as a full commit SHA before the commits API lookup")
-	}
-	if strings.Contains(manualStep.Run, `git rev-parse -q --verify "${existing_target}^{commit}"`) {
-		t.Fatal("manual release flow must resolve a release target that is absent from the local checkout")
-	}
-	if strings.Contains(manualStep.Run, `[ -n "${existing_commit}" ] &&`) {
-		t.Fatal("manual release flow must never skip existing release mismatch validation")
+	for _, forbidden := range []string{"target_commitish", `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`, `[ -n "${existing_commit}" ] &&`} {
+		if strings.Contains(manualStep.Run, forbidden) {
+			t.Fatalf("manual release flow must not contain stale validation path %q", forbidden)
+		}
 	}
 }
 
-func TestReleaseWorkflowRejectsBranchValuedMissingTagFallback(t *testing.T) {
+func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
 	t.Parallel()
 
 	var workflow struct {
@@ -335,31 +336,47 @@ func TestReleaseWorkflowRejectsBranchValuedMissingTagFallback(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
-	const guardLine = `if [[ ! "${existing_target}" =~ ^[0-9a-f]{40}$ ]]; then`
-	guardIndex := strings.Index(manualStep.Run, guardLine)
-	if guardIndex < 0 {
-		t.Fatal("manual release flow must guard target_commitish with a full-SHA check")
+	assertWorkflowStepRunContainsAll(t, manualStep, "manual release lookup failure contract", []string{
+		`release_lookup_error="$(mktemp)"`,
+		`gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`,
+		`release_lookup_status=$?`,
+		`elif grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`cat "${release_lookup_error}" >&2`,
+		`exit "${release_lookup_status}"`,
+		`gh release create "${tag}"`,
+	})
+
+	lookupIndex := strings.Index(manualStep.Run, `gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`)
+	statusIndex := strings.Index(manualStep.Run, `release_lookup_status=$?`)
+	notFoundIndex := strings.Index(manualStep.Run, `elif grep -q "HTTP 404" "${release_lookup_error}"; then`)
+	createIndex := strings.Index(manualStep.Run, `gh release create "${tag}"`)
+	if lookupIndex < 0 || statusIndex < lookupIndex || notFoundIndex < statusIndex || createIndex < notFoundIndex {
+		t.Fatal("manual release creation must follow the captured lookup status and explicit HTTP 404 evidence")
+	}
+}
+
+func TestReleaseWorkflowConfinesMainSyncPATToTrustedFeatureHistoryPush(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	releasePlease := workflowStepByName(t, workflow.Jobs, "prepare-release", "Run release-please")
+	if got := releasePlease.With["token"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("release-please token = %q, want RELEASE_PLEASE_TOKEN fallback to GITHUB_TOKEN", got)
 	}
 
-	var guardLines []string
-	for _, line := range strings.Split(manualStep.Run[guardIndex:], "\n") {
-		guardLines = append(guardLines, line)
-		if strings.TrimSpace(line) == "fi" {
-			break
-		}
+	manual := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	if got := manual.Env["GH_TOKEN"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("manual release GH_TOKEN = %q, want RELEASE_PLEASE_TOKEN fallback to GITHUB_TOKEN", got)
 	}
-	guardScript := strings.Join(guardLines, "\n")
-	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+guardScript+"\nprintf 'guard-bypassed\\n'")
-	cmd.Env = append(os.Environ(), "existing_target=main", "tag=v1.2.3")
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("branch-valued target_commitish passed the missing-tag guard: %s", output)
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if got := strings.Count(workflowText, "secrets.MAIN_SYNC_PAT"); got != 1 {
+		t.Fatalf("release workflow MAIN_SYNC_PAT references = %d, want only trusted feature history push fallback", got)
 	}
-	if !strings.Contains(string(output), "Existing release v1.2.3 target_commitish must be a full 40-character hexadecimal commit SHA; got 'main'.") {
-		t.Fatalf("branch-valued target_commitish error = %q", output)
-	}
-	if strings.Contains(string(output), "guard-bypassed") {
-		t.Fatalf("branch-valued target_commitish bypassed the guard: %s", output)
+	if !strings.Contains(workflowText, "PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}") {
+		t.Fatal("trusted feature history push must retain MAIN_SYNC_PAT fallback to GITHUB_TOKEN")
 	}
 }
 
@@ -482,6 +499,9 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		`cp -- "${source_dir}/package.json" "${source_dir}/package-lock.json" "${scratch_dir}/"`,
 		`if [ "$(find "${scratch_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
 		`npm ci --ignore-scripts --include=dev --audit=false --fund=false`,
+		`trusted_vsce_link="${scratch_dir}/node_modules/.bin/vsce"`,
+		`find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -delete`,
+		`find "${scratch_dir}/node_modules" -type l ! -path "${trusted_vsce_link}" -print -quit | grep -q .`,
 		`test -x "${scratch_dir}/node_modules/.bin/vsce"`,
 	})
 	for _, forbidden := range []string{"npm install", "npm exec", "npx "} {
@@ -606,6 +626,27 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 		`if [ "$(find "${artifact_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
 		`if [ "$(stat --format=%s "${archive_file}")" -gt 268435456 ]; then`,
 		`expected_vsix="lopper-vscode-${RELEASE_VERSION}.vsix"`,
+		`vsix_path="${publication_dir}/dist/${expected_vsix}"`,
+		`python3 - "${vsix_path}" "${RELEASE_VERSION}" <<'PY'`,
+		`import posixpath`,
+		`import stat`,
+		`infos = archive.infolist()`,
+		`if len(infos) == 0 or len(infos) > 65536:`,
+		`total_size = 0`,
+		`seen_names = set()`,
+		`raw_name = info.filename`,
+		`normalized_name = posixpath.normpath(raw_name)`,
+		`if raw_name.startswith("/") or not normalized_name or normalized_name == "." or ".." in normalized_name.split("/"):`,
+		`mode = (info.external_attr >> 16) & 0o170000`,
+		`if stat.S_ISLNK(mode):`,
+		`if normalized_name in seen_names:`,
+		`total_size += info.file_size`,
+		`if total_size > 1073741824:`,
+		`manifest_path = "extension/package.json"`,
+		`if len(manifest_entries) != 1:`,
+		`if manifest.get("publisher") != "BenRanford":`,
+		`if manifest.get("name") != "vscode-lopper":`,
+		`if manifest.get("version") != expected_version:`,
 		`if [ "${#assets[@]}" -eq 0 ] || [ "${#assets[@]}" -gt 32 ]; then`,
 		`if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then`,
 		`allowed_roots = {"package.json", "package-lock.json", "node_modules"}`,
@@ -652,6 +693,122 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	if count := strings.Count(workflowText, "${{ secrets.VSCE_PUBLISH }}"); count != 2 {
 		t.Fatalf("Marketplace secret references = %d, want isolated detection and final publication only", count)
 	}
+}
+
+func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	archivePath := writeTarFixture(t, []tarFixtureMember{
+		regularTarMember("package.json", 0o644),
+		regularTarMember("package-lock.json", 0o644),
+		directoryTarMember("node_modules/"),
+		directoryTarMember("node_modules/.bin/"),
+		directoryTarMember("node_modules/@vscode/"),
+		directoryTarMember("node_modules/@vscode/vsce/"),
+		regularTarMember("node_modules/@vscode/vsce/vsce", 0o755),
+		{
+			name:     "node_modules/.bin/vsce",
+			mode:     0o777,
+			typeflag: tar.TypeSymlink,
+			linkname: "../@vscode/vsce/vsce",
+		},
+	})
+
+	assertTarValidatorAccepts(t, validator, archivePath)
+}
+
+func TestMarketplaceToolchainValidatorRejectsManifestRootShapes(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	fixtures := []tarValidatorFixture{
+		{
+			name: "manifest descendant",
+			members: []tarFixtureMember{
+				regularTarMember("package.json/child", 0o644),
+				regularTarMember("package-lock.json", 0o644),
+				regularTarMember("node_modules/tool", 0o644),
+			},
+			want: "unexpected path",
+		},
+		{
+			name: "manifest directory",
+			members: []tarFixtureMember{
+				directoryTarMember("package.json/"),
+				regularTarMember("package-lock.json", 0o644),
+				regularTarMember("node_modules/tool", 0o644),
+			},
+			want: "unexpected entry type",
+		},
+	}
+
+	assertTarValidatorFixtures(t, validator, nil, fixtures)
+}
+
+func TestFeatureHistoryWorktreeValidatorAcceptsHiddenGitArchiveShape(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
+	archivePath := writeTarFixture(t, []tarFixtureMember{
+		directoryTarMember("feature-history-push/"),
+		directoryTarMember("feature-history-push/.git/"),
+		regularTarMember("feature-history-push/.git/HEAD", 0o644),
+		directoryTarMember("feature-history-push/internal/"),
+		directoryTarMember("feature-history-push/internal/featureflags/"),
+		regularTarMember("feature-history-push/internal/featureflags/features.json", 0o644),
+	})
+
+	assertTarValidatorAccepts(t, validator, archivePath)
+}
+
+func TestTarValidatorsRejectNoncanonicalMemberForms(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	marketplaceStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	featureHistoryStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+
+	marketplaceBase := []tarFixtureMember{
+		regularTarMember("package.json", 0o644),
+		regularTarMember("package-lock.json", 0o644),
+	}
+	marketplaceCases := []tarValidatorFixture{
+		{name: "absolute", members: []tarFixtureMember{regularTarMember("/node_modules/tool", 0o644)}, want: "unsafe path"},
+		{name: "parent traversal", members: []tarFixtureMember{regularTarMember("../node_modules/tool", 0o644)}, want: "unsafe path"},
+		{name: "unexpected dot root", members: []tarFixtureMember{regularTarMember(".root/tool", 0o644)}, want: "unexpected path"},
+		{name: "leading dot segment", members: []tarFixtureMember{regularTarMember("./node_modules/tool", 0o644)}, want: "unsafe path"},
+		{name: "internal dot segment", members: []tarFixtureMember{regularTarMember("node_modules/./tool", 0o644)}, want: "unsafe path"},
+		{name: "empty segment", members: []tarFixtureMember{regularTarMember("node_modules//tool", 0o644)}, want: "unsafe path"},
+		{name: "internal parent traversal", members: []tarFixtureMember{regularTarMember("node_modules/tool/../other", 0o644)}, want: "unsafe path"},
+		{name: "canonical alias", members: []tarFixtureMember{regularTarMember("node_modules/tool", 0o644), regularTarMember("node_modules/./tool", 0o644)}, want: "unsafe path"},
+		{name: "trusted symlink path alias", members: []tarFixtureMember{{name: "node_modules/./.bin/vsce", mode: 0o777, typeflag: tar.TypeSymlink, linkname: "../@vscode/vsce/vsce"}}, want: "unsafe path"},
+		{name: "trusted symlink target alias", members: []tarFixtureMember{{name: "node_modules/.bin/vsce", mode: 0o777, typeflag: tar.TypeSymlink, linkname: "../@vscode/vsce/./vsce"}}, want: "symbolic link"},
+	}
+	assertTarValidatorFixtures(t, embeddedPythonScript(t, marketplaceStep.Run, `python3 - "${archive_file}" <<'PY'`), marketplaceBase, marketplaceCases)
+
+	featureRoot := "feature-history-push"
+	featureCases := []tarValidatorFixture{
+		{name: "absolute", members: []tarFixtureMember{regularTarMember("/"+featureRoot+"/.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "parent traversal", members: []tarFixtureMember{regularTarMember("../"+featureRoot+"/.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "unexpected dot root", members: []tarFixtureMember{regularTarMember("."+featureRoot+"/.git/HEAD", 0o644)}, want: "unexpected path"},
+		{name: "leading dot segment", members: []tarFixtureMember{regularTarMember("./"+featureRoot+"/.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "internal dot segment", members: []tarFixtureMember{regularTarMember(featureRoot+"/./.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "empty segment", members: []tarFixtureMember{regularTarMember(featureRoot+"//.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "internal parent traversal", members: []tarFixtureMember{regularTarMember(featureRoot+"/work/../.git/HEAD", 0o644)}, want: "unsafe path"},
+		{name: "canonical alias", members: []tarFixtureMember{regularTarMember(featureRoot+"/.git/HEAD", 0o644), regularTarMember(featureRoot+"/./.git/HEAD", 0o644)}, want: "unsafe path"},
+	}
+	assertTarValidatorFixtures(t, embeddedPythonScript(t, featureHistoryStep.Run, `python3 - "${archive_file}" <<'PY'`), nil, featureCases)
 }
 
 func TestReleaseWorkflowFailsClosedWhenConfiguredMarketplaceTokenDisappears(t *testing.T) {
@@ -781,19 +938,57 @@ func TestReleaseWorkflowPublishesMarketplaceAfterGitHubReleaseBoundary(t *testin
 	}
 }
 
+func TestReleaseWorkflowFinalizesStableReleaseAfterMarketplace(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	publish := workflowJobByName(t, workflow.Jobs, "publish")
+	workflowJobByName(t, workflow.Jobs, "publish-marketplace")
+	finalizer := workflowJobByName(t, workflow.Jobs, "finalize-release")
+	assertWorkflowJobNeeds(t, finalizer, "release finalizer", workflowJobNeeds{"prepare-release", "publish", "publish-marketplace"})
+	assertWorkflowJobPermissions(t, finalizer, "release finalizer", map[string]string{"contents": "write"})
+	publishRelease := workflowStepByName(t, workflow.Jobs, "finalize-release", "Publish GitHub Release")
+	assertWorkflowStepEnv(t, publishRelease, "release finalization", map[string]string{
+		"GH_TOKEN":    "${{ secrets.GITHUB_TOKEN }}",
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, publishRelease, "release finalization", []string{"-F draft=false", "-f make_latest=true"})
+
+	for _, step := range publish.Steps {
+		if step.Name == "Publish GitHub Release" {
+			t.Fatal("publish job must not make the GitHub release public before Marketplace publication")
+		}
+		if strings.Contains(step.Run, "draft=false") || strings.Contains(step.Run, "make_latest=true") {
+			t.Fatalf("publish job must not finalize the GitHub release in step %q", step.Name)
+		}
+	}
+
+	for _, step := range finalizer.Steps {
+		if step.Name == "Prepare GitHub Action floating tags" {
+			if step.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
+				t.Fatalf("finalize floating tag RELEASE_TAG env = %q", step.Env["RELEASE_TAG"])
+			}
+			return
+		}
+	}
+	t.Fatal("finalize-release must own stable floating tag mutation after Marketplace publication")
+}
+
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	job := workflowJobByName(t, workflow.Jobs, "update-floating-tags")
-	assertWorkflowJobNeeds(t, job, "action floating tag job", workflowJobNeeds{"prepare-release", "publish"})
+	job := workflowJobByName(t, workflow.Jobs, "finalize-release")
+	assertWorkflowJobNeeds(t, job, "action floating tag job", workflowJobNeeds{"prepare-release", "publish", "publish-marketplace"})
 	assertWorkflowJobPermissions(t, job, "action floating tag job", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, job, "action floating tag job")
 	assertWorkflowJobOmitsCheckout(t, job, "action floating tag job")
 
-	prepareStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
+	prepareStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Prepare GitHub Action floating tags")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "action floating tag preparation id", got: prepareStep.ID, want: "prepare_tags"},
 		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
@@ -832,7 +1027,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	})
 	assertWorkflowStepRunOmitsAll(t, prepareStep, "action floating tag preparation", []string{"PUSH_TOKEN", "secrets.", "AUTHORIZATION: basic", "extraheader"})
 
-	pushStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Push GitHub Action floating tags")
+	pushStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Push GitHub Action floating tags")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "action floating tag push if", got: pushStep.If, want: "${{ steps.prepare_tags.outputs.push == 'true' }}"},
 		{label: "action floating tag push shell", got: pushStep.Shell, want: prepareStep.Shell},
@@ -883,7 +1078,7 @@ func TestReleaseWorkflowHomebrewUsesGatedThreeJobGraph(t *testing.T) {
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 
 	gate := workflowJobByName(t, workflow.Jobs, "homebrew-tap-token-gate")
-	assertWorkflowJobNeeds(t, gate, "tap token gate", workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"})
+	assertWorkflowJobNeeds(t, gate, "tap token gate", workflowJobNeeds{"prepare-release", "finalize-release"})
 	assertWorkflowJobHasExplicitEmptyPermissions(t, gate, "tap token gate")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "tap token gate if", got: gate.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' }}"},
@@ -1067,7 +1262,7 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history")
-	assertWorkflowJobNeeds(t, preparation, "feature history preparation", workflowJobNeeds{"prepare-release", "publish", "update-floating-tags"})
+	assertWorkflowJobNeeds(t, preparation, "feature history preparation", workflowJobNeeds{"prepare-release", "finalize-release"})
 	assertWorkflowJobPermissions(t, preparation, "feature history preparation", map[string]string{"contents": "read"})
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "feature history preparation changed output",
@@ -1134,22 +1329,33 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	assertTextContainsAll(t, uploadStep.With["path"], "feature history patch artifact path", []string{".artifacts/feature-history.patch", ".artifacts/SHA256SUMS"})
 	assertFeatureHistoryPreparationDoesNotPush(t, preparation)
 
+	pushPreparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
+	assertWorkflowJobNeeds(t, pushPreparation, "feature history push preparation", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobPermissions(t, pushPreparation, "feature history push preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, pushPreparation, "feature history push preparation")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "feature history push preparation if",
+		got:   pushPreparation.If,
+		want:  "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}",
+	}})
+	assertFeatureHistoryPublicationUsesFreshInputs(t, pushPreparation)
+
+	downloadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Download feature history patch")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature history patch download artifact name", got: downloadStep.With["name"], want: "feature-history-patch"},
+		{label: "feature history patch download artifact path", got: downloadStep.With["path"], want: "${{ runner.temp }}/feature-history-input"},
+	})
+
 	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
-	assertWorkflowJobNeeds(t, publication, "feature history publication", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobNeeds(t, publication, "feature history publication", workflowJobNeeds{"prepare-feature-release-history-push"})
 	assertWorkflowJobPermissions(t, publication, "feature history publication", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, publication, "feature history publication")
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "feature history publication if",
 		got:   publication.If,
-		want:  "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}",
+		want:  "${{ needs.prepare-feature-release-history-push.result == 'success' }}",
 	}})
 	assertFeatureHistoryPublicationUsesFreshInputs(t, publication)
-
-	downloadStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download feature history patch")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "feature history patch download artifact name", got: downloadStep.With["name"], want: "feature-history-patch"},
-		{label: "feature history patch download artifact path", got: downloadStep.With["path"], want: "feature-history-input"},
-	})
 }
 
 func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T) {
@@ -1192,7 +1398,7 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 	}
 
 	const stableSemverGate = `if [[ ! "${RELEASE_TAG}" =~ ^v([0-9]+)[.]([0-9]+)[.]([0-9]+)$ ]]; then`
-	floatingTagStep := workflowStepByName(t, workflow.Jobs, "update-floating-tags", "Prepare GitHub Action floating tags")
+	floatingTagStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Prepare GitHub Action floating tags")
 	if !strings.Contains(floatingTagStep.Run, stableSemverGate) {
 		t.Fatal("floating tag preparation must retain the stable semver gate")
 	}
@@ -1204,11 +1410,13 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 
 	patchStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Validate and stage feature history patch")
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Upload feature history patch")
+	pushPreparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
 	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature history patch step prerelease guard", got: patchStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
 		{label: "feature history patch upload prerelease guard", got: uploadStep.If, want: "${{ steps.stamp_history.outputs.changed == 'true' }}"},
-		{label: "feature history push prerelease guard", got: publication.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}"},
+		{label: "feature history push preparation prerelease guard", got: pushPreparation.If, want: "${{ needs.prepare-release.outputs.release_created == 'true' && needs.prepare-feature-release-history.outputs.changed == 'true' }}"},
+		{label: "feature history push dependency guard", got: publication.If, want: "${{ needs.prepare-feature-release-history-push.result == 'success' }}"},
 	})
 }
 
@@ -1218,7 +1426,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	prepareStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Prepare trusted feature history commit")
+	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
 	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("feature history commit preparation shell = %q", prepareStep.Shell)
 	}
@@ -1230,7 +1438,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 		"git_bin=/usr/bin/git",
 		"env_bin=/usr/bin/env",
 		`repo_dir="${RUNNER_TEMP}/feature-history-push"`,
-		`input_dir="${GITHUB_WORKSPACE}/feature-history-input"`,
+		`input_dir="${RUNNER_TEMP}/feature-history-input"`,
 		`sha256sum --check --strict SHA256SUMS`,
 		`if [ "$(find "${input_dir}" -maxdepth 1 -type f | wc -l)" -ne 2 ]; then`,
 		`expected_origin="https://github.com/${GITHUB_REPOSITORY}"`,
@@ -1260,14 +1468,14 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	if pushStep.Shell != prepareStep.Shell {
 		t.Fatalf("feature history push shell = %q", pushStep.Shell)
 	}
-	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-feature-release-history-push.outputs.release_tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-feature-release-history-push.outputs.release_sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("feature history push env = %#v", pushStep.Env)
 	}
 	assertWorkflowStepRunContainsAll(t, pushStep, "feature history push", []string{
 		"git_bin=/usr/bin/git",
 		"env_bin=/usr/bin/env",
 		`git_home="$("${mktemp_bin}" -d)"`,
-		`repo_dir="${RUNNER_TEMP}/feature-history-push"`,
+		`repo_dir="${RUNNER_TEMP}/prepared-feature-release-history/feature-history-push"`,
 		`"${env_bin}" -i`,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
@@ -1308,6 +1516,101 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 		t.Fatal("feature history authentication must be exposed only to fetch and push network commands")
 	}
 	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, pushStep, "feature history push")
+}
+
+func TestReleaseWorkflowSplitsFeatureHistoryPreparationFromTokenedPush(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
+	assertWorkflowJobNeeds(t, preparation, "feature history push preparation", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
+	assertWorkflowJobPermissions(t, preparation, "feature history push preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobOmitsText(t, preparation, "PUSH_TOKEN", "feature history push preparation must not receive PUSH_TOKEN")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.MAIN_SYNC_PAT", "feature history push preparation must not receive MAIN_SYNC_PAT")
+	workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
+	archive := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Archive prepared trusted feature history worktree")
+	assertWorkflowStepRunContainsAll(t, archive, "prepared feature history worktree archive", []string{
+		`archive_file="${archive_root}/prepared-feature-release-history-worktree.tar.gz"`,
+		`tar --create --gzip --file "${archive_file}" --directory "${RUNNER_TEMP}" feature-history-push`,
+		`sha256sum "$(basename "${archive_file}")" > "${checksum_file}"`,
+	})
+	upload := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Upload prepared trusted feature history worktree")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "prepared feature history artifact name", got: upload.With["name"], want: "prepared-feature-release-history-worktree"},
+		{label: "prepared feature history artifact path", got: upload.With["path"], want: "${{ runner.temp }}/prepared-feature-release-history"},
+	})
+
+	publication := workflowJobByName(t, workflow.Jobs, "push-feature-release-history")
+	assertWorkflowJobNeeds(t, publication, "feature history push", workflowJobNeeds{"prepare-feature-release-history-push"})
+	assertWorkflowJobPermissions(t, publication, "feature history push", map[string]string{"contents": "write"})
+	download := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Download prepared trusted feature history worktree")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "prepared feature history download name", got: download.With["name"], want: "prepared-feature-release-history-worktree"},
+		{label: "prepared feature history download path", got: download.With["path"], want: "${{ runner.temp }}/prepared-feature-release-history-input"},
+	})
+	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
+	assertWorkflowStepRunContainsAll(t, validate, "prepared feature history worktree validation", []string{
+		`sha256sum --check --strict "${checksum_file}"`,
+		`python3 - "${archive_file}" <<'PY'`,
+		`if member.issym() or member.islnk():`,
+		`tar --extract --gzip --no-same-owner --no-same-permissions --file "${archive_file}" --directory "${worktree_parent}"`,
+		`if [ ! -d "${worktree_dir}/.git" ] || [ -L "${worktree_dir}" ] || [ -L "${worktree_dir}/.git" ]; then`,
+	})
+	assertWorkflowStepEnvMissing(t, validate, "PUSH_TOKEN", "prepared worktree validation must be tokenless")
+	push := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push feature history commit")
+	if push.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("feature history PUSH_TOKEN = %q", push.Env["PUSH_TOKEN"])
+	}
+	if _, ok := push.Env["READ_TOKEN"]; ok {
+		t.Fatal("feature history push must not receive READ_TOKEN")
+	}
+}
+
+func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout manual release source")
+	if got := workflowStepWithString(t, step, "token"); got != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("manual release checkout token = %q, want GITHUB_TOKEN-only checkout", got)
+	}
+	if got := workflowStepWithString(t, step, "persist-credentials"); got != "false" {
+		t.Fatalf("manual release checkout persist-credentials = %q, want false", got)
+	}
+}
+
+func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
+	assertWorkflowStepRunContainsAll(t, step, "manual release existing-tag verification step", []string{
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then`,
+		`existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"`,
+		`case "${existing_ref_type}" in`,
+		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then`,
+		`echo "::error::Existing release ${tag} target commit could not be verified." >&2`,
+		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
+	})
+	if strings.Contains(step.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`) {
+		t.Fatal("manual release existing-tag verification must not rely on an unauthenticated tag fetch")
+	}
+	if strings.Contains(step.Run, `target_commitish`) {
+		t.Fatal("manual release existing-tag verification must fail closed instead of trusting release target_commitish metadata")
+	}
+	if strings.Contains(step.Run, `release_json`) {
+		t.Fatal("manual release existing-release probe must not persist an unused response body")
+	}
 }
 
 func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
@@ -1528,37 +1831,64 @@ func TestReleaseOrchestrationImageTagStepsUseSanitizer(t *testing.T) {
 	}
 	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
 
-	testCases := []struct {
-		jobName  string
-		stepName string
-		suffix   string
-	}{
-		{
-			jobName:  "prepare-ghcr-amd64",
-			stepName: "Compute amd64 image tags",
-			suffix:   "-amd64",
-		},
-		{
-			jobName:  "prepare-ghcr-arm64",
-			stepName: "Compute arm64 image tags",
-			suffix:   "-arm64",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.jobName, func(t *testing.T) {
-			t.Parallel()
-
-			step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
-			assertArchImageTagStep(t, step, tc.stepName, tc.suffix)
-		})
-	}
+	step := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Compute image tags")
+	assertArchImageTagStep(t, step, step.Name, "-${{ matrix.architecture }}")
 
 	t.Run("manifest", func(t *testing.T) {
 		manifestStep := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Compute manifest image tags")
 		assertManifestImageTagStep(t, manifestStep)
 	})
+}
+
+func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	prepare, ok := workflow.Jobs["prepare-ghcr"]
+	if !ok {
+		t.Fatal("release orchestration must consolidate GHCR preparation into prepare-ghcr")
+	}
+	for _, legacyJob := range []string{"prepare-ghcr-amd64", "prepare-ghcr-arm64"} {
+		if _, ok := workflow.Jobs[legacyJob]; ok {
+			t.Fatalf("release orchestration must remove duplicate job %q", legacyJob)
+		}
+	}
+
+	wantMatrix := []workflowMatrixEntry{
+		{Architecture: "amd64", Platform: "linux/amd64", Runner: "ubuntu-latest"},
+		{Architecture: "arm64", Platform: "linux/arm64", Runner: "ubuntu-24.04-arm"},
+	}
+	if !slices.Equal(prepare.Strategy.Matrix.Include, wantMatrix) {
+		t.Fatalf("prepare-ghcr matrix = %#v, want %#v", prepare.Strategy.Matrix.Include, wantMatrix)
+	}
+	if prepare.RunsOn != "${{ matrix.runner }}" {
+		t.Fatalf("prepare-ghcr runs-on = %q, want matrix runner", prepare.RunsOn)
+	}
+	if prepare.Strategy.FailFast == nil || *prepare.Strategy.FailFast {
+		t.Fatal("prepare-ghcr matrix must keep architecture preparation legs independent")
+	}
+	if prepare.ContinueOnError {
+		t.Fatal("prepare-ghcr must fail when an architecture preparation leg fails")
+	}
+
+	imageTags := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Compute image tags")
+	if imageTags.ID != "image_tags" {
+		t.Fatalf("prepare-ghcr image tag step ID = %q, want image_tags", imageTags.ID)
+	}
+	build := workflowStepByName(t, workflow.Jobs, "prepare-ghcr", "Build OCI publication payload")
+	if build.ID != "" {
+		t.Fatalf("prepare-ghcr build step ID = %q, want no unused ID", build.ID)
+	}
+	if build.With["tags"] != "${{ steps.image_tags.outputs.tags }}" {
+		t.Fatalf("prepare-ghcr build tags = %q, want image_tags output", build.With["tags"])
+	}
+	publishImages := workflow.Jobs["publish-ghcr-images"]
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	if publishImages.If != "" {
+		t.Fatalf("publish-ghcr-images if = %q, want no override of failed-needs handling", publishImages.If)
+	}
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
@@ -1571,13 +1901,7 @@ func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 		{name: "amd64", platform: "linux/amd64"},
 		{name: "arm64", platform: "linux/arm64"},
 	}
-	for _, architecture := range architectures {
-		architecture := architecture
-		t.Run(architecture.name, func(t *testing.T) {
-			t.Parallel()
-			assertTrustedGHCRPreparation(t, workflow, architecture)
-		})
-	}
+	assertTrustedGHCRPreparation(t, workflow)
 	assertTrustedGHCRImagePublisher(t, workflow, architectures)
 
 	t.Run("manifest", func(t *testing.T) {
@@ -1590,39 +1914,47 @@ type ghcrArchitecture struct {
 	platform string
 }
 
-func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig, architecture ghcrArchitecture) {
+func assertTrustedGHCRPreparation(t *testing.T, workflow workflowConfig) {
 	t.Helper()
 
-	prepareJobName := "prepare-ghcr-" + architecture.name
+	const prepareJobName = "prepare-ghcr"
 	prepare := workflowJobByName(t, workflow.Jobs, prepareJobName)
 	assertWorkflowJobPermissions(t, prepare, prepareJobName, map[string]string{"contents": "read"})
-	assertGHCRJobDoesNotReference(t, prepare, "secrets.GITHUB_TOKEN", prepareJobName)
+	for _, credentialReference := range []string{"secrets.", "github.token"} {
+		assertGHCRJobDoesNotReference(t, prepare, credentialReference, prepareJobName)
+	}
 	checkout := workflowStepByName(t, workflow.Jobs, prepareJobName, "Checkout")
 	if checkout.With["persist-credentials"] != "false" {
 		t.Fatalf("%s checkout persist-credentials = %q, want false", prepareJobName, checkout.With["persist-credentials"])
 	}
 
-	build := workflowStepByName(t, workflow.Jobs, prepareJobName, "Build "+architecture.name+" OCI publication payload")
+	build := workflowStepByName(t, workflow.Jobs, prepareJobName, "Build OCI publication payload")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: prepareJobName + " registry push", got: build.With["push"], want: "false"},
 		{label: prepareJobName + " deferred provenance", got: build.With["provenance"], want: "false"},
 		{label: prepareJobName + " deferred SBOM", got: build.With["sbom"], want: "false"},
-		{label: prepareJobName + " platform", got: build.With["platforms"], want: architecture.platform},
+		{label: prepareJobName + " platform", got: build.With["platforms"], want: "${{ matrix.platform }}"},
 	})
 	assertTextContainsAll(t, build.With["outputs"], prepareJobName+" OCI output", []string{
 		"type=oci",
 		"tar=false",
-		"${{ runner.temp }}/ghcr-" + architecture.name + "-publication/layout",
+		"${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication/layout",
 	})
-	metadata := workflowStepByName(t, workflow.Jobs, prepareJobName, "Prepare "+architecture.name+" publication metadata")
+	metadata := workflowStepByName(t, workflow.Jobs, prepareJobName, "Prepare publication metadata")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: prepareJobName + " metadata architecture", got: metadata.Env["ARCHITECTURE"], want: "${{ matrix.architecture }}"},
+		{label: prepareJobName + " metadata platform", got: metadata.Env["PLATFORM"], want: "${{ matrix.platform }}"},
+	})
 	assertWorkflowStepRunContainsAll(t, metadata, prepareJobName+" metadata", []string{
+		`payload_root="${RUNNER_TEMP}/ghcr-${ARCHITECTURE}-publication"`,
+		`--arg platform "${PLATFORM}"`,
 		`find -P . -type f ! -path './SHA256SUMS'`,
 		`> "${payload_root}/SHA256SUMS"`,
 	})
-	upload := workflowStepByName(t, workflow.Jobs, prepareJobName, "Upload "+architecture.name+" OCI publication payload")
+	upload := workflowStepByName(t, workflow.Jobs, prepareJobName, "Upload OCI publication payload")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: prepareJobName + " artifact name", got: upload.With["name"], want: "ghcr-" + architecture.name + "-publication-payload"},
-		{label: prepareJobName + " artifact path", got: upload.With["path"], want: "${{ runner.temp }}/ghcr-" + architecture.name + "-publication"},
+		{label: prepareJobName + " artifact name", got: upload.With["name"], want: "ghcr-${{ matrix.architecture }}-publication-payload"},
+		{label: prepareJobName + " artifact path", got: upload.With["path"], want: "${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication"},
 	})
 }
 
@@ -1630,7 +1962,7 @@ func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, arch
 	t.Helper()
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr-amd64", "prepare-ghcr-arm64"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
 	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{"packages": "write"})
 	assertFreshGHCRPublisher(t, publishImages, "Log in to GHCR")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
@@ -2638,7 +2970,6 @@ func assertReleasePublicationCredentialScope(t *testing.T, publication workflowJ
 	apiSteps := map[string]bool{
 		"Update GitHub Release notes":  false,
 		"Upload GitHub Release assets": false,
-		"Publish GitHub Release":       false,
 	}
 	for _, step := range publication.Steps {
 		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
@@ -2852,6 +3183,16 @@ func assertWorkflowJobCheckoutsDisablePersistedCredentials(t *testing.T, job wor
 	}
 }
 
+func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) string {
+	t.Helper()
+
+	value, ok := step.With[key]
+	if !ok {
+		t.Fatalf("workflow step %q must define with.%s", step.Name, key)
+	}
+	return value
+}
+
 func readJSONConfig(t *testing.T, path string, target any) {
 	t.Helper()
 
@@ -2888,4 +3229,114 @@ func repoPath(t *testing.T, path string) string {
 		t.Fatal("resolve test file path")
 	}
 	return filepath.Join(filepath.Dir(filename), "..", path)
+}
+
+func embeddedPythonScript(t *testing.T, run string, marker string) string {
+	t.Helper()
+
+	_, after, ok := strings.Cut(run, marker+"\n")
+	if !ok {
+		t.Fatalf("workflow step does not contain Python validator marker %q", marker)
+	}
+	script, _, ok := strings.Cut(after, "\nPY\n")
+	if !ok {
+		t.Fatal("workflow step Python validator is missing its heredoc terminator")
+	}
+	return script + "\n"
+}
+
+type tarFixtureMember struct {
+	name     string
+	mode     int64
+	typeflag byte
+	linkname string
+	contents []byte
+}
+
+type tarValidatorFixture struct {
+	name    string
+	members []tarFixtureMember
+	want    string
+}
+
+func regularTarMember(name string, mode int64) tarFixtureMember {
+	return tarFixtureMember{name: name, mode: mode, typeflag: tar.TypeReg, contents: []byte("fixture\n")}
+}
+
+func directoryTarMember(name string) tarFixtureMember {
+	return tarFixtureMember{name: name, mode: 0o755, typeflag: tar.TypeDir}
+}
+
+func writeTarFixture(t *testing.T, members []tarFixtureMember) string {
+	t.Helper()
+
+	archivePath := filepath.Join(t.TempDir(), "fixture.tar.gz")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("create tar fixture: %v", err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, member := range members {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name:     member.name,
+			Mode:     member.mode,
+			Size:     int64(len(member.contents)),
+			Typeflag: member.typeflag,
+			Linkname: member.linkname,
+		}); err != nil {
+			t.Fatalf("write tar header %q: %v", member.name, err)
+		}
+		if len(member.contents) > 0 {
+			if _, err := tarWriter.Write(member.contents); err != nil {
+				t.Fatalf("write tar contents %q: %v", member.name, err)
+			}
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar fixture: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip fixture: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close tar fixture file: %v", err)
+	}
+	return archivePath
+}
+
+func assertTarValidatorRejects(t *testing.T, validator string, archivePath string, want string) {
+	t.Helper()
+
+	cmd := exec.Command("python3", "-", archivePath)
+	cmd.Stdin = strings.NewReader(validator)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("tar validator accepted unsafe archive %s", archivePath)
+	}
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("tar validator error = %q, want substring %q", output, want)
+	}
+}
+
+func assertTarValidatorAccepts(t *testing.T, validator string, archivePath string) {
+	t.Helper()
+
+	cmd := exec.Command("python3", "-", archivePath)
+	cmd.Stdin = strings.NewReader(validator)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tar validator rejected trusted archive %s: %v\n%s", archivePath, err, output)
+	}
+}
+
+func assertTarValidatorFixtures(t *testing.T, validator string, base []tarFixtureMember, fixtures []tarValidatorFixture) {
+	t.Helper()
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			members := append([]tarFixtureMember{}, base...)
+			members = append(members, fixture.members...)
+			assertTarValidatorRejects(t, validator, writeTarFixture(t, members), fixture.want)
+		})
+	}
 }

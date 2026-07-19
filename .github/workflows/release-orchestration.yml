@@ -157,8 +157,18 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  prepare-ghcr-amd64:
-    runs-on: ubuntu-latest
+  prepare-ghcr:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     steps:
@@ -180,13 +190,13 @@ jobs:
           owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
 
-      - name: Compute amd64 image tags
+      - name: Compute image tags
         id: image_tags
         shell: bash
         env:
           IMAGE_TAGS: ${{ inputs.image_tags }}
           IMAGE_NAME: ${{ steps.image.outputs.name }}
-          IMAGE_ARCH_SUFFIX: -amd64
+          IMAGE_ARCH_SUFFIX: -${{ matrix.architecture }}
         run: |
           set -euo pipefail
           bash scripts/release-image-tags.sh > image-tags.txt
@@ -199,8 +209,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build amd64 OCI publication payload
-        id: build
+      - name: Build OCI publication payload
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -215,15 +224,17 @@ jobs:
             org.opencontainers.image.revision=${{ inputs.source_sha || github.sha }}
             org.opencontainers.image.version=${{ inputs.tag }}
           push: false
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           tags: ${{ steps.image_tags.outputs.tags }}
-          outputs: type=oci,dest=${{ runner.temp }}/ghcr-amd64-publication/layout,tar=false
+          outputs: type=oci,dest=${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication/layout,tar=false
           provenance: false
           sbom: false
 
-      - name: Prepare amd64 publication metadata
+      - name: Prepare publication metadata
         shell: bash
         env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          PLATFORM: ${{ matrix.platform }}
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           IMAGE_NAME: ${{ steps.image.outputs.name }}
           RELEASE_TAG: ${{ inputs.tag }}
@@ -232,12 +243,12 @@ jobs:
           BUILD_CHANNEL: ${{ inputs.build_channel }}
         run: |
           set -euo pipefail
-          payload_root="${RUNNER_TEMP}/ghcr-amd64-publication"
+          payload_root="${RUNNER_TEMP}/ghcr-${ARCHITECTURE}-publication"
           install -m 0600 image-tags.txt "${payload_root}/image-tags.txt"
           jq -n \
             --arg source_sha "${SOURCE_SHA}" \
             --arg image_name "${IMAGE_NAME}" \
-            --arg platform "linux/amd64" \
+            --arg platform "${PLATFORM}" \
             --arg tag "${RELEASE_TAG}" \
             --arg build_commit "${BUILD_COMMIT}" \
             --arg build_date "${BUILD_DATE}" \
@@ -258,123 +269,14 @@ jobs:
               | xargs -0 -r sha256sum
           ) > "${payload_root}/SHA256SUMS"
 
-      - name: Upload amd64 OCI publication payload
+      - name: Upload OCI publication payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ghcr-amd64-publication-payload
-          path: ${{ runner.temp }}/ghcr-amd64-publication
-
-  prepare-ghcr-arm64:
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          persist-credentials: false
-
-      - name: Compute image metadata
-        id: image_meta
-        run: |
-          echo "commit=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
-          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: Compute image name
-        id: image
-        run: |
-          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          echo "name=ghcr.io/${owner}/lopper" >> "$GITHUB_OUTPUT"
-
-      - name: Compute arm64 image tags
-        id: image_tags
-        shell: bash
-        env:
-          IMAGE_TAGS: ${{ inputs.image_tags }}
-          IMAGE_NAME: ${{ steps.image.outputs.name }}
-          IMAGE_ARCH_SUFFIX: -arm64
-        run: |
-          set -euo pipefail
-          bash scripts/release-image-tags.sh > image-tags.txt
-          {
-            echo 'tags<<EOF'
-            cat image-tags.txt
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Build arm64 OCI publication payload
-        id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: ./Dockerfile
-          build-args: |
-            VERSION=${{ inputs.tag }}
-            GIT_COMMIT=${{ steps.image_meta.outputs.commit }}
-            BUILD_DATE=${{ steps.image_meta.outputs.build_date }}
-            BUILD_CHANNEL=${{ inputs.build_channel }}
-          labels: |
-            org.opencontainers.image.created=${{ steps.image_meta.outputs.build_date }}
-            org.opencontainers.image.revision=${{ inputs.source_sha || github.sha }}
-            org.opencontainers.image.version=${{ inputs.tag }}
-          push: false
-          platforms: linux/arm64
-          tags: ${{ steps.image_tags.outputs.tags }}
-          outputs: type=oci,dest=${{ runner.temp }}/ghcr-arm64-publication/layout,tar=false
-          provenance: false
-          sbom: false
-
-      - name: Prepare arm64 publication metadata
-        shell: bash
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-          IMAGE_NAME: ${{ steps.image.outputs.name }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          BUILD_COMMIT: ${{ steps.image_meta.outputs.commit }}
-          BUILD_DATE: ${{ steps.image_meta.outputs.build_date }}
-          BUILD_CHANNEL: ${{ inputs.build_channel }}
-        run: |
-          set -euo pipefail
-          payload_root="${RUNNER_TEMP}/ghcr-arm64-publication"
-          install -m 0600 image-tags.txt "${payload_root}/image-tags.txt"
-          jq -n \
-            --arg source_sha "${SOURCE_SHA}" \
-            --arg image_name "${IMAGE_NAME}" \
-            --arg platform "linux/arm64" \
-            --arg tag "${RELEASE_TAG}" \
-            --arg build_commit "${BUILD_COMMIT}" \
-            --arg build_date "${BUILD_DATE}" \
-            --arg build_channel "${BUILD_CHANNEL}" \
-            '{
-              source_sha: $source_sha,
-              image_name: $image_name,
-              platform: $platform,
-              tag: $tag,
-              build_commit: $build_commit,
-              build_date: $build_date,
-              build_channel: $build_channel
-            }' > "${payload_root}/publication.json"
-          (
-            cd "${payload_root}"
-            find -P . -type f ! -path './SHA256SUMS' -print0 \
-              | LC_ALL=C sort -z \
-              | xargs -0 -r sha256sum
-          ) > "${payload_root}/SHA256SUMS"
-
-      - name: Upload arm64 OCI publication payload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: ghcr-arm64-publication-payload
-          path: ${{ runner.temp }}/ghcr-arm64-publication
+          name: ghcr-${{ matrix.architecture }}-publication-payload
+          path: ${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication
 
   publish-ghcr-images:
-    needs:
-      - prepare-ghcr-amd64
-      - prepare-ghcr-arm64
+    needs: prepare-ghcr
     outputs:
       amd64_digest: ${{ steps.publish_amd64.outputs.digest }}
       arm64_digest: ${{ steps.publish_arm64.outputs.digest }}
