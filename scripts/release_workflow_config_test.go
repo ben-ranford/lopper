@@ -62,26 +62,6 @@ func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-type workflowJobNeeds []string
-
-func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind == yaml.ScalarNode {
-		var need string
-		if err := node.Decode(&need); err != nil {
-			return err
-		}
-		*n = []string{need}
-		return nil
-	}
-
-	var decoded []string
-	if err := node.Decode(&decoded); err != nil {
-		return err
-	}
-	*n = decoded
-	return nil
-}
-
 type workflowStepConfig struct {
 	Name             string            `yaml:"name"`
 	ID               string            `yaml:"id"`
