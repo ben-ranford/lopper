@@ -495,18 +495,22 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 		"jobs.push-feature-release-history.steps.Push feature history commit#1.env.PUSH_TOKEN=${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 	}
 	slices.Sort(want)
-	got := workflowCredentialBindings(t, workflowYAMLMappingValue(&workflow, "jobs"))
+	got := workflowCredentialBindings(t, &workflow)
 
 	if !slices.Equal(got, want) {
 		t.Fatalf("release publication secret bindings = %#v, want %#v", got, want)
 	}
 }
 
-func TestWorkflowCredentialBindingsAuditRawJobFieldsAndDuplicateSteps(t *testing.T) {
+func TestWorkflowCredentialBindingsAuditRawWorkflowFieldsAliasesAndDuplicateSteps(t *testing.T) {
 	t.Parallel()
 
-	const config = `jobs:
+	const config = `env:
+  GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+jobs:
   publisher:
+    env:
+      ANCHORED_TOKEN: &anchored-token ${{ secrets.ALIAS_TOKEN }}
     container:
       credentials:
         password: ${{ secrets['CONTAINER_TOKEN'] }}
@@ -517,41 +521,50 @@ func TestWorkflowCredentialBindingsAuditRawJobFieldsAndDuplicateSteps(t *testing
       - name: Publish
         env:
           TOKEN: ${{ secrets.SECOND_TOKEN }}
+      - name: Publish all
+        env:
+          ALL_SECRETS: ${{ toJson(secrets) }}
+          ANCHORED_TOKEN: *anchored-token
   future-publisher:
     services:
       registry:
         credentials:
           password: ${{ secrets.SERVICE_TOKEN }}
+  inherited-publisher:
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
 `
 	var workflow yaml.Node
 	if err := yaml.Unmarshal([]byte(config), &workflow); err != nil {
 		t.Fatalf("parse workflow fixture: %v", err)
 	}
 	want := []string{
+		"env.GH_TOKEN=${{ secrets.WORKFLOW_TOKEN }}",
 		"jobs.future-publisher.services.registry.credentials.password=${{ secrets.SERVICE_TOKEN }}",
+		"jobs.inherited-publisher.secrets=inherit",
 		"jobs.publisher.container.credentials.password=${{ secrets['CONTAINER_TOKEN'] }}",
+		"jobs.publisher.env.ANCHORED_TOKEN=${{ secrets.ALIAS_TOKEN }}",
 		"jobs.publisher.steps.Publish#1.env.TOKEN=${{ github[\"token\"] }}",
 		"jobs.publisher.steps.Publish#2.env.TOKEN=${{ secrets.SECOND_TOKEN }}",
+		"jobs.publisher.steps.Publish all#1.env.ALL_SECRETS=${{ toJson(secrets) }}",
+		"jobs.publisher.steps.Publish all#1.env.ANCHORED_TOKEN=${{ secrets.ALIAS_TOKEN }}",
 	}
 	slices.Sort(want)
 
-	got := workflowCredentialBindings(t, workflowYAMLMappingValue(&workflow, "jobs"))
+	got := workflowCredentialBindings(t, &workflow)
 	if !slices.Equal(got, want) {
 		t.Fatalf("raw workflow credential bindings = %#v, want %#v", got, want)
 	}
 }
 
-func workflowCredentialBindings(t *testing.T, jobs *yaml.Node) []string {
+func workflowCredentialBindings(t *testing.T, workflow *yaml.Node) []string {
 	t.Helper()
 
-	if jobs == nil || jobs.Kind != yaml.MappingNode {
-		t.Fatal("workflow must define a jobs mapping")
+	if workflow == nil || workflow.Kind != yaml.DocumentNode || len(workflow.Content) != 1 {
+		t.Fatal("workflow must define one YAML document")
 	}
 	bindings := make([]string, 0)
-	for index := 0; index < len(jobs.Content); index += 2 {
-		jobName := jobs.Content[index].Value
-		collectWorkflowCredentialBindings(jobs.Content[index+1], "jobs."+jobName, &bindings)
-	}
+	collectWorkflowCredentialBindings(workflow.Content[0], "", &bindings)
 	slices.Sort(bindings)
 	return bindings
 }
@@ -559,24 +572,36 @@ func workflowCredentialBindings(t *testing.T, jobs *yaml.Node) []string {
 func collectWorkflowCredentialBindings(node *yaml.Node, path string, bindings *[]string) {
 	switch node.Kind {
 	case yaml.ScalarNode:
-		if workflowValueReferencesCredential(node.Value) {
+		if workflowValueReferencesCredential(path, node.Value) {
 			*bindings = append(*bindings, path+"="+node.Value)
+		}
+	case yaml.AliasNode:
+		if node.Alias != nil {
+			collectWorkflowCredentialBindings(node.Alias, path, bindings)
 		}
 	case yaml.MappingNode:
 		for index := 0; index < len(node.Content); index += 2 {
 			key := node.Content[index].Value
 			value := node.Content[index+1]
+			childPath := workflowCredentialChildPath(path, key)
 			if key == "steps" && value.Kind == yaml.SequenceNode {
-				collectWorkflowCredentialStepBindings(value, path+".steps", bindings)
+				collectWorkflowCredentialStepBindings(value, childPath, bindings)
 				continue
 			}
-			collectWorkflowCredentialBindings(value, path+"."+key, bindings)
+			collectWorkflowCredentialBindings(value, childPath, bindings)
 		}
 	case yaml.SequenceNode:
 		for index, child := range node.Content {
 			collectWorkflowCredentialBindings(child, path+"["+strconv.Itoa(index)+"]", bindings)
 		}
 	}
+}
+
+func workflowCredentialChildPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }
 
 func collectWorkflowCredentialStepBindings(steps *yaml.Node, path string, bindings *[]string) {
@@ -614,13 +639,37 @@ func workflowYAMLMappingValue(node *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-func workflowValueReferencesCredential(value string) bool {
+func workflowValueReferencesCredential(path, value string) bool {
 	normalized := strings.Join(strings.Fields(strings.ToLower(value)), "")
 	normalized = strings.ReplaceAll(normalized, `"`, `'`)
-	return strings.Contains(normalized, "secrets.") ||
-		strings.Contains(normalized, "secrets['") ||
+	return workflowContainsContext(normalized, "secrets") ||
 		strings.Contains(normalized, "github.token") ||
-		strings.Contains(normalized, "github['token']")
+		strings.Contains(normalized, "github['token']") ||
+		(strings.HasSuffix(strings.ToLower(path), ".secrets") && normalized == "inherit")
+}
+
+func workflowContainsContext(value, context string) bool {
+	for start := 0; start < len(value); {
+		offset := strings.Index(value[start:], context)
+		if offset < 0 {
+			return false
+		}
+		index := start + offset
+		end := index + len(context)
+		beforeBoundary := index == 0 || !workflowIdentifierByte(value[index-1])
+		afterBoundary := end == len(value) || !workflowIdentifierByte(value[end])
+		if beforeBoundary && afterBoundary {
+			return true
+		}
+		start = index + 1
+	}
+	return false
+}
+
+func workflowIdentifierByte(character byte) bool {
+	return character >= 'a' && character <= 'z' ||
+		character >= '0' && character <= '9' ||
+		character == '_'
 }
 
 func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
