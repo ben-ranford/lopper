@@ -114,14 +114,27 @@ func TestParseInlineFields(t *testing.T) {
 	if fields["package"] != "serde_json" || fields["path"] != "./x" {
 		t.Fatalf("unexpected single-quoted inline fields: %#v", fields)
 	}
+	fields = parseInlineFields(`{ package = "serde_json", broken }`)
+	if fields["package"] != "serde_json" || len(fields) != 1 {
+		t.Fatalf("expected invalid inline field to be skipped, got %#v", fields)
+	}
 }
 
 func TestTomlCommentAndStringHelpers(t *testing.T) {
 	if got := stripTomlComment(`name = "x#y" # comment`); strings.TrimSpace(got) != `name = "x#y"` {
 		t.Fatalf("unexpected toml comment stripping: %q", got)
 	}
+	if got := stripTomlComment(`name = "xy"`); got != `name = "xy"` {
+		t.Fatalf("unexpected comment-free toml line change: %q", got)
+	}
 	if got := extractQuotedStrings(`["a", 'b', "a"]`); len(got) != 2 {
 		t.Fatalf("expected quoted string extraction dedupe, got %#v", got)
+	}
+	if _, ok := parseTomlStringLiteral(""); ok {
+		t.Fatalf("expected empty string literal parse to fail")
+	}
+	if got := relativeManifestPath("/tmp/repo", "Cargo.toml"); got != "Cargo.toml" {
+		t.Fatalf("expected fallback relative manifest path, got %q", got)
 	}
 }
 
@@ -522,7 +535,7 @@ func TestBuildRustExternCrateStatementRequiresSemicolon(t *testing.T) {
 	}
 }
 
-func TestRustByteScannerEdgeHelpers(t *testing.T) {
+func TestRustByteScannerByteEdges(t *testing.T) {
 	if got := firstContentByteIndex([]byte(" \t")); got != 2 {
 		t.Fatalf("expected blank line content index to equal length, got %d", got)
 	}
@@ -538,10 +551,36 @@ func TestRustByteScannerEdgeHelpers(t *testing.T) {
 	if _, ok := buildRustUseStatement([]byte("use serde::de::DeserializeOwned"), 0, 1, 0, []byte("use serde::de::DeserializeOwned")); ok {
 		t.Fatalf("did not expect use statement without semicolon to parse")
 	}
-	if _, _, ok := consumeRustIdentifier([]byte("9serde")); ok {
-		t.Fatalf("did not expect identifier starting with a digit to parse")
+	for _, raw := range [][]byte{[]byte("9serde"), nil, []byte(" \t "), {0xff, 'x'}} {
+		if _, _, ok := consumeRustIdentifier(raw); ok {
+			t.Fatalf("did not expect invalid identifier to parse: %q", raw)
+		}
 	}
+}
 
+func TestRustByteScannerUnicodeConsumption(t *testing.T) {
+	for _, tc := range []struct {
+		raw      []byte
+		want     string
+		wantNext int
+	}{
+		{raw: []byte("_hidden"), want: "_hidden", wantNext: len("_hidden")},
+		{raw: []byte("Ⅰvalue tail"), want: "Ⅰvalue", wantNext: len("Ⅰvalue")},
+		{raw: []byte("ᢅvalue tail"), want: "ᢅvalue", wantNext: len("ᢅvalue")},
+		{raw: []byte("føø extra"), want: "føø", wantNext: len("føø")},
+		{raw: []byte("e\u0301 extra"), want: "e\u0301", wantNext: len("e\u0301")},
+		{raw: []byte("x·y tail"), want: "x·y", wantNext: len("x·y")},
+		{raw: []byte("føø-bar"), want: "føø", wantNext: len("føø")},
+		{raw: []byte("føø123"), want: "føø123", wantNext: len("føø123")},
+		{raw: []byte("føø\xfftail"), want: "føø", wantNext: len("føø")},
+	} {
+		if ident, next, ok := consumeRustIdentifier(tc.raw); !ok || ident != tc.want || next != tc.wantNext {
+			t.Fatalf("unexpected unicode identifier parse for %q: ident=%q next=%d ok=%v", tc.raw, ident, next, ok)
+		}
+	}
+}
+
+func TestRustByteScannerParseUseHelpers(t *testing.T) {
 	content := pubCrateSerdeStmt
 	clauseStart := strings.Index(content, "serde")
 	clauseEnd := strings.Index(content, ";")
@@ -714,7 +753,7 @@ func TestBuildRequestedRustDependenciesNoTargetAndLineColumn(t *testing.T) {
 	}
 }
 
-func TestRefactorHelperBranches(t *testing.T) {
+func TestWorkspaceMemberParsingHelpers(t *testing.T) {
 	meta := manifestMeta{}
 	if parseWorkspaceMembersLine(`members = ["a"]`, "package", false, &meta) {
 		t.Fatalf("expected false outside workspace section")
@@ -731,7 +770,18 @@ func TestRefactorHelperBranches(t *testing.T) {
 	if got, ok := workspaceMembersAssignmentValue(`members = ["a"]`); !ok || got != `["a"]` {
 		t.Fatalf("unexpected workspace members assignment parse: %q %v", got, ok)
 	}
+	if !parseWorkspaceMembersLine(`members = [`, "workspace", false, &meta) {
+		t.Fatalf("expected open workspace members assignment to continue")
+	}
+	if matched, err := workspaceMemberPatternMatches("", "crates/demo"); err != nil || matched {
+		t.Fatalf("expected empty workspace pattern to miss, got matched=%v err=%v", matched, err)
+	}
+	if matched, err := workspaceMemberPatternMatches("crates/*", ""); err != nil || matched {
+		t.Fatalf("expected empty workspace candidate to miss, got matched=%v err=%v", matched, err)
+	}
+}
 
+func TestDependencyLineGuardHelpers(t *testing.T) {
 	deps := map[string]dependencyInfo{}
 	addDependencyFromLine(deps, "package", `serde = "1.0"`)
 	if len(deps) != 0 {
@@ -740,14 +790,18 @@ func TestRefactorHelperBranches(t *testing.T) {
 	if _, _, ok := parseDependencyInfo(`"" = "1.0"`); ok {
 		t.Fatalf("expected invalid empty alias from quoted key")
 	}
+}
 
+func TestParseUseStatementIndexBounds(t *testing.T) {
 	if _, _, _, ok := parseUseStatementIndex("abc", []int{0, 1, 0}); ok {
 		t.Fatalf("expected parseUseStatementIndex false for short index")
 	}
 	if _, _, _, ok := parseUseStatementIndex("abc", []int{0, 1, 0, 99}); ok {
 		t.Fatalf("expected parseUseStatementIndex false for invalid bounds")
 	}
+}
 
+func TestScanRepoFileEntryBehavior(t *testing.T) {
 	repo := t.TempDir()
 	root := filepath.Join(repo, "crate")
 	writeFile(t, filepath.Join(root, "src", rustLibFile), rustRunFn)

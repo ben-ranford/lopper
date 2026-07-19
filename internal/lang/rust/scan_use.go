@@ -2,6 +2,7 @@ package rust
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -25,9 +26,10 @@ func appendUseClauseImports(imports []importBinding, clause string, ctx useImpor
 	nextToken := 0
 	multiline := strings.ContainsRune(clause, '\n')
 	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
+	declarationTokenHits := countRustDeclarationTokens(declarationClause, collectUseEntryLocalTokens(entries))
 	for _, entry := range entries {
 		entryContext := ctx
-		entryContext.DeclarationTokenHits = countRustUseEntryDeclarationTokens(declarationClause, entry)
+		entryContext.DeclarationTokenHits = declarationTokenHits[useEntryLocalToken(entry)]
 		if multiline {
 			entryContext, nextToken = locateMultilineUseEntry(declarationClause, entry, entryContext, nextToken)
 		}
@@ -59,11 +61,98 @@ func locateMultilineUseEntry(clause string, entry usePathEntry, ctx useImportCon
 	return ctx, offset + len(token)
 }
 
-func countRustUseEntryDeclarationTokens(clause string, entry usePathEntry) int {
-	if entry.Wildcard {
-		return 0
+func collectUseEntryLocalTokens(entries []usePathEntry) map[string]struct{} {
+	wanted := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		token := useEntryLocalToken(entry)
+		if token == "" {
+			continue
+		}
+		wanted[token] = struct{}{}
 	}
-	return countRustIdentifierTokens(clause, useEntryLocalToken(entry))
+	return wanted
+}
+
+func countRustDeclarationTokens(clause string, wanted map[string]struct{}) map[string]int {
+	hits := make(map[string]int, len(wanted))
+	if len(wanted) == 0 {
+		return hits
+	}
+	for index := 0; index < len(clause); {
+		token, next, ok := nextRustIdentifierToken(clause, index)
+		if !ok {
+			break
+		}
+		if _, ok := wanted[token]; ok {
+			hits[token]++
+		}
+		index = next
+	}
+	mergeASCIIWordTokenHits(clause, wanted, hits)
+	return hits
+}
+
+func nextRustIdentifierToken(content string, searchStart int) (string, int, bool) {
+	for searchStart < len(content) {
+		r, width := utf8.DecodeRuneInString(content[searchStart:])
+		if r == utf8.RuneError && width == 0 {
+			return "", searchStart, false
+		}
+		if !isRustIdentifierStartRune(r) {
+			searchStart += width
+			continue
+		}
+
+		start := searchStart
+		searchStart += width
+		for searchStart < len(content) {
+			next, nextWidth := utf8.DecodeRuneInString(content[searchStart:])
+			if next == utf8.RuneError && nextWidth == 0 {
+				break
+			}
+			if !isRustIdentifierContinueRune(next) {
+				break
+			}
+			searchStart += nextWidth
+		}
+		return content[start:searchStart], searchStart, true
+	}
+	return "", searchStart, false
+}
+
+func mergeASCIIWordTokenHits(content string, wanted map[string]struct{}, hits map[string]int) {
+	asciiHits := countASCIIWordTokenHits(content, wanted)
+	for token, count := range asciiHits {
+		if count > hits[token] {
+			hits[token] = count
+		}
+	}
+}
+
+func countASCIIWordTokenHits(content string, wanted map[string]struct{}) map[string]int {
+	hits := make(map[string]int, len(wanted))
+	if len(wanted) == 0 {
+		return hits
+	}
+	for offset := 0; offset < len(content); {
+		if !isASCIIUsageWordByte(content[offset]) {
+			offset++
+			continue
+		}
+		start := offset
+		for offset < len(content) && isASCIIUsageWordByte(content[offset]) {
+			offset++
+		}
+		token := content[start:offset]
+		if _, ok := wanted[token]; ok && rustIdentifierTokenAt(content, token, start) {
+			hits[token]++
+		}
+	}
+	return hits
+}
+
+func isASCIIUsageWordByte(b byte) bool {
+	return b == '$' || b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func advancePastRustUseWildcard(clause string, searchStart int) int {
@@ -109,19 +198,6 @@ func findRustAliasToken(content, alias string, searchStart int) int {
 	return -1
 }
 
-func countRustIdentifierTokens(content, token string) int {
-	count := 0
-	for searchStart := 0; searchStart < len(content); {
-		offset := findRustIdentifierToken(content, token, searchStart)
-		if offset < 0 {
-			return count
-		}
-		count++
-		searchStart = offset + len(token)
-	}
-	return count
-}
-
 func findRustIdentifierToken(content, token string, searchStart int) int {
 	if token == "" || searchStart < 0 || searchStart >= len(content) {
 		return -1
@@ -145,8 +221,16 @@ func rustIdentifierTokenAt(content, token string, offset int) bool {
 	if token == "" || offset < 0 || end > len(content) || content[offset:end] != token {
 		return false
 	}
-	leftBoundary := offset == 0 || !isRustIdentifierContinue(content[offset-1])
-	rightBoundary := end == len(content) || !isRustIdentifierContinue(content[end])
+	leftBoundary := offset == 0
+	if !leftBoundary {
+		left, _ := utf8.DecodeLastRuneInString(content[:offset])
+		leftBoundary = !isRustIdentifierContinueRune(left)
+	}
+	rightBoundary := end == len(content)
+	if !rightBoundary {
+		right, _ := utf8.DecodeRuneInString(content[end:])
+		rightBoundary = !isRustIdentifierContinueRune(right)
+	}
 	return leftBoundary && rightBoundary
 }
 

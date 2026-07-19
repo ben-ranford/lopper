@@ -173,6 +173,23 @@ func TestCountUsageUnicodeIdentifierBoundaries(t *testing.T) {
 	}
 }
 
+func TestCountUsageUsesUnicodeScannerForNonASCIIContent(t *testing.T) {
+	imports := []ImportRecord{{
+		Local:                "de",
+		Location:             report.Location{File: "lib.rs", Line: 1, Column: 18},
+		DeclarationTokenHits: 1,
+	}}
+	tests := map[string]int{
+		"use serde::deø as de;\n":                      0,
+		"use serde::deø as de;\nfn decode(_: de) {}\n": 1,
+	}
+	for content, want := range tests {
+		if got := CountUsage([]byte(content), imports)["de"]; got != want {
+			t.Errorf("countUsage(%q) = %d, want %d", content, got, want)
+		}
+	}
+}
+
 func TestContainsMaskableSyntax(t *testing.T) {
 	cases := []struct {
 		name    string

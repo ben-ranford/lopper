@@ -2,6 +2,8 @@ package rust
 
 import (
 	"bytes"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -375,22 +377,40 @@ func parseExternCrateClause(clause []byte, filePath, crateRoot string, depLookup
 
 func consumeRustIdentifier(value []byte) (string, int, bool) {
 	value = bytes.TrimSpace(value)
-	if len(value) == 0 || !isRustIdentifierStart(value[0]) {
+	if len(value) == 0 {
 		return "", 0, false
 	}
-	index := 1
-	for index < len(value) && isRustIdentifierContinue(value[index]) {
-		index++
+	first, width := utf8.DecodeRune(value)
+	if first == utf8.RuneError && width == 0 {
+		return "", 0, false
+	}
+	if !isRustIdentifierStartRune(first) {
+		return "", 0, false
+	}
+	index := width
+	for index < len(value) {
+		r, w := utf8.DecodeRune(value[index:])
+		if r == utf8.RuneError && w == 0 {
+			break
+		}
+		if !isRustIdentifierContinueRune(r) {
+			break
+		}
+		index += w
 	}
 	return string(value[:index]), index, true
 }
 
-func isRustIdentifierStart(b byte) bool {
-	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+func isRustIdentifierContinue(b byte) bool {
+	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
-func isRustIdentifierContinue(b byte) bool {
-	return isRustIdentifierStart(b) || (b >= '0' && b <= '9')
+func isRustIdentifierStartRune(r rune) bool {
+	return r == '_' || unicode.In(r, unicode.L, unicode.Nl, unicode.Other_ID_Start)
+}
+
+func isRustIdentifierContinueRune(r rune) bool {
+	return r == '_' || unicode.In(r, unicode.L, unicode.Nl, unicode.Nd, unicode.Mn, unicode.Mc, unicode.Me, unicode.Pc, unicode.Other_ID_Start, unicode.Other_ID_Continue)
 }
 
 func firstContentByteIndex(line []byte) int {

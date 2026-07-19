@@ -20,7 +20,7 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 
 	usage := make(map[string]int, len(importCount))
 	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
-	if hasUnicodeLocal {
+	if hasUnicodeLocal || containsNonASCIIBytes(scannable) {
 		scanUnicodeTokenUsage(scannable, importCount, usage)
 	} else {
 		scanTokenUsage(scannable, importCount, usage)
@@ -188,6 +188,15 @@ func isUnicodeIdentifierRune(value rune) bool {
 func containsNonASCII(value string) bool {
 	for index := 0; index < len(value); index++ {
 		if value[index] >= utf8.RuneSelf {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNonASCIIBytes(value []byte) bool {
+	for _, b := range value {
+		if b >= utf8.RuneSelf {
 			return true
 		}
 	}
