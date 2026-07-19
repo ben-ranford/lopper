@@ -1,0 +1,86 @@
+name: queue me
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request_target:
+    types:
+      - labeled
+      - unlabeled
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+      - closed
+
+concurrency:
+  group: queue-me-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  advance:
+    name: advance queue-me
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (
+        github.event_name == 'pull_request_target' &&
+        (
+          (github.event.action == 'labeled' && github.event.label.name == 'queue-me') ||
+          (github.event.action == 'unlabeled' && github.event.label.name == 'queue-me') ||
+          contains(github.event.pull_request.labels.*.name, 'queue-me')
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted queue controller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Check queue app configuration
+        id: queue_config
+        shell: bash
+        env:
+          QUEUE_APP_CLIENT_ID: ${{ vars.QUEUE_APP_CLIENT_ID }}
+          QUEUE_APP_PRIVATE_KEY: ${{ secrets.QUEUE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${QUEUE_APP_CLIENT_ID}" && -n "${QUEUE_APP_PRIVATE_KEY}" ]]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::queue-me is inactive until QUEUE_APP_CLIENT_ID and QUEUE_APP_PRIVATE_KEY are configured."
+          fi
+
+      - name: Create queue app token
+        if: steps.queue_config.outputs.configured == 'true'
+        id: queue_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.QUEUE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.QUEUE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Advance queue
+        if: steps.queue_config.outputs.configured == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          QUEUE_LABEL: queue-me
+        with:
+          github-token: ${{ steps.queue_token.outputs.token }}
+          script: |
+            const controllerPath = `${process.env.GITHUB_WORKSPACE}/scripts/queue_me_controller.js`;
+            const runController = require(controllerPath);
+            await runController({ github, context, core });

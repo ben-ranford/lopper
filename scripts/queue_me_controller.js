@@ -1,0 +1,359 @@
+'use strict';
+
+const COMMENT_MARKER = '<!-- queue-me-controller -->';
+const DEFAULT_QUEUE_LABEL = 'queue-me';
+
+function labelName(label) {
+  return typeof label === 'string' ? label : label?.name;
+}
+
+function hasLabel(pull, queueLabel) {
+  return (pull.labels || []).some((label) => labelName(label) === queueLabel);
+}
+
+function sortQueuedPulls(pulls) {
+  return [...pulls].sort((left, right) => left.number - right.number);
+}
+
+function isBranchCurrent(comparisonStatus) {
+  return comparisonStatus === 'ahead' || comparisonStatus === 'identical';
+}
+
+function shortSHA(sha) {
+  return typeof sha === 'string' ? sha.slice(0, 10) : 'unknown';
+}
+
+function safeError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replaceAll('`', "'").slice(0, 1200);
+}
+
+async function ensureQueueLabel(github, owner, repo, queueLabel) {
+  try {
+    await github.rest.issues.getLabel({ owner, repo, name: queueLabel });
+  } catch (error) {
+    if (error?.status !== 404) {
+      throw error;
+    }
+    await github.rest.issues.createLabel({
+      owner,
+      repo,
+      name: queueLabel,
+      color: '1D76DB',
+      description: 'Rebase and squash-merge automatically in deterministic PR order',
+    });
+  }
+}
+
+async function pullState(github, owner, repo, number) {
+  const result = await github.graphql(
+    `query QueuePullState($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          id
+          number
+          headRefOid
+          isDraft
+          mergeable
+          mergeStateStatus
+          autoMergeRequest {
+            enabledAt
+            mergeMethod
+          }
+        }
+      }
+    }`,
+    { owner, repo, number },
+  );
+  return result.repository.pullRequest;
+}
+
+async function syncStatusComment(github, owner, repo, number, body) {
+  const comments = await github.paginate(github.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number: number,
+    per_page: 100,
+  });
+  const existing = comments.find(
+    (comment) =>
+      comment.user?.type === 'Bot' &&
+      typeof comment.body === 'string' &&
+      comment.body.includes(COMMENT_MARKER),
+  );
+  const nextBody = `${COMMENT_MARKER}\n${body}`;
+  if (existing?.body === nextBody) {
+    return;
+  }
+  if (existing) {
+    await github.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: existing.id,
+      body: nextBody,
+    });
+    return;
+  }
+  await github.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: number,
+    body: nextBody,
+  });
+}
+
+async function disableAutoMerge(github, owner, repo, number) {
+  const state = await pullState(github, owner, repo, number);
+  if (!state?.autoMergeRequest) {
+    return;
+  }
+  await github.graphql(
+    `mutation DisableQueueAutoMerge($pullRequestId: ID!) {
+      disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
+        pullRequest { number }
+      }
+    }`,
+    { pullRequestId: state.id },
+  );
+}
+
+async function rebaseOntoDefault(github, pull, defaultBranchSHA) {
+  const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+    owner: pull.base.repo.owner.login,
+    repo: pull.base.repo.name,
+    basehead: `${defaultBranchSHA}...${pull.head.sha}`,
+  });
+  if (isBranchCurrent(comparison.status)) {
+    return { headSHA: pull.head.sha, rebased: false };
+  }
+  const result = await github.graphql(
+    `mutation RebaseQueuedPull($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+      updatePullRequestBranch(input: {
+        pullRequestId: $pullRequestId
+        expectedHeadOid: $expectedHeadOid
+        updateMethod: REBASE
+      }) {
+        pullRequest {
+          headRefOid
+          number
+        }
+      }
+    }`,
+    {
+      pullRequestId: pull.node_id,
+      expectedHeadOid: pull.head.sha,
+    },
+  );
+  return {
+    headSHA: result.updatePullRequestBranch.pullRequest.headRefOid,
+    rebased: true,
+  };
+}
+
+async function mergeNow(github, pullRequestId, expectedHeadOid) {
+  return github.graphql(
+    `mutation MergeQueuedPull($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+      mergePullRequest(input: {
+        pullRequestId: $pullRequestId
+        expectedHeadOid: $expectedHeadOid
+        mergeMethod: SQUASH
+      }) {
+        pullRequest { number merged mergedAt }
+      }
+    }`,
+    { pullRequestId, expectedHeadOid },
+  );
+}
+
+async function armAutoMerge(github, pullRequestId) {
+  return github.graphql(
+    `mutation ArmQueueAutoMerge($pullRequestId: ID!) {
+      enablePullRequestAutoMerge(input: {
+        pullRequestId: $pullRequestId
+        mergeMethod: SQUASH
+      }) {
+        pullRequest {
+          number
+          autoMergeRequest { enabledAt mergeMethod }
+        }
+      }
+    }`,
+    { pullRequestId },
+  );
+}
+
+async function armOrMerge(github, state) {
+  if (state.autoMergeRequest) {
+    return 'armed';
+  }
+  if (state.mergeable === 'MERGEABLE' && state.mergeStateStatus === 'CLEAN') {
+    await mergeNow(github, state.id, state.headRefOid);
+    return 'merged';
+  }
+  try {
+    await armAutoMerge(github, state.id);
+    return 'armed';
+  } catch (error) {
+    const refreshed = await pullStateByID(github, state.id);
+    if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
+      await mergeNow(github, refreshed.id, refreshed.headRefOid);
+      return 'merged';
+    }
+    throw error;
+  }
+}
+
+async function pullStateByID(github, pullRequestId) {
+  const result = await github.graphql(
+    `query QueuePullStateByID($pullRequestId: ID!) {
+      node(id: $pullRequestId) {
+        ... on PullRequest {
+          id
+          number
+          headRefOid
+          mergeable
+          mergeStateStatus
+          autoMergeRequest { enabledAt mergeMethod }
+        }
+      }
+    }`,
+    { pullRequestId },
+  );
+  return result.node;
+}
+
+async function runController({ github, context, core }) {
+  const queueLabel = process.env.QUEUE_LABEL || DEFAULT_QUEUE_LABEL;
+  const { owner, repo } = context.repo;
+  await ensureQueueLabel(github, owner, repo, queueLabel);
+
+  const eventPull = context.payload.pull_request;
+  if (
+    context.eventName === 'pull_request_target' &&
+    context.payload.action === 'unlabeled' &&
+    context.payload.label?.name === queueLabel &&
+    eventPull
+  ) {
+    await disableAutoMerge(github, owner, repo, eventPull.number);
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      eventPull.number,
+      `## Queue status\n\nRemoved from \`${queueLabel}\`; automatic merge is disabled.`,
+    );
+  }
+
+  const { data: repository } = await github.rest.repos.get({ owner, repo });
+  const defaultBranch = repository.default_branch;
+  const pulls = await github.paginate(github.rest.pulls.list, {
+    owner,
+    repo,
+    state: 'open',
+    base: defaultBranch,
+    sort: 'created',
+    direction: 'asc',
+    per_page: 100,
+  });
+  const queued = sortQueuedPulls(pulls.filter((pull) => hasLabel(pull, queueLabel)));
+  if (queued.length === 0) {
+    core.notice(`No open ${defaultBranch} pull requests carry the ${queueLabel} label.`);
+    return;
+  }
+
+  const leader = queued[0];
+  for (const follower of queued.slice(1)) {
+    await disableAutoMerge(github, owner, repo, follower.number);
+  }
+  if (eventPull && eventPull.number !== leader.number && context.payload.action === 'labeled') {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      eventPull.number,
+      `## Queue status\n\nQueued behind #${leader.number}. Pull requests advance in ascending number order.`,
+    );
+  }
+  await disableAutoMerge(github, owner, repo, leader.number);
+  if (leader.draft) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      leader.number,
+      `## Queue status\n\nQueue paused: the oldest queued pull request is still a draft.`,
+    );
+    return;
+  }
+  if (leader.head.repo?.full_name !== repository.full_name && !leader.maintainer_can_modify) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      leader.number,
+      `## Queue status\n\nQueue paused: maintainers cannot rebase this fork branch. Enable maintainer edits or rebase it manually.`,
+    );
+    return;
+  }
+
+  const { data: branch } = await github.rest.repos.getBranch({
+    owner,
+    repo,
+    branch: defaultBranch,
+  });
+  let update;
+  try {
+    update = await rebaseOntoDefault(github, leader, branch.commit.sha);
+  } catch (error) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      leader.number,
+      `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
+    );
+    throw error;
+  }
+
+  try {
+    const state = await pullState(github, owner, repo, leader.number);
+    if (state.headRefOid !== update.headSHA) {
+      throw new Error(
+        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
+      );
+    }
+    const result = await armOrMerge(github, state);
+    const rebaseSummary = update.rebased
+      ? `Rebased \`${shortSHA(leader.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
+      : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
+    const mergeSummary = result === 'merged'
+      ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
+      : 'Squash auto-merge is armed and will wait for the repository ruleset.';
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      leader.number,
+      `## Queue status\n\n${rebaseSummary}\n\n${mergeSummary}`,
+    );
+  } catch (error) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      leader.number,
+      `## Queue status\n\nQueue paused while enabling or completing squash auto-merge.\n\n\`${safeError(error)}\``,
+    );
+    throw error;
+  }
+}
+
+module.exports = runController;
+module.exports.testables = {
+  hasLabel,
+  isBranchCurrent,
+  labelName,
+  safeError,
+  shortSHA,
+  sortQueuedPulls,
+};
