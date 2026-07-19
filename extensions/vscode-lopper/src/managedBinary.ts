@@ -408,6 +408,10 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
   }
 
   private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoots: readonly string[]): Promise<boolean> {
+    if (workspaceRoots.some((workspaceRoot) => isPathInsideWorkspace(binaryPath, workspaceRoot))) {
+      return true;
+    }
+
     try {
       const [canonicalBinaryPath, ...canonicalWorkspaceRoots] = await Promise.all([
         this.canonicalizePath(binaryPath),
