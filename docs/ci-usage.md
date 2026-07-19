@@ -35,7 +35,7 @@ Stable release automation:
 
 `.github/workflows/queue-me.yml` provides a repository-hosted queue for the default branch without requiring GitHub's organization-only merge queue feature. Apply the `queue-me` label to any open, non-draft pull request targeting `main`. The controller processes labeled pull requests in ascending PR-number order, rebases only the current queue leader, and enables squash auto-merge so the existing ruleset remains authoritative for checks, Sonar, metadata, and resolved conversations. A merge or any other push to `main` causes the next leader to be rebased against the new exact base. Removing `queue-me` disables that pull request's auto-merge and advances the remaining queue.
 
-The workflow uses `pull_request_target`, but it checks out only the trusted `github.workflow_sha`; it never checks out or executes pull-request code. API writes use a repository-scoped GitHub App installation token so the rebase-generated `synchronize` event can start normal CI without the recursive-workflow restrictions of `GITHUB_TOKEN`.
+The workflow uses `pull_request_target`, but it never checks out a repository tree. It downloads only `scripts/queue_me_controller.js` from the exact trusted `github.workflow_sha` through GitHub's Contents API, writes that blob to runner temporary storage, and executes it. API writes use a repository-scoped GitHub App installation token so the rebase-generated `synchronize` event can start normal CI without the recursive-workflow restrictions of `GITHUB_TOKEN`.
 
 Configure the controller once:
 

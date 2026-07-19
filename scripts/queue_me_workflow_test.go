@@ -27,9 +27,6 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"- closed",
 		"cancel-in-progress: false",
 		"permissions:\n  contents: read",
-		"actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
-		"ref: ${{ github.workflow_sha }}",
-		"persist-credentials: false",
 		"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
 		"client-id: ${{ vars.QUEUE_APP_CLIENT_ID }}",
 		"private-key: ${{ secrets.QUEUE_APP_PRIVATE_KEY }}",
@@ -37,8 +34,14 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"permission-issues: write",
 		"permission-pull-requests: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+		"QUEUE_CONTROLLER_PATH: ${{ runner.temp }}/queue_me_controller.js",
+		"TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}",
+		"github.rest.repos.getContent",
+		"path: 'scripts/queue_me_controller.js'",
+		"ref: process.env.TRUSTED_CONTROLLER_REF",
+		"flag: 'wx'",
 		"QUEUE_LABEL: queue-me",
-		"scripts/queue_me_controller.js",
+		"require(process.env.QUEUE_CONTROLLER_PATH)",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(workflowText, fragment) {
@@ -46,10 +49,10 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"actions/checkout@v",
+		"actions/checkout@",
 		"actions/github-script@v",
+		"github.event.pull_request.head",
 		"pull_request:\n",
-		"persist-credentials: true",
 	} {
 		if strings.Contains(workflowText, forbidden) {
 			t.Fatalf("queue-me workflow contains unsafe fragment %q", forbidden)

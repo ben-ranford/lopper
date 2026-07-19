@@ -39,12 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout trusted queue controller
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-
       - name: Check queue app configuration
         id: queue_config
         shell: bash
@@ -73,14 +67,40 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - name: Materialize trusted queue controller
+        if: steps.queue_config.outputs.configured == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          QUEUE_CONTROLLER_PATH: ${{ runner.temp }}/queue_me_controller.js
+          TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}
+        with:
+          github-token: ${{ steps.queue_token.outputs.token }}
+          script: |
+            const fs = require('node:fs');
+            const { data } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'scripts/queue_me_controller.js',
+              ref: process.env.TRUSTED_CONTROLLER_REF,
+            });
+            if (Array.isArray(data) || data.type !== 'file' || data.encoding !== 'base64') {
+              throw new Error('Trusted queue controller is not a base64-encoded repository file.');
+            }
+            const source = Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8');
+            fs.writeFileSync(process.env.QUEUE_CONTROLLER_PATH, source, {
+              encoding: 'utf8',
+              flag: 'wx',
+              mode: 0o600,
+            });
+
       - name: Advance queue
         if: steps.queue_config.outputs.configured == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
+          QUEUE_CONTROLLER_PATH: ${{ runner.temp }}/queue_me_controller.js
           QUEUE_LABEL: queue-me
         with:
           github-token: ${{ steps.queue_token.outputs.token }}
           script: |
-            const controllerPath = `${process.env.GITHUB_WORKSPACE}/scripts/queue_me_controller.js`;
-            const runController = require(controllerPath);
+            const runController = require(process.env.QUEUE_CONTROLLER_PATH);
             await runController({ github, context, core });
