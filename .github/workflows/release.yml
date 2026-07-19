@@ -382,12 +382,9 @@ jobs:
           path: dist/lopper_${{ needs.prepare-release.outputs.tag }}_darwin_amd64.tar.gz
           if-no-files-found: error
 
-  prepare-release-publication:
+  prepare-release-feature-report:
     needs:
       - prepare-release
-      - orchestrate-release
-      - build-vscode-extension
-      - build-darwin-amd64
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -400,6 +397,17 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.sha }}
 
+      - name: Verify release source checkout
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.prepare-release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          actual_source_sha="$(git rev-parse HEAD)"
+          if [ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]; then
+            echo "Checked out release source ${actual_source_sha} does not match ${EXPECTED_SOURCE_SHA}" >&2
+            exit 1
+          fi
+
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
@@ -410,7 +418,9 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
-          mkdir -p .artifacts
+          report_dir="${RUNNER_TEMP}/release-feature-report"
+          rm -rf -- "${report_dir}"
+          mkdir -- "${report_dir}"
           git fetch --tags --force
           previous_tag=""
           while IFS= read -r candidate; do
@@ -422,7 +432,7 @@ jobs:
 
           args=(report --channel release --release "${RELEASE_TAG}")
           if [ -n "${previous_tag}" ]; then
-            previous_catalog=".artifacts/previous-features.json"
+            previous_catalog="${RUNNER_TEMP}/previous-features.json"
             if git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
               git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
             else
@@ -430,32 +440,122 @@ jobs:
             fi
             args+=(--previous-catalog "${previous_catalog}")
           fi
-          go run ./tools/featureflag "${args[@]}" > feature-flags.md
+          go run ./tools/featureflag "${args[@]}" > "${report_dir}/feature-flags.md"
 
-      - name: Reset release artifact staging
+      - name: Validate feature flag release report
         env:
           PATH: /usr/bin:/bin
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
-          rm -rf -- dist
-          mkdir -- dist
+          report_dir="${RUNNER_TEMP}/release-feature-report"
+          report="${report_dir}/feature-flags.md"
+          if find -P "${report_dir}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Feature flag release report staging contains a non-regular entry" >&2
+            exit 1
+          fi
+          file_count="$(find -P "${report_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne 1 ]; then
+            echo "Feature flag release report staging must contain exactly one file" >&2
+            exit 1
+          fi
+          if [ ! -f "${report}" ] || [ -L "${report}" ]; then
+            echo "Feature flag release report must be a regular file" >&2
+            exit 1
+          fi
+          if [ ! -s "${report}" ]; then
+            echo "Feature flag release report must not be empty" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${report}")" -gt 1048576 ]; then
+            echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
+            exit 1
+          fi
 
-      - name: Download release artifacts
+      - name: Upload feature flag release report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: stable-feature-report
+          path: ${{ runner.temp }}/release-feature-report/feature-flags.md
+          if-no-files-found: error
+
+  prepare-release-publication:
+    needs:
+      - prepare-release
+      - prepare-release-feature-report
+      - orchestrate-release
+      - build-vscode-extension
+      - build-darwin-amd64
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Reset release publication assembly
+        env:
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          assembly_root="${RUNNER_TEMP}/release-publication-assembly"
+          rm -rf -- "${assembly_root}"
+          rm -rf -- publication-inputs
+          mkdir -- "${assembly_root}"
+
+      - name: Download feature flag release report
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: release-*
-          merge-multiple: true
-          path: dist
+          name: stable-feature-report
+          path: ${{ runner.temp }}/release-publication-assembly/feature-report
+
+      - name: Download Linux and Windows release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-linux-windows
+          path: ${{ runner.temp }}/release-publication-assembly/linux-windows
+
+      - name: Download Darwin arm64 release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-darwin
+          path: ${{ runner.temp }}/release-publication-assembly/darwin-arm64
+
+      - name: Download Darwin amd64 release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-darwin-amd64
+          path: ${{ runner.temp }}/release-publication-assembly/darwin-amd64
+
+      - name: Download VS Code extension release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-vscode-extension
+          path: ${{ runner.temp }}/release-publication-assembly/vscode
 
       - name: Stage bounded release publication inputs
         env:
+          ASSEMBLY_ROOT: ${{ runner.temp }}/release-publication-assembly
           PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
+          report="${ASSEMBLY_ROOT}/feature-report/feature-flags.md"
+          linux_windows_assets=(
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_windows_amd64.zip"
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_windows_arm64.zip"
+          )
+          darwin_arm64_assets=("${ASSEMBLY_ROOT}/darwin-arm64/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz")
+          darwin_amd64_assets=("${ASSEMBLY_ROOT}/darwin-amd64/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz")
+          vsix_assets=("${ASSEMBLY_ROOT}/vscode/lopper-vscode-${version}.vsix")
+          assets=(
+            "${linux_windows_assets[@]}"
+            "${darwin_arm64_assets[@]}"
+            "${darwin_amd64_assets[@]}"
+            "${vsix_assets[@]}"
+          )
           expected_assets=(
             "dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz"
             "dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz"
@@ -466,47 +566,76 @@ jobs:
             "dist/lopper-vscode-${version}.vsix"
           )
 
-          if [ ! -f feature-flags.md ] || [ -L feature-flags.md ]; then
-            echo "Feature flag release report must be a regular file" >&2
-            exit 1
-          fi
-          if [ "$(stat --format=%s feature-flags.md)" -gt 1048576 ]; then
-            echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
-            exit 1
-          fi
-          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
-            echo "Release publication inputs must contain only regular files" >&2
-            exit 1
-          fi
-          file_count="$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
-          if [ "${file_count}" -ne "${#expected_assets[@]}" ]; then
-            echo "Release publication inputs must contain exactly ${#expected_assets[@]} assets" >&2
-            exit 1
-          fi
-          for asset in "${expected_assets[@]}"; do
-            if [ ! -f "${asset}" ] || [ -L "${asset}" ]; then
-              echo "Expected release asset ${asset} is missing or not a regular file" >&2
+          validate_input_root() {
+            local root="$1"
+            local maximum_size="$2"
+            shift 2
+            local expected=("$@")
+            if [ ! -d "${root}" ] || [ -L "${root}" ]; then
+              echo "Release input root ${root} is missing or invalid" >&2
               exit 1
             fi
-            if [ ! -s "${asset}" ]; then
-              echo "Expected release asset ${asset} is empty" >&2
+            if find -P "${root}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+              echo "Release input root ${root} contains a non-regular entry" >&2
               exit 1
             fi
-            if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
-              echo "Release asset ${asset} exceeds the 1 GiB publication limit" >&2
+            local file_count
+            file_count="$(find -P "${root}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+            if [ "${file_count}" -ne "${#expected[@]}" ]; then
+              echo "Release input root ${root} contains an unexpected file count" >&2
               exit 1
             fi
-          done
-          assets=("${expected_assets[@]}")
+            local input
+            for input in "${expected[@]}"; do
+              if [ ! -f "${input}" ] || [ -L "${input}" ]; then
+                echo "Expected release input ${input} is missing or not a regular file" >&2
+                exit 1
+              fi
+              if [ ! -s "${input}" ]; then
+                echo "Expected release input ${input} is empty" >&2
+                exit 1
+              fi
+              if [ "$(stat --format=%s "${input}")" -gt "${maximum_size}" ]; then
+                echo "Release input ${input} exceeds its publication limit" >&2
+                exit 1
+              fi
+            done
+          }
+
+          validate_input_root "${ASSEMBLY_ROOT}/feature-report" 1048576 "${report}"
+          validate_input_root "${ASSEMBLY_ROOT}/linux-windows" 1073741824 "${linux_windows_assets[@]}"
+          validate_input_root "${ASSEMBLY_ROOT}/darwin-arm64" 1073741824 "${darwin_arm64_assets[@]}"
+          validate_input_root "${ASSEMBLY_ROOT}/darwin-amd64" 1073741824 "${darwin_amd64_assets[@]}"
+          validate_input_root "${ASSEMBLY_ROOT}/vscode" 1073741824 "${vsix_assets[@]}"
 
           rm -rf -- publication-inputs
           mkdir -p publication-inputs/dist
           cp -- "${assets[@]}" publication-inputs/dist/
-          cp -- feature-flags.md publication-inputs/feature-flags.md
+          cp -- "${report}" publication-inputs/feature-flags.md
+          if find -P publication-inputs -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Staged release publication inputs contain a non-regular entry" >&2
+            exit 1
+          fi
+          if [ "$(find -P publication-inputs -type f | wc -l | tr -d '[:space:]')" -ne 8 ]; then
+            echo "Staged release publication inputs must contain seven assets and one report" >&2
+            exit 1
+          fi
+          for asset in "${expected_assets[@]}"; do
+            asset="publication-inputs/${asset}"
+            if [ ! -f "${asset}" ] || [ -L "${asset}" ] || [ ! -s "${asset}" ]; then
+              echo "Staged release asset ${asset} is missing, invalid, or empty" >&2
+              exit 1
+            fi
+          done
+          if [ ! -f publication-inputs/feature-flags.md ] || [ -L publication-inputs/feature-flags.md ] || [ ! -s publication-inputs/feature-flags.md ]; then
+            echo "Staged feature flag release report is missing, invalid, or empty" >&2
+            exit 1
+          fi
           (
             cd publication-inputs
-            mapfile -d '' checksum_files < <(find . -type f -print0 | sort -z)
-            sha256sum "${checksum_files[@]}" > SHA256SUMS
+            manifest_inputs=("feature-flags.md" "${expected_assets[@]}")
+            mapfile -d '' sorted_manifest_inputs < <(printf '%s\0' "${manifest_inputs[@]}" | sort -z)
+            sha256sum "${sorted_manifest_inputs[@]}" > SHA256SUMS
           )
 
       - name: Upload release publication inputs
@@ -1010,8 +1139,12 @@ jobs:
             echo "Release publication inputs contain a non-regular entry" >&2
             exit 1
           fi
-          if [ ! -f SHA256SUMS ] || [ -L SHA256SUMS ]; then
+          if [ ! -f SHA256SUMS ] || [ -L SHA256SUMS ] || [ ! -s SHA256SUMS ]; then
             echo "Release publication checksum manifest is missing or invalid" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s SHA256SUMS)" -gt 65536 ]; then
+            echo "Release publication checksum manifest exceeds the 64 KiB limit" >&2
             exit 1
           fi
           if find . -mindepth 1 -maxdepth 1 ! -name dist ! -name feature-flags.md ! -name SHA256SUMS -print -quit | grep -q .; then
@@ -1022,21 +1155,20 @@ jobs:
             echo "Release publication inputs contain an unexpected file count" >&2
             exit 1
           fi
-          computed_checksums="$(mktemp)"
-          trap 'rm -f "${computed_checksums}"' EXIT
-          mapfile -d '' checksum_files < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
-          sha256sum "${checksum_files[@]}" > "${computed_checksums}"
-          if ! cmp -s SHA256SUMS "${computed_checksums}"; then
-            echo "Release publication checksum manifest does not cover the exact input set" >&2
-            exit 1
-          fi
-          sha256sum --check --strict SHA256SUMS
           if [ ! -f feature-flags.md ] || [ -L feature-flags.md ]; then
             echo "Feature flag release report must be a regular file" >&2
             exit 1
           fi
+          if [ ! -s feature-flags.md ]; then
+            echo "Feature flag release report must not be empty" >&2
+            exit 1
+          fi
           if [ "$(stat --format=%s feature-flags.md)" -gt 1048576 ]; then
             echo "Feature flag release report exceeds the 1 MiB publication limit" >&2
+            exit 1
+          fi
+          if [ ! -d dist ] || [ -L dist ]; then
+            echo "Release asset directory is missing or invalid" >&2
             exit 1
           fi
           if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
@@ -1062,6 +1194,17 @@ jobs:
               exit 1
             fi
           done
+
+          computed_checksums="$(mktemp)"
+          trap 'rm -f "${computed_checksums}"' EXIT
+          manifest_inputs=("feature-flags.md" "${expected_assets[@]}")
+          mapfile -d '' sorted_manifest_inputs < <(printf '%s\0' "${manifest_inputs[@]}" | sort -z)
+          sha256sum "${sorted_manifest_inputs[@]}" > "${computed_checksums}"
+          if ! cmp -s SHA256SUMS "${computed_checksums}"; then
+            echo "Release publication checksum manifest does not cover the exact input set" >&2
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
 
       - name: Update GitHub Release notes
         env:
