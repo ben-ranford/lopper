@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -476,86 +477,150 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
+	var workflow yaml.Node
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	want := map[string]string{
-		"prepare-marketplace-toolchain/Detect Marketplace token/env.VSCE_PUBLISH":        "${{ secrets.VSCE_PUBLISH }}",
-		"publish-marketplace/Publish VS Code extension to Marketplace/env.VSCE_PAT":      "${{ secrets.VSCE_PUBLISH }}",
-		"publish/Update GitHub Release notes/env.GH_TOKEN":                               "${{ secrets.GITHUB_TOKEN }}",
-		"publish/Upload GitHub Release assets/env.GH_TOKEN":                              "${{ secrets.GITHUB_TOKEN }}",
-		"finalize-release/Publish GitHub Release/env.GH_TOKEN":                           "${{ secrets.GITHUB_TOKEN }}",
-		"finalize-release/Push GitHub Action floating tags/env.PUSH_TOKEN":               "${{ secrets.GITHUB_TOKEN }}",
-		"homebrew-tap-token-gate/Detect tap token/env.HOMEBREW_TAP_TOKEN":                "${{ secrets.HOMEBREW_TAP_TOKEN }}",
-		"update-homebrew-tap/Regenerate and push formula changes/env.HOMEBREW_TAP_TOKEN": "${{ secrets.HOMEBREW_TAP_TOKEN }}",
-		"push-feature-release-history/Push feature history commit/env.PUSH_TOKEN":        "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+	want := []string{
+		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Checkout release metadata#1.with.token=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Prepare manual release#1.env.GH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-marketplace-toolchain.steps.Detect Marketplace token#1.env.VSCE_PUBLISH=${{ secrets.VSCE_PUBLISH }}",
+		"jobs.publish-marketplace.steps.Publish VS Code extension to Marketplace#1.env.VSCE_PAT=${{ secrets.VSCE_PUBLISH }}",
+		"jobs.publish.steps.Update GitHub Release notes#1.env.GH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.publish.steps.Upload GitHub Release assets#1.env.GH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.finalize-release.steps.Publish GitHub Release#1.env.GH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.finalize-release.steps.Push GitHub Action floating tags#1.env.PUSH_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"jobs.homebrew-tap-token-gate.steps.Detect tap token#1.env.HOMEBREW_TAP_TOKEN=${{ secrets.HOMEBREW_TAP_TOKEN }}",
+		"jobs.update-homebrew-tap.steps.Regenerate and push formula changes#1.env.HOMEBREW_TAP_TOKEN=${{ secrets.HOMEBREW_TAP_TOKEN }}",
+		"jobs.push-feature-release-history.steps.Push feature history commit#1.env.PUSH_TOKEN=${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 	}
-	publicationJobs := []string{
-		"prepare-release-publication",
-		"prepare-marketplace-toolchain",
-		"publish-marketplace",
-		"publish",
-		"finalize-release",
-		"homebrew-tap-token-gate",
-		"validate-homebrew-tap",
-		"update-homebrew-tap",
-		"prepare-feature-release-history",
-		"prepare-feature-release-history-push",
-		"push-feature-release-history",
-	}
-	got := releasePublicationCredentialBindings(t, workflow.Jobs, publicationJobs)
+	slices.Sort(want)
+	got := workflowCredentialBindings(t, workflowYAMLMappingValue(&workflow, "jobs"))
 
-	if !maps.Equal(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("release publication secret bindings = %#v, want %#v", got, want)
 	}
 }
 
-func releasePublicationCredentialBindings(t *testing.T, jobs map[string]workflowJobConfig, jobNames []string) map[string]string {
+func TestWorkflowCredentialBindingsAuditRawJobFieldsAndDuplicateSteps(t *testing.T) {
+	t.Parallel()
+
+	const config = `jobs:
+  publisher:
+    container:
+      credentials:
+        password: ${{ secrets['CONTAINER_TOKEN'] }}
+    steps:
+      - name: Publish
+        env:
+          TOKEN: ${{ github["token"] }}
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.SECOND_TOKEN }}
+  future-publisher:
+    services:
+      registry:
+        credentials:
+          password: ${{ secrets.SERVICE_TOKEN }}
+`
+	var workflow yaml.Node
+	if err := yaml.Unmarshal([]byte(config), &workflow); err != nil {
+		t.Fatalf("parse workflow fixture: %v", err)
+	}
+	want := []string{
+		"jobs.future-publisher.services.registry.credentials.password=${{ secrets.SERVICE_TOKEN }}",
+		"jobs.publisher.container.credentials.password=${{ secrets['CONTAINER_TOKEN'] }}",
+		"jobs.publisher.steps.Publish#1.env.TOKEN=${{ github[\"token\"] }}",
+		"jobs.publisher.steps.Publish#2.env.TOKEN=${{ secrets.SECOND_TOKEN }}",
+	}
+	slices.Sort(want)
+
+	got := workflowCredentialBindings(t, workflowYAMLMappingValue(&workflow, "jobs"))
+	if !slices.Equal(got, want) {
+		t.Fatalf("raw workflow credential bindings = %#v, want %#v", got, want)
+	}
+}
+
+func workflowCredentialBindings(t *testing.T, jobs *yaml.Node) []string {
 	t.Helper()
 
-	bindings := make(map[string]string)
-	for _, jobName := range jobNames {
-		collectReleasePublicationJobCredentialBindings(t, jobName, workflowJobByName(t, jobs, jobName), bindings)
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
+		t.Fatal("workflow must define a jobs mapping")
 	}
+	bindings := make([]string, 0)
+	for index := 0; index < len(jobs.Content); index += 2 {
+		jobName := jobs.Content[index].Value
+		collectWorkflowCredentialBindings(jobs.Content[index+1], "jobs."+jobName, &bindings)
+	}
+	slices.Sort(bindings)
 	return bindings
 }
 
-func collectReleasePublicationJobCredentialBindings(t *testing.T, jobName string, job workflowJobConfig, bindings map[string]string) {
-	t.Helper()
-
-	jobValues := append([]string{job.If, job.RunsOn}, mapValues(job.Env)...)
-	jobValues = append(jobValues, mapValues(job.Outputs)...)
-	assertWorkflowValuesOmitCredentialReferences(t, jobValues, "release publication job "+jobName)
-	for _, step := range job.Steps {
-		collectReleasePublicationStepCredentialBindings(t, jobName, step, bindings)
-	}
-}
-
-func collectReleasePublicationStepCredentialBindings(t *testing.T, jobName string, step workflowStepConfig, bindings map[string]string) {
-	t.Helper()
-
-	unscopedValues := []string{step.If, step.Run, step.Shell, step.Uses, step.WorkingDirectory}
-	unscopedValues = append(unscopedValues, mapValues(step.With)...)
-	assertWorkflowValuesOmitCredentialReferences(t, unscopedValues, jobName+" step "+step.Name)
-	for key, value := range step.Env {
-		if workflowValueReferencesCredential(value) {
-			bindings[jobName+"/"+step.Name+"/env."+key] = value
+func collectWorkflowCredentialBindings(node *yaml.Node, path string, bindings *[]string) {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if workflowValueReferencesCredential(node.Value) {
+			*bindings = append(*bindings, path+"="+node.Value)
+		}
+	case yaml.MappingNode:
+		for index := 0; index < len(node.Content); index += 2 {
+			key := node.Content[index].Value
+			value := node.Content[index+1]
+			if key == "steps" && value.Kind == yaml.SequenceNode {
+				collectWorkflowCredentialStepBindings(value, path+".steps", bindings)
+				continue
+			}
+			collectWorkflowCredentialBindings(value, path+"."+key, bindings)
+		}
+	case yaml.SequenceNode:
+		for index, child := range node.Content {
+			collectWorkflowCredentialBindings(child, path+"["+strconv.Itoa(index)+"]", bindings)
 		}
 	}
 }
 
-func assertWorkflowValuesOmitCredentialReferences(t *testing.T, values []string, label string) {
-	t.Helper()
+func collectWorkflowCredentialStepBindings(steps *yaml.Node, path string, bindings *[]string) {
+	stepNameOccurrences := make(map[string]int)
+	for _, step := range steps.Content {
+		nameNode := workflowYAMLMappingValue(step, "name")
+		stepName := "<unnamed>"
+		if nameNode != nil && nameNode.Value != "" {
+			stepName = nameNode.Value
+		}
+		stepNameOccurrences[stepName]++
+		stepPath := path + "." + stepName + "#" + strconv.Itoa(stepNameOccurrences[stepName])
+		collectWorkflowCredentialBindings(step, stepPath, bindings)
+	}
+}
 
-	for _, value := range values {
-		if workflowValueReferencesCredential(value) {
-			t.Fatalf("%s must not reference a release publication credential", label)
+func workflowYAMLMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return nil
+		}
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return node.Content[index+1]
 		}
 	}
+	return nil
 }
 
 func workflowValueReferencesCredential(value string) bool {
-	return strings.Contains(value, "secrets.") || strings.Contains(value, "github.token")
+	normalized := strings.Join(strings.Fields(strings.ToLower(value)), "")
+	normalized = strings.ReplaceAll(normalized, `"`, `'`)
+	return strings.Contains(normalized, "secrets.") ||
+		strings.Contains(normalized, "secrets['") ||
+		strings.Contains(normalized, "github.token") ||
+		strings.Contains(normalized, "github['token']")
 }
 
 func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
