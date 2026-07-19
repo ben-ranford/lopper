@@ -240,7 +240,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf -- dist
-          mkdir -- dist
+          mkdir dist
 
       - name: Package VS Code extension
         env:
@@ -332,7 +332,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf -- dist
-          mkdir -- dist
+          mkdir dist
 
       - name: Build Darwin amd64 release artifact
         env:

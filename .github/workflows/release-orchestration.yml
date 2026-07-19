@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf -- dist
-          mkdir -- dist
+          mkdir dist
 
       - name: Build Linux/Windows release artifacts
         env:
@@ -186,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf -- dist
-          mkdir -- dist
+          mkdir dist
 
       - name: Build Darwin release artifact
         env:

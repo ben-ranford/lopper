@@ -492,10 +492,10 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	assertWorkflowStepEnv(t, resetStep, "VS Code extension artifact staging reset", map[string]string{"PATH": "/usr/bin:/bin"})
 	assertWorkflowStepRunContainsAll(t, resetStep, "VS Code extension artifact staging reset", []string{
 		`rm -rf -- dist`,
-		`mkdir -- dist`,
+		`mkdir dist`,
 	})
 	assertWorkflowStepRunOmitsAll(t, resetStep, "VS Code extension artifact staging reset", []string{"mkdir -p"})
-	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir -- dist`, "VS Code artifact staging must remove checkout-provided files before recreating dist")
+	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir dist`, "VS Code artifact staging must remove checkout-provided files before recreating dist")
 
 	packageStep := build.Steps[packageIndex]
 	const packageCommand = `npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
@@ -2716,21 +2716,31 @@ func TestRollingDarwinProducerPinsTrustedActions(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowsUsePortableHardenedBashPath(t *testing.T) {
+func TestReleaseWorkflowsUsePortableCommands(t *testing.T) {
 	t.Parallel()
 
-	for _, path := range []string{
+	testCases := []struct {
+		name      string
+		forbidden string
+	}{
+		{name: "hardened bash path", forbidden: "/usr/bin/bash"},
+		{name: "release staging mkdir", forbidden: "mkdir -- dist"},
+	}
+	paths := []string{
 		".github/workflows/release-orchestration.yml",
 		".github/workflows/release.yml",
 		".github/workflows/rolling.yml",
-	} {
-		path := path
-		t.Run(path, func(t *testing.T) {
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			workflowText := readConfig(t, path)
-			if strings.Contains(workflowText, "/usr/bin/bash") {
-				t.Fatalf("%s must use the macOS-compatible /bin/bash path for hardened shells", path)
+			for _, path := range paths {
+				workflowText := readConfig(t, path)
+				if strings.Contains(workflowText, tc.forbidden) {
+					t.Errorf("%s contains non-portable command fragment %q", path, tc.forbidden)
+				}
 			}
 		})
 	}
@@ -2845,8 +2855,8 @@ func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
 				{label: tc.resetStepName + " shell", got: resetStep.Shell, want: hardenedShell},
 			})
 			assertWorkflowStepEnv(t, resetStep, tc.resetStepName, map[string]string{"PATH": "/usr/bin:/bin"})
-			assertWorkflowStepRunContainsAll(t, resetStep, tc.resetStepName, []string{`rm -rf -- dist`, `mkdir -- dist`})
-			assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir -- dist`, "archive staging must remove checkout-provided files before recreating dist")
+			assertWorkflowStepRunContainsAll(t, resetStep, tc.resetStepName, []string{`rm -rf -- dist`, `mkdir dist`})
+			assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir dist`, "archive staging must remove checkout-provided files before recreating dist")
 
 			validateStep := job.Steps[validateIndex]
 			assertWorkflowStringValues(t, []workflowStringValue{
