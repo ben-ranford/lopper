@@ -95,9 +95,6 @@ func countRustDeclarationTokens(clause string, wanted map[string]struct{}) map[s
 func nextRustIdentifierToken(content string, searchStart int) (string, int, bool) {
 	for searchStart < len(content) {
 		r, width := utf8.DecodeRuneInString(content[searchStart:])
-		if r == utf8.RuneError && width == 0 {
-			return "", searchStart, false
-		}
 		if !isRustIdentifierStartRune(r) {
 			searchStart += width
 			continue
@@ -107,9 +104,6 @@ func nextRustIdentifierToken(content string, searchStart int) (string, int, bool
 		searchStart += width
 		for searchStart < len(content) {
 			next, nextWidth := utf8.DecodeRuneInString(content[searchStart:])
-			if next == utf8.RuneError && nextWidth == 0 {
-				break
-			}
 			if !isRustIdentifierContinueRune(next) {
 				break
 			}
