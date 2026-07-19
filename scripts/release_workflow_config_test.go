@@ -461,6 +461,65 @@ func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHisto
 	}
 }
 
+func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	const jobName = "build-vscode-extension"
+	build := workflowJobByName(t, workflow.Jobs, jobName)
+	syncIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Sync VS Code extension version")
+	resetIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Reset VS Code extension artifact staging")
+	packageIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Package VS Code extension")
+	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Upload VS Code extension artifact")
+	if resetIndex != syncIndex+1 || packageIndex != resetIndex+1 || uploadIndex != packageIndex+1 {
+		t.Fatal("VS Code release packaging must sync, reset, package, and upload in one contiguous sequence")
+	}
+
+	syncStep := build.Steps[syncIndex]
+	assertWorkflowStepRunContainsAll(t, syncStep, "VS Code extension version sync", []string{
+		`version="${RELEASE_TAG#v}"`,
+		`make sync-version VERSION="$version"`,
+	})
+
+	resetStep := build.Steps[resetIndex]
+	assertWorkflowStepRunContainsAll(t, resetStep, "VS Code extension artifact staging reset", []string{
+		`rm -rf -- dist`,
+		`mkdir -- dist`,
+	})
+	assertWorkflowStepRunOmitsAll(t, resetStep, "VS Code extension artifact staging reset", []string{"mkdir -p"})
+	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir -- dist`, "VS Code artifact staging must remove checkout-provided files before recreating dist")
+
+	packageStep := build.Steps[packageIndex]
+	const packageCommand = `npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
+	assertWorkflowStepRunContainsAll(t, packageStep, "VS Code extension package", []string{
+		`version="${RELEASE_TAG#v}"`,
+		packageCommand,
+	})
+	if strings.Count(packageStep.Run, "npx ") != 1 {
+		t.Fatal("VS Code extension packaging must run exactly one npx command after resetting artifact staging")
+	}
+
+	for _, step := range build.Steps[resetIndex:] {
+		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
+			if step.Name == packageStep.Name && repositoryCommand == "npx " && strings.Contains(step.Run, packageCommand) {
+				continue
+			}
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("VS Code release step %q must not execute repository-controlled command %q after resetting artifact staging", step.Name, repositoryCommand)
+			}
+		}
+	}
+
+	uploadStep := build.Steps[uploadIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code release artifact name", got: uploadStep.With["name"], want: "release-vscode-extension"},
+		{label: "VS Code release artifact path", got: uploadStep.With["path"], want: "dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"},
+		{label: "VS Code release artifact missing-file behavior", got: uploadStep.With["if-no-files-found"], want: "error"},
+	})
+}
+
 func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
 

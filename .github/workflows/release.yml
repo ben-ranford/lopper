@@ -225,14 +225,26 @@ jobs:
       - name: Run VS Code smoke tests
         run: xvfb-run -a make vscode-extension-test
 
+      - name: Sync VS Code extension version
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          make sync-version VERSION="$version"
+
+      - name: Reset VS Code extension artifact staging
+        run: |
+          set -euo pipefail
+          rm -rf -- dist
+          mkdir -- dist
+
       - name: Package VS Code extension
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           set -euo pipefail
-          mkdir -p dist
           version="${RELEASE_TAG#v}"
-          make sync-version VERSION="$version"
           cd extensions/vscode-lopper
           npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
@@ -240,7 +252,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-vscode-extension
-          path: dist/*.vsix
+          path: dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix
+          if-no-files-found: error
 
   build-darwin-amd64:
     needs: prepare-release
