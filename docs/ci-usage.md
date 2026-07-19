@@ -45,7 +45,7 @@ Configure the controller once:
 4. Add its private key as repository secret `QUEUE_APP_PRIVATE_KEY`.
 5. Run the `queue me` workflow manually once. This creates the `queue-me` label when it is missing and reports an empty queue successfully.
 
-If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Rebase conflicts, draft queue leaders, and fork branches without maintainer-edit permission pause the queue and update one sticky status comment on the blocking pull request. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
+If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Rebase conflicts, draft queue leaders, and all fork branches pause the queue and update one sticky status comment on the blocking pull request. Fork pull requests must be rebased manually because the repository-scoped App token cannot write to a contributor's fork. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
 
 Validate the no-credential path locally with `act workflow_dispatch -W .github/workflows/queue-me.yml --job advance --strict`; it must report the inactive-controller notice, skip token creation and API writes, and complete successfully.
 

@@ -25,6 +25,8 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"- synchronize",
 		"- converted_to_draft",
 		"- closed",
+		"- edited",
+		"- auto_merge_enabled",
 		"cancel-in-progress: false",
 		"permissions:\n  contents: read",
 		"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
@@ -42,6 +44,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"ref: process.env.TRUSTED_CONTROLLER_REF",
 		"flag: 'wx'",
 		"QUEUE_LABEL: queue-me",
+		"QUEUE_APP_SLUG: ${{ steps.queue_token.outputs.app-slug }}",
 		"require(process.env.QUEUE_CONTROLLER_PATH)",
 	}
 	for _, fragment := range required {
@@ -72,7 +75,6 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
 		"mergeMethod: SQUASH",
-		"maintainer_can_modify",
 		"left.number - right.number",
 		"COMMENT_MARKER",
 	} {

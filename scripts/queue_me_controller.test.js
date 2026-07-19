@@ -14,6 +14,7 @@ function makePull(number, overrides = {}) {
     draft: false,
     maintainer_can_modify: true,
     base: {
+      ref: 'main',
       repo: {
         name: 'lopper',
         owner: { login: 'octo' },
@@ -159,6 +160,7 @@ function makeHarness(options = {}) {
         action: options.action || 'labeled',
         label: { name: 'queue-me' },
         pull_request: eventPull,
+        sender: options.sender || { login: 'octocat', type: 'User' },
       }
     : {};
   return {
@@ -172,6 +174,7 @@ function makeHarness(options = {}) {
       core: {
         notice: (message) => calls.notices.push(message),
       },
+      queueAppSlug: options.queueAppSlug,
     },
     calls,
   };
@@ -278,16 +281,15 @@ test('removing queue-me disables auto-merge and leaves an empty queue green', as
   assert.equal(harness.calls.notices.length, 1);
 });
 
-test('drafts and unmodifiable forks pause before rebase or auto-merge', async (t) => {
+test('drafts and fork branches pause before rebase or auto-merge', async (t) => {
   const cases = [
     { name: 'draft', pull: makePull(10, { draft: true }), message: /still a draft/ },
     {
       name: 'fork',
       pull: makePull(10, {
         head: { sha: 'fork-head', repo: { full_name: 'contributor/lopper' } },
-        maintainer_can_modify: false,
       }),
-      message: /maintainers cannot rebase this fork branch/,
+      message: /queue App cannot update fork branches/,
     },
   ];
 
@@ -344,4 +346,61 @@ test('controller never merges an unverified head after auto-merge arming races a
   assert.deepEqual(harness.calls.armed, []);
   assert.deepEqual(harness.calls.merged, []);
   assert.match(harness.calls.comments[0].body, /Pull request head moved/);
+});
+
+test('changing a queued pull request away from main disables auto-merge', async () => {
+  const pull = makePull(10);
+  pull.base.ref = 'release';
+  const harness = makeHarness({
+    eventPull: pull,
+    action: 'edited',
+    initialStates: {
+      10: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(harness.calls.comments[0].body, /base changed to `release`/);
+  assert.equal(harness.calls.notices.length, 1);
+});
+
+test('manually enabling auto-merge on a follower restores queue ordering', async () => {
+  const leader = makePull(10);
+  const follower = makePull(20);
+  const harness = makeHarness({
+    pulls: [leader, follower],
+    eventPull: follower,
+    action: 'auto_merge_enabled',
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'manual', mergeMethod: 'SQUASH' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, [20]);
+  assert.deepEqual(harness.calls.armed, [10]);
+});
+
+test("the queue App's leader auto-merge event does not trigger a disable-enable loop", async () => {
+  const leader = makePull(10);
+  const harness = makeHarness({
+    pulls: [leader],
+    eventPull: leader,
+    action: 'auto_merge_enabled',
+    queueAppSlug: 'queue-app',
+    sender: { login: 'queue-app[bot]', type: 'Bot' },
+    initialStates: {
+      10: { autoMergeRequest: { enabledAt: 'controller', mergeMethod: 'SQUASH' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, []);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event/);
 });

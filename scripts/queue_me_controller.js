@@ -228,11 +228,18 @@ async function pullStateByID(github, pullRequestId) {
   return result.node;
 }
 
-async function runController({ github, context, core }) {
+async function runController({
+  github,
+  context,
+  core,
+  queueAppSlug = process.env.QUEUE_APP_SLUG,
+}) {
   const queueLabel = process.env.QUEUE_LABEL || DEFAULT_QUEUE_LABEL;
   const { owner, repo } = context.repo;
   await ensureQueueLabel(github, owner, repo, queueLabel);
 
+  const { data: repository } = await github.rest.repos.get({ owner, repo });
+  const defaultBranch = repository.default_branch;
   const eventPull = context.payload.pull_request;
   if (
     context.eventName === 'pull_request_target' &&
@@ -250,8 +257,23 @@ async function runController({ github, context, core }) {
     );
   }
 
-  const { data: repository } = await github.rest.repos.get({ owner, repo });
-  const defaultBranch = repository.default_branch;
+  if (
+    context.eventName === 'pull_request_target' &&
+    context.payload.action === 'edited' &&
+    eventPull &&
+    hasLabel(eventPull, queueLabel) &&
+    eventPull.base?.ref !== defaultBranch
+  ) {
+    await disableAutoMerge(github, owner, repo, eventPull.number);
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      eventPull.number,
+      `## Queue status\n\nQueue paused: the base changed to \`${eventPull.base?.ref || 'unknown'}\`. Automatic merge is disabled because \`${queueLabel}\` pull requests must target \`${defaultBranch}\`.`,
+    );
+  }
+
   const pulls = await github.paginate(github.rest.pulls.list, {
     owner,
     repo,
@@ -268,6 +290,16 @@ async function runController({ github, context, core }) {
   }
 
   const leader = queued[0];
+  if (
+    context.eventName === 'pull_request_target' &&
+    context.payload.action === 'auto_merge_enabled' &&
+    eventPull?.number === leader.number &&
+    queueAppSlug &&
+    context.payload.sender?.login === `${queueAppSlug}[bot]`
+  ) {
+    core.notice(`Ignoring the queue App's auto-merge event for leader #${leader.number}.`);
+    return;
+  }
   for (const follower of queued.slice(1)) {
     await disableAutoMerge(github, owner, repo, follower.number);
   }
@@ -291,13 +323,13 @@ async function runController({ github, context, core }) {
     );
     return;
   }
-  if (leader.head.repo?.full_name !== repository.full_name && !leader.maintainer_can_modify) {
+  if (leader.head.repo?.full_name !== repository.full_name) {
     await syncStatusComment(
       github,
       owner,
       repo,
       leader.number,
-      `## Queue status\n\nQueue paused: maintainers cannot rebase this fork branch. Enable maintainer edits or rebase it manually.`,
+      `## Queue status\n\nQueue paused: the repository-scoped queue App cannot update fork branches. Rebase this pull request onto \`${defaultBranch}\` manually, then remove and reapply \`${queueLabel}\`.`,
     );
     return;
   }
