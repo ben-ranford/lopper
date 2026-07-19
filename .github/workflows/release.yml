@@ -36,7 +36,7 @@ jobs:
           PATH: /usr/bin:/bin
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
           if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then
@@ -236,7 +236,7 @@ jobs:
       - name: Reset VS Code extension artifact staging
         env:
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           rm -rf -- dist
@@ -255,7 +255,7 @@ jobs:
         env:
           PATH: /usr/bin:/bin
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           expected="dist/lopper-vscode-${RELEASE_VERSION}.vsix"
@@ -328,7 +328,7 @@ jobs:
       - name: Reset Darwin amd64 artifact staging
         env:
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           rm -rf -- dist
@@ -351,7 +351,7 @@ jobs:
         env:
           PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           expected=("dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz")
@@ -445,7 +445,7 @@ jobs:
       - name: Validate feature flag release report
         env:
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           report_dir="${RUNNER_TEMP}/release-feature-report"
@@ -493,7 +493,7 @@ jobs:
       - name: Reset release publication assembly
         env:
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           assembly_root="${RUNNER_TEMP}/release-publication-assembly"
@@ -536,7 +536,7 @@ jobs:
           ASSEMBLY_ROOT: ${{ runner.temp }}/release-publication-assembly
           PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
@@ -659,7 +659,7 @@ jobs:
         env:
           VSCE_PUBLISH: ${{ secrets.VSCE_PUBLISH }}
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           if [ -n "${VSCE_PUBLISH:-}" ]; then
             /usr/bin/printf '%s\n' 'configured=true' >> "$GITHUB_OUTPUT"
@@ -817,7 +817,7 @@ jobs:
 
       - name: Validate Marketplace publication inputs
         if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
@@ -1087,7 +1087,7 @@ jobs:
 
       - name: Publish VS Code extension to Marketplace
         if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           VSCE_PAT: ${{ secrets.VSCE_PUBLISH }}
@@ -1121,7 +1121,7 @@ jobs:
         env:
           PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
@@ -1319,7 +1319,7 @@ jobs:
 
       - name: Prepare GitHub Action floating tags
         id: prepare_tags
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
@@ -1388,7 +1388,7 @@ jobs:
 
       - name: Push GitHub Action floating tags
         if: ${{ steps.prepare_tags.outputs.push == 'true' }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
@@ -1520,7 +1520,7 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@fc695c54c2032716dd4cedd007489c8e32fc8a5d
 
       - name: Clone tap repository anonymously
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
           mktemp_bin=/usr/bin/mktemp
@@ -1621,7 +1621,7 @@ jobs:
       - name: Regenerate and push formula changes
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
           curl_bin=/usr/bin/curl
@@ -1895,7 +1895,7 @@ jobs:
           path: ${{ runner.temp }}/feature-history-input
 
       - name: Prepare trusted feature history commit
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.sha }}
@@ -2005,7 +2005,7 @@ jobs:
           fi
 
       - name: Archive prepared trusted feature history worktree
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           PATH: /usr/bin:/bin
         run: |
@@ -2055,7 +2055,7 @@ jobs:
           path: ${{ runner.temp }}/prepared-feature-release-history-input
 
       - name: Validate prepared trusted feature history worktree
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           PATH: /usr/bin:/bin
         run: |
@@ -2135,7 +2135,7 @@ jobs:
           fi
 
       - name: Push feature history commit
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           RELEASE_TAG: ${{ needs.prepare-feature-release-history-push.outputs.release_tag }}
           RELEASE_SHA: ${{ needs.prepare-feature-release-history-push.outputs.release_sha }}

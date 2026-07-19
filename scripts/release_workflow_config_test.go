@@ -234,7 +234,7 @@ func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
 	resolver := preparation.Steps[0]
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "trusted main resolver id", got: resolver.ID, want: "trusted_main"},
-		{label: "trusted main resolver shell", got: resolver.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
+		{label: "trusted main resolver shell", got: resolver.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"},
 		{label: "trusted main resolver action", got: resolver.Uses, want: ""},
 		{label: "trusted main resolver condition", got: resolver.If, want: ""},
 		{label: "trusted main resolver working directory", got: resolver.WorkingDirectory, want: ""},
@@ -463,7 +463,7 @@ func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHisto
 
 func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	t.Parallel()
-	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
@@ -544,7 +544,7 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 
 func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
-	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
@@ -802,7 +802,7 @@ func TestReleaseWorkflowUsesCanonicalPublicationManifestPaths(t *testing.T) {
 
 func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
-	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
@@ -1520,7 +1520,7 @@ func assertMarketplacePreparationGate(t *testing.T, preparation workflowJobConfi
 	if len(gate.Env) != 2 || gate.Env["VSCE_PUBLISH"] != "${{ secrets.VSCE_PUBLISH }}" || gate.Env["PATH"] != "/usr/bin:/bin" {
 		t.Fatalf("Marketplace token detector env = %#v, want only the scoped token and trusted PATH", gate.Env)
 	}
-	wantShell := "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	wantShell := "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 	if gate.Shell != wantShell {
 		t.Fatalf("Marketplace token detector shell = %q, want sanitized shell", gate.Shell)
 	}
@@ -1590,7 +1590,7 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "Marketplace input validation shell",
 		got:   validateStep.Shell,
-		want:  "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}",
+		want:  "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}",
 	}})
 	assertWorkflowStepEnv(t, validateStep, "Marketplace input validation", map[string]string{
 		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
@@ -1969,7 +1969,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	prepareStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Prepare GitHub Action floating tags")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "action floating tag preparation id", got: prepareStep.ID, want: "prepare_tags"},
-		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
+		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"},
 	})
 	assertWorkflowStepEnv(t, prepareStep, "action floating tag preparation", map[string]string{
 		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
@@ -2169,7 +2169,7 @@ func TestReleaseWorkflowHomebrewPublicationUsesFreshCredentialScopedClone(t *tes
 	if len(step.Env) != 1 || step.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("privileged tap step env = %#v", step.Env)
 	}
-	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("privileged tap step shell = %q", step.Shell)
 	}
 	assertWorkflowStepRunContainsAll(t, step, "privileged tap publication step", []string{
@@ -2405,7 +2405,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
-	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("feature history commit preparation shell = %q", prepareStep.Shell)
 	}
 	if len(prepareStep.Env) != 2 || prepareStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || prepareStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
@@ -2716,9 +2716,29 @@ func TestRollingDarwinProducerPinsTrustedActions(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowsUsePortableHardenedBashPath(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		".github/workflows/release-orchestration.yml",
+		".github/workflows/release.yml",
+		".github/workflows/rolling.yml",
+	} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			workflowText := readConfig(t, path)
+			if strings.Contains(workflowText, "/usr/bin/bash") {
+				t.Fatalf("%s must use the macOS-compatible /bin/bash path for hardened shells", path)
+			}
+		})
+	}
+}
+
 func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
 	t.Parallel()
-	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
 	testCases := []struct {
 		name             string
@@ -3818,7 +3838,7 @@ func assertAnonymousValidationCloneStep(t *testing.T, job workflowJobConfig, tc 
 	if cloneStep.Uses != "" {
 		t.Fatalf("%s validation clone step must be a run step, got uses %q", tc.workflowPath, cloneStep.Uses)
 	}
-	if cloneStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if cloneStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("%s validation clone step shell = %q", tc.workflowPath, cloneStep.Shell)
 	}
 
@@ -3905,7 +3925,7 @@ func assertFreshPrivilegedTapUpdateJob(t *testing.T, jobs map[string]workflowJob
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("%s privileged tap update step HOMEBREW_TAP_TOKEN env = %q", tc.workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
-	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("%s privileged tap update step shell = %q", tc.workflowPath, pushStep.Shell)
 	}
 

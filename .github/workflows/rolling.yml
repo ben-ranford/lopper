@@ -97,7 +97,7 @@ jobs:
       - name: Reset Darwin amd64 rolling artifact staging
         env:
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           rm -rf -- dist
@@ -119,7 +119,7 @@ jobs:
         env:
           PATH: /usr/bin:/bin
           RELEASE_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           expected=("dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz")
@@ -238,7 +238,7 @@ jobs:
         env:
           NOTES_ROOT: ${{ runner.temp }}/rolling-release-notes
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           changelog="${NOTES_ROOT}/rolling-changelog.md"
@@ -301,7 +301,7 @@ jobs:
           PATH: /usr/bin:/bin
           ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
           SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           archive_root="${RUNNER_TEMP}/rolling-source-archive"
@@ -316,7 +316,7 @@ jobs:
           ARCHIVE_ROOT: ${{ runner.temp }}/rolling-source-archive
           PATH: /usr/bin:/bin
           ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           archive="${ARCHIVE_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"
@@ -362,7 +362,7 @@ jobs:
       - name: Reset rolling publication assembly
         env:
           PATH: /usr/bin:/bin
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           assembly_root="${RUNNER_TEMP}/rolling-publication-assembly"
@@ -405,7 +405,7 @@ jobs:
           ASSEMBLY_ROOT: ${{ runner.temp }}/rolling-publication-assembly
           PATH: /usr/bin:/bin
           ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           source_basename="lopper_${ROLLING_TAG}_source.tar.gz"
@@ -551,7 +551,7 @@ jobs:
         env:
           PATH: /usr/bin:/bin
           ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           source_basename="lopper_${ROLLING_TAG}_source.tar.gz"
@@ -693,7 +693,7 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@fc695c54c2032716dd4cedd007489c8e32fc8a5d
 
       - name: Clone tap repository anonymously
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
           mktemp_bin=/usr/bin/mktemp
@@ -794,7 +794,7 @@ jobs:
       - name: Regenerate and push rolling formula changes
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           git_bin=/usr/bin/git
           curl_bin=/usr/bin/curl
