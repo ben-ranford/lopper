@@ -367,6 +367,29 @@ test('changing a queued pull request away from main disables auto-merge', async 
   assert.equal(harness.calls.notices.length, 1);
 });
 
+test('non-default-base queue events disable auto-merge', async (t) => {
+  for (const action of ['labeled', 'auto_merge_enabled']) {
+    await t.test(action, async () => {
+      const pull = makePull(10);
+      pull.base.ref = 'release';
+      const harness = makeHarness({
+        eventPull: pull,
+        action,
+        initialStates: {
+          10: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+        },
+      });
+
+      await runController(harness.args);
+
+      assert.deepEqual(harness.calls.disabled, [10]);
+      assert.deepEqual(harness.calls.armed, []);
+      assert.match(harness.calls.comments[0].body, /base changed to `release`/);
+      assert.equal(harness.calls.notices.length, 1);
+    });
+  }
+});
+
 test('manually enabling auto-merge on a follower restores queue ordering', async () => {
   const leader = makePull(10);
   const follower = makePull(20);

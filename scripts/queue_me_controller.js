@@ -254,11 +254,7 @@ async function reconcileEventPull({
     );
     return;
   }
-  if (
-    context.payload.action !== 'edited' ||
-    !hasLabel(eventPull, queueLabel) ||
-    eventPull.base?.ref === defaultBranch
-  ) {
+  if (!hasLabel(eventPull, queueLabel) || eventPull.base?.ref === defaultBranch) {
     return;
   }
   await disableAutoMerge(github, owner, repo, eventPull.number);

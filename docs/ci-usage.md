@@ -39,11 +39,12 @@ The workflow uses `pull_request_target`, but it never checks out a repository tr
 
 Configure the controller once:
 
-1. Enable **Allow auto-merge** under **Settings > General > Pull Requests**. The controller relies on repository auto-merge while required checks are pending.
-2. Create and install a GitHub App on this repository with repository permissions `Contents: Read and write`, `Issues: Read and write`, `Pull requests: Read and write`, and `Workflows: Read and write`. The Workflows permission lets queued maintenance pull requests update files under `.github/workflows`.
-3. Add the App's client ID as repository variable `QUEUE_APP_CLIENT_ID`.
-4. Add its private key as repository secret `QUEUE_APP_PRIVATE_KEY`.
-5. Run the `queue me` workflow manually once. This creates the `queue-me` label when it is missing and reports an empty queue successfully.
+1. Enable **Allow squash merging** under **Settings > General > Pull Requests**. The controller always uses squash merges.
+2. Enable **Allow auto-merge** in the same settings section. The controller relies on repository auto-merge while required checks are pending.
+3. Create and install a GitHub App on this repository with repository permissions `Contents: Read and write`, `Issues: Read and write`, `Pull requests: Read and write`, and `Workflows: Read and write`. The Workflows permission lets queued maintenance pull requests update files under `.github/workflows`.
+4. Add the App's client ID as repository variable `QUEUE_APP_CLIENT_ID`.
+5. Add its private key as repository secret `QUEUE_APP_PRIVATE_KEY`.
+6. Run the `queue me` workflow manually once. This creates the `queue-me` label when it is missing and reports an empty queue successfully.
 
 If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Rebase conflicts, draft queue leaders, and all fork branches pause the queue and update one sticky status comment on the blocking pull request. Fork pull requests must be rebased manually because the repository-scoped App token cannot write to a contributor's fork. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
 
