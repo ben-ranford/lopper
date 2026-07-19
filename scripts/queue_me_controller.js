@@ -228,6 +228,59 @@ async function pullStateByID(github, pullRequestId) {
   return result.node;
 }
 
+async function reconcileEventPull({
+  github,
+  context,
+  owner,
+  repo,
+  queueLabel,
+  defaultBranch,
+  eventPull,
+}) {
+  if (!eventPull || context.eventName !== 'pull_request_target') {
+    return;
+  }
+  if (
+    context.payload.action === 'unlabeled' &&
+    context.payload.label?.name === queueLabel
+  ) {
+    await disableAutoMerge(github, owner, repo, eventPull.number);
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      eventPull.number,
+      `## Queue status\n\nRemoved from \`${queueLabel}\`; automatic merge is disabled.`,
+    );
+    return;
+  }
+  if (
+    context.payload.action !== 'edited' ||
+    !hasLabel(eventPull, queueLabel) ||
+    eventPull.base?.ref === defaultBranch
+  ) {
+    return;
+  }
+  await disableAutoMerge(github, owner, repo, eventPull.number);
+  await syncStatusComment(
+    github,
+    owner,
+    repo,
+    eventPull.number,
+    `## Queue status\n\nQueue paused: the base changed to \`${eventPull.base?.ref || 'unknown'}\`. Automatic merge is disabled because \`${queueLabel}\` pull requests must target \`${defaultBranch}\`.`,
+  );
+}
+
+function isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug }) {
+  return (
+    context.eventName === 'pull_request_target' &&
+    context.payload.action === 'auto_merge_enabled' &&
+    eventPull?.number === leader.number &&
+    queueAppSlug &&
+    context.payload.sender?.login === `${queueAppSlug}[bot]`
+  );
+}
+
 async function runController({
   github,
   context,
@@ -241,38 +294,15 @@ async function runController({
   const { data: repository } = await github.rest.repos.get({ owner, repo });
   const defaultBranch = repository.default_branch;
   const eventPull = context.payload.pull_request;
-  if (
-    context.eventName === 'pull_request_target' &&
-    context.payload.action === 'unlabeled' &&
-    context.payload.label?.name === queueLabel &&
-    eventPull
-  ) {
-    await disableAutoMerge(github, owner, repo, eventPull.number);
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      eventPull.number,
-      `## Queue status\n\nRemoved from \`${queueLabel}\`; automatic merge is disabled.`,
-    );
-  }
-
-  if (
-    context.eventName === 'pull_request_target' &&
-    context.payload.action === 'edited' &&
-    eventPull &&
-    hasLabel(eventPull, queueLabel) &&
-    eventPull.base?.ref !== defaultBranch
-  ) {
-    await disableAutoMerge(github, owner, repo, eventPull.number);
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      eventPull.number,
-      `## Queue status\n\nQueue paused: the base changed to \`${eventPull.base?.ref || 'unknown'}\`. Automatic merge is disabled because \`${queueLabel}\` pull requests must target \`${defaultBranch}\`.`,
-    );
-  }
+  await reconcileEventPull({
+    github,
+    context,
+    owner,
+    repo,
+    queueLabel,
+    defaultBranch,
+    eventPull,
+  });
 
   const pulls = await github.paginate(github.rest.pulls.list, {
     owner,
@@ -290,13 +320,7 @@ async function runController({
   }
 
   const leader = queued[0];
-  if (
-    context.eventName === 'pull_request_target' &&
-    context.payload.action === 'auto_merge_enabled' &&
-    eventPull?.number === leader.number &&
-    queueAppSlug &&
-    context.payload.sender?.login === `${queueAppSlug}[bot]`
-  ) {
+  if (isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug })) {
     core.notice(`Ignoring the queue App's auto-merge event for leader #${leader.number}.`);
     return;
   }
