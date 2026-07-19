@@ -281,27 +281,42 @@ test('removing queue-me disables auto-merge and leaves an empty queue green', as
   assert.equal(harness.calls.notices.length, 1);
 });
 
-test('drafts and fork branches pause before rebase or auto-merge', async (t) => {
+test('drafts and stale fork branches pause before rebase or auto-merge', async (t) => {
   const cases = [
     { name: 'draft', pull: makePull(10, { draft: true }), message: /still a draft/ },
     {
-      name: 'fork',
+      name: 'stale fork',
       pull: makePull(10, {
         head: { sha: 'fork-head', repo: { full_name: 'contributor/lopper' } },
       }),
-      message: /queue App cannot update fork branches/,
+      options: { comparisonStatus: 'behind' },
+      message: /queue App cannot update it/,
     },
   ];
 
   for (const scenario of cases) {
     await t.test(scenario.name, async () => {
-      const harness = makeHarness({ pulls: [scenario.pull] });
+      const harness = makeHarness({ pulls: [scenario.pull], ...scenario.options });
       await runController(harness.args);
       assert.deepEqual(harness.calls.rebased, []);
       assert.deepEqual(harness.calls.armed, []);
       assert.match(harness.calls.comments[0].body, scenario.message);
     });
   }
+});
+
+test('a current fork branch can arm auto-merge without a branch update', async () => {
+  const fork = makePull(10, {
+    head: { sha: 'fork-head', repo: { full_name: 'contributor/lopper' } },
+  });
+  const harness = makeHarness({ pulls: [fork], comparisonStatus: 'ahead' });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.rebased, []);
+  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armExpectedHeads, ['fork-head']);
+  assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
 });
 
 test('a rebase conflict pauses the queue with a bounded status message', async () => {

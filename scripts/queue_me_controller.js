@@ -117,7 +117,12 @@ async function disableAutoMerge(github, owner, repo, number) {
   );
 }
 
-async function rebaseOntoDefault(github, pull, defaultBranchSHA) {
+async function rebaseOntoDefault(
+  github,
+  pull,
+  defaultBranchSHA,
+  { canUpdateBranch = true } = {},
+) {
   const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
     owner: pull.base.repo.owner.login,
     repo: pull.base.repo.name,
@@ -125,6 +130,9 @@ async function rebaseOntoDefault(github, pull, defaultBranchSHA) {
   });
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, rebased: false };
+  }
+  if (!canUpdateBranch) {
+    return { headSHA: pull.head.sha, rebased: false, needsManualRebase: true };
   }
   const result = await github.graphql(
     `mutation RebaseQueuedPull($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
@@ -343,17 +351,6 @@ async function runController({
     );
     return;
   }
-  if (leader.head.repo?.full_name !== repository.full_name) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: the repository-scoped queue App cannot update fork branches. Rebase this pull request onto \`${defaultBranch}\` manually, then remove and reapply \`${queueLabel}\`.`,
-    );
-    return;
-  }
-
   const { data: branch } = await github.rest.repos.getBranch({
     owner,
     repo,
@@ -361,7 +358,9 @@ async function runController({
   });
   let update;
   try {
-    update = await rebaseOntoDefault(github, leader, branch.commit.sha);
+    update = await rebaseOntoDefault(github, leader, branch.commit.sha, {
+      canUpdateBranch: leader.head.repo?.full_name === repository.full_name,
+    });
   } catch (error) {
     await syncStatusComment(
       github,
@@ -371,6 +370,16 @@ async function runController({
       `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
     );
     throw error;
+  }
+  if (update.needsManualRebase) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      leader.number,
+      `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
+    );
+    return;
   }
 
   try {
