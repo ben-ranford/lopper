@@ -436,15 +436,15 @@ func TestReleaseWorkflowManualReleaseRequiresExistingReleaseAfterExplicit404(t *
 	}
 }
 
-func TestReleaseWorkflowConfinesMainSyncPATToTrustedFeatureHistoryPush(t *testing.T) {
+func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHistoryPush(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	releasePlease := workflowStepByName(t, workflow.Jobs, "prepare-release", "Run release-please")
-	if got := releasePlease.With["token"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("release-please token = %q, want RELEASE_PLEASE_TOKEN fallback to GITHUB_TOKEN", got)
+	if got := releasePlease.With["token"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
+		t.Fatalf("release-please token = %q, want RELEASE_PLEASE_TOKEN fallback to MAIN_SYNC_PAT then GITHUB_TOKEN", got)
 	}
 
 	manual := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
@@ -453,8 +453,8 @@ func TestReleaseWorkflowConfinesMainSyncPATToTrustedFeatureHistoryPush(t *testin
 	}
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
-	if got := strings.Count(workflowText, "secrets.MAIN_SYNC_PAT"); got != 1 {
-		t.Fatalf("release workflow MAIN_SYNC_PAT references = %d, want only trusted feature history push fallback", got)
+	if got := strings.Count(workflowText, "secrets.MAIN_SYNC_PAT"); got != 2 {
+		t.Fatalf("release workflow MAIN_SYNC_PAT references = %d, want release-please and trusted feature history push fallbacks only", got)
 	}
 	if !strings.Contains(workflowText, "PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}") {
 		t.Fatal("trusted feature history push must retain MAIN_SYNC_PAT fallback to GITHUB_TOKEN")
@@ -508,7 +508,7 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	want := []string{
-		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release metadata#1.with.token=${{ secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Prepare manual release#1.env.GH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-marketplace-toolchain.steps.Detect Marketplace token#1.env.VSCE_PUBLISH=${{ secrets.VSCE_PUBLISH }}",
