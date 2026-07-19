@@ -12,6 +12,7 @@ import (
 type rootedTarget struct {
 	rootAbs string
 	rel     string
+	abs     string
 }
 
 type rootedTargetPolicy int
@@ -45,7 +46,7 @@ func resolveRootedTarget(rootDir, targetPath string, policy rootedTargetPolicy) 
 		return rootedTarget{}, err
 	}
 
-	return rootedTarget{rootAbs: rootAbs, rel: rel}, nil
+	return rootedTarget{rootAbs: rootAbs, rel: rel, abs: targetAbs}, nil
 }
 
 func resolveExactFileTarget(targetPath string) (exactFileTarget, error) {

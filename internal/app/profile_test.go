@@ -112,9 +112,7 @@ func TestExecuteProfileErrorPaths(t *testing.T) {
 	}
 
 	blocker := filepath.Join(t.TempDir(), "blocker")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
+	writeBlockedFile(t, blocker)
 	req.Profile.Name = "strict"
 	req.Profile.OutputPath = filepath.Join(blocker, ".lopper.yml")
 	if _, err := application.Execute(context.Background(), req); err == nil {
@@ -126,6 +124,29 @@ func TestExecuteProfileErrorPaths(t *testing.T) {
 	req.Profile.Force = true
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected write error when output path is a directory")
+	}
+}
+
+func TestPersistProfileConfigPropagatesStatError(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocked")
+	writeBlockedFile(t, blocker)
+
+	_, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), false)
+	if err == nil {
+		t.Fatal("expected stat error under regular file")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "stat" || pathErr.Path != filepath.Join(blocker, "profile.yaml") {
+		t.Fatalf("expected propagated stat path error, got %v", err)
+	}
+}
+
+func TestPersistProfileConfigPropagatesMkdirAllError(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocked")
+	writeBlockedFile(t, blocker)
+
+	if _, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), true); err == nil {
+		t.Fatal("expected mkdir error under regular file")
 	}
 }
 

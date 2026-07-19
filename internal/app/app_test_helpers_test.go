@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +106,37 @@ func assertForwardedAnalyseRequest(t *testing.T, got analysis.Request) {
 
 func testTime() time.Time {
 	return time.Date(2026, time.February, 22, 15, 0, 0, 0, time.UTC)
+}
+
+func chdirCanonicalWorkspace(t *testing.T, workspace string) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatalf("canonicalize workspace: %v", err)
+	}
+	return canonicalWorkspace
+}
+
+func writeBlockedFile(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
 }
 
 func mustEnabledPreviewFeatureSet(t *testing.T) featureflags.Set {
