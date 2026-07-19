@@ -150,64 +150,58 @@ jobs:
           path: dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz
           if-no-files-found: error
 
-  publish-rolling:
+  prepare-rolling-source-inputs:
     needs:
       - prepare-rolling
-      - orchestrate-rolling
-      - build-darwin-amd64-rolling
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
-    outputs:
-      tag: ${{ needs.prepare-rolling.outputs.tag }}
-    env:
-      ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
-      SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
+      contents: read
     steps:
-      - name: Checkout (for changelog generation)
-        uses: actions/checkout@v7
+      - name: Checkout rolling source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          persist-credentials: false
           fetch-depth: 0
-          ref: ${{ env.SOURCE_SHA }}
+          ref: ${{ needs.prepare-rolling.outputs.source_sha }}
+
+      - name: Verify rolling source checkout
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_source_sha="$(git rev-parse HEAD)"
+          if [ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]; then
+            echo "Checked out rolling source ${actual_source_sha} does not match ${EXPECTED_SOURCE_SHA}" >&2
+            exit 1
+          fi
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
 
-      - name: Download rolling binary artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: rolling-*
-          merge-multiple: true
-          path: dist
-
-      - name: Verify Darwin artifacts are present
-        run: |
-          set -euo pipefail
-          if ! find dist -maxdepth 1 -type f -name '*_darwin_amd64.tar.gz' | grep -q .; then
-            echo "Expected darwin/amd64 artifact is missing from dist/" >&2
-            exit 1
-          fi
-          if ! find dist -maxdepth 1 -type f -name '*_darwin_arm64.tar.gz' | grep -q .; then
-            echo "Expected darwin/arm64 artifact is missing from dist/" >&2
-            exit 1
-          fi
-
       - name: Build rolling source bundle
+        env:
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
         run: |
           set -euo pipefail
-          mkdir -p dist
+          source_input_root="${RUNNER_TEMP}/rolling-source-inputs"
+          rm -rf -- "${source_input_root}"
+          mkdir -- "${source_input_root}"
           bundle="lopper_${ROLLING_TAG}_source"
-          archive_path="dist/${bundle}.tar.gz"
+          archive_path="${source_input_root}/lopper_${ROLLING_TAG}_source.tar.gz"
 
-          git archive --format=tar.gz --prefix="${bundle}/" -o "$archive_path" "$SOURCE_SHA"
-          sha256sum "$archive_path" > "${archive_path}.sha256"
+          git archive --format=tar.gz --prefix="${bundle}/" -o "${archive_path}" "${SOURCE_SHA}"
 
       - name: Generate rolling release notes
+        env:
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare-rolling.outputs.source_sha }}
         run: |
           set -euo pipefail
+          source_input_root="${RUNNER_TEMP}/rolling-source-inputs"
+          feature_report="${RUNNER_TEMP}/rolling-feature-flags.md"
           git fetch --tags --force
           previous_tag=""
           while IFS= read -r candidate; do
@@ -219,8 +213,7 @@ jobs:
 
           args=(report --channel rolling --release "${ROLLING_TAG}")
           if [ -n "${previous_tag}" ]; then
-            mkdir -p .artifacts
-            previous_catalog=".artifacts/previous-features.json"
+            previous_catalog="${RUNNER_TEMP}/previous-rolling-features.json"
             if git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
               git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
             else
@@ -228,7 +221,7 @@ jobs:
             fi
             args+=(--previous-catalog "${previous_catalog}")
           fi
-          go run ./tools/featureflag "${args[@]}" > feature-flags.md
+          go run ./tools/featureflag "${args[@]}" > "${feature_report}"
 
           {
             echo "## Rolling build from main"
@@ -240,7 +233,7 @@ jobs:
             echo "- Docker rolling tag: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lopper:rolling\`"
             echo "- Homebrew rolling formula: \`ben-ranford/tap/lopper-rolling\`"
             echo
-            cat feature-flags.md
+            cat "${feature_report}"
             echo
             if [ -n "${previous_tag}" ]; then
               echo "Changes since \`${previous_tag}\`:"
@@ -251,20 +244,357 @@ jobs:
               echo
               git log --reverse --pretty=format:'- %h %s (%an)' "${SOURCE_SHA}"
             fi
-          } > rolling-changelog.md
+          } > "${source_input_root}/rolling-changelog.md"
+
+      - name: Validate rolling source inputs
+        env:
+          PATH: /usr/bin:/bin
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+          SOURCE_INPUT_ROOT: ${{ runner.temp }}/rolling-source-inputs
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          archive="${SOURCE_INPUT_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"
+          changelog="${SOURCE_INPUT_ROOT}/rolling-changelog.md"
+          expected=("${archive}" "${changelog}")
+          if [ ! -d "${SOURCE_INPUT_ROOT}" ] || [ -L "${SOURCE_INPUT_ROOT}" ]; then
+            echo "Rolling source input root is missing or invalid" >&2
+            exit 1
+          fi
+          if find -P "${SOURCE_INPUT_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Rolling source input root contains a non-regular entry" >&2
+            exit 1
+          fi
+          file_count="$(find -P "${SOURCE_INPUT_ROOT}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne "${#expected[@]}" ]; then
+            echo "Rolling source input root must contain exactly two files" >&2
+            exit 1
+          fi
+          for input in "${expected[@]}"; do
+            if [ ! -f "${input}" ] || [ -L "${input}" ]; then
+              echo "Expected rolling source input ${input} is missing or invalid" >&2
+              exit 1
+            fi
+            if [ ! -s "${input}" ]; then
+              echo "Expected rolling source input ${input} is empty" >&2
+              exit 1
+            fi
+          done
+          if [ "$(stat --format=%s "${archive}")" -gt 1073741824 ]; then
+            echo "Rolling source archive exceeds the 1 GiB limit" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s "${changelog}")" -gt 1048576 ]; then
+            echo "Rolling changelog exceeds the 1 MiB limit" >&2
+            exit 1
+          fi
+
+      - name: Upload rolling source inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rolling-source-inputs
+          path: |
+            ${{ runner.temp }}/rolling-source-inputs/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz
+            ${{ runner.temp }}/rolling-source-inputs/rolling-changelog.md
+          if-no-files-found: error
+
+  prepare-rolling-publication:
+    needs:
+      - prepare-rolling
+      - prepare-rolling-source-inputs
+      - orchestrate-rolling
+      - build-darwin-amd64-rolling
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Reset rolling publication assembly
+        env:
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          assembly_root="${RUNNER_TEMP}/rolling-publication-assembly"
+          rm -rf -- "${assembly_root}"
+          rm -rf -- rolling-publication-inputs
+          mkdir -- "${assembly_root}"
+
+      - name: Download rolling source inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rolling-source-inputs
+          path: ${{ runner.temp }}/rolling-publication-assembly/source
+
+      - name: Download rolling Linux and Windows artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rolling-linux-windows
+          path: ${{ runner.temp }}/rolling-publication-assembly/linux-windows
+
+      - name: Download rolling Darwin arm64 artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rolling-darwin
+          path: ${{ runner.temp }}/rolling-publication-assembly/darwin-arm64
+
+      - name: Download rolling Darwin amd64 artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rolling-darwin-amd64
+          path: ${{ runner.temp }}/rolling-publication-assembly/darwin-amd64
+
+      - name: Stage bounded rolling publication inputs
+        env:
+          ASSEMBLY_ROOT: ${{ runner.temp }}/rolling-publication-assembly
+          PATH: /usr/bin:/bin
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          source_basename="lopper_${ROLLING_TAG}_source.tar.gz"
+          source_archive="${ASSEMBLY_ROOT}/source/lopper_${ROLLING_TAG}_source.tar.gz"
+          changelog="${ASSEMBLY_ROOT}/source/rolling-changelog.md"
+          linux_windows_assets=(
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_linux_amd64.tar.gz"
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_linux_arm64.tar.gz"
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_windows_amd64.zip"
+            "${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_windows_arm64.zip"
+          )
+          darwin_arm64_assets=("${ASSEMBLY_ROOT}/darwin-arm64/lopper_${ROLLING_TAG}_darwin_arm64.tar.gz")
+          darwin_amd64_assets=("${ASSEMBLY_ROOT}/darwin-amd64/lopper_${ROLLING_TAG}_darwin_amd64.tar.gz")
+          binary_assets=(
+            "${linux_windows_assets[@]}"
+            "${darwin_amd64_assets[@]}"
+            "${darwin_arm64_assets[@]}"
+          )
+          expected_assets=(
+            "dist/lopper_${ROLLING_TAG}_linux_amd64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_linux_arm64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_windows_amd64.zip"
+            "dist/lopper_${ROLLING_TAG}_windows_arm64.zip"
+            "dist/lopper_${ROLLING_TAG}_darwin_amd64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_darwin_arm64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_source.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_source.tar.gz.sha256"
+          )
+
+          validate_input_root() {
+            local root="$1"
+            local maximum_size="$2"
+            shift 2
+            local expected=("$@")
+            if [ ! -d "${root}" ] || [ -L "${root}" ]; then
+              echo "Rolling input root ${root} is missing or invalid" >&2
+              exit 1
+            fi
+            if find -P "${root}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+              echo "Rolling input root ${root} contains a non-regular entry" >&2
+              exit 1
+            fi
+            local file_count
+            file_count="$(find -P "${root}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+            if [ "${file_count}" -ne "${#expected[@]}" ]; then
+              echo "Rolling input root ${root} contains an unexpected file count" >&2
+              exit 1
+            fi
+            local input
+            for input in "${expected[@]}"; do
+              if [ ! -f "${input}" ] || [ -L "${input}" ] || [ ! -s "${input}" ]; then
+                echo "Expected rolling input ${input} is missing, invalid, or empty" >&2
+                exit 1
+              fi
+              if [ "$(stat --format=%s "${input}")" -gt "${maximum_size}" ]; then
+                echo "Rolling input ${input} exceeds its publication limit" >&2
+                exit 1
+              fi
+            done
+          }
+
+          validate_input_root "${ASSEMBLY_ROOT}/source" 1073741824 "${source_archive}" "${changelog}"
+          validate_input_root "${ASSEMBLY_ROOT}/linux-windows" 1073741824 "${linux_windows_assets[@]}"
+          validate_input_root "${ASSEMBLY_ROOT}/darwin-arm64" 1073741824 "${darwin_arm64_assets[@]}"
+          validate_input_root "${ASSEMBLY_ROOT}/darwin-amd64" 1073741824 "${darwin_amd64_assets[@]}"
+          if [ "$(stat --format=%s "${changelog}")" -gt 1048576 ]; then
+            echo "Rolling changelog exceeds the 1 MiB limit" >&2
+            exit 1
+          fi
+
+          rm -rf -- rolling-publication-inputs
+          mkdir -p rolling-publication-inputs/dist
+          cp -- "${binary_assets[@]}" rolling-publication-inputs/dist/
+          cp -- "${source_archive}" "rolling-publication-inputs/dist/${source_basename}"
+          cp -- "${changelog}" rolling-publication-inputs/rolling-changelog.md
+          (
+            cd rolling-publication-inputs/dist
+            sha256sum "${source_basename}" > "${source_basename}.sha256"
+            sha256sum --check --strict "${source_basename}.sha256"
+          )
+
+          if find -P rolling-publication-inputs -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Staged rolling publication inputs contain a non-regular entry" >&2
+            exit 1
+          fi
+          if [ "$(find -P rolling-publication-inputs -type f | wc -l | tr -d '[:space:]')" -ne 9 ]; then
+            echo "Staged rolling publication inputs must contain eight assets and one changelog" >&2
+            exit 1
+          fi
+          for asset in "${expected_assets[@]}"; do
+            asset="rolling-publication-inputs/${asset}"
+            if [ ! -f "${asset}" ] || [ -L "${asset}" ] || [ ! -s "${asset}" ]; then
+              echo "Staged rolling asset ${asset} is missing, invalid, or empty" >&2
+              exit 1
+            fi
+          done
+          if [ "$(stat --format=%s "rolling-publication-inputs/dist/${source_basename}.sha256")" -gt 4096 ]; then
+            echo "Rolling source checksum sidecar exceeds the 4 KiB limit" >&2
+            exit 1
+          fi
+          if [ ! -f rolling-publication-inputs/rolling-changelog.md ] || [ -L rolling-publication-inputs/rolling-changelog.md ] || [ ! -s rolling-publication-inputs/rolling-changelog.md ]; then
+            echo "Staged rolling changelog is missing, invalid, or empty" >&2
+            exit 1
+          fi
+          (
+            cd rolling-publication-inputs
+            manifest_inputs=("rolling-changelog.md" "${expected_assets[@]}")
+            mapfile -d '' sorted_manifest_inputs < <(printf '%s\0' "${manifest_inputs[@]}" | sort -z)
+            sha256sum "${sorted_manifest_inputs[@]}" > SHA256SUMS
+          )
+          if [ ! -s rolling-publication-inputs/SHA256SUMS ] || [ -L rolling-publication-inputs/SHA256SUMS ] ||
+            [ "$(stat --format=%s rolling-publication-inputs/SHA256SUMS)" -gt 65536 ]; then
+            echo "Rolling publication checksum manifest is missing, invalid, or oversized" >&2
+            exit 1
+          fi
+
+      - name: Upload rolling publication inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rolling-publication-inputs
+          path: rolling-publication-inputs
+          if-no-files-found: error
+
+  publish-rolling:
+    needs:
+      - prepare-rolling
+      - prepare-rolling-publication
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ needs.prepare-rolling.outputs.tag }}
+    steps:
+      - name: Download rolling publication inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rolling-publication-inputs
+          path: rolling-publication-inputs
+
+      - name: Validate rolling publication inputs
+        working-directory: rolling-publication-inputs
+        env:
+          PATH: /usr/bin:/bin
+          ROLLING_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          source_basename="lopper_${ROLLING_TAG}_source.tar.gz"
+          expected_assets=(
+            "dist/lopper_${ROLLING_TAG}_linux_amd64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_linux_arm64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_windows_amd64.zip"
+            "dist/lopper_${ROLLING_TAG}_windows_arm64.zip"
+            "dist/lopper_${ROLLING_TAG}_darwin_amd64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_darwin_arm64.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_source.tar.gz"
+            "dist/lopper_${ROLLING_TAG}_source.tar.gz.sha256"
+          )
+
+          if find . -mindepth 1 ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Rolling publication inputs contain a non-regular entry" >&2
+            exit 1
+          fi
+          if find . -mindepth 1 -maxdepth 1 ! -name dist ! -name rolling-changelog.md ! -name SHA256SUMS -print -quit | grep -q .; then
+            echo "Rolling publication inputs contain an unexpected top-level path" >&2
+            exit 1
+          fi
+          if [ "$(find . -type f | wc -l | tr -d '[:space:]')" -ne 10 ]; then
+            echo "Rolling publication inputs contain an unexpected file count" >&2
+            exit 1
+          fi
+          if [ ! -f SHA256SUMS ] || [ -L SHA256SUMS ] || [ ! -s SHA256SUMS ]; then
+            echo "Rolling publication checksum manifest is missing or invalid" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s SHA256SUMS)" -gt 65536 ]; then
+            echo "Rolling publication checksum manifest exceeds the 64 KiB limit" >&2
+            exit 1
+          fi
+          if [ ! -f rolling-changelog.md ] || [ -L rolling-changelog.md ] || [ ! -s rolling-changelog.md ]; then
+            echo "Rolling changelog is missing, invalid, or empty" >&2
+            exit 1
+          fi
+          if [ "$(stat --format=%s rolling-changelog.md)" -gt 1048576 ]; then
+            echo "Rolling changelog exceeds the 1 MiB limit" >&2
+            exit 1
+          fi
+          if [ ! -d dist ] || [ -L dist ]; then
+            echo "Rolling asset directory is missing or invalid" >&2
+            exit 1
+          fi
+          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Rolling asset directory contains a non-regular entry" >&2
+            exit 1
+          fi
+          if [ "$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -ne "${#expected_assets[@]}" ]; then
+            echo "Rolling asset directory must contain exactly eight assets" >&2
+            exit 1
+          fi
+          for asset in "${expected_assets[@]}"; do
+            if [ ! -f "${asset}" ] || [ -L "${asset}" ] || [ ! -s "${asset}" ]; then
+              echo "Expected rolling asset ${asset} is missing, invalid, or empty" >&2
+              exit 1
+            fi
+            if [ "$(stat --format=%s "${asset}")" -gt 1073741824 ]; then
+              echo "Rolling asset ${asset} exceeds the 1 GiB limit" >&2
+              exit 1
+            fi
+          done
+          if [ "$(stat --format=%s "dist/${source_basename}.sha256")" -gt 4096 ]; then
+            echo "Rolling source checksum sidecar exceeds the 4 KiB limit" >&2
+            exit 1
+          fi
+
+          (
+            cd dist
+            sha256sum --check --strict "${source_basename}.sha256"
+          )
+          computed_checksums="$(mktemp)"
+          trap 'rm -f "${computed_checksums}"' EXIT
+          manifest_inputs=("rolling-changelog.md" "${expected_assets[@]}")
+          mapfile -d '' sorted_manifest_inputs < <(printf '%s\0' "${manifest_inputs[@]}" | sort -z)
+          sha256sum "${sorted_manifest_inputs[@]}" > "${computed_checksums}"
+          if ! cmp -s SHA256SUMS "${computed_checksums}"; then
+            echo "Rolling publication checksum manifest does not cover the exact input set" >&2
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
 
       - name: Publish rolling prerelease
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e
         with:
-          tag_name: ${{ env.ROLLING_TAG }}
-          target_commitish: ${{ env.SOURCE_SHA }}
-          name: Rolling ${{ env.ROLLING_TAG }}
-          body_path: rolling-changelog.md
+          tag_name: ${{ needs.prepare-rolling.outputs.tag }}
+          target_commitish: ${{ needs.prepare-rolling.outputs.source_sha }}
+          name: Rolling ${{ needs.prepare-rolling.outputs.tag }}
+          body_path: rolling-publication-inputs/rolling-changelog.md
           prerelease: true
+          fail_on_unmatched_files: true
           files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.sha256
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_linux_amd64.tar.gz
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_linux_arm64.tar.gz
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_windows_amd64.zip
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_windows_arm64.zip
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_arm64.tar.gz
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz
+            rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz.sha256
 
   homebrew-tap-token-gate:
     needs:
