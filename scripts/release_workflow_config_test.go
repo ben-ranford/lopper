@@ -2192,6 +2192,134 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	}
 }
 
+func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
+	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+
+	testCases := []struct {
+		name             string
+		path             string
+		jobName          string
+		resetStepName    string
+		buildStepName    string
+		validateStepName string
+		uploadStepName   string
+		releaseTag       string
+		expectedRuntime  []string
+		expectedUploads  []string
+	}{
+		{
+			name:             "stable Darwin amd64",
+			path:             ".github/workflows/release.yml",
+			jobName:          "build-darwin-amd64",
+			resetStepName:    "Reset Darwin amd64 artifact staging",
+			buildStepName:    "Build Darwin amd64 release artifact",
+			validateStepName: "Validate Darwin amd64 release artifact",
+			uploadStepName:   "Upload Darwin amd64 artifacts",
+			releaseTag:       "${{ needs.prepare-release.outputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ needs.prepare-release.outputs.tag }}_darwin_amd64.tar.gz",
+			},
+		},
+		{
+			name:             "orchestrated Linux and Windows",
+			path:             ".github/workflows/release-orchestration.yml",
+			jobName:          "build-linux-windows",
+			resetStepName:    "Reset Linux/Windows artifact staging",
+			buildStepName:    "Build Linux/Windows release artifacts",
+			validateStepName: "Validate Linux/Windows release artifacts",
+			uploadStepName:   "Upload Linux/Windows artifacts",
+			releaseTag:       "${{ inputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+				`dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+				`dist/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+				`dist/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ inputs.tag }}_linux_amd64.tar.gz",
+				"dist/lopper_${{ inputs.tag }}_linux_arm64.tar.gz",
+				"dist/lopper_${{ inputs.tag }}_windows_amd64.zip",
+				"dist/lopper_${{ inputs.tag }}_windows_arm64.zip",
+			},
+		},
+		{
+			name:             "orchestrated Darwin arm64",
+			path:             ".github/workflows/release-orchestration.yml",
+			jobName:          "build-darwin",
+			resetStepName:    "Reset Darwin arm64 artifact staging",
+			buildStepName:    "Build Darwin release artifact",
+			validateStepName: "Validate Darwin arm64 release artifact",
+			uploadStepName:   "Upload Darwin artifacts",
+			releaseTag:       "${{ inputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ inputs.tag }}_darwin_arm64.tar.gz",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow workflowConfig
+			readYAMLConfig(t, tc.path, &workflow)
+			job := workflowJobByName(t, workflow.Jobs, tc.jobName)
+			resetIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.resetStepName)
+			buildIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.buildStepName)
+			validateIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.validateStepName)
+			uploadIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.uploadStepName)
+			if buildIndex != resetIndex+1 || validateIndex != buildIndex+1 || uploadIndex != validateIndex+1 {
+				t.Fatal("archive release producer must reset, build, validate, and upload in one contiguous sequence")
+			}
+
+			resetStep := job.Steps[resetIndex]
+			assertWorkflowStringValues(t, []workflowStringValue{
+				{label: tc.resetStepName + " shell", got: resetStep.Shell, want: hardenedShell},
+			})
+			assertWorkflowStepEnv(t, resetStep, tc.resetStepName, map[string]string{"PATH": "/usr/bin:/bin"})
+			assertWorkflowStepRunContainsAll(t, resetStep, tc.resetStepName, []string{`rm -rf -- dist`, `mkdir -- dist`})
+			assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir -- dist`, "archive staging must remove checkout-provided files before recreating dist")
+
+			validateStep := job.Steps[validateIndex]
+			assertWorkflowStringValues(t, []workflowStringValue{
+				{label: tc.validateStepName + " shell", got: validateStep.Shell, want: hardenedShell},
+			})
+			assertWorkflowStepEnv(t, validateStep, tc.validateStepName, map[string]string{
+				"PATH":        "/usr/bin:/bin",
+				"RELEASE_TAG": tc.releaseTag,
+			})
+			validationContract := []string{
+				`find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+				`find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l`,
+				`[ ! -f "${artifact}" ] || [ -L "${artifact}" ]`,
+				`[ ! -s "${artifact}" ]`,
+			}
+			validationContract = append(validationContract, tc.expectedRuntime...)
+			assertWorkflowStepRunContainsAll(t, validateStep, tc.validateStepName, validationContract)
+
+			uploadStep := job.Steps[uploadIndex]
+			gotUploads := strings.Split(strings.TrimSpace(uploadStep.With["path"]), "\n")
+			if !slices.Equal(gotUploads, tc.expectedUploads) {
+				t.Fatalf("%s upload paths = %#v, want %#v", tc.uploadStepName, gotUploads, tc.expectedUploads)
+			}
+			if strings.Contains(uploadStep.With["path"], "*") {
+				t.Fatalf("%s must not upload archive globs", tc.uploadStepName)
+			}
+			if uploadStep.With["if-no-files-found"] != "error" {
+				t.Fatalf("%s must fail when an expected artifact is missing", tc.uploadStepName)
+			}
+		})
+	}
+}
+
 func TestMakefileReleasePackagesRuntimeHooks(t *testing.T) {
 	t.Parallel()
 

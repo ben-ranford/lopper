@@ -316,6 +316,15 @@ jobs:
           make tools-install
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Reset Darwin amd64 artifact staging
+        env:
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          rm -rf -- dist
+          mkdir -- dist
+
       - name: Build Darwin amd64 release artifact
         env:
           TAG: ${{ needs.prepare-release.outputs.tag }}
@@ -329,13 +338,40 @@ jobs:
             RELEASE_BUILD_CHANNEL=release \
             PLATFORMS="darwin/amd64"
 
+      - name: Validate Darwin amd64 release artifact
+        env:
+          PATH: /usr/bin:/bin
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          expected=("dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz")
+          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Darwin amd64 artifact staging contains a non-regular entry" >&2
+            exit 1
+          fi
+          file_count="$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne "${#expected[@]}" ]; then
+            echo "Darwin amd64 artifact staging contains an unexpected file count" >&2
+            exit 1
+          fi
+          for artifact in "${expected[@]}"; do
+            if [ ! -f "${artifact}" ] || [ -L "${artifact}" ]; then
+              echo "Expected Darwin amd64 artifact ${artifact} is missing or not a regular file" >&2
+              exit 1
+            fi
+            if [ ! -s "${artifact}" ]; then
+              echo "Expected Darwin amd64 artifact ${artifact} is empty" >&2
+              exit 1
+            fi
+          done
+
       - name: Upload Darwin amd64 artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-darwin-amd64
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          path: dist/lopper_${{ needs.prepare-release.outputs.tag }}_darwin_amd64.tar.gz
+          if-no-files-found: error
 
   prepare-release-publication:
     needs:
