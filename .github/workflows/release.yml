@@ -948,10 +948,10 @@ jobs:
           (
             cd "${publication_dir}"
             {
-              printf '%s\n' ./feature-flags.md
-              find ./dist -maxdepth 1 -type f -print
+              printf '%s\n' feature-flags.md
+              find dist -maxdepth 1 -type f -print
             } | sort > "${expected_paths}"
-            if grep -Ev '^[0-9a-f]{64}  [.]\/(feature-flags[.]md|dist\/[A-Za-z0-9._+-]+([.]tar[.]gz|[.]zip|[.]vsix))$' SHA256SUMS | grep -q .; then
+            if grep -Ev '^[0-9a-f]{64}  (feature-flags[.]md|dist/[A-Za-z0-9._+-]+([.]tar[.]gz|[.]zip|[.]vsix))$' SHA256SUMS | grep -q .; then
               echo "Marketplace publication checksum manifest contains an unexpected path" >&2
               exit 1
             fi

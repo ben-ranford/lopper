@@ -751,6 +751,55 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
 }
 
+func TestReleaseWorkflowUsesCanonicalPublicationManifestPaths(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	assembler := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	publisher := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
+	marketplace := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+
+	const canonicalInputs = `manifest_inputs=("feature-flags.md" "${expected_assets[@]}")`
+	for name, step := range map[string]workflowStepConfig{
+		"assembler": assembler,
+		"publisher": publisher,
+	} {
+		if !strings.Contains(step.Run, canonicalInputs) {
+			t.Fatalf("%s must hash canonical publication paths without a leading ./", name)
+		}
+	}
+
+	assertWorkflowStepRunContainsAll(t, marketplace, "Marketplace canonical publication manifest paths", []string{
+		`printf '%s\n' feature-flags.md`,
+		`find dist -maxdepth 1 -type f -print`,
+	})
+	assertWorkflowStepRunOmitsAll(t, marketplace, "Marketplace canonical publication manifest paths", []string{
+		`printf '%s\n' ./feature-flags.md`,
+		`find ./dist -maxdepth 1 -type f -print`,
+		`[.]\/`,
+	})
+
+	manifestPatternMatch := regexp.MustCompile(`grep -Ev '([^']+)' SHA256SUMS`).FindStringSubmatch(marketplace.Run)
+	if len(manifestPatternMatch) != 2 {
+		t.Fatal("Marketplace validation must expose one checksum-manifest path pattern")
+	}
+	manifestPattern, err := regexp.Compile(manifestPatternMatch[1])
+	if err != nil {
+		t.Fatalf("compile Marketplace checksum-manifest path pattern: %v", err)
+	}
+	for _, line := range []string{
+		strings.Repeat("a", 64) + "  feature-flags.md",
+		strings.Repeat("b", 64) + "  dist/lopper_v1.2.3_linux_amd64.tar.gz",
+		strings.Repeat("c", 64) + "  dist/lopper-vscode-1.2.3.vsix",
+	} {
+		if !manifestPattern.MatchString(line) {
+			t.Fatalf("Marketplace checksum-manifest path pattern rejects canonical producer line %q", line)
+		}
+	}
+}
+
 func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
 	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
