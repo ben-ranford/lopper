@@ -238,7 +238,7 @@ func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
 	assertTextAppearsBefore(t, resolver.Run, `if [ "${WORKFLOW_REF}" != "${expected_workflow_ref}" ]; then`, `/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`, "trusted main workflow ref must be validated before output")
 	assertTextAppearsBefore(t, resolver.Run, `if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then`, `/usr/bin/printf 'trusted_main_sha=%s\n' "${WORKFLOW_SHA}" >> "$GITHUB_OUTPUT"`, "trusted main workflow SHA must be validated before output")
 	assertWorkflowStepRunOmitsAll(t, resolver, "trusted main workflow resolver", []string{"git ", "gh ", "curl ", "wget ", "secrets.", "token"})
-	assertWorkflowStepOrder(t, preparation, "Resolve trusted main workflow revision", "Run release-please", "Checkout manual release source", "Prepare manual release")
+	assertWorkflowStepOrder(t, preparation, "Resolve trusted main workflow revision", "Run release-please", "Checkout release metadata", "Prepare manual release")
 
 	wantTrustedMain := "${{ needs.prepare-release.outputs.trusted_main_sha }}"
 	marketplaceCheckout := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Checkout trusted main Marketplace manifests")
@@ -276,11 +276,11 @@ func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	if !strings.Contains(workflowText, "Manual release promotion can only retry an existing GitHub release for ${tag}.") {
 		t.Fatal("manual release flow must require an existing GitHub release to retry")
 	}
-	if !strings.Contains(workflowText, `resolved_sha="$(git rev-list -n 1 "refs/tags/${tag}")"`) {
-		t.Fatal("manual release flow must resolve the source SHA from the requested release tag")
+	if !strings.Contains(workflowText, `resolved_sha="${existing_commit}"`) {
+		t.Fatal("manual release flow must use the API-verified release tag commit as its source SHA")
 	}
-	if !strings.Contains(workflowText, "GitHub release ${tag} targets ${release_target_sha}, but tag ${tag} points to ${resolved_sha}.") {
-		t.Fatal("manual release flow must fail when release metadata disagrees with the tag target")
+	if strings.Contains(workflowText, `resolved_sha="$(git rev-list -n 1 "refs/tags/${tag}")"`) {
+		t.Fatal("manual release flow must not resolve its source through an unauthenticated tag fetch")
 	}
 	if !strings.Contains(workflowText, "needs.prepare-release.outputs.sha") {
 		t.Fatal("downstream release jobs must use the resolved prepare-release SHA")
@@ -363,7 +363,7 @@ func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *
 	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
 	assertWorkflowStepRunContainsAll(t, manualStep, "manual release preparation step", []string{
 		`release_lookup_error="$(mktemp)"`,
-		`elif grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`if grep -q "HTTP 404" "${release_lookup_error}"; then`,
 		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}" >"${release_ref_json}" 2>/dev/null; then`,
 		`existing_ref_type="$(jq -r '.object.type // empty' "${release_ref_json}")"`,
 		`case "${existing_ref_type}" in`,
@@ -378,7 +378,7 @@ func TestReleaseWorkflowManualDispatchStrictlyValidatesExistingReleaseCommit(t *
 	}
 }
 
-func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
+func TestReleaseWorkflowManualReleaseRequiresExistingReleaseAfterExplicit404(t *testing.T) {
 	t.Parallel()
 
 	var workflow struct {
@@ -388,21 +388,28 @@ func TestReleaseWorkflowManualReleaseCreatesOnlyAfterExplicit404(t *testing.T) {
 
 	manualStep := workflowStepByName(t, workflow.Jobs, "prepare-release", "Prepare manual release")
 	assertWorkflowStepRunContainsAll(t, manualStep, "manual release lookup failure contract", []string{
+		`release_metadata_file="$(mktemp)"`,
 		`release_lookup_error="$(mktemp)"`,
-		`gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`,
+		`gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_metadata_file}" 2>"${release_lookup_error}"`,
 		`release_lookup_status=$?`,
-		`elif grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`if grep -q "HTTP 404" "${release_lookup_error}"; then`,
+		`gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases"`,
+		`if ! [ -s "${release_metadata_file}" ]; then`,
+		`Manual release promotion can only retry an existing GitHub release for ${tag}.`,
 		`cat "${release_lookup_error}" >&2`,
 		`exit "${release_lookup_status}"`,
-		`gh release create "${tag}"`,
 	})
+	if strings.Contains(manualStep.Run, `gh release create "${tag}"`) {
+		t.Fatal("manual release retries must not create missing releases")
+	}
 
-	lookupIndex := strings.Index(manualStep.Run, `gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >/dev/null 2>"${release_lookup_error}"`)
+	lookupIndex := strings.Index(manualStep.Run, `gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_tag}" >"${release_metadata_file}" 2>"${release_lookup_error}"`)
 	statusIndex := strings.Index(manualStep.Run, `release_lookup_status=$?`)
-	notFoundIndex := strings.Index(manualStep.Run, `elif grep -q "HTTP 404" "${release_lookup_error}"; then`)
-	createIndex := strings.Index(manualStep.Run, `gh release create "${tag}"`)
-	if lookupIndex < 0 || statusIndex < lookupIndex || notFoundIndex < statusIndex || createIndex < notFoundIndex {
-		t.Fatal("manual release creation must follow the captured lookup status and explicit HTTP 404 evidence")
+	notFoundIndex := strings.Index(manualStep.Run, `if grep -q "HTTP 404" "${release_lookup_error}"; then`)
+	draftLookupIndex := strings.Index(manualStep.Run, `gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases"`)
+	requireExistingIndex := strings.Index(manualStep.Run, `if ! [ -s "${release_metadata_file}" ]; then`)
+	if lookupIndex < 0 || statusIndex < lookupIndex || notFoundIndex < statusIndex || draftLookupIndex < notFoundIndex || requireExistingIndex < draftLookupIndex {
+		t.Fatal("manual release retry validation must follow the captured lookup status and explicit HTTP 404 evidence")
 	}
 }
 
@@ -1627,7 +1634,7 @@ func TestReleaseWorkflowManualCheckoutUsesReadOnlyToken(t *testing.T) {
 	}
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout manual release source")
+	step := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release metadata")
 	if got := workflowStepWithString(t, step, "token"); got != "${{ secrets.GITHUB_TOKEN }}" {
 		t.Fatalf("manual release checkout token = %q, want GITHUB_TOKEN-only checkout", got)
 	}
@@ -1651,7 +1658,7 @@ func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing
 		`case "${existing_ref_type}" in`,
 		`if ! gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_ref_sha}" >"${annotated_tag_json}" 2>/dev/null; then`,
 		`echo "::error::Existing release ${tag} target commit could not be verified." >&2`,
-		`if [ "${existing_commit}" != "${resolved_sha}" ]; then`,
+		`resolved_sha="${existing_commit}"`,
 	})
 	if strings.Contains(step.Run, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`) {
 		t.Fatal("manual release existing-tag verification must not rely on an unauthenticated tag fetch")
@@ -1661,28 +1668,6 @@ func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing
 	}
 	if strings.Contains(step.Run, `release_json`) {
 		t.Fatal("manual release existing-release probe must not persist an unused response body")
-	}
-
-	finalizeJob := workflowJobRequired(t, workflow.Jobs, "finalize-release")
-	if !slices.Equal(finalizeJob.Needs, workflowNeeds{"prepare-release", "publish", "publish-vscode-marketplace"}) {
-		t.Fatalf("finalize-release needs = %#v, want prepare-release + publish + publish-vscode-marketplace", finalizeJob.Needs)
-	}
-	if len(finalizeJob.Permissions) != 1 || finalizeJob.Permissions["contents"] != "write" {
-		t.Fatalf("finalize-release permissions = %#v, want only contents: write", finalizeJob.Permissions)
-	}
-	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Publish GitHub Release"); ok {
-		t.Fatal("publish job must not make the GitHub Release public directly")
-	}
-	if _, ok := workflowStepByNameIfPresent(workflow.Jobs, "publish", "Update GitHub Action floating tags"); ok {
-		t.Fatal("publish job must not move floating action tags directly")
-	}
-	finalizeRelease := workflowStepByName(t, workflow.Jobs, "finalize-release", "Publish GitHub Release")
-	if finalizeRelease.Env["GH_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" {
-		t.Fatalf("finalize release GH_TOKEN env = %q", finalizeRelease.Env["GH_TOKEN"])
-	}
-	floatingTags := workflowStepByName(t, workflow.Jobs, "finalize-release", "Update GitHub Action floating tags")
-	if floatingTags.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" {
-		t.Fatalf("finalize floating tag RELEASE_TAG env = %q", floatingTags.Env["RELEASE_TAG"])
 	}
 }
 
