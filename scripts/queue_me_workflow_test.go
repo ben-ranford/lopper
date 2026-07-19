@@ -28,6 +28,8 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"- edited",
 		"- auto_merge_enabled",
 		"cancel-in-progress: false",
+		"github.event_name == 'workflow_dispatch' &&",
+		"github.ref == 'refs/heads/main'",
 		"permissions:\n  contents: read",
 		"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
 		"client-id: ${{ vars.QUEUE_APP_CLIENT_ID }}",
