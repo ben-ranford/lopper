@@ -628,29 +628,14 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`mkdir -- "${assembly_root}"`,
 	})
 	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- "${assembly_root}"`, `mkdir -- "${assembly_root}"`, "release assembly must remove prior inputs before recreating its runner-temp root")
-	downloadContracts := []struct {
-		index int
-		name  string
-		path  string
-	}{
+	downloadContracts := []workflowArtifactDownloadContract{
 		{index: reportDownloadIndex, name: "stable-feature-report", path: "${{ runner.temp }}/release-publication-assembly/feature-report"},
 		{index: linuxWindowsDownloadIndex, name: "release-linux-windows", path: "${{ runner.temp }}/release-publication-assembly/linux-windows"},
 		{index: darwinArm64DownloadIndex, name: "release-darwin", path: "${{ runner.temp }}/release-publication-assembly/darwin-arm64"},
 		{index: darwinAmd64DownloadIndex, name: "release-darwin-amd64", path: "${{ runner.temp }}/release-publication-assembly/darwin-amd64"},
 		{index: vsixDownloadIndex, name: "release-vscode-extension", path: "${{ runner.temp }}/release-publication-assembly/vscode"},
 	}
-	for _, contract := range downloadContracts {
-		download := preparation.Steps[contract.index]
-		assertWorkflowStringValues(t, []workflowStringValue{
-			{label: download.Name + " artifact name", got: download.With["name"], want: contract.name},
-			{label: download.Name + " path", got: download.With["path"], want: contract.path},
-		})
-		for _, forbidden := range []string{"pattern", "merge-multiple"} {
-			if _, ok := download.With[forbidden]; ok {
-				t.Fatalf("%s must not use with.%s", download.Name, forbidden)
-			}
-		}
-	}
+	assertExactArtifactDownloads(t, preparation.Steps, downloadContracts)
 	for _, step := range preparation.Steps {
 		if strings.Contains(step.Run, "${{ needs.") {
 			t.Fatalf("fresh release assembly step %q must bind trusted values through env instead of interpolating expressions into shell source", step.Name)
@@ -875,28 +860,13 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`rm -rf -- rolling-publication-inputs`,
 		`mkdir -- "${assembly_root}"`,
 	})
-	downloadContracts := []struct {
-		index int
-		name  string
-		path  string
-	}{
+	downloadContracts := []workflowArtifactDownloadContract{
 		{index: sourceDownloadIndex, name: "rolling-source-inputs", path: "${{ runner.temp }}/rolling-publication-assembly/source"},
 		{index: linuxWindowsDownloadIndex, name: "rolling-linux-windows", path: "${{ runner.temp }}/rolling-publication-assembly/linux-windows"},
 		{index: darwinArm64DownloadIndex, name: "rolling-darwin", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-arm64"},
 		{index: darwinAmd64DownloadIndex, name: "rolling-darwin-amd64", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-amd64"},
 	}
-	for _, contract := range downloadContracts {
-		download := preparation.Steps[contract.index]
-		assertWorkflowStringValues(t, []workflowStringValue{
-			{label: download.Name + " artifact name", got: download.With["name"], want: contract.name},
-			{label: download.Name + " path", got: download.With["path"], want: contract.path},
-		})
-		for _, forbidden := range []string{"pattern", "merge-multiple"} {
-			if _, ok := download.With[forbidden]; ok {
-				t.Fatalf("%s must not use with.%s", download.Name, forbidden)
-			}
-		}
-	}
+	assertExactArtifactDownloads(t, preparation.Steps, downloadContracts)
 	for _, step := range preparation.Steps {
 		if strings.Contains(step.Run, "${{ needs.") {
 			t.Fatalf("fresh rolling assembly step %q must bind trusted values through env", step.Name)
@@ -4012,12 +3982,35 @@ type workflowStringValue struct {
 	want  string
 }
 
+type workflowArtifactDownloadContract struct {
+	index int
+	name  string
+	path  string
+}
+
 func assertWorkflowStringValues(t *testing.T, values []workflowStringValue) {
 	t.Helper()
 
 	for _, value := range values {
 		if value.got != value.want {
 			t.Fatalf("%s = %q", value.label, value.got)
+		}
+	}
+}
+
+func assertExactArtifactDownloads(t *testing.T, steps []workflowStepConfig, contracts []workflowArtifactDownloadContract) {
+	t.Helper()
+
+	for _, contract := range contracts {
+		download := steps[contract.index]
+		assertWorkflowStringValues(t, []workflowStringValue{
+			{label: download.Name + " artifact name", got: download.With["name"], want: contract.name},
+			{label: download.Name + " path", got: download.With["path"], want: contract.path},
+		})
+		for _, forbidden := range []string{"pattern", "merge-multiple"} {
+			if _, ok := download.With[forbidden]; ok {
+				t.Fatalf("%s must not use with.%s", download.Name, forbidden)
+			}
 		}
 	}
 }
