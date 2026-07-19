@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -15,6 +16,11 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+)
+
+var (
+	workflowSecretsContextPattern    = regexp.MustCompile(`(?:^|[^a-z0-9_])secrets(?:$|[^a-z0-9_])`)
+	workflowBareGitHubContextPattern = regexp.MustCompile(`(?:^|[^a-z0-9_])github(?:$|[^a-z0-9_.\[])`)
 )
 
 type workflowInput struct {
@@ -525,6 +531,10 @@ jobs:
         env:
           ALL_SECRETS: ${{ toJson(secrets) }}
           ANCHORED_TOKEN: *anchored-token
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+          EVENT_NAME: ${{ github.event_name }}
+      - name: Explain configuration
+        run: echo "no secrets configured"
   future-publisher:
     services:
       registry:
@@ -548,6 +558,7 @@ jobs:
 		"jobs.publisher.steps.Publish#2.env.TOKEN=${{ secrets.SECOND_TOKEN }}",
 		"jobs.publisher.steps.Publish all#1.env.ALL_SECRETS=${{ toJson(secrets) }}",
 		"jobs.publisher.steps.Publish all#1.env.ANCHORED_TOKEN=${{ secrets.ALIAS_TOKEN }}",
+		"jobs.publisher.steps.Publish all#1.env.GITHUB_CONTEXT=${{ toJson(github) }}",
 	}
 	slices.Sort(want)
 
@@ -564,37 +575,47 @@ func workflowCredentialBindings(t *testing.T, workflow *yaml.Node) []string {
 		t.Fatal("workflow must define one YAML document")
 	}
 	bindings := make([]string, 0)
-	collectWorkflowCredentialBindings(workflow.Content[0], "", &bindings)
+	collectWorkflowCredentialBindings(t, workflow.Content[0], "", &bindings, make(map[*yaml.Node]bool))
 	slices.Sort(bindings)
 	return bindings
 }
 
-func collectWorkflowCredentialBindings(node *yaml.Node, path string, bindings *[]string) {
+func collectWorkflowCredentialBindings(t *testing.T, node *yaml.Node, path string, bindings *[]string, resolvingAliases map[*yaml.Node]bool) {
 	switch node.Kind {
 	case yaml.ScalarNode:
 		if workflowValueReferencesCredential(path, node.Value) {
 			*bindings = append(*bindings, path+"="+node.Value)
 		}
 	case yaml.AliasNode:
-		if node.Alias != nil {
-			collectWorkflowCredentialBindings(node.Alias, path, bindings)
-		}
+		collectWorkflowCredentialAliasBindings(t, node, path, bindings, resolvingAliases)
 	case yaml.MappingNode:
 		for index := 0; index < len(node.Content); index += 2 {
 			key := node.Content[index].Value
 			value := node.Content[index+1]
 			childPath := workflowCredentialChildPath(path, key)
 			if key == "steps" && value.Kind == yaml.SequenceNode {
-				collectWorkflowCredentialStepBindings(value, childPath, bindings)
+				collectWorkflowCredentialStepBindings(t, value, childPath, bindings, resolvingAliases)
 				continue
 			}
-			collectWorkflowCredentialBindings(value, childPath, bindings)
+			collectWorkflowCredentialBindings(t, value, childPath, bindings, resolvingAliases)
 		}
 	case yaml.SequenceNode:
 		for index, child := range node.Content {
-			collectWorkflowCredentialBindings(child, path+"["+strconv.Itoa(index)+"]", bindings)
+			collectWorkflowCredentialBindings(t, child, path+"["+strconv.Itoa(index)+"]", bindings, resolvingAliases)
 		}
 	}
+}
+
+func collectWorkflowCredentialAliasBindings(t *testing.T, alias *yaml.Node, path string, bindings *[]string, resolvingAliases map[*yaml.Node]bool) {
+	if alias.Alias == nil {
+		return
+	}
+	if resolvingAliases[alias.Alias] {
+		t.Fatalf("workflow credential alias cycle at %s", path)
+	}
+	resolvingAliases[alias.Alias] = true
+	collectWorkflowCredentialBindings(t, alias.Alias, path, bindings, resolvingAliases)
+	delete(resolvingAliases, alias.Alias)
 }
 
 func workflowCredentialChildPath(path, key string) string {
@@ -604,7 +625,7 @@ func workflowCredentialChildPath(path, key string) string {
 	return path + "." + key
 }
 
-func collectWorkflowCredentialStepBindings(steps *yaml.Node, path string, bindings *[]string) {
+func collectWorkflowCredentialStepBindings(t *testing.T, steps *yaml.Node, path string, bindings *[]string, resolvingAliases map[*yaml.Node]bool) {
 	stepNameOccurrences := make(map[string]int)
 	for _, step := range steps.Content {
 		nameNode := workflowYAMLMappingValue(step, "name")
@@ -614,7 +635,7 @@ func collectWorkflowCredentialStepBindings(steps *yaml.Node, path string, bindin
 		}
 		stepNameOccurrences[stepName]++
 		stepPath := path + "." + stepName + "#" + strconv.Itoa(stepNameOccurrences[stepName])
-		collectWorkflowCredentialBindings(step, stepPath, bindings)
+		collectWorkflowCredentialBindings(t, step, stepPath, bindings, resolvingAliases)
 	}
 }
 
@@ -640,36 +661,33 @@ func workflowYAMLMappingValue(node *yaml.Node, key string) *yaml.Node {
 }
 
 func workflowValueReferencesCredential(path, value string) bool {
-	normalized := strings.Join(strings.Fields(strings.ToLower(value)), "")
-	normalized = strings.ReplaceAll(normalized, `"`, `'`)
-	return workflowContainsContext(normalized, "secrets") ||
-		strings.Contains(normalized, "github.token") ||
-		strings.Contains(normalized, "github['token']") ||
-		(strings.HasSuffix(strings.ToLower(path), ".secrets") && normalized == "inherit")
-}
-
-func workflowContainsContext(value, context string) bool {
-	for start := 0; start < len(value); {
-		offset := strings.Index(value[start:], context)
-		if offset < 0 {
+	if strings.HasSuffix(strings.ToLower(path), ".secrets") && strings.EqualFold(strings.TrimSpace(value), "inherit") {
+		return true
+	}
+	for remainder := value; ; {
+		start := strings.Index(remainder, "${{")
+		if start < 0 {
 			return false
 		}
-		index := start + offset
-		end := index + len(context)
-		beforeBoundary := index == 0 || !workflowIdentifierByte(value[index-1])
-		afterBoundary := end == len(value) || !workflowIdentifierByte(value[end])
-		if beforeBoundary && afterBoundary {
+		remainder = remainder[start+3:]
+		end := strings.Index(remainder, "}}")
+		if end < 0 {
+			return false
+		}
+		if workflowExpressionReferencesCredential(remainder[:end]) {
 			return true
 		}
-		start = index + 1
+		remainder = remainder[end+2:]
 	}
-	return false
 }
 
-func workflowIdentifierByte(character byte) bool {
-	return character >= 'a' && character <= 'z' ||
-		character >= '0' && character <= '9' ||
-		character == '_'
+func workflowExpressionReferencesCredential(expression string) bool {
+	normalized := strings.Join(strings.Fields(strings.ToLower(expression)), "")
+	normalized = strings.ReplaceAll(normalized, `"`, `'`)
+	return workflowSecretsContextPattern.MatchString(normalized) ||
+		strings.Contains(normalized, "github.token") ||
+		strings.Contains(normalized, "github['token']") ||
+		workflowBareGitHubContextPattern.MatchString(normalized)
 }
 
 func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
