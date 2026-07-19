@@ -2066,6 +2066,441 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 	}
 }
 
+func TestHomebrewTapWorkflowsSkipAllTapJobsWithoutToken(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range homebrewTapWorkflowCases() {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t, tc)
+		})
+	}
+}
+
+func TestHomebrewTapWorkflowsUseFreshPrivilegedTapUpdateJobs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range homebrewTapWorkflowCases() {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t, tc)
+		})
+	}
+}
+
+func TestReleaseWorkflowOmitsDeadTapTokenConfiguredEnv(t *testing.T) {
+	t.Parallel()
+
+	workflowText := readConfig(t, ".github/workflows/release.yml")
+	if strings.Contains(workflowText, "HOMEBREW_TAP_TOKEN_CONFIGURED") {
+		t.Fatal("release workflow must not retain the dead HOMEBREW_TAP_TOKEN_CONFIGURED env")
+	}
+}
+
+func TestHomebrewTapWorkflowsUseImmutablePreparedSourceBindings(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range homebrewTapWorkflowCases() {
+		tc := tc
+		t.Run(tc.workflowPath, func(t *testing.T) {
+			t.Parallel()
+			assertImmutablePreparedSourceBindings(t, tc)
+		})
+	}
+}
+
+func assertImmutablePreparedSourceBindings(t *testing.T, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, tc.workflowPath, &workflow)
+
+	validationJob := workflow.Jobs[tc.validationJobName]
+	if validationJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
+		t.Fatalf("%s validation job SOURCE_SHA env = %q", tc.workflowPath, validationJob.Env["SOURCE_SHA"])
+	}
+	if validationJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
+		t.Fatalf("%s validation job FORMULA_VERSION env = %q", tc.workflowPath, validationJob.Env["FORMULA_VERSION"])
+	}
+	if validationJob.Env["SOURCE_REPO"] != "${{ github.repository }}" {
+		t.Fatalf("%s validation job SOURCE_REPO env = %q", tc.workflowPath, validationJob.Env["SOURCE_REPO"])
+	}
+	for _, deadEnv := range []string{"RELEASE_TAG", "ROLLING_TAG"} {
+		if _, ok := validationJob.Env[deadEnv]; ok {
+			t.Fatalf("%s validation job must not retain unused %s env", tc.workflowPath, deadEnv)
+		}
+	}
+	updateJob := workflow.Jobs[tc.updateJobName]
+	if updateJob.Env["SOURCE_SHA"] != tc.sourceSHAExpr {
+		t.Fatalf("%s update job SOURCE_SHA env = %q", tc.workflowPath, updateJob.Env["SOURCE_SHA"])
+	}
+	if updateJob.Env["FORMULA_VERSION"] != tc.formulaVersionExpr {
+		t.Fatalf("%s update job FORMULA_VERSION env = %q", tc.workflowPath, updateJob.Env["FORMULA_VERSION"])
+	}
+
+	assertImmutableSourceBinding(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName).Run, tc)
+	assertImmutableSourceBinding(t, tc.workflowPath, workflowStepByName(t, workflow.Jobs, tc.updateJobName, tc.pushStepName).Run, tc)
+}
+
+type homebrewTapWorkflowCase struct {
+	name               string
+	workflowPath       string
+	gateJobName        string
+	validationJobName  string
+	updateJobName      string
+	regenerateStepName string
+	pushStepName       string
+	formulaPath        string
+	sourceURLLine      string
+	formulaVersionExpr string
+	commitMessageLine  string
+	updateNeedsLine    string
+	requiredIfFragment string
+	sourceSHAExpr      string
+}
+
+func homebrewTapWorkflowCases() []homebrewTapWorkflowCase {
+	return []homebrewTapWorkflowCase{
+		{
+			name:               "release",
+			workflowPath:       ".github/workflows/release.yml",
+			gateJobName:        "homebrew-tap-token-gate",
+			validationJobName:  "validate-homebrew-tap",
+			updateJobName:      "update-homebrew-tap",
+			regenerateStepName: "Regenerate lopper formula",
+			pushStepName:       "Regenerate and push formula changes",
+			formulaPath:        "Formula/lopper.rb",
+			sourceURLLine:      `source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"`,
+			formulaVersionExpr: "${{ needs.prepare-release.outputs.version }}",
+			commitMessageLine:  `git_safe -C "${tap_repo}" commit --no-verify -m "lopper ${RELEASE_TAG}"`,
+			updateNeedsLine:    "  update-homebrew-tap:\n    needs:\n      - prepare-release\n      - publish\n      - validate-homebrew-tap",
+			requiredIfFragment: "needs.prepare-release.outputs.release_created == 'true'",
+			sourceSHAExpr:      "${{ needs.prepare-release.outputs.sha }}",
+		},
+		{
+			name:               "rolling",
+			workflowPath:       ".github/workflows/rolling.yml",
+			gateJobName:        "homebrew-tap-token-gate",
+			validationJobName:  "validate-homebrew-tap-rolling",
+			updateJobName:      "update-homebrew-tap-rolling",
+			regenerateStepName: "Regenerate lopper-rolling formula",
+			pushStepName:       "Regenerate and push rolling formula changes",
+			formulaPath:        "Formula/lopper-rolling.rb",
+			sourceURLLine:      `source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"`,
+			formulaVersionExpr: "${{ needs.prepare-rolling.outputs.tag }}",
+			commitMessageLine:  `git_safe -C "${tap_repo}" commit --no-verify -m "lopper-rolling ${ROLLING_TAG}"`,
+			updateNeedsLine:    "  update-homebrew-tap-rolling:\n    needs:\n      - prepare-rolling\n      - publish-rolling\n      - validate-homebrew-tap-rolling",
+			sourceSHAExpr:      "${{ needs.prepare-rolling.outputs.source_sha }}",
+		},
+	}
+}
+
+func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, tc.workflowPath, &workflow)
+	workflowText := readConfig(t, tc.workflowPath)
+
+	if !strings.Contains(workflowText, tc.updateNeedsLine) {
+		t.Fatalf("%s must make %s depend on the tokenless validation job", tc.workflowPath, tc.updateJobName)
+	}
+
+	assertTokenlessValidationJob(t, workflow.Jobs, tc)
+	assertFreshPrivilegedTapUpdateJob(t, workflow.Jobs, tc)
+}
+
+func assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t *testing.T, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, tc.workflowPath, &workflow)
+	workflowText := readConfig(t, tc.workflowPath)
+
+	assertTapTokenGateJob(t, workflow.Jobs, workflowText, tc)
+
+	validationJob, ok := workflow.Jobs[tc.validationJobName]
+	if !ok {
+		t.Fatalf("%s must define job %s", tc.workflowPath, tc.validationJobName)
+	}
+	if !strings.Contains(validationJob.If, "needs.homebrew-tap-token-gate.outputs.configured == 'true'") {
+		t.Fatalf("%s job %s must skip entirely when HOMEBREW_TAP_TOKEN is absent", tc.workflowPath, tc.validationJobName)
+	}
+	if tc.requiredIfFragment != "" && !strings.Contains(validationJob.If, tc.requiredIfFragment) {
+		t.Fatalf("%s job %s must preserve %q", tc.workflowPath, tc.validationJobName, tc.requiredIfFragment)
+	}
+
+	updateJob, ok := workflow.Jobs[tc.updateJobName]
+	if !ok {
+		t.Fatalf("%s must define job %s", tc.workflowPath, tc.updateJobName)
+	}
+	if !slices.Contains(updateJob.Needs, tc.validationJobName) {
+		t.Fatalf("%s job %s must depend on token-gated job %s", tc.workflowPath, tc.updateJobName, tc.validationJobName)
+	}
+	if strings.Contains(updateJob.If, "always()") {
+		t.Fatalf("%s job %s must not bypass a skipped token-gated dependency", tc.workflowPath, tc.updateJobName)
+	}
+}
+
+func assertTapTokenGateJob(t *testing.T, jobs map[string]workflowJobConfig, workflowText string, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	gateJob, ok := jobs[tc.gateJobName]
+	if !ok {
+		t.Fatalf("%s must define job %s", tc.workflowPath, tc.gateJobName)
+	}
+	if !strings.Contains(workflowText, "configured: ${{ steps.gate.outputs.configured }}") {
+		t.Fatalf("%s must expose the tap-token gate output for downstream job gating", tc.workflowPath)
+	}
+	if gateJob.Permissions == nil || len(gateJob.Permissions) != 0 {
+		t.Fatalf("%s gate job permissions = %#v, want an explicit empty permission set", tc.workflowPath, gateJob.Permissions)
+	}
+
+	gateStep := workflowStepByName(t, jobs, tc.gateJobName, "Detect tap token")
+	if gateStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
+		t.Fatalf("%s gate step must read HOMEBREW_TAP_TOKEN only inside the gate job", tc.workflowPath)
+	}
+	for _, want := range []string{
+		`if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
+		`echo "configured=true" >> "$GITHUB_OUTPUT"`,
+		`echo "configured=false" >> "$GITHUB_OUTPUT"`,
+	} {
+		if !strings.Contains(gateStep.Run, want) {
+			t.Fatalf("%s gate step must contain %q", tc.workflowPath, want)
+		}
+	}
+	if tc.requiredIfFragment != "" && !strings.Contains(gateJob.If, tc.requiredIfFragment) {
+		t.Fatalf("%s gate job must preserve %q", tc.workflowPath, tc.requiredIfFragment)
+	}
+}
+
+func assertTokenlessValidationJob(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	validationJob, ok := jobs[tc.validationJobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", tc.validationJobName)
+	}
+	assertAnonymousValidationCloneStep(t, validationJob, tc)
+	assertJobDoesNotReceiveTapToken(t, validationJob, tc)
+	assertValidationRegenerationStep(t, jobs, tc)
+}
+
+func assertAnonymousValidationCloneStep(t *testing.T, job workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		if step.Name == "Checkout tap repository" || strings.Contains(step.Uses, "actions/checkout") {
+			t.Fatalf("%s validation job must not use actions/checkout for tap validation", tc.workflowPath)
+		}
+	}
+
+	cloneStep := workflowStepByName(t, map[string]workflowJobConfig{tc.validationJobName: job}, tc.validationJobName, "Clone tap repository anonymously")
+	if cloneStep.Uses != "" {
+		t.Fatalf("%s validation clone step must be a run step, got uses %q", tc.workflowPath, cloneStep.Uses)
+	}
+	if cloneStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("%s validation clone step shell = %q", tc.workflowPath, cloneStep.Shell)
+	}
+
+	for _, want := range []string{
+		"git_bin=/usr/bin/git",
+		"mktemp_bin=/usr/bin/mktemp",
+		`export PATH=/usr/bin:/bin`,
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`trap 'rm -rf "${git_home}"' EXIT`,
+		"env -i",
+		`HOME="${git_home}"`,
+		`PATH="${PATH}"`,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		`-c core.hooksPath=/dev/null`,
+		`-c protocol.file.allow=never`,
+		`-c protocol.ext.allow=never`,
+		`clone --origin origin --branch main --single-branch`,
+		`https://github.com/ben-ranford/homebrew-tap.git homebrew-tap`,
+	} {
+		if !strings.Contains(cloneStep.Run, want) {
+			t.Fatalf("%s validation clone step must contain %q", tc.workflowPath, want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"actions/checkout",
+		"github.token",
+		"GITHUB_TOKEN",
+		"HOMEBREW_TAP_TOKEN",
+		"persist-credentials",
+		"credential.helper",
+		"http.https://github.com/.extraheader",
+		"x-access-token:",
+		"AUTHORIZATION: basic",
+	} {
+		if strings.Contains(cloneStep.Run, forbidden) {
+			t.Fatalf("%s validation clone step must not contain %q", tc.workflowPath, forbidden)
+		}
+	}
+}
+
+func assertJobDoesNotReceiveTapToken(t *testing.T, job workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, step := range job.Steps {
+		for key, value := range step.Env {
+			if strings.Contains(key, "HOMEBREW_TAP_TOKEN") || strings.Contains(value, "HOMEBREW_TAP_TOKEN") {
+				t.Fatalf("%s validation step %q must not receive HOMEBREW_TAP_TOKEN", tc.workflowPath, step.Name)
+			}
+		}
+	}
+}
+
+func assertValidationRegenerationStep(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	validationRegenerate := workflowStepByName(t, jobs, tc.validationJobName, tc.regenerateStepName)
+	for _, want := range []string{
+		tc.sourceURLLine,
+		`version "${FORMULA_VERSION}"`,
+		`cat > ` + tc.formulaPath + ` <<RUBY`,
+	} {
+		if !strings.Contains(validationRegenerate.Run, want) {
+			t.Fatalf("%s validation regenerate step must contain %q", tc.workflowPath, want)
+		}
+	}
+}
+
+func assertFreshPrivilegedTapUpdateJob(t *testing.T, jobs map[string]workflowJobConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	updateJob, ok := jobs[tc.updateJobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", tc.updateJobName)
+	}
+	for _, step := range updateJob.Steps {
+		if step.Name == "Checkout tap repository" {
+			t.Fatalf("%s privileged job must use a fresh git clone instead of actions/checkout", tc.workflowPath)
+		}
+	}
+
+	pushStep := workflowStepByName(t, jobs, tc.updateJobName, tc.pushStepName)
+	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
+		t.Fatalf("%s privileged tap update step HOMEBREW_TAP_TOKEN env = %q", tc.workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
+	}
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatalf("%s privileged tap update step shell = %q", tc.workflowPath, pushStep.Shell)
+	}
+
+	assertPrivilegedStepContainsRequiredHardening(t, pushStep, tc)
+	assertPrivilegedStepOmitsUnsafePatterns(t, pushStep, tc)
+}
+
+func assertPrivilegedStepContainsRequiredHardening(t *testing.T, pushStep workflowStepConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, want := range []string{
+		"git_bin=/usr/bin/git",
+		"curl_bin=/usr/bin/curl",
+		"sha256sum_bin=/usr/bin/sha256sum",
+		"base64_bin=/usr/bin/base64",
+		"tr_bin=/usr/bin/tr",
+		"mktemp_bin=/usr/bin/mktemp",
+		"export PATH=/usr/bin:/bin",
+		`git_home="$("${mktemp_bin}" -d)"`,
+		`work_root="$("${mktemp_bin}" -d)"`,
+		`tap_repo="${work_root}/homebrew-tap"`,
+		`trap 'rm -rf "${git_home}" "${work_root}"' EXIT`,
+		"auth_header=\"$(printf 'x-access-token:%s' \"${HOMEBREW_TAP_TOKEN}\" | \"${base64_bin}\" | \"${tr_bin}\" -d '\\n')\"",
+		"unset HOMEBREW_TAP_TOKEN",
+		"env -i",
+		`HOME="${git_home}"`,
+		`PATH="${PATH}"`,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_COUNT=5",
+		"GIT_CONFIG_KEY_4=http.https://github.com/.extraheader",
+		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
+		`git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"`,
+		tc.sourceURLLine,
+		`version "${FORMULA_VERSION}"`,
+		`cat > "${tap_repo}/` + tc.formulaPath + `" <<RUBY`,
+		`git_safe -C "${tap_repo}" add ` + tc.formulaPath,
+		`git_safe -C "${tap_repo}" diff --cached --quiet`,
+		tc.commitMessageLine,
+		`git_network -C "${tap_repo}" fetch origin main:refs/remotes/origin/main`,
+		`git_safe -C "${tap_repo}" rebase origin/main`,
+		`git_safe -C "${tap_repo}" rebase --abort || true`,
+		`git_network -C "${tap_repo}" push origin HEAD:main`,
+		"/bin/sleep 2",
+	} {
+		if !strings.Contains(pushStep.Run, want) {
+			t.Fatalf("%s privileged tap update step must contain %q", tc.workflowPath, want)
+		}
+	}
+}
+
+func assertPrivilegedStepOmitsUnsafePatterns(t *testing.T, pushStep workflowStepConfig, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"brew audit --strict --online",
+		"brew install --build-from-source",
+		"brew test ben-ranford/tap/",
+		"RUNNER_TEMP",
+		"patch_path=",
+		"commit_sha=",
+		"format-patch --stdout",
+		`am --no-verify`,
+		"FORMULA_PATCH_PATH",
+		"git remote set-url origin ",
+		"x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ben-ranford/homebrew-tap.git",
+		`-c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}"`,
+		"env -u HOMEBREW_TAP_TOKEN",
+		"git_local()",
+		"awk_bin=",
+		`if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then`,
+		"HOMEBREW_TAP_TOKEN not configured; skipping",
+	} {
+		if strings.Contains(pushStep.Run, forbidden) {
+			t.Fatalf("%s privileged tap update step must not contain %q", tc.workflowPath, forbidden)
+		}
+	}
+}
+
+func assertImmutableSourceBinding(t *testing.T, workflowPath string, run string, tc homebrewTapWorkflowCase) {
+	t.Helper()
+
+	for _, want := range []string{
+		tc.sourceURLLine,
+		`read -r source_sha _ < <`,
+		`version "${FORMULA_VERSION}"`,
+	} {
+		if !strings.Contains(run, want) {
+			t.Fatalf("%s step must contain %q", workflowPath, want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"resolve_source_tag_commit() {",
+		"ls-remote",
+		"codeload.github.com",
+		"archive/refs/tags/",
+		"refs/tags/",
+		"Source tag ",
+	} {
+		if strings.Contains(run, forbidden) {
+			t.Fatalf("%s step must not contain %q", workflowPath, forbidden)
+		}
+	}
+}
+
 func hasAutomerge(values []bool, want bool) bool {
 	for _, value := range values {
 		if value == want {
