@@ -62,6 +62,7 @@ jobs:
       - name: Checkout rolling source
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           ref: ${{ env.SOURCE_SHA }}
 
       - name: Compute build metadata
@@ -93,6 +94,15 @@ jobs:
           make tools-install
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Reset Darwin amd64 rolling artifact staging
+        env:
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          rm -rf -- dist
+          mkdir -- dist
+
       - name: Build Darwin amd64 rolling artifact
         env:
           COMMIT_SHA: ${{ steps.build_meta.outputs.commit }}
@@ -105,13 +115,40 @@ jobs:
             RELEASE_BUILD_CHANNEL=rolling \
             PLATFORMS="darwin/amd64"
 
+      - name: Validate Darwin amd64 rolling artifact
+        env:
+          PATH: /usr/bin:/bin
+          RELEASE_TAG: ${{ needs.prepare-rolling.outputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          expected=("dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz")
+          if find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "Darwin amd64 rolling artifact staging contains a non-regular entry" >&2
+            exit 1
+          fi
+          file_count="$(find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -ne "${#expected[@]}" ]; then
+            echo "Darwin amd64 rolling artifact staging contains an unexpected file count" >&2
+            exit 1
+          fi
+          for artifact in "${expected[@]}"; do
+            if [ ! -f "${artifact}" ] || [ -L "${artifact}" ]; then
+              echo "Expected Darwin amd64 rolling artifact ${artifact} is missing or not a regular file" >&2
+              exit 1
+            fi
+            if [ ! -s "${artifact}" ]; then
+              echo "Expected Darwin amd64 rolling artifact ${artifact} is empty" >&2
+              exit 1
+            fi
+          done
+
       - name: Upload Darwin amd64 rolling artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: rolling-darwin-amd64
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          path: dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz
+          if-no-files-found: error
 
   publish-rolling:
     needs:

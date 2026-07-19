@@ -2437,6 +2437,22 @@ func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
 				"dist/lopper_${{ inputs.tag }}_darwin_arm64.tar.gz",
 			},
 		},
+		{
+			name:             "rolling Darwin amd64",
+			path:             ".github/workflows/rolling.yml",
+			jobName:          "build-darwin-amd64-rolling",
+			resetStepName:    "Reset Darwin amd64 rolling artifact staging",
+			buildStepName:    "Build Darwin amd64 rolling artifact",
+			validateStepName: "Validate Darwin amd64 rolling artifact",
+			uploadStepName:   "Upload Darwin amd64 rolling artifacts",
+			releaseTag:       "${{ needs.prepare-rolling.outputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz",
+			},
+		},
 	}
 
 	for _, tc := range testCases {
