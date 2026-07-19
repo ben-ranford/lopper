@@ -503,41 +503,59 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 		"prepare-feature-release-history-push",
 		"push-feature-release-history",
 	}
-	hasCredentialReference := func(value string) bool {
-		return strings.Contains(value, "secrets.") || strings.Contains(value, "github.token")
-	}
-
-	got := make(map[string]string, len(want))
-	for _, jobName := range publicationJobs {
-		job := workflowJobByName(t, workflow.Jobs, jobName)
-		jobValues := append([]string{job.If, job.RunsOn}, mapValues(job.Env)...)
-		jobValues = append(jobValues, mapValues(job.Outputs)...)
-		for _, value := range jobValues {
-			if hasCredentialReference(value) {
-				t.Fatalf("release publication credential must not be scoped to job %q", jobName)
-			}
-		}
-		for _, step := range job.Steps {
-			unscopedValues := []string{step.If, step.Run, step.Shell, step.Uses, step.WorkingDirectory}
-			unscopedValues = append(unscopedValues, mapValues(step.With)...)
-			for _, value := range unscopedValues {
-				if hasCredentialReference(value) {
-					t.Fatalf("release publication credential must reach %s step %q only through step env", jobName, step.Name)
-				}
-			}
-			for key, value := range step.Env {
-				if !hasCredentialReference(value) {
-					continue
-				}
-				binding := jobName + "/" + step.Name + "/env." + key
-				got[binding] = value
-			}
-		}
-	}
+	got := releasePublicationCredentialBindings(t, workflow.Jobs, publicationJobs)
 
 	if !maps.Equal(got, want) {
 		t.Fatalf("release publication secret bindings = %#v, want %#v", got, want)
 	}
+}
+
+func releasePublicationCredentialBindings(t *testing.T, jobs map[string]workflowJobConfig, jobNames []string) map[string]string {
+	t.Helper()
+
+	bindings := make(map[string]string)
+	for _, jobName := range jobNames {
+		collectReleasePublicationJobCredentialBindings(t, jobName, workflowJobByName(t, jobs, jobName), bindings)
+	}
+	return bindings
+}
+
+func collectReleasePublicationJobCredentialBindings(t *testing.T, jobName string, job workflowJobConfig, bindings map[string]string) {
+	t.Helper()
+
+	jobValues := append([]string{job.If, job.RunsOn}, mapValues(job.Env)...)
+	jobValues = append(jobValues, mapValues(job.Outputs)...)
+	assertWorkflowValuesOmitCredentialReferences(t, jobValues, "release publication job "+jobName)
+	for _, step := range job.Steps {
+		collectReleasePublicationStepCredentialBindings(t, jobName, step, bindings)
+	}
+}
+
+func collectReleasePublicationStepCredentialBindings(t *testing.T, jobName string, step workflowStepConfig, bindings map[string]string) {
+	t.Helper()
+
+	unscopedValues := []string{step.If, step.Run, step.Shell, step.Uses, step.WorkingDirectory}
+	unscopedValues = append(unscopedValues, mapValues(step.With)...)
+	assertWorkflowValuesOmitCredentialReferences(t, unscopedValues, jobName+" step "+step.Name)
+	for key, value := range step.Env {
+		if workflowValueReferencesCredential(value) {
+			bindings[jobName+"/"+step.Name+"/env."+key] = value
+		}
+	}
+}
+
+func assertWorkflowValuesOmitCredentialReferences(t *testing.T, values []string, label string) {
+	t.Helper()
+
+	for _, value := range values {
+		if workflowValueReferencesCredential(value) {
+			t.Fatalf("%s must not reference a release publication credential", label)
+		}
+	}
+}
+
+func workflowValueReferencesCredential(value string) bool {
+	return strings.Contains(value, "secrets.") || strings.Contains(value, "github.token")
 }
 
 func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
