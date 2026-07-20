@@ -234,7 +234,7 @@ func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
 	resolver := preparation.Steps[0]
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "trusted main resolver id", got: resolver.ID, want: "trusted_main"},
-		{label: "trusted main resolver shell", got: resolver.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
+		{label: "trusted main resolver shell", got: resolver.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"},
 		{label: "trusted main resolver action", got: resolver.Uses, want: ""},
 		{label: "trusted main resolver condition", got: resolver.If, want: ""},
 		{label: "trusted main resolver working directory", got: resolver.WorkingDirectory, want: ""},
@@ -461,32 +461,237 @@ func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHisto
 	}
 }
 
-func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
+func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
+	const jobName = "build-vscode-extension"
+	build := workflowJobByName(t, workflow.Jobs, jobName)
+	syncIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Sync VS Code extension version")
+	resetIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Reset VS Code extension artifact staging")
+	packageIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Package VS Code extension")
+	validateIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Validate VS Code extension artifact")
+	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Upload VS Code extension artifact")
+	if resetIndex != syncIndex+1 || packageIndex != resetIndex+1 || validateIndex != packageIndex+1 || uploadIndex != validateIndex+1 {
+		t.Fatal("VS Code release packaging must sync, reset, package, validate, and upload in one contiguous sequence")
+	}
+
+	syncStep := build.Steps[syncIndex]
+	assertWorkflowStepRunContainsAll(t, syncStep, "VS Code extension version sync", []string{
+		`version="${RELEASE_TAG#v}"`,
+		`make sync-version VERSION="$version"`,
+	})
+
+	resetStep := build.Steps[resetIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension artifact staging reset shell", got: resetStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, resetStep, "VS Code extension artifact staging reset", map[string]string{"PATH": "/usr/bin:/bin"})
+	assertWorkflowStepRunContainsAll(t, resetStep, "VS Code extension artifact staging reset", []string{
+		`rm -rf -- dist`,
+		`mkdir dist`,
+	})
+	assertWorkflowStepRunOmitsAll(t, resetStep, "VS Code extension artifact staging reset", []string{"mkdir -p"})
+	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir dist`, "VS Code artifact staging must remove checkout-provided files before recreating dist")
+
+	packageStep := build.Steps[packageIndex]
+	const packageCommand = `npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
+	assertWorkflowStepRunContainsAll(t, packageStep, "VS Code extension package", []string{
+		`version="${RELEASE_TAG#v}"`,
+		packageCommand,
+	})
+	if strings.Count(packageStep.Run, "npx ") != 1 {
+		t.Fatal("VS Code extension packaging must run exactly one npx command after resetting artifact staging")
+	}
+
+	validateStep := build.Steps[validateIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension artifact validation shell", got: validateStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateStep, "VS Code extension artifact validation", map[string]string{
+		"PATH":            "/usr/bin:/bin",
+		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateStep, "VS Code extension artifact validation", []string{
+		`expected="dist/lopper-vscode-${RELEASE_VERSION}.vsix"`,
+		`find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ ! -f "${expected}" ] || [ -L "${expected}" ]`,
+		`[ ! -s "${expected}" ]`,
+		`find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l`,
+	})
+
+	for _, step := range build.Steps[resetIndex:] {
+		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
+			if step.Name == packageStep.Name && repositoryCommand == "npx " && strings.Contains(step.Run, packageCommand) {
+				continue
+			}
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("VS Code release step %q must not execute repository-controlled command %q after resetting artifact staging", step.Name, repositoryCommand)
+			}
+		}
+	}
+
+	uploadStep := build.Steps[uploadIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code release artifact name", got: uploadStep.With["name"], want: "release-vscode-extension"},
+		{label: "VS Code release artifact path", got: uploadStep.With["path"], want: "dist/lopper-vscode-${{ needs.prepare-release.outputs.version }}.vsix"},
+		{label: "VS Code release artifact missing-file behavior", got: uploadStep.With["if-no-files-found"], want: "error"},
+	})
+}
+
+func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
+	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	reportPreparation := workflowJobByName(t, workflow.Jobs, "prepare-release-feature-report")
+	assertWorkflowJobNeeds(t, reportPreparation, "release feature report preparation", workflowJobNeeds{"prepare-release"})
+	assertWorkflowJobPermissions(t, reportPreparation, "release feature report preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, reportPreparation, "release feature report preparation")
+	assertWorkflowJobOmitsText(t, reportPreparation, "secrets.", "release feature report preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, reportPreparation, "prepare-release-feature-report")
+	assertWorkflowStepOrder(t, reportPreparation, "Checkout release source", "Verify release source checkout", "Setup Go", "Generate feature flag release report", "Validate feature flag release report", "Upload feature flag release report")
+	verifySource := workflowStepByName(t, workflow.Jobs, "prepare-release-feature-report", "Verify release source checkout")
+	assertWorkflowStepEnv(t, verifySource, "release source checkout verification", map[string]string{
+		"EXPECTED_SOURCE_SHA": "${{ needs.prepare-release.outputs.sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, verifySource, "release source checkout verification", []string{
+		`actual_source_sha="$(git rev-parse HEAD)"`,
+		`[ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]`,
+	})
+
+	generateReport := workflowStepByName(t, workflow.Jobs, "prepare-release-feature-report", "Generate feature flag release report")
+	assertWorkflowStepRunContainsAll(t, generateReport, "feature flag release report generation", []string{
+		`report_dir="${RUNNER_TEMP}/release-feature-report"`,
+		`rm -rf -- "${report_dir}"`,
+		`mkdir -- "${report_dir}"`,
+		`go run ./tools/featureflag "${args[@]}" > "${report_dir}/feature-flags.md"`,
+	})
+	validateReport := workflowStepByName(t, workflow.Jobs, "prepare-release-feature-report", "Validate feature flag release report")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature report validation shell", got: validateReport.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateReport, "feature report validation", map[string]string{"PATH": "/usr/bin:/bin"})
+	assertWorkflowStepRunContainsAll(t, validateReport, "feature report validation", []string{
+		`find -P "${report_dir}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ ! -f "${report}" ] || [ -L "${report}" ]`,
+		`[ ! -s "${report}" ]`,
+		`find -P "${report_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l`,
+	})
+	reportUpload := workflowStepByName(t, workflow.Jobs, "prepare-release-feature-report", "Upload feature flag release report")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature report artifact name", got: reportUpload.With["name"], want: "stable-feature-report"},
+		{label: "feature report artifact path", got: reportUpload.With["path"], want: "${{ runner.temp }}/release-feature-report/feature-flags.md"},
+		{label: "feature report artifact missing-file behavior", got: reportUpload.With["if-no-files-found"], want: "error"},
+	})
+
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release-publication")
-	assertWorkflowJobNeeds(t, preparation, "release publication preparation", workflowJobNeeds{"prepare-release", "orchestrate-release", "build-vscode-extension", "build-darwin-amd64"})
-	assertWorkflowJobPermissions(t, preparation, "release publication preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobNeeds(t, preparation, "release publication preparation", workflowJobNeeds{"prepare-release", "prepare-release-feature-report", "orchestrate-release", "build-vscode-extension", "build-darwin-amd64"})
+	assertWorkflowJobHasExplicitEmptyPermissions(t, preparation, "release publication preparation")
+	assertWorkflowJobEnvEmpty(t, preparation, "release publication preparation")
 	assertWorkflowJobOmitsText(t, preparation, "GH_TOKEN", "release publication preparation must not receive GH_TOKEN")
 	assertWorkflowJobOmitsText(t, preparation, "secrets.", "release publication preparation must not receive secrets")
-	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, preparation, "prepare-release-publication")
+	assertWorkflowJobOmitsCheckout(t, preparation, "prepare-release-publication")
+	assertWorkflowJobStepRunsOmitAllFold(t, preparation, "release publication preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/"})
+
+	resetIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Reset release publication assembly")
+	reportDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download feature flag release report")
+	linuxWindowsDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download Linux and Windows release artifacts")
+	darwinArm64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download Darwin arm64 release artifact")
+	darwinAmd64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download Darwin amd64 release artifact")
+	vsixDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Download VS Code extension release artifact")
+	stageIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
+	if reportDownloadIndex != resetIndex+1 || linuxWindowsDownloadIndex != reportDownloadIndex+1 ||
+		darwinArm64DownloadIndex != linuxWindowsDownloadIndex+1 || darwinAmd64DownloadIndex != darwinArm64DownloadIndex+1 ||
+		vsixDownloadIndex != darwinAmd64DownloadIndex+1 {
+		t.Fatal("release inputs must be downloaded into fresh roots immediately after resetting publication assembly")
+	}
+	if stageIndex != vsixDownloadIndex+1 || uploadIndex != stageIndex+1 {
+		t.Fatal("release artifacts must be downloaded, staged, and uploaded in one contiguous sequence")
+	}
+
+	resetStep := preparation.Steps[resetIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release artifact staging reset shell", got: resetStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, resetStep, "release artifact staging reset", map[string]string{"PATH": "/usr/bin:/bin"})
+	assertWorkflowStepRunContainsAll(t, resetStep, "release artifact staging reset", []string{
+		`assembly_root="${RUNNER_TEMP}/release-publication-assembly"`,
+		`rm -rf -- "${assembly_root}"`,
+		`rm -rf -- publication-inputs`,
+		`mkdir -- "${assembly_root}"`,
+	})
+	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- "${assembly_root}"`, `mkdir -- "${assembly_root}"`, "release assembly must remove prior inputs before recreating its runner-temp root")
+	downloadContracts := []workflowArtifactDownloadContract{
+		{index: reportDownloadIndex, name: "stable-feature-report", path: "${{ runner.temp }}/release-publication-assembly/feature-report"},
+		{index: linuxWindowsDownloadIndex, name: "release-linux-windows", path: "${{ runner.temp }}/release-publication-assembly/linux-windows"},
+		{index: darwinArm64DownloadIndex, name: "release-darwin", path: "${{ runner.temp }}/release-publication-assembly/darwin-arm64"},
+		{index: darwinAmd64DownloadIndex, name: "release-darwin-amd64", path: "${{ runner.temp }}/release-publication-assembly/darwin-amd64"},
+		{index: vsixDownloadIndex, name: "release-vscode-extension", path: "${{ runner.temp }}/release-publication-assembly/vscode"},
+	}
+	assertExactArtifactDownloads(t, preparation.Steps, downloadContracts)
+	for _, step := range preparation.Steps {
+		if strings.Contains(step.Run, "${{ needs.") {
+			t.Fatalf("fresh release assembly step %q must bind trusted values through env instead of interpolating expressions into shell source", step.Name)
+		}
+	}
 
 	stageStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release publication staging shell", got: stageStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, stageStep, "release publication staging", map[string]string{
+		"ASSEMBLY_ROOT": "${{ runner.temp }}/release-publication-assembly",
+		"PATH":          "/usr/bin:/bin",
+		"RELEASE_TAG":   "${{ needs.prepare-release.outputs.tag }}",
+	})
 	assertWorkflowStepRunContainsAll(t, stageStep, "release publication staging step", []string{
-		`find dist -maxdepth 1 -type f`,
-		`lopper-vscode-${version}.vsix`,
+		`report="${ASSEMBLY_ROOT}/feature-report/feature-flags.md"`,
+		`linux_windows_assets=(`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+		`darwin_arm64_assets=("${ASSEMBLY_ROOT}/darwin-arm64/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz")`,
+		`darwin_amd64_assets=("${ASSEMBLY_ROOT}/darwin-amd64/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz")`,
+		`vsix_assets=("${ASSEMBLY_ROOT}/vscode/lopper-vscode-${version}.vsix")`,
+		`validate_input_root "${ASSEMBLY_ROOT}/feature-report" 1048576 "${report}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/linux-windows" 1073741824 "${linux_windows_assets[@]}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/darwin-arm64" 1073741824 "${darwin_arm64_assets[@]}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/darwin-amd64" 1073741824 "${darwin_amd64_assets[@]}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/vscode" 1073741824 "${vsix_assets[@]}"`,
+		`expected_assets=(`,
+		`dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+		`dist/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+		`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz`,
+		`dist/lopper-vscode-${version}.vsix`,
+		`[ ! -f "${asset}" ] || [ -L "${asset}" ]`,
+		`[ ! -s "${asset}" ]`,
 		`rm -rf -- publication-inputs`,
 		`mkdir -p publication-inputs/dist`,
-		`publication-inputs/feature-flags.md`,
-		`mapfile -d '' checksum_files`,
-		`sha256sum "${checksum_files[@]}" > SHA256SUMS`,
+		`cp -- "${report}" publication-inputs/feature-flags.md`,
+		`manifest_inputs=("feature-flags.md" "${expected_assets[@]}")`,
+		`printf '%s\0' "${manifest_inputs[@]}" | sort -z`,
+		`sha256sum "${sorted_manifest_inputs[@]}" > SHA256SUMS`,
+	})
+	assertWorkflowStepRunOmitsAll(t, stageStep, "release publication staging step", []string{
+		"Expected between 1 and 32 release assets",
+		"pattern:",
+		`-name '*.tar.gz'`,
+		`-name 'lopper-vscode-*.vsix'`,
 	})
 	assertTextAppearsBefore(t, stageStep.Run, `rm -rf -- publication-inputs`, `mkdir -p publication-inputs/dist`, "release publication staging must remove prior inputs before recreating the directory")
 	assertTextAppearsBefore(t, stageStep.Run, `mkdir -p publication-inputs/dist`, `cp -- "${assets[@]}" publication-inputs/dist/`, "release publication staging must recreate the directory before copying bounded assets")
-	assertTextAppearsBefore(t, stageStep.Run, `mkdir -p publication-inputs/dist`, `cp -- feature-flags.md publication-inputs/feature-flags.md`, "release publication staging must recreate the directory before copying the feature report")
+	assertTextAppearsBefore(t, stageStep.Run, `mkdir -p publication-inputs/dist`, `cp -- "${report}" publication-inputs/feature-flags.md`, "release publication staging must recreate the directory before copying the feature report")
 	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "release publication input artifact name", got: uploadStep.With["name"], want: "publication-inputs"},
@@ -497,8 +702,389 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	publication := workflowJobByName(t, workflow.Jobs, "publish")
 	assertWorkflowJobPermissions(t, publication, "fresh release publication", map[string]string{"contents": "write"})
 	assertWorkflowJobEnvEmpty(t, publication, "fresh release publication")
+	validateStep := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "privileged release publication validation shell", got: validateStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateStep, "privileged release publication validation", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateStep, "privileged release publication validation", []string{
+		`expected_assets=(`,
+		`dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+		`dist/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+		`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+		`dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz`,
+		`dist/lopper-vscode-${version}.vsix`,
+		`[ ! -f SHA256SUMS ] || [ -L SHA256SUMS ] || [ ! -s SHA256SUMS ]`,
+		`stat --format=%s SHA256SUMS`,
+		`manifest_inputs=("feature-flags.md" "${expected_assets[@]}")`,
+		`printf '%s\0' "${manifest_inputs[@]}" | sort -z`,
+		`sha256sum "${sorted_manifest_inputs[@]}" > "${computed_checksums}"`,
+		`cmp -s SHA256SUMS "${computed_checksums}"`,
+		`[ ! -f "${asset}" ] || [ -L "${asset}" ]`,
+		`[ ! -s "${asset}" ]`,
+	})
+	assertTextAppearsBefore(t, validateStep.Run, `stat --format=%s "${asset}"`, `sha256sum "${sorted_manifest_inputs[@]}"`, "privileged publication must bound every release asset before hashing it")
+	assertTextAppearsBefore(t, validateStep.Run, `stat --format=%s feature-flags.md`, `sha256sum "${sorted_manifest_inputs[@]}"`, "privileged publication must bound the feature report before hashing it")
+	assertTextAppearsBefore(t, validateStep.Run, `stat --format=%s SHA256SUMS`, `sha256sum "${sorted_manifest_inputs[@]}"`, "privileged publication must bound the checksum manifest before hashing release inputs")
+	assertWorkflowStepRunOmitsAll(t, validateStep, "privileged release publication validation", []string{
+		"Expected between 1 and 32 release assets",
+		`-name '*.tar.gz'`,
+		`-name 'lopper-vscode-*.vsix'`,
+	})
+	uploadAssets := workflowStepByName(t, workflow.Jobs, "publish", "Upload GitHub Release assets")
+	assertWorkflowStepRunContainsAll(t, uploadAssets, "explicit GitHub release asset upload", []string{
+		`publication-inputs/dist/lopper_${tag}_linux_amd64.tar.gz`,
+		`publication-inputs/dist/lopper_${tag}_linux_arm64.tar.gz`,
+		`publication-inputs/dist/lopper_${tag}_windows_amd64.zip`,
+		`publication-inputs/dist/lopper_${tag}_windows_arm64.zip`,
+		`publication-inputs/dist/lopper_${tag}_darwin_amd64.tar.gz`,
+		`publication-inputs/dist/lopper_${tag}_darwin_arm64.tar.gz`,
+		`publication-inputs/dist/lopper-vscode-${tag#v}.vsix`,
+	})
+	assertWorkflowStepRunOmitsAll(t, uploadAssets, "explicit GitHub release asset upload", []string{"find publication-inputs/dist", "*.tar.gz", "*.zip", "*.vsix"})
 	assertReleasePublicationCredentialScope(t, publication)
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
+}
+
+func TestReleaseWorkflowUsesCanonicalPublicationManifestPaths(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+
+	assembler := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
+	publisher := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
+	marketplace := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+
+	const canonicalInputs = `manifest_inputs=("feature-flags.md" "${expected_assets[@]}")`
+	for name, step := range map[string]workflowStepConfig{
+		"assembler": assembler,
+		"publisher": publisher,
+	} {
+		if !strings.Contains(step.Run, canonicalInputs) {
+			t.Fatalf("%s must hash canonical publication paths without a leading ./", name)
+		}
+	}
+
+	assertWorkflowStepRunContainsAll(t, marketplace, "Marketplace canonical publication manifest paths", []string{
+		`printf '%s\n' feature-flags.md`,
+		`find dist -maxdepth 1 -type f -print`,
+	})
+	assertWorkflowStepRunOmitsAll(t, marketplace, "Marketplace canonical publication manifest paths", []string{
+		`printf '%s\n' ./feature-flags.md`,
+		`find ./dist -maxdepth 1 -type f -print`,
+		`[.]\/`,
+	})
+
+	manifestPatternMatch := regexp.MustCompile(`grep -Ev '([^']+)' SHA256SUMS`).FindStringSubmatch(marketplace.Run)
+	if len(manifestPatternMatch) != 2 {
+		t.Fatal("Marketplace validation must expose one checksum-manifest path pattern")
+	}
+	manifestPattern, err := regexp.Compile(manifestPatternMatch[1])
+	if err != nil {
+		t.Fatalf("compile Marketplace checksum-manifest path pattern: %v", err)
+	}
+	for _, line := range []string{
+		strings.Repeat("a", 64) + "  feature-flags.md",
+		strings.Repeat("b", 64) + "  dist/lopper_v1.2.3_linux_amd64.tar.gz",
+		strings.Repeat("c", 64) + "  dist/lopper-vscode-1.2.3.vsix",
+	} {
+		if !manifestPattern.MatchString(line) {
+			t.Fatalf("Marketplace checksum-manifest path pattern rejects canonical producer line %q", line)
+		}
+	}
+}
+
+func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
+	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
+
+	darwinProducer := workflowJobByName(t, workflow.Jobs, "build-darwin-amd64-rolling")
+	darwinCheckout := workflowStepByName(t, workflow.Jobs, "build-darwin-amd64-rolling", "Checkout rolling source")
+	if darwinCheckout.With["persist-credentials"] != "false" {
+		t.Fatal("rolling Darwin amd64 checkout must disable persisted credentials")
+	}
+	assertWorkflowJobPermissions(t, darwinProducer, "rolling Darwin amd64 producer", map[string]string{"contents": "read"})
+
+	notesPreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-release-notes")
+	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling"})
+	assertWorkflowJobPermissions(t, notesPreparation, "rolling release note preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, notesPreparation, "rolling release note preparation")
+	assertWorkflowJobOmitsText(t, notesPreparation, "secrets.", "rolling release note preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, notesPreparation, "prepare-rolling-release-notes")
+	assertWorkflowStepOrder(t, notesPreparation, "Checkout rolling source", "Verify rolling source checkout", "Setup Go", "Generate rolling release notes", "Validate rolling release notes", "Upload rolling release notes")
+	generateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Generate rolling release notes")
+	assertWorkflowStepRunContainsAll(t, generateNotes, "rolling release note generation", []string{
+		`notes_root="${RUNNER_TEMP}/rolling-release-notes"`,
+		`rm -rf -- "${notes_root}"`,
+		`mkdir -- "${notes_root}"`,
+		`go run ./tools/featureflag "${args[@]}" > "${feature_report}"`,
+		`> "${notes_root}/rolling-changelog.md"`,
+	})
+	validateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Validate rolling release notes")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling release note validation shell",
+		got:   validateNotes.Shell,
+		want:  hardenedShell,
+	}})
+	assertWorkflowStepEnv(t, validateNotes, "rolling release note validation", map[string]string{
+		"NOTES_ROOT": "${{ runner.temp }}/rolling-release-notes",
+		"PATH":       "/usr/bin:/bin",
+	})
+	assertWorkflowStepRunContainsAll(t, validateNotes, "rolling release note validation", []string{
+		`changelog="${NOTES_ROOT}/rolling-changelog.md"`,
+		`find -P "${NOTES_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ "${file_count}" -ne 1 ]`,
+		`[ ! -f "${changelog}" ] || [ -L "${changelog}" ] || [ ! -s "${changelog}" ]`,
+		`[ "$(stat --format=%s "${changelog}")" -gt 1048576 ]`,
+	})
+	notesUpload := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Upload rolling release notes")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling release note artifact name", got: notesUpload.With["name"], want: "rolling-release-notes"},
+		{label: "rolling release note artifact path", got: notesUpload.With["path"], want: "${{ runner.temp }}/rolling-release-notes/rolling-changelog.md"},
+		{label: "rolling release note missing-file behavior", got: notesUpload.With["if-no-files-found"], want: "error"},
+	})
+
+	archivePreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-source-archive")
+	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling"})
+	assertWorkflowJobPermissions(t, archivePreparation, "rolling source archive preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, archivePreparation, "rolling source archive preparation")
+	assertWorkflowJobOmitsText(t, archivePreparation, "secrets.", "rolling source archive preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, archivePreparation, "prepare-rolling-source-archive")
+	assertWorkflowJobStepRunsOmitAllFold(t, archivePreparation, "rolling source archive preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"})
+	assertWorkflowStepOrder(t, archivePreparation, "Checkout rolling source", "Verify rolling source checkout", "Build rolling source archive", "Validate rolling source archive", "Upload rolling source archive")
+	verifySource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Verify rolling source checkout")
+	assertWorkflowStepEnv(t, verifySource, "rolling source archive checkout verification", map[string]string{
+		"EXPECTED_SOURCE_SHA": "${{ needs.prepare-rolling.outputs.source_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, verifySource, "rolling source archive checkout verification", []string{
+		`actual_source_sha="$(git rev-parse HEAD)"`,
+		`[ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]`,
+	})
+	buildSource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Build rolling source archive")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling source archive build shell",
+		got:   buildSource.Shell,
+		want:  hardenedShell,
+	}})
+	assertWorkflowStepEnv(t, buildSource, "rolling source archive", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"ROLLING_TAG": "${{ needs.prepare-rolling.outputs.tag }}",
+		"SOURCE_SHA":  "${{ needs.prepare-rolling.outputs.source_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, buildSource, "rolling source archive", []string{
+		`archive_root="${RUNNER_TEMP}/rolling-source-archive"`,
+		`rm -rf -- "${archive_root}"`,
+		`mkdir -- "${archive_root}"`,
+		`archive_path="${archive_root}/lopper_${ROLLING_TAG}_source.tar.gz"`,
+		`git archive --format=tar.gz --prefix="${bundle}/" -o "${archive_path}" "${SOURCE_SHA}"`,
+	})
+	validateSource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Validate rolling source archive")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling source archive validation shell", got: validateSource.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateSource, "rolling source archive validation", map[string]string{
+		"ARCHIVE_ROOT": "${{ runner.temp }}/rolling-source-archive",
+		"PATH":         "/usr/bin:/bin",
+		"ROLLING_TAG":  "${{ needs.prepare-rolling.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateSource, "rolling source archive validation", []string{
+		`archive="${ARCHIVE_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"`,
+		`find -P "${ARCHIVE_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ "${file_count}" -ne 1 ]`,
+		`[ ! -f "${archive}" ] || [ -L "${archive}" ] || [ ! -s "${archive}" ]`,
+		`[ "$(stat --format=%s "${archive}")" -gt 1073741824 ]`,
+	})
+	sourceUpload := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Upload rolling source archive")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling source archive artifact name", got: sourceUpload.With["name"], want: "rolling-source-archive"},
+		{label: "rolling source archive artifact path", got: sourceUpload.With["path"], want: "${{ runner.temp }}/rolling-source-archive/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz"},
+		{label: "rolling source archive missing-file behavior", got: sourceUpload.With["if-no-files-found"], want: "error"},
+	})
+	for _, step := range archivePreparation.Steps[workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Build rolling source archive")+1:] {
+		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("rolling source archive step %q must not execute repository-controlled command %q after archive creation", step.Name, repositoryCommand)
+			}
+		}
+	}
+
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-publication")
+	assertWorkflowJobNeeds(t, preparation, "rolling publication preparation", workflowJobNeeds{"prepare-rolling", "prepare-rolling-release-notes", "prepare-rolling-source-archive", "orchestrate-rolling", "build-darwin-amd64-rolling"})
+	assertWorkflowJobHasExplicitEmptyPermissions(t, preparation, "rolling publication preparation")
+	assertWorkflowJobEnvEmpty(t, preparation, "rolling publication preparation")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.", "rolling publication preparation must not receive secrets")
+	assertWorkflowJobOmitsCheckout(t, preparation, "prepare-rolling-publication")
+	assertWorkflowJobStepRunsOmitAllFold(t, preparation, "rolling publication preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "git "})
+
+	resetIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Reset rolling publication assembly")
+	sourceDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling source archive")
+	notesDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling release notes")
+	linuxWindowsDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Linux and Windows artifacts")
+	darwinArm64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Darwin arm64 artifact")
+	darwinAmd64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Darwin amd64 artifact")
+	stageIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Stage bounded rolling publication inputs")
+	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Upload rolling publication inputs")
+	if sourceDownloadIndex != resetIndex+1 || notesDownloadIndex != sourceDownloadIndex+1 || linuxWindowsDownloadIndex != notesDownloadIndex+1 ||
+		darwinArm64DownloadIndex != linuxWindowsDownloadIndex+1 || darwinAmd64DownloadIndex != darwinArm64DownloadIndex+1 ||
+		stageIndex != darwinAmd64DownloadIndex+1 || uploadIndex != stageIndex+1 {
+		t.Fatal("rolling publication inputs must reset, download exact producers, stage, and upload contiguously")
+	}
+	resetStep := preparation.Steps[resetIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling publication assembly reset shell", got: resetStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, resetStep, "rolling publication assembly reset", map[string]string{"PATH": "/usr/bin:/bin"})
+	assertWorkflowStepRunContainsAll(t, resetStep, "rolling publication assembly reset", []string{
+		`assembly_root="${RUNNER_TEMP}/rolling-publication-assembly"`,
+		`rm -rf -- "${assembly_root}"`,
+		`rm -rf -- rolling-publication-inputs`,
+		`mkdir -- "${assembly_root}"`,
+	})
+	downloadContracts := []workflowArtifactDownloadContract{
+		{index: sourceDownloadIndex, name: "rolling-source-archive", path: "${{ runner.temp }}/rolling-publication-assembly/source-archive"},
+		{index: notesDownloadIndex, name: "rolling-release-notes", path: "${{ runner.temp }}/rolling-publication-assembly/release-notes"},
+		{index: linuxWindowsDownloadIndex, name: "rolling-linux-windows", path: "${{ runner.temp }}/rolling-publication-assembly/linux-windows"},
+		{index: darwinArm64DownloadIndex, name: "rolling-darwin", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-arm64"},
+		{index: darwinAmd64DownloadIndex, name: "rolling-darwin-amd64", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-amd64"},
+	}
+	assertExactArtifactDownloads(t, preparation.Steps, downloadContracts)
+	for _, step := range preparation.Steps {
+		if strings.Contains(step.Run, "${{ needs.") {
+			t.Fatalf("fresh rolling assembly step %q must bind trusted values through env", step.Name)
+		}
+	}
+	stageStep := preparation.Steps[stageIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling publication staging shell", got: stageStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, stageStep, "rolling publication staging", map[string]string{
+		"ASSEMBLY_ROOT": "${{ runner.temp }}/rolling-publication-assembly",
+		"PATH":          "/usr/bin:/bin",
+		"ROLLING_TAG":   "${{ needs.prepare-rolling.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, stageStep, "rolling publication staging", []string{
+		`source_archive="${ASSEMBLY_ROOT}/source-archive/lopper_${ROLLING_TAG}_source.tar.gz"`,
+		`changelog="${ASSEMBLY_ROOT}/release-notes/rolling-changelog.md"`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_linux_amd64.tar.gz`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_linux_arm64.tar.gz`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_windows_amd64.zip`,
+		`${ASSEMBLY_ROOT}/linux-windows/lopper_${ROLLING_TAG}_windows_arm64.zip`,
+		`${ASSEMBLY_ROOT}/darwin-arm64/lopper_${ROLLING_TAG}_darwin_arm64.tar.gz`,
+		`${ASSEMBLY_ROOT}/darwin-amd64/lopper_${ROLLING_TAG}_darwin_amd64.tar.gz`,
+		`validate_input_root "${ASSEMBLY_ROOT}/source-archive" 1073741824 "${source_archive}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/release-notes" 1048576 "${changelog}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/linux-windows" 1073741824 "${linux_windows_assets[@]}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/darwin-arm64" 1073741824 "${darwin_arm64_assets[@]}"`,
+		`validate_input_root "${ASSEMBLY_ROOT}/darwin-amd64" 1073741824 "${darwin_amd64_assets[@]}"`,
+		`[ "$(stat --format=%s "${changelog}")" -gt 1048576 ]`,
+		`cp -- "${binary_assets[@]}" rolling-publication-inputs/dist/`,
+		`cp -- "${source_archive}" "rolling-publication-inputs/dist/${source_basename}"`,
+		`cp -- "${changelog}" rolling-publication-inputs/rolling-changelog.md`,
+		`sha256sum "${source_basename}" > "${source_basename}.sha256"`,
+		`expected_assets=(`,
+		`dist/lopper_${ROLLING_TAG}_linux_amd64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_linux_arm64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_windows_amd64.zip`,
+		`dist/lopper_${ROLLING_TAG}_windows_arm64.zip`,
+		`dist/lopper_${ROLLING_TAG}_darwin_amd64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_darwin_arm64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_source.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_source.tar.gz.sha256`,
+		`stat --format=%s "rolling-publication-inputs/dist/${source_basename}.sha256"`,
+		`manifest_inputs=("rolling-changelog.md" "${expected_assets[@]}")`,
+		`sha256sum "${sorted_manifest_inputs[@]}" > SHA256SUMS`,
+	})
+	assertWorkflowStepRunOmitsAll(t, stageStep, "rolling publication staging", []string{"*.tar.gz", "*.zip", "find dist", "pattern:"})
+	uploadInputs := preparation.Steps[uploadIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling publication input artifact name", got: uploadInputs.With["name"], want: "rolling-publication-inputs"},
+		{label: "rolling publication input artifact path", got: uploadInputs.With["path"], want: "rolling-publication-inputs"},
+		{label: "rolling publication input missing-file behavior", got: uploadInputs.With["if-no-files-found"], want: "error"},
+	})
+
+	publication := workflowJobByName(t, workflow.Jobs, "publish-rolling")
+	assertWorkflowJobNeeds(t, publication, "rolling publication", workflowJobNeeds{"prepare-rolling", "prepare-rolling-publication"})
+	assertWorkflowJobPermissions(t, publication, "rolling publication", map[string]string{"contents": "write"})
+	assertWorkflowJobEnvEmpty(t, publication, "rolling publication")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling publication tag output",
+		got:   publication.Outputs["tag"],
+		want:  "${{ needs.prepare-rolling.outputs.tag }}",
+	}})
+	assertWorkflowJobOmitsCheckout(t, publication, "publish-rolling")
+	assertWorkflowJobStepRunsOmitAllFold(t, publication, "rolling publication", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "git "})
+	assertWorkflowStepOrder(t, publication, "Download rolling publication inputs", "Validate rolling publication inputs", "Publish rolling prerelease")
+	downloadInputs := workflowStepByName(t, workflow.Jobs, "publish-rolling", "Download rolling publication inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "privileged rolling publication download name", got: downloadInputs.With["name"], want: "rolling-publication-inputs"},
+		{label: "privileged rolling publication download path", got: downloadInputs.With["path"], want: "rolling-publication-inputs"},
+	})
+	validateInputs := workflowStepByName(t, workflow.Jobs, "publish-rolling", "Validate rolling publication inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "privileged rolling publication validation shell", got: validateInputs.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateInputs, "privileged rolling publication validation", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"ROLLING_TAG": "${{ needs.prepare-rolling.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateInputs, "privileged rolling publication validation", []string{
+		`expected_assets=(`,
+		`dist/lopper_${ROLLING_TAG}_linux_amd64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_linux_arm64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_windows_amd64.zip`,
+		`dist/lopper_${ROLLING_TAG}_windows_arm64.zip`,
+		`dist/lopper_${ROLLING_TAG}_darwin_amd64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_darwin_arm64.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_source.tar.gz`,
+		`dist/lopper_${ROLLING_TAG}_source.tar.gz.sha256`,
+		`[ "$(find . -type f | wc -l | tr -d '[:space:]')" -ne 10 ]`,
+		`[ ! -f SHA256SUMS ] || [ -L SHA256SUMS ] || [ ! -s SHA256SUMS ]`,
+		`stat --format=%s SHA256SUMS`,
+		`[ ! -f rolling-changelog.md ] || [ -L rolling-changelog.md ] || [ ! -s rolling-changelog.md ]`,
+		`[ "$(stat --format=%s rolling-changelog.md)" -gt 1048576 ]`,
+		`[ ! -f "${asset}" ] || [ -L "${asset}" ] || [ ! -s "${asset}" ]`,
+		`stat --format=%s "dist/${source_basename}.sha256"`,
+		`sha256sum --check --strict "${source_basename}.sha256"`,
+		`manifest_inputs=("rolling-changelog.md" "${expected_assets[@]}")`,
+		`sha256sum "${sorted_manifest_inputs[@]}" > "${computed_checksums}"`,
+		`cmp -s SHA256SUMS "${computed_checksums}"`,
+		`sha256sum --check --strict SHA256SUMS`,
+	})
+	assertTextAppearsBefore(t, validateInputs.Run, `stat --format=%s "${asset}"`, `sha256sum --check --strict "${source_basename}.sha256"`, "rolling publisher must bound every asset before verifying checksums")
+	assertTextAppearsBefore(t, validateInputs.Run, `stat --format=%s rolling-changelog.md`, `sha256sum "${sorted_manifest_inputs[@]}"`, "rolling publisher must bound the changelog before hashing inputs")
+	publishStep := workflowStepByName(t, workflow.Jobs, "publish-rolling", "Publish rolling prerelease")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling release action", got: publishStep.Uses, want: "softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e"},
+		{label: "rolling release tag", got: publishStep.With["tag_name"], want: "${{ needs.prepare-rolling.outputs.tag }}"},
+		{label: "rolling release target", got: publishStep.With["target_commitish"], want: "${{ needs.prepare-rolling.outputs.source_sha }}"},
+		{label: "rolling release body", got: publishStep.With["body_path"], want: "rolling-publication-inputs/rolling-changelog.md"},
+		{label: "rolling unmatched-file behavior", got: publishStep.With["fail_on_unmatched_files"], want: "true"},
+	})
+	wantPublishedAssets := []string{
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_linux_amd64.tar.gz",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_linux_arm64.tar.gz",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_windows_amd64.zip",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_windows_arm64.zip",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_arm64.tar.gz",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz",
+		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz.sha256",
+	}
+	if got := strings.Split(strings.TrimSpace(publishStep.With["files"]), "\n"); !slices.Equal(got, wantPublishedAssets) {
+		t.Fatalf("rolling published assets = %#v", got)
+	}
+	if strings.Contains(publishStep.With["files"], "*") {
+		t.Fatal("rolling publication must not upload asset globs")
+	}
 }
 
 func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
@@ -539,9 +1125,14 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 		"jobs.prepare-marketplace-toolchain.steps.Checkout trusted main Marketplace manifests#1.uses",
 		"jobs.prepare-marketplace-toolchain.steps.Setup Node for Marketplace tooling#1.uses",
 		"jobs.prepare-marketplace-toolchain.steps.Upload Marketplace toolchain#1.uses",
-		"jobs.prepare-release-publication.steps.Checkout release source#1.uses",
-		"jobs.prepare-release-publication.steps.Download release artifacts#1.uses",
-		"jobs.prepare-release-publication.steps.Setup Go#1.uses",
+		"jobs.prepare-release-feature-report.steps.Checkout release source#1.uses",
+		"jobs.prepare-release-feature-report.steps.Setup Go#1.uses",
+		"jobs.prepare-release-feature-report.steps.Upload feature flag release report#1.uses",
+		"jobs.prepare-release-publication.steps.Download Darwin amd64 release artifact#1.uses",
+		"jobs.prepare-release-publication.steps.Download Darwin arm64 release artifact#1.uses",
+		"jobs.prepare-release-publication.steps.Download Linux and Windows release artifacts#1.uses",
+		"jobs.prepare-release-publication.steps.Download VS Code extension release artifact#1.uses",
+		"jobs.prepare-release-publication.steps.Download feature flag release report#1.uses",
 		"jobs.prepare-release-publication.steps.Upload release publication inputs#1.uses",
 		"jobs.prepare-release.steps.Checkout release metadata#1.uses",
 		"jobs.prepare-release.steps.Run release-please#1.uses",
@@ -796,23 +1387,29 @@ func workflowExpressionReferencesCredential(expression string) bool {
 		workflowBareGitHubContextPattern.MatchString(normalized)
 }
 
-func TestReleaseWorkflowPublicationArtifactNameAvoidsReleaseArtifactWildcard(t *testing.T) {
+func TestReleaseWorkflowDownloadsReleaseArtifactsByExactName(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
-	downloadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Download release artifacts")
-	uploadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Upload release publication inputs")
-
-	pattern := downloadStep.With["pattern"]
-	artifactName := uploadStep.With["name"]
-	matched, err := filepath.Match(pattern, artifactName)
-	if err != nil {
-		t.Fatalf("release artifact download pattern %q is invalid: %v", pattern, err)
+	expectedArtifacts := map[string]string{
+		"Download feature flag release report":         "stable-feature-report",
+		"Download Linux and Windows release artifacts": "release-linux-windows",
+		"Download Darwin arm64 release artifact":       "release-darwin",
+		"Download Darwin amd64 release artifact":       "release-darwin-amd64",
+		"Download VS Code extension release artifact":  "release-vscode-extension",
 	}
-	if matched {
-		t.Fatalf("release publication input artifact %q must not match release artifact download pattern %q", artifactName, pattern)
+	for stepName, artifactName := range expectedArtifacts {
+		downloadStep := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", stepName)
+		if downloadStep.With["name"] != artifactName {
+			t.Fatalf("%s artifact name = %q", stepName, downloadStep.With["name"])
+		}
+		for _, forbidden := range []string{"pattern", "merge-multiple"} {
+			if _, ok := downloadStep.With[forbidden]; ok {
+				t.Fatalf("%s must not use with.%s", stepName, forbidden)
+			}
+		}
 	}
 }
 
@@ -923,7 +1520,7 @@ func assertMarketplacePreparationGate(t *testing.T, preparation workflowJobConfi
 	if len(gate.Env) != 2 || gate.Env["VSCE_PUBLISH"] != "${{ secrets.VSCE_PUBLISH }}" || gate.Env["PATH"] != "/usr/bin:/bin" {
 		t.Fatalf("Marketplace token detector env = %#v, want only the scoped token and trusted PATH", gate.Env)
 	}
-	wantShell := "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"
+	wantShell := "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 	if gate.Shell != wantShell {
 		t.Fatalf("Marketplace token detector shell = %q, want sanitized shell", gate.Shell)
 	}
@@ -993,7 +1590,7 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "Marketplace input validation shell",
 		got:   validateStep.Shell,
-		want:  "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}",
+		want:  "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}",
 	}})
 	assertWorkflowStepEnv(t, validateStep, "Marketplace input validation", map[string]string{
 		"RELEASE_VERSION": "${{ needs.prepare-release.outputs.version }}",
@@ -1372,7 +1969,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	prepareStep := workflowStepByName(t, workflow.Jobs, "finalize-release", "Prepare GitHub Action floating tags")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "action floating tag preparation id", got: prepareStep.ID, want: "prepare_tags"},
-		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}"},
+		{label: "action floating tag preparation shell", got: prepareStep.Shell, want: "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"},
 	})
 	assertWorkflowStepEnv(t, prepareStep, "action floating tag preparation", map[string]string{
 		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
@@ -1572,7 +2169,7 @@ func TestReleaseWorkflowHomebrewPublicationUsesFreshCredentialScopedClone(t *tes
 	if len(step.Env) != 1 || step.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("privileged tap step env = %#v", step.Env)
 	}
-	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if step.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("privileged tap step shell = %q", step.Shell)
 	}
 	assertWorkflowStepRunContainsAll(t, step, "privileged tap publication step", []string{
@@ -1808,7 +2405,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
-	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("feature history commit preparation shell = %q", prepareStep.Shell)
 	}
 	if len(prepareStep.Env) != 2 || prepareStep.Env["RELEASE_TAG"] != "${{ needs.prepare-release.outputs.tag }}" || prepareStep.Env["RELEASE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
@@ -2086,6 +2683,208 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 			wantCheck := `host_goarch}" != "` + tc.expectedArch + `"`
 			if !strings.Contains(workflowText, wantCheck) {
 				t.Fatalf("%s must fail early unless GOARCH is %s", tc.path, tc.expectedArch)
+			}
+		})
+	}
+}
+
+func TestRollingDarwinProducerPinsTrustedActions(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
+
+	testCases := []struct {
+		stepName string
+		wantUses string
+	}{
+		{
+			stepName: "Checkout rolling source",
+			wantUses: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+		},
+		{
+			stepName: "Setup Go",
+			wantUses: "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
+		},
+	}
+
+	for _, tc := range testCases {
+		step := workflowStepByName(t, workflow.Jobs, "build-darwin-amd64-rolling", tc.stepName)
+		if step.Uses != tc.wantUses {
+			t.Errorf("rolling Darwin producer step %q uses %q, want %q", tc.stepName, step.Uses, tc.wantUses)
+		}
+	}
+}
+
+func TestReleaseWorkflowsUsePortableCommands(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		forbidden string
+	}{
+		{name: "hardened bash path", forbidden: "/usr/bin/bash"},
+		{name: "release staging mkdir", forbidden: "mkdir -- dist"},
+	}
+	paths := []string{
+		".github/workflows/release-orchestration.yml",
+		".github/workflows/release.yml",
+		".github/workflows/rolling.yml",
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, path := range paths {
+				workflowText := readConfig(t, path)
+				if strings.Contains(workflowText, tc.forbidden) {
+					t.Errorf("%s contains non-portable command fragment %q", path, tc.forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
+	t.Parallel()
+	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
+
+	testCases := []struct {
+		name             string
+		path             string
+		jobName          string
+		resetStepName    string
+		buildStepName    string
+		validateStepName string
+		uploadStepName   string
+		releaseTag       string
+		expectedRuntime  []string
+		expectedUploads  []string
+	}{
+		{
+			name:             "stable Darwin amd64",
+			path:             ".github/workflows/release.yml",
+			jobName:          "build-darwin-amd64",
+			resetStepName:    "Reset Darwin amd64 artifact staging",
+			buildStepName:    "Build Darwin amd64 release artifact",
+			validateStepName: "Validate Darwin amd64 release artifact",
+			uploadStepName:   "Upload Darwin amd64 artifacts",
+			releaseTag:       "${{ needs.prepare-release.outputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ needs.prepare-release.outputs.tag }}_darwin_amd64.tar.gz",
+			},
+		},
+		{
+			name:             "orchestrated Linux and Windows",
+			path:             ".github/workflows/release-orchestration.yml",
+			jobName:          "build-linux-windows",
+			resetStepName:    "Reset Linux/Windows artifact staging",
+			buildStepName:    "Build Linux/Windows release artifacts",
+			validateStepName: "Validate Linux/Windows release artifacts",
+			uploadStepName:   "Upload Linux/Windows artifacts",
+			releaseTag:       "${{ inputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_linux_amd64.tar.gz`,
+				`dist/lopper_${RELEASE_TAG}_linux_arm64.tar.gz`,
+				`dist/lopper_${RELEASE_TAG}_windows_amd64.zip`,
+				`dist/lopper_${RELEASE_TAG}_windows_arm64.zip`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ inputs.tag }}_linux_amd64.tar.gz",
+				"dist/lopper_${{ inputs.tag }}_linux_arm64.tar.gz",
+				"dist/lopper_${{ inputs.tag }}_windows_amd64.zip",
+				"dist/lopper_${{ inputs.tag }}_windows_arm64.zip",
+			},
+		},
+		{
+			name:             "orchestrated Darwin arm64",
+			path:             ".github/workflows/release-orchestration.yml",
+			jobName:          "build-darwin",
+			resetStepName:    "Reset Darwin arm64 artifact staging",
+			buildStepName:    "Build Darwin release artifact",
+			validateStepName: "Validate Darwin arm64 release artifact",
+			uploadStepName:   "Upload Darwin artifacts",
+			releaseTag:       "${{ inputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_darwin_arm64.tar.gz`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ inputs.tag }}_darwin_arm64.tar.gz",
+			},
+		},
+		{
+			name:             "rolling Darwin amd64",
+			path:             ".github/workflows/rolling.yml",
+			jobName:          "build-darwin-amd64-rolling",
+			resetStepName:    "Reset Darwin amd64 rolling artifact staging",
+			buildStepName:    "Build Darwin amd64 rolling artifact",
+			validateStepName: "Validate Darwin amd64 rolling artifact",
+			uploadStepName:   "Upload Darwin amd64 rolling artifacts",
+			releaseTag:       "${{ needs.prepare-rolling.outputs.tag }}",
+			expectedRuntime: []string{
+				`dist/lopper_${RELEASE_TAG}_darwin_amd64.tar.gz`,
+			},
+			expectedUploads: []string{
+				"dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_amd64.tar.gz",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow workflowConfig
+			readYAMLConfig(t, tc.path, &workflow)
+			job := workflowJobByName(t, workflow.Jobs, tc.jobName)
+			resetIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.resetStepName)
+			buildIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.buildStepName)
+			validateIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.validateStepName)
+			uploadIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.uploadStepName)
+			if buildIndex != resetIndex+1 || validateIndex != buildIndex+1 || uploadIndex != validateIndex+1 {
+				t.Fatal("archive release producer must reset, build, validate, and upload in one contiguous sequence")
+			}
+
+			resetStep := job.Steps[resetIndex]
+			assertWorkflowStringValues(t, []workflowStringValue{
+				{label: tc.resetStepName + " shell", got: resetStep.Shell, want: hardenedShell},
+			})
+			assertWorkflowStepEnv(t, resetStep, tc.resetStepName, map[string]string{"PATH": "/usr/bin:/bin"})
+			assertWorkflowStepRunContainsAll(t, resetStep, tc.resetStepName, []string{`rm -rf -- dist`, `mkdir dist`})
+			assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir dist`, "archive staging must remove checkout-provided files before recreating dist")
+
+			validateStep := job.Steps[validateIndex]
+			assertWorkflowStringValues(t, []workflowStringValue{
+				{label: tc.validateStepName + " shell", got: validateStep.Shell, want: hardenedShell},
+			})
+			assertWorkflowStepEnv(t, validateStep, tc.validateStepName, map[string]string{
+				"PATH":        "/usr/bin:/bin",
+				"RELEASE_TAG": tc.releaseTag,
+			})
+			validationContract := []string{
+				`find -P dist -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+				`find -P dist -mindepth 1 -maxdepth 1 -type f | wc -l`,
+				`[ ! -f "${artifact}" ] || [ -L "${artifact}" ]`,
+				`[ ! -s "${artifact}" ]`,
+			}
+			validationContract = append(validationContract, tc.expectedRuntime...)
+			assertWorkflowStepRunContainsAll(t, validateStep, tc.validateStepName, validationContract)
+
+			uploadStep := job.Steps[uploadIndex]
+			gotUploads := strings.Split(strings.TrimSpace(uploadStep.With["path"]), "\n")
+			if !slices.Equal(gotUploads, tc.expectedUploads) {
+				t.Fatalf("%s upload paths = %#v, want %#v", tc.uploadStepName, gotUploads, tc.expectedUploads)
+			}
+			if strings.Contains(uploadStep.With["path"], "*") {
+				t.Fatalf("%s must not upload archive globs", tc.uploadStepName)
+			}
+			if uploadStep.With["if-no-files-found"] != "error" {
+				t.Fatalf("%s must fail when an expected artifact is missing", tc.uploadStepName)
 			}
 		})
 	}
@@ -3049,7 +3848,7 @@ func assertAnonymousValidationCloneStep(t *testing.T, job workflowJobConfig, tc 
 	if cloneStep.Uses != "" {
 		t.Fatalf("%s validation clone step must be a run step, got uses %q", tc.workflowPath, cloneStep.Uses)
 	}
-	if cloneStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if cloneStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("%s validation clone step shell = %q", tc.workflowPath, cloneStep.Shell)
 	}
 
@@ -3136,7 +3935,7 @@ func assertFreshPrivilegedTapUpdateJob(t *testing.T, jobs map[string]workflowJob
 	if pushStep.Env["HOMEBREW_TAP_TOKEN"] != "${{ secrets.HOMEBREW_TAP_TOKEN }}" {
 		t.Fatalf("%s privileged tap update step HOMEBREW_TAP_TOKEN env = %q", tc.workflowPath, pushStep.Env["HOMEBREW_TAP_TOKEN"])
 	}
-	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -euo pipefail {0}" {
+	if pushStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("%s privileged tap update step shell = %q", tc.workflowPath, pushStep.Shell)
 	}
 
@@ -3332,12 +4131,35 @@ type workflowStringValue struct {
 	want  string
 }
 
+type workflowArtifactDownloadContract struct {
+	index int
+	name  string
+	path  string
+}
+
 func assertWorkflowStringValues(t *testing.T, values []workflowStringValue) {
 	t.Helper()
 
 	for _, value := range values {
 		if value.got != value.want {
 			t.Fatalf("%s = %q", value.label, value.got)
+		}
+	}
+}
+
+func assertExactArtifactDownloads(t *testing.T, steps []workflowStepConfig, contracts []workflowArtifactDownloadContract) {
+	t.Helper()
+
+	for _, contract := range contracts {
+		download := steps[contract.index]
+		assertWorkflowStringValues(t, []workflowStringValue{
+			{label: download.Name + " artifact name", got: download.With["name"], want: contract.name},
+			{label: download.Name + " path", got: download.With["path"], want: contract.path},
+		})
+		for _, forbidden := range []string{"pattern", "merge-multiple"} {
+			if _, ok := download.With[forbidden]; ok {
+				t.Fatalf("%s must not use with.%s", download.Name, forbidden)
+			}
 		}
 	}
 }
@@ -3384,7 +4206,13 @@ func assertReleasePublicationCredentialScope(t *testing.T, publication workflowJ
 	for _, step := range publication.Steps {
 		if _, isAPIStep := apiSteps[step.Name]; isAPIStep {
 			apiSteps[step.Name] = true
-			assertWorkflowStepEnv(t, step, "GitHub API step "+step.Name, map[string]string{"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"})
+			stepLabel := "GitHub API step " + step.Name
+			assertWorkflowStepEnv(t, step, stepLabel, map[string]string{
+				"GH_TOKEN":    "${{ secrets.GITHUB_TOKEN }}",
+				"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+			})
+			assertWorkflowStepRunContainsAll(t, step, stepLabel, []string{`tag="${RELEASE_TAG}"`})
+			assertWorkflowStepRunOmitsAll(t, step, stepLabel, []string{"${{ needs.prepare-release.outputs.tag }}"})
 		} else if _, ok := step.Env["GH_TOKEN"]; ok {
 			t.Fatalf("non-API publication step %q must not receive GH_TOKEN", step.Name)
 		}
