@@ -3926,6 +3926,8 @@ func assertValidationRegenerationStep(t *testing.T, jobs map[string]workflowJobC
 	validationRegenerate := workflowStepByName(t, jobs, tc.validationJobName, tc.regenerateStepName)
 	for _, want := range []string{
 		tc.sourceURLLine,
+		`--proto '=https'`,
+		`--proto-redir '=https'`,
 		`version "${FORMULA_VERSION}"`,
 		`cat > ` + tc.formulaPath + ` <<RUBY`,
 	} {
@@ -3987,6 +3989,8 @@ func assertPrivilegedStepContainsRequiredHardening(t *testing.T, pushStep workfl
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
 		`git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"`,
 		tc.sourceURLLine,
+		`--proto '=https'`,
+		`--proto-redir '=https'`,
 		`version "${FORMULA_VERSION}"`,
 		`cat > "${tap_repo}/` + tc.formulaPath + `" <<RUBY`,
 		`git_safe -C "${tap_repo}" add ` + tc.formulaPath,

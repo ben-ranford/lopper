@@ -727,6 +727,7 @@ jobs:
 
           source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           curl --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "$source_url" -o /tmp/lopper-rolling-source.tar.gz
@@ -855,6 +856,7 @@ jobs:
 
           source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           "${curl_bin}" --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "${source_url}" -o "${source_archive}"
