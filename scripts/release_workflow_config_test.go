@@ -573,6 +573,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`rm -rf -- .artifacts`,
 		`mkdir -- .artifacts`,
 		`previous_catalog=".artifacts/previous-features.json"`,
+		`args+=(--previous-catalog "${previous_catalog}")`,
 		`go run ./tools/featureflag "${args[@]}" > "${report_dir}/feature-flags.md"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, generateReport, "feature flag release report generation", []string{
@@ -580,7 +581,8 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 	assertTextAppearsBefore(t, generateReport.Run, `rm -rf -- .artifacts`, `mkdir -- .artifacts`, "release feature report generation must reset its workspace-confined catalog staging directory")
 	assertTextAppearsBefore(t, generateReport.Run, `mkdir -- .artifacts`, `previous_catalog=".artifacts/previous-features.json"`, "release feature report generation must recreate catalog staging before selecting the relative path")
-	assertTextAppearsBefore(t, generateReport.Run, `previous_catalog=".artifacts/previous-features.json"`, `go run ./tools/featureflag`, "release feature report generation must stage the workspace-confined catalog before running the report")
+	assertTextAppearsBefore(t, generateReport.Run, `previous_catalog=".artifacts/previous-features.json"`, `args+=(--previous-catalog "${previous_catalog}")`, "release feature report generation must select the workspace-confined catalog before passing it to the report")
+	assertTextAppearsBefore(t, generateReport.Run, `args+=(--previous-catalog "${previous_catalog}")`, `go run ./tools/featureflag`, "release feature report generation must pass the staged catalog to the report")
 	validateReport := workflowStepByName(t, workflow.Jobs, "prepare-release-feature-report", "Validate feature flag release report")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature report validation shell", got: validateReport.Shell, want: hardenedShell},
@@ -838,6 +840,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`rm -rf -- .artifacts`,
 		`mkdir -- .artifacts`,
 		`previous_catalog=".artifacts/previous-rolling-features.json"`,
+		`args+=(--previous-catalog "${previous_catalog}")`,
 		`go run ./tools/featureflag "${args[@]}" > "${feature_report}"`,
 		`> "${notes_root}/rolling-changelog.md"`,
 	})
@@ -846,7 +849,8 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 	assertTextAppearsBefore(t, generateNotes.Run, `rm -rf -- .artifacts`, `mkdir -- .artifacts`, "rolling release note generation must reset its workspace-confined catalog staging directory")
 	assertTextAppearsBefore(t, generateNotes.Run, `mkdir -- .artifacts`, `previous_catalog=".artifacts/previous-rolling-features.json"`, "rolling release note generation must recreate catalog staging before selecting the relative path")
-	assertTextAppearsBefore(t, generateNotes.Run, `previous_catalog=".artifacts/previous-rolling-features.json"`, `go run ./tools/featureflag`, "rolling release note generation must stage the workspace-confined catalog before running the report")
+	assertTextAppearsBefore(t, generateNotes.Run, `previous_catalog=".artifacts/previous-rolling-features.json"`, `args+=(--previous-catalog "${previous_catalog}")`, "rolling release note generation must select the workspace-confined catalog before passing it to the report")
+	assertTextAppearsBefore(t, generateNotes.Run, `args+=(--previous-catalog "${previous_catalog}")`, `go run ./tools/featureflag`, "rolling release note generation must pass the staged catalog to the report")
 	validateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Validate rolling release notes")
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "rolling release note validation shell",
