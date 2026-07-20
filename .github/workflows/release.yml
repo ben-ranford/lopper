@@ -249,7 +249,7 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           cd extensions/vscode-lopper
-          npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
+          ./node_modules/.bin/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Validate VS Code extension artifact
         env:
@@ -430,9 +430,11 @@ jobs:
             fi
           done < <(git tag --list 'v[0-9]*' --sort=-v:refname)
 
+          rm -rf -- .artifacts
+          mkdir -- .artifacts
           args=(report --channel release --release "${RELEASE_TAG}")
           if [ -n "${previous_tag}" ]; then
-            previous_catalog="${RUNNER_TEMP}/previous-features.json"
+            previous_catalog=".artifacts/previous-features.json"
             if git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
               git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
             else
@@ -1552,6 +1554,7 @@ jobs:
 
           source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           curl --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "$source_url" -o /tmp/lopper-source.tar.gz
@@ -1680,6 +1683,7 @@ jobs:
 
           source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
           "${curl_bin}" --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --connect-timeout 20 --max-time 180 \
             "${source_url}" -o "${source_archive}"

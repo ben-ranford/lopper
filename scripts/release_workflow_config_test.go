@@ -498,14 +498,12 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir dist`, "VS Code artifact staging must remove checkout-provided files before recreating dist")
 
 	packageStep := build.Steps[packageIndex]
-	const packageCommand = `npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
+	const packageCommand = `./node_modules/.bin/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
 	assertWorkflowStepRunContainsAll(t, packageStep, "VS Code extension package", []string{
 		`version="${RELEASE_TAG#v}"`,
 		packageCommand,
 	})
-	if strings.Count(packageStep.Run, "npx ") != 1 {
-		t.Fatal("VS Code extension packaging must run exactly one npx command after resetting artifact staging")
-	}
+	assertWorkflowStepRunOmitsAll(t, packageStep, "VS Code extension package", []string{"npx ", "@vscode/vsce package"})
 
 	validateStep := build.Steps[validateIndex]
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -525,9 +523,6 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 
 	for _, step := range build.Steps[resetIndex:] {
 		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
-			if step.Name == packageStep.Name && repositoryCommand == "npx " && strings.Contains(step.Run, packageCommand) {
-				continue
-			}
 			if strings.Contains(step.Run, repositoryCommand) {
 				t.Fatalf("VS Code release step %q must not execute repository-controlled command %q after resetting artifact staging", step.Name, repositoryCommand)
 			}
@@ -570,8 +565,19 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`report_dir="${RUNNER_TEMP}/release-feature-report"`,
 		`rm -rf -- "${report_dir}"`,
 		`mkdir -- "${report_dir}"`,
+		`rm -rf -- .artifacts`,
+		`mkdir -- .artifacts`,
+		`previous_catalog=".artifacts/previous-features.json"`,
+		`args+=(--previous-catalog "${previous_catalog}")`,
 		`go run ./tools/featureflag "${args[@]}" > "${report_dir}/feature-flags.md"`,
 	})
+	assertWorkflowStepRunOmitsAll(t, generateReport, "feature flag release report generation", []string{
+		`previous_catalog="${RUNNER_TEMP}/previous-features.json"`,
+	})
+	assertTextAppearsBefore(t, generateReport.Run, `rm -rf -- .artifacts`, `mkdir -- .artifacts`, "release feature report generation must reset its workspace-confined catalog staging directory")
+	assertTextAppearsBefore(t, generateReport.Run, `mkdir -- .artifacts`, `previous_catalog=".artifacts/previous-features.json"`, "release feature report generation must recreate catalog staging before selecting the relative path")
+	assertTextAppearsBefore(t, generateReport.Run, `previous_catalog=".artifacts/previous-features.json"`, `args+=(--previous-catalog "${previous_catalog}")`, "release feature report generation must select the workspace-confined catalog before passing it to the report")
+	assertTextAppearsBefore(t, generateReport.Run, `args+=(--previous-catalog "${previous_catalog}")`, `go run ./tools/featureflag`, "release feature report generation must pass the staged catalog to the report")
 	validateReport := workflowStepByName(t, workflow.Jobs, "prepare-release-feature-report", "Validate feature flag release report")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature report validation shell", got: validateReport.Shell, want: hardenedShell},
@@ -826,9 +832,20 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`notes_root="${RUNNER_TEMP}/rolling-release-notes"`,
 		`rm -rf -- "${notes_root}"`,
 		`mkdir -- "${notes_root}"`,
+		`rm -rf -- .artifacts`,
+		`mkdir -- .artifacts`,
+		`previous_catalog=".artifacts/previous-rolling-features.json"`,
+		`args+=(--previous-catalog "${previous_catalog}")`,
 		`go run ./tools/featureflag "${args[@]}" > "${feature_report}"`,
 		`> "${notes_root}/rolling-changelog.md"`,
 	})
+	assertWorkflowStepRunOmitsAll(t, generateNotes, "rolling release note generation", []string{
+		`previous_catalog="${RUNNER_TEMP}/previous-rolling-features.json"`,
+	})
+	assertTextAppearsBefore(t, generateNotes.Run, `rm -rf -- .artifacts`, `mkdir -- .artifacts`, "rolling release note generation must reset its workspace-confined catalog staging directory")
+	assertTextAppearsBefore(t, generateNotes.Run, `mkdir -- .artifacts`, `previous_catalog=".artifacts/previous-rolling-features.json"`, "rolling release note generation must recreate catalog staging before selecting the relative path")
+	assertTextAppearsBefore(t, generateNotes.Run, `previous_catalog=".artifacts/previous-rolling-features.json"`, `args+=(--previous-catalog "${previous_catalog}")`, "rolling release note generation must select the workspace-confined catalog before passing it to the report")
+	assertTextAppearsBefore(t, generateNotes.Run, `args+=(--previous-catalog "${previous_catalog}")`, `go run ./tools/featureflag`, "rolling release note generation must pass the staged catalog to the report")
 	validateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Validate rolling release notes")
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "rolling release note validation shell",
@@ -3909,6 +3926,8 @@ func assertValidationRegenerationStep(t *testing.T, jobs map[string]workflowJobC
 	validationRegenerate := workflowStepByName(t, jobs, tc.validationJobName, tc.regenerateStepName)
 	for _, want := range []string{
 		tc.sourceURLLine,
+		`--proto '=https'`,
+		`--proto-redir '=https'`,
 		`version "${FORMULA_VERSION}"`,
 		`cat > ` + tc.formulaPath + ` <<RUBY`,
 	} {
@@ -3970,6 +3989,8 @@ func assertPrivilegedStepContainsRequiredHardening(t *testing.T, pushStep workfl
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
 		`git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"`,
 		tc.sourceURLLine,
+		`--proto '=https'`,
+		`--proto-redir '=https'`,
 		`version "${FORMULA_VERSION}"`,
 		`cat > "${tap_repo}/` + tc.formulaPath + `" <<RUBY`,
 		`git_safe -C "${tap_repo}" add ` + tc.formulaPath,
