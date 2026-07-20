@@ -199,9 +199,11 @@ jobs:
             fi
           done < <(git tag --list 'rolling-*' --sort=-creatordate)
 
+          rm -rf -- .artifacts
+          mkdir -- .artifacts
           args=(report --channel rolling --release "${ROLLING_TAG}")
           if [ -n "${previous_tag}" ]; then
-            previous_catalog="${RUNNER_TEMP}/previous-rolling-features.json"
+            previous_catalog=".artifacts/previous-rolling-features.json"
             if git cat-file -e "${previous_tag}:internal/featureflags/features.json" 2>/dev/null; then
               git show "${previous_tag}:internal/featureflags/features.json" > "${previous_catalog}"
             else
