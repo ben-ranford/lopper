@@ -249,7 +249,7 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           cd extensions/vscode-lopper
-          npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
+          ./node_modules/.bin/vsce package --out "../../dist/lopper-vscode-${version}.vsix"
 
       - name: Validate VS Code extension artifact
         env:

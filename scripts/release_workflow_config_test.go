@@ -498,14 +498,12 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	assertTextAppearsBefore(t, resetStep.Run, `rm -rf -- dist`, `mkdir dist`, "VS Code artifact staging must remove checkout-provided files before recreating dist")
 
 	packageStep := build.Steps[packageIndex]
-	const packageCommand = `npx @vscode/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
+	const packageCommand = `./node_modules/.bin/vsce package --out "../../dist/lopper-vscode-${version}.vsix"`
 	assertWorkflowStepRunContainsAll(t, packageStep, "VS Code extension package", []string{
 		`version="${RELEASE_TAG#v}"`,
 		packageCommand,
 	})
-	if strings.Count(packageStep.Run, "npx ") != 1 {
-		t.Fatal("VS Code extension packaging must run exactly one npx command after resetting artifact staging")
-	}
+	assertWorkflowStepRunOmitsAll(t, packageStep, "VS Code extension package", []string{"npx ", "@vscode/vsce package"})
 
 	validateStep := build.Steps[validateIndex]
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -525,9 +523,6 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 
 	for _, step := range build.Steps[resetIndex:] {
 		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
-			if step.Name == packageStep.Name && repositoryCommand == "npx " && strings.Contains(step.Run, packageCommand) {
-				continue
-			}
 			if strings.Contains(step.Run, repositoryCommand) {
 				t.Fatalf("VS Code release step %q must not execute repository-controlled command %q after resetting artifact staging", step.Name, repositoryCommand)
 			}
