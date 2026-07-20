@@ -2,6 +2,32 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.2](https://github.com/ben-ranford/lopper/compare/v1.8.1...v1.8.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* **ci:** avoid persisting release credentials ([#1197](https://github.com/ben-ranford/lopper/issues/1197)) ([a17f032](https://github.com/ben-ranford/lopper/commit/a17f032d5a9cbaad1bdda63fa6b70fc08e8c420f))
+* **ci:** scope release publish secrets ([#1205](https://github.com/ben-ranford/lopper/issues/1205)) ([def3348](https://github.com/ben-ranford/lopper/commit/def334843111544012502555019719e7869b8098))
+* **dashboard:** secure output writes ([#1200](https://github.com/ben-ranford/lopper/issues/1200)) ([52de59c](https://github.com/ben-ranford/lopper/commit/52de59c070504c17da29f80554484dfe364fe917))
+* **git:** harden lockfile drift invocations ([#1199](https://github.com/ben-ranford/lopper/issues/1199)) ([64214f4](https://github.com/ben-ranford/lopper/commit/64214f4c9e780371ac90af2b587f943c4811f9d3))
+* **release:** close late publication review findings ([#1209](https://github.com/ben-ranford/lopper/issues/1209)) ([ee800cb](https://github.com/ben-ranford/lopper/commit/ee800cb1126f770e157f0e0b20f860e5fee7cd17))
+* **release:** inline trusted GHCR tag sanitization ([#1204](https://github.com/ben-ranford/lopper/issues/1204)) ([03422ad](https://github.com/ben-ranford/lopper/commit/03422add573be9d9c64da0cbb93fca65cbbd1c14))
+* **release:** isolate publication artifact trust boundaries ([#1211](https://github.com/ben-ranford/lopper/issues/1211)) ([7649be5](https://github.com/ben-ranford/lopper/commit/7649be5cb5c135df6c5721e06d8c84e81f413723))
+* **release:** keep prior feature catalogs workspace-relative ([#1212](https://github.com/ben-ranford/lopper/issues/1212)) ([8135de6](https://github.com/ben-ranford/lopper/commit/8135de65e2948f1f0571dc0f769505cf2af0d690))
+* **release:** prevent Homebrew tap token leakage ([#1198](https://github.com/ben-ranford/lopper/issues/1198)) ([3fb86d2](https://github.com/ben-ranford/lopper/commit/3fb86d2d476ad65d0c439b235a3db5d48fffe5f5))
+* **release:** prevent workflow PAT exposure ([#1201](https://github.com/ben-ranford/lopper/issues/1201)) ([16e3a2b](https://github.com/ben-ranford/lopper/commit/16e3a2b128cfacf9a67b8e71100db365dcd9208f))
+* **report:** handle empty baseline snapshot summaries ([#1195](https://github.com/ben-ranford/lopper/issues/1195)) ([f6bd435](https://github.com/ben-ranford/lopper/commit/f6bd43565f3a44839e7ed096d7ab2f7508989b9c))
+* **rust:** precompute use declaration token hits ([#1196](https://github.com/ben-ranford/lopper/issues/1196)) ([b2a7fef](https://github.com/ben-ranford/lopper/commit/b2a7fefe53bef4b5b3cb381ba4f53f3b422bc0f2))
+* **swift:** bound unqualified usage generic scan ([#1194](https://github.com/ben-ranford/lopper/issues/1194)) ([75449c1](https://github.com/ben-ranford/lopper/commit/75449c1fca0280061b52b00ed5bd075ec813dbf7))
+* validate manual release source ([#1203](https://github.com/ben-ranford/lopper/issues/1203)) ([03a4915](https://github.com/ben-ranford/lopper/commit/03a49151e1a12148a929f7b54e85a339f882bba0))
+* **vscode:** reject untrusted workspace symlink binaries ([#1202](https://github.com/ben-ranford/lopper/issues/1202)) ([4b33ccd](https://github.com/ben-ranford/lopper/commit/4b33ccd5d1dcffeaa0e4bc31049821796d18d732))
+
+
+### Code Refactoring
+
+* **rust:** remove unreachable decoder branches ([#1210](https://github.com/ben-ranford/lopper/issues/1210)) ([8cc89bb](https://github.com/ben-ranford/lopper/commit/8cc89bb8c67f5c11f70c29b55a35f862bd5c2d13))
+
 ## [1.8.1](https://github.com/ben-ranford/lopper/compare/v1.8.0...v1.8.1) (2026-07-14)
 
 
