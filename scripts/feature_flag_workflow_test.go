@@ -12,6 +12,15 @@ func TestFeatureFlagEnforcementWorkflowSeparatesUntrustedExecutionFromPrivileged
 
 	var enforcementWorkflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/feature-flag-enforcement.yml", &enforcementWorkflow)
+	assertReadOnlyFeatureFlagEnforcementWorkflow(t, enforcementWorkflow, hardenedShell)
+
+	var publicationWorkflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &publicationWorkflow)
+	assertTrustedFeatureFlagPublicationWorkflow(t, publicationWorkflow, hardenedShell)
+}
+
+func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkflow workflowConfig, hardenedShell string) {
+	t.Helper()
 
 	enforce := workflowJobByName(t, enforcementWorkflow.Jobs, "enforce")
 	assertWorkflowJobPermissions(t, enforce, "feature flag enforcement", map[string]string{"contents": "read"})
@@ -58,8 +67,11 @@ func TestFeatureFlagEnforcementWorkflowSeparatesUntrustedExecutionFromPrivileged
 		}
 	}
 
-	var publicationWorkflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &publicationWorkflow)
+}
+
+func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkflow workflowConfig, hardenedShell string) {
+	t.Helper()
+
 	publication := workflowJobByName(t, publicationWorkflow.Jobs, "publish-comments")
 	assertWorkflowJobPermissions(t, publication, "feature flag comment publication", map[string]string{
 		"actions": "read",
