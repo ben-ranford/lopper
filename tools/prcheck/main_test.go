@@ -176,6 +176,17 @@ func TestValidateAcceptsCompletedTemplate(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsPreviewTitle(t *testing.T) {
+	if err := validate("preview(runtime): add opt-in capture", "feat/preview-runtime-capture", validBody(), releasePleaseIdentity{}); err != nil {
+		t.Fatalf("validate returned error: %v", err)
+	}
+}
+
+func TestValidateRejectsBreakingPreviewTitle(t *testing.T) {
+	err := validate("preview(runtime)!: replace capture format", "feat/preview-runtime-capture", validBody(), releasePleaseIdentity{})
+	expectValidationError(t, err, "Preview PR titles must not use a breaking-change marker")
+}
+
 func TestValidateRejectsBugTitle(t *testing.T) {
 	err := validate("bug: patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{})
 	if err == nil {

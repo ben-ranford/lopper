@@ -15,10 +15,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 )
 
-var featurePRTitlePattern = regexp.MustCompile(`(?i)^feat(?:\([^)]*\))?(?:!)?:\s+\S`)
+var featurePRTitlePattern = regexp.MustCompile(`(?i)^(feat|preview)(?:\([^)]*\))?(?:!)?:\s+\S`)
 
 type prEnforcementResult struct {
 	RequireFlag       bool
+	FeaturePRType     string
 	AddedFlags        []featureflags.Flag
 	GraduatedFlags    []featureflags.Flag
 	InvalidAddedFlags []featureflags.Flag
@@ -64,8 +65,10 @@ func runPREnforce(args []string) error {
 }
 
 func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag, catalogViolations []string) prEnforcementResult {
+	prType := featurePRType(prTitle)
 	result := prEnforcementResult{
-		RequireFlag:       isFeaturePRTitle(prTitle),
+		RequireFlag:       prType != "",
+		FeaturePRType:     prType,
 		CatalogViolations: catalogViolations,
 	}
 	if len(catalogViolations) > 0 {
@@ -178,7 +181,15 @@ func formatDuplicateRefs(refs []string) string {
 }
 
 func isFeaturePRTitle(title string) bool {
-	return featurePRTitlePattern.MatchString(strings.TrimSpace(title))
+	return featurePRType(title) != ""
+}
+
+func featurePRType(title string) string {
+	matches := featurePRTitlePattern.FindStringSubmatch(strings.TrimSpace(title))
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.ToLower(matches[1])
 }
 
 func newlyAddedFlags(current, previous []featureflags.Flag) []featureflags.Flag {
@@ -227,12 +238,12 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 	b.WriteString("<!-- lopper-feature-flag-enforcement -->\n")
 	b.WriteString("## Feature flag enforcement\n\n")
 	if result.RequireFlag {
-		b.WriteString("- Feature PR: yes (`feat` PR title)\n")
+		fmt.Fprintf(&b, "- Feature PR: yes (`%s` PR title)\n", result.FeaturePRType)
 	} else {
 		b.WriteString("- Feature PR: no\n")
 	}
 	fmt.Fprintf(&b, "- Check: %s\n", status)
-	b.WriteString("- Rule: feature PRs must add a feature flag or graduate an existing preview flag, new flags must start as `preview`, and feature flag ids and names must be unique.\n\n")
+	b.WriteString("- Rule: `preview` PRs add new preview flags, `feat` PRs graduate existing preview flags, new flags must start as `preview`, and feature flag ids and names must be unique.\n\n")
 
 	writePREnforcementFlagSection(&b, "New feature flags in this PR", result.AddedFlags, writeAddedFlag)
 	writePREnforcementFlagSection(&b, "Graduated feature flags in this PR", result.GraduatedFlags, writeGraduatedFlag)
@@ -282,10 +293,10 @@ func writeFlagDescription(b *strings.Builder, description string) {
 
 func previewEnforcementSuccessMessage(result prEnforcementResult) string {
 	switch {
-	case result.RequireFlag && len(result.AddedFlags) > 0:
-		return "Passed. This feature PR adds at least one new preview feature flag.\n"
-	case result.RequireFlag && len(result.GraduatedFlags) > 0:
-		return "Passed. This feature PR graduates existing preview feature flags to stable.\n"
+	case result.FeaturePRType == "preview" && len(result.AddedFlags) > 0:
+		return "Passed. This preview PR adds at least one new preview feature flag.\n"
+	case result.FeaturePRType == "feat" && len(result.GraduatedFlags) > 0:
+		return "Passed. This feature graduation PR promotes existing preview feature flags to stable.\n"
 	case len(result.AddedFlags) > 0:
 		return "Passed. Added feature flags all start as `preview`.\n"
 	default:
@@ -299,9 +310,7 @@ func (r *prEnforcementResult) violations() []string {
 	if len(violations) > 0 {
 		return violations
 	}
-	if r.RequireFlag && len(r.AddedFlags) == 0 && len(r.GraduatedFlags) == 0 {
-		violations = append(violations, "Feature PRs must add at least one new feature flag or graduate an existing preview flag in `internal/featureflags/features.json`.")
-	}
+	violations = append(violations, r.featurePRTypeViolations()...)
 	if len(r.InvalidAddedFlags) > 0 {
 		parts := make([]string, 0, len(r.InvalidAddedFlags))
 		for _, flag := range r.InvalidAddedFlags {
@@ -310,6 +319,34 @@ func (r *prEnforcementResult) violations() []string {
 		violations = append(violations, "New feature flags must start as `preview`: "+strings.Join(parts, ", ")+".")
 	}
 	return violations
+}
+
+func (r *prEnforcementResult) featurePRTypeViolations() []string {
+	switch r.FeaturePRType {
+	case "preview":
+		var violations []string
+		if len(r.AddedFlags) == 0 {
+			violations = append(violations, "Preview PRs must add at least one new feature flag in `internal/featureflags/features.json`.")
+		}
+		if len(r.GraduatedFlags) > 0 {
+			violations = append(violations, "Feature graduations must use a `feat(flags): ...` PR title so release-please performs the minor version bump.")
+		}
+		return violations
+	case "feat":
+		var violations []string
+		if len(r.AddedFlags) > 0 {
+			violations = append(violations, "New preview feature flags must use a `preview(scope): ...` PR title so release-please keeps the current minor release line.")
+		}
+		if len(r.GraduatedFlags) == 0 {
+			violations = append(violations, "Feature PRs must graduate at least one existing preview flag in `internal/featureflags/features.json`.")
+		}
+		return violations
+	default:
+		if r.RequireFlag && len(r.AddedFlags) == 0 && len(r.GraduatedFlags) == 0 {
+			return []string{"Feature PRs must add at least one new feature flag or graduate an existing preview flag in `internal/featureflags/features.json`."}
+		}
+		return nil
+	}
 }
 
 func (r *prEnforcementResult) err() error {

@@ -53,15 +53,35 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^feat(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^(feat|preview)(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
             echo "feature_pr=true" >> "$GITHUB_OUTPUT"
           else
             echo "feature_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^preview(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+            echo "preview_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "preview_pr=false" >> "$GITHUB_OUTPUT"
           fi
           if [[ "${PR_HEAD_REF}" == release-please--branches--* ]]; then
             echo "release_pr=true" >> "$GITHUB_OUTPUT"
           else
             echo "release_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reject release overrides on preview PRs
+        if: ${{ steps.classify_pr.outputs.preview_pr == 'true' }}
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          base_ref="${PR_BASE_REF:-main}"
+          commit_messages="$(mktemp "${RUNNER_TEMP}/preview-commit-messages.XXXXXX")"
+          trap 'rm -f "${commit_messages}"' EXIT
+          git log --format=%B "origin/${base_ref}..HEAD" > "${commit_messages}"
+          if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|^(BEGIN|END)_COMMIT_OVERRIDE[[:space:]]*$' "${commit_messages}"; then
+            echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
+            exit 1
           fi
 
       - name: Enforce feature flags on PRs

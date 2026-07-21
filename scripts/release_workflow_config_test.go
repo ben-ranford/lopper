@@ -121,9 +121,16 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
-		Packages map[string]struct {
-			ChangelogPath string `json:"changelog-path"`
-			ExtraFiles    []struct {
+		Versioning string `json:"versioning"`
+		Packages   map[string]struct {
+			Versioning        string `json:"versioning"`
+			ChangelogPath     string `json:"changelog-path"`
+			ChangelogSections []struct {
+				Type    string `json:"type"`
+				Section string `json:"section"`
+				Hidden  bool   `json:"hidden"`
+			} `json:"changelog-sections"`
+			ExtraFiles []struct {
 				Path string `json:"path"`
 			} `json:"extra-files"`
 		} `json:"packages"`
@@ -139,6 +146,23 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	}
 	if rootPackage.ChangelogPath == "extensions/vscode-lopper/CHANGELOG.md" {
 		t.Fatal("root release notes must not be written to the VS Code extension changelog")
+	}
+	if config.Versioning != "" || rootPackage.Versioning != "" {
+		t.Fatal("release-please must keep default versioning so preview commits bump patch and feat graduations bump minor")
+	}
+
+	previewSectionFound := false
+	for _, section := range rootPackage.ChangelogSections {
+		if section.Type != "preview" {
+			continue
+		}
+		previewSectionFound = true
+		if section.Section != "Preview Features" || section.Hidden {
+			t.Fatalf("preview changelog section = %#v, want visible Preview Features", section)
+		}
+	}
+	if !previewSectionFound {
+		t.Fatal("release-please config must expose preview commits in release notes")
 	}
 
 	extraFiles := map[string]bool{}
@@ -165,8 +189,8 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	if !ok {
 		t.Fatal("graduate-feature workflow must define the milestone input")
 	}
-	if milestone.Default != "v1.7.0" {
-		t.Fatalf("graduate-feature milestone default = %q, want v1.7.0", milestone.Default)
+	if milestone.Default != "v1.9.0" {
+		t.Fatalf("graduate-feature milestone default = %q, want v1.9.0", milestone.Default)
 	}
 
 	workflowText := readConfig(t, ".github/workflows/graduate-feature.yml")
@@ -176,6 +200,38 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	if strings.Contains(workflowText, "--label target-series:") {
 		t.Fatal("graduate-feature workflow must not hardcode a target-series label")
 	}
+	for _, want := range []string{
+		`git commit -m "feat(flags): graduate ${FEATURE} to stable"`,
+		`--title "feat(flags): graduate ${FEATURE} to stable"`,
+	} {
+		if !strings.Contains(workflowText, want) {
+			t.Fatalf("graduate-feature workflow must preserve the minor-bump title %q", want)
+		}
+	}
+}
+
+func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-enforcement.yml", &workflow)
+	classify := workflowStepByName(t, workflow.Jobs, "enforce", "Classify PR")
+	if !strings.Contains(classify.Run, `grep -Eq '^(feat|preview)`) {
+		t.Fatal("feature flag enforcement must classify preview titles as feature PRs")
+	}
+	if !strings.Contains(classify.Run, `echo "preview_pr=true"`) {
+		t.Fatal("feature flag enforcement must expose preview PR classification")
+	}
+
+	rejectOverrides := workflowStepByName(t, workflow.Jobs, "enforce", "Reject release overrides on preview PRs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "preview override condition", got: rejectOverrides.If, want: "${{ steps.classify_pr.outputs.preview_pr == 'true' }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, rejectOverrides, "preview release override guard", []string{
+		`git log --format=%B "origin/${base_ref}..HEAD"`,
+		`(BREAKING[ -]CHANGE|Release-As)`,
+		`(BEGIN|END)_COMMIT_OVERRIDE`,
+	})
 }
 
 func TestGraduateFeatureWorkflowCreatesTemplateCompatiblePRBody(t *testing.T) {
