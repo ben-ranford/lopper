@@ -24,129 +24,63 @@ jobs:
   verify-source-ci:
     runs-on: ubuntu-latest
     permissions:
-      checks: read
       contents: read
     steps:
-      - name: Verify required CI for source SHA
+      - name: Checkout exact release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Verify exact release source
         env:
           PATH: /usr/bin:/bin
-          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-          PROTECTED_BRANCH: main
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          set -euo pipefail
-
           source_sha="${SOURCE_SHA}"
           if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Release source SHA must be a lowercase full 40-character commit SHA; got ${source_sha}." >&2
             exit 1
           fi
 
-          api_url="${GITHUB_API_URL:-https://api.github.com}"
-          auth_args=()
-          if [ -n "${GH_TOKEN:-}" ]; then
-            auth_args=(-H "Authorization: Bearer ${GH_TOKEN}")
-          fi
-
-          rules_file="$(mktemp)"
-          check_runs_file="$(mktemp)"
-          statuses_file="$(mktemp)"
-          required_file="$(mktemp)"
-          trap 'rm -f "${rules_file}" "${check_runs_file}" "${statuses_file}" "${required_file}"' EXIT
-
-          rules_endpoint="${api_url}/repos/${GITHUB_REPOSITORY}/rules/branches/${PROTECTED_BRANCH}"
-          check_runs_endpoint="${api_url}/repos/${GITHUB_REPOSITORY}/commits/${source_sha}/check-runs?per_page=100"
-          statuses_endpoint="${api_url}/repos/${GITHUB_REPOSITORY}/commits/${source_sha}/status"
-
-          curl -fsSL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "${rules_endpoint}" > "${rules_file}"
-          jq -c '
-            [
-              .[]
-              | select(.type == "required_status_checks")
-              | .parameters.required_status_checks[]?
-              | {context, integration_id}
-            ]
-            | unique_by(.context + ":" + (.integration_id | tostring))
-          ' "${rules_file}" > "${required_file}"
-          if [ "$(jq 'length' "${required_file}")" -lt 1 ]; then
-            echo "::error::No required status checks are configured for ${PROTECTED_BRANCH}; refusing release promotion without exact CI validation." >&2
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [ "${checked_out_sha}" != "${source_sha}" ]; then
+            echo "::error::Release source checkout resolved to ${checked_out_sha}, expected ${source_sha}." >&2
             exit 1
           fi
 
-          curl -fsSL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "${check_runs_endpoint}" > "${check_runs_file}"
-          curl -fsSL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "${statuses_endpoint}" > "${statuses_file}"
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
 
-          while IFS=$'\t' read -r context integration_id; do
-            [ -n "${context}" ] || continue
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
 
-            check_result="$(
-              jq -r \
-                --arg context "${context}" \
-                --arg integration_id "${integration_id}" \
-                --arg source_sha "${source_sha}" '
-                  [
-                    .check_runs[]
-                    | select(.name == $context)
-                    | select(.head_sha == $source_sha)
-                    | select(
-                        ($integration_id == "null")
-                        or ((.app.id // -1 | tostring) == $integration_id)
-                      )
-                  ]
-                  | if length == 0 then
-                      empty
-                    else
-                      max_by(.id)
-                      | "check-run\t\(.status // "")\t\(.conclusion // "")\t\(.html_url // "")"
-                    end
-                ' "${check_runs_file}"
-            )"
-            if [ -n "${check_result}" ]; then
-              IFS=$'\t' read -r check_kind check_status check_conclusion check_url <<< "${check_result}"
-              if [ "${check_status}" != "completed" ]; then
-                echo "::error::Required check ${context} for ${source_sha} is ${check_status:-unknown}; exact source SHA CI must complete successfully before release." >&2
-                exit 1
-              fi
-              if [ "${check_conclusion}" != "success" ]; then
-                echo "::error::Required check ${context} for ${source_sha} concluded ${check_conclusion:-unknown}; exact source SHA CI must pass before release. ${check_url}" >&2
-                exit 1
-              fi
-              continue
-            fi
+      - name: Resolve gosec version
+        id: gosec_version
+        run: echo "value=$(make --silent print-gosec-version)" >> "$GITHUB_OUTPUT"
 
-            status_result="$(
-              jq -r \
-                --arg context "${context}" \
-                --arg integration_id "${integration_id}" '
-                  [
-                    .statuses[]
-                    | select(.context == $context)
-                    | select(
-                        ($integration_id == "null")
-                        or ((.creator.id // -1 | tostring) == $integration_id)
-                      )
-                  ]
-                  | if length == 0 then
-                      empty
-                    else
-                      .[0]
-                      | "status\t\(.state // "")\t\(.target_url // "")"
-                    end
-                ' "${statuses_file}"
-            )"
-            if [ -z "${status_result}" ]; then
-              echo "::error::Required check ${context} is absent for exact source SHA ${source_sha}; refusing release promotion." >&2
-              exit 1
-            fi
+      - name: Install Go tooling
+        env:
+          GOSEC_VERSION: ${{ steps.gosec_version.outputs.value }}
+        run: |
+          make tools-install
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-            IFS=$'\t' read -r status_kind status_state status_url <<< "${status_result}"
-            if [ "${status_state}" != "success" ]; then
-              echo "::error::Required status ${context} for ${source_sha} is ${status_state:-unknown}; exact source SHA CI must pass before release. ${status_url}" >&2
-              exit 1
-            fi
-          done < <(jq -r '.[] | [.context, (.integration_id | tostring)] | @tsv' "${required_file}")
+      - name: Run exact source CI gate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          parent_sha="$(git rev-parse "${SOURCE_SHA}^")"
+          MEMORY_BENCH_BASE="${parent_sha}" make ci
 
+      - name: Verify demo assets
+        run: make demos-check
   build-linux-windows:
     needs:
       - verify-source-ci
