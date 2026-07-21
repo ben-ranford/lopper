@@ -105,7 +105,6 @@ jobs:
 
       - name: Enforce feature flags on PRs
         id: enforce_flags
-        continue-on-error: true
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -115,11 +114,11 @@ jobs:
             > "${RUNNER_TEMP}/feature-flag-comment-inputs/feature-flag-enforcement.md"
 
       - name: Fetch tags for release PR guidance
-        if: ${{ steps.classify_pr.outputs.release_pr == 'true' }}
+        if: ${{ always() && steps.classify_pr.outputs.release_pr == 'true' }}
         run: git fetch --tags --force
 
       - name: Capture previous release feature catalog
-        if: ${{ steps.classify_pr.outputs.release_pr == 'true' }}
+        if: ${{ always() && steps.classify_pr.outputs.release_pr == 'true' }}
         run: |
           set -euo pipefail
           previous_catalog=".artifacts/previous-release-features.json"
@@ -131,7 +130,7 @@ jobs:
           fi
 
       - name: Write release feature guidance
-        if: ${{ steps.classify_pr.outputs.release_pr == 'true' }}
+        if: ${{ always() && steps.classify_pr.outputs.release_pr == 'true' }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           RELEASE_WORKFLOW_URL: ${{ format('https://github.com/{0}/actions/workflows/graduate-feature.yml', github.repository) }}
@@ -245,7 +244,7 @@ jobs:
           compression-level: "0"
 
       - name: Fail on feature flag enforcement errors
-        if: ${{ steps.enforce_flags.outcome == 'failure' }}
+        if: ${{ always() && steps.enforce_flags.outcome == 'failure' }}
         run: |
           echo "Feature flag enforcement failed. See the summary above for the added flags and any violations."
           exit 1

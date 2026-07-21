@@ -109,12 +109,40 @@ jobs:
               throw new Error('bounded comment artifact metadata is invalid or oversized');
             }
 
+            if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) {
+              throw new Error('workflow_run did not provide a valid attempt number');
+            }
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRunAttempt,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                attempt_number: run.run_attempt,
+                per_page: 100,
+              },
+            );
+            const enforcementSteps = jobs.flatMap((job) =>
+              (job.steps ?? []).filter(
+                (step) => step.name === 'Enforce feature flags on PRs',
+              ),
+            );
+            if (enforcementSteps.length !== 1) {
+              throw new Error(
+                `expected exactly one feature flag enforcement step; found ${enforcementSteps.length}`,
+              );
+            }
+            const [enforcementStep] = enforcementSteps;
+            if (!['success', 'failure', 'cancelled', 'skipped'].includes(enforcementStep.conclusion)) {
+              throw new Error('feature flag enforcement step has an invalid conclusion');
+            }
+
             core.setOutput('artifact-id', String(artifact.id));
             core.setOutput('artifact-size', String(artifact.size_in_bytes));
             core.exportVariable('PR_NUMBER', String(prNumber));
             core.exportVariable(
               'ENFORCEMENT_FAILED',
-              String(run.conclusion !== 'success'),
+              String(enforcementStep.conclusion === 'failure'),
             );
             core.exportVariable(
               'FEATURE_PR',

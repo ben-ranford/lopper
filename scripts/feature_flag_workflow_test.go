@@ -122,6 +122,76 @@ func TestFeatureFlagCommentResolverRejectsOversizedArtifactBeforeDownload(t *tes
 	}
 }
 
+func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		jobs          []map[string]any
+		wantFailed    string
+		wantErrorPart string
+	}{
+		{
+			name: "unrelated failure does not become enforcement failure",
+			jobs: []map[string]any{{"steps": []map[string]any{
+				{"name": "Enforce feature flags on PRs", "conclusion": "success"},
+				{"name": "Write release feature guidance", "conclusion": "failure"},
+			}}},
+			wantFailed: "false",
+		},
+		{
+			name: "enforcement failure is preserved",
+			jobs: []map[string]any{{"steps": []map[string]any{
+				{"name": "Enforce feature flags on PRs", "conclusion": "failure"},
+				{"name": "Write release feature guidance", "conclusion": "success"},
+			}}},
+			wantFailed: "true",
+		},
+		{
+			name: "ambiguous enforcement steps fail closed",
+			jobs: []map[string]any{{"steps": []map[string]any{
+				{"name": "Enforce feature flags on PRs", "conclusion": "success"},
+				{"name": "Enforce feature flags on PRs", "conclusion": "failure"},
+			}}},
+			wantErrorPart: "expected exactly one feature flag enforcement step",
+		},
+	}
+
+	resolver := featureFlagCommentResolverScript(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			run := featureFlagWorkflowRun([]map[string]any{{"number": 7}})
+			run["conclusion"] = "failure"
+			result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+				"run":             run,
+				"pulls":           []map[string]any{featureFlagPull(7, "open")},
+				"associatedPulls": []map[string]any{},
+				"artifacts": []map[string]any{
+					{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+				},
+				"jobs": tt.jobs,
+			})
+			if tt.wantErrorPart != "" {
+				if result.OK {
+					t.Fatal("resolver accepted ambiguous enforcement step results")
+				}
+				if !strings.Contains(result.Error, tt.wantErrorPart) {
+					t.Fatalf("resolver error = %q, want %q", result.Error, tt.wantErrorPart)
+				}
+				return
+			}
+			if !result.OK {
+				t.Fatalf("resolver rejected named enforcement step fixture: %s", result.Error)
+			}
+			if got := result.Exported["ENFORCEMENT_FAILED"]; got != tt.wantFailed {
+				t.Fatalf("ENFORCEMENT_FAILED = %q, want %q", got, tt.wantFailed)
+			}
+		})
+	}
+}
+
 func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
 	t.Parallel()
 
@@ -329,7 +399,9 @@ const github = {
     }
     if (method === listJobs) {
       calls.jobs += 1;
-      return fixture.jobs || [];
+      return fixture.jobs || [{ steps: [
+        { name: 'Enforce feature flags on PRs', conclusion: 'success' },
+      ] }];
     }
     throw new Error('unexpected paginated API method');
   },
@@ -417,6 +489,25 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		{label: "feature flag enforcement checkout persist-credentials", got: checkout.With["persist-credentials"], want: "false"},
 	})
 
+	enforceFlags := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Enforce feature flags on PRs")
+	if enforceFlags.ContinueOnError {
+		t.Fatal("feature flag enforcement step must expose its real conclusion to the jobs API")
+	}
+	for _, stepName := range []string{
+		"Fetch tags for release PR guidance",
+		"Capture previous release feature catalog",
+		"Write release feature guidance",
+	} {
+		step := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", stepName)
+		if step.If != "${{ always() && steps.classify_pr.outputs.release_pr == 'true' }}" {
+			t.Fatalf("%s must run after an enforcement failure when this is a release PR", stepName)
+		}
+	}
+	failEnforcement := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Fail on feature flag enforcement errors")
+	if failEnforcement.If != "${{ always() && steps.enforce_flags.outcome == 'failure' }}" {
+		t.Fatal("feature flag failure step must preserve the failed enforcement job result")
+	}
+
 	validateUpload := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Validate and stage bounded comment inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag input validation id", got: validateUpload.ID, want: "validate_comment_inputs"},
@@ -501,8 +592,12 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		"artifact.size_in_bytes > maxArtifactBytes",
 		"core.setOutput('artifact-id', String(artifact.id))",
 		"core.setOutput('artifact-size', String(artifact.size_in_bytes))",
+		"github.rest.actions.listJobsForWorkflowRunAttempt",
+		"attempt_number: run.run_attempt",
+		"step.name === 'Enforce feature flags on PRs'",
+		"enforcementSteps.length !== 1",
 		"core.exportVariable('PR_NUMBER', String(prNumber))",
-		"String(run.conclusion !== 'success')",
+		"String(enforcementStep.conclusion === 'failure')",
 		"String(/^feat(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title))",
 		"String(pull.head.ref.startsWith('release-please--branches--'))",
 	})
@@ -590,6 +685,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		"actions/checkout@",
 		"go run ./",
 		"workflow_run.pull_requests[0]",
+		"String(run.conclusion !== 'success')",
 		"enforcement_failed.txt",
 		"feature_pr.txt",
 		"release_pr.txt",

@@ -106,6 +106,7 @@ func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type workflowStepConfig struct {
+	ContinueOnError  bool              `yaml:"continue-on-error"`
 	Name             string            `yaml:"name"`
 	ID               string            `yaml:"id"`
 	If               string            `yaml:"if"`
