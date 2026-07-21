@@ -243,6 +243,7 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 	})
 	assertWorkflowStepRunContainsAll(t, rejectOverrides, "preview release override guard", []string{
 		`printf '%s\n' "${PR_BODY}"`,
+		`grep -Eiq '(BEGIN|END)_COMMIT_OVERRIDE' "${pr_body}"`,
 		`(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)`,
 		`git log --format=%B "origin/${base_ref}..HEAD"`,
 		`git log --format=%s "origin/${base_ref}..HEAD"`,
