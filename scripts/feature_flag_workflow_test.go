@@ -524,8 +524,11 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 	}
 
 	checkout := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Checkout")
+	setupGo := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Setup Go")
 	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature flag enforcement checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
 		{label: "feature flag enforcement checkout persist-credentials", got: checkout.With["persist-credentials"], want: "false"},
+		{label: "feature flag enforcement setup-go action", got: setupGo.Uses, want: "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c"},
 	})
 
 	enforceFlags := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Enforce feature flags on PRs")
@@ -582,6 +585,8 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		"issues: write",
 		"pull-requests: write",
 		"actions/github-script@",
+		"actions/checkout@v",
+		"actions/setup-go@v",
 		"publish-comments:",
 		"enforcement_failed.txt",
 		"feature_pr.txt",
