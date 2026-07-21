@@ -71,11 +71,14 @@ func TestPythonRuntimeSymbolStripsFileSuffixes(t *testing.T) {
 }
 
 func TestPythonRuntimeResolutionBranches(t *testing.T) {
-	if got := normalizeRuntimeDependency("  custom_pkg  ", runtimeLanguageJSTS); got != "custom_pkg" {
+	if got := normalizeRuntimeDependency("  My__Package  ", runtimeLanguageJSTS); got != "My__Package" {
 		t.Fatalf("expected non-Python dependency to preserve trimmed value, got %q", got)
 	}
 	if got := normalizeRuntimeDependency("  ", runtimeLanguagePython); got != "" {
 		t.Fatalf("expected blank dependency to stay blank, got %q", got)
+	}
+	if got := normalizeRuntimeDependency(" My__Package ", runtimeLanguagePython); got != "my-package" {
+		t.Fatalf("expected Python dependency to use canonical PyPI key, got %q", got)
 	}
 	if got := dependencyFromEventForLanguage(Event{Dependency: "PIL"}, runtimeLanguagePython); got != "pillow" {
 		t.Fatalf("expected direct Python dependency alias to normalize, got %q", got)

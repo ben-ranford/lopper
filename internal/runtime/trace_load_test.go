@@ -63,6 +63,21 @@ func TestLoadTracePythonLanguageEvents(t *testing.T) {
 	}
 }
 
+func TestLoadTracePythonLanguageEventsCanonicalizePyPIKeys(t *testing.T) {
+	trace, err := loadTraceFromContent(t, `{"language":"python","dependency":"My__Package","module":"My__Package.client"}`+"\n"+`{"language":"python","dependency":"my_.package","module":"my_.package.api"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "my-package"}
+	if got := trace.DependencyLoadsByLanguage[key]; got != 2 {
+		t.Fatalf("expected canonical my-package load count=2, got %d from %#v", got, trace.DependencyLoadsByLanguage)
+	}
+	if len(trace.DependencyLoadsByLanguage) != 1 {
+		t.Fatalf("expected one canonical Python dependency key, got %#v", trace.DependencyLoadsByLanguage)
+	}
+}
+
 func TestLoadTraceInvalidLine(t *testing.T) {
 	if _, err := loadTraceFromContent(t, "{not-json}\n"); err == nil {
 		t.Fatalf("expected parse error for invalid NDJSON")

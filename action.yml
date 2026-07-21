@@ -15,6 +15,54 @@ inputs:
     description: Repository path to analyse.
     required: false
     default: .
+  mode:
+    description: 'Execution mode: analyse, dashboard, or pr-review. dashboard requires action-dashboard-mode-preview; pr-review requires dependency-surface-pr-review-preview.'
+    required: false
+    default: analyse
+  dashboard-config:
+    description: Dashboard config file path for dashboard mode.
+    required: false
+    default: ''
+  dashboard-repos:
+    description: Comma-separated repository paths for dashboard mode.
+    required: false
+    default: ''
+  dashboard-format:
+    description: 'Dashboard output format: json, csv, html, slack-summary, teams-summary, or cyclonedx-json.'
+    required: false
+    default: ''
+  dashboard-output:
+    description: Dashboard output file path.
+    required: false
+    default: ''
+  pr-base:
+    description: Full immutable base commit SHA for pr-review mode.
+    required: false
+    default: ''
+  pr-head:
+    description: Full immutable head commit SHA for pr-review mode.
+    required: false
+    default: ''
+  pr-review-format:
+    description: 'PR review output format: markdown or json.'
+    required: false
+    default: markdown
+  pr-review-output:
+    description: PR review output file path.
+    required: false
+    default: ''
+  pr-fail-on-regression:
+    description: Fail pr-review mode when new regression rows are detected.
+    required: false
+    default: 'false'
+  pr-material-waste-bytes:
+    description: Estimated unused byte increase required for a material PR regression.
+    required: false
+    default: '1024'
+  pr-max-rows:
+    description: Maximum Markdown rows per PR review section.
+    required: false
+    default: '20'
   dependency:
     description: Optional single dependency target. When set, top is ignored.
     required: false
@@ -22,15 +70,13 @@ inputs:
   top:
     description: Number of top dependencies to analyse when dependency is not set.
     required: false
-    default: '20'
   language:
-    description: Language adapter to use, such as auto, all, js-ts, python, go, rust, dotnet, swift, dart, or powershell.
+    description: Language adapter to use, such as auto, all, js-ts, python, go, rust, dotnet, swift, dart, or powershell. Defaults to all for analyse and pr-review, and auto for dashboard.
     required: false
-    default: all
+    default: ''
   scope-mode:
     description: 'Analysis scope mode: repo, package, or changed-packages.'
     required: false
-    default: package
   format:
     description: 'Output format: table, csv, json, sarif, pr-comment, or cyclonedx-json. cyclonedx-json requires enable-feature=sbom-attestation-exports-preview.'
     required: false
@@ -175,6 +221,18 @@ runs:
       shell: bash
       env:
         INPUT_REPO: ${{ inputs.repo }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_DASHBOARD_CONFIG: ${{ inputs.dashboard-config }}
+        INPUT_DASHBOARD_REPOS: ${{ inputs.dashboard-repos }}
+        INPUT_DASHBOARD_FORMAT: ${{ inputs.dashboard-format }}
+        INPUT_DASHBOARD_OUTPUT: ${{ inputs.dashboard-output }}
+        INPUT_PR_BASE: ${{ inputs.pr-base }}
+        INPUT_PR_HEAD: ${{ inputs.pr-head }}
+        INPUT_PR_REVIEW_FORMAT: ${{ inputs.pr-review-format }}
+        INPUT_PR_REVIEW_OUTPUT: ${{ inputs.pr-review-output }}
+        INPUT_PR_FAIL_ON_REGRESSION: ${{ inputs.pr-fail-on-regression }}
+        INPUT_PR_MATERIAL_WASTE_BYTES: ${{ inputs.pr-material-waste-bytes }}
+        INPUT_PR_MAX_ROWS: ${{ inputs.pr-max-rows }}
         INPUT_DEPENDENCY: ${{ inputs.dependency }}
         INPUT_TOP: ${{ inputs.top }}
         INPUT_LANGUAGE: ${{ inputs.language }}

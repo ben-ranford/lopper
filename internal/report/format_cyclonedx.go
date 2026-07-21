@@ -18,13 +18,14 @@ const (
 )
 
 type cycloneDXBOM struct {
-	Schema      string               `json:"$schema,omitempty"`
-	BOMFormat   string               `json:"bomFormat"`
-	SpecVersion string               `json:"specVersion"`
-	Version     int                  `json:"version"`
-	Metadata    *cycloneDXMetadata   `json:"metadata,omitempty"`
-	Components  []cycloneDXComponent `json:"components"`
-	Properties  []cycloneDXProperty  `json:"properties,omitempty"`
+	Schema          string                   `json:"$schema,omitempty"`
+	BOMFormat       string                   `json:"bomFormat"`
+	SpecVersion     string                   `json:"specVersion"`
+	Version         int                      `json:"version"`
+	Metadata        *cycloneDXMetadata       `json:"metadata,omitempty"`
+	Components      []cycloneDXComponent     `json:"components"`
+	Properties      []cycloneDXProperty      `json:"properties,omitempty"`
+	Vulnerabilities []cycloneDXVulnerability `json:"vulnerabilities,omitempty"`
 }
 
 type cycloneDXMetadata struct {
@@ -41,6 +42,8 @@ type cycloneDXComponent struct {
 	BOMRef     string                   `json:"bom-ref,omitempty"`
 	Type       string                   `json:"type"`
 	Name       string                   `json:"name"`
+	Version    string                   `json:"version,omitempty"`
+	PURL       string                   `json:"purl,omitempty"`
 	Licenses   []cycloneDXLicenseChoice `json:"licenses,omitempty"`
 	Properties []cycloneDXProperty      `json:"properties,omitempty"`
 }
@@ -58,14 +61,25 @@ type cycloneDXProperty struct {
 	Value string `json:"value"`
 }
 
+type cycloneDXDependencyInstance struct {
+	dependency DependencyReport
+	component  cycloneDXComponent
+}
+
+type cycloneDXRefAllocator struct {
+	reserved map[string]struct{}
+	used     map[string]struct{}
+}
+
 func formatCycloneDXJSON(reportData Report) (string, error) {
+	instances := buildCycloneDXDependencyInstances(reportData)
 	bom := cycloneDXBOM{
 		Schema:      cycloneDXSchemaURL,
 		BOMFormat:   cycloneDXBOMFormat,
 		SpecVersion: cycloneDXSpecVersion,
 		Version:     1,
 		Metadata:    formatCycloneDXMetadata(reportData),
-		Components:  formatCycloneDXComponents(reportData),
+		Components:  formatCycloneDXComponents(instances),
 		Properties:  formatCycloneDXBOMProperties(reportData),
 	}
 
@@ -90,38 +104,26 @@ func formatCycloneDXMetadata(reportData Report) *cycloneDXMetadata {
 	return &metadata
 }
 
-func formatCycloneDXComponents(reportData Report) []cycloneDXComponent {
-	dependencies := sortedCycloneDXDependencies(reportData.Dependencies)
-	components := make([]cycloneDXComponent, 0, len(dependencies))
-	baselineDeltas := cycloneDXBaselineDeltasByDependency(reportData)
-	baselineDeltaIndexes := make(map[string]int, len(baselineDeltas))
-	seenRefs := map[string]int{}
-
-	for _, dep := range dependencies {
-		key := dependencyKey(dep)
-		delta := DependencyDelta{}
-		if deltaIndex := baselineDeltaIndexes[key]; deltaIndex < len(baselineDeltas[key]) {
-			delta = baselineDeltas[key][deltaIndex]
-			baselineDeltaIndexes[key] = deltaIndex + 1
-		}
-
-		ref := cycloneDXBOMRef(dep)
-		seenRefs[ref]++
-		if seenRefs[ref] > 1 {
-			ref += ":" + strconv.Itoa(seenRefs[ref])
-		}
-
-		component := cycloneDXComponent{
-			BOMRef:     ref,
-			Type:       "library",
-			Name:       cycloneDXComponentName(dep),
-			Licenses:   formatCycloneDXLicenses(dep.License),
-			Properties: formatCycloneDXComponentProperties(dep, delta),
-		}
-		components = append(components, component)
+func formatCycloneDXComponents(instances []cycloneDXDependencyInstance) []cycloneDXComponent {
+	components := make([]cycloneDXComponent, 0, len(instances))
+	for _, instance := range instances {
+		components = append(components, instance.component)
 	}
-
 	return components
+}
+
+func cycloneDXComponentVersion(dep DependencyReport) string {
+	if dep.Identity == nil {
+		return ""
+	}
+	return strings.TrimSpace(dep.Identity.Version)
+}
+
+func cycloneDXComponentPURL(dep DependencyReport) string {
+	if dep.Identity == nil {
+		return ""
+	}
+	return strings.TrimSpace(dep.Identity.PURL)
 }
 
 func cycloneDXComponentName(dep DependencyReport) string {
@@ -197,8 +199,7 @@ func formatCycloneDXComponentProperties(dep DependencyReport, baselineDelta Depe
 	if strings.TrimSpace(dep.Name) == "" {
 		appendCycloneDXProperty(&props, "lopper:dependency:name:status", "unknown")
 	}
-	appendCycloneDXProperty(&props, "lopper:dependency:version:status", "unknown")
-	appendCycloneDXProperty(&props, "lopper:dependency:purl:status", "unavailable")
+	appendCycloneDXIdentityProperties(&props, dep.Identity)
 	appendCycloneDXProperty(&props, "lopper:used-exports-count", strconv.Itoa(dep.UsedExportsCount))
 	appendCycloneDXProperty(&props, "lopper:total-exports-count", strconv.Itoa(dep.TotalExportsCount))
 	appendCycloneDXProperty(&props, "lopper:used-percent", formatCycloneDXFloat(dep.UsedPercent))
@@ -221,6 +222,23 @@ func formatCycloneDXComponentProperties(dep DependencyReport, baselineDelta Depe
 	appendCycloneDXProvenanceProperties(&props, dep.Provenance)
 	appendCycloneDXBaselineDeltaProperties(&props, baselineDelta)
 	return sortedCycloneDXProperties(props)
+}
+
+func appendCycloneDXIdentityProperties(props *[]cycloneDXProperty, identity *DependencyIdentity) {
+	if identity == nil {
+		appendCycloneDXProperty(props, "lopper:dependency:version:status", "unknown")
+		appendCycloneDXProperty(props, "lopper:dependency:purl:status", "unavailable")
+		return
+	}
+	appendCycloneDXProperty(props, "lopper:dependency:ecosystem", identity.Ecosystem)
+	appendCycloneDXProperty(props, "lopper:dependency:identity-name", identity.Name)
+	appendCycloneDXProperty(props, "lopper:dependency:namespace", identity.Namespace)
+	appendCycloneDXProperty(props, "lopper:dependency:version:status", identity.VersionStatus)
+	appendCycloneDXProperty(props, "lopper:dependency:purl:status", identity.PURLStatus)
+	appendCycloneDXProperty(props, "lopper:dependency:identity-source", identity.Source)
+	appendCycloneDXProperty(props, "lopper:dependency:identity-confidence", identity.Confidence)
+	appendCycloneDXJSONProperty(props, "lopper:dependency:identity-evidence", sortedStrings(identity.Evidence))
+	appendCycloneDXJSONProperty(props, "lopper:dependency:identity-conflicts", sortedStrings(identity.Conflicts))
 }
 
 func appendCycloneDXVulnerabilityProperties(props *[]cycloneDXProperty, findings []VulnerabilityFinding) {
@@ -421,10 +439,21 @@ func cycloneDXDependencySortKey(dep DependencyReport) string {
 		BOMRef:     cycloneDXBOMRef(dep),
 		Type:       "library",
 		Name:       cycloneDXComponentName(dep),
+		Version:    cycloneDXComponentVersion(dep),
+		PURL:       cycloneDXComponentPURL(dep),
 		Licenses:   formatCycloneDXLicenses(dep.License),
 		Properties: formatCycloneDXComponentProperties(dep, DependencyDelta{}),
 	}
-	parts := []string{dep.Language, dep.Name, component.BOMRef, component.Type, component.Name, strconv.Itoa(len(component.Licenses))}
+	parts := []string{
+		dep.Language,
+		dep.Name,
+		component.Version,
+		component.PURL,
+		component.BOMRef,
+		component.Type,
+		component.Name,
+		strconv.Itoa(len(component.Licenses)),
+	}
 	for _, license := range component.Licenses {
 		parts = append(parts, license.License.Name)
 	}
@@ -435,32 +464,67 @@ func cycloneDXDependencySortKey(dep DependencyReport) string {
 	return cycloneDXSortKeyFromParts(parts)
 }
 
-func cycloneDXBaselineDeltasByDependency(reportData Report) map[string][]DependencyDelta {
-	if reportData.BaselineComparison == nil || len(reportData.BaselineComparison.Dependencies) == 0 {
-		return nil
+func buildCycloneDXDependencyInstances(reportData Report) []cycloneDXDependencyInstance {
+	dependencies := sortedCycloneDXDependencies(reportData.Dependencies)
+	baselineDeltas := baselineDependencyDeltasForDependencies(dependencies, reportData.BaselineComparison)
+	instances := make([]cycloneDXDependencyInstance, 0, len(dependencies))
+	baseRefs := make([]string, 0, len(dependencies))
+	for _, dep := range dependencies {
+		baseRefs = append(baseRefs, cycloneDXBOMRef(dep))
 	}
-	deltas := make(map[string][]DependencyDelta, len(reportData.BaselineComparison.Dependencies))
-	for _, delta := range reportData.BaselineComparison.Dependencies {
-		dep := DependencyReport{Name: delta.Name, Language: delta.Language}
-		key := dependencyKey(dep)
-		deltas[key] = append(deltas[key], delta)
+	refAllocator := newCycloneDXRefAllocator(baseRefs)
+
+	for index, dep := range dependencies {
+		delta := DependencyDelta{}
+		if baselineDeltas[index] != nil {
+			delta = *baselineDeltas[index]
+		}
+
+		ref := refAllocator.allocate(cycloneDXBOMRef(dep))
+		instances = append(instances, cycloneDXDependencyInstance{
+			dependency: dep,
+			component: cycloneDXComponent{
+				BOMRef:     ref,
+				Type:       "library",
+				Name:       cycloneDXComponentName(dep),
+				Version:    cycloneDXComponentVersion(dep),
+				PURL:       cycloneDXComponentPURL(dep),
+				Licenses:   formatCycloneDXLicenses(dep.License),
+				Properties: formatCycloneDXComponentProperties(dep, delta),
+			},
+		})
 	}
-	for key, values := range deltas {
-		deltas[key] = sortedCycloneDXByCachedStringKey(values, cycloneDXBaselineDeltaSortKey)
-	}
-	return deltas
+
+	return instances
 }
 
-func cycloneDXBaselineDeltaSortKey(delta DependencyDelta) string {
-	properties := make([]cycloneDXProperty, 0, 10)
-	appendCycloneDXBaselineDeltaProperties(&properties, delta)
-	properties = sortedCycloneDXProperties(properties)
-	parts := make([]string, 0, 1+(len(properties)*2))
-	parts = append(parts, strconv.Itoa(len(properties)))
-	for _, property := range properties {
-		parts = append(parts, property.Name, property.Value)
+func newCycloneDXRefAllocator(bases []string) cycloneDXRefAllocator {
+	reserved := make(map[string]struct{}, len(bases))
+	for _, base := range bases {
+		reserved[base] = struct{}{}
 	}
-	return cycloneDXSortKeyFromParts(parts)
+	return cycloneDXRefAllocator{
+		reserved: reserved,
+		used:     make(map[string]struct{}, len(bases)),
+	}
+}
+
+func (a *cycloneDXRefAllocator) allocate(base string) string {
+	if _, exists := a.used[base]; !exists {
+		a.used[base] = struct{}{}
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := base + ":" + strconv.Itoa(suffix)
+		if _, reserved := a.reserved[candidate]; reserved {
+			continue
+		}
+		if _, exists := a.used[candidate]; exists {
+			continue
+		}
+		a.used[candidate] = struct{}{}
+		return candidate
+	}
 }
 
 func cycloneDXSortKeyFromParts(parts []string) string {

@@ -87,6 +87,21 @@ func parseCarthageResolvedDependencies(content []byte) []carthageDependency {
 	return parseCarthageDependencies(content, true)
 }
 
+// ParseCarthageResolvedIdentities returns normalized package identities from
+// Cartfile.resolved. Non-version references have an empty Version.
+func ParseCarthageResolvedIdentities(content []byte) []CarthageResolvedIdentity {
+	entries := parseCarthageResolvedDependencies(content)
+	identities := make([]CarthageResolvedIdentity, 0, len(entries))
+	for _, entry := range entries {
+		version, _ := classifyCarthageReference(entry.Reference)
+		identities = append(identities, CarthageResolvedIdentity{
+			Name:    entry.Dependency,
+			Version: version,
+		})
+	}
+	return identities
+}
+
 func parseCarthageDependencies(content []byte, requireReference bool) []carthageDependency {
 	lines := strings.Split(string(content), "\n")
 	entries := make([]carthageDependency, 0, len(lines))

@@ -110,8 +110,9 @@ lopper analyse --top 20 --repo . --language all \
 The CycloneDX export preserves Lopper-specific usage, reachability, runtime,
 license, provenance, waste, removal-candidate, and baseline context as
 component properties. It does not infer missing versions or package URLs, and it
-is not a full transitive dependency inventory. SPDX JSON, dashboard-wide
-combined SBOMs, and signed attestations are deferred from the first preview.
+is not a full transitive dependency inventory. SPDX 2.3 JSON is available behind
+`spdx-sbom-export-preview`, and dashboard-wide CycloneDX portfolio exports are
+available behind `dashboard-cyclonedx-portfolio-preview`.
 
 Launch the interactive TUI:
 
@@ -224,6 +225,18 @@ lopper dashboard --config lopper-org.yml --format json
 ```
 
 Remote dashboard config entries can use `repoUrl` with the `dashboard-remote-repos` feature and may pin exactly one of `branch`, `tag`, or full `commit` SHA. Unpinned remote entries continue to track remote `HEAD`; dashboard JSON, CSV, HTML, and saved dashboard baselines include the resolved commit SHA for materialized remote repos.
+
+Preview pull request dependency-surface review:
+
+```bash
+lopper pr-review \
+  --base 0123456789abcdef0123456789abcdef01234567 \
+  --head fedcba9876543210fedcba9876543210fedcba98 \
+  --format markdown \
+  --enable-feature dependency-surface-pr-review-preview
+```
+
+`pr-review` requires explicit immutable SHAs, analyzes detached worktrees without running package-manager commands, and separates added, removed, upgraded/downgraded, policy-changed, newly reachable, and materially worsened rows.
 
 ## Languages
 
@@ -432,6 +445,7 @@ For watched hotspot packages, run `make mem-profiles` to capture alloc-space sum
 
 - Report schema: `docs/report-schema.json`, `docs/report-schema.md`
 - Multi-repo dashboard: `docs/dashboard.md`
+- Pull request dependency-surface review: `docs/pr-review.md`
 - Memory profiling workflow: `docs/memory-profiling.md`
 - SARIF code scanning: `docs/sarif-code-scanning.md`
 - Threshold tuning: `docs/threshold-tuning.md`

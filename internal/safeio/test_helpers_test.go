@@ -148,6 +148,8 @@ func (f *fakeFileSystem) OpenRootNoFollow(name string) (Root, error) {
 
 type fakeRoot struct {
 	Root
+	chmod    func(name string, perm os.FileMode) error
+	mkdirAll func(name string, perm os.FileMode) error
 	open     func(name string) (File, error)
 	openFile func(name string, flag int, perm os.FileMode) (File, error)
 	openRoot func(name string) (Root, error)
@@ -191,6 +193,20 @@ func (r *fakeRoot) Mkdir(name string, perm os.FileMode) error {
 		return r.mkdir(name, perm)
 	}
 	return r.Root.Mkdir(name, perm)
+}
+
+func (r *fakeRoot) Chmod(name string, perm os.FileMode) error {
+	if r.chmod != nil {
+		return r.chmod(name, perm)
+	}
+	return r.Root.Chmod(name, perm)
+}
+
+func (r *fakeRoot) MkdirAll(name string, perm os.FileMode) error {
+	if r.mkdirAll != nil {
+		return r.mkdirAll(name, perm)
+	}
+	return r.Root.MkdirAll(name, perm)
 }
 
 func (r *fakeRoot) Rename(oldName, newName string) error {

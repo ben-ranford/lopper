@@ -35,12 +35,16 @@ func ParseArgs(args []string) (app.Request, error) {
 		return parseDashboard(args[1:], req)
 	case "baseline":
 		return parseBaseline(args[1:], req)
+	case "pr-review":
+		return parsePRReview(args[1:], req)
 	case "features":
 		return parseFeatures(args[1:], req)
 	case "profile":
 		return parseProfile(args[1:], req)
 	case "mcp":
 		return parseMCP(args[1:], req)
+	case "advisory":
+		return parseAdvisory(args[1:], req)
 	default:
 		return req, fmt.Errorf("unknown command: %s", args[0])
 	}

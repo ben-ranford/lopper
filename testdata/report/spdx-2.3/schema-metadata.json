@@ -1,0 +1,19 @@
+{
+  "upstream": "https://github.com/spdx/spdx-spec",
+  "tag": "v2.3",
+  "tagObject": "f7f7bce5511a23fe3c9d8a1edca0d870a7d0bea5",
+  "commit": "aadf3b0b8dbbabdb4d880b0fc714255fea436ff7",
+  "license": "CC-BY-3.0",
+  "licenseURI": "https://spdx.dev/spdx-specification-2-3-web-version/#h.jxpfx0ykyb60",
+  "attribution": "SPDX Specification 2.3 JSON schema from the SPDX project, vendored unmodified for offline test validation.",
+  "files": [
+    {
+      "path": "spdx-schema.json",
+      "upstreamPath": "schemas/spdx-schema.json",
+      "rawURL": "https://raw.githubusercontent.com/spdx/spdx-spec/aadf3b0b8dbbabdb4d880b0fc714255fea436ff7/schemas/spdx-schema.json",
+      "bytes": 45312,
+      "gitBlobSHA1": "ee61e6686e885f8139c132647fd0b4f483b8fb81",
+      "sha256": "239208b7ac287b3cf5d9a9af23f9d69863971102a5e1587a27a398b43490b89b"
+    }
+  ]
+}

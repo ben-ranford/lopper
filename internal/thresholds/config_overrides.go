@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const duplicateThresholdErrFmt = "threshold %s is defined more than once"
@@ -207,6 +210,11 @@ type advisorySourceConfig struct {
 	set    bool
 }
 
+type vulnerabilityExceptionConfig struct {
+	exceptions []report.VulnerabilityException
+	set        bool
+}
+
 func (a *rawAdvisories) toAdvisorySourceConfig(configPath string) advisorySourceConfig {
 	if a == nil || a.Source == nil {
 		return advisorySourceConfig{}
@@ -221,11 +229,94 @@ func (a *rawAdvisories) toAdvisorySourceConfig(configPath string) advisorySource
 	return advisorySourceConfig{source: filepath.Clean(filepath.Join(filepath.Dir(configPath), source)), set: true}
 }
 
+func (a *rawAdvisories) toVulnerabilityExceptionConfig(configPath string) (vulnerabilityExceptionConfig, error) {
+	if a == nil || len(a.Exceptions) == 0 {
+		return vulnerabilityExceptionConfig{}, nil
+	}
+	exceptions := make([]report.VulnerabilityException, 0, len(a.Exceptions))
+	for index, exception := range a.Exceptions {
+		normalized, err := normalizeVulnerabilityException(configPath, index, exception)
+		if err != nil {
+			return vulnerabilityExceptionConfig{}, err
+		}
+		exceptions = append(exceptions, normalized)
+	}
+	return vulnerabilityExceptionConfig{exceptions: exceptions, set: true}, nil
+}
+
+func normalizeVulnerabilityException(configPath string, index int, exception report.VulnerabilityException) (report.VulnerabilityException, error) {
+	normalized := exception
+	normalized.VulnerabilityID = strings.TrimSpace(normalized.VulnerabilityID)
+	normalized.PURL = strings.TrimSpace(normalized.PURL)
+	normalized.Package = strings.TrimSpace(normalized.Package)
+	normalized.Repository = strings.TrimSpace(normalized.Repository)
+	normalized.Path = strings.TrimSpace(normalized.Path)
+	normalized.Owner = strings.TrimSpace(normalized.Owner)
+	normalized.Reason = strings.TrimSpace(normalized.Reason)
+	normalized.Status = strings.ToLower(strings.TrimSpace(normalized.Status))
+	normalized.Justification = strings.TrimSpace(normalized.Justification)
+	normalized.Issued = strings.TrimSpace(normalized.Issued)
+	normalized.Expires = strings.TrimSpace(normalized.Expires)
+	normalized.Source = strings.TrimSpace(normalized.Source)
+	if normalized.Source == "" {
+		normalized.Source = configPath
+	}
+	switch {
+	case normalized.VulnerabilityID == "":
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].vulnerability_id is required", index)
+	case normalized.Owner == "":
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].owner is required", index)
+	case normalized.Reason == "":
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].reason is required", index)
+	case normalized.Expires == "":
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].expires is required", index)
+	}
+	if normalized.Status == "" {
+		normalized.Status = "accepted-risk"
+	}
+	switch normalized.Status {
+	case "accepted-risk", "not-affected", "affected", "resolved", "under-investigation":
+	default:
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].status is unsupported: %s", index, normalized.Status)
+	}
+	if normalized.Justification != "" && report.CycloneDXVEXJustification(normalized.Justification) == "" {
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].justification is unsupported: %s", index, normalized.Justification)
+	}
+	if normalized.PURL == "" && normalized.Package == "" {
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d] must define purl or package scope", index)
+	}
+	if normalized.PURL == "*" || normalized.Package == "*" {
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d] wildcard scopes are not allowed in preview", index)
+	}
+	if !validVulnerabilityExceptionExpiry(normalized.Expires) {
+		return report.VulnerabilityException{}, fmt.Errorf("advisories.exceptions[%d].expires must be RFC3339 or YYYY-MM-DD", index)
+	}
+	return normalized, nil
+}
+
+func validVulnerabilityExceptionExpiry(value string) bool {
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if _, err := time.Parse(layout, value); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeAdvisorySource(base, higher advisorySourceConfig) advisorySourceConfig {
 	if higher.set {
 		return higher
 	}
 	return base
+}
+
+func mergeVulnerabilityExceptions(base, higher vulnerabilityExceptionConfig) vulnerabilityExceptionConfig {
+	if !higher.set && len(higher.exceptions) == 0 {
+		return base
+	}
+	merged := vulnerabilityExceptionConfig{set: base.set || higher.set}
+	merged.exceptions = append(append([]report.VulnerabilityException{}, base.exceptions...), higher.exceptions...)
+	return merged
 }
 
 func normalizePathScope(scope PathScope) PathScope {

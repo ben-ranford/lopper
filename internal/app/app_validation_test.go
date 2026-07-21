@@ -52,6 +52,7 @@ func TestApplyBaselineIfNeededWithBaselineFile(t *testing.T) {
 
 	application := &App{Formatter: report.NewFormatter()}
 	current := report.Report{
+		SchemaVersion: report.SchemaVersion,
 		Dependencies: []report.DependencyReport{
 			{Name: "dep", UsedExportsCount: 4, TotalExportsCount: 10, UsedPercent: 40},
 		},
@@ -65,6 +66,35 @@ func TestApplyBaselineIfNeededWithBaselineFile(t *testing.T) {
 	}
 	if updated.BaselineComparison == nil {
 		t.Fatalf("expected baseline comparison details to be present")
+	}
+	if updated.SchemaVersion != report.SchemaVersion {
+		t.Fatalf("expected current report schema version %q to be preserved, got %q", report.SchemaVersion, updated.SchemaVersion)
+	}
+}
+
+func TestApplyBaselineIfNeededPropagatesAmbiguousLegacyIdentityBridge(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, testBaselinePath)
+	data := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"language":"js-ts","name":"lib","usedExportsCount":1,"totalExportsCount":2,"usedPercent":50}]}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+
+	application := &App{Formatter: report.NewFormatter()}
+	current := report.Report{
+		SchemaVersion: report.SchemaVersion,
+		Dependencies: []report.DependencyReport{
+			{Name: "lib", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50, Identity: &report.DependencyIdentity{PURL: "pkg:npm/lib@1.0.0"}},
+			{Name: "lib", Language: "js-ts", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50, Identity: &report.DependencyIdentity{PURL: "pkg:npm/lib@2.0.0"}},
+		},
+	}
+
+	_, err := application.applyBaselineIfNeeded(current, ".", AnalyseRequest{BaselinePath: path, Format: report.FormatJSON})
+	if !errors.Is(err, report.ErrBaselineAmbiguousIdentityBridge) {
+		t.Fatalf("expected ambiguous identity bridge error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "regenerate the baseline") {
+		t.Fatalf("expected actionable regenerate-baseline guidance, got %v", err)
 	}
 }
 
@@ -332,6 +362,8 @@ affected:
   - package:
       ecosystem: npm
       name: reachable-lib
+    versions:
+      - "1.0.0"
 `
 	assertReachableVulnerabilityThresholdFromAdvisory(t, "osv.yml", advisorySource, "GHSA-osv-vector", "critical")
 }
@@ -342,11 +374,15 @@ affected:
   - package:
       ecosystem: npm
       name: safe-lib
+    versions:
+      - "1.0.0"
     database_specific:
       severity: low
   - package:
       ecosystem: npm
       name: reachable-lib
+    versions:
+      - "1.0.0"
     database_specific:
       severity: high
 `
@@ -367,6 +403,7 @@ func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName st
 				{
 					Language:          "js-ts",
 					Name:              "reachable-lib",
+					Identity:          &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: "1.0.0"},
 					UsedExportsCount:  1,
 					TotalExportsCount: 1,
 					UsedPercent:       100,

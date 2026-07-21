@@ -402,6 +402,9 @@ func TestNormalizeDependencyID(t *testing.T) {
 		want  string
 	}{
 		{input: " My_Package.Name ", want: "my-package-name"},
+		{input: "My__Package.Name", want: "my-package-name"},
+		{input: "my_.package", want: "my-package"},
+		{input: "my-._package", want: "my-package"},
 		{input: "bs4", want: "beautifulsoup4"},
 		{input: "dateutil", want: "python-dateutil"},
 	}
@@ -409,6 +412,19 @@ func TestNormalizeDependencyID(t *testing.T) {
 		if got := normalizeDependencyID(tc.input); got != tc.want {
 			t.Fatalf("normalizeDependencyID(%q): expected %q, got %q", tc.input, tc.want, got)
 		}
+	}
+}
+
+func TestBuildRequestedPythonDependenciesCanonicalizesPyPIAliasRuns(t *testing.T) {
+	dependencies, warnings := buildRequestedPythonDependencies(language.Request{Dependency: "my_.package"}, scanResult{})
+	if len(dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %#v", dependencies)
+	}
+	if dependencies[0].Name != "my-package" {
+		t.Fatalf("expected canonical PEP 503 dependency name, got %#v", dependencies[0])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "no imports found for dependency") {
+		t.Fatalf("expected import-miss warning for canonicalized dependency, got %#v", warnings)
 	}
 }
 

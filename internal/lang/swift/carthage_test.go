@@ -154,6 +154,14 @@ git "https://example.com/internal-kit.git" "abcdef123456"
 	if version != "" || revision == "" {
 		t.Fatalf("expected revision reference classification, got version=%q revision=%q", version, revision)
 	}
+
+	identities := ParseCarthageResolvedIdentities([]byte(`github "ReactiveX/RxSwift" "6.8.0"
+git "https://example.com/internal-kit.git" "abcdef123456"
+`))
+	wantIdentities := []CarthageResolvedIdentity{{Name: "internal-kit"}, {Name: "rxswift", Version: "6.8.0"}}
+	if !slices.Equal(identities, wantIdentities) {
+		t.Fatalf("unexpected resolved Carthage identities: %#v", identities)
+	}
 }
 
 func mustResolveSwiftCarthageFeatureSet(t *testing.T, enabled bool) featureflags.Set {

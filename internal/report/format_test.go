@@ -131,6 +131,34 @@ func TestFormatJSON(t *testing.T) {
 	assertOutputContains(t, output, "repoPath")
 }
 
+func TestFormatJSONOmitsHiddenBaselineLocators(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			Dependencies: []DependencyDelta{{
+				Kind:            DependencyDeltaChanged,
+				Name:            "duplicate",
+				DependencyKey:   "hidden-key",
+				CurrentOrdinal:  3,
+				BaselineOrdinal: 1,
+			}},
+			NewReachableVulnerabilities: []VulnerabilityDelta{{
+				Name:           "duplicate",
+				AdvisoryID:     "GHSA-hidden",
+				DependencyKey:  "hidden-key",
+				CurrentOrdinal: 4,
+			}},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatJSON)
+	if err != nil {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+	if strings.Contains(output, "DependencyKey") || strings.Contains(output, "CurrentOrdinal") || strings.Contains(output, "BaselineOrdinal") || strings.Contains(output, "hidden-key") {
+		t.Fatalf("expected internal baseline locators to stay out of public JSON, got %s", output)
+	}
+}
+
 func TestFormatTableIncludesCodemodApplySummary(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{

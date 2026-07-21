@@ -420,8 +420,7 @@ func localModuleSearchRoots(repoPath string) []string {
 }
 
 func normalizeDependencyID(value string) string {
-	replacer := strings.NewReplacer("_", "-", ".", "-")
-	normalized := replacer.Replace(shared.NormalizeDependencyID(value))
+	normalized := report.CanonicalPackageNameForEcosystem("pypi", shared.NormalizeDependencyID(value))
 	if canonical, ok := pythonKnownImportAliases[normalized]; ok {
 		return canonical
 	}
@@ -429,6 +428,11 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
+	return ShouldSkipDirectory(name)
+}
+
+// ShouldSkipDirectory reports whether Python discovery ignores a directory.
+func ShouldSkipDirectory(name string) bool {
 	return shared.ShouldSkipDir(name, pythonSkippedDirs)
 }
 

@@ -58,6 +58,18 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 	requireInputDescriptions(t, metadata, []string{
 		"version",
 		"repo",
+		"mode",
+		"dashboard-config",
+		"dashboard-repos",
+		"dashboard-format",
+		"dashboard-output",
+		"pr-base",
+		"pr-head",
+		"pr-review-format",
+		"pr-review-output",
+		"pr-fail-on-regression",
+		"pr-material-waste-bytes",
+		"pr-max-rows",
 		"dependency",
 		"top",
 		"language",
@@ -80,14 +92,179 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 	})
 	requireNoInput(t, metadata, "extra-args")
 	requireInputDefault(t, metadata, "version", "action")
+	requireInputDefault(t, metadata, "mode", "analyse")
 	requireInputDefault(t, metadata, "format", "table")
 	requireInputDefault(t, metadata, "cache", "true")
+	requireInputDefault(t, metadata, "dashboard-format", "")
+	requireInputDefault(t, metadata, "pr-review-format", "markdown")
+	requireInputDefault(t, metadata, "top", "")
+	requireInputDefault(t, metadata, "language", "")
+	requireInputDefault(t, metadata, "scope-mode", "")
 
 	requireOutput(t, metadata, "report-path", "${{ steps.analyse.outputs.report-path }}")
 	requireOutput(t, metadata, "lopper-version", "${{ steps.install.outputs.lopper-version }}")
 	requireOutput(t, metadata, "resolved-version", "${{ steps.install.outputs.resolved-version }}")
 	requireScriptStep(t, metadata, "install", "install-lopper.sh")
 	requireScriptStep(t, metadata, "analyse", "run-lopper.sh")
+	requireStepEnv(t, metadata, "analyse", "INPUT_SCOPE_MODE", "${{ inputs.scope-mode }}")
+}
+
+func TestPRReviewDocsFetchCompleteHistoryBeforeAction(t *testing.T) {
+	document, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "pr-review.md"))
+	if err != nil {
+		t.Fatalf("read pr-review documentation: %v", err)
+	}
+	const workflow = "- uses: actions/checkout@v7\n  with:\n    fetch-depth: 0\n\n- uses: ben-ranford/lopper@"
+	if !strings.Contains(string(document), workflow) {
+		t.Fatalf("pr-review workflow must fetch complete history before running the action")
+	}
+}
+
+func TestRunScriptBuildsDashboardCommand(t *testing.T) {
+	env := []string{
+		"INPUT_MODE=dashboard",
+		"INPUT_DASHBOARD_REPOS=./api,./web",
+		"INPUT_DASHBOARD_FORMAT=slack-summary",
+		"INPUT_DASHBOARD_OUTPUT=.artifacts/dashboard.txt",
+		"INPUT_LANGUAGE=all",
+		"INPUT_TOP=15",
+		"INPUT_BASELINE_STORE=.artifacts/dashboard-baselines",
+		"INPUT_ENABLE_FEATURE=action-dashboard-mode-preview,remediation-routing-summaries-preview",
+	}
+	got := runLopperScript(t, env)
+
+	want := []string{
+		"dashboard",
+		"--format", "slack-summary",
+		"--top", "15",
+		"--language", "all",
+		"--output", ".artifacts/dashboard.txt",
+		"--repos", "./api,./web",
+		"--baseline-store", ".artifacts/dashboard-baselines",
+		"--enable-feature", "action-dashboard-mode-preview,remediation-routing-summaries-preview",
+	}
+	assertArgs(t, got, want)
+}
+
+func TestRunScriptPreservesDashboardAutoLanguageDefault(t *testing.T) {
+	env := []string{
+		"INPUT_MODE=dashboard",
+		"INPUT_DASHBOARD_REPOS=./api,./web",
+		"INPUT_LANGUAGE=",
+		"INPUT_ENABLE_FEATURE=action-dashboard-mode-preview",
+	}
+	got := runLopperScript(t, env)
+
+	want := []string{
+		"dashboard",
+		"--top", "20",
+		"--repos", "./api,./web",
+		"--enable-feature", "action-dashboard-mode-preview",
+	}
+	assertArgs(t, got, want)
+}
+
+func TestRunScriptDefaultsAnalyseLanguageToAll(t *testing.T) {
+	env := []string{
+		"INPUT_LANGUAGE=",
+		"INPUT_CACHE=true",
+	}
+	got := runLopperScript(t, env)
+
+	want := []string{
+		"analyse",
+		"--repo", ".",
+		"--language", "all",
+		"--format", "table",
+		"--scope-mode", "package",
+		"--cache=true",
+		"--top", "20",
+		"--runtime-profile", "node-import",
+	}
+	assertArgs(t, got, want)
+}
+
+func TestRunScriptBuildsPRReviewCommand(t *testing.T) {
+	baseSHA := strings.Repeat("a", 40)
+	headSHA := strings.Repeat("b", 40)
+	env := []string{
+		"INPUT_MODE=pr-review",
+		"INPUT_REPO=.",
+		"INPUT_PR_BASE=" + baseSHA,
+		"INPUT_PR_HEAD=" + headSHA,
+		"INPUT_PR_REVIEW_FORMAT=json",
+		"INPUT_PR_REVIEW_OUTPUT=.artifacts/lopper-pr-review.json",
+		"INPUT_LANGUAGE=all",
+		"INPUT_TOP=25",
+		"INPUT_SCOPE_MODE=repo",
+		"INPUT_ADVISORY_SOURCE=security/advisories.json",
+		"INPUT_LICENSE_DENY=gpl-3.0-only",
+		"INPUT_PR_FAIL_ON_REGRESSION=true",
+		"INPUT_PR_MATERIAL_WASTE_BYTES=0",
+		"INPUT_PR_MAX_ROWS=5",
+		"INPUT_ENABLE_FEATURE=dependency-surface-pr-review-preview,dependency-identity-preview",
+	}
+	got := runLopperScript(t, env)
+
+	want := []string{
+		"pr-review",
+		"--repo", ".",
+		"--base", baseSHA,
+		"--head", headSHA,
+		"--format", "json",
+		"--language", "all",
+		"--top", "25",
+		"--scope-mode", "repo",
+		"--output", ".artifacts/lopper-pr-review.json",
+		"--advisory-source", "security/advisories.json",
+		"--license-deny", "gpl-3.0-only",
+		"--fail-on-regression",
+		"--material-waste-bytes", "0",
+		"--max-rows", "5",
+		"--enable-feature", "dependency-surface-pr-review-preview,dependency-identity-preview",
+	}
+	assertArgs(t, got, want)
+}
+
+func TestRunScriptDefaultsPRReviewScopeModeToRepoWhenUnset(t *testing.T) {
+	assertPRReviewScopeMode(t, "", "repo")
+}
+
+func TestRunScriptPreservesExplicitPRReviewPackageScopeMode(t *testing.T) {
+	assertPRReviewScopeMode(t, "package", "package")
+}
+
+func assertPRReviewScopeMode(t *testing.T, input, wantScope string) {
+	t.Helper()
+	baseSHA := strings.Repeat("a", 40)
+	headSHA := strings.Repeat("b", 40)
+	env := []string{
+		"INPUT_MODE=pr-review",
+		"INPUT_REPO=.",
+		"INPUT_PR_BASE=" + baseSHA,
+		"INPUT_PR_HEAD=" + headSHA,
+		"INPUT_PR_REVIEW_FORMAT=json",
+		"INPUT_LANGUAGE=all",
+		"INPUT_TOP=25",
+		"INPUT_ENABLE_FEATURE=dependency-surface-pr-review-preview,dependency-identity-preview",
+	}
+	if input != "" {
+		env = append(env, "INPUT_SCOPE_MODE="+input)
+	}
+	got := runLopperScript(t, env)
+
+	want := []string{
+		"pr-review",
+		"--repo", ".",
+		"--base", baseSHA,
+		"--head", headSHA,
+		"--format", "json",
+		"--language", "all",
+		"--top", "25",
+		"--scope-mode", wantScope,
+		"--enable-feature", "dependency-surface-pr-review-preview,dependency-identity-preview",
+	}
+	assertArgs(t, got, want)
 }
 
 func TestRunScriptBuildsPRCommentCommandSafely(t *testing.T) {
@@ -207,7 +384,7 @@ func TestRunScriptBuildsSARIFCommand(t *testing.T) {
 	assertArgs(t, got, want)
 }
 
-func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
+func TestRunScriptDefaultsExplicitlyEmptyRuntimeProfile(t *testing.T) {
 	env := []string{
 		"INPUT_REPO=.",
 		"INPUT_LANGUAGE=all",
@@ -227,6 +404,7 @@ func TestRunScriptOmitsExplicitlyEmptyRuntimeProfile(t *testing.T) {
 		"--scope-mode", "package",
 		"--cache=true",
 		"--top", "20",
+		"--runtime-profile", "node-import",
 	}
 	assertArgs(t, got, want)
 }
@@ -491,6 +669,14 @@ func requireScriptStep(t *testing.T, metadata actionMetadata, id, scriptName str
 	step := requireStep(t, metadata, id)
 	if step.Shell != "bash" || !strings.Contains(step.Run, scriptName) {
 		t.Fatalf("%s step does not call %s with bash: %#v", id, scriptName, step)
+	}
+}
+
+func requireStepEnv(t *testing.T, metadata actionMetadata, id, name, want string) {
+	t.Helper()
+	step := requireStep(t, metadata, id)
+	if got := step.Env[name]; got != want {
+		t.Fatalf("%s env %q = %q, want %q", id, name, got, want)
 	}
 }
 

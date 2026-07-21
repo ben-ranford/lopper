@@ -42,6 +42,7 @@ type osvAdvisory struct {
 
 type osvAffected struct {
 	Package           osvPackage     `json:"package" yaml:"package"`
+	Versions          []string       `json:"versions" yaml:"versions"`
 	Ranges            []osvRange     `json:"ranges" yaml:"ranges"`
 	EcosystemSpecific map[string]any `json:"ecosystem_specific" yaml:"ecosystem_specific"`
 	DatabaseSpecific  map[string]any `json:"database_specific" yaml:"database_specific"`
@@ -53,11 +54,15 @@ type osvPackage struct {
 }
 
 type osvRange struct {
+	Type   string     `json:"type" yaml:"type"`
 	Events []osvEvent `json:"events" yaml:"events"`
 }
 
 type osvEvent struct {
-	Fixed string `json:"fixed" yaml:"fixed"`
+	Introduced   string `json:"introduced" yaml:"introduced"`
+	Fixed        string `json:"fixed" yaml:"fixed"`
+	LastAffected string `json:"last_affected" yaml:"last_affected"`
+	Limit        string `json:"limit" yaml:"limit"`
 }
 
 type osvSeverity struct {
@@ -187,20 +192,54 @@ func advisoriesFromOSV(items []osvAdvisory) []report.VulnerabilityAdvisory {
 		}
 		itemSeverity := osvAdvisorySeverity(item)
 		for _, affected := range item.Affected {
-			if strings.TrimSpace(affected.Package.Name) == "" {
+			if strings.TrimSpace(affected.Package.Name) == "" || !osvAffectedHasVersionConstraints(affected) {
 				continue
 			}
 			advisories = append(advisories, report.VulnerabilityAdvisory{
-				ID:           item.ID,
-				Package:      affected.Package.Name,
-				Ecosystem:    affected.Package.Ecosystem,
-				Severity:     osvAffectedSeverity(affected, itemSeverity),
-				FixedVersion: firstFixedVersion(affected.Ranges),
-				Aliases:      item.Aliases,
+				ID:               item.ID,
+				Package:          affected.Package.Name,
+				Ecosystem:        affected.Package.Ecosystem,
+				Severity:         osvAffectedSeverity(affected, itemSeverity),
+				FixedVersion:     fixedVersionFromRanges(affected.Ranges),
+				Aliases:          item.Aliases,
+				AffectedVersions: append([]string(nil), affected.Versions...),
+				VersionRanges:    reportVersionRanges(affected.Ranges),
 			})
 		}
 	}
 	return advisories
+}
+
+func osvAffectedHasVersionConstraints(affected osvAffected) bool {
+	if len(affected.Ranges) > 0 {
+		return true
+	}
+	for _, version := range affected.Versions {
+		if strings.TrimSpace(version) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func reportVersionRanges(ranges []osvRange) []report.VulnerabilityVersionRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+	result := make([]report.VulnerabilityVersionRange, 0, len(ranges))
+	for _, versionRange := range ranges {
+		events := make([]report.VulnerabilityVersionEvent, 0, len(versionRange.Events))
+		for _, event := range versionRange.Events {
+			events = append(events, report.VulnerabilityVersionEvent{
+				Introduced:   event.Introduced,
+				Fixed:        event.Fixed,
+				LastAffected: event.LastAffected,
+				Limit:        event.Limit,
+			})
+		}
+		result = append(result, report.VulnerabilityVersionRange{Type: versionRange.Type, Events: events})
+	}
+	return result
 }
 
 func osvAdvisorySeverity(item osvAdvisory) string {
@@ -419,13 +458,46 @@ func cvssRoundUp(value float64) float64 {
 	return math.Ceil((value-0.000001)*10) / 10
 }
 
-func firstFixedVersion(ranges []osvRange) string {
-	for _, item := range ranges {
-		for _, event := range item.Events {
-			if fixed := strings.TrimSpace(event.Fixed); fixed != "" {
-				return fixed
-			}
-		}
+func fixedVersionFromRanges(ranges []osvRange) string {
+	if len(ranges) != 1 || len(ranges[0].Events) != 2 {
+		return ""
+	}
+	rangeType := strings.ToUpper(strings.TrimSpace(ranges[0].Type))
+	if rangeType != "SEMVER" && rangeType != "ECOSYSTEM" {
+		return ""
+	}
+	firstKind, firstOK := osvEventKind(ranges[0].Events[0])
+	secondKind, secondOK := osvEventKind(ranges[0].Events[1])
+	if !firstOK || !secondOK {
+		return ""
+	}
+	if firstKind == "introduced" && secondKind == "fixed" {
+		return strings.TrimSpace(ranges[0].Events[1].Fixed)
+	}
+	if firstKind == "fixed" && secondKind == "introduced" {
+		return strings.TrimSpace(ranges[0].Events[0].Fixed)
 	}
 	return ""
+}
+
+func osvEventKind(event osvEvent) (string, bool) {
+	kind := ""
+	for _, candidate := range []struct {
+		value string
+		kind  string
+	}{
+		{value: strings.TrimSpace(event.Introduced), kind: "introduced"},
+		{value: strings.TrimSpace(event.Fixed), kind: "fixed"},
+		{value: strings.TrimSpace(event.LastAffected), kind: "last_affected"},
+		{value: strings.TrimSpace(event.Limit), kind: "limit"},
+	} {
+		if candidate.value == "" {
+			continue
+		}
+		if kind != "" {
+			return "", false
+		}
+		kind = candidate.kind
+	}
+	return kind, kind != ""
 }

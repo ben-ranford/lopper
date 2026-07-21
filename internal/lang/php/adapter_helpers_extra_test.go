@@ -227,11 +227,18 @@ func TestShouldSkipDirAndDependencyHelpers(t *testing.T) {
 	if shouldSkipDir("src") {
 		t.Fatalf("did not expect src to be skipped")
 	}
-	if dep, ok := normalizeComposerDependency("ext-json"); ok || dep != "" {
-		t.Fatalf("ext-json should be ignored")
+	for _, platformPackage := range []string{
+		"php", "php-64bit", "hhvm", "composer", "composer-plugin-api", "composer-runtime-api", "ext-json", "lib-icu",
+	} {
+		if dep, ok := normalizeComposerDependency(platformPackage); ok || dep != "" {
+			t.Fatalf("Composer platform package %q should be ignored, dep=%q ok=%v", platformPackage, dep, ok)
+		}
 	}
 	if dep, ok := normalizeComposerDependency(helpersVendorLibDependency); !ok || dep != helpersVendorLibDependency {
 		t.Fatalf("vendor/lib should be accepted, dep=%q ok=%v", dep, ok)
+	}
+	if dep, ok := normalizeComposerDependency("php-http/discovery"); !ok || dep != "php-http/discovery" {
+		t.Fatalf("qualified package with a platform-like vendor should be accepted, dep=%q ok=%v", dep, ok)
 	}
 }
 

@@ -8,6 +8,7 @@ type Report = model.Report
 type Result = model.Report
 
 type DependencyReport = model.DependencyReport
+type DependencyIdentity = model.DependencyIdentity
 type DependencyLicense = model.DependencyLicense
 type DependencyProvenance = model.DependencyProvenance
 type CodemodReport = model.CodemodReport
@@ -23,6 +24,8 @@ type RemovalCandidateWeights = model.RemovalCandidateWeights
 type RiskCue = model.RiskCue
 type Recommendation = model.Recommendation
 type VulnerabilityFinding = model.VulnerabilityFinding
+type VulnerabilityExceptionDecision = model.VulnerabilityExceptionDecision
+type VulnerabilityException = model.VulnerabilityException
 type RuntimeUsage = model.RuntimeUsage
 type RuntimeCorrelation = model.RuntimeCorrelation
 type RuntimeModuleUsage = model.RuntimeModuleUsage

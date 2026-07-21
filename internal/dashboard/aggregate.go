@@ -15,7 +15,9 @@ type RepoAnalysis struct {
 }
 
 type AggregateOptions struct {
-	IncludeRemediationQueue bool
+	IncludeRemediationQueue    bool
+	IncludePortfolioComponents bool
+	RemediationRouter          func(RepoInput, []RemediationItem) []RemediationItem
 }
 
 type crossRepoRepository struct {
@@ -42,6 +44,7 @@ func AggregateWithOptions(generatedAt time.Time, analyses []RepoAnalysis, option
 	repoNameCounts := countRepoNames(analyses)
 	sourceWarnings := make([]string, 0)
 	remediationItems := make([]RemediationItem, 0)
+	portfolioComponents := make([]PortfolioComponent, 0)
 	summary := Summary{
 		TotalRepos: len(analyses),
 	}
@@ -53,11 +56,10 @@ func AggregateWithOptions(generatedAt time.Time, analyses []RepoAnalysis, option
 			sourceWarnings = append(sourceWarnings, warning)
 		}
 		if options.IncludeRemediationQueue {
-			if analysis.Err != nil {
-				remediationItems = append(remediationItems, repoErrorRemediationItem(analysis.Input, repoNameCounts, analysis.Err))
-			} else {
-				remediationItems = append(remediationItems, repoRemediationItems(analysis, repoNameCounts)...)
-			}
+			remediationItems = append(remediationItems, routedRepoRemediationItems(analysis, repoNameCounts, options.RemediationRouter)...)
+		}
+		if options.IncludePortfolioComponents && analysis.Err == nil {
+			portfolioComponents = append(portfolioComponents, repoPortfolioComponents(analysis, repoNameCounts)...)
 		}
 		results = append(results, repoResult)
 	}
@@ -65,18 +67,75 @@ func AggregateWithOptions(generatedAt time.Time, analyses []RepoAnalysis, option
 	crossRepoDeps := buildCrossRepoDependencies(crossRepoIndex)
 	summary.CrossRepoDuplicates = len(crossRepoDeps)
 	if options.IncludeRemediationQueue {
-		remediationItems = append(remediationItems, crossRepoRemediationItems(crossRepoDeps)...)
+		remediationItems = append(remediationItems, routedRemediationItems(RepoInput{}, crossRepoRemediationItems(crossRepoDeps), options.RemediationRouter)...)
 		remediationItems = dedupeAndSortRemediationItems(remediationItems)
 	}
 
 	return Report{
-		GeneratedAt:      generatedAt.UTC(),
-		Repos:            results,
-		Summary:          summary,
-		CrossRepoDeps:    crossRepoDeps,
-		RemediationItems: remediationItems,
-		SourceWarnings:   sourceWarnings,
+		GeneratedAt:         generatedAt.UTC(),
+		Repos:               results,
+		Summary:             summary,
+		CrossRepoDeps:       crossRepoDeps,
+		RemediationItems:    remediationItems,
+		PortfolioComponents: sortPortfolioComponents(portfolioComponents),
+		SourceWarnings:      sourceWarnings,
 	}
+}
+
+func routedRepoRemediationItems(analysis RepoAnalysis, repoNameCounts map[string]int, router func(RepoInput, []RemediationItem) []RemediationItem) []RemediationItem {
+	repoItems := []RemediationItem(nil)
+	if analysis.Err != nil {
+		repoItems = append(repoItems, repoErrorRemediationItem(analysis.Input, repoNameCounts, analysis.Err))
+	} else {
+		repoItems = append(repoItems, repoRemediationItems(analysis, repoNameCounts)...)
+	}
+	return routedRemediationItems(analysis.Input, repoItems, router)
+}
+
+func routedRemediationItems(input RepoInput, items []RemediationItem, router func(RepoInput, []RemediationItem) []RemediationItem) []RemediationItem {
+	if router == nil {
+		return items
+	}
+	return router(input, items)
+}
+
+func repoPortfolioComponents(analysis RepoAnalysis, repoNameCounts map[string]int) []PortfolioComponent {
+	repoLabel := crossRepoRepositoryLabel(analysis.Input, repoNameCounts)
+	components := make([]PortfolioComponent, 0, len(analysis.Report.Dependencies))
+	for _, dep := range analysis.Report.Dependencies {
+		component := PortfolioComponent{
+			Repo:     repoLabel,
+			RepoPath: strings.TrimSpace(analysis.Input.Path),
+			Language: dep.Language,
+			Name:     strings.TrimSpace(dep.Name),
+		}
+		if dep.Identity != nil {
+			component.Version = strings.TrimSpace(dep.Identity.Version)
+			component.PURL = strings.TrimSpace(dep.Identity.PURL)
+			component.Ecosystem = strings.TrimSpace(dep.Identity.Ecosystem)
+		}
+		if component.Name != "" {
+			components = append(components, component)
+		}
+	}
+	return components
+}
+
+func sortPortfolioComponents(components []PortfolioComponent) []PortfolioComponent {
+	items := append([]PortfolioComponent{}, components...)
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		if items[i].Language != items[j].Language {
+			return items[i].Language < items[j].Language
+		}
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Version < items[j].Version
+	})
+	return items
 }
 
 func aggregateRepoAnalysis(analysis RepoAnalysis, repoNameCounts map[string]int, crossRepoIndex map[string]map[string]crossRepoRepository) (RepoResult, repoSummaryContribution, string) {

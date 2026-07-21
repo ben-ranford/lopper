@@ -3,6 +3,7 @@ package advisory
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -48,7 +49,8 @@ func TestLoadOSVAdvisoryJSON(t *testing.T) {
   "affected": [
     {
       "package": {"ecosystem": "PyPI", "name": "requests"},
-      "ranges": [{"events": [{"introduced": "0"}, {"fixed": "2.32.0"}]}]
+      "versions": ["2.31.0"],
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "2.32.0"}]}]
     }
   ]
 }`
@@ -69,6 +71,12 @@ func TestLoadOSVAdvisoryJSON(t *testing.T) {
 	}
 	if got.Source == "" {
 		t.Fatalf("expected default local source to be attached: %#v", got)
+	}
+	if !slices.Equal(got.AffectedVersions, []string{"2.31.0"}) {
+		t.Fatalf("expected exact OSV versions to be preserved, got %#v", got.AffectedVersions)
+	}
+	if len(got.VersionRanges) != 1 || got.VersionRanges[0].Type != "SEMVER" || len(got.VersionRanges[0].Events) != 2 || got.VersionRanges[0].Events[0].Introduced != "0" || got.VersionRanges[0].Events[1].Fixed != "2.32.0" {
+		t.Fatalf("expected OSV range metadata to be preserved, got %#v", got.VersionRanges)
 	}
 }
 
@@ -119,7 +127,8 @@ func TestLoadOSVSequenceAndWrappedDocuments(t *testing.T) {
         ecosystem: npm
         name: sequence-lib
       ranges:
-        - events:
+        - type: SEMVER
+          events:
             - introduced: "0"
             - fixed: "2.0.0"
 `
@@ -143,7 +152,7 @@ func TestLoadOSVSequenceAndWrappedDocuments(t *testing.T) {
         {
           "package": {"ecosystem": "PyPI", "name": "wrapped-lib"},
           "ecosystem_specific": {"severity": "moderate"},
-          "ranges": [{"events": [{"introduced": "0"}]}]
+          "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]
         }
       ]
     }
@@ -167,6 +176,8 @@ affected:
   - package:
       ecosystem: npm
       name: yaml-osv-lib
+    versions:
+      - "1.0.0"
 `)
 	advisories, err := parse("osv.yml", data)
 	if err != nil {
@@ -174,6 +185,29 @@ affected:
 	}
 	if len(advisories) != 1 || advisories[0].ID != "GHSA-yaml-osv" || advisories[0].Package != "yaml-osv-lib" {
 		t.Fatalf("unexpected fallback advisories: %#v", advisories)
+	}
+}
+
+func TestParseSequenceWithoutUsableAdvisoriesReturnsError(t *testing.T) {
+	data := []byte(`- affected:
+    - package:
+        ecosystem: npm
+        name: missing-id
+`)
+	if _, err := parse("sequence.yml", data); err == nil || !strings.Contains(err.Error(), "no advisories found") {
+		t.Fatalf("expected no advisories error for sequence document, got %v", err)
+	}
+}
+
+func TestParseSequenceStructuredDecodeErrorIsReturned(t *testing.T) {
+	if _, err := parse("broken.json", []byte("[")); err == nil || !strings.Contains(err.Error(), "invalid JSON advisory source") {
+		t.Fatalf("expected sequence parse error, got %v", err)
+	}
+}
+
+func TestParseFallsBackToOSVAndReturnsStructuredError(t *testing.T) {
+	if _, err := parse("advisories.json", []byte(`{"advisories":null,"id":[]}`)); err == nil || !strings.Contains(err.Error(), "invalid JSON advisory source") {
+		t.Fatalf("expected OSV fallback parse error, got %v", err)
 	}
 }
 
@@ -187,7 +221,9 @@ func TestAdvisoriesFromOSVSkipsIncompleteEntries(t *testing.T) {
 	items := []osvAdvisory{
 		{Affected: []osvAffected{{Package: osvPackage{Name: "missing-id"}}}},
 		{ID: "GHSA-missing-package", Affected: []osvAffected{{Package: osvPackage{}}}},
-		{ID: "GHSA-ok", Affected: []osvAffected{{Package: osvPackage{Name: "ok-lib"}}}},
+		{ID: "GHSA-missing-constraints", Affected: []osvAffected{{Package: osvPackage{Name: "all-lib"}}}},
+		{ID: "GHSA-blank-version", Affected: []osvAffected{{Package: osvPackage{Name: "blank-lib"}, Versions: []string{" "}}}},
+		{ID: "GHSA-ok", Affected: []osvAffected{{Package: osvPackage{Name: "ok-lib"}, Versions: []string{"1.0.0"}}}},
 	}
 	advisories := advisoriesFromOSV(items)
 	if len(advisories) != 1 || advisories[0].ID != "GHSA-ok" {
@@ -202,10 +238,12 @@ func TestAdvisoriesFromOSVUsesAffectedSpecificSeverity(t *testing.T) {
 			Affected: []osvAffected{
 				{
 					Package:          osvPackage{Ecosystem: "npm", Name: "safe-lib"},
+					Versions:         []string{"1.0.0"},
 					DatabaseSpecific: map[string]any{"severity": "low"},
 				},
 				{
 					Package:          osvPackage{Ecosystem: "npm", Name: "reachable-lib"},
+					Versions:         []string{"1.0.0"},
 					DatabaseSpecific: map[string]any{"severity": "high"},
 				},
 			},
@@ -222,6 +260,180 @@ func TestAdvisoriesFromOSVUsesAffectedSpecificSeverity(t *testing.T) {
 	}
 	if severities["safe-lib"] != "low" || severities["reachable-lib"] != "high" {
 		t.Fatalf("expected affected-specific severities, got %#v", advisories)
+	}
+}
+
+func TestAdvisoriesFromOSVUsesConservativeFixedVersionExtraction(t *testing.T) {
+	items := []osvAdvisory{
+		{
+			ID: "GHSA-fixed-version-shapes",
+			Affected: []osvAffected{
+				{
+					Package: osvPackage{Ecosystem: "npm", Name: "simple-lib"},
+					Ranges: []osvRange{{
+						Type:   "SEMVER",
+						Events: []osvEvent{{Introduced: "0"}, {Fixed: "1.2.3"}},
+					}},
+				},
+				{
+					Package: osvPackage{Ecosystem: "npm", Name: "multi-range-lib"},
+					Ranges: []osvRange{
+						{Type: "SEMVER", Events: []osvEvent{{Introduced: "0"}, {Fixed: "1.2.3"}}},
+						{Type: "SEMVER", Events: []osvEvent{{Introduced: "2.0.0"}, {Fixed: "2.1.0"}}},
+					},
+				},
+				{
+					Package: osvPackage{Ecosystem: "npm", Name: "reintroduced-lib"},
+					Ranges: []osvRange{{
+						Type:   "SEMVER",
+						Events: []osvEvent{{Introduced: "0"}, {Fixed: "1.2.3"}, {Introduced: "2.0.0"}},
+					}},
+				},
+				{
+					Package: osvPackage{Ecosystem: "npm", Name: "last-affected-lib"},
+					Ranges: []osvRange{{
+						Type:   "SEMVER",
+						Events: []osvEvent{{Introduced: "0"}, {LastAffected: "1.2.3"}},
+					}},
+				},
+				{
+					Package: osvPackage{Ecosystem: "npm", Name: "limited-lib"},
+					Ranges: []osvRange{{
+						Type:   "SEMVER",
+						Events: []osvEvent{{Introduced: "0"}, {Limit: "2.0.0"}, {Fixed: "1.2.3"}},
+					}},
+				},
+			},
+		},
+	}
+
+	advisories := advisoriesFromOSV(items)
+	if len(advisories) != 5 {
+		t.Fatalf("expected five affected advisories, got %#v", advisories)
+	}
+
+	fixedVersions := map[string]string{}
+	for _, advisory := range advisories {
+		fixedVersions[advisory.Package] = advisory.FixedVersion
+	}
+	if fixedVersions["simple-lib"] != "1.2.3" {
+		t.Fatalf("expected simple OSV range to keep fixed version, got %#v", fixedVersions)
+	}
+	for _, pkg := range []string{"multi-range-lib", "reintroduced-lib", "last-affected-lib", "limited-lib"} {
+		if fixedVersions[pkg] != "" {
+			t.Fatalf("expected ambiguous OSV range for %s to clear fixed version, got %#v", pkg, fixedVersions)
+		}
+	}
+}
+
+func TestFixedVersionFromRangesConservativeBranches(t *testing.T) {
+	cases := []struct {
+		name   string
+		ranges []osvRange
+		want   string
+	}{
+		{
+			name: "no ranges",
+			want: "",
+		},
+		{
+			name:   "empty events",
+			ranges: []osvRange{{Type: "SEMVER"}},
+			want:   "",
+		},
+		{
+			name:   "fixed without introduced",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Fixed: "1.2.3"}}}},
+			want:   "",
+		},
+		{
+			name:   "simple ecosystem range",
+			ranges: []osvRange{{Type: "ECOSYSTEM", Events: []osvEvent{{Introduced: "0"}, {Fixed: "1.2.3"}}}},
+			want:   "1.2.3",
+		},
+		{
+			name:   "git range uses commit identifiers",
+			ranges: []osvRange{{Type: "GIT", Events: []osvEvent{{Introduced: "abc"}, {Fixed: "def"}}}},
+			want:   "",
+		},
+		{
+			name:   "unknown range type",
+			ranges: []osvRange{{Type: "custom", Events: []osvEvent{{Introduced: "0"}, {Fixed: "1.2.3"}}}},
+			want:   "",
+		},
+		{
+			name:   "simple semantic range",
+			ranges: []osvRange{{Type: " semver ", Events: []osvEvent{{Introduced: "2.0.0"}, {Fixed: "2.0.1"}}}},
+			want:   "2.0.1",
+		},
+		{
+			name:   "reordered simple range",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Fixed: "2.0.1"}, {Introduced: "2.0.0"}}}},
+			want:   "2.0.1",
+		},
+		{
+			name:   "duplicate fixed events",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Fixed: "1.2.3"}, {Fixed: "1.2.4"}}}},
+			want:   "",
+		},
+		{
+			name:   "duplicate introduced events",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Introduced: "0"}, {Introduced: "1.0.0"}}}},
+			want:   "",
+		},
+		{
+			name:   "empty event",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{}, {Fixed: "1.2.3"}}}},
+			want:   "",
+		},
+		{
+			name:   "multi field event",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Introduced: "0", Fixed: "1.2.3"}, {Fixed: "1.2.4"}}}},
+			want:   "",
+		},
+		{
+			name:   "last affected event",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Introduced: "0"}, {LastAffected: "1.2.3"}}}},
+			want:   "",
+		},
+		{
+			name:   "limit event",
+			ranges: []osvRange{{Type: "SEMVER", Events: []osvEvent{{Introduced: "0"}, {Limit: "2.0.0"}}}},
+			want:   "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fixedVersionFromRanges(tc.ranges); got != tc.want {
+				t.Fatalf("fixedVersionFromRanges(%#v) = %q, want %q", tc.ranges, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOSVEventKindBranches(t *testing.T) {
+	cases := []struct {
+		name  string
+		event osvEvent
+		want  string
+		ok    bool
+	}{
+		{name: "introduced", event: osvEvent{Introduced: "0"}, want: "introduced", ok: true},
+		{name: "fixed", event: osvEvent{Fixed: "1.2.3"}, want: "fixed", ok: true},
+		{name: "last affected", event: osvEvent{LastAffected: "1.2.3"}, want: "last_affected", ok: true},
+		{name: "limit", event: osvEvent{Limit: "2.0.0"}, want: "limit", ok: true},
+		{name: "blank", event: osvEvent{}, want: "", ok: false},
+		{name: "multiple fields", event: osvEvent{Fixed: "1.2.3", Limit: "2.0.0"}, want: "", ok: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := osvEventKind(tc.event)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("osvEventKind(%#v) = (%q, %t), want (%q, %t)", tc.event, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 

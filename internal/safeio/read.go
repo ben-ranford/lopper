@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"path/filepath"
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
@@ -19,6 +18,14 @@ func (r *rootedReadCloser) Read(p []byte) (int, error) {
 	return r.file.Read(p)
 }
 
+func (r *rootedReadCloser) ReadAt(p []byte, offset int64) (int, error) {
+	readerAt, ok := r.file.(io.ReaderAt)
+	if !ok {
+		return 0, errors.New("file does not support random access")
+	}
+	return readerAt.ReadAt(p, offset)
+}
+
 func (r *rootedReadCloser) Close() error {
 	return errors.Join(r.file.Close(), r.root.Close())
 }
@@ -26,6 +33,32 @@ func (r *rootedReadCloser) Close() error {
 // ReadFileUnder reads targetPath only if it resolves under rootDir.
 func ReadFileUnder(rootDir, targetPath string) ([]byte, error) {
 	return ReadFileUnderLimit(rootDir, targetPath, 0)
+}
+
+// ReadFileWithinRoot reads targetPath using an already-open confined root.
+func ReadFileWithinRoot(root Root, targetPath string) (_ []byte, err error) {
+	return ReadFileWithinRootLimit(root, targetPath, 0)
+}
+
+// ReadFileWithinRootLimit reads targetPath using an already-open confined root
+// and does not exceed maxBytes when a positive limit is provided.
+func ReadFileWithinRootLimit(root Root, targetPath string, maxBytes int64) (_ []byte, err error) {
+	targetRel, err := resolveRelativeTarget(targetPath, allowRootTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := root.Open(targetRel)
+	if err != nil {
+		return nil, translateOpenNotExist(err, targetPath)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	return readOpenedFile(file, maxBytes)
 }
 
 // ReadFileUnderLimit reads targetPath only if it resolves under rootDir and
@@ -46,7 +79,7 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 		}
 	}()
 
-	file, err := root.Open(filepath.Clean(target.rel))
+	file, err := root.Open(target.rel)
 	if err != nil {
 		return nil, translateOpenNotExist(err, targetPath)
 	}

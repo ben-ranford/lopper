@@ -41,6 +41,8 @@ Supported output formats:
 - `json`
 - `csv`
 - `html` (self-contained, no external assets)
+- `slack-summary` and `teams-summary` when `remediation-routing-summaries-preview` is enabled
+- `cyclonedx-json` when `dashboard-cyclonedx-portfolio-preview` is enabled
 
 ## Config File
 
@@ -59,6 +61,15 @@ dashboard:
       language: python
       name: Worker
   output: html
+  ownership:
+    default_team: dependency-platform
+    default_status: open
+    rules:
+      - repo: API Service
+        category: vulnerability
+        team: appsec
+        owner: security
+        due: "2026-08-01"
 ```
 
 Remote Git repositories can be configured with `repoUrl` when the `dashboard-remote-repos` feature is enabled:
@@ -100,6 +111,7 @@ Notes:
 - `baseline_key` selects a stored baseline snapshot when comparing. `baseline_label` is used when saving a labeled snapshot.
 - `save_baseline` writes the current dashboard report to the baseline store without changing the normal report output.
 - CLI flags take precedence over config for `--format` and `--output`; `--language` only fills missing repo language values, and `--top` is CLI-only.
+- `ownership` is preview routing metadata used by `remediation-routing-summaries-preview`; config rules are applied before CODEOWNERS and defaults.
 
 ## JSON Shape
 
@@ -114,6 +126,7 @@ Dashboard JSON emits:
   - `repo_path`: local repo path when available
   - `dependency`: affected dependency when applicable
   - `category`: one of the emitted remediation categories, such as `repo_error`, `vulnerability`, `license`, `runtime_regression`, `risk`, `waste`, `recommendation`, or `duplicate_dependency`
+  - `owner`, `team`, `due`, `status`, and `routing_source` when remediation routing is enabled
   - `severity` and `priority`: normalized triage levels when available
   - `evidence[]`: compact evidence strings backing the item
   - `suggested_action`: recommended next action
@@ -142,9 +155,14 @@ When `dashboard-remediation-queue-preview` is enabled and the queue is non-empty
 - `repo_path`
 - `dependency`
 - `category`
+- `owner`
+- `team`
+- `due`
+- `status`
+- `routing_source`
 - `severity`
 - `priority`
 - `evidence` (`|` delimited)
 - `suggested_action`
 
-When a dashboard baseline is compared, `baseline_comparison` also includes remediation queue deltas split into `new_remediation_items`, `regressed_remediation_items`, `existing_remediation_items`, and `removed_remediation_items`. The CSV baseline section includes a remediation delta subsection with `kind`, current severity/priority, and baseline severity/priority columns.
+When a dashboard baseline is compared, `baseline_comparison` also includes remediation queue deltas split into `new_remediation_items`, `regressed_remediation_items`, `existing_remediation_items`, and `removed_remediation_items`. The CSV baseline section includes a remediation delta subsection with `kind`, routing fields, current severity/priority, and baseline severity/priority columns.

@@ -107,6 +107,100 @@ func TestChangedFilesReturnsDiffFailureForSingleCommitRepoWhenStatusClean(t *tes
 	}
 }
 
+func TestChangedFilesBetweenUsesExplicitRange(t *testing.T) {
+	repo := t.TempDir()
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.name", "Workspace Test")
+	testutil.RunGit(t, repo, "config", "user.email", "workspace-test@example.com")
+
+	mustWrite(t, filepath.Join(repo, "packages", "a", "file.txt"), "base\n")
+	mustWrite(t, filepath.Join(repo, "packages", "b", "file.txt"), "base\n")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "base")
+
+	mustWrite(t, filepath.Join(repo, "packages", "a", "file.txt"), "base change\n")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "change a")
+	baseSHA := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	mustWrite(t, filepath.Join(repo, "packages", "b", "file.txt"), "head change\n")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "change b")
+	headSHA := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	changed, err := ChangedFilesBetween(repo, baseSHA, headSHA)
+	if err != nil {
+		t.Fatalf("changed files between explicit range: %v", err)
+	}
+	assertParsedPaths(t, changed, []string{"packages/b/file.txt"}, "expected explicit range to ignore detached-worktree HEAD~1 drift")
+}
+
+func TestChangedFilesBetweenKeepsRenameSourceAndDestinationAcrossPackageRoots(t *testing.T) {
+	repo := t.TempDir()
+	testutil.RunGit(t, repo, "init")
+	testutil.RunGit(t, repo, "config", "user.name", "Workspace Test")
+	testutil.RunGit(t, repo, "config", "user.email", "workspace-test@example.com")
+
+	mustWrite(t, filepath.Join(repo, "packages", "oldpkg", "file.txt"), "same content\n")
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "base")
+	baseSHA := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(repo, "packages", "newpkg"), 0o755); err != nil {
+		t.Fatalf("mkdir new package root: %v", err)
+	}
+	testutil.RunGit(t, repo, "mv", "packages/oldpkg/file.txt", "packages/newpkg/file.txt")
+	testutil.RunGit(t, repo, "commit", "-am", "rename package root")
+	headSHA := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	changed, err := ChangedFilesBetween(repo, baseSHA, headSHA)
+	if err != nil {
+		t.Fatalf("changed files between rename range: %v", err)
+	}
+	assertParsedPaths(t, changed, []string{"packages/newpkg/file.txt", "packages/oldpkg/file.txt"}, "expected explicit range rename to include both package roots")
+}
+
+func TestChangedFilesBetweenErrorBranches(t *testing.T) {
+	t.Run("normalize_repo_path", func(t *testing.T) {
+		original := normalizeRepoPath
+		normalizeRepoPath = func(string) (string, error) {
+			return "", errors.New(normalizeFailedErr)
+		}
+		t.Cleanup(func() {
+			normalizeRepoPath = original
+		})
+
+		_, err := ChangedFilesBetween(".", "base", "head")
+		if err == nil || err.Error() != normalizeFailedErr {
+			t.Fatalf("expected normalization failure, got %v", err)
+		}
+	})
+
+	t.Run("resolve_git_binary", func(t *testing.T) {
+		original := resolveGitBinaryPathFn
+		resolveGitBinaryPathFn = func() (string, error) {
+			return "", errors.New("git unavailable")
+		}
+		t.Cleanup(func() {
+			resolveGitBinaryPathFn = original
+		})
+
+		_, err := ChangedFilesBetween(t.TempDir(), "base", "head")
+		if err == nil || !strings.Contains(err.Error(), "git unavailable") {
+			t.Fatalf("expected resolver error, got %v", err)
+		}
+	})
+
+	t.Run("diff_failure", func(t *testing.T) {
+		setupFakeGitResolver(t, "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"range failed\" >&2\n  exit 2\nfi\nexit 1\n")
+
+		_, err := ChangedFilesBetween(t.TempDir(), "base", "head")
+		if err == nil || !strings.Contains(err.Error(), "range failed") {
+			t.Fatalf("expected explicit range diff failure, got %v", err)
+		}
+	})
+}
+
 func TestChangedFilesReturnsJoinedGitErrors(t *testing.T) {
 	setupFakeGitResolver(t, "#!/bin/sh\nif [ \"$3\" = \"diff\" ]; then\n  echo \"diff failed\" >&2\n  exit 2\nfi\nif [ \"$3\" = \"status\" ]; then\n  echo \"status failed\" >&2\n  exit 3\nfi\nexit 1\n")
 
@@ -167,6 +261,12 @@ func TestChangedFilesIgnoresCallerGitConfigEnvironment(t *testing.T) {
 func TestParseChangedFileHelpers(t *testing.T) {
 	assertParsedPaths(t, parseChangedFileLines([]byte("  packages/a/file.ts\n  packages/a/file.ts\n")), []string{"  packages/a/file.ts"}, "expected deduped changed lines")
 	assertParsedPaths(t, parseChangedFileLines([]byte("\"\\303\\261ame.go\"\n")), []string{"ñame.go"}, "expected quoted diff path to decode")
+	assertParsedPaths(t, parseNameStatusChangedFiles([]byte("R100\x00packages/old/file.ts\x00packages/new/file.ts\x00C100\x00copy/source.ts\x00copy/dest.ts\x00M\x00plain.go\x00")), []string{"copy/dest.ts", "copy/source.ts", "packages/new/file.ts", "packages/old/file.ts", "plain.go"}, "expected name-status parser to retain both rename/copy paths")
+	assertParsedPaths(t, parseNameStatusChangedFiles([]byte("R100\x00old\tname.go\x00new\nname.go\x00M\x00quoted\"name.go\x00")), []string{"new\nname.go", "old\tname.go", "quoted\"name.go"}, "expected name-status parser to preserve unusual filenames")
+	assertParsedPaths(t, parseNameStatusChangedFiles([]byte("R100\x00only-old")), []string{}, "expected truncated rename to return accumulated paths deterministically")
+	assertParsedPaths(t, parseNameStatusChangedFiles([]byte("M")), []string{}, "expected truncated modify to return accumulated paths deterministically")
+	assertParsedPaths(t, parseNameStatusChangedFiles([]byte("X\x00ignored")), []string{}, "expected unknown status with trailing token to be ignored deterministically")
+	assertParsedPaths(t, parseNameStatusChangedFiles([]byte("X")), []string{}, "expected unknown status at EOF to be ignored deterministically")
 	assertParsedPaths(t, parsePorcelainChangedFiles([]byte("M   packages/a/file.ts\nR  old.ts ->  packages/b/new.ts\n")), []string{" packages/a/file.ts", " packages/b/new.ts"}, "expected parsed porcelain paths")
 	assertParsedPaths(t, parsePorcelainChangedFiles([]byte("M  \"\\303\\261ame.go\"\n")), []string{"ñame.go"}, "expected quoted porcelain path to decode")
 	assertParsedPaths(t, parsePorcelainChangedFiles([]byte("M  \"weird -> name.go\"\n")), []string{"weird -> name.go"}, "expected modified quoted path with arrow substring to stay intact")
@@ -222,6 +322,23 @@ func TestResolveGitBinaryPathUsesResolver(t *testing.T) {
 	path, err := resolveGitBinaryPath()
 	if err != nil || path != expectedPath {
 		t.Fatalf("expected resolver path, got path=%q err=%v", path, err)
+	}
+}
+
+func TestResolveRefLookupErrorBranches(t *testing.T) {
+	refErr := errors.New("loose refs failed")
+	if !errors.Is(resolveRefLookupError(mainRefPath, refErr, os.ErrNotExist), refErr) {
+		t.Fatalf("expected loose-ref error to win")
+	}
+
+	packedErr := errors.New("packed refs failed")
+	if !errors.Is(resolveRefLookupError(mainRefPath, os.ErrNotExist, packedErr), packedErr) {
+		t.Fatalf("expected packed-ref error to win")
+	}
+
+	err := resolveRefLookupError(mainRefPath, os.ErrNotExist, os.ErrNotExist)
+	if err == nil || !strings.Contains(err.Error(), "ref "+mainRefPath+" not found") {
+		t.Fatalf("expected not-found fallback, got %v", err)
 	}
 }
 
@@ -313,4 +430,18 @@ func assertParsedPaths(t *testing.T, got, want []string, message string) {
 			t.Fatalf("%s, got %#v", message, got)
 		}
 	}
+}
+
+func gitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+
+	gitPath, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve git binary: %v", err)
+	}
+	output, err := runGit(gitPath, repo, args...)
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(output))
 }

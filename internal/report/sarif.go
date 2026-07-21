@@ -46,10 +46,10 @@ func reportVersion(rep Report) string {
 
 func buildSARIFResults(rep Report, rules *sarifRuleBuilder) []sarifResult {
 	results := make([]sarifResult, 0)
-	baselineDeltas := baselineDeltaIndex(rep.BaselineComparison)
+	baselineDeltas := baselineDependencyDeltasForDependencies(rep.Dependencies, rep.BaselineComparison)
 
-	for _, dep := range rep.Dependencies {
-		results = append(results, dependencySARIFResults(dep, rules, baselineDeltas[dependencyKey(dep)])...)
+	for index, dep := range rep.Dependencies {
+		results = append(results, dependencySARIFResults(dep, rules, baselineDeltas[index])...)
 	}
 
 	appendWasteIncreaseResult(&results, rules, rep.WasteIncreasePercent, rep.BaselineComparison)
@@ -72,6 +72,9 @@ func dependencySARIFResults(dep DependencyReport, rules *sarifRuleBuilder, basel
 
 func appendVulnerabilityResults(results []sarifResult, rules *sarifRuleBuilder, dep DependencyReport, anchor *sarifLocation, baselineDelta *DependencyDelta) []sarifResult {
 	for _, finding := range dep.Vulnerabilities {
+		if FindingSuppressedByException(finding) {
+			continue
+		}
 		ruleID := "lopper/vulnerability/" + normalizeRuleToken(finding.AdvisoryID)
 		rules.add(sarifRule{
 			ID:               ruleID,
@@ -233,19 +236,6 @@ func appendSignalResult(results []sarifResult, rules *sarifRuleBuilder, dep Depe
 		result.Locations = []sarifLocation{*anchor}
 	}
 	return append(results, result)
-}
-
-func baselineDeltaIndex(comparison *BaselineComparison) map[string]*DependencyDelta {
-	if comparison == nil || len(comparison.Dependencies) == 0 {
-		return nil
-	}
-	index := make(map[string]*DependencyDelta, len(comparison.Dependencies))
-	for i := range comparison.Dependencies {
-		delta := comparison.Dependencies[i]
-		copyDelta := delta
-		index[dependencyKey(DependencyReport{Language: delta.Language, Name: delta.Name})] = &copyDelta
-	}
-	return index
 }
 
 func sarifDependencyProperties(dep DependencyReport, baselineDelta *DependencyDelta, extra map[string]any) map[string]any {

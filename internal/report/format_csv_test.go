@@ -196,6 +196,86 @@ func TestFormatCSVDependencyNamesSanitizeFormulaPrefixes(t *testing.T) {
 	}
 }
 
+func TestFormatCSVIncludesIdentityColumnsWhenPresent(t *testing.T) {
+	reportData := Report{
+		SchemaVersion: SchemaVersion,
+		Dependencies: []DependencyReport{{
+			Language: "go",
+			Name:     "github.com/acme/lib",
+			Identity: &DependencyIdentity{
+				Ecosystem:     "golang",
+				Name:          "github.com/acme/lib",
+				Namespace:     "github.com/acme",
+				Version:       "v1.2.3",
+				VersionStatus: "resolved",
+				PURL:          "pkg:golang/github.com%2Facme%2Flib@v1.2.3",
+				PURLStatus:    "resolved",
+				Source:        "go.mod",
+				Confidence:    "high",
+				Evidence:      []string{"go.mod", "go.sum"},
+				Conflicts:     []string{"v1.2.2 from vendored metadata"},
+			},
+		}},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatCSV)
+	if err != nil {
+		t.Fatalf("format csv with identity: %v", err)
+	}
+
+	rows := readCSVRows(t, output)
+	if len(rows) != 2 {
+		t.Fatalf("expected header and one dependency row, got %d rows", len(rows))
+	}
+	header := append([]string{}, analyseCSVHeader...)
+	header = append(header, analyseCSVIdentityHeader...)
+	if !reflect.DeepEqual(rows[0], header) {
+		t.Fatalf("unexpected identity csv header: %#v", rows[0])
+	}
+	row := csvRowMap(rows[0], rows[1])
+	assertCSVRowHasValues(t, row, map[string]string{
+		"identity_ecosystem":      "golang",
+		"identity_name":           "github.com/acme/lib",
+		"identity_namespace":      "github.com/acme",
+		"identity_version":        "v1.2.3",
+		"identity_version_status": "resolved",
+		"identity_purl":           "pkg:golang/github.com%2Facme%2Flib@v1.2.3",
+		"identity_purl_status":    "resolved",
+		"identity_source":         "go.mod",
+		"identity_confidence":     "high",
+		"identity_evidence":       "go.mod|go.sum",
+		"identity_conflicts":      "v1.2.2 from vendored metadata",
+	})
+}
+
+func TestFormatCSVOmitsExceptionSuppressedVulnerabilities(t *testing.T) {
+	reportData := Report{Dependencies: []DependencyReport{{
+		Language: "go",
+		Name:     "lib",
+		Vulnerabilities: []VulnerabilityFinding{
+			{
+				AdvisoryID: "GHSA-suppressed", Priority: VulnerabilityPriorityCritical, Reachable: true,
+				Decision: &VulnerabilityExceptionDecision{Status: "accepted-risk"},
+			},
+			{AdvisoryID: "GHSA-visible", Priority: VulnerabilityPriorityLow},
+		},
+	}}}
+
+	output, err := NewFormatter().Format(reportData, FormatCSV)
+	if err != nil {
+		t.Fatalf("format csv with vulnerability exception: %v", err)
+	}
+	rows := readCSVRows(t, output)
+	row := csvRowMap(rows[0], rows[1])
+	if strings.Contains(row["vulnerability_findings"], "GHSA-suppressed") || !strings.Contains(row["vulnerability_findings"], "GHSA-visible") {
+		t.Fatalf("expected only active findings in CSV, got %q", row["vulnerability_findings"])
+	}
+	assertCSVRowHasValues(t, row, map[string]string{
+		"vulnerability_highest_priority": "low",
+		"vulnerability_reachable_count":  "0",
+	})
+}
+
 func TestFormatCSVEmptyReport(t *testing.T) {
 	output, err := NewFormatter().Format(Report{}, FormatCSV)
 	if err != nil {

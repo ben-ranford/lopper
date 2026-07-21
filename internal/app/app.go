@@ -27,6 +27,7 @@ var (
 	ErrMCPFeatureDisabled           = errors.New("mcp server feature is disabled")
 	ErrProfileFeatureDisabled       = errors.New("threshold profile command feature is disabled; enable threshold-profiles with --enable-feature")
 	ErrBaselineFeatureDisabled      = errors.New("baseline discovery feature is disabled; remove baseline-store-discovery from --disable-feature or features.disable")
+	ErrPRReviewRegressions          = errors.New("pr review regressions detected")
 )
 
 type App struct {
@@ -69,6 +70,8 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 		return a.executeDashboard(ctx, req)
 	case ModeBaseline:
 		return a.executeBaseline(req)
+	case ModePRReview:
+		return a.executePRReview(ctx, req)
 	case ModeFeatures:
 		return a.executeFeatures(req)
 	case ModeProfile:
@@ -84,6 +87,8 @@ func (a *App) Execute(ctx context.Context, req Request) (string, error) {
 			Features:         req.MCP.Features,
 			MutationRunner:   a.mcpMutationRunner(),
 		})
+	case ModeAdvisory:
+		return a.executeAdvisory(ctx, req)
 	default:
 		return "", ErrUnknownMode
 	}

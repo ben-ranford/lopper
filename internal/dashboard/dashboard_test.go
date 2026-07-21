@@ -30,6 +30,9 @@ func TestParseFormat(t *testing.T) {
 		{input: "json", want: FormatJSON},
 		{input: "csv", want: FormatCSV},
 		{input: "html", want: FormatHTML},
+		{input: "slack-summary", want: FormatSlackSummary},
+		{input: "teams-summary", want: FormatTeamsSummary},
+		{input: "cyclonedx-json", want: FormatCycloneDXJSON},
 	}
 	for _, tc := range tests {
 		got, err := ParseFormat(tc.input)
@@ -180,6 +183,49 @@ func assertAggregateSummary(t *testing.T, summary Summary) {
 	}
 	if summary.ReposWithRuntimeRegressions != 1 {
 		t.Fatalf("expected one repo with runtime regressions, got %+v", summary)
+	}
+}
+
+func TestAggregateWithPortfolioComponents(t *testing.T) {
+	generatedAt := time.Date(2026, time.July, 13, 0, 0, 0, 0, time.UTC)
+	reportData := report.Report{Dependencies: []report.DependencyReport{
+		{
+			Name:     "z-lib",
+			Language: "go",
+			Identity: &report.DependencyIdentity{
+				Ecosystem: "golang",
+				Version:   "v1.0.0",
+				PURL:      "pkg:golang/z-lib@v1.0.0",
+			},
+		},
+		{
+			Name:     "a-lib",
+			Language: "js-ts",
+			Identity: &report.DependencyIdentity{
+				Ecosystem: "npm",
+				Version:   "2.0.0",
+				PURL:      "pkg:npm/a-lib@2.0.0",
+			},
+		},
+		{Name: "  "},
+	}}
+
+	analyses := []RepoAnalysis{{
+		Input:  RepoInput{Name: "service", Path: "services/api"},
+		Report: reportData,
+	}}
+	got := AggregateWithOptions(generatedAt, analyses, AggregateOptions{IncludePortfolioComponents: true})
+
+	if len(got.PortfolioComponents) != 2 {
+		t.Fatalf("expected two portfolio components, got %#v", got.PortfolioComponents)
+	}
+	first := got.PortfolioComponents[0]
+	if first.Repo != "service" || first.RepoPath != "services/api" || first.Language != "go" || first.Name != "z-lib" || first.Version != "v1.0.0" || first.PURL != "pkg:golang/z-lib@v1.0.0" || first.Ecosystem != "golang" {
+		t.Fatalf("unexpected first portfolio component: %#v", first)
+	}
+	second := got.PortfolioComponents[1]
+	if second.Language != "js-ts" || second.Name != "a-lib" {
+		t.Fatalf("expected sorted portfolio components, got %#v", got.PortfolioComponents)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestExecuteDashboardJSON(t *testing.T) {
@@ -141,6 +142,129 @@ func TestExecuteDashboardRemediationQueueRequiresPreviewFeature(t *testing.T) {
 	}
 	if len(enabledReport.RemediationItems) != 1 || enabledReport.RemediationItems[0].Category != "vulnerability" {
 		t.Fatalf("expected vulnerability remediation item when feature is enabled, got %#v", enabledReport.RemediationItems)
+	}
+}
+
+func TestExecuteDashboardPortfolioRoutesChildReposWithOwnCodeowners(t *testing.T) {
+	tmp := t.TempDir()
+	callerRepo := filepath.Join(tmp, "caller")
+	repoA := filepath.Join(tmp, "services", "api")
+	repoB := filepath.Join(tmp, "services", "web")
+
+	testutil.MustWriteFile(t, filepath.Join(callerRepo, ".github", "CODEOWNERS"), "* @caller\n")
+	testutil.MustWriteFile(t, filepath.Join(repoA, ".github", "CODEOWNERS"), "* @team-api\n")
+	testutil.MustWriteFile(t, filepath.Join(repoB, "CODEOWNERS"), "* @team-web\n")
+
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			repoA: {Dependencies: []report.DependencyReport{{
+				Name: "api-lib",
+				Vulnerabilities: []report.VulnerabilityFinding{{
+					AdvisoryID: "GHSA-api",
+					Package:    "api-lib",
+					Severity:   report.VulnerabilityPriorityHigh,
+					Priority:   report.VulnerabilityPriorityHigh,
+				}},
+			}}},
+			repoB: {Dependencies: []report.DependencyReport{{
+				Name: "web-lib",
+				Vulnerabilities: []report.VulnerabilityFinding{{
+					AdvisoryID: "GHSA-web",
+					Package:    "web-lib",
+					Severity:   report.VulnerabilityPriorityHigh,
+					Priority:   report.VulnerabilityPriorityHigh,
+				}},
+			}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.RepoPath = callerRepo
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{
+		{Name: "api", Path: repoA},
+		{Name: "web", Path: repoB},
+	}
+	req.Dashboard.Features = mustResolveAppTestFeatures(t, DashboardRemediationQueuePreviewFeature, DashboardRemediationRoutingSummariesPreviewFeature)
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute dashboard with child repo codeowners: %v", err)
+	}
+
+	reportData := dashboard.Report{}
+	if err := json.Unmarshal([]byte(output), &reportData); err != nil {
+		t.Fatalf("unmarshal dashboard output: %v", err)
+	}
+	if len(reportData.RemediationItems) != 2 {
+		t.Fatalf("expected two routed remediation items, got %#v", reportData.RemediationItems)
+	}
+
+	routedByRepo := make(map[string]dashboard.RemediationItem, len(reportData.RemediationItems))
+	for _, item := range reportData.RemediationItems {
+		routedByRepo[item.Repo] = item
+		if item.Owner == "@caller" {
+			t.Fatalf("expected no caller CODEOWNERS leakage, got %#v", item)
+		}
+	}
+
+	if got := routedByRepo["api"]; got.Owner != "@team-api" || got.RoutingSource != ".github/CODEOWNERS" || got.Due != "" || got.Status != "open" {
+		t.Fatalf("expected api item to use api repo CODEOWNERS, got %#v", got)
+	}
+	if got := routedByRepo["web"]; got.Owner != "@team-web" || got.RoutingSource != "CODEOWNERS" || got.Due != "" || got.Status != "open" {
+		t.Fatalf("expected web item to use web repo CODEOWNERS, got %#v", got)
+	}
+}
+
+func TestExecuteDashboardSingleRepoRoutingStillUsesAnalysedRepoRoot(t *testing.T) {
+	tmp := t.TempDir()
+	callerRepo := filepath.Join(tmp, "caller")
+	repoPath := filepath.Join(tmp, "repo")
+
+	testutil.MustWriteFile(t, filepath.Join(callerRepo, ".github", "CODEOWNERS"), "* @caller\n")
+	testutil.MustWriteFile(t, filepath.Join(repoPath, ".github", "CODEOWNERS"), "* @single-owner\n")
+
+	analyzer := &mapAnalyzer{
+		reports: map[string]report.Report{
+			repoPath: {Dependencies: []report.DependencyReport{{
+				Name: "single-lib",
+				Vulnerabilities: []report.VulnerabilityFinding{{
+					AdvisoryID: "GHSA-single",
+					Package:    "single-lib",
+					Severity:   report.VulnerabilityPriorityHigh,
+					Priority:   report.VulnerabilityPriorityHigh,
+				}},
+			}}},
+		},
+		errs: map[string]error{},
+	}
+	application := &App{Analyzer: analyzer}
+
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.RepoPath = callerRepo
+	req.Dashboard.Format = "json"
+	req.Dashboard.Repos = []DashboardRepo{{Name: "repo", Path: repoPath}}
+	req.Dashboard.Features = mustResolveAppTestFeatures(t, DashboardRemediationQueuePreviewFeature, DashboardRemediationRoutingSummariesPreviewFeature)
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute single-repo dashboard routing: %v", err)
+	}
+
+	reportData := dashboard.Report{}
+	if err := json.Unmarshal([]byte(output), &reportData); err != nil {
+		t.Fatalf("unmarshal dashboard output: %v", err)
+	}
+	if len(reportData.RemediationItems) != 1 {
+		t.Fatalf("expected one routed remediation item, got %#v", reportData.RemediationItems)
+	}
+	item := reportData.RemediationItems[0]
+	if item.Owner != "@single-owner" || item.RoutingSource != ".github/CODEOWNERS" || item.Status != "open" {
+		t.Fatalf("expected single repo routing from analysed repo root, got %#v", item)
 	}
 }
 

@@ -17,6 +17,11 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
+	return ShouldSkipDirectory(name)
+}
+
+// ShouldSkipDirectory reports whether Dart discovery ignores a directory.
+func ShouldSkipDirectory(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case ".git", ".idea", ".vscode", ".dart_tool", ".artifacts", "build", "dist", "vendor", "node_modules", "pods", ".gradle", "android", "ios", "macos", "linux", "windows":
 		return true

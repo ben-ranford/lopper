@@ -195,6 +195,27 @@ func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (repo
 	return reportData, nil
 }
 
+func applyVulnerabilityExceptionsIfNeeded(reportData report.Report, req AnalyseRequest, now time.Time) (report.Report, error) {
+	return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, now), nil
+}
+
+func applyVulnerabilityExceptionsToReport(reportData report.Report, exceptions []report.VulnerabilityException, now time.Time) report.Report {
+	if len(exceptions) == 0 {
+		return reportData
+	}
+	diagnostics := report.ApplyVulnerabilityExceptions(&reportData, exceptions, now)
+	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+	reportData.Warnings = appendVulnerabilityExceptionWarnings(reportData.Warnings, diagnostics)
+	return reportData
+}
+
+func appendVulnerabilityExceptionWarnings(warnings, diagnostics []string) []string {
+	for _, diagnostic := range diagnostics {
+		warnings = append(warnings, "vulnerability exception: "+diagnostic)
+	}
+	return warnings
+}
+
 func resolveCurrentBaselineKey(repoPath string) string {
 	sha, err := workspace.CurrentCommitSHA(repoPath)
 	if err != nil || strings.TrimSpace(sha) == "" {
@@ -275,7 +296,7 @@ func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold stri
 	}
 	for _, dep := range reportData.Dependencies {
 		for _, finding := range dep.Vulnerabilities {
-			if finding.Reachable && report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
+			if finding.Reachable && !report.FindingSuppressedByException(finding) && report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
 				return true
 			}
 		}

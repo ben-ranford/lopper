@@ -92,13 +92,13 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 	}
 	if len(p.reports) == 0 {
 		reportData.Warnings = append(reportData.Warnings, "no language adapter produced results")
-		return finalizeReport(p.request, p.repoPath, p.remappedAnalyzedRoots(), reportData)
+		return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
 	}
 
 	merged := mergeReports(p.repoPath, p.reports)
 	merged.Warnings = append(merged.Warnings, reportData.Warnings...)
 	merged.Cache = reportData.Cache
-	return finalizeReport(p.request, p.repoPath, p.remappedAnalyzedRoots(), merged)
+	return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
 }
 
 func (p *analysisPipeline) collectWarnings() []string {
@@ -121,7 +121,7 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 	return remapAnalyzedRoots(p.analyzedRoots, p.analysisRepoPath, p.repoPath)
 }
 
-func finalizeReport(req Request, repoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
+func finalizeReport(req Request, repoPath string, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
 	var err error
 	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
 		(req.PythonRuntimeTraceCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
@@ -132,6 +132,9 @@ func finalizeReport(req Request, repoPath string, analyzedRoots []string, report
 
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
 	annotateDerivedDependencyMetrics(reportData.Dependencies)
+	if identityPreviewEnabled(req) {
+		annotateDependencyIdentities(identityRepoPath, &reportData)
+	}
 	report.AnnotateReachabilityConfidence(&reportData)
 	report.AnnotateFindingConfidence(reportData.Dependencies)
 	report.FilterFindingsByConfidence(reportData.Dependencies, lowConfidenceThreshold)
@@ -177,11 +180,18 @@ func normalizeScopeMode(mode string) string {
 }
 
 func scopedCandidateRoots(scopeMode string, roots []string, repoPath string) ([]string, []string) {
-	switch normalizeScopeMode(scopeMode) {
+	return scopedCandidateRootsForRequest(Request{ScopeMode: scopeMode}, roots, repoPath)
+}
+
+func scopedCandidateRootsForRequest(req Request, roots []string, repoPath string) ([]string, []string) {
+	switch normalizeScopeMode(req.ScopeMode) {
 	case ScopeModeRepo:
 		return []string{repoPath}, nil
 	case ScopeModeChangedPackages:
 		baseRoots := candidateRoots(roots, repoPath)
+		if req.ChangedFilesExplicit {
+			return changedRoots(baseRoots, repoPath, req.ChangedFiles), nil
+		}
 		changedFiles, err := workspace.ChangedFiles(repoPath)
 		if err != nil {
 			return baseRoots, []string{"unable to resolve changed packages; falling back to package scope: " + err.Error()}

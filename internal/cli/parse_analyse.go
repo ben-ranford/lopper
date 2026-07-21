@@ -14,19 +14,20 @@ import (
 )
 
 type analyseParseState struct {
-	dependency         string
-	format             report.Format
-	outputPath         string
-	scopeMode          string
-	visited            map[string]bool
-	thresholds         thresholds.Values
-	scope              thresholds.PathScope
-	policySources      []string
-	policyTrace        []report.PolicyMergeTrace
-	advisorySourcePath string
-	configPath         string
-	features           featureflags.Set
-	notifications      notify.Config
+	dependency              string
+	format                  report.Format
+	outputPath              string
+	scopeMode               string
+	visited                 map[string]bool
+	thresholds              thresholds.Values
+	scope                   thresholds.PathScope
+	policySources           []string
+	policyTrace             []report.PolicyMergeTrace
+	advisorySourcePath      string
+	vulnerabilityExceptions []report.VulnerabilityException
+	configPath              string
+	features                featureflags.Set
+	notifications           notify.Config
 }
 
 func parseAnalyse(args []string, req app.Request) (app.Request, error) {
@@ -74,37 +75,30 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 	}
 
 	visited := visitedFlags(fs)
-	resolvedThresholds, resolvedScope, policySources, policyTrace, advisorySourcePath, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
+	resolvedPolicy, err := resolveAnalysisPolicy(visited, flags)
 	if err != nil {
 		return analyseParseState{}, err
 	}
-	resolvedFeatures, err := resolveAnalyseFeatures(visited, flags, configFeatures)
-	if err != nil {
-		return analyseParseState{}, err
-	}
-	commandOptions := runtime.CommandOptions{PythonRunnerProfiles: resolvedFeatures.Enabled(runtime.PythonRunnerProfilesFeature)}
+	commandOptions := runtime.CommandOptions{PythonRunnerProfiles: resolvedPolicy.features.Enabled(runtime.PythonRunnerProfilesFeature)}
 	if err := runtime.ValidateCommand(*flags.runtimeTestCommand, commandOptions); err != nil {
-		return analyseParseState{}, err
-	}
-	resolvedNotifications, err := resolveAnalyseNotifications(visited, flags, resolvedConfigPath)
-	if err != nil {
 		return analyseParseState{}, err
 	}
 
 	return analyseParseState{
-		dependency:         dependency,
-		format:             format,
-		outputPath:         outputPath,
-		scopeMode:          scopeMode,
-		visited:            visited,
-		thresholds:         resolvedThresholds,
-		scope:              resolvedScope,
-		policySources:      policySources,
-		policyTrace:        policyTrace,
-		advisorySourcePath: advisorySourcePath,
-		configPath:         resolvedConfigPath,
-		features:           resolvedFeatures,
-		notifications:      resolvedNotifications,
+		dependency:              dependency,
+		format:                  format,
+		outputPath:              outputPath,
+		scopeMode:               scopeMode,
+		visited:                 visited,
+		thresholds:              resolvedPolicy.thresholds,
+		scope:                   resolvedPolicy.scope,
+		policySources:           resolvedPolicy.policySources,
+		policyTrace:             resolvedPolicy.policyTrace,
+		advisorySourcePath:      resolvedPolicy.advisorySourcePath,
+		vulnerabilityExceptions: resolvedPolicy.vulnerabilityExceptions,
+		configPath:              resolvedPolicy.configPath,
+		features:                resolvedPolicy.features,
+		notifications:           resolvedPolicy.notifications,
 	}, nil
 }
 
@@ -112,35 +106,36 @@ func buildAnalyseRequest(req app.Request, flags analyseFlagValues, state analyse
 	req.Mode = app.ModeAnalyse
 	req.RepoPath = strings.TrimSpace(*flags.repoPath)
 	req.Analyse = app.AnalyseRequest{
-		Dependency:         state.dependency,
-		TopN:               *flags.top,
-		ScopeMode:          state.scopeMode,
-		SuggestOnly:        *flags.suggestOnly,
-		ApplyCodemod:       *flags.applyCodemod,
-		AllowDirty:         *flags.allowDirty,
-		Format:             state.format,
-		OutputPath:         state.outputPath,
-		Language:           strings.TrimSpace(*flags.languageFlag),
-		CacheEnabled:       *flags.cacheEnabled,
-		CachePath:          strings.TrimSpace(*flags.cachePath),
-		CacheReadOnly:      *flags.cacheReadOnly,
-		RuntimeProfile:     strings.TrimSpace(*flags.runtimeProfile),
-		BaselinePath:       strings.TrimSpace(*flags.baselinePath),
-		BaselineStorePath:  strings.TrimSpace(*flags.baselineStorePath),
-		BaselineKey:        strings.TrimSpace(*flags.baselineKey),
-		BaselineLabel:      strings.TrimSpace(*flags.baselineLabel),
-		SaveBaseline:       *flags.saveBaseline,
-		RuntimeTracePath:   strings.TrimSpace(*flags.runtimeTracePath),
-		RuntimeTestCommand: strings.TrimSpace(*flags.runtimeTestCommand),
-		AdvisorySourcePath: state.advisorySourcePath,
-		IncludePatterns:    resolveScopePatterns(state.visited, "include", flags.includePatterns.Values(), state.scope.Include),
-		ExcludePatterns:    resolveScopePatterns(state.visited, "exclude", flags.excludePatterns.Values(), state.scope.Exclude),
-		ConfigPath:         state.configPath,
-		PolicySources:      state.policySources,
-		PolicyTrace:        state.policyTrace,
-		Features:           state.features,
-		Thresholds:         state.thresholds,
-		Notifications:      state.notifications,
+		Dependency:              state.dependency,
+		TopN:                    *flags.top,
+		ScopeMode:               state.scopeMode,
+		SuggestOnly:             *flags.suggestOnly,
+		ApplyCodemod:            *flags.applyCodemod,
+		AllowDirty:              *flags.allowDirty,
+		Format:                  state.format,
+		OutputPath:              state.outputPath,
+		Language:                strings.TrimSpace(*flags.languageFlag),
+		CacheEnabled:            *flags.cacheEnabled,
+		CachePath:               strings.TrimSpace(*flags.cachePath),
+		CacheReadOnly:           *flags.cacheReadOnly,
+		RuntimeProfile:          strings.TrimSpace(*flags.runtimeProfile),
+		BaselinePath:            strings.TrimSpace(*flags.baselinePath),
+		BaselineStorePath:       strings.TrimSpace(*flags.baselineStorePath),
+		BaselineKey:             strings.TrimSpace(*flags.baselineKey),
+		BaselineLabel:           strings.TrimSpace(*flags.baselineLabel),
+		SaveBaseline:            *flags.saveBaseline,
+		RuntimeTracePath:        strings.TrimSpace(*flags.runtimeTracePath),
+		RuntimeTestCommand:      strings.TrimSpace(*flags.runtimeTestCommand),
+		AdvisorySourcePath:      state.advisorySourcePath,
+		VulnerabilityExceptions: append([]report.VulnerabilityException{}, state.vulnerabilityExceptions...),
+		IncludePatterns:         resolveScopePatterns(state.visited, "include", flags.includePatterns.Values(), state.scope.Include),
+		ExcludePatterns:         resolveScopePatterns(state.visited, "exclude", flags.excludePatterns.Values(), state.scope.Exclude),
+		ConfigPath:              state.configPath,
+		PolicySources:           state.policySources,
+		PolicyTrace:             state.policyTrace,
+		Features:                state.features,
+		Thresholds:              state.thresholds,
+		Notifications:           state.notifications,
 	}
 
 	return req

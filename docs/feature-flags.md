@@ -115,6 +115,21 @@ Use these stable names in v1.8 and later. The deprecated compatibility names rem
 
 `LOP-FEAT-0013`, `LOP-FEAT-0015`, and `LOP-FEAT-0017` remain preview and require explicit enablement.
 
+## v1.9 Preview Flags
+
+These v1.9 features remain preview-only and require explicit enablement:
+
+| Code | Name |
+| --- | --- |
+| `LOP-FEAT-0021` | `dependency-identity-preview` |
+| `LOP-FEAT-0022` | `advisory-osv-sync-preview` |
+| `LOP-FEAT-0023` | `vulnerability-exceptions-vex-preview` |
+| `LOP-FEAT-0024` | `spdx-sbom-export-preview` |
+| `LOP-FEAT-0025` | `dashboard-cyclonedx-portfolio-preview` |
+| `LOP-FEAT-0026` | `remediation-routing-summaries-preview` |
+| `LOP-FEAT-0027` | `action-dashboard-mode-preview` |
+| `LOP-FEAT-0028` | `dependency-surface-pr-review-preview` |
+
 ## v2 Stable Alias Migration
 
 Use these stable names for v2.0.0 and later. The legacy preview names remain accepted in v2.0.0 and emit deprecation guidance when used as explicit CLI feature overrides.

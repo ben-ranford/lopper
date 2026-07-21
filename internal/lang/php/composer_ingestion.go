@@ -102,11 +102,17 @@ func collectLocalNamespaces(manifest composerManifest, out map[string]struct{}) 
 }
 
 func normalizeComposerDependency(name string) (string, bool) {
+	return NormalizeComposerDependency(name)
+}
+
+// NormalizeComposerDependency normalizes installable Composer package names.
+func NormalizeComposerDependency(name string) (string, bool) {
 	name = normalizeDependencyID(name)
-	if name == "" || name == "php" {
+	switch name {
+	case "", "php", "hhvm", "composer", "composer-plugin-api", "composer-runtime-api":
 		return "", false
 	}
-	if strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "lib-") {
+	if !strings.Contains(name, "/") && (strings.HasPrefix(name, "php-") || strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "lib-")) {
 		return "", false
 	}
 	return name, true

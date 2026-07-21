@@ -88,6 +88,79 @@ func TestServiceAnalyseAllLanguages(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseScopedDependencyIdentityUsesScopedRepoPath(t *testing.T) {
+	repo := t.TempDir()
+	writeScopedGoIdentityFixture(t, repo)
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:        repo,
+		Dependency:      "github.com/google/uuid",
+		Language:        "go",
+		IncludePatterns: []string{"services/included/**", "services/excluded/**"},
+		ExcludePatterns: []string{"services/excluded/**"},
+		Features:        mustResolveDependencyIdentityPreviewFeatureSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse scoped identity fixture: %v", err)
+	}
+	if reportData.RepoPath != repo {
+		t.Fatalf("expected original repo path preserved, got %q want %q", reportData.RepoPath, repo)
+	}
+	if reportData.Scope == nil || len(reportData.Scope.Packages) != 1 || reportData.Scope.Packages[0] != "services/included" {
+		t.Fatalf("expected scoped analyzed root remapped to included package, got %#v", reportData.Scope)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+	assertIdentity(t, findIdentityDependency(t, reportData, "go", "github.com/google/uuid"), report.DependencyIdentity{
+		Ecosystem: "golang", Name: "github.com/google/uuid", Version: "v1.6.0", VersionStatus: identityStatusResolved,
+		PURL: "pkg:golang/github.com/google/uuid@v1.6.0", PURLStatus: identityStatusResolved, Source: "services/included/go.mod", Confidence: "high",
+	})
+	for _, warning := range reportData.Warnings {
+		if strings.Contains(warning, "v9.9.9") {
+			t.Fatalf("expected scoped warnings to exclude excluded manifest version, got %#v", reportData.Warnings)
+		}
+	}
+}
+
+func TestServiceAnalyseDependencyIdentityUnscopedStillUsesFullRepo(t *testing.T) {
+	repo := t.TempDir()
+	writeScopedGoIdentityFixture(t, repo)
+
+	service := NewService()
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "github.com/google/uuid",
+		Language:   "go",
+		Features:   mustResolveDependencyIdentityPreviewFeatureSet(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse unscoped identity fixture: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(expectedOneDependencyText, len(reportData.Dependencies))
+	}
+	dependency := findIdentityDependency(t, reportData, "go", "github.com/google/uuid")
+	if dependency.Identity.VersionStatus != identityStatusConflicting || dependency.Identity.PURLStatus != identityPURLUnavailable || dependency.Identity.Version != "" {
+		t.Fatalf("expected unscoped full-repo identity conflict, got %#v", dependency.Identity)
+	}
+	if !slices.Equal(dependency.Identity.Conflicts, []string{
+		"v1.6.0 from services/included/go.mod",
+		"v9.9.9 from services/excluded/go.mod",
+	}) {
+		t.Fatalf("unexpected unscoped identity conflicts: %#v", dependency.Identity.Conflicts)
+	}
+}
+
+func writeScopedGoIdentityFixture(t *testing.T, repo string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, "services", "included", "go.mod"), "module example.com/included\n\nrequire github.com/google/uuid v1.6.0\n")
+	writeFile(t, filepath.Join(repo, "services", "included", "main.go"), "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
+	writeFile(t, filepath.Join(repo, "services", "excluded", "go.mod"), "module example.com/excluded\n\nrequire github.com/google/uuid v9.9.9\n")
+	writeFile(t, filepath.Join(repo, "services", "excluded", "main.go"), "package main\n\nimport \"github.com/google/uuid\"\n\nfunc main() { _ = uuid.NewString() }\n")
+}
+
 func TestServiceAnalyseKotlinAndroidPackageScopeAvoidsRootOverlapDoubleCount(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "settings.gradle"), "rootProject.name = 'demo'\ninclude ':app'\n")
@@ -384,6 +457,18 @@ func mustResolveSwiftCarthagePreviewSet(t *testing.T, enabled bool) featureflags
 	resolved, err := featureflags.DefaultRegistry().Resolve(options)
 	if err != nil {
 		t.Fatalf("resolve swift Carthage preview feature set: %v", err)
+	}
+	return resolved
+}
+
+func mustResolveDependencyIdentityPreviewFeatureSet(t *testing.T) featureflags.Set {
+	t.Helper()
+	resolved, err := featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{
+		Channel: featureflags.ChannelDev,
+		Enable:  []string{report.DependencyIdentityPreviewFeature},
+	})
+	if err != nil {
+		t.Fatalf("resolve dependency identity preview feature set: %v", err)
 	}
 	return resolved
 }

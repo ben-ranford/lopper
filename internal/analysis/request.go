@@ -19,6 +19,8 @@ type CacheOptions struct {
 
 type Request struct {
 	RepoPath                          string
+	ChangedFiles                      []string
+	ChangedFilesExplicit              bool
 	Dependency                        string
 	TopN                              int
 	ScopeMode                         string
@@ -38,5 +40,6 @@ type Request struct {
 	RemovalCandidateWeights           *report.RemovalCandidateWeights
 	LicenseDenyList                   []string
 	IncludeRegistryProvenance         bool
+	VulnerabilityExceptions           []report.VulnerabilityException
 	Cache                             *CacheOptions
 }

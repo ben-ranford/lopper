@@ -107,6 +107,80 @@ func TestFormatSARIFIncludesRuntimeAndBaselineContext(t *testing.T) {
 	assertSARIFBaselineContextPresent(t, wasteProps["baselineContext"])
 }
 
+func TestSARIFDependencyPropertiesIncludePerInstanceMetadataAndExtras(t *testing.T) {
+	loadDelta := 2
+	dependency := DependencyReport{
+		Name:     "lib",
+		Language: "js-ts",
+		License: &DependencyLicense{
+			SPDX:       "MIT",
+			Source:     "package.json",
+			Confidence: "high",
+			Unknown:    false,
+			Denied:     true,
+			Evidence:   []string{"license field"},
+		},
+		Provenance: &DependencyProvenance{
+			Source:     "lockfile",
+			Confidence: "high",
+			Signals:    []string{"resolved"},
+		},
+		RuntimeUsage: &RuntimeUsage{
+			LoadCount:     3,
+			Correlation:   RuntimeCorrelationOverlap,
+			RuntimeOnly:   true,
+			Modules:       []RuntimeModuleUsage{{Module: "lib/core", Count: 2}},
+			ParentModules: []RuntimeModuleUsage{{Module: "app/root", Count: 1}},
+			Entrypoints:   []RuntimeModuleUsage{{Module: "cmd/start", Count: 1}},
+			TopSymbols:    []RuntimeSymbolUsage{{Symbol: "run", Module: "lib/core", Count: 2}},
+		},
+		ReachabilityConfidence: &ReachabilityConfidence{
+			Model:          "v1",
+			Score:          0.91,
+			Summary:        "strong evidence",
+			RationaleCodes: []string{"runtime"},
+		},
+		Vulnerabilities: []VulnerabilityFinding{{AdvisoryID: "GHSA-123", Priority: VulnerabilityPriorityHigh}},
+	}
+	delta := &DependencyDelta{
+		Kind:                      DependencyDeltaChanged,
+		UsedExportsCountDelta:     1,
+		TotalExportsCountDelta:    -1,
+		UsedPercentDelta:          5,
+		EstimatedUnusedBytesDelta: 128,
+		WastePercentDelta:         -5,
+		DeniedIntroduced:          true,
+		RuntimeDelta: &RuntimeDelta{
+			Comparable:      true,
+			BaselinePresent: true,
+			CurrentPresent:  true,
+			LoadCountDelta:  &loadDelta,
+		},
+	}
+	props := sarifDependencyProperties(dependency, delta, map[string]any{"custom": "value"})
+
+	runtimeProps, ok := props["runtime"].(map[string]any)
+	if !ok || len(runtimeProps["modules"].([]map[string]any)) != 1 || len(runtimeProps["topSymbols"].([]map[string]any)) != 1 {
+		t.Fatalf("expected runtime property bags to include modules and symbols, got %#v", runtimeProps)
+	}
+	if props["custom"] != "value" {
+		t.Fatalf("expected extra SARIF property to be preserved, got %#v", props)
+	}
+	baselineContext, ok := props["baselineContext"].(map[string]any)
+	if !ok || baselineContext["deniedIntroduced"] != true || baselineContext["runtimeDelta"] == nil {
+		t.Fatalf("expected baseline context in SARIF properties, got %#v", baselineContext)
+	}
+}
+
+func TestSARIFPropertyBagsReturnNilForEmptyInputs(t *testing.T) {
+	if got := runtimeModulePropertyBag(nil); len(got) != 0 {
+		t.Fatalf("expected nil runtime module bag for nil input, got %#v", got)
+	}
+	if got := runtimeSymbolPropertyBag(nil); len(got) != 0 {
+		t.Fatalf("expected nil runtime symbol bag for nil input, got %#v", got)
+	}
+}
+
 func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{
@@ -134,6 +208,13 @@ func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
 						Reachable:     true,
 						Evidence:      []string{"static_location: src/app.ts:7"},
 					},
+					{
+						AdvisoryID: "GHSA-suppressed",
+						Package:    "reachable-lib",
+						Decision: &VulnerabilityExceptionDecision{
+							Status: "accepted-risk",
+						},
+					},
 				},
 			},
 		},
@@ -147,9 +228,11 @@ func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
 	payload := mustSARIFLog(t, output)
 	var finding *sarifResult
 	for i := range payload.Runs[0].Results {
-		if payload.Runs[0].Results[i].RuleID == "lopper/vulnerability/ghsa-1234" {
+		switch payload.Runs[0].Results[i].RuleID {
+		case "lopper/vulnerability/ghsa-1234":
 			finding = &payload.Runs[0].Results[i]
-			break
+		case "lopper/vulnerability/ghsa-suppressed":
+			t.Fatalf("expected accepted-risk finding to be omitted from SARIF, got %#v", payload.Runs[0].Results[i])
 		}
 	}
 	if finding == nil {
@@ -163,6 +246,52 @@ func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
 	}
 	if finding.Properties["advisoryId"] != "GHSA-1234" || finding.Properties["fixedVersion"] != "1.2.3" || finding.Properties["priority"] != VulnerabilityPriorityCritical || finding.Properties["reachable"] != true {
 		t.Fatalf("expected vulnerability properties, got %#v", finding.Properties)
+	}
+}
+
+func TestFormatSARIFMapsDuplicatePURLBaselineContextPerInstance(t *testing.T) {
+	current := Report{Dependencies: []DependencyReport{
+		{
+			Language:          "js-ts",
+			Name:              "dup",
+			Identity:          &DependencyIdentity{PURL: "pkg:npm/dup@1.0.0"},
+			UsedExportsCount:  1,
+			TotalExportsCount: 2,
+			UnusedExports:     []SymbolRef{{Name: "alpha", Module: "dup/alpha"}},
+		},
+		{
+			Language:          "js-ts",
+			Name:              "dup",
+			Identity:          &DependencyIdentity{PURL: "pkg:npm/dup@2.0.0"},
+			UsedExportsCount:  11,
+			TotalExportsCount: 12,
+			UnusedExports:     []SymbolRef{{Name: "beta", Module: "dup/beta"}},
+		},
+	}}
+	baseline := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "dup", Identity: &DependencyIdentity{PURL: "pkg:npm/dup@1.0.0"}, TotalExportsCount: 2},
+		{Language: "js-ts", Name: "dup", Identity: &DependencyIdentity{PURL: "pkg:npm/dup@2.0.0"}, UsedExportsCount: 2, TotalExportsCount: 12},
+	}}
+	comparison := ComputeBaselineComparison(current, baseline)
+	current.BaselineComparison = &comparison
+
+	output, err := NewFormatter().Format(current, FormatSARIF)
+	if err != nil {
+		t.Fatalf("format sarif duplicate purls: %v", err)
+	}
+
+	payload := mustSARIFLog(t, output)
+	deltasByModule := map[string]float64{}
+	for _, result := range payload.Runs[0].Results {
+		if result.RuleID != "lopper/waste/unused-export" {
+			continue
+		}
+		module, _ := result.Properties["module"].(string)
+		baselineContext, _ := result.Properties["baselineContext"].(map[string]any)
+		deltasByModule[module] = baselineContext["usedExportsCountDelta"].(float64)
+	}
+	if deltasByModule["dup/alpha"] != 1 || deltasByModule["dup/beta"] != 9 {
+		t.Fatalf("expected per-instance duplicate SARIF baseline deltas, got %#v", deltasByModule)
 	}
 }
 
