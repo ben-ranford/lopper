@@ -171,8 +171,21 @@ jobs:
             echo "sha=${resolved_sha}"
           } >> "$GITHUB_OUTPUT"
 
-  orchestrate-release:
+  verify-release-source-ci:
     needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-source-ci.yml
+    with:
+      source_sha: ${{ needs.prepare-release.outputs.sha }}
+      build_channel: release
+      memory_approved: false
+
+  orchestrate-release:
+    needs:
+      - prepare-release
+      - verify-release-source-ci
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     permissions:
       contents: read
@@ -183,7 +196,6 @@ jobs:
       source_sha: ${{ needs.prepare-release.outputs.sha }}
       artifact_prefix: release
       build_channel: release
-      memory_approved: false
       image_tags: |
         ${{ needs.prepare-release.outputs.tag }}
         latest
@@ -191,7 +203,7 @@ jobs:
   build-vscode-extension:
     needs:
       - prepare-release
-      - orchestrate-release
+      - verify-release-source-ci
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -289,7 +301,7 @@ jobs:
   build-darwin-amd64:
     needs:
       - prepare-release
-      - orchestrate-release
+      - verify-release-source-ci
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: macos-26-intel
     permissions:
@@ -390,7 +402,7 @@ jobs:
   prepare-release-feature-report:
     needs:
       - prepare-release
-      - orchestrate-release
+      - verify-release-source-ci
     if: ${{ needs.prepare-release.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:

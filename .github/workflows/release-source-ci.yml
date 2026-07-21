@@ -1,0 +1,83 @@
+name: release-source-ci
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      build_channel:
+        required: true
+        type: string
+      memory_approved:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  verify-source-ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+          ref: ${{ inputs.source_sha }}
+
+      - name: Verify exact release source
+        env:
+          PATH: /usr/bin:/bin
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          source_sha="${SOURCE_SHA}"
+          if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source SHA must be a lowercase full 40-character commit SHA." >&2
+            printf 'Rejected release source SHA: %q\n' "${source_sha}" >&2
+            exit 1
+          fi
+
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [ "${checked_out_sha}" != "${source_sha}" ]; then
+            echo "::error::Release source checkout resolved to ${checked_out_sha}, expected ${source_sha}." >&2
+            exit 1
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Resolve gosec version
+        id: gosec_version
+        run: echo "value=$(make --silent print-gosec-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Go tooling
+        env:
+          GOSEC_VERSION: ${{ steps.gosec_version.outputs.value }}
+        run: |
+          make tools-install
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run exact source CI gate
+        env:
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
+          MEMORY_BENCH_ENFORCE: ${{ inputs.memory_approved && '0' || '1' }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          parent_sha="$(git rev-parse "${SOURCE_SHA}^")"
+          export MEMORY_BENCH_BASE="${parent_sha}"
+          export DUPLICATION_BASE="${parent_sha}"
+          export SUPPRESSION_BASE="${parent_sha}"
+          make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+
+      - name: Verify demo assets
+        run: make demos-check
