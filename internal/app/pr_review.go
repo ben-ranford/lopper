@@ -24,6 +24,7 @@ const (
 	prReviewFormatJSON     = "json"
 
 	prReviewSchemaVersion = "lopper.pr-review.v1"
+	prReviewGitRevParse   = "rev-parse"
 
 	prReviewCategoryAdded              = "added"
 	prReviewCategoryRemoved            = "removed"
@@ -284,9 +285,9 @@ func resolvePRReviewRepositoryScope(ctx context.Context, repoPath string) (strin
 	candidate := requestedPath
 	missingSuffix := ""
 	for {
-		root, err := runPRReviewGit(ctx, candidate, "rev-parse", "--show-toplevel")
+		root, err := runPRReviewGit(ctx, candidate, prReviewGitRevParse, "--show-toplevel")
 		if err == nil {
-			prefix, prefixErr := runPRReviewGit(ctx, candidate, "rev-parse", "--show-prefix")
+			prefix, prefixErr := runPRReviewGit(ctx, candidate, prReviewGitRevParse, "--show-prefix")
 			if prefixErr != nil {
 				return "", "", fmt.Errorf("resolve pr-review repository scope: %w", prefixErr)
 			}
@@ -324,7 +325,7 @@ func scopePRReviewChangedFiles(changedFiles []string, repoPrefix string) []strin
 }
 
 func verifyPRReviewCommit(ctx context.Context, repoPath, sha string) (string, error) {
-	out, err := runPRReviewGit(ctx, repoPath, "rev-parse", "--verify", sha+"^{commit}")
+	out, err := runPRReviewGit(ctx, repoPath, prReviewGitRevParse, "--verify", sha+"^{commit}")
 	if err != nil {
 		return "", err
 	}
